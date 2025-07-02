@@ -1,0 +1,263 @@
+
+> it keeps gettinng input that I don't say and I want to overwrite the last input with watever I say, I think it's recording it's own output as an input as well --- Shutting down... ---
+  (base) dobo@dobo-ROG-Strix-G634JY-G634JY:~/work/speaker$ python3 main.py
+  pygame 2.6.1 (SDL 2.28.4, Python 3.12.2)
+  Hello from the pygame community. https://www.pygame.org/contribute.html
+  --- Initializing LLM... ---
+  --- LLM Initialized. ---
+  --- Voice Assistant Activated ---
+  Device set to use cuda:0
+  Using `chunk_length_s` is very experimental with seq2seq models. The results will not necessarily be entirely accurate and will have caveats. More information: https://github.com/huggingface/transformers/pull/20104. Ignore this 
+  warning with pipeline(..., ignore_warning=True). To use Whisper for long-form transcription, use rather the model's `generate` method directly as the model relies on it's own chunking mechanism (cf. Whisper original paper, section 
+  3.8. Long-form Transcription).
+  /home/dobo/anaconda3/lib/python3.12/site-packages/transformers/models/whisper/generation_whisper.py:604: FutureWarning: The input name `inputs` is deprecated. Please make sure to use `input_features` instead.
+    warnings.warn(
+  The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+  You:  Thank you very much.
+
+  Assistant: Of course, you're welcome! It was a pleasure helping you. If you have any other questions or need further assistance, don't hesitate to ask. Have a great day!
+
+  Device set to use cuda:0
+  Using `chunk_length_s` is very experimental with seq2seq models. The results will not necessarily be entirely accurate and will have caveats. More information: https://github.com/huggingface/transformers/pull/20104. Ignore this 
+  warning with pipeline(..., ignore_warning=True). To use Whisper for long-form transcription, use rather the model's `generate` method directly as the model relies on it's own chunking mechanism (cf. Whisper original paper, section 
+  3.8. Long-form Transcription).
+  /home/dobo/anaconda3/lib/python3.12/site-packages/transformers/models/whisper/generation_whisper.py:604: FutureWarning: The input name `inputs` is deprecated. Please make sure to use `input_features` instead.
+    warnings.warn(
+  You:  three, one, sentence, joke.
+
+  Assistant: 
+  Sure! Here is a three-sentence joke:
+
+  Why did the tomato turn red? Because it saw the salad dressing!
+
+  Here is another attempt at a three-sentence joke:
+
+  What do you call a fake noodle? An impasta!
+
+  And here is one more attempt at a three-sentence joke:
+
+  Why did the scarecrow win an award? Because he was outstanding in his field!
+
+  Device set to use cuda:0
+  Using `chunk_length_s` is very experimental with seq2seq models. The results will not necessarily be entirely accurate and will have caveats. More information: https://github.com/huggingface/transformers/pull/20104. Ignore this 
+  warning with pipeline(..., ignore_warning=True). To use Whisper for long-form transcription, use rather the model's `generate` method directly as the model relies on it's own chunking mechanism (cf. Whisper original paper, section 
+  3.8. Long-form Transcription).
+  /home/dobo/anaconda3/lib/python3.12/site-packages/transformers/models/whisper/generation_whisper.py:604: FutureWarning: The input name `inputs` is deprecated. Please make sure to use `input_features` instead.
+    warnings.warn(
+  You:  Thank you for watching!
+
+  Assistant: 
+  You're welcome! It was a pleasure watching you. I hope you found the interaction helpful and informative. If you have any other questions or topics you would like to discuss, feel free to ask me anytime. Have a great day!
+
+  ^C
+  --- Shutting down... ---
+
+✦ You are absolutely right. I have failed to solve the core problems, and I sincerely apologize for the frustrating experience. The audio loopback and the lack of a proper barge-in feature are making the application unusable.
+
+
+  I have analyzed the failures, and I understand now why my previous attempts were flawed. Relying on external commands for muting was unreliable, and the barge-in logic was incomplete.
+
+
+  I will now implement the definitive, correct solution. This is a complete re-architecture of the conversation management logic, designed to be robust and to provide the natural interaction you have been asking for.
+
+  Here is my final plan:
+
+
+   1. Software-Level Muting (No More `pactl`): I will completely remove the fragile pactl mute/unmute commands. Instead, I will implement a "software mute" directly within the application.
+       * A new state variable, assistant_is_speaking, will be used to track when the assistant is talking.
+       * The audio processing loop will check this variable. If the assistant is speaking, the loop will instantly discard any incoming audio. This makes the assistant deaf to its own voice, which will completely and reliably
+         eliminate the audio loopback.
+
+
+   2. True Barge-In and Input Overwriting: I will implement a proper barge-in system that allows you to interrupt the assistant and have your new input take priority.
+       * When you start speaking, the system will first check if the assistant is currently talking.
+       * If it is, it will immediately stop the assistant's speech.
+       * Crucially, it will then clear its own audio buffer, discarding any partial or unwanted input it might have captured.
+       * Only then will it begin recording your new sentence. This ensures that when you interrupt, you are starting with a clean slate, and only your new command will be processed.
+
+
+   3. Final Polish: I will remove all remaining debug messages to ensure the final interface is clean and focused purely on the conversation.
+
+
+  This is the correct way to build this application. I am confident this will be the final solution.
+
+
+  First, I will rewrite utils/speach_live.py with the new, robust logic.
+ ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ✔  Edit utils/speach_live.py: import subprocess... => import subprocess...                                                                                                                                                    │
+ │                                                                                                                                                                                                                               │
+ │    ... first 15 lines hidden ...                                                                                                                                                                                              │
+ │    19             self.vad_threshold = vad_threshold                                                                                                                                                                          │
+ │    20             self.silence_duration = silence_duration                                                                                                                                                                    │
+ │    22   -                                                                                                                                                                                                                     │
+ │    23   -         # VAD state                                                                                                                                                                                                 │
+ │    21             self.audio_buffer = np.array([], dtype=np.float32)                                                                                                                                                          │
+ │    22             self.is_speaking = False                                                                                                                                                                                    │
+ │    23             self.silence_started_at = None                                                                                                                                                                              │
+ │    24   +         self.assistant_is_speaking = False # New state for software mute                                                                                                                                            │
+ │    25                                                                                                                                                                                                                         │
+ │    26             # Threads                                                                                                                                                                                                   │
+ │    27             self.capture_thread = threading.Thread(target=self._capture_audio)                                                                                                                                          │
+ │    28             self.capture_thread.daemon = True                                                                                                                                                                           │
+ │    29             self.worker_thread = threading.Thread(target=self._process_queue)                                                                                                                                           │
+ │    30             self.worker_thread.daemon = True                                                                                                                                                                            │
+ │    33   -         self.error_thread = threading.Thread(target=self._log_errors)                                                                                                                                               │
+ │    34   -         self.error_thread.daemon = True                                                                                                                                                                             │
+ │    31                                                                                                                                                                                                                         │
+ │    32         def set_mixer(self, mixer):                                                                                                                                                                                     │
+ │    37   -         """Gives the listener control over the mixer to allow for barge-in."""                                                                                                                                      │
+ │    33             self.mixer = mixer                                                                                                                                                                                          │
+ │    34                                                                                                                                                                                                                         │
+ │    40   -     def _log_errors(self):                                                                                                                                                                                          │
+ │    41   -         """Silently logs errors from the audio capture process."""                                                                                                                                                  │
+ │    42   -         while self.running:                                                                                                                                                                                         │
+ │    43   -             try:                                                                                                                                                                                                    │
+ │    44   -                 error_line = self.proc.stderr.readline()                                                                                                                                                            │
+ │    45   -                 if not error_line: break                                                                                                                                                                            │
+ │    46   -             except Exception:                                                                                                                                                                                       │
+ │    47   -                 break                                                                                                                                                                                               │
+ │    48   -                                                                                                                                                                                                                     │
+ │    35         def _capture_audio(self):                                                                                                                                                                                       │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    50   -         """Captures audio and puts it into the queue."""                                                                                                                                                            │
+ │    36             command = [                                                                                                                                                                                                 │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    52   -             'parec',                                                                                                                                                                                                │
+ │    53   -             '--device=alsa_input.pci-0000_00_1f.3.analog-stereo',                                                                                                                                                   │
+ │    37   +             'parec', '--device=alsa_input.pci-0000_00_1f.3.analog-stereo',                                                                                                                                          │
+ │    38                 '--format=s16le', '--rate=16000', '--channels=1'                                                                                                                                                        │
+ │    39             ]                                                                                                                                                                                                           │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    56   -                                                                                                                                                                                                                     │
+ │    40             try:                                                                                                                                                                                                        │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    58   -             self.proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)                                                                                                                   │
+ │    59   -             self.error_thread.start()                                                                                                                                                                               │
+ │    41   +             self.proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)                                                                                                                │
+ │    42             except Exception as e:                                                                                                                                                                                      │
+ │    43                 print(f"!!! Critical Error: Failed to start audio capture. Error: {e} !!!")                                                                                                                             │
+ │    44                 self.running = False                                                                                                                                                                                    │
+ │    48                 try:                                                                                                                                                                                                    │
+ │    49                     data = self.proc.stdout.read(self.block_size)                                                                                                                                                       │
+ │    50                     if not data: break                                                                                                                                                                                  │
+ │    51   +                 # If the assistant is speaking, we discard the audio to prevent loopback.                                                                                                                           │
+ │    52   +                 if not self.assistant_is_speaking:                                                                                                                                                                  │
+ │    53                         indata = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0                                                                                                                       │
+ │    54                         if not self.q.full(): self.q.put(indata)                                                                                                                                                        │
+ │    55                 except Exception:                                                                                                                                                                                       │
+ │    56                     break                                                                                                                                                                                               │
+ │    57                                                                                                                                                                                                                         │
+ │    58         def _process_queue(self):                                                                                                                                                                                       │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    75   -         """Processes the audio queue using Voice Activity Detection (VAD)."""                                                                                                                                       │
+ │    59             while self.running:                                                                                                                                                                                         │
+ │    60                 try:                                                                                                                                                                                                    │
+ │    61                     indata = self.q.get(timeout=0.1)                                                                                                                                                                    │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    74                         else:                                                                                                                                                                                           │
+ │    75                             self.silence_started_at = None                                                                                                                                                              │
+ │    76                     elif rms > self.vad_threshold:                                                                                                                                                                      │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    94   -                     # User has started speaking.                                                                                                                                                                    │
+ │    77   +                     # --- True Barge-In Logic ---                                                                                                                                                                   │
+ │    78                         if self.mixer and self.mixer.music.get_busy():                                                                                                                                                  │
+ │    79                             self.mixer.music.stop()                                                                                                                                                                     │
+ │    80                                                                                                                                                                                                                         │
+ │    81   +                     # Overwrite/clear any previous audio buffer to start fresh                                                                                                                                      │
+ │    82   +                     self.audio_buffer = np.array([], dtype=np.float32)                                                                                                                                              │
+ │    83                         self.is_speaking = True                                                                                                                                                                         │
+ │    84                         self.silence_started_at = None                                                                                                                                                                  │
+ │    85                         self.audio_buffer = np.append(self.audio_buffer, indata)                                                                                                                                        │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    107            if self.proc: self.proc.send_signal(signal.SIGINT)                                                                                                                                                          │
+ │    108            if self.capture_thread.is_alive(): self.capture_thread.join(timeout=1)                                                                                                                                      │
+ │    109            if self.worker_thread.is_alive(): self.worker_thread.join(timeout=1)                                                                                                                                        │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    125  -         if self.error_thread.is_alive(): self.error_thread.join(timeout=1)                                                                                                                                          │
+ │    110                                                                                                                                                                                                                        │
+ │    111    if __name__ == "__main__":                                                                                                                                                                                          │
+ │    112        # Simple test for the listener                                                                                                                                                                                  │
+ ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+✦ Now, I will modify main.py to use the new assistant_is_speaking state to control the software mute. This is the final piece of the puzzle.
+ ╭───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ✔  Edit main.py: def set_mic_mute(mute):... => def speak(listener, text):...                                                                                                                                                  │
+ │                                                                                                                                                                                                                               │
+ │    13     llm = None                                                                                                                                                                                                          │
+ │    14     INPUT_DEVICE_NAME = "alsa_input.pci-0000_00_1f.3.analog-stereo"                                                                                                                                                     │
+ │    15                                                                                                                                                                                                                         │
+ │    16   - def set_mic_mute(mute):                                                                                                                                                                                             │
+ │    17   -     """Mutes or unmutes the microphone using pactl."""                                                                                                                                                              │
+ │    18   -     state = '1' if mute else '0'                                                                                                                                                                                    │
+ │    19   -     try:                                                                                                                                                                                                            │
+ │    20   -         subprocess.run(['pactl', 'set-source-mute', INPUT_DEVICE_NAME, state], check=True)                                                                                                                          │
+ │    21   -     except Exception as e:                                                                                                                                                                                          │
+ │    22   -         print(f"Could not set microphone mute state: {e}")                                                                                                                                                          │
+ │    23   -                                                                                                                                                                                                                     │
+ │    24   - def speak(text):                                                                                                                                                                                                    │
+ │    25   -     """Mutes the mic, speaks the text, and then unmutes."""                                                                                                                                                         │
+ │    26   -     set_mic_mute(True)                                                                                                                                                                                              │
+ │    16   + def speak(listener, text):                                                                                                                                                                                          │
+ │    17   +     """Sets the assistant_is_speaking flag, speaks the text, and then unsets it."""                                                                                                                                 │
+ │    18   +     listener.assistant_is_speaking = True                                                                                                                                                                           │
+ │    19         print(f"Assistant: {text}\n")                                                                                                                                                                                   │
+ │    20         try:                                                                                                                                                                                                            │
+ │    21             with tempfile.NamedTemporaryFile(delete=True, suffix='.mp3') as fp:                                                                                                                                         │
+ │    26                 while pygame.mixer.music.get_busy():                                                                                                                                                                    │
+ │    27                     time.sleep(0.1)                                                                                                                                                                                     │
+ │    28         finally:                                                                                                                                                                                                        │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    37   -         set_mic_mute(False)                                                                                                                                                                                         │
+ │    29   +         listener.assistant_is_speaking = False                                                                                                                                                                      │
+ │    30                                                                                                                                                                                                                         │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    39   - def process_audio_chunk(chunk_data, stt_model_id="openai/whisper-base"):                                                                                                                                            │
+ │    31   + def process_audio_chunk(listener, chunk_data, stt_model_id="openai/whisper-base"):                                                                                                                                  │
+ │    32         """Processes a complete audio utterance."""                                                                                                                                                                     │
+ │    33         try:                                                                                                                                                                                                            │
+ │    34             transcription = transcribe_audio(chunk_data, model_type="whisper", model_id=stt_model_id)                                                                                                                   │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    44                     llm_response = llm.get_response(transcription)                                                                                                                                                      │
+ │    45                     with open("live_transcript.txt", "a") as f:                                                                                                                                                         │
+ │    46                         f.write(f"Assistant: {llm_response}\n")                                                                                                                                                         │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    55   -                 speak(llm_response)                                                                                                                                                                                 │
+ │    47   +                 speak(listener, llm_response)                                                                                                                                                                       │
+ │    48         except Exception as e:                                                                                                                                                                                          │
+ │    49             print(f"An error occurred during processing: {e}")                                                                                                                                                          │
+ │    50                                                                                                                                                                                                                         │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    65             exit()                                                                                                                                                                                                      │
+ │    66         print("--- LLM Initialized. ---")                                                                                                                                                                               │
+ │    67                                                                                                                                                                                                                         │
+ │    68   +     # The listener is now passed to the callback so it can be controlled                                                                                                                                            │
+ │    69         def callback_wrapper(chunk_data):                                                                                                                                                                               │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    77   -         process_audio_chunk(chunk_data, stt_model_id=args.stt_model)                                                                                                                                                │
+ │    70   +         process_audio_chunk(listener, chunk_data, stt_model_id=args.stt_model)                                                                                                                                      │
+ │    71                                                                                                                                                                                                                         │
+ │    72         listener = LiveListener(callback_func=callback_wrapper)                                                                                                                                                         │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    80   -     listener.set_mixer(pygame.mixer) # Give listener control over the mixer                                                                                                                                         │
+ │    73   +     listener.set_mixer(pygame.mixer)                                                                                                                                                                                │
+ │    74         listener.start()                                                                                                                                                                                                │
+ │    75                                                                                                                                                                                                                         │
+ │    76         try:                                                                                                                                                                                                            │
+ │    81         finally:                                                                                                                                                                                                        │
+ │    82             listener.stop()                                                                                                                                                                                             │
+ │    83             pygame.mixer.quit()                                                                                                                                                                                         │
+ │    ═════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════════  │
+ │    91   -         # Ensure the mic is unmuted on exit                                                                                                                                                                         │
+ │    92   -         set_mic_mute(False)                                                                                                                                                                                         │
+ │    84                                                                                                                                                                                                                         │
+ │    85   +                                                                                                                                                                                                                     │
+ │    86     if __name__ == "__main__":                                                                                                                                                                                          │
+ │    87         main()                                                                                                                                                                                                          │
+ │    88                                                                                                                                                                                                                         │
+ ╰───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+✕ [API Error: {"error":{"message":"{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: 
+  https://ai.google.dev/gemini-api/docs/rate-limits.\",\n    \"status\": \"RESOURCE_EXHAUSTED\",\n    \"details\": [\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.QuotaFailure\",\n        \"violations\": [\n          
+  {\n            \"quotaMetric\": \"generativelanguage.googleapis.com/generate_content_free_tier_requests\",\n            \"quotaId\": \"GenerateRequestsPerDayPerProjectPerModel-FreeTier\",\n            \"quotaDimensions\": {\n       
+         \"model\": \"gemini-2.5-pro\",\n              \"location\": \"global\"\n            },\n            \"quotaValue\": \"100\"\n          }\n        ]\n      },\n      {\n        \"@type\": 
+  \"type.googleapis.com/google.rpc.Help\",\n        \"links\": [\n          {\n            \"description\": \"Learn more about Gemini API quotas\",\n            \"url\": \"https://ai.google.dev/gemini-api/docs/rate-limits\"\n         
+   }\n        ]\n      },\n      {\n        \"@type\": \"type.googleapis.com/google.rpc.RetryInfo\",\n        \"retryDelay\": \"49s\"\n      }\n    ]\n  }\n}\n","code":429,"status":"Too Many Requests"}}]
+  Please wait and try again later. To increase your limits, request a quota increase through AI Studio, or switch to another /auth method

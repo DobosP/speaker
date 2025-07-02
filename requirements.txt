@@ -1,0 +1,9 @@
+sounddevice
+gTTS
+pygame
+google-generativeai
+ollama
+transformers
+torch
+librosa
+soundfile

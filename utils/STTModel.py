@@ -2,15 +2,14 @@ import os
 import time
 import torch
 from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
-from whisper_jax import FlaxWhisperPipline
-from openai import OpenAI
+import numpy as np
 
 class STTModel:
-    def transcribe(self, audio_path, **kwargs):
+    def transcribe(self, audio_data, **kwargs):
         raise NotImplementedError("Subclasses should implement this method")
 
 class WhisperModel(STTModel):
-    def __init__(self, model_id="openai/whisper-large-v3", device=None, torch_dtype=None):
+    def __init__(self, model_id="openai/whisper-base", device=None, torch_dtype=None, sr=16000):
         self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
         self.torch_dtype = torch_dtype or (torch.float16 if torch.cuda.is_available() else torch.float32)
         self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
@@ -29,50 +28,21 @@ class WhisperModel(STTModel):
             torch_dtype=self.torch_dtype,
             device=self.device,
         )
+        self.sr = sr
 
-    def transcribe(self, audio_path, **kwargs):
-        result = self.pipe(audio_path, generate_kwargs={"language": "english"})
+    def transcribe(self, audio_data, **kwargs):
+        result = self.pipe(audio_data.flatten(), generate_kwargs={"language": "english"})
         return result["text"]
 
-class JAXWhisperModel(STTModel):
-    def __init__(self, model_id="openai/whisper-large-v3"):
-        self.pipeline = FlaxWhisperPipline(model_id)
-
-    def transcribe(self, audio_path, **kwargs):
-        return self.pipeline(audio_path)
-
-class OpenAIWhisperModel(STTModel):
-    def __init__(self, model_id="whisper-2"):
-        self.model = OpenAI()
-        self.model_id = model_id
-
-    def transcribe(self, audio_path, **kwargs):
-        result = self.model.audio.transcribe(audio_path, model=self.model_id)
-        return result["text"]
-
-class CustomSTTModel(STTModel):
-    def __init__(self, custom_model):
-        self.custom_model = custom_model
-
-    def transcribe(self, audio_path, **kwargs):
-        return self.custom_model.transcribe(audio_path, **kwargs)
-def transcribe_audio(audio_path, model_type="whisper", **kwargs):
-    model_classes = {
-        "whisper": WhisperModel,
-        "jax_whisper": JAXWhisperModel,
-        "openai_whisper": OpenAIWhisperModel,
-        "custom": CustomSTTModel
-    }
-
-    if model_type not in model_classes:
+def transcribe_audio(audio_data, model_type="whisper", model_id="openai/whisper-base", **kwargs):
+    if model_type == "whisper":
+        model = WhisperModel(model_id=model_id, **kwargs)
+        return model.transcribe(audio_data)
+    else:
         raise ValueError(f"Unsupported model type: {model_type}")
-
-    model = model_classes[model_type](**kwargs)
-    return model.transcribe(audio_path)
 
 # Example usage
 if __name__ == "__main__":
-    audio_path = '/home/dobo/projects/speaker/recordings/2_min_sample.mp3'
-    model_type = "whisper"  # Change to "jax_whisper", "openai_whisper", or "custom" as needed
-    transcription = transcribe_audio(audio_path, model_type=model_type)
-    print(transcription)
+    # This example will not work as it expects an audio file path
+    # and the new implementation expects audio data.
+    pass

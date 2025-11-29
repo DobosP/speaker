@@ -5,9 +5,9 @@ A cross-platform voice assistant that lets you have natural conversations with y
 ## Features
 
 - 🎤 **Cross-platform audio** - Works on Windows, Mac, and Linux
-- 🗣️ **Speech-to-Text** - Uses OpenAI Whisper for accurate transcription
+- 🗣️ **Speech-to-Text** - faster-whisper (4x faster than standard Whisper)
 - 🤖 **Local LLM** - Powered by Ollama (llama2, llama3, etc.)
-- 🔊 **Text-to-Speech** - Natural voice responses with gTTS
+- 🔊 **Text-to-Speech** - Natural Microsoft Edge voices via edge-tts
 - ⚡ **Barge-in** - Interrupt the assistant mid-speech by talking
 - 🎯 **Voice Activity Detection** - Automatic speech start/stop detection
 
@@ -70,9 +70,29 @@ Edit `config.json` to customize:
   "input_device": null,      // null = auto-detect
   "output_device": null,     // null = auto-detect
   "llm_model": "llama2",     // Ollama model name
-  "stt_model": "openai/whisper-base"  // Whisper model
+  "stt_model": "base",       // Whisper model (tiny/base/small/medium/large-v3)
+  "tts_voice": "en-US"       // TTS voice (en-US/en-US-male/en-GB/en-AU)
 }
 ```
+
+### STT Models (faster-whisper)
+
+| Model | Speed | Quality | VRAM |
+|-------|-------|---------|------|
+| tiny | Fastest | Good | ~1GB |
+| base | Fast | Better | ~1GB |
+| small | Medium | Great | ~2GB |
+| medium | Slow | Excellent | ~5GB |
+| large-v3 | Slowest | Best | ~10GB |
+
+### TTS Voices (edge-tts)
+
+| Voice | Description |
+|-------|-------------|
+| en-US | US English (Aria, female) |
+| en-US-male | US English (Guy, male) |
+| en-GB | British English (Sonia, female) |
+| en-AU | Australian English (Natasha, female) |
 
 ### VAD Threshold Tuning
 

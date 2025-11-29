@@ -26,6 +26,13 @@ except ImportError:
     PYGAME_AVAILABLE = False
 
 try:
+    import edge_tts
+    import asyncio
+    EDGE_TTS_AVAILABLE = True
+except ImportError:
+    EDGE_TTS_AVAILABLE = False
+
+try:
     from gtts import gTTS
     GTTS_AVAILABLE = True
 except ImportError:
@@ -342,16 +349,26 @@ class AudioRecorder:
 
 class AudioPlayer:
     """
-    Cross-platform audio player using pygame.
+    Cross-platform audio player with multiple TTS backends.
+    Supports: edge-tts (recommended), gTTS (fallback)
     Supports interruption for barge-in functionality.
     """
     
-    def __init__(self, output_device: Optional[int] = None):
+    # Available edge-tts voices (natural sounding)
+    EDGE_VOICES = {
+        "en-US": "en-US-AriaNeural",      # Female, natural
+        "en-US-male": "en-US-GuyNeural",  # Male, natural
+        "en-GB": "en-GB-SoniaNeural",     # British female
+        "en-AU": "en-AU-NatashaNeural",   # Australian female
+    }
+    
+    def __init__(self, output_device: Optional[int] = None, voice: str = "en-US"):
         """
         Initialize the audio player.
         
         Args:
             output_device: Output device index (pygame uses system default)
+            voice: Voice to use (e.g., "en-US", "en-US-male", "en-GB")
         """
         if not PYGAME_AVAILABLE:
             raise RuntimeError("pygame is required for audio playback. Install with: pip install pygame")
@@ -359,9 +376,37 @@ class AudioPlayer:
         self.output_device = output_device
         self._is_playing = False
         self._current_file = None
+        self.voice = self.EDGE_VOICES.get(voice, voice)
+        
+        # Determine TTS backend
+        if EDGE_TTS_AVAILABLE:
+            self.tts_backend = "edge-tts"
+            print(f"🔊 TTS: edge-tts (voice: {self.voice})")
+        elif GTTS_AVAILABLE:
+            self.tts_backend = "gtts"
+            print("🔊 TTS: gTTS (fallback)")
+        else:
+            self.tts_backend = None
+            print("⚠️  No TTS backend available!")
         
         # Initialize pygame mixer
         pygame.mixer.init()
+    
+    async def _edge_tts_synthesize(self, text: str, output_file: str):
+        """Synthesize speech using edge-tts."""
+        communicate = edge_tts.Communicate(text, self.voice)
+        await communicate.save(output_file)
+    
+    def _synthesize_speech(self, text: str, output_file: str):
+        """Synthesize speech to file using available backend."""
+        if self.tts_backend == "edge-tts":
+            # Run async edge-tts in sync context
+            asyncio.run(self._edge_tts_synthesize(text, output_file))
+        elif self.tts_backend == "gtts":
+            tts = gTTS(text=text, lang='en')
+            tts.save(output_file)
+        else:
+            raise RuntimeError("No TTS backend available")
     
     def speak(self, text: str, on_start: Callable = None, on_end: Callable = None) -> bool:
         """
@@ -375,7 +420,7 @@ class AudioPlayer:
         Returns:
             True if speech completed, False if interrupted
         """
-        if not GTTS_AVAILABLE:
+        if self.tts_backend is None:
             print(f"[TTS not available] {text}")
             return True
         
@@ -383,8 +428,9 @@ class AudioPlayer:
             # Create temporary audio file
             with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
                 self._current_file = fp.name
-                tts = gTTS(text=text, lang='en')
-                tts.save(fp.name)
+            
+            # Synthesize speech
+            self._synthesize_speech(text, self._current_file)
             
             # Signal start
             if on_start:

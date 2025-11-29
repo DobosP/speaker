@@ -469,24 +469,27 @@ class MemoryManager:
         """
         context_parts = []
         
-        # 1. Search for relevant past context
+        # 1. Search for relevant past context (only highly relevant)
         if current_query and self._embeddings_available and self._db_available:
-            relevant = self.search_memory(current_query, limit=3)
+            relevant = self.search_memory(current_query, limit=5)
             if relevant:
-                context_parts.append("=== Relevant Past Context ===")
-                for item in relevant:
-                    if item['type'] == 'message' and item['similarity'] > 0.5:
-                        context_parts.append(f"[Past] {item['role']}: {item['content'][:200]}...")
-                    elif item['type'] == 'summary' and item['similarity'] > 0.5:
-                        context_parts.append(f"[Summary] {item['content']}")
-                context_parts.append("")
+                # Only include items with high similarity (>0.6)
+                high_relevance = [item for item in relevant if item.get('similarity', 0) > 0.6]
+                if high_relevance:
+                    context_parts.append("=== Past Conversations ===")
+                    for item in high_relevance[:3]:  # Max 3 items
+                        if item['type'] == 'message':
+                            # Format: "User said: ..." or "Assistant said: ..."
+                            role_label = "User" if item['role'] == 'user' else "Assistant"
+                            content = item['content'][:150]  # Shorter for voice
+                            context_parts.append(f"{role_label}: {content}")
+                        elif item['type'] == 'summary':
+                            context_parts.append(f"Summary: {item['content'][:150]}")
+                    context_parts.append("")
         
-        # 2. Recent conversation
-        if self.recent_messages:
-            context_parts.append("=== Recent Conversation ===")
-            for msg in self.recent_messages[-10:]:  # Last 10 messages
-                context_parts.append(f"{msg.role}: {msg.content}")
-            context_parts.append("")
+        # 2. Recent conversation (only if we need older context beyond what's in history)
+        # Note: Recent messages are passed separately as history, so we skip this
+        # to avoid duplication
         
         # 3. User profile (if available)
         profile = self.get_user_profile()

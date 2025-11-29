@@ -54,3 +54,7 @@ Thumbs.db
 
 # Local config (keep config.json as template)
 config.local.json
+
+# Environment variables
+.env
+.env.local

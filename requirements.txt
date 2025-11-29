@@ -5,11 +5,13 @@
 sounddevice>=0.4.6
 pygame>=2.5.0
 
-# Text-to-Speech
-gTTS>=2.4.0
+# Text-to-Speech (multiple backends)
+edge-tts>=6.1.0          # Fast, natural Microsoft voices (recommended)
+gTTS>=2.4.0              # Google TTS fallback
 
-# Speech-to-Text (Whisper)
-transformers>=4.36.0
+# Speech-to-Text
+faster-whisper>=1.0.0    # 4x faster than standard Whisper (recommended)
+transformers>=4.36.0     # Standard Whisper fallback
 torch>=2.0.0
 accelerate>=0.26.0
 

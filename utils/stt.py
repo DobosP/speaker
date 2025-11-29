@@ -1,26 +1,41 @@
 """
-Speech-to-Text Model module with singleton pattern.
-The model is loaded ONCE and reused for all transcriptions.
+Speech-to-Text module with multiple backends.
+
+Supports:
+- faster-whisper (recommended, 4x faster)
+- Standard Whisper (fallback)
 """
-import torch
-from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
 import numpy as np
 import warnings
 
-# Suppress the chunk_length_s warning
 warnings.filterwarnings("ignore", message=".*chunk_length_s.*")
+
+# Try to import faster-whisper first (recommended)
+try:
+    from faster_whisper import WhisperModel as FasterWhisperModel
+    FASTER_WHISPER_AVAILABLE = True
+except ImportError:
+    FASTER_WHISPER_AVAILABLE = False
+
+# Fallback to standard whisper
+try:
+    import torch
+    from transformers import AutoModelForSpeechSeq2Seq, AutoProcessor, pipeline
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    TRANSFORMERS_AVAILABLE = False
 
 
 class WhisperSTT:
     """
-    Whisper Speech-to-Text model with singleton pattern.
-    Model is loaded once and reused for efficiency.
+    Whisper Speech-to-Text with automatic backend selection.
+    Uses faster-whisper if available, falls back to transformers.
     """
     
     _instance = None
     _model_id = None
     
-    def __new__(cls, model_id: str = "openai/whisper-base"):
+    def __new__(cls, model_id: str = "base"):
         """Singleton pattern - only create one instance per model."""
         if cls._instance is None or cls._model_id != model_id:
             cls._instance = super().__new__(cls)
@@ -28,50 +43,105 @@ class WhisperSTT:
             cls._instance._initialized = False
         return cls._instance
     
-    def __init__(self, model_id: str = "openai/whisper-base"):
-        """Initialize the Whisper model (only runs once due to singleton)."""
+    def __init__(self, model_id: str = "base"):
+        """Initialize the Whisper model."""
         if self._initialized:
             return
         
+        self.sample_rate = 16000
+        self.model_id = model_id
+        
+        # Try faster-whisper first (4x faster)
+        if FASTER_WHISPER_AVAILABLE:
+            self._init_faster_whisper(model_id)
+        elif TRANSFORMERS_AVAILABLE:
+            self._init_transformers_whisper(model_id)
+        else:
+            raise RuntimeError("No STT backend available. Install faster-whisper or transformers.")
+        
+        self._initialized = True
+    
+    def _init_faster_whisper(self, model_id: str):
+        """Initialize faster-whisper backend."""
+        print(f"🔄 Loading faster-whisper model: {model_id}...")
+        
+        # Map model names
+        model_map = {
+            "openai/whisper-tiny": "tiny",
+            "openai/whisper-base": "base",
+            "openai/whisper-small": "small",
+            "openai/whisper-medium": "medium",
+            "openai/whisper-large": "large-v3",
+            "openai/whisper-large-v3": "large-v3",
+            "openai/whisper-large-v3-turbo": "large-v3-turbo",
+        }
+        
+        model_size = model_map.get(model_id, model_id)
+        
+        # Determine compute type and device
+        try:
+            import torch
+            if torch.cuda.is_available():
+                device = "cuda"
+                compute_type = "float16"
+            else:
+                device = "cpu"
+                compute_type = "int8"
+        except:
+            device = "cpu"
+            compute_type = "int8"
+        
+        print(f"   Device: {device}, Compute: {compute_type}")
+        
+        self.model = FasterWhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+        )
+        self.backend = "faster-whisper"
+        print("✅ faster-whisper loaded (4x faster)!")
+    
+    def _init_transformers_whisper(self, model_id: str):
+        """Initialize transformers whisper backend (fallback)."""
         print(f"🔄 Loading Whisper model: {model_id}...")
         
+        # Ensure full model path
+        if not model_id.startswith("openai/"):
+            model_id = f"openai/whisper-{model_id}"
+        
+        import torch
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-        self.sample_rate = 16000
         
         print(f"   Device: {self.device}")
         
-        # Load model
-        self.model = AutoModelForSpeechSeq2Seq.from_pretrained(
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
             model_id,
             torch_dtype=self.torch_dtype,
             low_cpu_mem_usage=True,
             use_safetensors=True,
         ).to(self.device)
         
-        self.processor = AutoProcessor.from_pretrained(model_id)
+        processor = AutoProcessor.from_pretrained(model_id)
         
-        # Create pipeline
         self.pipe = pipeline(
             "automatic-speech-recognition",
-            model=self.model,
-            tokenizer=self.processor.tokenizer,
-            feature_extractor=self.processor.feature_extractor,
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
             torch_dtype=self.torch_dtype,
             device=self.device,
-            # Don't use chunking for short audio (live speech)
         )
-        
-        self._initialized = True
+        self.backend = "transformers"
         print("✅ Whisper model loaded!")
     
-    def transcribe(self, audio: np.ndarray, language: str = "english") -> str:
+    def transcribe(self, audio: np.ndarray, language: str = "en") -> str:
         """
         Transcribe audio to text.
         
         Args:
             audio: Audio data as numpy array (float32, mono, 16kHz)
-            language: Language for transcription
+            language: Language code (e.g., 'en', 'es', 'fr')
             
         Returns:
             Transcribed text
@@ -79,23 +149,31 @@ class WhisperSTT:
         if len(audio) == 0:
             return ""
         
-        # Ensure audio is the right format
         audio = audio.flatten().astype(np.float32)
         
-        # Transcribe
-        result = self.pipe(
-            {"raw": audio, "sampling_rate": self.sample_rate},
-            generate_kwargs={"language": language},
-        )
+        if self.backend == "faster-whisper":
+            segments, _ = self.model.transcribe(
+                audio,
+                language=language,
+                beam_size=5,
+                vad_filter=True,  # Filter out silence
+            )
+            text = " ".join(segment.text for segment in segments)
+        else:
+            result = self.pipe(
+                {"raw": audio, "sampling_rate": self.sample_rate},
+                generate_kwargs={"language": language},
+            )
+            text = result["text"]
         
-        return result["text"].strip()
+        return text.strip()
 
 
-# Global instance for easy access
+# Global instance
 _stt_model = None
 
 
-def get_stt_model(model_id: str = "openai/whisper-base") -> WhisperSTT:
+def get_stt_model(model_id: str = "base") -> WhisperSTT:
     """Get the singleton STT model instance."""
     global _stt_model
     if _stt_model is None:
@@ -105,18 +183,16 @@ def get_stt_model(model_id: str = "openai/whisper-base") -> WhisperSTT:
 
 def transcribe_audio(
     audio: np.ndarray,
-    model_id: str = "openai/whisper-base",
+    model_id: str = "base",
     model_type: str = "whisper",
     **kwargs
 ) -> str:
     """
     Transcribe audio to text.
     
-    This function maintains backward compatibility but uses singleton pattern internally.
-    
     Args:
         audio: Audio data as numpy array
-        model_id: Model identifier (e.g., "openai/whisper-base", "openai/whisper-small")
+        model_id: Model identifier (e.g., "base", "small", "large-v3-turbo")
         model_type: Type of model (currently only "whisper" supported)
         
     Returns:
@@ -131,19 +207,14 @@ def transcribe_audio(
 
 # Test
 if __name__ == "__main__":
-    import numpy as np
+    print("Testing STT module...")
+    print(f"faster-whisper available: {FASTER_WHISPER_AVAILABLE}")
+    print(f"transformers available: {TRANSFORMERS_AVAILABLE}")
     
-    print("Testing STT Model...")
+    model = get_stt_model("base")
+    print(f"Backend: {model.backend}")
     
-    # First call - loads model
-    model1 = get_stt_model()
-    
-    # Second call - reuses model (singleton)
-    model2 = get_stt_model()
-    
-    print(f"Same instance: {model1 is model2}")  # Should be True
-    
-    # Test with silence (should return empty or minimal)
-    silence = np.zeros(16000, dtype=np.float32)  # 1 second of silence
-    result = model1.transcribe(silence)
+    # Test with silence
+    silence = np.zeros(16000, dtype=np.float32)
+    result = model.transcribe(silence)
     print(f"Silence transcription: '{result}'")

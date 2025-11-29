@@ -23,5 +23,9 @@ soundfile>=0.12.0
 # LLM
 ollama>=0.1.0
 
+# Memory & Database (optional but recommended)
+psycopg2-binary>=2.9.0   # PostgreSQL driver
+sentence-transformers>=2.2.0  # For embeddings/vector search
+
 # Environment
 python-dotenv>=1.0.0

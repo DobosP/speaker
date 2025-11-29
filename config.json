@@ -1,0 +1,9 @@
+{
+  "vad_threshold": 0.005,
+  "silence_duration": 1.5,
+  "sample_rate": 16000,
+  "input_device": null,
+  "output_device": null,
+  "llm_model": "llama2",
+  "stt_model": "openai/whisper-base"
+}

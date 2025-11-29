@@ -1,5 +1,5 @@
 {
-  "vad_threshold": 0.005,
+  "vad_threshold": 0.006,
   "silence_duration": 1.5,
   "sample_rate": 16000,
   "input_device": null,

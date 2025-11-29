@@ -1,6 +1,6 @@
 # Voice Assistant
 
-A cross-platform voice assistant that lets you have natural conversations with your computer using open-source libraries.
+A cross-platform voice assistant with persistent memory that lets you have natural conversations with your computer using open-source libraries.
 
 ## Features
 
@@ -10,6 +10,34 @@ A cross-platform voice assistant that lets you have natural conversations with y
 - 🔊 **Text-to-Speech** - Natural Microsoft Edge voices via edge-tts
 - ⚡ **Barge-in** - Interrupt the assistant mid-speech by talking
 - 🎯 **Voice Activity Detection** - Automatic speech start/stop detection
+- 💾 **Persistent Memory** - PostgreSQL + pgvector for long-term memory
+- 🔍 **Semantic Search** - Find past conversations by meaning
+
+## Memory Architecture
+
+The assistant uses a multi-layer memory system:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MEMORY LAYERS                             │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 1: Recent Messages (Short-term)                       │
+│   → Last 20 messages in current session                     │
+│   → Full context for immediate conversation                 │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 2: Conversation Summaries (Medium-term)               │
+│   → Auto-generated when context gets too long               │
+│   → Condensed history with key topics                       │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 3: Vector Embeddings (Long-term)                      │
+│   → Semantic search over all past conversations             │
+│   → Powered by pgvector + sentence-transformers             │
+├─────────────────────────────────────────────────────────────┤
+│ Layer 4: User Profile                                       │
+│   → Learned preferences (name, interests, etc.)             │
+│   → Persists across all sessions                            │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Quick Start
 
@@ -21,23 +49,46 @@ A cross-platform voice assistant that lets you have natural conversations with y
    ollama serve
    ollama pull llama2
    ```
+3. **PostgreSQL with pgvector** (optional, for persistent memory):
+   ```bash
+   # Ubuntu/Debian
+   sudo apt install postgresql postgresql-contrib
+   
+   # Install pgvector extension
+   # See: https://github.com/pgvector/pgvector
+   ```
 
 ### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/voice-assistant.git
-cd voice-assistant
+git clone https://github.com/DobosP/speaker.git
+cd speaker
 
 # Install dependencies
 pip install -r requirements.txt
+
+# (Optional) Setup database for persistent memory
+python setup_database.py --create-db
 ```
 
 ### Usage
 
 ```bash
-# Run the assistant
+# Run the assistant (with memory)
 python main.py
+
+# Run without persistent memory
+python main.py --no-memory
+
+# Start a fresh session
+python main.py --new-session
+
+# Continue a specific session
+python main.py --session-id abc123
+
+# Use custom database
+python main.py --db-url "postgresql://user:pass@host/db"
 
 # List available audio devices
 python main.py --list-devices
@@ -49,7 +100,10 @@ python main.py --input-device 2
 python main.py --llm-model llama3
 
 # Use different STT model
-python main.py --stt-model openai/whisper-small
+python main.py --stt-model small
+
+# Use different TTS voice
+python main.py --tts-voice en-GB
 ```
 
 ### Commands
@@ -57,6 +111,7 @@ python main.py --stt-model openai/whisper-small
 - **Say anything** - The assistant will respond
 - **Say "stop" or "quit"** - Exit the application
 - **Speak while assistant is talking** - Interrupt (barge-in)
+- **Reference past conversations** - "What did I tell you last time about..."
 
 ## Configuration
 
@@ -64,15 +119,22 @@ Edit `config.json` to customize:
 
 ```json
 {
-  "vad_threshold": 0.005,    // Voice detection sensitivity
-  "silence_duration": 1.5,   // Seconds of silence before processing
-  "sample_rate": 16000,      // Audio sample rate
-  "input_device": null,      // null = auto-detect
-  "output_device": null,     // null = auto-detect
-  "llm_model": "llama2",     // Ollama model name
-  "stt_model": "base",       // Whisper model (tiny/base/small/medium/large-v3)
-  "tts_voice": "en-US"       // TTS voice (en-US/en-US-male/en-GB/en-AU)
+  "vad_threshold": 0.005,
+  "silence_duration": 1.5,
+  "sample_rate": 16000,
+  "input_device": null,
+  "output_device": null,
+  "llm_model": "llama2",
+  "stt_model": "base",
+  "tts_voice": "en-US"
 }
+```
+
+### Environment Variables
+
+```bash
+# Database connection (optional)
+export DATABASE_URL="postgresql://localhost/voice_assistant"
 ```
 
 ### STT Models (faster-whisper)
@@ -110,16 +172,50 @@ voice-assistant/
 ├── main.py              # Main application entry point
 ├── config.json          # Configuration file
 ├── requirements.txt     # Python dependencies
+├── setup_database.py    # Database setup script
 ├── run_tests.py         # Test runner
 ├── utils/
 │   ├── audio.py         # Cross-platform audio recording/playback
-│   ├── stt.py           # Speech-to-text (Whisper)
-│   └── llm.py           # LLM integration (Ollama)
+│   ├── stt.py           # Speech-to-text (faster-whisper)
+│   ├── llm.py           # LLM integration (Ollama)
+│   └── memory.py        # Multi-layer memory system
 └── tests/
     ├── test_audio.py    # Audio module tests
     ├── test_stt.py      # STT module tests
     ├── test_llm.py      # LLM module tests
     └── test_integration.py  # Integration tests
+```
+
+## Database Setup
+
+For persistent memory across sessions:
+
+```bash
+# Create database and tables
+python setup_database.py --create-db --db-name voice_assistant
+
+# Verify setup
+python setup_database.py --verify-only
+
+# Custom host/user
+python setup_database.py --create-db --host localhost --user myuser --password mypass
+```
+
+### PostgreSQL + pgvector Installation
+
+```bash
+# Ubuntu/Debian
+sudo apt install postgresql postgresql-contrib
+
+# Install pgvector (required for semantic search)
+cd /tmp
+git clone https://github.com/pgvector/pgvector.git
+cd pgvector
+make
+sudo make install
+
+# Enable extension in your database
+psql -d voice_assistant -c "CREATE EXTENSION vector;"
 ```
 
 ## Running Tests
@@ -152,6 +248,11 @@ python run_tests.py --quick    # Fast tests (skip model loading)
 - Make sure Ollama is running: `ollama serve`
 - Check the model is downloaded: `ollama list`
 
+### Database connection failed
+- Check PostgreSQL is running: `sudo systemctl status postgresql`
+- Verify connection URL: `psql "postgresql://localhost/voice_assistant"`
+- Run without memory: `python main.py --no-memory`
+
 ## License
 
 MIT License - feel free to use and modify.
@@ -159,4 +260,3 @@ MIT License - feel free to use and modify.
 ## Contributing
 
 Contributions welcome! Please open an issue or PR.
-

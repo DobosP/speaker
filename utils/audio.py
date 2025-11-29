@@ -146,15 +146,34 @@ class AudioRecorder:
     def _get_device_sample_rate(self) -> int:
         """Get the native sample rate for the recording device."""
         try:
-            if self.device is not None:
-                device_info = sd.query_devices(self.device)
-            else:
-                device_info = sd.query_devices(kind='input')
+            # Get the actual device index (resolve None to default)
+            if self.device is None:
+                # Get default input device index from sounddevice
+                default_input_idx = sd.default.device[0]
+                if default_input_idx is not None and default_input_idx >= 0:
+                    self.device = default_input_idx
+                else:
+                    # Find first input device manually
+                    devices = sd.query_devices()
+                    for i, dev in enumerate(devices):
+                        if dev['max_input_channels'] > 0:
+                            self.device = i
+                            break
             
+            device_info = sd.query_devices(self.device)
             native_rate = int(device_info['default_samplerate'])
             return native_rate
         except Exception as e:
             print(f"⚠️  Could not query device sample rate: {e}")
+            # Try to get any input device as fallback
+            try:
+                devices = sd.query_devices()
+                for i, dev in enumerate(devices):
+                    if dev['max_input_channels'] > 0:
+                        self.device = i
+                        return int(dev['default_samplerate'])
+            except:
+                pass
             return 44100  # Common fallback
     
     def _resample_audio(self, audio: np.ndarray) -> np.ndarray:

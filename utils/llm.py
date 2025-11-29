@@ -24,14 +24,14 @@ class LLM:
 class LocalLLM(LLM):
     """Local LLM using Ollama."""
     
-    SYSTEM_PROMPT = """You are a helpful voice assistant. You have access to conversation history and memory.
+    SYSTEM_PROMPT = """You are a helpful voice assistant with memory of past conversations.
 
-Guidelines:
-- Be concise but helpful (this is voice, not text)
-- Remember and reference past conversations when relevant
-- Learn user preferences and adapt
-- If the user refers to something from the past, try to recall it
-- Be natural and conversational
+IMPORTANT RULES:
+- Keep responses SHORT: 1-2 sentences maximum (this is voice, not text)
+- NO emojis, NO filler words like "Ah, great!", "I see!", etc.
+- Be direct and helpful
+- Use memory context below to answer questions about past conversations
+- If asked about past conversations, reference the context directly
 
 {context}"""
     
@@ -70,26 +70,99 @@ Guidelines:
         # Build messages list
         messages = []
         
+        # Format context (only include past context, not recent messages which are in history)
+        context_text = ""
+        if context:
+            # Filter out "Recent Conversation" section - that's already in history
+            context_lines = context.split('\n')
+            filtered_lines = []
+            skip_section = False
+            for line in context_lines:
+                if "=== Recent Conversation ===" in line:
+                    skip_section = True
+                    continue
+                elif line.startswith("===") and skip_section:
+                    skip_section = False
+                    filtered_lines.append(line)
+                elif not skip_section:
+                    filtered_lines.append(line)
+            context_text = "\n".join(filtered_lines).strip()
+        
         # System prompt with context
         system_content = self.SYSTEM_PROMPT.format(
-            context=f"\n{context}" if context else ""
+            context=f"\n\nMemory Context:\n{context_text}" if context_text else ""
         )
         messages.append({'role': 'system', 'content': system_content})
         
-        # Add conversation history
+        # Add conversation history (last 8 messages to leave room for context)
         if history:
-            for msg in history[-10:]:  # Last 10 messages for context window
+            for msg in history[-8:]:
                 messages.append({
                     'role': msg['role'],
                     'content': msg['content']
                 })
         
-        # Add current message
+        # Add current message - be direct
         messages.append({'role': 'user', 'content': text})
         
         # Get response
         response = ollama.chat(model=self.model, messages=messages)
-        return response['message']['content']
+        response_text = response['message']['content'].strip()
+        
+        # Post-process: remove verbose patterns and emojis
+        verbose_patterns = [
+            "Ah, ", "I see! ", "Great! ", "Of course! ", "Well, ", 
+            "You know, ", "Actually, ", "Basically, ", "So, ",
+            "In our previous conversation, ", "As we discussed, ",
+            "As I mentioned, ", "Let me tell you, "
+        ]
+        for pattern in verbose_patterns:
+            if response_text.startswith(pattern):
+                response_text = response_text[len(pattern):].strip()
+        
+        # Remove emojis
+        import re
+        emoji_pattern = re.compile("["
+            u"\U0001F600-\U0001F64F"  # emoticons
+            u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+            u"\U0001F680-\U0001F6FF"  # transport & map symbols
+            u"\U0001F1E0-\U0001F1FF"  # flags
+            u"\U00002702-\U000027B0"
+            u"\U000024C2-\U0001F251"
+            "]+", flags=re.UNICODE)
+        response_text = emoji_pattern.sub('', response_text)
+        
+        # Remove excessive punctuation
+        response_text = response_text.replace('...', '.')
+        response_text = response_text.replace('!!', '!')
+        response_text = response_text.replace('??', '?')
+        
+        # Limit length (150 characters for voice - roughly 2 sentences)
+        if len(response_text) > 150:
+            # Try to cut at sentence boundary
+            sentences = response_text.split('. ')
+            shortened = []
+            total_len = 0
+            for sent in sentences[:2]:  # Max 2 sentences
+                sent = sent.strip()
+                if not sent:
+                    continue
+                if total_len + len(sent) > 150:
+                    break
+                shortened.append(sent)
+                total_len += len(sent) + 2
+            if shortened:
+                response_text = '. '.join(shortened)
+                if not response_text.endswith(('.', '!', '?')):
+                    response_text += '.'
+            else:
+                # Fallback: cut at word boundary
+                words = response_text.split()
+                response_text = ' '.join(words[:25])  # ~25 words max
+                if not response_text.endswith(('.', '!', '?')):
+                    response_text += '...'
+        
+        return response_text.strip()
     
     def summarize_conversation(self, messages: List[Dict[str, str]]) -> Dict[str, Any]:
         """

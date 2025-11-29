@@ -49,14 +49,7 @@ The assistant uses a multi-layer memory system:
    ollama serve
    ollama pull llama2
    ```
-3. **PostgreSQL with pgvector** (optional, for persistent memory):
-   ```bash
-   # Ubuntu/Debian
-   sudo apt install postgresql postgresql-contrib
-   
-   # Install pgvector extension
-   # See: https://github.com/pgvector/pgvector
-   ```
+3. **PostgreSQL with pgvector** (optional, for persistent memory)
 
 ### Installation
 
@@ -65,11 +58,98 @@ The assistant uses a multi-layer memory system:
 git clone https://github.com/DobosP/speaker.git
 cd speaker
 
-# Install dependencies
+# Install Python dependencies
 pip install -r requirements.txt
 
 # (Optional) Setup database for persistent memory
+# Option 1: Automated setup (recommended)
+./setup.sh
+
+# Option 2: Manual setup
 python setup_database.py --create-db
+```
+
+### Database Setup (Optional but Recommended)
+
+The voice assistant can work without a database (in-memory only), but for persistent memory across sessions, you need PostgreSQL.
+
+**📖 For detailed setup instructions, see [SETUP.md](SETUP.md)**
+
+#### Automated Setup (Easiest)
+
+```bash
+# Run the automated setup script
+./setup.sh
+```
+
+This script will:
+- ✅ Check PostgreSQL installation
+- ✅ Install pgvector if needed
+- ✅ Create database and user
+- ✅ Set up all tables
+- ✅ Create `.env` file from `env.example`
+
+#### Manual Setup
+
+**Step 1: Install PostgreSQL and pgvector**
+
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install -y postgresql postgresql-contrib
+
+# Install pgvector extension
+sudo apt-get install -y postgresql-16-pgvector
+# Or for other PostgreSQL versions:
+# sudo apt-get install -y postgresql-<version>-pgvector
+```
+
+**Step 2: Create Database**
+
+```bash
+# Create database (as postgres user)
+sudo -u postgres createdb voice_assistant
+
+# Create user (optional, for password auth)
+sudo -u postgres createuser dobo
+# Or with password:
+# sudo -u postgres psql -c "CREATE USER dobo WITH PASSWORD 'yourpassword';"
+```
+
+**Step 3: Enable pgvector Extension**
+
+```bash
+# Enable vector extension (requires superuser)
+sudo -u postgres psql -d voice_assistant -c "CREATE EXTENSION vector;"
+```
+
+**Step 4: Grant Permissions**
+
+```bash
+# Grant schema permissions (for peer authentication)
+sudo -u postgres psql -d voice_assistant -c "
+    GRANT ALL ON SCHEMA public TO dobo;
+    GRANT ALL PRIVILEGES ON DATABASE voice_assistant TO dobo;
+"
+```
+
+**Step 5: Run Setup Script**
+
+```bash
+# For peer authentication (no password)
+python setup_database.py --db-url "postgresql:///voice_assistant"
+
+# For password authentication
+python setup_database.py --db-url "postgresql://dobo:password@localhost/voice_assistant"
+```
+
+**Step 6: Set Environment Variable (Optional)**
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+export DATABASE_URL="postgresql:///voice_assistant"
+# Or with password:
+# export DATABASE_URL="postgresql://dobo:password@localhost/voice_assistant"
 ```
 
 ### Usage
@@ -188,34 +268,20 @@ voice-assistant/
 
 ## Database Setup
 
-For persistent memory across sessions:
+For persistent memory across sessions, see **[SETUP.md](SETUP.md)** for detailed instructions.
 
+**Quick setup:**
 ```bash
-# Create database and tables
+# Automated setup (recommended)
+./setup.sh
+
+# Or manual setup
 python setup_database.py --create-db --db-name voice_assistant
-
-# Verify setup
-python setup_database.py --verify-only
-
-# Custom host/user
-python setup_database.py --create-db --host localhost --user myuser --password mypass
 ```
 
-### PostgreSQL + pgvector Installation
-
+**Without database (in-memory only):**
 ```bash
-# Ubuntu/Debian
-sudo apt install postgresql postgresql-contrib
-
-# Install pgvector (required for semantic search)
-cd /tmp
-git clone https://github.com/pgvector/pgvector.git
-cd pgvector
-make
-sudo make install
-
-# Enable extension in your database
-psql -d voice_assistant -c "CREATE EXTENSION vector;"
+python main.py --no-memory
 ```
 
 ## Running Tests

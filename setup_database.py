@@ -192,13 +192,28 @@ def verify_setup(db_url: str):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Setup PostgreSQL database for Voice Assistant memory"
+        description="Setup PostgreSQL database for Voice Assistant memory",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Peer authentication (no password)
+  python setup_database.py --db-url "postgresql:///voice_assistant"
+  
+  # Password authentication
+  python setup_database.py --db-url "postgresql://user:pass@localhost/voice_assistant"
+  
+  # Create new database
+  python setup_database.py --create-db --db-name voice_assistant
+  
+  # Verify existing setup
+  python setup_database.py --verify-only
+        """
     )
     parser.add_argument(
         "--db-url",
         type=str,
         default=os.getenv("DATABASE_URL", "postgresql://localhost/voice_assistant"),
-        help="PostgreSQL connection URL"
+        help="PostgreSQL connection URL (default: from DATABASE_URL env or localhost/voice_assistant)"
     )
     parser.add_argument(
         "--create-db",

@@ -5,8 +5,9 @@
 sounddevice>=0.4.6
 pygame>=2.5.0
 
-# Text-to-Speech (multiple backends)
-edge-tts>=6.1.0          # Fast, natural Microsoft voices (recommended)
+# Text-to-Speech (multiple backends, in priority order)
+supertonic               # Lightning fast on-device TTS (~10x realtime)
+edge-tts>=6.1.0          # Microsoft neural voices (online fallback)
 gTTS>=2.4.0              # Google TTS fallback
 
 # Speech-to-Text

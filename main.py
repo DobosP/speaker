@@ -5,7 +5,7 @@ Works on Windows, Mac, and Linux without OS-specific dependencies.
 
 Features:
 - Speech-to-text with faster-whisper
-- Text-to-speech with edge-tts
+- Text-to-speech with Supertonic (fast, on-device)
 - Barge-in support (interrupt while assistant speaks)
 - Multi-layer memory (recent, summaries, vector search)
 - PostgreSQL + pgvector for persistent memory
@@ -19,11 +19,14 @@ Usage:
     python main.py --no-memory          # Disable persistent memory
     python main.py --new-session        # Start fresh session
 """
+# Disable CUDA to avoid cuDNN compatibility issues (must be before torch import)
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = ''
+
 import argparse
 import signal
 import threading
 import json
-import os
 
 from utils.audio import AudioRecorder, AudioPlayer, list_audio_devices
 from utils.stt import get_stt_model, transcribe_audio

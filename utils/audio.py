@@ -7,6 +7,7 @@ import sounddevice as sd
 import threading
 import queue
 import time
+import subprocess
 from typing import Callable, Optional
 import tempfile
 import os
@@ -37,6 +38,14 @@ try:
     GTTS_AVAILABLE = True
 except ImportError:
     GTTS_AVAILABLE = False
+
+# Supertonic - Lightning fast on-device TTS
+try:
+    from supertonic import TTS as SupertonicTTS
+    import soundfile as sf
+    SUPERTONIC_AVAILABLE = True
+except ImportError:
+    SUPERTONIC_AVAILABLE = False
 
 
 def list_audio_devices():
@@ -299,22 +308,56 @@ class AudioRecorder:
         
         self.is_recording = True
         self._stop_event.clear()
+        self._use_parec = False
+        self._parec_process = None
         
         # Start the processing thread
         self._worker_thread = threading.Thread(target=self._process_audio, daemon=True)
         self._worker_thread.start()
         
-        # Start the audio stream using device's native sample rate
-        self._stream = sd.InputStream(
-            device=self.device,
-            channels=1,
-            samplerate=self.device_sample_rate,  # Use device's native rate
-            dtype=np.float32,
-            callback=self._audio_callback,
-            blocksize=1024,
+        # Try sounddevice first, fall back to parec if it fails
+        try:
+            self._stream = sd.InputStream(
+                device=self.device,
+                channels=1,
+                samplerate=self.device_sample_rate,
+                dtype=np.float32,
+                callback=self._audio_callback,
+                blocksize=1024,
+            )
+            self._stream.start()
+            print(f"🎤 Audio recording started at {self.device_sample_rate}Hz (sounddevice)")
+        except Exception as e:
+            # Fall back to parec (PulseAudio/PipeWire)
+            print(f"⚠️  sounddevice failed, using parec (PipeWire)...")
+            self._use_parec = True
+            self._start_parec()
+    
+    def _start_parec(self):
+        """Start recording using parec (PulseAudio/PipeWire fallback)."""
+        # Use 16kHz directly since parec supports it
+        self.device_sample_rate = 16000
+        self.needs_resampling = False
+        
+        self._parec_process = subprocess.Popen(
+            ['parec', '--rate=16000', '--channels=1', '--format=float32le'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
         )
-        self._stream.start()
-        print(f"🎤 Audio recording started at {self.device_sample_rate}Hz (cross-platform)")
+        
+        # Start thread to read from parec
+        self._parec_thread = threading.Thread(target=self._read_parec, daemon=True)
+        self._parec_thread.start()
+        print(f"🎤 Audio recording started at 16000Hz (parec/PipeWire)")
+    
+    def _read_parec(self):
+        """Read audio data from parec process."""
+        chunk_size = 1024 * 4  # 1024 samples * 4 bytes per float32
+        while not self._stop_event.is_set() and self._parec_process.poll() is None:
+            data = self._parec_process.stdout.read(chunk_size)
+            if data:
+                audio = np.frombuffer(data, dtype=np.float32)
+                self._audio_queue.put(audio)
     
     def stop(self):
         """Stop recording audio."""
@@ -324,9 +367,21 @@ class AudioRecorder:
         self.is_recording = False
         self._stop_event.set()
         
-        if hasattr(self, '_stream'):
-            self._stream.stop()
-            self._stream.close()
+        # Stop sounddevice stream
+        if hasattr(self, '_stream') and self._stream:
+            try:
+                self._stream.stop()
+                self._stream.close()
+            except:
+                pass
+        
+        # Stop parec process
+        if hasattr(self, '_parec_process') and self._parec_process:
+            try:
+                self._parec_process.terminate()
+                self._parec_process.wait(timeout=1)
+            except:
+                pass
         
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=2.0)
@@ -369,7 +424,7 @@ class AudioRecorder:
 class AudioPlayer:
     """
     Cross-platform audio player with multiple TTS backends.
-    Supports: edge-tts (recommended), gTTS (fallback)
+    Priority: Supertonic (fast local) > edge-tts (online) > gTTS (fallback)
     Supports interruption for barge-in functionality.
     """
     
@@ -381,13 +436,21 @@ class AudioPlayer:
         "en-AU": "en-AU-NatashaNeural",   # Australian female
     }
     
-    def __init__(self, output_device: Optional[int] = None, voice: str = "en-US"):
+    # Supertonic voice mapping
+    SUPERTONIC_VOICES = {
+        "en-US": "M1",           # Male voice
+        "en-US-male": "M1",      # Male voice
+        "en-US-female": "F1",    # Female voice (if available)
+    }
+    
+    def __init__(self, output_device: Optional[int] = None, voice: str = "en-US", prefer_local: bool = True):
         """
         Initialize the audio player.
         
         Args:
             output_device: Output device index (pygame uses system default)
             voice: Voice to use (e.g., "en-US", "en-US-male", "en-GB")
+            prefer_local: If True, prefer Supertonic (local) over edge-tts (online)
         """
         if not PYGAME_AVAILABLE:
             raise RuntimeError("pygame is required for audio playback. Install with: pip install pygame")
@@ -395,11 +458,17 @@ class AudioPlayer:
         self.output_device = output_device
         self._is_playing = False
         self._current_file = None
-        self.voice = self.EDGE_VOICES.get(voice, voice)
+        self.voice = voice
+        self._supertonic_tts = None
+        self._supertonic_style = None
         
-        # Determine TTS backend
-        if EDGE_TTS_AVAILABLE:
+        # Determine TTS backend (priority: supertonic > edge-tts > gtts)
+        if prefer_local and SUPERTONIC_AVAILABLE:
+            self.tts_backend = "supertonic"
+            self._init_supertonic()
+        elif EDGE_TTS_AVAILABLE:
             self.tts_backend = "edge-tts"
+            self.voice = self.EDGE_VOICES.get(voice, voice)
             print(f"🔊 TTS: edge-tts (voice: {self.voice})")
         elif GTTS_AVAILABLE:
             self.tts_backend = "gtts"
@@ -411,6 +480,29 @@ class AudioPlayer:
         # Initialize pygame mixer
         pygame.mixer.init()
     
+    def _init_supertonic(self):
+        """Initialize Supertonic TTS engine."""
+        try:
+            print("🔊 Initializing Supertonic TTS (fast, on-device)...")
+            self._supertonic_tts = SupertonicTTS(auto_download=True)
+            voice_name = self.SUPERTONIC_VOICES.get(self.voice, "M1")
+            self._supertonic_style = self._supertonic_tts.get_voice_style(voice_name=voice_name)
+            print(f"✅ TTS: Supertonic (voice: {voice_name}, ~10x realtime)")
+        except Exception as e:
+            print(f"⚠️  Supertonic init failed: {e}, falling back...")
+            self.tts_backend = "edge-tts" if EDGE_TTS_AVAILABLE else "gtts" if GTTS_AVAILABLE else None
+            if self.tts_backend == "edge-tts":
+                self.voice = self.EDGE_VOICES.get(self.voice, self.voice)
+                print(f"🔊 TTS: edge-tts (voice: {self.voice})")
+    
+    def _supertonic_synthesize(self, text: str, output_file: str):
+        """Synthesize speech using Supertonic (fast, on-device)."""
+        audio, duration = self._supertonic_tts.synthesize(text, voice_style=self._supertonic_style)
+        # Audio is shape (1, samples) - flatten it
+        audio = audio.flatten()
+        # Save as WAV (Supertonic uses 44100 Hz)
+        sf.write(output_file, audio, 44100)
+    
     async def _edge_tts_synthesize(self, text: str, output_file: str):
         """Synthesize speech using edge-tts."""
         communicate = edge_tts.Communicate(text, self.voice)
@@ -418,7 +510,9 @@ class AudioPlayer:
     
     def _synthesize_speech(self, text: str, output_file: str):
         """Synthesize speech to file using available backend."""
-        if self.tts_backend == "edge-tts":
+        if self.tts_backend == "supertonic":
+            self._supertonic_synthesize(text, output_file)
+        elif self.tts_backend == "edge-tts":
             # Run async edge-tts in sync context
             asyncio.run(self._edge_tts_synthesize(text, output_file))
         elif self.tts_backend == "gtts":
@@ -444,8 +538,9 @@ class AudioPlayer:
             return True
         
         try:
-            # Create temporary audio file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.mp3') as fp:
+            # Create temporary audio file (wav for supertonic, mp3 for others)
+            suffix = '.wav' if self.tts_backend == "supertonic" else '.mp3'
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as fp:
                 self._current_file = fp.name
             
             # Synthesize speech

@@ -158,6 +158,9 @@ export DATABASE_URL="postgresql:///voice_assistant"
 # Run the assistant (with memory)
 python main.py
 
+# Run with dialogue controller (hybrid streaming ASR + barge-in controller)
+python main.py --mode controller
+
 # Run without persistent memory
 python main.py --no-memory
 
@@ -184,6 +187,12 @@ python main.py --stt-model small
 
 # Use different TTS voice
 python main.py --tts-voice en-GB
+
+# Enable barge-in debug (see why interruptions are ignored)
+python main.py --mode controller --barge-in-debug
+
+# Stronger echo protection during TTS
+python main.py --mode controller --barge-in-min-delay 0.7 --echo-corr-threshold 0.75
 ```
 
 ### Commands
@@ -206,9 +215,111 @@ Edit `config.json` to customize:
   "output_device": null,
   "llm_model": "llama2",
   "stt_model": "base",
-  "tts_voice": "en-US"
+  "tts_voice": "en-US",
+  "barge_in_pre_roll_sec": 0.3,
+  "barge_in_min_speech_sec": 0.2,
+  "barge_in_rms_ratio": 2.0,
+  "barge_in_cooldown_sec": 0.5,
+  "barge_in_use_webrtcvad": true,
+  "mode": "asr",
+  "partial_interval_sec": 1.0,
+  "adaptive_vad": true,
+  "vad_noise_multiplier": 2.5,
+  "vad_noise_floor_min": 0.003,
+  "calibrate_on_start": true,
+  "calibrate_duration_sec": 2.5,
+  "aec_enabled": true,
+  "aec_strength": 0.8,
+  "aec_max_ref_sec": 20.0,
+  "simple_voiced_fallback": true,
+  "barge_in_debug": false,
+  "barge_in_min_delay_sec": 0.4,
+  "echo_corr_threshold": 0.6,
+  "barge_in_min_delay_after_ref_sec": 0.6,
+  "barge_in_min_rms_ratio": 1.5,
+  "stop_mode": "exact",
+  "stop_phrases": ["stop", "quit", "exit"],
+  "controller_min_interrupt_delay_sec": 0.2,
+  "controller_min_barge_in_sec": 0.2,
+  "controller_min_partial_chars": 3,
+  "controller_max_partial_age_sec": 1.5,
+  "controller_echo_similarity_threshold": 0.7,
+  "controller_allow_rms_fallback": false,
+  "controller_require_partial_for_barge_in": true,
+  "controller_strong_voiced_multiplier": 2.5,
+  "controller_ignore_phrases": ["", ".", "uh", "um"]
 }
 ```
+
+## Modes
+
+- `asr` (default): simple VAD → STT → LLM → TTS pipeline.
+- `controller`: hybrid streaming ASR + dialogue controller for more reliable barge‑in and turn‑taking.
+
+## Barge‑In Architecture
+
+The current barge‑in stack uses multiple layers to reduce false interrupts:
+
+1. **AEC (lightweight echo suppression)** using the TTS output as a reference.
+2. **Echo correlation gating**: block barge‑in if mic audio correlates with TTS.
+3. **Delay gates**: minimum delay after TTS start and after TTS reference is set.
+4. **Voiced detection**: WebRTC VAD if available; fallback heuristic otherwise.
+5. **Dialogue controller**: requires partial text or strong voiced evidence; blocks echo.
+
+This is designed to be cross‑device and low‑CPU, but hardware/OS AEC still improves results.
+
+## Startup Calibration
+
+When `adaptive_vad` and `calibrate_on_start` are enabled, the recorder samples 2–3 seconds of silence and
+automatically estimates the ambient noise floor. This improves VAD thresholds and barge‑in stability.
+
+Key options:
+- `calibrate_on_start`
+- `calibrate_duration_sec`
+
+## Echo Handling (AEC)
+
+Lightweight AEC is enabled by default and uses the synthesized TTS audio as a reference signal.
+Options:
+- `aec_enabled`
+- `aec_strength`
+- `aec_max_ref_sec`
+- `echo_corr_threshold`
+
+If your platform supports OS‑level AEC (PipeWire/WebRTC/Android/iOS), it will outperform software‑only AEC.
+
+## Dialogue Controller Options (Controller Mode)
+
+These control how barge‑in is accepted or ignored:
+- `controller_min_interrupt_delay_sec`
+- `controller_min_barge_in_sec`
+- `controller_min_partial_chars`
+- `controller_max_partial_age_sec`
+- `controller_echo_similarity_threshold`
+- `controller_allow_rms_fallback`
+- `controller_require_partial_for_barge_in`
+- `controller_strong_voiced_multiplier`
+
+Enable `barge_in_debug` to print decision reasons.
+
+## Barge‑In Tuning Tips
+
+- Start with headphones to reduce echo.
+- If self‑barge happens:
+  - Increase `echo_corr_threshold` (0.75–0.9)
+  - Increase `barge_in_min_delay_sec` (0.6–0.9)
+  - Increase `barge_in_min_delay_after_ref_sec` (0.6–0.9)
+  - Increase `barge_in_min_rms_ratio` (2.0–3.0)
+- If barge‑in feels too hard:
+  - Lower `barge_in_min_rms_ratio` and `barge_in_min_speech_sec`
+
+## Stop Command Behavior
+
+Stop behavior is now configurable:
+- `stop_mode`: `exact` or `prefix`
+- `stop_phrases`: list of phrases (default: `["stop","quit","exit"]`)
+
+Example: with `exact`, only the exact word "stop" will exit, not sentences containing it.
 
 ### Environment Variables
 
@@ -305,6 +416,7 @@ python run_tests.py --quick    # Fast tests (skip model loading)
 ### Barge-in not working
 - Lower the VAD threshold in `config.json`
 - Speak louder or move closer to the microphone
+- Install `webrtcvad` for more reliable barge-in in noisy rooms
 
 ### Whisper hallucinating (transcribing silence)
 - Increase the VAD threshold in `config.json`

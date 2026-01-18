@@ -127,6 +127,46 @@ class TestAudioRecorder(unittest.TestCase):
         recorder = AudioRecorder(callback=self.audio_callback)
         # sample_rate property should return target (16000) regardless of device rate
         self.assertEqual(recorder.sample_rate, 16000)
+
+    def test_adaptive_vad_threshold_from_noise(self):
+        """Adaptive VAD should derive threshold from noise samples."""
+        recorder = AudioRecorder(callback=self.audio_callback, adaptive_vad=True)
+        noise_floor = recorder._update_noise_floor_from_rms([0.001, 0.002, 0.004, 0.003])
+        self.assertGreaterEqual(noise_floor, recorder.vad_noise_floor_min)
+        threshold = recorder._get_vad_threshold()
+        self.assertGreaterEqual(threshold, noise_floor * recorder.vad_noise_multiplier)
+
+    def test_aec_reduces_echo_energy(self):
+        """AEC should reduce energy when reference matches mic signal."""
+        recorder = AudioRecorder(callback=self.audio_callback, aec_enabled=True, aec_strength=1.0)
+        ref = np.sin(np.linspace(0, 2 * np.pi, 1024)).astype(np.float32) * 0.2
+        mic = ref + np.random.randn(1024).astype(np.float32) * 0.01
+        recorder._aec_ref = ref.copy()
+        recorder._aec_ref_idx = 0
+        cleaned = recorder._apply_aec(mic)
+        self.assertLess(np.mean(cleaned ** 2), np.mean(mic ** 2))
+
+    def test_simple_voiced_fallback(self):
+        """Simple voiced fallback should detect voiced-like signals."""
+        recorder = AudioRecorder(callback=self.audio_callback, simple_voiced_fallback=True)
+        tone = np.sin(np.linspace(0, 2 * np.pi * 20, 1024)).astype(np.float32) * 0.2
+        self.assertTrue(recorder._simple_voiced(tone, threshold=0.01))
+
+    def test_echo_similarity_threshold(self):
+        """Echo similarity should detect strong correlation."""
+        recorder = AudioRecorder(callback=self.audio_callback, aec_enabled=True)
+        ref = np.sin(np.linspace(0, 2 * np.pi, 1024)).astype(np.float32) * 0.2
+        recorder._aec_ref = ref.copy()
+        recorder._aec_ref_idx = 0
+        corr = recorder._echo_similarity(ref.copy())
+        self.assertGreater(corr, 0.5)
+
+    def test_min_rms_ratio_blocks_low_energy(self):
+        recorder = AudioRecorder(callback=self.audio_callback, adaptive_vad=True)
+        recorder._noise_floor = 0.01
+        recorder.barge_in_min_rms_ratio = 2.0
+        min_rms = recorder._noise_floor * recorder.barge_in_min_rms_ratio
+        self.assertGreater(min_rms, recorder._noise_floor)
     
     def test_recorder_barge_in_callback(self):
         """Should accept and store barge-in callback."""

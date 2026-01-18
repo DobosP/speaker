@@ -30,7 +30,10 @@ class TestWhisperSTT(unittest.TestCase):
     def test_model_initialized(self):
         """Model should be properly initialized."""
         self.assertTrue(self.model._initialized)
-        self.assertIsNotNone(self.model.pipe)
+        if self.model.backend == "faster-whisper":
+            self.assertIsNotNone(self.model.model)
+        else:
+            self.assertIsNotNone(self.model.pipe)
     
     def test_transcribe_silence(self):
         """Should handle silence gracefully."""

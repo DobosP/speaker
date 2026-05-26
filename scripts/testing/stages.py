@@ -59,6 +59,7 @@ class StageRegistry:
                     "tests/test_conversation_simulation.py",
                     "tests/test_bargein_scenarios.py",
                     "tests/test_recorded_sessions.py",
+                    "tests/test_voice_agent_metrics.py",
                 ),
                 markers="audio and not discovery",
                 extra_args=("-q",),
@@ -97,8 +98,12 @@ class StageRegistry:
             ),
             TestStage(
                 name="simulation_llm",
-                purpose="LLM-driven user simulator + judge against real Ollama (opt-in).",
-                paths=("tests/test_user_simulation_llm.py",),
+                purpose="LLM-driven user simulator, judge, and LLM/memory evals (opt-in, real Ollama).",
+                paths=(
+                    "tests/test_user_simulation_llm.py",
+                    "tests/test_llm_response_quality.py",
+                    "tests/test_memory_llm_eval.py",
+                ),
                 markers="llm and slow",
                 extra_args=("-q", "-s"),
                 allow_failures=True,

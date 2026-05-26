@@ -8,6 +8,9 @@ on:
       - '.github/workflows/android-apk.yml'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-apk:
     runs-on: ubuntu-latest
@@ -44,22 +47,39 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug
 
+      - name: Stage APK with a friendly name
+        run: cp build/app/outputs/flutter-apk/app-debug.apk speaker-android.apk
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: speaker-mobile-debug-apk
-          path: mobile/build/app/outputs/flutter-apk/app-debug.apk
+          path: mobile/speaker-android.apk
           if-no-files-found: error
 
-      - name: Install instructions
+      - name: Publish APK to a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Android build (latest)
+          body: |
+            On-device Speaker test app — streaming ASR + TTS, fully local.
+            Download **speaker-android.apk** below on your phone and tap to install
+            (enable *Install unknown apps* if prompted).
+          files: mobile/speaker-android.apk
+          make_latest: true
+
+      - name: Download link
         if: always()
         run: |
           {
             echo "## Speaker on-device APK"
             echo ""
-            echo "Download the **speaker-mobile-debug-apk** artifact from this run's"
-            echo "summary, copy it to your Android phone, and tap to install"
-            echo "(enable *Install unknown apps* for your file manager/browser if prompted)."
+            echo "**Direct download (open on your phone):**"
             echo ""
-            echo "The app runs ASR and TTS **fully on-device** — no network at runtime."
+            echo "https://github.com/${{ github.repository }}/releases/download/android-latest/speaker-android.apk"
+            echo ""
+            echo "Or browse all builds: https://github.com/${{ github.repository }}/releases/tag/android-latest"
+            echo ""
+            echo "Runs ASR and TTS **fully on-device** — no network at runtime."
           } >> "$GITHUB_STEP_SUMMARY"

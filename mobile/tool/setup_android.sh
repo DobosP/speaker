@@ -71,21 +71,19 @@ kts = "android/build.gradle.kts"
 if os.path.exists(kts):
     path, block = kts, '''
 subprojects {
-    afterEvaluate {
-        extensions.findByName("android")?.withGroovyBuilder {
-            "compileSdkVersion"(36)
-        }
+    plugins.withId("com.android.library") {
+        extensions.findByName("android")?.withGroovyBuilder { "compileSdkVersion"(36) }
+    }
+    plugins.withId("com.android.application") {
+        extensions.findByName("android")?.withGroovyBuilder { "compileSdkVersion"(36) }
     }
 }
 '''
 elif os.path.exists(groovy):
     path, block = groovy, '''
 subprojects {
-    afterEvaluate { proj ->
-        if (proj.extensions.findByName("android") != null) {
-            proj.extensions.getByName("android").compileSdkVersion 36
-        }
-    }
+    plugins.withId("com.android.library") { android.compileSdkVersion 36 }
+    plugins.withId("com.android.application") { android.compileSdkVersion 36 }
 }
 '''
 else:

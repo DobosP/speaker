@@ -33,3 +33,28 @@ if "android.permission.RECORD_AUDIO" not in text:
 else:
     print("RECORD_AUDIO already present, no patch needed")
 PY
+
+# Some plugins (e.g. audioplayers) pull AndroidX libs that require compileSdk
+# >= 34, but `flutter create` may default to 33. Force a high enough compileSdk.
+python3 - <<'PY'
+import os
+import re
+
+candidates = ["android/app/build.gradle.kts", "android/app/build.gradle"]
+path = next((p for p in candidates if os.path.exists(p)), None)
+if path is None:
+    raise SystemExit("Could not find android/app/build.gradle[.kts]")
+
+with open(path, encoding="utf-8") as f:
+    text = f.read()
+
+# Normalize whatever compileSdk line is present to a fixed value (valid in
+# both Groovy and Kotlin DSL).
+new, n = re.subn(r"compileSdk(?:Version)?\s*=?\s*[^\n]+", "compileSdk = 34", text)
+if n == 0:
+    raise SystemExit(f"No compileSdk declaration found in {path}")
+
+with open(path, "w", encoding="utf-8") as f:
+    f.write(new)
+print(f"Set compileSdk = 34 in {path} ({n} occurrence(s))")
+PY

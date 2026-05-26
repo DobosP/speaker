@@ -1,0 +1,4 @@
+# Optional: the Open Interpreter action brain (voice -> machine control).
+# Only needed to actually execute commands via `python -m core --agent`; the
+# base runtime and full test suite work without it (the brain imports OI lazily).
+open-interpreter==0.4.3

@@ -34,12 +34,18 @@ class VoiceRuntime:
         llm: Optional[LLMClient] = None,
         *,
         start_mode: Mode = Mode.ASSISTANT,
+        agent_config=None,
     ):
         self.engine = engine
         self.bus = EventBus()
         memory = SessionMemory()
         registry = create_default_capabilities(memory)
         attach_llm_capabilities(registry, llm or EchoLLM())
+        if agent_config is not None:
+            # Opt-in: route command-mode through the Open Interpreter action brain.
+            from .agent import attach_agent_capability
+
+            attach_agent_capability(registry, agent_config)
         self.supervisor = AgentSupervisor(bus=self.bus, capabilities=registry, memory=memory)
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)

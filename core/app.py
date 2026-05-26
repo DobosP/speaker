@@ -83,12 +83,25 @@ def main(argv: list[str] | None = None) -> int:
         default=Mode.ASSISTANT.value,
         help="starting mode",
     )
+    parser.add_argument(
+        "--agent",
+        action="store_true",
+        help="enable the Open Interpreter action brain for command-mode "
+        "(voice -> machine control); reads the 'agent_brain' config block",
+    )
     args = parser.parse_args(argv)
 
     config = _load_config()
     llm = _build_llm(args, config)
     engine = _build_engine(args, config)
-    runtime = VoiceRuntime(engine, llm, start_mode=Mode(args.mode))
+
+    agent_config = None
+    if args.agent:
+        from .agent import AgentBrainConfig
+
+        agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
+
+    runtime = VoiceRuntime(engine, llm, start_mode=Mode(args.mode), agent_config=agent_config)
 
     if args.engine == "sherpa":
         _run_live(runtime)

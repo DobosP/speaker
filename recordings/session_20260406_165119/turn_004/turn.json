@@ -1,0 +1,11 @@
+{
+  "index": 4,
+  "start_sec": 13.467961072921753,
+  "end_sec": 16.090046644210815,
+  "text": "",
+  "barge_in_fired": false,
+  "barge_in_events": [],
+  "mic_rms_mean": 0.023446805775165558,
+  "mic_rms_max": 0.15216612815856934,
+  "echo_sim_mean": 0.25895579942015867
+}

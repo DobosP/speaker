@@ -1,0 +1,70 @@
+{
+  "session_id": "session_20260406_165119",
+  "start_time": 1775483497.508187,
+  "end_time": 1775483513.6368427,
+  "duration_sec": 16.128656148910522,
+  "noise_floor": 0.009745398165810692,
+  "device_sample_rate": 44100,
+  "target_test_sample_rate": 16000,
+  "profile": "high",
+  "num_tts_turns": 5,
+  "num_barge_ins": 0,
+  "false_positive_candidates": [],
+  "turns": [
+    {
+      "index": 0,
+      "start_sec": 3.4809112548828125e-05,
+      "end_sec": 0.9020698070526123,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.013457493856549263,
+      "mic_rms_max": 0.05853569507598877,
+      "echo_sim_mean": 0.17976070849651596
+    },
+    {
+      "index": 1,
+      "start_sec": 1.2448880672454834,
+      "end_sec": 2.396949529647827,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.018366986885666847,
+      "mic_rms_max": 0.08125519752502441,
+      "echo_sim_mean": 0.18799468082477616
+    },
+    {
+      "index": 2,
+      "start_sec": 3.6721343994140625,
+      "end_sec": 9.582741737365723,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.014550772495567799,
+      "mic_rms_max": 0.13797688484191895,
+      "echo_sim_mean": 0.24571154797194672
+    },
+    {
+      "index": 3,
+      "start_sec": 10.200968027114868,
+      "end_sec": 12.655246019363403,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.021649839356541634,
+      "mic_rms_max": 0.15836775302886963,
+      "echo_sim_mean": 0.25907792316067296
+    },
+    {
+      "index": 4,
+      "start_sec": 13.467961072921753,
+      "end_sec": 16.090046644210815,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.023446805775165558,
+      "mic_rms_max": 0.15216612815856934,
+      "echo_sim_mean": 0.25895579942015867
+    }
+  ]
+}

@@ -1,0 +1,1757 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest" errors="0" failures="62" skipped="0" tests="146" time="104.780" timestamp="2026-05-02T16:37:37.509730" hostname="dobo-ROG-Strix-G634JY-G634JY"><testcase classname="tests.test_failure_discovery_audio" name="test_local_failure_samples_are_saved" time="0.001" /><testcase classname="tests.test_failure_discovery_audio" name="test_saved_samples_are_16khz_float32" time="0.000" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[control_synthetic_zero_lag_tts]" time="1.756" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_phone_table_30cm]" time="0.324"><failure message="AssertionError: Phone lying beside laptop speaker. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.2070034295320511, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Phone lying beside laptop speaker.', 'expectation': 'no_interrupt', 'importance': 'Common desk setup; tiny delay should still be echo.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Phone lying beside laptop speaker. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.2070034295320511, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_laptop_mic_70cm]" time="0.282"><failure message="AssertionError: Laptop speaker to built-in microphone path. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.17284372448921204, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Laptop speaker to built-in microphone path.', 'expectation': 'no_interrupt', 'importance': 'Most likely desktop deployment false-interrupt path.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Laptop speaker to built-in microphone path. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.17284372448921204, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_smart_speaker_2m]" time="0.272"><failure message="AssertionError: Smart speaker two metres from user microphone. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1532914638519287, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Smart speaker two metres from user microphone.', 'expectation': 'no_interrupt', 'importance': 'Typical living-room propagation delay.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Smart speaker two metres from user microphone. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1532914638519287, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_kitchen_counter_tile]" time="0.279"><failure message="AssertionError: Kitchen counter with hard tile reflections. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.0753880962729454, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Kitchen counter with hard tile reflections.', 'expectation': 'no_interrupt', 'importance': 'Hard reflective rooms are common and noisy.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Kitchen counter with hard tile reflections. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.0753880962729454, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_bathroom_tile]" time="0.276"><failure message="AssertionError: Bathroom tile reverberation. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.06440238654613495, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Bathroom tile reverberation.', 'expectation': 'no_interrupt', 'importance': 'Worst-case reverb tail should not self-interrupt.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Bathroom tile reverberation. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.06440238654613495, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_hallway_far_wall]" time="0.276"><failure message="AssertionError: Hallway far-wall assistant reflection. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08435456454753876, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Hallway far-wall assistant reflection.', 'expectation': 'no_interrupt', 'importance': 'Long narrow spaces produce strong late reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Hallway far-wall assistant reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08435456454753876, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_open_living_room_wall]" time="0.274"><failure message="AssertionError: Living-room first wall reflection. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.12791402637958527, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Living-room first wall reflection.', 'expectation': 'no_interrupt', 'importance': 'Known failure mode for zero-lag echo checks.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Living-room first wall reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.12791402637958527, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_car_cabin_dashboard]" time="0.273"><failure message="AssertionError: Small car cabin dashboard reflection. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08567162603139877, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Small car cabin dashboard reflection.', 'expectation': 'no_interrupt', 'importance': 'Car cabins create dense early reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Small car cabin dashboard reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08567162603139877, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_projector_speaker_ceiling]" time="0.269"><failure message="AssertionError: Ceiling projector speaker reflection. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.09706400334835052, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Ceiling projector speaker reflection.', 'expectation': 'no_interrupt', 'importance': 'Distant media speakers should not look like user speech.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Ceiling projector speaker reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.09706400334835052, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_bluetooth_speaker_shelf]" time="0.274"><failure message="AssertionError: Bluetooth speaker on bookshelf. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.05154785141348839, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Bluetooth speaker on bookshelf.', 'expectation': 'no_interrupt', 'importance': 'Common assistant playback device with shelf reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Bluetooth speaker on bookshelf. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.05154785141348839, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_tv_soundbar_living_room]" time="0.276"><failure message="AssertionError: TV soundbar leaking assistant speech. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.055319078266620636, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'TV soundbar leaking assistant speech.', 'expectation': 'no_interrupt', 'importance': 'Soundbars are loud and far from microphones.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: TV soundbar leaking assistant speech. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.055319078266620636, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_conference_table]" time="0.271"><failure message="AssertionError: Conference table speakerphone echo. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.06111621484160423, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Conference table speakerphone echo.', 'expectation': 'no_interrupt', 'importance': 'Meeting rooms are key voice-agent environments.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Conference table speakerphone echo. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.06111621484160423, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_corner_room_bass_buildup]" time="0.280"><failure message="AssertionError: Speaker in room corner with gain buildup. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.09177596867084503, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Speaker in room corner with gain buildup.', 'expectation': 'no_interrupt', 'importance': 'Corner placement amplifies echo energy.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Speaker in room corner with gain buildup. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.09177596867084503, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_curtained_room_soft_reverb]" time="0.277"><failure message="AssertionError: Curtained room with soft reverb. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.16978240013122559, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Curtained room with soft reverb.', 'expectation': 'no_interrupt', 'importance': 'Even damped rooms must remain safe.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Curtained room with soft reverb. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.16978240013122559, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_open_door_secondary_room]" time="0.275"><failure message="AssertionError: Assistant audio heard from another room. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.039073649793863297, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Assistant audio heard from another room.', 'expectation': 'no_interrupt', 'importance': 'Late low-level echo should not trigger barge-in.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant audio heard from another room. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.039073649793863297, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_high_volume_near_field]" time="0.269"><failure message="AssertionError: High-volume near-field assistant playback. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.3066733777523041, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'High-volume near-field assistant playback.', 'expectation': 'no_interrupt', 'importance': 'Loud assistant speech is likely during TTS.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: High-volume near-field assistant playback. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.3066733777523041, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_low_volume_far_field]" time="0.278"><failure message="AssertionError: Low-volume far-field assistant leakage. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.051804907619953156, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Low-volume far-field assistant leakage.', 'expectation': 'no_interrupt', 'importance': 'Weak echoes should not accumulate false evidence.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Low-volume far-field assistant leakage. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.051804907619953156, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_reverb_tail_only_after_pause]" time="0.273" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_sample_rate_artifact]" time="0.276"><failure message="AssertionError: Echo after device sample-rate conversion. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.13466854393482208, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Echo after device sample-rate conversion.', 'expectation': 'no_interrupt', 'importance': '44.1 kHz consumer devices can add interpolation artifacts to echo.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Echo after device sample-rate conversion. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.13466854393482208, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_clipped_speaker_output]" time="0.276"><failure message="AssertionError: Clipped speaker output echo. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.15810346603393555, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Clipped speaker output echo.', 'expectation': 'no_interrupt', 'importance': 'Small speakers clip assistant speech.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Clipped speaker output echo. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.15810346603393555, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_tts_with_background_tv]" time="0.279"><failure message="AssertionError: Assistant echo mixed with TV bed. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1376277208328247, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Assistant echo mixed with TV bed.', 'expectation': 'no_interrupt', 'importance': 'Real rooms contain background media during TTS.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant echo mixed with TV bed. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1376277208328247, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_tts_with_music_bed]" time="0.270"><failure message="AssertionError: Assistant echo mixed with music. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.053375061601400375, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Assistant echo mixed with music.', 'expectation': 'no_interrupt', 'importance': 'Music can confuse VAD while echo is present.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant echo mixed with music. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.053375061601400375, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_tts_with_babble_bed]" time="0.272"><failure message="AssertionError: Assistant echo mixed with distant people. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.04849665239453316, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Assistant echo mixed with distant people.', 'expectation': 'no_interrupt', 'importance': 'Parties and meetings are hard echo cases.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant echo mixed with distant people. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.04849665239453316, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_multi_path_two_reflections]" time="0.277"><failure message="AssertionError: Two dominant echo paths. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.17298339307308197, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Two dominant echo paths.', 'expectation': 'no_interrupt', 'importance': 'Multi-path echo is more realistic than one delay.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Two dominant echo paths. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.17298339307308197, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_multi_path_three_reflections]" time="0.278"><failure message="AssertionError: Three dominant echo paths. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1978895366191864, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Three dominant echo paths.', 'expectation': 'no_interrupt', 'importance': 'Large rooms create several reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Three dominant echo paths. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1978895366191864, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_reverb_long_phrase_tail]" time="0.272"><failure message="AssertionError: Long TTS phrase with heavy tail. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08119171857833862, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Long TTS phrase with heavy tail.', 'expectation': 'no_interrupt', 'importance': 'Long assistant responses must not self-cancel.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Long TTS phrase with heavy tail. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08119171857833862, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_tv_news_anchor]" time="0.693"><failure message="AssertionError: TV news anchor-like broadband audio.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00971879, -0.03316975,  0.02393525, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'TV news anchor-like broadband audio.', 'expectation': 'no_callback', 'importance': 'TV speech must not become a user command.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: TV news anchor-like broadband audio.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00971879, -0.03316975,  0.02393525, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_tv_loud_commercial]" time="0.694"><failure message="AssertionError: Loud TV commercial burst.&#10;assert [array([ 0.01...type=float32)] == []&#10;  Left contains one more item: array([ 0.01518561, -0.05182773,  0.03739883, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Loud TV commercial burst.', 'expectation': 'no_callback', 'importance': 'Commercials are sudden and speech-like.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Loud TV commercial burst.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01518561, -0.05182773,  0.03739883, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_podcast_far_field]" time="0.695"><failure message="AssertionError: Podcast playing across the room.&#10;assert [array([0.018...type=float32)] == []&#10;  Left contains one more item: array([0.0186704 , 0.01719079, 0.01517375, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Podcast playing across the room.', 'expectation': 'no_callback', 'importance': 'Single/few-speaker media can look voiced.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Podcast playing across the room.
+E           assert [array([0.018...type=float32)] == []
+E             Left contains one more item: array([0.0186704 , 0.01719079, 0.01517375, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_party_babble]" time="0.692"><failure message="AssertionError: Party babble without direct user intent.&#10;assert [array([ 0.01...type=float32)] == []&#10;  Left contains one more item: array([ 0.01082398,  0.00380801, -0.0036492 , ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Party babble without direct user intent.', 'expectation': 'no_callback', 'importance': 'Multi-talker noise is common in homes.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Party babble without direct user intent.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01082398,  0.00380801, -0.0036492 , ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_kids_room_babble]" time="0.695"><failure message="AssertionError: Children talking in another room.&#10;assert [array([0.025...type=float32)] == []&#10;  Left contains one more item: array([0.025953  , 0.01864869, 0.01055665, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Children talking in another room.', 'expectation': 'no_callback', 'importance': 'Distant family speech should not trigger callbacks.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Children talking in another room.
+E           assert [array([0.025...type=float32)] == []
+E             Left contains one more item: array([0.025953  , 0.01864869, 0.01055665, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_music_120bpm]" time="0.695"><failure message="AssertionError: Rhythmic 120 bpm music.&#10;assert [array([-0.03...type=float32)] == []&#10;  Left contains one more item: array([-0.03196305, -0.01801219, -0.03546395, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Rhythmic 120 bpm music.', 'expectation': 'no_callback', 'importance': 'Beat envelopes can accumulate speech score.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Rhythmic 120 bpm music.
+E           assert [array([-0.03...type=float32)] == []
+E             Left contains one more item: array([-0.03196305, -0.01801219, -0.03546395, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_music_fast_tempo]" time="0.692"><failure message="AssertionError: Fast-tempo music.&#10;assert [array([-0.03...type=float32)] == []&#10;  Left contains one more item: array([-0.03588392, -0.02022173, -0.03981426, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Fast-tempo music.', 'expectation': 'no_callback', 'importance': 'High beat rate probes soft-decay accumulation.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Fast-tempo music.
+E           assert [array([-0.03...type=float32)] == []
+E             Left contains one more item: array([-0.03588392, -0.02022173, -0.03981426, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_clipped_radio]" time="0.792"><failure message="AssertionError: Clipped radio speaker.&#10;assert [array([-0.1 ...type=float32)] == []&#10;  Left contains one more item: array([-0.1       , -0.09132827, -0.1       , ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Clipped radio speaker.', 'expectation': 'no_callback', 'importance': 'Cheap speakers distort harmonic content.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Clipped radio speaker.
+E           assert [array([-0.1 ...type=float32)] == []
+E             Left contains one more item: array([-0.1       , -0.09132827, -0.1       , ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_hvac_turns_on]" time="0.706"><failure message="AssertionError: HVAC fan ramps up mid-turn.&#10;assert [array([-0.00...type=float32)] == []&#10;  Left contains one more item: array([-0.00771902,  0.00618991, -0.00032629, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'HVAC fan ramps up mid-turn.', 'expectation': 'no_callback', 'importance': 'Stale noise floors cause false speech starts.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: HVAC fan ramps up mid-turn.
+E           assert [array([-0.00...type=float32)] == []
+E             Left contains one more item: array([-0.00771902,  0.00618991, -0.00032629, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_dishwasher_pulse]" time="0.797"><failure message="AssertionError: Dishwasher pump pulse.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00170637, -0.0169002 , -0.00108922, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Dishwasher pump pulse.', 'expectation': 'no_callback', 'importance': 'Appliance bursts are frequent home noise.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Dishwasher pump pulse.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00170637, -0.0169002 , -0.00108922, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_keyboard_close]" time="0.691"><failure message="AssertionError: Close keyboard clicks.&#10;assert [array([ 0.07...type=float32)] == []&#10;  Left contains one more item: array([ 0.0733812 , -0.10367411,  0.10846554, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Close keyboard clicks.', 'expectation': 'no_callback', 'importance': 'Transient bursts should not become speech.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Close keyboard clicks.
+E           assert [array([ 0.07...type=float32)] == []
+E             Left contains one more item: array([ 0.0733812 , -0.10367411,  0.10846554, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_mic_plosive_no_speech]" time="0.689"><failure message="AssertionError: Breath/plosive bursts without words.&#10;assert [array([ 0.12...type=float32)] == []&#10;  Left contains one more item: array([ 0.12535906, -0.17710924,  0.18529457, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Breath/plosive bursts without words.', 'expectation': 'no_callback', 'importance': 'Mic pops can fool duration accumulation.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Breath/plosive bursts without words.
+E           assert [array([ 0.12...type=float32)] == []
+E             Left contains one more item: array([ 0.12535906, -0.17710924,  0.18529457, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_door_slam_tail]" time="0.694"><failure message="AssertionError: Door slam with room tail.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00055357,  0.13443549, -0.12336203, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Door slam with room tail.', 'expectation': 'no_callback', 'importance': 'Impulse sounds should not open a turn.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Door slam with room tail.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00055357,  0.13443549, -0.12336203, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_mic_bump]" time="0.695"><failure message="AssertionError: Microphone bump burst.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00024603,  0.05974911, -0.05482757, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Microphone bump burst.', 'expectation': 'no_callback', 'importance': 'Physical handling noise is common.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Microphone bump burst.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00024603,  0.05974911, -0.05482757, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_fan_plus_music]" time="0.694"><failure message="AssertionError: Fan plus music bed.&#10;assert [array([-0.00...type=float32)] == []&#10;  Left contains one more item: array([-0.00090342, -0.06197613, -0.02308182, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Fan plus music bed.', 'expectation': 'no_callback', 'importance': 'Layered noise is more realistic than one source.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Fan plus music bed.
+E           assert [array([-0.00...type=float32)] == []
+E             Left contains one more item: array([-0.00090342, -0.06197613, -0.02308182, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_tv_plus_babble]" time="0.697"><failure message="AssertionError: TV plus distant people.&#10;assert [array([ 0.03...type=float32)] == []&#10;  Left contains one more item: array([ 0.03476644, -0.03844946,  0.04420753, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'TV plus distant people.', 'expectation': 'no_callback', 'importance': 'Mixed speech sources should not trigger intent.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: TV plus distant people.
+E           assert [array([ 0.03...type=float32)] == []
+E             Left contains one more item: array([ 0.03476644, -0.03844946,  0.04420753, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_low_bass_music]" time="0.697"><failure message="AssertionError: Bass-heavy music pulse.&#10;assert [array([-0.03...type=float32)] == []&#10;  Left contains one more item: array([-0.03075795, -0.01733308, -0.03412686, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Bass-heavy music pulse.', 'expectation': 'no_callback', 'importance': 'Low-frequency energy can fool RMS gates.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Bass-heavy music pulse.
+E           assert [array([-0.03...type=float32)] == []
+E             Left contains one more item: array([-0.03075795, -0.01733308, -0.03412686, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_window_traffic]" time="0.795"><failure message="AssertionError: Traffic swell through window.&#10;assert [array([ 0.01...type=float32)] == []&#10;  Left contains one more item: array([ 0.01105796, -0.00769649,  0.01080731, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Traffic swell through window.', 'expectation': 'no_callback', 'importance': 'Outdoor noise changes slowly.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Traffic swell through window.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01105796, -0.00769649,  0.01080731, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_coffee_grinder]" time="0.792"><failure message="AssertionError: Coffee grinder burst.&#10;assert [array([ 0.02...type=float32)] == []&#10;  Left contains one more item: array([ 0.02500484, -0.08835402, -0.00905547, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Coffee grinder burst.', 'expectation': 'no_callback', 'importance': 'Loud appliance noise is highly nonstationary.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Coffee grinder burst.
+E           assert [array([ 0.02...type=float32)] == []
+E             Left contains one more item: array([ 0.02500484, -0.08835402, -0.00905547, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_vacuum_far_room]" time="0.692"><failure message="AssertionError: Vacuum in adjacent room.&#10;assert [array([ 0.02...type=float32)] == []&#10;  Left contains one more item: array([ 0.02083736, -0.07362835, -0.00754623, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Vacuum in adjacent room.', 'expectation': 'no_callback', 'importance': 'Sustained high noise should not be a command.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Vacuum in adjacent room.
+E           assert [array([ 0.02...type=float32)] == []
+E             Left contains one more item: array([ 0.02083736, -0.07362835, -0.00754623, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_siren_outside]" time="0.691"><failure message="AssertionError: Siren-like tonal sweep approximation.&#10;assert [array([-0.04...type=float32)] == []&#10;  Left contains one more item: array([-0.04406995, -0.02483482, -0.04889692, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Siren-like tonal sweep approximation.', 'expectation': 'no_callback', 'importance': 'Tonal external sounds can appear voiced.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Siren-like tonal sweep approximation.
+E           assert [array([-0.04...type=float32)] == []
+E             Left contains one more item: array([-0.04406995, -0.02483482, -0.04889692, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_baby_monitor]" time="0.696"><failure message="AssertionError: Baby monitor audio.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00445983, -0.01254628,  0.00917974, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Baby monitor audio.', 'expectation': 'no_callback', 'importance': 'Remote speech should not control assistant.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Baby monitor audio.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00445983, -0.01254628,  0.00917974, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_video_call_speaker]" time="0.811"><failure message="AssertionError: Video call played through speakers.&#10;assert [array([0.023...type=float32)] == []&#10;  Left contains one more item: array([0.02364917, 0.021775  , 0.01922008, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Video call played through speakers.', 'expectation': 'no_callback', 'importance': 'Assistant must ignore other calls.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Video call played through speakers.
+E           assert [array([0.023...type=float32)] == []
+E             Left contains one more item: array([0.02364917, 0.021775  , 0.01922008, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_white_noise_machine]" time="0.695"><failure message="AssertionError: White-noise sleep machine.&#10;assert [array([ 0.01...type=float32)] == []&#10;  Left contains one more item: array([ 0.01275591, -0.04353529,  0.03141501, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'White-noise sleep machine.', 'expectation': 'no_callback', 'importance': 'Noise machines run near smart speakers.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: White-noise sleep machine.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01275591, -0.04353529,  0.03141501, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_rain_on_window]" time="0.704"><failure message="AssertionError: Rain-like broadband noise.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00248556, -0.01399296,  0.00152202, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Rain-like broadband noise.', 'expectation': 'no_callback', 'importance': 'Weather noise is common and persistent.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Rain-like broadband noise.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00248556, -0.01399296,  0.00152202, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_chair_scrape]" time="0.702"><failure message="AssertionError: Chair scrape impulse train.&#10;assert [array([-0.16...type=float32)] == []&#10;  Left contains one more item: array([-0.16, -0.16, -0.16, ...,  0.  ,  0.  ,  0.  ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Chair scrape impulse train.', 'expectation': 'no_callback', 'importance': 'Furniture noise should not start STT.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Chair scrape impulse train.
+E           assert [array([-0.16...type=float32)] == []
+E             Left contains one more item: array([-0.16, -0.16, -0.16, ...,  0.  ,  0.  ,  0.  ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_near_clean_question]" time="0.701" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_quiet_soft_speaker]" time="0.716" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_loud_close_talker]" time="0.692" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_short_stop_command]" time="0.789" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_short_yes_command]" time="0.699" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_short_no_command]" time="0.700" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_over_far_tv]" time="0.701" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_over_loud_tv]" time="0.696" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_over_party_babble]" time="0.712" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_over_music]" time="0.704" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_over_hvac]" time="0.702" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_sample_rate_44100]" time="0.697" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_sample_rate_48000]" time="0.700" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_bluetooth_codec_artifact]" time="0.697" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_clipped_mic_gain_high]" time="0.698" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_laptop_fan_and_speech]" time="0.703" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_far_field_across_room]" time="0.701" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_far_field_with_tv]" time="0.805" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_kitchen_appliance]" time="0.702" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_car_cabin_noise]" time="0.701" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_plosive_heavy_speech]" time="0.693" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_room_reverb_voice]" time="0.700" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_compressed_hard_limited]" time="0.702" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_low_battery_mic_noise]" time="0.710" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_open_window_traffic]" time="0.706" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_speaker_change_pitch_low]" time="0.802" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_speaker_change_pitch_high]" time="0.698" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_fast_syllables]" time="0.690" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_slow_syllables]" time="0.701" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_near_speech_with_assistant_echo]" time="0.704" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_clipped_with_babble]" time="0.722" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_quiet_with_music]" time="0.696" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_emergency_help_short]" time="0.702" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_wake_followup_short]" time="0.698" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_noisy_usb_mic]" time="0.695" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_table_reflection_comb_filter]" time="0.688" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_phone_speaker_feedback]" time="0.691" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_repeated_small_pauses]" time="0.707" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_tablet_kickstand_reflection]" time="0.271"><failure message="AssertionError: Tablet on kickstand reflecting off desk. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08281847089529037, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Tablet on kickstand reflecting off desk.', 'expectation': 'no_interrupt', 'importance': 'Tablets are common always-on assistant devices.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Tablet on kickstand reflecting off desk. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08281847089529037, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_open_back_headphones_leak]" time="0.275"><failure message="AssertionError: Open-back headphone leakage into mic. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.023985307663679123, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Open-back headphone leakage into mic.', 'expectation': 'no_interrupt', 'importance': 'Headset users can still leak TTS into microphones.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Open-back headphone leakage into mic. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.023985307663679123, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_dual_desktop_monitors]" time="0.272"><failure message="AssertionError: Desktop speakers reflecting between monitors. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1786615401506424, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Desktop speakers reflecting between monitors.', 'expectation': 'no_interrupt', 'importance': 'Desktop geometry creates strong multi-path reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Desktop speakers reflecting between monitors. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1786615401506424, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[echo_smart_display_countertop]" time="0.271"><failure message="AssertionError: Smart display on countertop. Fired 1 false interrupt(s).&#10;assert [{'duration_s...': 0.01, ...}] == []&#10;  Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.07129807025194168, 'threshold': 0.01, ...}&#10;  Use -v to get more diff">case = {'description': 'Smart display on countertop.', 'expectation': 'no_interrupt', 'importance': 'Smart displays combine speaker and mic in reflective kitchens.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+&gt;       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Smart display on countertop. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.07129807025194168, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_alarm_beep_sequence]" time="0.709"><failure message="AssertionError: Alarm-like beep sequence.&#10;assert [array([ 0.08...type=float32)] == []&#10;  Left contains one more item: array([ 0.08961237, -0.12660578,  0.13245702, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Alarm-like beep sequence.', 'expectation': 'no_callback', 'importance': 'Alarms are loud periodic bursts near microphones.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Alarm-like beep sequence.
+E           assert [array([ 0.08...type=float32)] == []
+E             Left contains one more item: array([ 0.08961237, -0.12660578,  0.13245702, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_phone_notification_cluster]" time="0.707"><failure message="AssertionError: Cluster of phone notifications.&#10;assert [array([ 0.10...type=float32)] == []&#10;  Left contains one more item: array([ 0.10841722, -0.15317355,  0.16025266, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Cluster of phone notifications.', 'expectation': 'no_callback', 'importance': 'Notification sounds should not start listening.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Cluster of phone notifications.
+E           assert [array([ 0.10...type=float32)] == []
+E             Left contains one more item: array([ 0.10841722, -0.15317355,  0.16025266, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_mic_cable_crackle]" time="0.791"><failure message="AssertionError: Microphone cable crackle.&#10;assert [array([0.11 ...type=float32)] == []&#10;  Left contains one more item: array([0.11      , 0.02864544, 0.09149078, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Microphone cable crackle.', 'expectation': 'no_callback', 'importance': 'Hardware noise can look like voiced transients.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Microphone cable crackle.
+E           assert [array([0.11 ...type=float32)] == []
+E             Left contains one more item: array([0.11      , 0.02864544, 0.09149078, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[background_roommate_laugh_far]" time="0.698"><failure message="AssertionError: Roommate laugh in background.&#10;assert [array([ 0.00...type=float32)] == []&#10;  Left contains one more item: array([ 0.00086382,  0.00058268, -0.00025366, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)&#10;  Use -v to get more diff">case = {'description': 'Roommate laugh in background.', 'expectation': 'no_callback', 'importance': 'Non-command human vocalization should not trigger STT.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+&gt;           assert callbacks == [], case["description"]
+E           AssertionError: Roommate laugh in background.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00086382,  0.00058268, -0.00025366, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError</failure></testcase><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_whisper_like_low_energy]" time="0.819" /><testcase classname="tests.test_failure_discovery_audio" name="test_failure_discovery_corpus[user_command_after_loud_noise]" time="0.701" /><testcase classname="tests.test_acoustic_realism.TestRoomDelayedEcho" name="test_35ms_wall_reflection_does_not_self_bargein" time="0.298" /><testcase classname="tests.test_acoustic_realism.TestRoomDelayedEcho" name="test_7ms_room_delay_does_not_self_bargein" time="0.322" /><testcase classname="tests.test_acoustic_realism.TestRoomDelayedEcho" name="test_delayed_echo_plus_user_speech_fires_barge_in" time="0.307" /><testcase classname="tests.test_acoustic_realism.TestRoomDelayedEcho" name="test_full_reverberant_room_does_not_self_bargein" time="0.317" /><testcase classname="tests.test_acoustic_realism.TestRoomDelayedEcho" name="test_zero_delay_echo_blocked_correctly" time="0.305" /><testcase classname="tests.test_acoustic_realism.TestCrossSpeakerBargein" name="test_all_available_speakers_and_digits_fire" time="3.916" /><testcase classname="tests.test_acoustic_realism.TestCrossSpeakerBargein" name="test_low_amplitude_speakers_still_fire" time="3.359" /><testcase classname="tests.test_acoustic_realism.TestCrossSpeakerBargein" name="test_per_speaker_latency_under_500ms" time="3.372" /><testcase classname="tests.test_acoustic_realism.TestReverbTailAfterTTS" name="test_reverb_tail_does_not_fire_callback_during_recover" time="0.608" /><testcase classname="tests.test_acoustic_realism.TestReverbTailAfterTTS" name="test_user_speech_after_reverb_tail_fires_callback" time="1.418" /><testcase classname="tests.test_noise_robustness.TestBabbleNoise" name="test_5s_babble_never_fires_false_positive_when_calibrated" time="0.278" /><testcase classname="tests.test_noise_robustness.TestBabbleNoise" name="test_babble_blocked_when_calibrated_to_babble_level" time="0.291" /><testcase classname="tests.test_noise_robustness.TestBabbleNoise" name="test_babble_does_not_fire_without_calibration" time="0.285"><failure message="AssertionError: 1 != 0 : Babble noise (3 FSDD speakers, RMS≈0.06) must NOT trigger barge-in. Got 1 false interrupt(s).  This is background TV speech — the user is not speaking.  BUG: Silero detects voices in the babble mix → score ≥ 2.0 → fires.  FIX: Require calibrated noise_floor or a pre-TTS energy baseline.">self = &lt;tests.test_noise_robustness.TestBabbleNoise testMethod=test_babble_does_not_fire_without_calibration&gt;
+
+    def test_babble_does_not_fire_without_calibration(self):
+        """
+        3 FSDD speakers mixed at 0.06 RMS during ASSISTANT_SPEAKING, no noise
+        floor calibration (noise_floor=None → gate always passes).
+    
+        CURRENTLY FAILS: Silero classifies the mixed babble as voiced=True on
+        several frames → score = 2.0 → accumulates → barge-in fires.
+        This is a false positive from background TV speech.
+    
+        FIX: Set a minimum noise_floor based on pre-TTS calibration, or check
+        that the barge-in energy represents a CHANGE relative to the pre-TTS
+        background, not just an absolute threshold.
+        """
+        babble = babble_noise(3.0, amplitude=0.06, num_speakers=3)
+    
+        interrupts = []
+        rec = make_recorder(on_interrupt=lambda info=None: interrupts.append(info))
+    
+        with AudioHarness(rec) as h:
+            h.set_tts_speaking()
+            h.inject(babble)
+            h.drain(timeout=5.0)
+    
+&gt;       self.assertEqual(
+            len(interrupts), 0,
+            f"Babble noise (3 FSDD speakers, RMS≈0.06) must NOT trigger barge-in. "
+            f"Got {len(interrupts)} false interrupt(s).  "
+            f"This is background TV speech — the user is not speaking.  "
+            f"BUG: Silero detects voices in the babble mix → score ≥ 2.0 → fires.  "
+            f"FIX: Require calibrated noise_floor or a pre-TTS energy baseline.",
+        )
+E       AssertionError: 1 != 0 : Babble noise (3 FSDD speakers, RMS≈0.06) must NOT trigger barge-in. Got 1 false interrupt(s).  This is background TV speech — the user is not speaking.  BUG: Silero detects voices in the babble mix → score ≥ 2.0 → fires.  FIX: Require calibrated noise_floor or a pre-TTS energy baseline.
+
+tests/test_noise_robustness.py:124: AssertionError</failure></testcase><testcase classname="tests.test_noise_robustness.TestBabbleNoise" name="test_user_speech_over_babble_fires" time="0.269" /><testcase classname="tests.test_noise_robustness.TestNonstationaryNoise" name="test_environment_spike_with_babble_causes_false_positive" time="0.277"><failure message="AssertionError: 1 != 0 : Environment change (TV turns on mid-stream) must NOT fire barge-in. Got 1 false interrupt(s).  BUG: noise_floor=0.01 is stale; TV speech at 0.08 RMS passes the gate.  FIX: Dynamically update noise_floor during idle / non-speaking periods.">self = &lt;tests.test_noise_robustness.TestNonstationaryNoise testMethod=test_environment_spike_with_babble_causes_false_positive&gt;
+
+    def test_environment_spike_with_babble_causes_false_positive(self):
+        """
+        Calibrated to quiet (noise_floor=0.01).  TV turns on at 0.08 RMS with
+        speech content.  Silero detects the TV speech as voiced → barge-in fires.
+    
+        CURRENTLY FAILS: this is the most common real-world false-positive.
+    
+        FIX: Implement dynamic noise floor update.  During idle periods
+        (between TTS turns), continuously update the noise floor as an
+        exponential moving average of the measured RMS.
+        """
+        _skip_if_no_fsdd()
+        # Quiet period followed by TV speech (babble) turning on
+        noise = nonstationary_noise(
+            3.0,
+            quiet_amplitude=0.005,
+            loud_amplitude=0.08,
+            transition_at=0.4,
+        )
+        # Replace the loud half with real babble speech to trigger Silero
+        babble = babble_noise(3.0, amplitude=0.08, num_speakers=3)
+        transition = int(0.4 * 3.0 * SR)
+        noise[transition:] = babble[transition:]
+    
+        interrupts = []
+        rec = make_recorder(on_interrupt=lambda info=None: interrupts.append(info))
+        rec._noise_floor = 0.01  # calibrated to quiet
+    
+        with AudioHarness(rec) as h:
+            h.set_tts_speaking()
+            h.inject(noise)
+            h.drain(timeout=6.0)
+    
+&gt;       self.assertEqual(
+            len(interrupts), 0,
+            f"Environment change (TV turns on mid-stream) must NOT fire barge-in. "
+            f"Got {len(interrupts)} false interrupt(s).  "
+            f"BUG: noise_floor=0.01 is stale; TV speech at 0.08 RMS passes the gate.  "
+            f"FIX: Dynamically update noise_floor during idle / non-speaking periods.",
+        )
+E       AssertionError: 1 != 0 : Environment change (TV turns on mid-stream) must NOT fire barge-in. Got 1 false interrupt(s).  BUG: noise_floor=0.01 is stale; TV speech at 0.08 RMS passes the gate.  FIX: Dynamically update noise_floor during idle / non-speaking periods.
+
+tests/test_noise_robustness.py:255: AssertionError</failure></testcase><testcase classname="tests.test_noise_robustness.TestNonstationaryNoise" name="test_hvac_noise_spike_fires_energy_path_without_calibration" time="0.310" /><testcase classname="tests.test_noise_robustness.TestNonstationaryNoise" name="test_quiet_noise_spike_white_noise_does_not_fire" time="0.291" /><testcase classname="tests.test_noise_robustness.TestMusicNoise" name="test_background_music_does_not_fire_without_calibration" time="0.305" /><testcase classname="tests.test_noise_robustness.TestMusicNoise" name="test_music_calibrated_does_not_fire" time="0.277" /><testcase classname="tests.test_noise_robustness.TestTransientSounds" name="test_high_amplitude_noise_fires_energy_path_without_calibration" time="0.876" /><testcase classname="tests.test_noise_robustness.TestTransientSounds" name="test_many_plosives_do_not_accumulate_with_soft_decay" time="0.289" /><testcase classname="tests.test_noise_robustness.TestTransientSounds" name="test_plosive_bursts_do_not_fire" time="0.278" /><testcase classname="tests.test_noise_robustness.TestTransientSounds" name="test_white_noise_silero_rejects_as_unvoiced" time="0.875" /><testcase classname="tests.test_noise_robustness.TestSNRBoundary" name="test_noise_only_5s_fires_without_calibration_energy_bug" time="0.932" /><testcase classname="tests.test_noise_robustness.TestSNRBoundary" name="test_noise_only_5s_never_fires_when_calibrated" time="0.852" /><testcase classname="tests.test_noise_robustness.TestSNRBoundary" name="test_speech_at_plus_12db_snr_fires" time="0.582" /><testcase classname="tests.test_noise_robustness.TestSNRBoundary" name="test_speech_at_plus_6db_snr_fires" time="0.580" /><testcase classname="tests.test_voice_variability.TestMicDistance" name="test_close_range_does_not_false_positive_after_fire" time="0.286" /><testcase classname="tests.test_voice_variability.TestMicDistance" name="test_far_distance_speech_still_fires" time="0.276" /><testcase classname="tests.test_voice_variability.TestMicDistance" name="test_loud_speech_fires" time="0.575" /><testcase classname="tests.test_voice_variability.TestMicDistance" name="test_normal_distance_fires" time="0.843" /><testcase classname="tests.test_voice_variability.TestMicDistance" name="test_whispered_speech_fires_barge_in" time="0.285"><failure message="AssertionError: 0 not greater than 0 : Whispered speech (amplitude=0.03) must trigger barge-in.  Got 0 interrupts.  BUG: Whispers are below the noise gate AND below Silero's 0.80 confidence threshold in barge-in mode.  FIX: Lower barge-in Silero threshold to 0.60, or implement AGC so weak signals are amplified before gating.">self = &lt;tests.test_voice_variability.TestMicDistance testMethod=test_whispered_speech_fires_barge_in&gt;
+
+    def test_whispered_speech_fires_barge_in(self):
+        """
+        Whispered speech at amplitude=0.03 (very low, barely audible).
+    
+        CURRENTLY FAILS: whisper RMS &lt; vad_threshold * 3 = 0.03 and Silero
+        scores unvoiced fricatives &lt; 0.80 barge-in threshold → never accumulates.
+        Users who whisper "stop" get no response.
+    
+        FIX: Lower Silero barge-in threshold for whisper mode, or implement AGC.
+        """
+        audio = human_voice_concat(1.5, amplitude=0.03)
+    
+        interrupts = []
+        rec = make_recorder(on_interrupt=lambda info=None: interrupts.append(info))
+    
+        with AudioHarness(rec) as h:
+            h.set_tts_speaking()
+            h.inject(audio)
+            h.drain(timeout=4.0)
+    
+&gt;       self.assertGreater(
+            len(interrupts), 0,
+            f"Whispered speech (amplitude=0.03) must trigger barge-in.  "
+            f"Got 0 interrupts.  "
+            f"BUG: Whispers are below the noise gate AND below Silero's 0.80 "
+            f"confidence threshold in barge-in mode.  "
+            f"FIX: Lower barge-in Silero threshold to 0.60, or implement AGC "
+            f"so weak signals are amplified before gating.",
+        )
+E       AssertionError: 0 not greater than 0 : Whispered speech (amplitude=0.03) must trigger barge-in.  Got 0 interrupts.  BUG: Whispers are below the noise gate AND below Silero's 0.80 confidence threshold in barge-in mode.  FIX: Lower barge-in Silero threshold to 0.60, or implement AGC so weak signals are amplified before gating.
+
+tests/test_voice_variability.py:164: AssertionError</failure></testcase><testcase classname="tests.test_voice_variability.TestClippedSpeech" name="test_clipped_speech_does_not_false_block_via_echo_gate" time="0.294" /><testcase classname="tests.test_voice_variability.TestClippedSpeech" name="test_clipped_speech_fires_via_energy" time="0.289" /><testcase classname="tests.test_voice_variability.TestSpeakingStyleVariation" name="test_fast_speaking_rate_fires" time="0.275" /><testcase classname="tests.test_voice_variability.TestSpeakingStyleVariation" name="test_high_pitch_female_fires" time="0.284" /><testcase classname="tests.test_voice_variability.TestSpeakingStyleVariation" name="test_low_pitch_male_fires" time="0.280" /><testcase classname="tests.test_voice_variability.TestSpeakingStyleVariation" name="test_slow_speaking_rate_fires" time="0.276" /><testcase classname="tests.test_voice_variability.TestSpeakingStyleVariation" name="test_very_slow_speech_with_long_pauses" time="0.285" /><testcase classname="tests.test_voice_variability.TestRapidCommands" name="test_rapid_successive_utterances_both_delivered" time="1.236" /><testcase classname="tests.test_voice_variability.TestRapidCommands" name="test_sequential_turns_after_bargein_both_delivered" time="0.916" /><testcase classname="tests.test_voice_variability.TestCrossSpeakerCallbackDelivery" name="test_all_speakers_produce_callbacks_after_tts" time="6.696" /><testcase classname="tests.test_voice_variability.TestCrossSpeakerCallbackDelivery" name="test_captured_audio_rms_reasonable" time="6.693" /></testsuite></testsuites>

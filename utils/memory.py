@@ -15,9 +15,14 @@ import os
 import json
 import hashlib
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Callable, Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 import numpy as np
+import re
+import time
+
+from utils.memory_config import MemoryWriterConfig, config_from_dict
+from utils.memory_writer import MemoryWriter, is_junk_stt_text
 
 # Database
 try:
@@ -124,6 +129,76 @@ class MemoryManager:
     CREATE INDEX IF NOT EXISTS idx_summaries_embedding ON summaries 
         USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
     """
+
+    MIGRATE_MESSAGES_SQL = """
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'messages' AND column_name = 'raw_text'
+        ) THEN
+            ALTER TABLE messages ADD COLUMN raw_text TEXT;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'messages' AND column_name = 'cleaned_text'
+        ) THEN
+            ALTER TABLE messages ADD COLUMN cleaned_text TEXT;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'messages' AND column_name = 'source'
+        ) THEN
+            ALTER TABLE messages ADD COLUMN source VARCHAR(32) DEFAULT 'user_final';
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'messages' AND column_name = 'confidence'
+        ) THEN
+            ALTER TABLE messages ADD COLUMN confidence FLOAT DEFAULT 1.0;
+        END IF;
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'messages' AND column_name = 'saved_at'
+        ) THEN
+            ALTER TABLE messages ADD COLUMN saved_at TIMESTAMPTZ;
+        END IF;
+    END $$;
+    """
+
+    CREATE_TABLES_BASIC_SQL = """
+    CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+        session_id VARCHAR(64) NOT NULL,
+        role VARCHAR(20) NOT NULL,
+        content TEXT NOT NULL,
+        timestamp TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS summaries (
+        id SERIAL PRIMARY KEY,
+        session_id VARCHAR(64),
+        summary TEXT NOT NULL,
+        topics TEXT[],
+        user_preferences TEXT[],
+        start_time TIMESTAMPTZ,
+        end_time TIMESTAMPTZ,
+        message_count INT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS user_profile (
+        id SERIAL PRIMARY KEY,
+        key VARCHAR(255) UNIQUE NOT NULL,
+        value TEXT NOT NULL,
+        confidence FLOAT DEFAULT 1.0,
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+    CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
+    CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
+    """
     
     def __init__(
         self,
@@ -132,6 +207,14 @@ class MemoryManager:
         max_recent_messages: int = 20,
         max_context_tokens: int = 2000,
         embedding_model: str = "all-MiniLM-L6-v2",
+        enable_embeddings: bool = True,
+        smart_save: bool = True,
+        persist_roles: tuple[str, ...] = ("user",),
+        flush_interval_sec: float = 240.0,
+        min_user_words: int = 3,
+        memory_config: Optional[Dict[str, Any]] = None,
+        memory_writer_config: Optional[MemoryWriterConfig] = None,
+        text_cleaner: Callable[[str, str], Optional[str]] | None = None,
     ):
         """
         Initialize the memory manager.
@@ -143,10 +226,24 @@ class MemoryManager:
             max_context_tokens: Approx max tokens before summarizing
             embedding_model: Sentence transformer model for embeddings
         """
-        self.db_url = db_url or os.getenv('DATABASE_URL', 'postgresql://localhost/voice_assistant')
+        self.db_url = db_url or os.getenv('DATABASE_URL', 'postgresql:///voice_assistant')
         self.session_id = session_id or self._generate_session_id()
         self.max_recent_messages = max_recent_messages
         self.max_context_tokens = max_context_tokens
+        self.enable_embeddings = enable_embeddings
+        self.smart_save = smart_save
+        self.persist_roles = tuple(persist_roles)
+        self.min_user_words = max(1, int(min_user_words))
+        self._writer_config = memory_writer_config or config_from_dict(
+            memory_config
+        )
+        if flush_interval_sec is not None:
+            self._writer_config.save_interval_sec = max(
+                30.0, float(flush_interval_sec)
+            )
+        self._text_cleaner = text_cleaner
+        self._writer: Optional[MemoryWriter] = None
+        self._last_assistant_text = ""
         
         # In-memory recent messages (Layer 1)
         self.recent_messages: List[Message] = []
@@ -161,9 +258,12 @@ class MemoryManager:
         
         # Initialize
         self._init_database()
-        self._init_embeddings(embedding_model)
+        if self.enable_embeddings:
+            self._init_embeddings(embedding_model)
+        else:
+            print("Memory embeddings: disabled (faster smart-save mode).")
         self._load_recent_messages()
-    
+
     def _generate_session_id(self) -> str:
         """Generate a unique session ID."""
         timestamp = datetime.now().isoformat()
@@ -180,11 +280,27 @@ class MemoryManager:
             self.conn = psycopg2.connect(self.db_url)
             self.conn.autocommit = True
             
-            # Create tables
+            # Create tables + migrate smart-save columns
             with self.conn.cursor() as cur:
-                cur.execute(self.CREATE_TABLES_SQL)
+                try:
+                    cur.execute(self.CREATE_TABLES_SQL)
+                except Exception as exc:
+                    if self.enable_embeddings:
+                        raise
+                    print(
+                        "⚠️  pgvector unavailable; using text-only memory "
+                        f"schema ({exc})"
+                    )
+                    cur.execute(self.CREATE_TABLES_BASIC_SQL)
+                cur.execute(self.MIGRATE_MESSAGES_SQL)
             
             self._db_available = True
+            if self.smart_save and self._writer_config.enabled:
+                self._writer = MemoryWriter(
+                    config=self._writer_config,
+                    persist_fn=self._persist_user_message,
+                    text_cleaner=self._text_cleaner,
+                )
             print(f"✅ Database connected (session: {self.session_id[:8]}...)")
         except Exception as e:
             print(f"⚠️  Database connection failed: {e}")
@@ -221,8 +337,8 @@ class MemoryManager:
                 cur.execute("""
                     SELECT role, content, timestamp 
                     FROM messages 
-                    WHERE session_id = %s 
-                    ORDER BY timestamp DESC 
+                    WHERE session_id = %s AND role = 'user'
+                    ORDER BY COALESCE(saved_at, timestamp) DESC 
                     LIMIT %s
                 """, (self.session_id, self.max_recent_messages))
                 
@@ -238,60 +354,223 @@ class MemoryManager:
         except Exception as e:
             print(f"⚠️  Failed to load recent messages: {e}")
     
-    def add_message(self, role: str, content: str) -> Message:
+    def add_message(self, role: str, content: str, *, persist: bool = True) -> Optional[Message]:
         """
-        Add a message to memory.
-        
-        Args:
-            role: 'user' or 'assistant'
-            content: Message content
-            
-        Returns:
-            The created Message object
+        Add a message to in-session memory.
+
+        User speech is queued for debounced PostgreSQL persistence; assistant
+        replies stay in RAM for conversation context only.
         """
-        message = Message(role=role, content=content)
-        
-        # Add to recent messages (Layer 1)
+        cleaned = self._basic_clean_text(content)
+        if not cleaned:
+            return None
+        if role == "user" and self._is_obvious_junk(cleaned):
+            return None
+
+        message = Message(role=role, content=cleaned)
         self.recent_messages.append(message)
-        
-        # Trim if too many
         if len(self.recent_messages) > self.max_recent_messages:
             self.recent_messages = self.recent_messages[-self.max_recent_messages:]
-        
-        # Save to database with embedding
-        if self._db_available:
-            embedding = self._get_embedding(content)
-            self._save_message_to_db(message, embedding)
-        
-        # Check if we need to summarize
+
+        if role == "assistant":
+            self._last_assistant_text = cleaned
+        elif (
+            persist
+            and role == "user"
+            and self._db_available
+            and role in self.persist_roles
+        ):
+            self._queue_user_for_persist(cleaned, raw_text=content.strip())
+
         self._check_and_summarize()
-        
         return message
+
+    def queue_user_utterance(
+        self,
+        text: str,
+        *,
+        source: str = "user_final",
+        confidence: float = 1.0,
+    ) -> bool:
+        """Queue user speech; also updates short-term history when substantive."""
+        msg = self.add_message("user", text, persist=False)
+        if msg is None:
+            return False
+        return self._queue_user_for_persist(
+            msg.content,
+            raw_text=text.strip(),
+            source=source,
+            confidence=confidence,
+        )
+
+    def _queue_user_for_persist(
+        self,
+        cleaned: str,
+        *,
+        raw_text: str,
+        source: str = "user_final",
+        confidence: float = 1.0,
+    ) -> bool:
+        if not self._db_available or "user" not in self.persist_roles:
+            return False
+        if self.smart_save and self._writer:
+            return self._writer.enqueue(
+                raw_text,
+                source=source,
+                confidence=confidence,
+                last_assistant_text=self._last_assistant_text,
+            )
+        if not self._is_user_memory_worthy(cleaned):
+            return False
+        message = Message(role="user", content=cleaned)
+        embedding = self._get_embedding(cleaned)
+        self._save_message_to_db(
+            message,
+            embedding,
+            raw_text=raw_text,
+            cleaned_text=cleaned,
+            source=source,
+            confidence=confidence,
+        )
+        return True
+
+    def set_text_cleaner(
+        self, cleaner: Callable[[str, str], Optional[str]] | None
+    ) -> None:
+        """Optional hook: overrides built-in Ollama cleanup when set."""
+        self._text_cleaner = cleaner
+        if self._writer:
+            self._writer.set_text_cleaner(cleaner)
+
+    def _persist_user_message(
+        self,
+        *,
+        raw_text: str,
+        cleaned_text: str,
+        source: str,
+        confidence: float,
+        captured_at: datetime,
+        reason: str = "",
+    ) -> None:
+        if not self._is_user_memory_worthy(cleaned_text):
+            return
+        message = Message(role="user", content=cleaned_text, timestamp=captured_at)
+        embedding = self._get_embedding(cleaned_text)
+        self._save_message_to_db(
+            message,
+            embedding,
+            raw_text=raw_text,
+            cleaned_text=cleaned_text,
+            source=source,
+            confidence=confidence,
+        )
+
+    def _is_obvious_junk(self, text: str) -> bool:
+        return is_junk_stt_text(text)
+
+    @staticmethod
+    def _basic_clean_text(content: str) -> str:
+        text = (content or "").strip()
+        if not text:
+            return ""
+        text = re.sub(r"\s+", " ", text)
+        text = text.replace(">>", "").replace("<<", "")
+        text = re.sub(r"\s+([,.!?])", r"\1", text)
+        text = re.sub(r"([.!?]){2,}", r"\1", text)
+        text = text.strip(" -")
+        return text.strip()
+
+    def _is_user_memory_worthy(self, text: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if len(normalized.split()) < self.min_user_words:
+            return False
+        junk_markers = (
+            "thank you thank you",
+            "thanks for watching",
+            "subscribe",
+            "hario",
+            "blank audio",
+            "birds chirping",
+            "music",
+        )
+        if any(marker in normalized for marker in junk_markers):
+            return False
+        filler_only = {
+            "thank you very much",
+            "i think ill be right back",
+            "i am saying something",
+            "im saying something",
+            "i was saying something right",
+        }
+        if normalized in filler_only:
+            return False
+        unique_words = set(normalized.split())
+        if len(unique_words) <= 2 and len(normalized.split()) >= 5:
+            return False
+        return True
+
+    def flush_pending(self) -> int:
+        """Force flush buffered user utterances to PostgreSQL."""
+        if self._writer:
+            saved = self._writer.flush(force=True)
+            if saved:
+                print(f"Memory: flushed {saved} smart-saved message(s) to Postgres")
+            return saved
+        return 0
     
-    def _save_message_to_db(self, message: Message, embedding: Optional[np.ndarray]):
+    def _save_message_to_db(
+        self,
+        message: Message,
+        embedding: Optional[np.ndarray],
+        *,
+        raw_text: Optional[str] = None,
+        cleaned_text: Optional[str] = None,
+        source: str = "user_final",
+        confidence: float = 1.0,
+    ):
         """Save message to database."""
+        saved_at = datetime.now()
+        content = cleaned_text or message.content
+        raw = raw_text if raw_text is not None else message.content
         try:
             with self.conn.cursor() as cur:
                 if embedding is not None:
                     cur.execute("""
-                        INSERT INTO messages (session_id, role, content, timestamp, embedding)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO messages (
+                            session_id, role, content, timestamp, embedding,
+                            raw_text, cleaned_text, source, confidence, saved_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.session_id,
                         message.role,
-                        message.content,
+                        content,
                         message.timestamp,
-                        embedding.tolist()
+                        embedding.tolist(),
+                        raw,
+                        content,
+                        source,
+                        confidence,
+                        saved_at,
                     ))
                 else:
                     cur.execute("""
-                        INSERT INTO messages (session_id, role, content, timestamp)
-                        VALUES (%s, %s, %s, %s)
+                        INSERT INTO messages (
+                            session_id, role, content, timestamp,
+                            raw_text, cleaned_text, source, confidence, saved_at
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """, (
                         self.session_id,
                         message.role,
-                        message.content,
-                        message.timestamp
+                        content,
+                        message.timestamp,
+                        raw,
+                        content,
+                        source,
+                        confidence,
+                        saved_at,
                     ))
         except Exception as e:
             print(f"⚠️  Failed to save message: {e}")
@@ -368,20 +647,35 @@ class MemoryManager:
         try:
             embedding = self._get_embedding(summary.summary)
             with self.conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO summaries 
-                    (session_id, summary, topics, user_preferences, start_time, end_time, message_count, embedding)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    self.session_id,
-                    summary.summary,
-                    summary.topics,
-                    summary.user_preferences,
-                    summary.start_time,
-                    summary.end_time,
-                    summary.message_count,
-                    embedding.tolist() if embedding is not None else None
-                ))
+                if embedding is not None:
+                    cur.execute("""
+                        INSERT INTO summaries
+                        (session_id, summary, topics, user_preferences, start_time, end_time, message_count, embedding)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        self.session_id,
+                        summary.summary,
+                        summary.topics,
+                        summary.user_preferences,
+                        summary.start_time,
+                        summary.end_time,
+                        summary.message_count,
+                        embedding.tolist(),
+                    ))
+                else:
+                    cur.execute("""
+                        INSERT INTO summaries
+                        (session_id, summary, topics, user_preferences, start_time, end_time, message_count)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        self.session_id,
+                        summary.summary,
+                        summary.topics,
+                        summary.user_preferences,
+                        summary.start_time,
+                        summary.end_time,
+                        summary.message_count,
+                    ))
         except Exception as e:
             print(f"⚠️  Failed to save summary: {e}")
     
@@ -413,6 +707,7 @@ class MemoryManager:
                            1 - (embedding <=> %s::vector) as similarity
                     FROM messages 
                     WHERE embedding IS NOT NULL
+                      AND role = 'user'
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s
                 """, (query_embedding.tolist(), query_embedding.tolist(), limit))
@@ -551,8 +846,13 @@ class MemoryManager:
         stats = {
             'session_id': self.session_id,
             'recent_messages': len(self.recent_messages),
+            'pending_db_messages': (
+                self._writer.pending_count if self._writer else 0
+            ),
             'db_available': self._db_available,
             'embeddings_available': self._embeddings_available,
+            'smart_save': self.smart_save,
+            'persist_roles': self.persist_roles,
         }
         
         if self._db_available:
@@ -586,7 +886,17 @@ class MemoryManager:
                 print(f"⚠️  Failed to clear session: {e}")
     
     def close(self):
-        """Close database connection."""
+        """Flush pending user memory and close database connection."""
+        try:
+            if self._writer:
+                saved = self._writer.close()
+                if saved:
+                    print(f"Memory: flushed {saved} user utterance(s) on shutdown")
+            else:
+                self.flush_pending()
+        except Exception as e:
+            print(f"⚠️  Failed to flush pending memory: {e}")
+        self._writer = None
         if self.conn:
             self.conn.close()
 
@@ -616,4 +926,3 @@ if __name__ == "__main__":
     print(memory.get_context_for_llm("What's my name?"))
     
     print(f"\nStats: {memory.get_conversation_stats()}")
-

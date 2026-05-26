@@ -1,0 +1,31 @@
+[
+  {
+    "stage": "full",
+    "returncode": 1,
+    "duration_sec": 284.508,
+    "passed": 392,
+    "failed": 216,
+    "errors": 0,
+    "skipped": 0,
+    "xfailed": 0,
+    "xpassed": 0,
+    "total": 608,
+    "failure_count": 216,
+    "stdout_path": "test-reports/20260502_153356/full/stdout.txt",
+    "junit_path": "test-reports/20260502_153356/full/junit.xml",
+    "command": [
+      "/home/dobo/anaconda3/bin/python",
+      "-m",
+      "pytest",
+      "tests",
+      "-m",
+      "not backend and not hardware and not network and not llm",
+      "-q",
+      "--junitxml=test-reports/20260502_153356/full/junit.xml"
+    ],
+    "purpose": "Strict quality gate: normal tests plus real-world discovery tests.",
+    "allowed_to_fail": false,
+    "duplicates_path": "test-reports/20260502_153356/full/duplicates.json",
+    "duplicate_audio_hash_groups": 0
+  }
+]

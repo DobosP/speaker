@@ -1,0 +1,139 @@
+{"ts": 1777740429.9757288, "event": "recorder_init", "component": "audio", "device": 4, "device_sample_rate": 44100, "target_sample_rate": 16000, "adaptive_vad": true, "vad_threshold": 0.01, "noise_multiplier": 2.5, "barge_in_min_delay_sec": 0.5, "barge_in_min_delay_after_ref_sec": 0.35, "barge_in_min_rms_ratio": 3.0, "echo_corr_threshold": 0.45, "wakeword_enabled": false, "wakeword": null, "wakeword_threshold": 0.5, "wakeword_timeout_sec": 5.0, "wakeword_model_path": null, "wakeword_service_mode": "local", "wakeword_policy": "strict_required", "wakeword_miss_limit": 80, "wakeword_recovery_window_sec": 3.0, "wakeword_available": true, "wakeword_labels": ["alexa", "hey_mycroft", "hey_jarvis", "1_minute_timer", "5_minute_timer", "10_minute_timer", "20_minute_timer", "30_minute_timer", "1_hour_timer", "weather"], "speaker_verify_enabled": false, "speaker_verify_threshold": 0.55, "speaker_enrollment_wav": null, "speaker_verify_available": null}
+{"ts": 1777740434.1891239, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "listening", "reason": "speech_onset"}
+{"ts": 1777740434.1892307, "event": "speech_start", "component": "audio", "rms": 0.022154174745082855, "vad_threshold": 0.0075, "voiced_start": true}
+{"timestamp": 1777740434.1897316, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 1760}
+{"timestamp": 1777740434.5642872, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 11518}
+{"ts": 1777740435.0239673, "event": "policy_partial", "component": "policy_decision", "partial_len": 26, "partial_is_echo": false}
+{"ts": 1777740435.024056, "event": "turn_partial", "component": "turn_detector", "partial_len": 26}
+{"timestamp": 1777740435.02414, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 15976}
+{"ts": 1777740435.3968494, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777740435.3969595, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777740435.397045, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 18205}
+{"ts": 1777740435.7744803, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777740435.7745855, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777740435.9360774, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 21549}
+{"ts": 1777740436.2577932, "event": "recording_processing", "component": "audio", "duration_sec": 1.3931972789115645, "avg_energy": 0.021562231704592705, "samples": 61440}
+{"ts": 1777740436.2589562, "event": "listener_state", "component": "audio", "from_state": "listening", "to_state": "idle", "reason": "utterance_finished"}
+{"ts": 1777740436.3188405, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777740436.3189404, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777740436.3190937, "event": "backend_trace", "subsystem": "stt_final", "model_id": "distil-medium.en", "model_type": "whisper", "n_samples": 22292}
+{"ts": 1777740438.368764, "event": "turn_final", "component": "turn_detector", "final_len": 20}
+{"timestamp": 1777740438.3694136, "event": "backend_trace", "subsystem": "ollama", "chat_kind": "stream", "model": "llama2", "purpose": "main_turn"}
+{"ts": 1777740440.6288743, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "assistant_speaking", "reason": "tts_start"}
+{"ts": 1777740440.6290126, "event": "assistant_speaking_start", "component": "audio", "vad_threshold": 0.01}
+{"ts": 1777740440.629063, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777740442.990055, "event": "listener_state", "component": "audio", "from_state": "assistant_speaking", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1777740442.990138, "event": "assistant_speaking_end", "component": "audio"}
+{"ts": 1777740442.9901729, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777740442.9902086, "event": "listener_state", "component": "audio", "from_state": "recover", "to_state": "assistant_speaking", "reason": "tts_start"}
+{"ts": 1777740442.9902394, "event": "assistant_speaking_start", "component": "audio", "vad_threshold": 0.01}
+{"ts": 1777740442.9902587, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777740446.046599, "event": "listener_state", "component": "audio", "from_state": "assistant_speaking", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1777740446.0467303, "event": "assistant_speaking_end", "component": "audio"}
+{"ts": 1777740446.046766, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777740446.0468128, "event": "listener_state", "component": "audio", "from_state": "recover", "to_state": "assistant_speaking", "reason": "tts_start"}
+{"ts": 1777740446.046851, "event": "assistant_speaking_start", "component": "audio", "vad_threshold": 0.01}
+{"ts": 1777740446.0468736, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777740448.5635526, "event": "listener_state", "component": "audio", "from_state": "assistant_speaking", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1777740448.5638146, "event": "assistant_speaking_end", "component": "audio"}
+{"ts": 1777740448.564477, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"event": "turn_metrics", "session_id": "local", "timestamp": 1777740448.5654864, "speech_detected_to_stt_final_ms": 2109.98, "stt_final_to_first_llm_sentence_ms": 2259.7, "total_turn_ms": 12306.3, "runtime_profile": "balanced", "stt_model": "distil-medium.en", "stt_model_type": "whisper", "stt_threads": 4, "streaming_llm": true, "chunked_tts": true, "transcript_chars": 20}
+{"ts": 1777740448.8198, "event": "listener_state", "component": "audio", "from_state": "recover", "to_state": "idle", "reason": "recover_timeout"}
+{"ts": 1777740452.2586918, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "listening", "reason": "speech_onset"}
+{"ts": 1777740452.258924, "event": "speech_start", "component": "audio", "rms": 0.009906900115311146, "vad_threshold": 0.0075, "voiced_start": true}
+{"timestamp": 1777740452.259957, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 1760}
+{"timestamp": 1777740452.6295762, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 6688}
+{"ts": 1777740453.0194042, "event": "policy_partial", "component": "policy_decision", "partial_len": 4, "partial_is_echo": false}
+{"ts": 1777740453.0194886, "event": "turn_partial", "component": "turn_detector", "partial_len": 4}
+{"timestamp": 1777740453.0228744, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 11518}
+{"ts": 1777740453.4161913, "event": "policy_partial", "component": "policy_decision", "partial_len": 4, "partial_is_echo": false}
+{"ts": 1777740453.4162989, "event": "turn_partial", "component": "turn_detector", "partial_len": 4}
+{"timestamp": 1777740453.4163873, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 17462}
+{"ts": 1777740453.8261456, "event": "policy_partial", "component": "policy_decision", "partial_len": 22, "partial_is_echo": false}
+{"ts": 1777740453.8262296, "event": "turn_partial", "component": "turn_detector", "partial_len": 22}
+{"timestamp": 1777740453.8263168, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 23406}
+{"ts": 1777740454.2157767, "event": "policy_partial", "component": "policy_decision", "partial_len": 21, "partial_is_echo": false}
+{"ts": 1777740454.2158892, "event": "turn_partial", "component": "turn_detector", "partial_len": 21}
+{"timestamp": 1777740454.231398, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 26750}
+{"ts": 1777740454.626782, "event": "policy_partial", "component": "policy_decision", "partial_len": 24, "partial_is_echo": false}
+{"ts": 1777740454.626884, "event": "turn_partial", "component": "turn_detector", "partial_len": 24}
+{"timestamp": 1777740454.6269796, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 32694}
+{"ts": 1777740455.0195117, "event": "policy_partial", "component": "policy_decision", "partial_len": 25, "partial_is_echo": false}
+{"ts": 1777740455.0195932, "event": "turn_partial", "component": "turn_detector", "partial_len": 25}
+{"timestamp": 1777740455.0196776, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 38267}
+{"ts": 1777740455.414885, "event": "policy_partial", "component": "policy_decision", "partial_len": 25, "partial_is_echo": false}
+{"ts": 1777740455.4149714, "event": "turn_partial", "component": "turn_detector", "partial_len": 25}
+{"timestamp": 1777740455.5097094, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 39753}
+{"ts": 1777740455.9110825, "event": "policy_partial", "component": "policy_decision", "partial_len": 25, "partial_is_echo": false}
+{"ts": 1777740455.911189, "event": "turn_partial", "component": "turn_detector", "partial_len": 25}
+{"ts": 1777740456.4134533, "event": "recording_processing", "component": "audio", "duration_sec": 2.48453514739229, "avg_energy": 0.014833198860287666, "samples": 109568}
+{"ts": 1777740456.4158385, "event": "listener_state", "component": "audio", "from_state": "listening", "to_state": "idle", "reason": "utterance_finished"}
+{"timestamp": 1777740456.4159694, "event": "backend_trace", "subsystem": "stt_final", "model_id": "distil-medium.en", "model_type": "whisper", "n_samples": 39753}
+{"ts": 1777740458.5385945, "event": "turn_final", "component": "turn_detector", "final_len": 25}
+{"timestamp": 1777740458.539258, "event": "backend_trace", "subsystem": "ollama", "chat_kind": "stream", "model": "llama2", "purpose": "main_turn"}
+{"ts": 1777740458.697535, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "assistant_speaking", "reason": "tts_start"}
+{"ts": 1777740458.697672, "event": "assistant_speaking_start", "component": "audio", "vad_threshold": 0.01}
+{"ts": 1777740458.697716, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777740460.1934316, "event": "listener_state", "component": "audio", "from_state": "assistant_speaking", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1777740460.193602, "event": "assistant_speaking_end", "component": "audio"}
+{"ts": 1777740460.2385018, "event": "assistant_speaking_end", "component": "audio"}
+{"ts": 1777740460.2387068, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"event": "turn_metrics", "session_id": "local", "timestamp": 1777740460.2392542, "speech_detected_to_stt_final_ms": 2122.96, "stt_final_to_first_llm_sentence_ms": 158.44, "total_turn_ms": 3823.28, "runtime_profile": "balanced", "stt_model": "distil-medium.en", "stt_model_type": "whisper", "stt_threads": 4, "streaming_llm": true, "chunked_tts": true, "transcript_chars": 25}
+{"ts": 1777741272.4026008, "event": "recorder_init", "component": "audio", "device": 4, "device_sample_rate": 44100, "target_sample_rate": 16000, "adaptive_vad": true, "vad_threshold": 0.01, "noise_multiplier": 2.5, "barge_in_min_delay_sec": 0.5, "barge_in_min_delay_after_ref_sec": 0.35, "barge_in_min_rms_ratio": 3.0, "echo_corr_threshold": 0.45, "wakeword_enabled": false, "wakeword": null, "wakeword_threshold": 0.5, "wakeword_timeout_sec": 5.0, "wakeword_model_path": null, "wakeword_service_mode": "local", "wakeword_policy": "strict_required", "wakeword_miss_limit": 80, "wakeword_recovery_window_sec": 3.0, "wakeword_available": true, "wakeword_labels": ["alexa", "hey_mycroft", "hey_jarvis", "1_minute_timer", "5_minute_timer", "10_minute_timer", "20_minute_timer", "30_minute_timer", "1_hour_timer", "weather"], "speaker_verify_enabled": false, "speaker_verify_threshold": 0.55, "speaker_enrollment_wav": null, "speaker_verify_available": null}
+{"ts": 1777741277.0728426, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "listening", "reason": "speech_onset"}
+{"ts": 1777741277.0729692, "event": "speech_start", "component": "audio", "rms": 0.01900903880596161, "vad_threshold": 0.0075, "voiced_start": false}
+{"timestamp": 1777741277.0735993, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 1760}
+{"timestamp": 1777741277.4287226, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 12261}
+{"ts": 1777741277.862626, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777741277.862742, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777741277.8628542, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 15976}
+{"ts": 1777741278.2833357, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777741278.2834356, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777741278.283527, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 16719}
+{"ts": 1777741278.698219, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777741278.6983368, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777741278.8451526, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 17462}
+{"ts": 1777741279.0052605, "event": "recording_processing", "component": "audio", "duration_sec": 1.1377777777777778, "avg_energy": 0.02254876121878624, "samples": 50176}
+{"ts": 1777741279.005968, "event": "listener_state", "component": "audio", "from_state": "listening", "to_state": "idle", "reason": "utterance_finished"}
+{"ts": 1777741279.2417855, "event": "policy_partial", "component": "policy_decision", "partial_len": 11, "partial_is_echo": false}
+{"ts": 1777741279.2419267, "event": "turn_partial", "component": "turn_detector", "partial_len": 11}
+{"timestamp": 1777741279.2418861, "event": "backend_trace", "subsystem": "stt_final", "model_id": "distil-medium.en", "model_type": "whisper", "n_samples": 18205}
+{"ts": 1777741281.3468454, "event": "turn_final", "component": "turn_detector", "final_len": 9}
+{"timestamp": 1777741281.3475368, "event": "backend_trace", "subsystem": "ollama", "chat_kind": "stream", "model": "llama2", "purpose": "main_turn"}
+{"ts": 1777741282.6275766, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "assistant_speaking", "reason": "tts_start"}
+{"ts": 1777741282.6277027, "event": "assistant_speaking_start", "component": "audio", "vad_threshold": 0.01}
+{"ts": 1777741282.6277575, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777741284.5276313, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777741284.5278978, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777741286.5867827, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777741286.5869668, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777741289.4464245, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777741289.446595, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777741293.3874285, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777741293.38752, "event": "policy_tts_start", "component": "listener_state"}
+{"ts": 1777741295.4163973, "event": "policy_tts_end", "component": "listener_state", "state": "idle"}
+{"ts": 1777741295.4165604, "event": "listener_state", "component": "audio", "from_state": "assistant_speaking", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1777741295.4166129, "event": "assistant_speaking_end", "component": "audio"}
+{"event": "turn_metrics", "session_id": "local", "timestamp": 1777741295.4168267, "speech_detected_to_stt_final_ms": 2341.04, "stt_final_to_first_llm_sentence_ms": 1280.43, "total_turn_ms": 16410.79, "runtime_profile": "balanced", "stt_model": "distil-medium.en", "stt_model_type": "whisper", "stt_threads": 4, "streaming_llm": true, "chunked_tts": true, "transcript_chars": 9}
+{"ts": 1777741295.6773775, "event": "listener_state", "component": "audio", "from_state": "recover", "to_state": "idle", "reason": "recover_timeout"}
+{"ts": 1777741296.2603157, "event": "listener_state", "component": "audio", "from_state": "idle", "to_state": "listening", "reason": "speech_onset"}
+{"ts": 1777741296.2605128, "event": "speech_start", "component": "audio", "rms": 0.025626344606280327, "vad_threshold": 0.009460871281388656, "voiced_start": false}
+{"timestamp": 1777741296.3054695, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 1760}
+{"timestamp": 1777741296.700835, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 4830}
+{"ts": 1777741297.0709472, "event": "policy_partial", "component": "policy_decision", "partial_len": 13, "partial_is_echo": false}
+{"ts": 1777741297.0711293, "event": "turn_partial", "component": "turn_detector", "partial_len": 13}
+{"timestamp": 1777741297.0720503, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 8917}
+{"ts": 1777741297.4683163, "event": "policy_partial", "component": "policy_decision", "partial_len": 13, "partial_is_echo": false}
+{"ts": 1777741297.4684227, "event": "turn_partial", "component": "turn_detector", "partial_len": 13}
+{"timestamp": 1777741297.468507, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 13747}
+{"ts": 1777741297.8391724, "event": "policy_partial", "component": "policy_decision", "partial_len": 13, "partial_is_echo": false}
+{"ts": 1777741297.839281, "event": "turn_partial", "component": "turn_detector", "partial_len": 13}
+{"timestamp": 1777741297.8850672, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 14118}
+{"ts": 1777741298.2622042, "event": "policy_partial", "component": "policy_decision", "partial_len": 13, "partial_is_echo": false}
+{"ts": 1777741298.2623024, "event": "turn_partial", "component": "turn_detector", "partial_len": 13}
+{"timestamp": 1777741298.27872, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 17090}
+{"ts": 1777741298.67315, "event": "policy_partial", "component": "policy_decision", "partial_len": 13, "partial_is_echo": false}
+{"ts": 1777741298.673249, "event": "turn_partial", "component": "turn_detector", "partial_len": 13}
+{"timestamp": 1777741298.673344, "event": "backend_trace", "subsystem": "stt_partial", "model_id": "tiny", "n_samples": 20434}
+{"ts": 1777741298.69252, "event": "listener_state", "component": "audio", "from_state": "listening", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1777741298.6926234, "event": "assistant_speaking_end", "component": "audio"}

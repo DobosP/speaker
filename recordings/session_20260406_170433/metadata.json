@@ -1,0 +1,147 @@
+{
+  "session_id": "session_20260406_170433",
+  "start_time": 1775484298.6496413,
+  "end_time": 1775484343.6542447,
+  "duration_sec": 45.00460386276245,
+  "noise_floor": 0.010310930873269546,
+  "device_sample_rate": 44100,
+  "target_test_sample_rate": 16000,
+  "profile": "high",
+  "num_tts_turns": 12,
+  "num_barge_ins": 0,
+  "false_positive_candidates": [],
+  "turns": [
+    {
+      "index": 0,
+      "start_sec": 3.337860107421875e-05,
+      "end_sec": 0.8524422645568848,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.009646491147577763,
+      "mic_rms_max": 0.05755507946014404,
+      "echo_sim_mean": 0.2763234136752426
+    },
+    {
+      "index": 1,
+      "start_sec": 1.311560869216919,
+      "end_sec": 3.267876625061035,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.011070678941905499,
+      "mic_rms_max": 0.10370147228240967,
+      "echo_sim_mean": 0.24187409068654495
+    },
+    {
+      "index": 2,
+      "start_sec": 3.5992350578308105,
+      "end_sec": 4.901335716247559,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.014788975939154625,
+      "mic_rms_max": 0.20158302783966064,
+      "echo_sim_mean": 0.18269349673387195
+    },
+    {
+      "index": 3,
+      "start_sec": 5.420632362365723,
+      "end_sec": 7.674539804458618,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.011174645274877548,
+      "mic_rms_max": 0.11715865135192871,
+      "echo_sim_mean": 0.21946840637435186
+    },
+    {
+      "index": 4,
+      "start_sec": 13.967243671417236,
+      "end_sec": 14.76857876777649,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.012482657097280025,
+      "mic_rms_max": 0.09162044525146484,
+      "echo_sim_mean": 0.21576199403889712
+    },
+    {
+      "index": 5,
+      "start_sec": 15.855741024017334,
+      "end_sec": 20.915741443634033,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.018097974359989166,
+      "mic_rms_max": 1.0,
+      "echo_sim_mean": 0.23108836021461462
+    },
+    {
+      "index": 6,
+      "start_sec": 21.372211933135986,
+      "end_sec": 23.225538969039917,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.013448328711092472,
+      "mic_rms_max": 0.12163054943084717,
+      "echo_sim_mean": 0.2418571141388443
+    },
+    {
+      "index": 7,
+      "start_sec": 23.788289070129395,
+      "end_sec": 26.042519569396973,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.024978497996926308,
+      "mic_rms_max": 0.12756621837615967,
+      "echo_sim_mean": 0.21545997838143988
+    },
+    {
+      "index": 8,
+      "start_sec": 33.084277868270874,
+      "end_sec": 34.0858633518219,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.01606149412691593,
+      "mic_rms_max": 0.05661332607269287,
+      "echo_sim_mean": 0.19503656440339662
+    },
+    {
+      "index": 9,
+      "start_sec": 35.30631399154663,
+      "end_sec": 41.418158769607544,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.016565700992941856,
+      "mic_rms_max": 0.42913520336151123,
+      "echo_sim_mean": 0.2384577749723213
+    },
+    {
+      "index": 10,
+      "start_sec": 41.86094117164612,
+      "end_sec": 43.714211225509644,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.056412290781736374,
+      "mic_rms_max": 1.0,
+      "echo_sim_mean": 0.2250995556604279
+    },
+    {
+      "index": 11,
+      "start_sec": 44.25611758232117,
+      "end_sec": 44.91769003868103,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.015480659902095795,
+      "mic_rms_max": 0.12265646457672119,
+      "echo_sim_mean": 0.1910012185268928
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "stage": "dev",
+  "returncode": 0,
+  "duration_sec": 8.113,
+  "passed": 18,
+  "failed": 0,
+  "errors": 0,
+  "skipped": 0,
+  "xfailed": 0,
+  "xpassed": 0,
+  "total": 18,
+  "failure_count": 0,
+  "failure_categories": {},
+  "failure_areas": {},
+  "failure_solvability": {},
+  "quality_metrics": {
+    "false_accept_failures": 0,
+    "false_reject_failures": 0,
+    "false_accept_failure_rate": 0.0,
+    "false_reject_failure_rate": 0.0,
+    "unsolvable_failure_count": 0,
+    "solvable_failure_count": 0
+  },
+  "stdout_path": "test-reports/20260502_165421_402516_71621/dev/stdout.txt",
+  "junit_path": "test-reports/20260502_165421_402516_71621/dev/junit.xml",
+  "command": [
+    "/home/dobo/anaconda3/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_conversation_simulation.py",
+    "tests/test_profiles.py",
+    "tests/test_test_runner_quality.py",
+    "-m",
+    "dev",
+    "-q",
+    "--junitxml=test-reports/20260502_165421_402516_71621/dev/junit.xml"
+  ],
+  "purpose": "Critical fast tests for everyday TDD.",
+  "allowed_to_fail": false,
+  "duplicates_path": "test-reports/20260502_165421_402516_71621/dev/duplicates.json",
+  "duplicate_audio_hash_groups": 0
+}

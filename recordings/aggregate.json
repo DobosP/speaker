@@ -1,0 +1,54 @@
+{
+  "sessions": [
+    {
+      "session_id": "session_20260406_165119",
+      "start_time": 1775483497.508187,
+      "duration_sec": 16.128656148910522,
+      "noise_floor": 0.009745398165810692,
+      "profile": "high",
+      "num_tts_turns": 5,
+      "num_barge_ins": 0,
+      "false_positive_candidates": 0
+    },
+    {
+      "session_id": "session_20260406_170433",
+      "start_time": 1775484298.6496413,
+      "duration_sec": 45.00460386276245,
+      "noise_floor": 0.010310930873269546,
+      "profile": "high",
+      "num_tts_turns": 12,
+      "num_barge_ins": 0,
+      "false_positive_candidates": 0
+    },
+    {
+      "session_id": "session_20260406_175048",
+      "start_time": 1775487072.9305754,
+      "duration_sec": 25.868287324905396,
+      "noise_floor": 0.0030172878695553813,
+      "profile": "high",
+      "num_tts_turns": 5,
+      "num_barge_ins": 1,
+      "false_positive_candidates": 0
+    },
+    {
+      "session_id": "session_20260406_190243",
+      "start_time": 1775491373.3553872,
+      "duration_sec": 30.507736444473267,
+      "noise_floor": 0.0043773721717354774,
+      "profile": "high",
+      "num_tts_turns": 9,
+      "num_barge_ins": 1,
+      "false_positive_candidates": 0
+    }
+  ],
+  "summary": {
+    "total_sessions": 4,
+    "total_tts_turns": 31,
+    "total_barge_ins": 2,
+    "total_false_positive_candidates": 0,
+    "false_positive_rate": 0.0,
+    "avg_barge_ins_per_session": 0.5,
+    "last_session": "session_20260406_190243",
+    "last_updated": "2026-04-06T19:03:23"
+  }
+}

@@ -1,0 +1,4090 @@
+
+[fixtures] TTS speech fixtures ready.
+[fixtures] 20/20 FSDD voice samples ready (real human speech — Silero accuracy tests enabled).
+...FFFFFFFFFFFFFFFFF.FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF................. [ 49%]
+.....................FFFFFFFF..............F.F................F......... [ 98%]
+..                                                                       [100%]
+=================================== FAILURES ===================================
+_____________ test_failure_discovery_corpus[echo_phone_table_30cm] _____________
+
+case = {'description': 'Phone lying beside laptop speaker.', 'expectation': 'no_interrupt', 'importance': 'Common desk setup; tiny delay should still be echo.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Phone lying beside laptop speaker. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.2070034295320511, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0811
+🔊 [████████████████████] 0.2070
+                                                            
+BARGE-IN! (RMS: 0.2070 > 0.0100  voiced=True  echo_sim=0.18)
+
+🎤 [████████████████████] 0.0998
+🎤 [████████████████████] 0.1840
+🎤 [████████████████████] 0.0856
+🎤 [████████████████████] 0.0444
+🎤 [████████████████████] 0.1286
+🎤 [████████████████████] 0.1692
+🎤 [████████████████████] 0.1287
+🎤 [████████████████████] 0.1200
+🎤 [████████████████████] 0.1196
+🎤 [██████████████████  ] 0.0373
+🎤 [████████████████████] 0.1290
+🎤 [████████████████████] 0.0972
+🎤 [██                  ] 0.0048
+🎤 [████████████████████] 0.0771
+🎤 [███████████████████ ] 0.0386
+🎤 [███████████         ] 0.0223
+🎤 [████████████        ] 0.0241
+🎤 [████████████████████] 0.1091
+Audio recording stopped
+_____________ test_failure_discovery_corpus[echo_laptop_mic_70cm] ______________
+
+case = {'description': 'Laptop speaker to built-in microphone path.', 'expectation': 'no_interrupt', 'importance': 'Most likely desktop deployment false-interrupt path.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Laptop speaker to built-in microphone path. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.17284372448921204, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0680
+🔊 [████████████████████] 0.1728
+                                                            
+BARGE-IN! (RMS: 0.1728 > 0.0100  voiced=True  echo_sim=0.13)
+
+🎤 [████████████████████] 0.0858
+🎤 [████████████████████] 0.1532
+🎤 [████████████████████] 0.0765
+🎤 [██████████████████  ] 0.0373
+🎤 [████████████████████] 0.1078
+🎤 [████████████████████] 0.1417
+🎤 [████████████████████] 0.1090
+🎤 [████████████████████] 0.1010
+🎤 [████████████████████] 0.1012
+🎤 [███████████████     ] 0.0316
+🎤 [████████████████████] 0.1082
+🎤 [████████████████████] 0.0822
+🎤 [██                  ] 0.0041
+🎤 [████████████████████] 0.0647
+🎤 [████████████████    ] 0.0326
+🎤 [█████████           ] 0.0189
+🎤 [██████████          ] 0.0201
+🎤 [████████████████████] 0.0902
+Audio recording stopped
+_____________ test_failure_discovery_corpus[echo_smart_speaker_2m] _____________
+
+case = {'description': 'Smart speaker two metres from user microphone.', 'expectation': 'no_interrupt', 'importance': 'Typical living-room propagation delay.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Smart speaker two metres from user microphone. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1532914638519287, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0533
+🔊 [████████████████████] 0.1533
+                                                            
+BARGE-IN! (RMS: 0.1533 > 0.0100  voiced=True  echo_sim=0.18)
+
+🎤 [████████████████████] 0.0777
+🎤 [████████████████████] 0.1346
+🎤 [████████████████████] 0.0779
+🎤 [████████████████    ] 0.0330
+🎤 [████████████████████] 0.0883
+🎤 [████████████████████] 0.1292
+🎤 [████████████████████] 0.0982
+🎤 [████████████████████] 0.0893
+🎤 [████████████████████] 0.0906
+🎤 [██████████████████  ] 0.0366
+🎤 [████████████████████] 0.0923
+🎤 [████████████████████] 0.0783
+🎤 [███                 ] 0.0070
+🎤 [████████████████████] 0.0549
+🎤 [████████████████    ] 0.0333
+🎤 [█████████           ] 0.0182
+🎤 [███████             ] 0.0157
+🎤 [████████████████████] 0.0787
+Audio recording stopped
+___________ test_failure_discovery_corpus[echo_kitchen_counter_tile] ___________
+
+case = {'description': 'Kitchen counter with hard tile reflections.', 'expectation': 'no_interrupt', 'importance': 'Hard reflective rooms are common and noisy.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Kitchen counter with hard tile reflections. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.0753880962729454, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [██████████████████  ] 0.0361
+🔊 [████████████████████] 0.0754
+                                                            
+BARGE-IN! (RMS: 0.0754 > 0.0100  voiced=False  echo_sim=0.36)
+
+🎤 [████████████████████] 0.2257
+🎤 [████████████████████] 0.1432
+🎤 [████████████████████] 0.2377
+🎤 [████████████████████] 0.1725
+🎤 [████████████████████] 0.0577
+🎤 [████████████████████] 0.1205
+🎤 [████████████████████] 0.2022
+🎤 [████████████████████] 0.1465
+🎤 [████████████████████] 0.1415
+🎤 [████████████████████] 0.1539
+🎤 [████████████████████] 0.0741
+🎤 [████████████████████] 0.1350
+🎤 [████████████████████] 0.1145
+🎤 [████████████████████] 0.0435
+🎤 [████████████████████] 0.0767
+🎤 [████████████████████] 0.0734
+🎤 [████████████████    ] 0.0327
+🎤 [████████████        ] 0.0245
+🎤 [████████████████████] 0.1031
+Audio recording stopped
+______________ test_failure_discovery_corpus[echo_bathroom_tile] _______________
+
+case = {'description': 'Bathroom tile reverberation.', 'expectation': 'no_interrupt', 'importance': 'Worst-case reverb tail should not self-interrupt.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Bathroom tile reverberation. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.06440238654613495, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [████████████████████] 0.0444
+🔊 [████████████████████] 0.0644
+                                                            
+BARGE-IN! (RMS: 0.0644 > 0.0100  voiced=False  echo_sim=0.24)
+
+🎤 [████████████████████] 0.1997
+🎤 [████████████████████] 0.1453
+🎤 [████████████████████] 0.2017
+🎤 [████████████████████] 0.1305
+🎤 [████████████████████] 0.0538
+🎤 [████████████████████] 0.1135
+🎤 [████████████████████] 0.1873
+🎤 [████████████████████] 0.1407
+🎤 [████████████████████] 0.1245
+🎤 [████████████████████] 0.1246
+🎤 [████████████████████] 0.0718
+🎤 [████████████████████] 0.1197
+🎤 [████████████████████] 0.1104
+🎤 [████████████████████] 0.0426
+🎤 [████████████████████] 0.0700
+🎤 [████████████████████] 0.0632
+🎤 [███████████████     ] 0.0305
+🎤 [███████████         ] 0.0223
+🎤 [████████████████████] 0.0966
+Audio recording stopped
+_____________ test_failure_discovery_corpus[echo_hallway_far_wall] _____________
+
+case = {'description': 'Hallway far-wall assistant reflection.', 'expectation': 'no_interrupt', 'importance': 'Long narrow spaces produce strong late reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Hallway far-wall assistant reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08435456454753876, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [█████████████       ] 0.0263
+🔊 [████████████████████] 0.1284
+🔊 [████████████████████] 0.0844
+                                                            
+BARGE-IN! (RMS: 0.0844 > 0.0100  voiced=True  echo_sim=0.15)
+
+🎤 [████████████████████] 0.1098
+🎤 [████████████████████] 0.0926
+🎤 [██████████████      ] 0.0290
+🎤 [████████████████████] 0.0536
+🎤 [████████████████████] 0.1199
+🎤 [████████████████████] 0.0929
+🎤 [████████████████████] 0.0781
+🎤 [████████████████████] 0.0808
+🎤 [████████████████████] 0.0503
+🎤 [████████████████████] 0.0711
+🎤 [████████████████████] 0.0774
+🎤 [████████████        ] 0.0254
+🎤 [███████████████████ ] 0.0390
+🎤 [████████████████████] 0.0408
+🎤 [█████████           ] 0.0188
+🎤 [██████              ] 0.0121
+🎤 [████████████████████] 0.0582
+Audio recording stopped
+__________ test_failure_discovery_corpus[echo_open_living_room_wall] ___________
+
+case = {'description': 'Living-room first wall reflection.', 'expectation': 'no_interrupt', 'importance': 'Known failure mode for zero-lag echo checks.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Living-room first wall reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.12791402637958527, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [██                  ] 0.0045
+🔊 [████████████████████] 0.1459
+🔊 [████████████████████] 0.1279
+                                                            
+BARGE-IN! (RMS: 0.1279 > 0.0100  voiced=True  echo_sim=0.15)
+
+🎤 [████████████████████] 0.1201
+🎤 [████████████████████] 0.1381
+🎤 [█████████████████   ] 0.0357
+🎤 [███████████████████ ] 0.0382
+🎤 [████████████████████] 0.1486
+🎤 [████████████████████] 0.1237
+🎤 [████████████████████] 0.0968
+🎤 [████████████████████] 0.1031
+🎤 [████████████████████] 0.0788
+🎤 [████████████████████] 0.0708
+🎤 [████████████████████] 0.1056
+🎤 [████████████████████] 0.0495
+🎤 [████████████        ] 0.0255
+🎤 [████████████████████] 0.0652
+🎤 [█████████████       ] 0.0267
+🎤 [███████             ] 0.0141
+🎤 [████████████████████] 0.0569
+Audio recording stopped
+___________ test_failure_discovery_corpus[echo_car_cabin_dashboard] ____________
+
+case = {'description': 'Small car cabin dashboard reflection.', 'expectation': 'no_interrupt', 'importance': 'Car cabins create dense early reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Small car cabin dashboard reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08567162603139877, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [█████████████████   ] 0.0350
+🔊 [████████████████████] 0.0857
+                                                            
+BARGE-IN! (RMS: 0.0857 > 0.0100  voiced=False  echo_sim=0.39)
+
+🎤 [████████████████████] 0.2484
+🎤 [████████████████████] 0.1702
+🎤 [████████████████████] 0.1970
+🎤 [████████████████████] 0.1237
+🎤 [████████████████████] 0.0614
+🎤 [████████████████████] 0.1380
+🎤 [████████████████████] 0.1979
+🎤 [████████████████████] 0.1880
+🎤 [████████████████████] 0.1524
+🎤 [████████████████████] 0.1515
+🎤 [████████████████████] 0.0788
+🎤 [████████████████████] 0.1432
+🎤 [████████████████████] 0.1582
+🎤 [████████████████████] 0.0426
+🎤 [████████████████████] 0.0818
+🎤 [████████████████████] 0.0607
+🎤 [████████████████    ] 0.0340
+🎤 [██████████████      ] 0.0288
+🎤 [████████████████████] 0.1222
+Audio recording stopped
+________ test_failure_discovery_corpus[echo_projector_speaker_ceiling] _________
+
+case = {'description': 'Ceiling projector speaker reflection.', 'expectation': 'no_interrupt', 'importance': 'Distant media speakers should not look like user speech.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Ceiling projector speaker reflection. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.09706400334835052, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0718
+🔊 [████████████████████] 0.0971
+                                                            
+BARGE-IN! (RMS: 0.0971 > 0.0100  voiced=True  echo_sim=0.15)
+
+🎤 [████████████████████] 0.0638
+🎤 [████████████████████] 0.0973
+🎤 [████████            ] 0.0163
+🎤 [████████████        ] 0.0243
+🎤 [████████████████████] 0.0851
+🎤 [████████████████████] 0.0820
+🎤 [████████████████████] 0.0648
+🎤 [████████████████████] 0.0643
+🎤 [████████████████████] 0.0582
+🎤 [███████████         ] 0.0226
+🎤 [████████████████████] 0.0718
+🎤 [████████████████████] 0.0428
+🎤 [█                   ] 0.0025
+🎤 [████████████████████] 0.0432
+🎤 [█████████           ] 0.0180
+🎤 [████                ] 0.0096
+🎤 [████████            ] 0.0175
+Audio recording stopped
+_________ test_failure_discovery_corpus[echo_bluetooth_speaker_shelf] __________
+
+case = {'description': 'Bluetooth speaker on bookshelf.', 'expectation': 'no_interrupt', 'importance': 'Common assistant playback device with shelf reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Bluetooth speaker on bookshelf. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.05154785141348839, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [█████████████████   ] 0.0342
+🔊 [████████████████████] 0.0515
+                                                            
+BARGE-IN! (RMS: 0.0515 > 0.0100  voiced=False  echo_sim=0.24)
+
+🎤 [████████████████████] 0.1894
+🎤 [████████████████████] 0.1408
+🎤 [████████████████████] 0.1343
+🎤 [████████████████████] 0.1142
+🎤 [████████████████████] 0.0522
+🎤 [████████████████████] 0.1018
+🎤 [████████████████████] 0.1929
+🎤 [████████████████████] 0.1390
+🎤 [████████████████████] 0.1213
+🎤 [████████████████████] 0.1199
+🎤 [████████████████████] 0.0793
+🎤 [████████████████████] 0.1069
+🎤 [████████████████████] 0.1255
+🎤 [████████████████████] 0.0455
+🎤 [████████████████████] 0.0566
+🎤 [████████████████████] 0.0635
+🎤 [███████████████     ] 0.0308
+🎤 [██████████          ] 0.0212
+🎤 [████████████████████] 0.0830
+Audio recording stopped
+_________ test_failure_discovery_corpus[echo_tv_soundbar_living_room] __________
+
+case = {'description': 'TV soundbar leaking assistant speech.', 'expectation': 'no_interrupt', 'importance': 'Soundbars are loud and far from microphones.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: TV soundbar leaking assistant speech. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.055319078266620636, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [████████████████████] 0.0417
+🔊 [████████████████████] 0.0553
+                                                            
+BARGE-IN! (RMS: 0.0553 > 0.0100  voiced=False  echo_sim=0.32)
+
+🎤 [████████████████████] 0.2046
+🎤 [████████████████████] 0.1583
+🎤 [████████████████████] 0.1906
+🎤 [████████████████████] 0.1353
+🎤 [████████████████████] 0.0554
+🎤 [████████████████████] 0.0864
+🎤 [████████████████████] 0.2072
+🎤 [████████████████████] 0.1915
+🎤 [████████████████████] 0.1215
+🎤 [████████████████████] 0.1447
+🎤 [████████████████████] 0.0816
+🎤 [████████████████████] 0.1176
+🎤 [████████████████████] 0.1167
+🎤 [████████████████████] 0.0453
+🎤 [████████████████████] 0.0686
+🎤 [████████████████████] 0.0635
+🎤 [████████████████    ] 0.0324
+🎤 [███████████         ] 0.0222
+🎤 [████████████████████] 0.1031
+Audio recording stopped
+_____________ test_failure_discovery_corpus[echo_conference_table] _____________
+
+case = {'description': 'Conference table speakerphone echo.', 'expectation': 'no_interrupt', 'importance': 'Meeting rooms are key voice-agent environments.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Conference table speakerphone echo. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.06111621484160423, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [█████████████████   ] 0.0354
+🔊 [████████████████████] 0.0611
+                                                            
+BARGE-IN! (RMS: 0.0611 > 0.0100  voiced=False  echo_sim=0.41)
+
+🎤 [████████████████████] 0.2043
+🎤 [████████████████████] 0.1624
+🎤 [████████████████████] 0.1196
+🎤 [████████████████████] 0.1249
+🎤 [████████████████████] 0.0544
+🎤 [████████████████████] 0.1106
+🎤 [████████████████████] 0.1715
+🎤 [████████████████████] 0.1626
+🎤 [████████████████████] 0.1175
+🎤 [████████████████████] 0.1397
+🎤 [████████████████████] 0.0652
+🎤 [████████████████████] 0.1162
+🎤 [████████████████████] 0.1159
+🎤 [████████████████████] 0.0438
+🎤 [████████████████████] 0.0693
+🎤 [████████████████████] 0.0612
+🎤 [███████████████     ] 0.0313
+🎤 [██████████          ] 0.0217
+🎤 [████████████████████] 0.1015
+Audio recording stopped
+_________ test_failure_discovery_corpus[echo_corner_room_bass_buildup] _________
+
+case = {'description': 'Speaker in room corner with gain buildup.', 'expectation': 'no_interrupt', 'importance': 'Corner placement amplifies echo energy.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Speaker in room corner with gain buildup. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.09177596867084503, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [████████████████████] 0.0632
+🔊 [████████████████████] 0.0918
+                                                            
+BARGE-IN! (RMS: 0.0918 > 0.0100  voiced=False  echo_sim=0.36)
+
+🎤 [████████████████████] 0.2990
+🎤 [████████████████████] 0.2050
+🎤 [████████████████████] 0.3261
+🎤 [████████████████████] 0.2193
+🎤 [████████████████████] 0.0765
+🎤 [████████████████████] 0.1416
+🎤 [████████████████████] 0.3200
+🎤 [████████████████████] 0.2326
+🎤 [████████████████████] 0.1906
+🎤 [████████████████████] 0.1933
+🎤 [████████████████████] 0.1126
+🎤 [████████████████████] 0.1618
+🎤 [████████████████████] 0.1628
+🎤 [████████████████████] 0.0602
+🎤 [████████████████████] 0.0920
+🎤 [████████████████████] 0.0785
+🎤 [████████████████████] 0.0436
+🎤 [████████████████    ] 0.0321
+🎤 [████████████████████] 0.1421
+Audio recording stopped
+________ test_failure_discovery_corpus[echo_curtained_room_soft_reverb] ________
+
+case = {'description': 'Curtained room with soft reverb.', 'expectation': 'no_interrupt', 'importance': 'Even damped rooms must remain safe.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Curtained room with soft reverb. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.16978240013122559, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [██████████          ] 0.0206
+🔊 [████████████████████] 0.0464
+🔊 [████████████████████] 0.1698
+                                                            
+BARGE-IN! (RMS: 0.1698 > 0.0100  voiced=True  echo_sim=0.08)
+
+🎤 [████████████████████] 0.1472
+🎤 [████████████████████] 0.0946
+🎤 [████████████████████] 0.1175
+🎤 [████████████████████] 0.0487
+🎤 [████████████████████] 0.0879
+🎤 [████████████████████] 0.1473
+🎤 [████████████████████] 0.1445
+🎤 [████████████████████] 0.1004
+🎤 [████████████████████] 0.1206
+🎤 [████████████████████] 0.0632
+🎤 [████████████████████] 0.0946
+🎤 [████████████████████] 0.1014
+🎤 [████████████████████] 0.0435
+🎤 [████████████████████] 0.0554
+🎤 [████████████████████] 0.0568
+🎤 [██████████████      ] 0.0285
+🎤 [█████████           ] 0.0185
+🎤 [████████████████████] 0.0824
+Audio recording stopped
+_________ test_failure_discovery_corpus[echo_open_door_secondary_room] _________
+
+case = {'description': 'Assistant audio heard from another room.', 'expectation': 'no_interrupt', 'importance': 'Late low-level echo should not trigger barge-in.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant audio heard from another room. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.039073649793863297, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [█████████████       ] 0.0270
+🔊 [████████████████████] 0.0770
+🔊 [███████████████████ ] 0.0391
+                                                            
+BARGE-IN! (RMS: 0.0391 > 0.0100  voiced=True  echo_sim=0.33)
+
+🎤 [████████████████████] 0.0675
+🎤 [███████████████████ ] 0.0383
+🎤 [████████            ] 0.0166
+🎤 [████████████████████] 0.0444
+🎤 [████████████████████] 0.0647
+🎤 [████████████████████] 0.0495
+🎤 [████████████████████] 0.0444
+🎤 [████████████████████] 0.0461
+🎤 [████████            ] 0.0164
+🎤 [████████████████████] 0.0464
+🎤 [███████████████████ ] 0.0390
+🎤 [█                   ] 0.0032
+🎤 [█████████████       ] 0.0276
+🎤 [████████            ] 0.0166
+🎤 [████                ] 0.0089
+🎤 [███                 ] 0.0073
+Audio recording stopped
+__________ test_failure_discovery_corpus[echo_high_volume_near_field] __________
+
+case = {'description': 'High-volume near-field assistant playback.', 'expectation': 'no_interrupt', 'importance': 'Loud assistant speech is likely during TTS.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: High-volume near-field assistant playback. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.3066733777523041, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0001
+🔊 [                    ] 0.0002
+🔊 [████████████████████] 0.1159
+🔊 [████████████████████] 0.3067
+                                                            
+BARGE-IN! (RMS: 0.3067 > 0.0100  voiced=True  echo_sim=0.14)
+
+🎤 [████████████████████] 0.1533
+🎤 [████████████████████] 0.2712
+🎤 [████████████████████] 0.1435
+🎤 [████████████████████] 0.0661
+🎤 [████████████████████] 0.1867
+🎤 [████████████████████] 0.2550
+🎤 [████████████████████] 0.1923
+🎤 [████████████████████] 0.1805
+🎤 [████████████████████] 0.1805
+🎤 [████████████████████] 0.0601
+🎤 [████████████████████] 0.1905
+🎤 [████████████████████] 0.1485
+🎤 [█████               ] 0.0109
+🎤 [████████████████████] 0.1142
+🎤 [████████████████████] 0.0592
+🎤 [█████████████████   ] 0.0347
+🎤 [████████████████    ] 0.0330
+🎤 [████████████████████] 0.1584
+Audio recording stopped
+___________ test_failure_discovery_corpus[echo_low_volume_far_field] ___________
+
+case = {'description': 'Low-volume far-field assistant leakage.', 'expectation': 'no_interrupt', 'importance': 'Weak echoes should not accumulate false evidence.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Low-volume far-field assistant leakage. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.051804907619953156, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0442
+🔊 [████████████████████] 0.0518
+                                                            
+BARGE-IN! (RMS: 0.0518 > 0.0100  voiced=True  echo_sim=0.12)
+
+🎤 [███████████████████ ] 0.0383
+🎤 [████████████████████] 0.0533
+🎤 [█████               ] 0.0103
+🎤 [█████               ] 0.0115
+🎤 [████████████████████] 0.0497
+🎤 [████████████████████] 0.0455
+🎤 [█████████████████   ] 0.0357
+🎤 [█████████████████   ] 0.0358
+🎤 [███████████████     ] 0.0318
+🎤 [████████            ] 0.0168
+🎤 [███████████████████ ] 0.0399
+🎤 [███████████         ] 0.0220
+🎤 [                    ] 0.0016
+🎤 [████████████        ] 0.0244
+🎤 [█████               ] 0.0101
+🎤 [██                  ] 0.0052
+🎤 [██████              ] 0.0133
+Audio recording stopped
+___________ test_failure_discovery_corpus[echo_sample_rate_artifact] ___________
+
+case = {'description': 'Echo after device sample-rate conversion.', 'expectation': 'no_interrupt', 'importance': '44.1 kHz consumer devices can add interpolation artifacts to echo.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Echo after device sample-rate conversion. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.13466854393482208, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0419
+🔊 [████████████████████] 0.1347
+                                                            
+BARGE-IN! (RMS: 0.1347 > 0.0100  voiced=True  echo_sim=0.17)
+
+🎤 [████████████████████] 0.0719
+🎤 [████████████████████] 0.1173
+🎤 [████████████████████] 0.0765
+🎤 [███████████         ] 0.0234
+🎤 [████████████████████] 0.0715
+🎤 [████████████████████] 0.1165
+🎤 [████████████████████] 0.0894
+🎤 [████████████████████] 0.0791
+🎤 [████████████████████] 0.0810
+🎤 [██████████████████  ] 0.0364
+🎤 [████████████████████] 0.0802
+🎤 [████████████████████] 0.0704
+🎤 [██████              ] 0.0124
+🎤 [████████████████████] 0.0479
+🎤 [██████████████      ] 0.0293
+🎤 [██████              ] 0.0132
+🎤 [██████              ] 0.0121
+🎤 [████████████████████] 0.0665
+Audio recording stopped
+__________ test_failure_discovery_corpus[echo_clipped_speaker_output] __________
+
+case = {'description': 'Clipped speaker output echo.', 'expectation': 'no_interrupt', 'importance': 'Small speakers clip assistant speech.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Clipped speaker output echo. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.15810346603393555, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0001
+🔊 [                    ] 0.0002
+🔊 [████████████████████] 0.0876
+🔊 [████████████████████] 0.1581
+                                                            
+BARGE-IN! (RMS: 0.1581 > 0.0100  voiced=False  echo_sim=0.13)
+
+🎤 [████████████████████] 0.1355
+🎤 [████████████████████] 0.1629
+🎤 [████████████████████] 0.1046
+🎤 [████████████████████] 0.0661
+🎤 [████████████████████] 0.1209
+🎤 [████████████████████] 0.1497
+🎤 [████████████████████] 0.1387
+🎤 [████████████████████] 0.1405
+🎤 [████████████████████] 0.1405
+🎤 [████████████████████] 0.0778
+🎤 [████████████████████] 0.1349
+🎤 [████████████████████] 0.1355
+🎤 [█████████           ] 0.0184
+🎤 [████████████████████] 0.0972
+🎤 [████████████████████] 0.0775
+🎤 [████████████████████] 0.0450
+🎤 [███████████████████ ] 0.0387
+🎤 [████████████████████] 0.1265
+Audio recording stopped
+__________ test_failure_discovery_corpus[echo_tts_with_background_tv] __________
+
+case = {'description': 'Assistant echo mixed with TV bed.', 'expectation': 'no_interrupt', 'importance': 'Real rooms contain background media during TTS.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant echo mixed with TV bed. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1376277208328247, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [████████████        ] 0.0256
+🔊 [█████████████       ] 0.0266
+🔊 [████████████████████] 0.0510
+🔊 [████████████████████] 0.1376
+                                                            
+BARGE-IN! (RMS: 0.1376 > 0.0100  voiced=True  echo_sim=0.12)
+
+🎤 [████████████████████] 0.0760
+🎤 [████████████████████] 0.1213
+🎤 [████████████████████] 0.0788
+🎤 [███████████████████ ] 0.0384
+🎤 [████████████████████] 0.0760
+🎤 [████████████████████] 0.1207
+🎤 [████████████████████] 0.0922
+🎤 [████████████████████] 0.0840
+🎤 [████████████████████] 0.0862
+🎤 [████████████████████] 0.0448
+🎤 [████████████████████] 0.0851
+🎤 [████████████████████] 0.0734
+🎤 [███                 ] 0.0072
+🎤 [████████████████████] 0.0483
+🎤 [███████████████     ] 0.0305
+🎤 [████████            ] 0.0166
+🎤 [██████              ] 0.0136
+🎤 [████████████████████] 0.0673
+Audio recording stopped
+____________ test_failure_discovery_corpus[echo_tts_with_music_bed] ____________
+
+case = {'description': 'Assistant echo mixed with music.', 'expectation': 'no_interrupt', 'importance': 'Music can confuse VAD while echo is present.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant echo mixed with music. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.053375061601400375, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [████████████████████] 0.0405
+🔊 [████████████████████] 0.0534
+                                                            
+BARGE-IN! (RMS: 0.0534 > 0.0100  voiced=False  echo_sim=0.05)
+
+🎤 [████████████████████] 0.0693
+🎤 [████████████████████] 0.2122
+🎤 [████████████████████] 0.1669
+🎤 [████████████████████] 0.1287
+🎤 [████████████████████] 0.1323
+🎤 [████████████████████] 0.0705
+🎤 [████████████████████] 0.1202
+🎤 [████████████████████] 0.1818
+🎤 [████████████████████] 0.1706
+🎤 [████████████████████] 0.1224
+🎤 [████████████████████] 0.1450
+🎤 [████████████████████] 0.0759
+🎤 [████████████████████] 0.1278
+🎤 [████████████████████] 0.1215
+🎤 [████████████████████] 0.0438
+🎤 [████████████████████] 0.0718
+🎤 [████████████████████] 0.0621
+🎤 [███████████████     ] 0.0319
+🎤 [███████████         ] 0.0223
+🎤 [████████████████████] 0.1050
+Audio recording stopped
+___________ test_failure_discovery_corpus[echo_tts_with_babble_bed] ____________
+
+case = {'description': 'Assistant echo mixed with distant people.', 'expectation': 'no_interrupt', 'importance': 'Parties and meetings are hard echo cases.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Assistant echo mixed with distant people. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.04849665239453316, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [█████████████████   ] 0.0349
+🔊 [████████████████████] 0.0485
+                                                            
+BARGE-IN! (RMS: 0.0485 > 0.0100  voiced=False  echo_sim=0.03)
+
+🎤 [████████████████████] 0.0647
+🎤 [████████████████████] 0.2145
+🎤 [████████████████████] 0.1662
+🎤 [████████████████████] 0.1419
+🎤 [████████████████████] 0.1307
+🎤 [████████████████████] 0.0582
+🎤 [████████████████████] 0.1142
+🎤 [████████████████████] 0.1791
+🎤 [████████████████████] 0.1682
+🎤 [████████████████████] 0.1169
+🎤 [████████████████████] 0.1466
+🎤 [████████████████████] 0.0760
+🎤 [████████████████████] 0.1241
+🎤 [████████████████████] 0.1177
+🎤 [████████████████████] 0.0438
+🎤 [████████████████████] 0.0718
+🎤 [████████████████████] 0.0621
+🎤 [███████████████     ] 0.0319
+🎤 [███████████         ] 0.0223
+🎤 [████████████████████] 0.1050
+Audio recording stopped
+________ test_failure_discovery_corpus[echo_multi_path_two_reflections] ________
+
+case = {'description': 'Two dominant echo paths.', 'expectation': 'no_interrupt', 'importance': 'Multi-path echo is more realistic than one delay.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Two dominant echo paths. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.17298339307308197, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0534
+🔊 [████████████████████] 0.1730
+                                                            
+BARGE-IN! (RMS: 0.1730 > 0.0100  voiced=True  echo_sim=0.12)
+
+🎤 [████████████████████] 0.1028
+🎤 [████████████████████] 0.1411
+🎤 [████████████████████] 0.1375
+🎤 [██████████████████  ] 0.0373
+🎤 [████████████████████] 0.0918
+🎤 [████████████████████] 0.1677
+🎤 [████████████████████] 0.1162
+🎤 [████████████████████] 0.1068
+🎤 [████████████████████] 0.1105
+🎤 [████████████████████] 0.0500
+🎤 [████████████████████] 0.0938
+🎤 [████████████████████] 0.0901
+🎤 [███████████████     ] 0.0315
+🎤 [████████████████████] 0.0555
+🎤 [████████████████████] 0.0512
+🎤 [███████████         ] 0.0239
+🎤 [████████            ] 0.0178
+🎤 [████████████████████] 0.0826
+Audio recording stopped
+_______ test_failure_discovery_corpus[echo_multi_path_three_reflections] _______
+
+case = {'description': 'Three dominant echo paths.', 'expectation': 'no_interrupt', 'importance': 'Large rooms create several reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Three dominant echo paths. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1978895366191864, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0623
+🔊 [████████████████████] 0.1979
+                                                            
+BARGE-IN! (RMS: 0.1979 > 0.0100  voiced=True  echo_sim=0.15)
+
+🎤 [████████████████████] 0.1153
+🎤 [████████████████████] 0.1576
+🎤 [████████████████████] 0.0790
+🎤 [████████████████████] 0.0506
+🎤 [████████████████████] 0.0924
+🎤 [████████████████████] 0.1863
+🎤 [████████████████████] 0.1658
+🎤 [████████████████████] 0.1245
+🎤 [████████████████████] 0.1279
+🎤 [████████████████████] 0.0566
+🎤 [████████████████████] 0.1157
+🎤 [████████████████████] 0.0989
+🎤 [███████████████████ ] 0.0380
+🎤 [████████████████████] 0.0685
+🎤 [████████████████████] 0.0570
+🎤 [█████████████       ] 0.0278
+🎤 [██████████          ] 0.0212
+🎤 [████████████████████] 0.1026
+Audio recording stopped
+_________ test_failure_discovery_corpus[echo_reverb_long_phrase_tail] __________
+
+case = {'description': 'Long TTS phrase with heavy tail.', 'expectation': 'no_interrupt', 'importance': 'Long assistant responses must not self-cancel.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Long TTS phrase with heavy tail. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08119171857833862, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [████████████████████] 0.0495
+🔊 [████████████████████] 0.0812
+                                                            
+BARGE-IN! (RMS: 0.0812 > 0.0100  voiced=False  echo_sim=0.20)
+
+🎤 [████████████████████] 0.2474
+🎤 [████████████████████] 0.1447
+🎤 [████████████████████] 0.2316
+🎤 [████████████████████] 0.2109
+🎤 [████████████████████] 0.0679
+🎤 [████████████████████] 0.1221
+🎤 [████████████████████] 0.2002
+🎤 [████████████████████] 0.2156
+🎤 [████████████████████] 0.1643
+🎤 [████████████████████] 0.1450
+🎤 [████████████████████] 0.1003
+🎤 [████████████████████] 0.1494
+🎤 [████████████████████] 0.1416
+🎤 [████████████████████] 0.0513
+🎤 [████████████████████] 0.0827
+🎤 [████████████████████] 0.0693
+🎤 [███████████████████ ] 0.0388
+🎤 [█████████████       ] 0.0280
+🎤 [████████████████████] 0.1319
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_tv_news_anchor] ___________
+
+case = {'description': 'TV news anchor-like broadband audio.', 'expectation': 'no_callback', 'importance': 'TV speech must not become a user command.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: TV news anchor-like broadband audio.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00971879, -0.03316975,  0.02393525, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [███████████████     ] 0.0314
+                                                  
+
+🎤 [████████████████    ] 0.0325
+🎤 [████████████████    ] 0.0324
+🎤 [███████████████     ] 0.0310
+🎤 [███████████████     ] 0.0320
+🎤 [████████████████    ] 0.0329
+🎤 [████████████████    ] 0.0322
+🎤 [███████████████     ] 0.0315
+🎤 [████████████████    ] 0.0324
+🎤 [████████████████    ] 0.0327
+🎤 [███████████████     ] 0.0320
+🎤 [███████████████     ] 0.0314
+🎤 [███████████████     ] 0.0315
+🎤 [████████████████    ] 0.0326
+🎤 [███████████████     ] 0.0318
+🎤 [████████████        ] 0.0249
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0316)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+_________ test_failure_discovery_corpus[background_tv_loud_commercial] _________
+
+case = {'description': 'Loud TV commercial burst.', 'expectation': 'no_callback', 'importance': 'Commercials are sudden and speech-like.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Loud TV commercial burst.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01518561, -0.05182773,  0.03739883, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0490
+                                                  
+
+🎤 [████████████████████] 0.0508
+🎤 [████████████████████] 0.0506
+🎤 [████████████████████] 0.0484
+🎤 [████████████████████] 0.0500
+🎤 [████████████████████] 0.0514
+🎤 [████████████████████] 0.0504
+🎤 [████████████████████] 0.0493
+🎤 [████████████████████] 0.0506
+🎤 [████████████████████] 0.0510
+🎤 [████████████████████] 0.0500
+🎤 [████████████████████] 0.0491
+🎤 [████████████████████] 0.0492
+🎤 [████████████████████] 0.0509
+🎤 [████████████████████] 0.0497
+🎤 [███████████████████ ] 0.0390
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0494)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+_________ test_failure_discovery_corpus[background_podcast_far_field] __________
+
+case = {'description': 'Podcast playing across the room.', 'expectation': 'no_callback', 'importance': 'Single/few-speaker media can look voiced.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Podcast playing across the room.
+E           assert [array([0.018...type=float32)] == []
+E             Left contains one more item: array([0.0186704 , 0.01719079, 0.01517375, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [██████████          ] 0.0211
+                                                  
+
+🎤 [███████████         ] 0.0237
+🎤 [███████████         ] 0.0225
+🎤 [██████████████████  ] 0.0361
+🎤 [███████████████████ ] 0.0397
+🎤 [██████████████████  ] 0.0373
+🎤 [███████████████     ] 0.0307
+🎤 [██████████          ] 0.0210
+🎤 [████                ] 0.0088
+🎤 [█████████           ] 0.0193
+🎤 [███████████         ] 0.0231
+🎤 [███████████████     ] 0.0319
+🎤 [████████████████████] 0.0441
+🎤 [████████████████████] 0.0413
+🎤 [████████████████    ] 0.0325
+🎤 [██████              ] 0.0136
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0296)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+____________ test_failure_discovery_corpus[background_party_babble] ____________
+
+case = {'description': 'Party babble without direct user intent.', 'expectation': 'no_callback', 'importance': 'Multi-talker noise is common in homes.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Party babble without direct user intent.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01082398,  0.00380801, -0.0036492 , ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [███████████████████ ] 0.0386
+                                                  
+
+🎤 [████████████████████] 0.0411
+🎤 [████████████████████] 0.0479
+🎤 [████████████████████] 0.0440
+🎤 [████████████████████] 0.0500
+🎤 [████████████████████] 0.0547
+🎤 [████████████████████] 0.0492
+🎤 [████████████████████] 0.0409
+🎤 [███████████████     ] 0.0320
+🎤 [████████████████████] 0.0404
+🎤 [████████████████████] 0.0465
+🎤 [████████████████████] 0.0431
+🎤 [████████████████████] 0.0479
+🎤 [████████████████████] 0.0507
+🎤 [████████████████████] 0.0463
+🎤 [███████████████     ] 0.0309
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0445)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+__________ test_failure_discovery_corpus[background_kids_room_babble] __________
+
+case = {'description': 'Children talking in another room.', 'expectation': 'no_callback', 'importance': 'Distant family speech should not trigger callbacks.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Children talking in another room.
+E           assert [array([0.025...type=float32)] == []
+E             Left contains one more item: array([0.025953  , 0.01864869, 0.01055665, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [█████████████████   ] 0.0351
+                                                  
+
+🎤 [███████████████████ ] 0.0380
+🎤 [███████████████     ] 0.0317
+🎤 [████████████████    ] 0.0335
+🎤 [████████████████████] 0.0452
+🎤 [████████████████████] 0.0503
+🎤 [████████████████████] 0.0455
+🎤 [█████████████       ] 0.0270
+🎤 [█████               ] 0.0103
+🎤 [████████████████    ] 0.0326
+🎤 [████████████████████] 0.0420
+🎤 [████████████████████] 0.0403
+🎤 [████████████████████] 0.0403
+🎤 [████████████████████] 0.0419
+🎤 [███████████████████ ] 0.0389
+🎤 [████████████        ] 0.0257
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0373)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+____________ test_failure_discovery_corpus[background_music_120bpm] ____________
+
+case = {'description': 'Rhythmic 120 bpm music.', 'expectation': 'no_callback', 'importance': 'Beat envelopes can accumulate speech score.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Rhythmic 120 bpm music.
+E           assert [array([-0.03...type=float32)] == []
+E             Left contains one more item: array([-0.03196305, -0.01801219, -0.03546395, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0425
+                                                  
+
+🎤 [████████████████████] 0.0404
+🎤 [██████████████      ] 0.0292
+🎤 [█████████           ] 0.0193
+🎤 [██████████          ] 0.0217
+🎤 [███████████████     ] 0.0310
+🎤 [███████████████████ ] 0.0390
+🎤 [████████████████████] 0.0453
+🎤 [████████████████████] 0.0437
+🎤 [███████████████████ ] 0.0383
+🎤 [██████████████      ] 0.0281
+🎤 [████████            ] 0.0180
+🎤 [███████████         ] 0.0239
+🎤 [█████████████████   ] 0.0340
+🎤 [████████████████████] 0.0438
+🎤 [██████████████████  ] 0.0364
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0346)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+__________ test_failure_discovery_corpus[background_music_fast_tempo] __________
+
+case = {'description': 'Fast-tempo music.', 'expectation': 'no_callback', 'importance': 'High beat rate probes soft-decay accumulation.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Fast-tempo music.
+E           assert [array([-0.03...type=float32)] == []
+E             Left contains one more item: array([-0.03588392, -0.02022173, -0.03981426, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0463
+                                                  
+
+🎤 [██████████████████  ] 0.0363
+🎤 [██████████          ] 0.0205
+🎤 [██████████████████  ] 0.0380
+🎤 [████████████████████] 0.0499
+🎤 [████████████████████] 0.0451
+🎤 [███████████████     ] 0.0320
+🎤 [███████████         ] 0.0225
+🎤 [███████████████████ ] 0.0395
+🎤 [████████████████████] 0.0498
+🎤 [████████████████████] 0.0457
+🎤 [███████████████     ] 0.0320
+🎤 [███████████         ] 0.0236
+🎤 [████████████████████] 0.0409
+🎤 [████████████████████] 0.0523
+🎤 [███████████████████ ] 0.0387
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0395)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_clipped_radio] ____________
+
+case = {'description': 'Clipped radio speaker.', 'expectation': 'no_callback', 'importance': 'Cheap speakers distort harmonic content.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Clipped radio speaker.
+E           assert [array([-0.1 ...type=float32)] == []
+E             Left contains one more item: array([-0.1       , -0.09132827, -0.1       , ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0866
+                                                  
+
+🎤 [████████████████████] 0.0861
+🎤 [████████████████████] 0.0768
+🎤 [████████████████████] 0.0692
+🎤 [████████████████████] 0.0826
+🎤 [████████████████████] 0.0862
+🎤 [████████████████████] 0.0876
+🎤 [████████████████████] 0.0863
+🎤 [████████████████████] 0.0826
+🎤 [████████████████████] 0.0697
+🎤 [████████████████████] 0.0760
+🎤 [████████████████████] 0.0855
+🎤 [████████████████████] 0.0881
+🎤 [████████████████████] 0.0875
+🎤 [████████████████████] 0.0861
+🎤 [████████████████████] 0.0627
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0816)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_hvac_turns_on] ____________
+
+case = {'description': 'HVAC fan ramps up mid-turn.', 'expectation': 'no_callback', 'importance': 'Stale noise floors cause false speech starts.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: HVAC fan ramps up mid-turn.
+E           assert [array([-0.00...type=float32)] == []
+E             Left contains one more item: array([-0.00771902,  0.00618991, -0.00032629, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [███                 ] 0.0060
+🎤 [███                 ] 0.0061
+🎤 [██                  ] 0.0058
+🎤 [███                 ] 0.0061
+🎤 [███                 ] 0.0063
+🎤 [███                 ] 0.0060
+🎤 [██                  ] 0.0059
+🎤 [██████████          ] 0.0209
+                                                  
+
+🎤 [████████████████████] 0.0452
+🎤 [████████████████████] 0.0483
+🎤 [████████████████████] 0.0487
+🎤 [████████████████████] 0.0486
+🎤 [████████████████████] 0.0511
+🎤 [████████████████████] 0.0518
+🎤 [████████████████████] 0.0502
+🎤 [██████████████████  ] 0.0373
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.6s of audio (energy: 0.0457)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+__________ test_failure_discovery_corpus[background_dishwasher_pulse] __________
+
+case = {'description': 'Dishwasher pump pulse.', 'expectation': 'no_callback', 'importance': 'Appliance bursts are frequent home noise.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Dishwasher pump pulse.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00170637, -0.0169002 , -0.00108922, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [█████               ] 0.0100
+🎤 [█████               ] 0.0102
+🎤 [████                ] 0.0097
+🎤 [█████               ] 0.0102
+🎤 [█████               ] 0.0119
+🎤 [██████████████      ] 0.0293
+                                                  
+
+🎤 [████████████████████] 0.0435
+🎤 [████████████████████] 0.0452
+🎤 [████████████████████] 0.0450
+🎤 [████████████████████] 0.0434
+🎤 [████████████████████] 0.0439
+🎤 [████████████████████] 0.0437
+🎤 [████████████████████] 0.0460
+🎤 [████████████████████] 0.0466
+🎤 [████████████████████] 0.0452
+🎤 [████████████████    ] 0.0336
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.7s of audio (energy: 0.0426)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_keyboard_close] ___________
+
+case = {'description': 'Close keyboard clicks.', 'expectation': 'no_callback', 'importance': 'Transient bursts should not become speech.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Close keyboard clicks.
+E           assert [array([ 0.07...type=float32)] == []
+E             Left contains one more item: array([ 0.0733812 , -0.10367411,  0.10846554, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0955
+                                                  
+
+🎤 [████████████████████] 0.0955
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.0955
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.0955
+🎤 [████████████████████] 0.0906
+🎤 [██████████████      ] 0.0300
+🎤 [████████████████████] 0.0955
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.4s of audio (energy: 0.0884)...
+
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+Audio recording stopped
+_______ test_failure_discovery_corpus[background_mic_plosive_no_speech] ________
+
+case = {'description': 'Breath/plosive bursts without words.', 'expectation': 'no_callback', 'importance': 'Mic pops can fool duration accumulation.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Breath/plosive bursts without words.
+E           assert [array([ 0.12...type=float32)] == []
+E             Left contains one more item: array([ 0.12535906, -0.17710924,  0.18529457, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.2054
+                                                  
+
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.2054
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.2054
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.1989
+🎤 [████████████████████] 0.0513
+🎤 [████████████████████] 0.1494
+🎤 [████████████████████] 0.1410
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.4s of audio (energy: 0.1736)...
+
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_door_slam_tail] ___________
+
+case = {'description': 'Door slam with room tail.', 'expectation': 'no_callback', 'importance': 'Impulse sounds should not open a turn.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Door slam with room tail.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00055357,  0.13443549, -0.12336203, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.4258
+                                                  
+
+🎤 [████████████████████] 0.2254
+🎤 [███████████████████ ] 0.0400
+🎤 [███████████         ] 0.0237
+🎤 [███████             ] 0.0151
+🎤 [█████               ] 0.0117
+🎤 [████                ] 0.0080
+🎤 [█████               ] 0.0117
+🎤 [███████             ] 0.0146
+🎤 [███████             ] 0.0151
+🎤 [██████              ] 0.0125
+🎤 [████                ] 0.0083
+🎤 [█████               ] 0.0108
+🎤 [███████             ] 0.0141
+🎤 [███████             ] 0.0151
+🎤 [█████               ] 0.0110
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.1215)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+______________ test_failure_discovery_corpus[background_mic_bump] ______________
+
+case = {'description': 'Microphone bump burst.', 'expectation': 'no_callback', 'importance': 'Physical handling noise is common.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Microphone bump burst.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00024603,  0.05974911, -0.05482757, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.1892
+                                                  
+
+🎤 [████████████████████] 0.2045
+🎤 [████████████████████] 0.2016
+🎤 [████████████████████] 0.1966
+🎤 [████████████████████] 0.1996
+🎤 [████████████████████] 0.2025
+🎤 [████████████████████] 0.1950
+🎤 [████████████████████] 0.1896
+🎤 [████████████████████] 0.2001
+🎤 [████████████████████] 0.2081
+🎤 [████████████████████] 0.2032
+🎤 [████████████████████] 0.2058
+🎤 [████████████████████] 0.1933
+🎤 [████████████████████] 0.1950
+🎤 [████████████████████] 0.1999
+🎤 [████████████████████] 0.1609
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.1968)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_fan_plus_music] ___________
+
+case = {'description': 'Fan plus music bed.', 'expectation': 'no_callback', 'importance': 'Layered noise is more realistic than one source.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Fan plus music bed.
+E           assert [array([-0.00...type=float32)] == []
+E             Left contains one more item: array([-0.00090342, -0.06197613, -0.02308182, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [█████████████       ] 0.0278
+                                                  
+
+🎤 [█████████████       ] 0.0267
+🎤 [███████████         ] 0.0227
+🎤 [██████████          ] 0.0208
+🎤 [██████████          ] 0.0216
+🎤 [████████████        ] 0.0241
+🎤 [█████████████       ] 0.0267
+🎤 [███████████████     ] 0.0304
+🎤 [██████████████████  ] 0.0361
+🎤 [█████████████████   ] 0.0352
+🎤 [███████████████     ] 0.0318
+🎤 [███████████████     ] 0.0303
+🎤 [████████████████    ] 0.0330
+🎤 [█████████████████   ] 0.0349
+🎤 [███████████████████ ] 0.0381
+🎤 [█████████████       ] 0.0280
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0297)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_tv_plus_babble] ___________
+
+case = {'description': 'TV plus distant people.', 'expectation': 'no_callback', 'importance': 'Mixed speech sources should not trigger intent.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: TV plus distant people.
+E           assert [array([ 0.03...type=float32)] == []
+E             Left contains one more item: array([ 0.03476644, -0.03844946,  0.04420753, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0596
+                                                  
+
+🎤 [████████████████████] 0.0571
+🎤 [████████████████████] 0.0544
+🎤 [████████████████████] 0.0575
+🎤 [████████████████████] 0.0629
+🎤 [████████████████████] 0.0667
+🎤 [████████████████████] 0.0617
+🎤 [████████████████████] 0.0532
+🎤 [████████████████████] 0.0511
+🎤 [████████████████████] 0.0551
+🎤 [████████████████████] 0.0605
+🎤 [████████████████████] 0.0632
+🎤 [████████████████████] 0.0615
+🎤 [████████████████████] 0.0629
+🎤 [████████████████████] 0.0589
+🎤 [████████████████████] 0.0460
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0585)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_low_bass_music] ___________
+
+case = {'description': 'Bass-heavy music pulse.', 'expectation': 'no_callback', 'importance': 'Low-frequency energy can fool RMS gates.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Bass-heavy music pulse.
+E           assert [array([-0.03...type=float32)] == []
+E             Left contains one more item: array([-0.03075795, -0.01733308, -0.03412686, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0415
+                                                  
+
+🎤 [████████████████████] 0.0425
+🎤 [██████████████████  ] 0.0365
+🎤 [████████████████    ] 0.0337
+🎤 [█████████████       ] 0.0276
+🎤 [█████████           ] 0.0194
+🎤 [███████             ] 0.0143
+🎤 [██████████          ] 0.0206
+🎤 [█████████████       ] 0.0271
+🎤 [████████████████    ] 0.0332
+🎤 [██████████████████  ] 0.0374
+🎤 [████████████████████] 0.0425
+🎤 [████████████████████] 0.0440
+🎤 [████████████████████] 0.0430
+🎤 [████████████████████] 0.0435
+🎤 [███████████████     ] 0.0317
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0349)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_window_traffic] ___________
+
+case = {'description': 'Traffic swell through window.', 'expectation': 'no_callback', 'importance': 'Outdoor noise changes slowly.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Traffic swell through window.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01105796, -0.00769649,  0.01080731, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [█████████           ] 0.0181
+🎤 [█████████           ] 0.0184
+🎤 [████████            ] 0.0174
+🎤 [█████████           ] 0.0184
+🎤 [█████████           ] 0.0188
+🎤 [█████████           ] 0.0181
+🎤 [████████            ] 0.0176
+🎤 [█████████           ] 0.0181
+🎤 [█████████           ] 0.0191
+🎤 [██████████████      ] 0.0290
+                                                  
+
+🎤 [██████████████████  ] 0.0369
+🎤 [██████████████████  ] 0.0369
+🎤 [███████████████████ ] 0.0389
+🎤 [███████████████████ ] 0.0394
+🎤 [███████████████████ ] 0.0382
+🎤 [██████████████      ] 0.0284
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.4s of audio (energy: 0.0356)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_coffee_grinder] ___________
+
+case = {'description': 'Coffee grinder burst.', 'expectation': 'no_callback', 'importance': 'Loud appliance noise is highly nonstationary.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Coffee grinder burst.
+E           assert [array([ 0.02...type=float32)] == []
+E             Left contains one more item: array([ 0.02500484, -0.08835402, -0.00905547, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [███████████████     ] 0.0301
+                                                  
+
+🎤 [███████████████     ] 0.0306
+🎤 [█████████████████   ] 0.0350
+🎤 [████████████████████] 0.0599
+🎤 [████████████████████] 0.0688
+🎤 [████████████████████] 0.0666
+🎤 [████████████████████] 0.0651
+🎤 [████████████████████] 0.0648
+🎤 [████████████████████] 0.0653
+🎤 [████████████████████] 0.0652
+🎤 [████████████████████] 0.0651
+🎤 [████████████████████] 0.0646
+🎤 [████████████████████] 0.0678
+🎤 [████████████████████] 0.0675
+🎤 [████████████████████] 0.0668
+🎤 [████████████████████] 0.0500
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0598)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+__________ test_failure_discovery_corpus[background_vacuum_far_room] ___________
+
+case = {'description': 'Vacuum in adjacent room.', 'expectation': 'no_callback', 'importance': 'Sustained high noise should not be a command.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Vacuum in adjacent room.
+E           assert [array([ 0.02...type=float32)] == []
+E             Left contains one more item: array([ 0.02083736, -0.07362835, -0.00754623, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████        ] 0.0256
+                                                  
+
+🎤 [████████████████████] 0.0400
+🎤 [████████████████████] 0.0522
+🎤 [████████████████████] 0.0563
+🎤 [████████████████████] 0.0575
+🎤 [████████████████████] 0.0553
+🎤 [████████████████████] 0.0539
+🎤 [████████████████████] 0.0552
+🎤 [████████████████████] 0.0550
+🎤 [████████████████████] 0.0531
+🎤 [████████████████████] 0.0536
+🎤 [████████████████████] 0.0535
+🎤 [████████████████████] 0.0562
+🎤 [████████████████████] 0.0570
+🎤 [████████████████████] 0.0552
+🎤 [████████████████████] 0.0411
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0520)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_siren_outside] ____________
+
+case = {'description': 'Siren-like tonal sweep approximation.', 'expectation': 'no_callback', 'importance': 'Tonal external sounds can appear voiced.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Siren-like tonal sweep approximation.
+E           assert [array([-0.04...type=float32)] == []
+E             Left contains one more item: array([-0.04406995, -0.02483482, -0.04889692, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0596
+                                                  
+
+🎤 [████████████████████] 0.0625
+🎤 [████████████████████] 0.0564
+🎤 [████████████████████] 0.0562
+🎤 [████████████████████] 0.0520
+🎤 [████████████████████] 0.0441
+🎤 [███████████████████ ] 0.0389
+🎤 [█████████████████   ] 0.0347
+🎤 [█████████████       ] 0.0275
+🎤 [██████████          ] 0.0211
+🎤 [███████████         ] 0.0235
+🎤 [███████████████     ] 0.0316
+🎤 [██████████████████  ] 0.0379
+🎤 [████████████████████] 0.0431
+🎤 [████████████████████] 0.0510
+🎤 [████████████████████] 0.0427
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0445)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+____________ test_failure_discovery_corpus[background_baby_monitor] ____________
+
+case = {'description': 'Baby monitor audio.', 'expectation': 'no_callback', 'importance': 'Remote speech should not control assistant.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Baby monitor audio.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00445983, -0.01254628,  0.00917974, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [███████████         ] 0.0240
+                                                  
+
+🎤 [██████████████      ] 0.0297
+🎤 [██████████████      ] 0.0286
+🎤 [██████████████████  ] 0.0368
+🎤 [██████████████████  ] 0.0366
+🎤 [████████████        ] 0.0245
+🎤 [█████████           ] 0.0180
+🎤 [████████            ] 0.0174
+🎤 [██████              ] 0.0131
+🎤 [████████████        ] 0.0257
+🎤 [██████████████      ] 0.0298
+🎤 [██████████████      ] 0.0291
+🎤 [███████████████████ ] 0.0388
+🎤 [█████████████████   ] 0.0351
+🎤 [███████████         ] 0.0235
+🎤 [██████              ] 0.0130
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0276)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+_________ test_failure_discovery_corpus[background_video_call_speaker] _________
+
+case = {'description': 'Video call played through speakers.', 'expectation': 'no_callback', 'importance': 'Assistant must ignore other calls.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Video call played through speakers.
+E           assert [array([0.023...type=float32)] == []
+E             Left contains one more item: array([0.02364917, 0.021775  , 0.01922008, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [█████████████       ] 0.0267
+                                                  
+
+🎤 [███████████████     ] 0.0300
+🎤 [██████████████      ] 0.0285
+🎤 [████████████████████] 0.0457
+🎤 [████████████████████] 0.0503
+🎤 [████████████████████] 0.0472
+🎤 [███████████████████ ] 0.0389
+🎤 [█████████████       ] 0.0266
+🎤 [█████               ] 0.0112
+🎤 [████████████        ] 0.0245
+🎤 [██████████████      ] 0.0293
+🎤 [████████████████████] 0.0404
+🎤 [████████████████████] 0.0558
+🎤 [████████████████████] 0.0523
+🎤 [████████████████████] 0.0412
+🎤 [████████            ] 0.0172
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0376)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+________ test_failure_discovery_corpus[background_white_noise_machine] _________
+
+case = {'description': 'White-noise sleep machine.', 'expectation': 'no_callback', 'importance': 'Noise machines run near smart speakers.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: White-noise sleep machine.
+E           assert [array([ 0.01...type=float32)] == []
+E             Left contains one more item: array([ 0.01275591, -0.04353529,  0.03141501, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0412
+                                                  
+
+🎤 [████████████████████] 0.0427
+🎤 [████████████████████] 0.0425
+🎤 [████████████████████] 0.0406
+🎤 [████████████████████] 0.0420
+🎤 [████████████████████] 0.0432
+🎤 [████████████████████] 0.0423
+🎤 [████████████████████] 0.0414
+🎤 [████████████████████] 0.0425
+🎤 [████████████████████] 0.0429
+🎤 [████████████████████] 0.0420
+🎤 [████████████████████] 0.0413
+🎤 [████████████████████] 0.0413
+🎤 [████████████████████] 0.0428
+🎤 [████████████████████] 0.0417
+🎤 [████████████████    ] 0.0327
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0415)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+___________ test_failure_discovery_corpus[background_rain_on_window] ___________
+
+case = {'description': 'Rain-like broadband noise.', 'expectation': 'no_callback', 'importance': 'Weather noise is common and persistent.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Rain-like broadband noise.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00248556, -0.01399296,  0.00152202, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [███████████████     ] 0.0302
+                                                  
+
+🎤 [██████████████      ] 0.0299
+🎤 [███████████████     ] 0.0303
+🎤 [██████████████      ] 0.0298
+🎤 [███████████████     ] 0.0300
+🎤 [██████████████      ] 0.0293
+🎤 [██████████████      ] 0.0292
+🎤 [██████████████      ] 0.0290
+🎤 [███████████████     ] 0.0309
+🎤 [███████████████     ] 0.0303
+🎤 [███████████████     ] 0.0300
+🎤 [██████████████      ] 0.0299
+🎤 [███████████████     ] 0.0305
+🎤 [███████████████     ] 0.0302
+🎤 [███████████████     ] 0.0302
+🎤 [███████████         ] 0.0239
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0296)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+____________ test_failure_discovery_corpus[background_chair_scrape] ____________
+
+case = {'description': 'Chair scrape impulse train.', 'expectation': 'no_callback', 'importance': 'Furniture noise should not start STT.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Chair scrape impulse train.
+E           assert [array([-0.16...type=float32)] == []
+E             Left contains one more item: array([-0.16, -0.16, -0.16, ...,  0.  ,  0.  ,  0.  ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.1294
+                                                  
+
+🎤 [████████████████████] 0.1309
+🎤 [████████████████████] 0.1304
+🎤 [████████████████████] 0.1280
+🎤 [████████████████████] 0.1291
+🎤 [████████████████████] 0.1297
+🎤 [████████████████████] 0.1312
+🎤 [████████████████████] 0.1292
+🎤 [████████████████████] 0.1303
+🎤 [████████████████████] 0.1290
+🎤 [████████████████████] 0.1311
+🎤 [████████████████████] 0.1287
+🎤 [████████████████████] 0.1281
+🎤 [████████████████████] 0.1292
+🎤 [████████████████████] 0.1291
+🎤 [████████████████████] 0.1021
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.1280)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+_______ test_failure_discovery_corpus[echo_tablet_kickstand_reflection] ________
+
+case = {'description': 'Tablet on kickstand reflecting off desk.', 'expectation': 'no_interrupt', 'importance': 'Tablets are common always-on assistant devices.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Tablet on kickstand reflecting off desk. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.08281847089529037, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [███████████████████ ] 0.0387
+🔊 [████████████████████] 0.0828
+                                                            
+BARGE-IN! (RMS: 0.0828 > 0.0100  voiced=False  echo_sim=0.30)
+
+🎤 [████████████████████] 0.2264
+🎤 [████████████████████] 0.1320
+🎤 [████████████████████] 0.1603
+🎤 [████████████████████] 0.1532
+🎤 [████████████████████] 0.0608
+🎤 [████████████████████] 0.1254
+🎤 [████████████████████] 0.2342
+🎤 [████████████████████] 0.1988
+🎤 [████████████████████] 0.1480
+🎤 [████████████████████] 0.1542
+🎤 [████████████████████] 0.0813
+🎤 [████████████████████] 0.1481
+🎤 [████████████████████] 0.1306
+🎤 [████████████████████] 0.0448
+🎤 [████████████████████] 0.0793
+🎤 [████████████████████] 0.0702
+🎤 [████████████████    ] 0.0332
+🎤 [█████████████       ] 0.0267
+🎤 [████████████████████] 0.1143
+Audio recording stopped
+________ test_failure_discovery_corpus[echo_open_back_headphones_leak] _________
+
+case = {'description': 'Open-back headphone leakage into mic.', 'expectation': 'no_interrupt', 'importance': 'Headset users can still leak TTS into microphones.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Open-back headphone leakage into mic. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.023985307663679123, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0000
+🔊 [█████████           ] 0.0191
+🔊 [████████████████████] 0.0487
+🔊 [███████████         ] 0.0240
+                                                            
+BARGE-IN! (RMS: 0.0240 > 0.0100  voiced=True  echo_sim=0.24)
+
+🎤 [████████████████████] 0.0433
+🎤 [██████████          ] 0.0217
+🎤 [█████               ] 0.0105
+🎤 [███████████████     ] 0.0303
+🎤 [███████████████████ ] 0.0400
+🎤 [███████████████     ] 0.0305
+🎤 [██████████████      ] 0.0287
+🎤 [██████████████      ] 0.0286
+🎤 [████                ] 0.0089
+🎤 [███████████████     ] 0.0304
+🎤 [███████████         ] 0.0233
+🎤 [                    ] 0.0012
+🎤 [█████████           ] 0.0182
+🎤 [████                ] 0.0093
+🎤 [██                  ] 0.0054
+🎤 [██                  ] 0.0056
+🎤 [████████████        ] 0.0252
+Audio recording stopped
+__________ test_failure_discovery_corpus[echo_dual_desktop_monitors] ___________
+
+case = {'description': 'Desktop speakers reflecting between monitors.', 'expectation': 'no_interrupt', 'importance': 'Desktop geometry creates strong multi-path reflections.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Desktop speakers reflecting between monitors. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.1786615401506424, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [                    ] 0.0001
+🔊 [████████████████████] 0.0471
+🔊 [████████████████████] 0.1787
+                                                            
+BARGE-IN! (RMS: 0.1787 > 0.0100  voiced=True  echo_sim=0.10)
+
+🎤 [████████████████████] 0.0786
+🎤 [████████████████████] 0.0711
+🎤 [████████████████████] 0.0525
+🎤 [████████████████    ] 0.0333
+🎤 [████████████████████] 0.0890
+🎤 [████████████████████] 0.1504
+🎤 [████████████████████] 0.1017
+🎤 [████████████████████] 0.0827
+🎤 [████████████████████] 0.1143
+🎤 [███████████████████ ] 0.0381
+🎤 [████████████████████] 0.0978
+🎤 [████████████████████] 0.0947
+🎤 [███████             ] 0.0142
+🎤 [████████████████████] 0.0679
+🎤 [████████████████████] 0.0456
+🎤 [█████████           ] 0.0189
+🎤 [████████            ] 0.0162
+🎤 [████████████████████] 0.0874
+Audio recording stopped
+_________ test_failure_discovery_corpus[echo_smart_display_countertop] _________
+
+case = {'description': 'Smart display on countertop.', 'expectation': 'no_interrupt', 'importance': 'Smart displays combine speaker and mic in reflective kitchens.', 'kind': 'echo_leak', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks == [], case["description"]
+            return
+    
+        ref = SAMPLES[case["ref"]]
+        if case["kind"] == "echo_control":
+            interrupts = _interrupts_for_tts_leak(
+                audio,
+                ref,
+                gate_sec=0.20,
+                inter_chunk_delay=1024 / SR,
+                zero_delays=False,
+            )
+        else:
+            interrupts = _interrupts_for_tts_leak(audio, ref)
+>       assert interrupts == [], (
+            f"{case['description']} Fired {len(interrupts)} false interrupt(s)."
+        )
+E       AssertionError: Smart display on countertop. Fired 1 false interrupt(s).
+E       assert [{'duration_s...': 0.01, ...}] == []
+E         Left contains one more item: {'duration_sec': 0.128, 'echo': False, 'rms': 0.07129807025194168, 'threshold': 0.01, ...}
+E         Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:374: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [                    ] 0.0000
+🔊 [███████████████████ ] 0.0396
+🔊 [████████████████████] 0.0713
+                                                            
+BARGE-IN! (RMS: 0.0713 > 0.0100  voiced=False  echo_sim=0.25)
+
+🎤 [████████████████████] 0.2256
+🎤 [████████████████████] 0.1550
+🎤 [████████████████████] 0.2248
+🎤 [████████████████████] 0.1375
+🎤 [████████████████████] 0.0582
+🎤 [████████████████████] 0.1300
+🎤 [████████████████████] 0.2074
+🎤 [████████████████████] 0.1529
+🎤 [████████████████████] 0.1383
+🎤 [████████████████████] 0.1380
+🎤 [████████████████████] 0.0744
+🎤 [████████████████████] 0.1361
+🎤 [████████████████████] 0.1209
+🎤 [████████████████████] 0.0426
+🎤 [████████████████████] 0.0804
+🎤 [████████████████████] 0.0668
+🎤 [████████████████    ] 0.0326
+🎤 [████████████        ] 0.0249
+🎤 [████████████████████] 0.1104
+Audio recording stopped
+________ test_failure_discovery_corpus[background_alarm_beep_sequence] _________
+
+case = {'description': 'Alarm-like beep sequence.', 'expectation': 'no_callback', 'importance': 'Alarms are loud periodic bursts near microphones.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Alarm-like beep sequence.
+E           assert [array([ 0.08...type=float32)] == []
+E             Left contains one more item: array([ 0.08961237, -0.12660578,  0.13245702, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.1739
+                                                  
+
+🎤 [████████████████████] 0.0801
+🎤 [████████████████████] 0.1544
+🎤 [████████████████████] 0.1159
+🎤 [████████████████████] 0.1297
+🎤 [████████████████████] 0.1412
+🎤 [████████████████████] 0.1015
+🎤 [████████████████████] 0.1538
+🎤 [████████████████████] 0.0812
+🎤 [████████████████████] 0.1739
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.1739
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.1739
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.8s of audio (energy: 0.1420)...
+
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+Audio recording stopped
+_____ test_failure_discovery_corpus[background_phone_notification_cluster] _____
+
+case = {'description': 'Cluster of phone notifications.', 'expectation': 'no_callback', 'importance': 'Notification sounds should not start listening.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Cluster of phone notifications.
+E           assert [array([ 0.10...type=float32)] == []
+E             Left contains one more item: array([ 0.10841722, -0.15317355,  0.16025266, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.1923
+                                                  
+
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.1923
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.1923
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [████████████████████] 0.1923
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 0.3s of audio (energy: 0.1923)...
+
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+Audio recording stopped
+_________ test_failure_discovery_corpus[background_mic_cable_crackle] __________
+
+case = {'description': 'Microphone cable crackle.', 'expectation': 'no_callback', 'importance': 'Hardware noise can look like voiced transients.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Microphone cable crackle.
+E           assert [array([0.11 ...type=float32)] == []
+E             Left contains one more item: array([0.11      , 0.02864544, 0.09149078, ..., 0.        , 0.        ,\n       0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [████████████████████] 0.0980
+                                                  
+
+🎤 [████████████████████] 0.0962
+🎤 [████████████████████] 0.0977
+🎤 [████████████████████] 0.0985
+🎤 [████████████████████] 0.0984
+🎤 [████████████████████] 0.0985
+🎤 [████████████████████] 0.0977
+🎤 [████████████████████] 0.0987
+🎤 [████████████████████] 0.0983
+🎤 [████████████████████] 0.0975
+🎤 [████████████████████] 0.0975
+🎤 [████████████████████] 0.0987
+🎤 [████████████████████] 0.0974
+🎤 [████████████████████] 0.0988
+🎤 [████████████████████] 0.0991
+🎤 [████████████████████] 0.0783
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0970)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+_________ test_failure_discovery_corpus[background_roommate_laugh_far] _________
+
+case = {'description': 'Roommate laugh in background.', 'expectation': 'no_callback', 'importance': 'Non-command human vocalization should not trigger STT.', 'kind': 'background', ...}
+
+    @pytest.mark.parametrize("case", ACTION_CASES, ids=lambda c: c["name"])
+    def test_failure_discovery_corpus(case):
+        audio = SAMPLES[case["name"]]
+        expectation = case["expectation"]
+    
+        if expectation == "callback":
+            callbacks = _callbacks_for_user_audio(audio)
+            assert callbacks, case["description"]
+            return
+    
+        if expectation == "no_callback":
+            callbacks = _callbacks_for_user_audio(audio)
+>           assert callbacks == [], case["description"]
+E           AssertionError: Roommate laugh in background.
+E           assert [array([ 0.00...type=float32)] == []
+E             Left contains one more item: array([ 0.00086382,  0.00058268, -0.00025366, ...,  0.        ,\n        0.        ,  0.        ], dtype=float32)
+E             Use -v to get more diff
+
+tests/test_failure_discovery_audio.py:360: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+🎤 [█████████████       ] 0.0272
+                                                  
+
+🎤 [█████████████████   ] 0.0357
+🎤 [████████████████    ] 0.0340
+🎤 [████████████████████] 0.0457
+🎤 [████████████████████] 0.0458
+🎤 [██████████████      ] 0.0282
+🎤 [███████             ] 0.0160
+🎤 [████████            ] 0.0168
+🎤 [██                  ] 0.0048
+🎤 [██████████████      ] 0.0292
+🎤 [█████████████████   ] 0.0357
+🎤 [█████████████████   ] 0.0342
+🎤 [████████████████████] 0.0486
+🎤 [████████████████████] 0.0430
+🎤 [████████████        ] 0.0259
+🎤 [█████               ] 0.0109
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+🎤 [                    ] 0.0000
+                                                  
+Processing 1.0s of audio (energy: 0.0326)...
+
+🎤 [                    ] 0.0000
+Audio recording stopped
+________ TestBabbleNoise.test_babble_does_not_fire_without_calibration _________
+
+self = <tests.test_noise_robustness.TestBabbleNoise testMethod=test_babble_does_not_fire_without_calibration>
+
+    def test_babble_does_not_fire_without_calibration(self):
+        """
+        3 FSDD speakers mixed at 0.06 RMS during ASSISTANT_SPEAKING, no noise
+        floor calibration (noise_floor=None → gate always passes).
+    
+        CURRENTLY FAILS: Silero classifies the mixed babble as voiced=True on
+        several frames → score = 2.0 → accumulates → barge-in fires.
+        This is a false positive from background TV speech.
+    
+        FIX: Set a minimum noise_floor based on pre-TTS calibration, or check
+        that the barge-in energy represents a CHANGE relative to the pre-TTS
+        background, not just an absolute threshold.
+        """
+        babble = babble_noise(3.0, amplitude=0.06, num_speakers=3)
+    
+        interrupts = []
+        rec = make_recorder(on_interrupt=lambda info=None: interrupts.append(info))
+    
+        with AudioHarness(rec) as h:
+            h.set_tts_speaking()
+            h.inject(babble)
+            h.drain(timeout=5.0)
+    
+>       self.assertEqual(
+            len(interrupts), 0,
+            f"Babble noise (3 FSDD speakers, RMS≈0.06) must NOT trigger barge-in. "
+            f"Got {len(interrupts)} false interrupt(s).  "
+            f"This is background TV speech — the user is not speaking.  "
+            f"BUG: Silero detects voices in the babble mix → score ≥ 2.0 → fires.  "
+            f"FIX: Require calibrated noise_floor or a pre-TTS energy baseline.",
+        )
+E       AssertionError: 1 != 0 : Babble noise (3 FSDD speakers, RMS≈0.06) must NOT trigger barge-in. Got 1 false interrupt(s).  This is background TV speech — the user is not speaking.  BUG: Silero detects voices in the babble mix → score ≥ 2.0 → fires.  FIX: Require calibrated noise_floor or a pre-TTS energy baseline.
+
+tests/test_noise_robustness.py:124: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [████████████████████] 0.0639
+🔊 [████████████████████] 0.0496
+🔊 [███████████████████ ] 0.0395
+🔊 [████████████████████] 0.0617
+🔊 [████████████████████] 0.0783
+🔊 [████████████████████] 0.0855
+🔊 [████████████████████] 0.0656
+🔊 [███████████████████ ] 0.0392
+🔊 [████████            ] 0.0173
+🔊 [████████████████████] 0.0404
+🔊 [████████████████████] 0.0643
+🔊 [████████████████████] 0.0747
+🔊 [████████████████████] 0.0754
+🔊 [████████████████████] 0.0694
+🔊 [████████████████████] 0.0599
+🔊 [████████████████████] 0.0617
+🔊 [████████████████████] 0.0528
+🔊 [█████████████       ] 0.0262
+                                                            
+BARGE-IN! (RMS: 0.0262 > 0.0100  voiced=True  echo_sim=0.00)
+
+🎤 [██████████████████  ] 0.0375
+🎤 [████████████████████] 0.0590
+🎤 [████████████████████] 0.0801
+🎤 [████████████████████] 0.0908
+🎤 [████████████████████] 0.0679
+🎤 [██████████████████  ] 0.0364
+🎤 [███████████         ] 0.0221
+🎤 [████████████████████] 0.0506
+🎤 [████████████████████] 0.0576
+🎤 [████████████████████] 0.0498
+🎤 [████████████████████] 0.0631
+🎤 [████████████████████] 0.0701
+🎤 [████████████████████] 0.0824
+🎤 [████████████████████] 0.0715
+🎤 [████████████████████] 0.0411
+🎤 [████████████        ] 0.0258
+🎤 [████████████████    ] 0.0328
+🎤 [████████████████████] 0.0550
+🎤 [████████████████████] 0.0811
+🎤 [████████████████████] 0.0781
+🎤 [████████████████████] 0.0525
+🎤 [████████████████████] 0.0602
+🎤 [████████████████████] 0.0483
+🎤 [████████████████████] 0.0603
+🎤 [████████████████████] 0.0587
+🎤 [████████████████████] 0.0527
+🎤 [████████████████████] 0.0553
+🎤 [████████████████████] 0.0635
+🎤 [████████████████████] 0.0681
+Audio recording stopped
+_ TestNonstationaryNoise.test_environment_spike_with_babble_causes_false_positive _
+
+self = <tests.test_noise_robustness.TestNonstationaryNoise testMethod=test_environment_spike_with_babble_causes_false_positive>
+
+    def test_environment_spike_with_babble_causes_false_positive(self):
+        """
+        Calibrated to quiet (noise_floor=0.01).  TV turns on at 0.08 RMS with
+        speech content.  Silero detects the TV speech as voiced → barge-in fires.
+    
+        CURRENTLY FAILS: this is the most common real-world false-positive.
+    
+        FIX: Implement dynamic noise floor update.  During idle periods
+        (between TTS turns), continuously update the noise floor as an
+        exponential moving average of the measured RMS.
+        """
+        _skip_if_no_fsdd()
+        # Quiet period followed by TV speech (babble) turning on
+        noise = nonstationary_noise(
+            3.0,
+            quiet_amplitude=0.005,
+            loud_amplitude=0.08,
+            transition_at=0.4,
+        )
+        # Replace the loud half with real babble speech to trigger Silero
+        babble = babble_noise(3.0, amplitude=0.08, num_speakers=3)
+        transition = int(0.4 * 3.0 * SR)
+        noise[transition:] = babble[transition:]
+    
+        interrupts = []
+        rec = make_recorder(on_interrupt=lambda info=None: interrupts.append(info))
+        rec._noise_floor = 0.01  # calibrated to quiet
+    
+        with AudioHarness(rec) as h:
+            h.set_tts_speaking()
+            h.inject(noise)
+            h.drain(timeout=6.0)
+    
+>       self.assertEqual(
+            len(interrupts), 0,
+            f"Environment change (TV turns on mid-stream) must NOT fire barge-in. "
+            f"Got {len(interrupts)} false interrupt(s).  "
+            f"BUG: noise_floor=0.01 is stale; TV speech at 0.08 RMS passes the gate.  "
+            f"FIX: Dynamically update noise_floor during idle / non-speaking periods.",
+        )
+E       AssertionError: 1 != 0 : Environment change (TV turns on mid-stream) must NOT fire barge-in. Got 1 false interrupt(s).  BUG: noise_floor=0.01 is stale; TV speech at 0.08 RMS passes the gate.  FIX: Dynamically update noise_floor during idle / non-speaking periods.
+
+tests/test_noise_robustness.py:255: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [██                  ] 0.0051
+🔊 [██                  ] 0.0051
+🔊 [██                  ] 0.0049
+🔊 [██                  ] 0.0052
+🔊 [██                  ] 0.0053
+🔊 [██                  ] 0.0051
+🔊 [██                  ] 0.0049
+🔊 [██                  ] 0.0051
+🔊 [██                  ] 0.0050
+🔊 [██                  ] 0.0049
+🔊 [██                  ] 0.0049
+🔊 [██                  ] 0.0049
+🔊 [██                  ] 0.0051
+🔊 [██                  ] 0.0052
+🔊 [██                  ] 0.0051
+🔊 [██                  ] 0.0049
+🔊 [██                  ] 0.0052
+🔊 [██                  ] 0.0051
+🔊 [█████████████████   ] 0.0356
+🔊 [████████████████████] 0.0786
+🔊 [████████████████████] 0.1068
+🔊 [████████████████████] 0.1211
+🔊 [████████████████████] 0.0905
+                                                            
+BARGE-IN! (RMS: 0.0905 > 0.0200  voiced=False  echo_sim=0.00)
+
+🎤 [████████████████████] 0.0486
+🎤 [██████████████      ] 0.0294
+🎤 [████████████████████] 0.0674
+🎤 [████████████████████] 0.0767
+🎤 [████████████████████] 0.0664
+🎤 [████████████████████] 0.0842
+🎤 [████████████████████] 0.0934
+🎤 [████████████████████] 0.1098
+🎤 [████████████████████] 0.0953
+🎤 [████████████████████] 0.0547
+🎤 [█████████████████   ] 0.0343
+🎤 [████████████████████] 0.0438
+🎤 [████████████████████] 0.0733
+🎤 [████████████████████] 0.1082
+🎤 [████████████████████] 0.1042
+🎤 [████████████████████] 0.0700
+🎤 [████████████████████] 0.0803
+🎤 [████████████████████] 0.0644
+🎤 [████████████████████] 0.0804
+🎤 [████████████████████] 0.0782
+🎤 [████████████████████] 0.0702
+🎤 [████████████████████] 0.0737
+🎤 [████████████████████] 0.0847
+🎤 [████████████████████] 0.0908
+Audio recording stopped
+_____________ TestMicDistance.test_whispered_speech_fires_barge_in _____________
+
+self = <tests.test_voice_variability.TestMicDistance testMethod=test_whispered_speech_fires_barge_in>
+
+    def test_whispered_speech_fires_barge_in(self):
+        """
+        Whispered speech at amplitude=0.03 (very low, barely audible).
+    
+        CURRENTLY FAILS: whisper RMS < vad_threshold * 3 = 0.03 and Silero
+        scores unvoiced fricatives < 0.80 barge-in threshold → never accumulates.
+        Users who whisper "stop" get no response.
+    
+        FIX: Lower Silero barge-in threshold for whisper mode, or implement AGC.
+        """
+        audio = human_voice_concat(1.5, amplitude=0.03)
+    
+        interrupts = []
+        rec = make_recorder(on_interrupt=lambda info=None: interrupts.append(info))
+    
+        with AudioHarness(rec) as h:
+            h.set_tts_speaking()
+            h.inject(audio)
+            h.drain(timeout=4.0)
+    
+>       self.assertGreater(
+            len(interrupts), 0,
+            f"Whispered speech (amplitude=0.03) must trigger barge-in.  "
+            f"Got 0 interrupts.  "
+            f"BUG: Whispers are below the noise gate AND below Silero's 0.80 "
+            f"confidence threshold in barge-in mode.  "
+            f"FIX: Lower barge-in Silero threshold to 0.60, or implement AGC "
+            f"so weak signals are amplified before gating.",
+        )
+E       AssertionError: 0 not greater than 0 : Whispered speech (amplitude=0.03) must trigger barge-in.  Got 0 interrupts.  BUG: Whispers are below the noise gate AND below Silero's 0.80 confidence threshold in barge-in mode.  FIX: Lower barge-in Silero threshold to 0.60, or implement AGC so weak signals are amplified before gating.
+
+tests/test_voice_variability.py:164: AssertionError
+----------------------------- Captured stdout call -----------------------------
+VAD: Silero neural network (high accuracy)
+Audio recording started at 16000Hz (sounddevice)
+
+Speaking... (interrupt by talking, threshold > 0.010)
+
+🔊 [███████████         ] 0.0228
+🔊 [████████████████████] 0.0410
+🔊 [████████████████████] 0.0631
+🔊 [████████████████████] 0.0529
+🔊 [█████████████████   ] 0.0343
+🔊 [███████████         ] 0.0233
+🔊 [███████             ] 0.0160
+🔊 [██                  ] 0.0054
+🔊 [                    ] 0.0009
+🔊 [██                  ] 0.0048
+🔊 [███                 ] 0.0073
+🔊 [████████████████████] 0.0445
+🔊 [████████████████████] 0.0468
+🔊 [████████████████████] 0.0552
+🔊 [████████████████████] 0.0430
+🔊 [███████████         ] 0.0239
+🔊 [████                ] 0.0091
+🔊 [                    ] 0.0013
+🔊 [██████              ] 0.0123
+🔊 [███████████████     ] 0.0307
+🔊 [████████████████████] 0.0408
+🔊 [████████████████████] 0.0514
+🔊 [████████████████████] 0.0519
+🔊 [█████████████       ] 0.0277
+Audio recording stopped
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+../../anaconda3/lib/python3.12/site-packages/pygame/pkgdata.py:25
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pygame/pkgdata.py:25: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    from pkg_resources import resource_stream, resource_exists
+
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('google')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('sphinxcontrib')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('zope')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+tests/test_failure_discovery_audio.py: 101 warnings
+tests/test_acoustic_realism.py: 10 warnings
+tests/test_noise_robustness.py: 17 warnings
+tests/test_voice_variability.py: 16 warnings
+  /home/dobo/anaconda3/lib/python3.12/site-packages/onnxruntime/capi/onnxruntime_inference_collection.py:123: UserWarning: Specified provider 'CUDAExecutionProvider' is not in available provider names.Available providers: 'AzureExecutionProvider, CPUExecutionProvider'
+    warnings.warn(
+
+tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[control_synthetic_zero_lag_tts]
+  /home/dobo/anaconda3/lib/python3.12/site-packages/silero_vad/model.py:26: DeprecationWarning: path is deprecated. Use files() instead. Refer to https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy for migration advice.
+    with impresources.path(package_path, model_name) as f:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/dobo/work/speaker/test-reports/20260502_163530_148559_62118/discovery/junit.xml -
+=========================== short test summary info ============================
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_phone_table_30cm]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_laptop_mic_70cm]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_smart_speaker_2m]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_kitchen_counter_tile]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_bathroom_tile]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_hallway_far_wall]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_open_living_room_wall]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_car_cabin_dashboard]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_projector_speaker_ceiling]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_bluetooth_speaker_shelf]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_tv_soundbar_living_room]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_conference_table]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_corner_room_bass_buildup]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_curtained_room_soft_reverb]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_open_door_secondary_room]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_high_volume_near_field]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_low_volume_far_field]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_sample_rate_artifact]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_clipped_speaker_output]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_tts_with_background_tv]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_tts_with_music_bed]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_tts_with_babble_bed]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_multi_path_two_reflections]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_multi_path_three_reflections]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_reverb_long_phrase_tail]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_tv_news_anchor]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_tv_loud_commercial]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_podcast_far_field]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_party_babble]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_kids_room_babble]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_music_120bpm]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_music_fast_tempo]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_clipped_radio]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_hvac_turns_on]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_dishwasher_pulse]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_keyboard_close]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_mic_plosive_no_speech]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_door_slam_tail]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_mic_bump]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_fan_plus_music]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_tv_plus_babble]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_low_bass_music]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_window_traffic]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_coffee_grinder]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_vacuum_far_room]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_siren_outside]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_baby_monitor]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_video_call_speaker]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_white_noise_machine]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_rain_on_window]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_chair_scrape]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_tablet_kickstand_reflection]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_open_back_headphones_leak]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_dual_desktop_monitors]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[echo_smart_display_countertop]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_alarm_beep_sequence]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_phone_notification_cluster]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_mic_cable_crackle]
+FAILED tests/test_failure_discovery_audio.py::test_failure_discovery_corpus[background_roommate_laugh_far]
+FAILED tests/test_noise_robustness.py::TestBabbleNoise::test_babble_does_not_fire_without_calibration
+FAILED tests/test_noise_robustness.py::TestNonstationaryNoise::test_environment_spike_with_babble_causes_false_positive
+FAILED tests/test_voice_variability.py::TestMicDistance::test_whispered_speech_fires_barge_in
+62 failed, 84 passed, 155 warnings in 105.65s (0:01:45)
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

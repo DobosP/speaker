@@ -1,0 +1,34 @@
+[
+  {
+    "stage": "discovery",
+    "returncode": 1,
+    "duration_sec": 104.939,
+    "passed": 84,
+    "failed": 62,
+    "errors": 0,
+    "skipped": 0,
+    "xfailed": 0,
+    "xpassed": 0,
+    "total": 146,
+    "failure_count": 62,
+    "stdout_path": "test-reports/20260502_152601/discovery/stdout.txt",
+    "junit_path": "test-reports/20260502_152601/discovery/junit.xml",
+    "command": [
+      "/home/dobo/anaconda3/bin/python",
+      "-m",
+      "pytest",
+      "tests/test_failure_discovery_audio.py",
+      "tests/test_acoustic_realism.py",
+      "tests/test_noise_robustness.py",
+      "tests/test_voice_variability.py",
+      "-m",
+      "discovery",
+      "-q",
+      "--junitxml=test-reports/20260502_152601/discovery/junit.xml"
+    ],
+    "purpose": "Failure-discovery corpus; expected to fail until bugs are fixed.",
+    "allowed_to_fail": true,
+    "duplicates_path": "test-reports/20260502_152601/discovery/duplicates.json",
+    "duplicate_audio_hash_groups": 0
+  }
+]

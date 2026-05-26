@@ -47,7 +47,6 @@ def test_partial_only_allows_control_commands():
     assert router.route_partial(_ctx("what time is it", partial=True)).action == RouteAction.IGNORE
 
 
-# -- action-brain trigger routing -------------------------------------------
 
 def _agent_ctx(text: str) -> RouteContext:
     return RouteContext(
@@ -120,3 +119,14 @@ def test_route_confirmation_custom_phrases_replace_defaults():
     assert r.route_confirmation("affirmative") is True
     assert r.route_confirmation("negative") is False
     assert r.route_confirmation("yes") is None  # default 'yes' no longer recognized
+=======
+def test_shutdown_prefix_allows_trailing_words():
+    decision = ConversationRouter().route(_ctx("shut down the system"))
+    assert decision.action == RouteAction.SHUTDOWN
+
+
+def test_capability_absent_falls_back_to_llm():
+    # When the capability is not registered, a time request must reach the LLM
+    # rather than dropping silently.
+    ctx = RouteContext(transcript="what time is it", available_capabilities=())
+    assert ConversationRouter().route(ctx).action == RouteAction.LLM

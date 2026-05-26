@@ -78,7 +78,9 @@ class SpeakerGate:
         return self._embed_fn(samples, sample_rate)
 
 
-def sherpa_speaker_gate(model_path: str, *, threshold: float = 0.5, num_threads: int = 1) -> SpeakerGate:
+def sherpa_speaker_gate(
+    model_path: str, *, threshold: float = 0.5, num_threads: int = 1, provider: str = "cpu"
+) -> SpeakerGate:
     """Build a :class:`SpeakerGate` backed by a sherpa-onnx speaker-embedding
     model (e.g. a 3D-Speaker / WeSpeaker ONNX export). Imported lazily."""
 
@@ -91,7 +93,7 @@ def sherpa_speaker_gate(model_path: str, *, threshold: float = 0.5, num_threads:
         extractor = extractor_holder.get("extractor")
         if extractor is None:
             config = sherpa_onnx.SpeakerEmbeddingExtractorConfig(
-                model=model_path, num_threads=num_threads
+                model=model_path, num_threads=num_threads, provider=provider
             )
             extractor = sherpa_onnx.SpeakerEmbeddingExtractor(config)
             extractor_holder["extractor"] = extractor

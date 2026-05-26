@@ -1,0 +1,24 @@
+# The repo-root .gitignore ignores `lib/`; this app's lib/ must be tracked.
+!lib/
+!lib/**
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+.metadata
+pubspec.lock
+
+# Generated platform projects (recreated by tool/setup_android.sh at build time)
+/android/
+/ios/
+/linux/
+/macos/
+/windows/
+/web/
+
+# Downloaded models (fetched by tool/download-models.sh at build time)
+/assets/*
+!/assets/.gitkeep

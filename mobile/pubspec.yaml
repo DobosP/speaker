@@ -1,0 +1,35 @@
+name: speaker_mobile
+description: >
+  On-device test harness for the speaker voice assistant: streaming ASR and
+  TTS running fully locally on the phone via sherpa-onnx.
+
+publish_to: 'none'
+
+version: 0.1.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.6
+  path_provider: ^2.1.3
+  path: ^1.9.0
+  record: ^5.1.2
+  audioplayers: ^5.0.0
+  sherpa_onnx: ^1.13.2
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+# NOTE: the `assets:` list below is rewritten by tool/generate-asset-list.py
+# at build time, after the model archives are extracted into ./assets/.
+# Keep `assets:` as the last key in this file.
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/

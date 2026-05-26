@@ -1,0 +1,65 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ claude/nice-planck-ZDr90 ]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+
+      - name: Generate Android platform files
+        run: bash tool/setup_android.sh
+
+      - name: Download on-device models
+        run: bash tool/download-models.sh
+
+      - name: Write asset list into pubspec
+        run: python3 tool/generate-asset-list.py
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: flutter build apk --debug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: speaker-mobile-debug-apk
+          path: mobile/build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+
+      - name: Install instructions
+        if: always()
+        run: |
+          {
+            echo "## Speaker on-device APK"
+            echo ""
+            echo "Download the **speaker-mobile-debug-apk** artifact from this run's"
+            echo "summary, copy it to your Android phone, and tap to install"
+            echo "(enable *Install unknown apps* for your file manager/browser if prompted)."
+            echo ""
+            echo "The app runs ASR and TTS **fully on-device** — no network at runtime."
+          } >> "$GITHUB_STEP_SUMMARY"

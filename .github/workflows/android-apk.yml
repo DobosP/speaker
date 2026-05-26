@@ -58,7 +58,11 @@ jobs:
 
 
       - name: Stage APK with a friendly name
-        run: cp build/app/outputs/flutter-apk/app-debug.apk speaker-android.apk
+        run: |
+          apk=$(find build -name "app-debug.apk" -print -quit)
+          [ -n "$apk" ] || { echo "No app-debug.apk found under build/"; find build -name '*.apk'; exit 1; }
+          echo "Found APK at: $apk"
+          cp "$apk" speaker-android.apk
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

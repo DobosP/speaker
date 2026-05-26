@@ -32,6 +32,42 @@ except ImportError:
 
 
 # SQL to create tables (same as in memory.py)
+MIGRATE_MESSAGES_SQL = """
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'messages' AND column_name = 'raw_text'
+    ) THEN
+        ALTER TABLE messages ADD COLUMN raw_text TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'messages' AND column_name = 'cleaned_text'
+    ) THEN
+        ALTER TABLE messages ADD COLUMN cleaned_text TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'messages' AND column_name = 'source'
+    ) THEN
+        ALTER TABLE messages ADD COLUMN source VARCHAR(32) DEFAULT 'user_final';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'messages' AND column_name = 'confidence'
+    ) THEN
+        ALTER TABLE messages ADD COLUMN confidence FLOAT DEFAULT 1.0;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'messages' AND column_name = 'saved_at'
+    ) THEN
+        ALTER TABLE messages ADD COLUMN saved_at TIMESTAMPTZ;
+    END IF;
+END $$;
+"""
+
 CREATE_TABLES_SQL = """
 -- Enable pgvector extension
 CREATE EXTENSION IF NOT EXISTS vector;
@@ -85,6 +121,45 @@ CREATE INDEX IF NOT EXISTS idx_summaries_embedding ON summaries
     USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 """
 
+CREATE_TEXT_ONLY_TABLES_SQL = """
+CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(64) NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    timestamp TIMESTAMPTZ DEFAULT NOW(),
+    raw_text TEXT,
+    cleaned_text TEXT,
+    source VARCHAR(32) DEFAULT 'user_final',
+    confidence FLOAT DEFAULT 1.0,
+    saved_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    id SERIAL PRIMARY KEY,
+    session_id VARCHAR(64),
+    summary TEXT NOT NULL,
+    topics TEXT[],
+    user_preferences TEXT[],
+    start_time TIMESTAMPTZ,
+    end_time TIMESTAMPTZ,
+    message_count INT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS user_profile (
+    id SERIAL PRIMARY KEY,
+    key VARCHAR(255) UNIQUE NOT NULL,
+    value TEXT NOT NULL,
+    confidence FLOAT DEFAULT 1.0,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
+"""
+
 
 def create_database(host: str, user: str, password: str, db_name: str):
     """Create a new PostgreSQL database."""
@@ -129,7 +204,13 @@ def setup_tables(db_url: str):
         with conn.cursor() as cur:
             # Create tables
             print("📦 Creating tables...")
-            cur.execute(CREATE_TABLES_SQL)
+            try:
+                cur.execute(CREATE_TABLES_SQL)
+            except Exception as exc:
+                print(f"⚠️  pgvector setup failed: {exc}")
+                print("📦 Creating text-only memory tables instead...")
+                cur.execute(CREATE_TEXT_ONLY_TABLES_SQL)
+            cur.execute(MIGRATE_MESSAGES_SQL)
             print("✅ Tables created")
             
             # Check if pgvector is available
@@ -212,8 +293,8 @@ Examples:
     parser.add_argument(
         "--db-url",
         type=str,
-        default=os.getenv("DATABASE_URL", "postgresql://localhost/voice_assistant"),
-        help="PostgreSQL connection URL (default: from DATABASE_URL env or localhost/voice_assistant)"
+        default=os.getenv("DATABASE_URL", "postgresql:///voice_assistant"),
+        help="PostgreSQL connection URL (default: from DATABASE_URL env or local socket voice_assistant)"
     )
     parser.add_argument(
         "--create-db",
@@ -287,4 +368,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

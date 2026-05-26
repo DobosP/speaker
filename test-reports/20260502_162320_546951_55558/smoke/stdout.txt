@@ -1,0 +1,38 @@
+
+[fixtures] TTS speech fixtures ready.
+[fixtures] 20/20 FSDD voice samples ready (real human speech — Silero accuracy tests enabled).
+...........                                                              [100%]
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+../../anaconda3/lib/python3.12/site-packages/pygame/pkgdata.py:25
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pygame/pkgdata.py:25: DeprecationWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html
+    from pkg_resources import resource_stream, resource_exists
+
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('google')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('sphinxcontrib')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+../../anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832
+  /home/dobo/anaconda3/lib/python3.12/site-packages/pkg_resources/__init__.py:2832: DeprecationWarning: Deprecated call to `pkg_resources.declare_namespace('zope')`.
+  Implementing implicit namespace packages (as specified in PEP 420) is preferred to `pkg_resources.declare_namespace`. See https://setuptools.pypa.io/en/latest/references/keywords.html#keyword-namespace-packages
+    declare_namespace(pkg)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/dobo/work/speaker/test-reports/20260502_162320_546951_55558/smoke/junit.xml -
+11 passed, 10 warnings in 2.50s
+sys:1: DeprecationWarning: builtin type swigvarlink has no __module__ attribute

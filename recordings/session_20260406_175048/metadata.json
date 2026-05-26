@@ -1,0 +1,87 @@
+{
+  "session_id": "session_20260406_175048",
+  "start_time": 1775487072.9305754,
+  "end_time": 1775487098.7988622,
+  "duration_sec": 25.868287324905396,
+  "noise_floor": 0.0030172878695553813,
+  "device_sample_rate": 44100,
+  "target_test_sample_rate": 16000,
+  "profile": "high",
+  "num_tts_turns": 5,
+  "num_barge_ins": 1,
+  "false_positive_candidates": [],
+  "turns": [
+    {
+      "index": 0,
+      "start_sec": 3.552436828613281e-05,
+      "end_sec": 0.8016262054443359,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.010750805959105492,
+      "mic_rms_max": 0.04066967964172363,
+      "echo_sim_mean": 0.23758013190209554
+    },
+    {
+      "index": 1,
+      "start_sec": 1.146726369857788,
+      "end_sec": 2.298973798751831,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.008787218481302261,
+      "mic_rms_max": 0.07466471195220947,
+      "echo_sim_mean": 0.28517885395606146
+    },
+    {
+      "index": 2,
+      "start_sec": 13.92577576637268,
+      "end_sec": 14.677146196365356,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.008216669782996178,
+      "mic_rms_max": 0.05635416507720947,
+      "echo_sim_mean": 0.19854603201856097
+    },
+    {
+      "index": 3,
+      "start_sec": 15.070630073547363,
+      "end_sec": 16.57354164123535,
+      "text": "",
+      "barge_in_fired": false,
+      "barge_in_events": [],
+      "mic_rms_mean": 0.00855419784784317,
+      "mic_rms_max": 0.07580304145812988,
+      "echo_sim_mean": 0.25844431525692485
+    },
+    {
+      "index": 4,
+      "start_sec": 22.864482402801514,
+      "end_sec": 25.525756120681763,
+      "text": "",
+      "barge_in_fired": true,
+      "barge_in_events": [
+        {
+          "timestamp_sec": 23.848268508911133,
+          "rms": 0.04007365182042122,
+          "threshold": 0.01,
+          "voiced": true,
+          "echo_sim": 0.0,
+          "tts_turn_index": 4
+        },
+        {
+          "timestamp_sec": 23.84827184677124,
+          "rms": 0.04007365182042122,
+          "threshold": 0.01,
+          "voiced": true,
+          "echo_sim": 0.0,
+          "tts_turn_index": 4
+        }
+      ],
+      "mic_rms_mean": 0.010151313617825508,
+      "mic_rms_max": 0.0705186128616333,
+      "echo_sim_mean": 0.2810176903757134
+    }
+  ]
+}

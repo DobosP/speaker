@@ -1,0 +1,30 @@
+{
+  "stage": "smoke",
+  "returncode": 0,
+  "duration_sec": 3.494,
+  "passed": 11,
+  "failed": 0,
+  "errors": 0,
+  "skipped": 0,
+  "xfailed": 0,
+  "xpassed": 0,
+  "total": 11,
+  "failure_count": 0,
+  "stdout_path": "test-reports/20260502_162320_546951_55558/smoke/stdout.txt",
+  "junit_path": "test-reports/20260502_162320_546951_55558/smoke/junit.xml",
+  "command": [
+    "/home/dobo/anaconda3/bin/python",
+    "-m",
+    "pytest",
+    "tests/test_profiles.py",
+    "tests/test_test_runner_quality.py",
+    "-m",
+    "smoke",
+    "-q",
+    "--junitxml=test-reports/20260502_162320_546951_55558/smoke/junit.xml"
+  ],
+  "purpose": "Fast import/config/schema checks.",
+  "allowed_to_fail": false,
+  "duplicates_path": "test-reports/20260502_162320_546951_55558/smoke/duplicates.json",
+  "duplicate_audio_hash_groups": 0
+}

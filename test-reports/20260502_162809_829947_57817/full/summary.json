@@ -1,0 +1,30 @@
+{
+  "stage": "full",
+  "returncode": 1,
+  "duration_sec": 39.595,
+  "passed": 181,
+  "failed": 20,
+  "errors": 0,
+  "skipped": 0,
+  "xfailed": 0,
+  "xpassed": 0,
+  "total": 201,
+  "failure_count": 20,
+  "stdout_path": "test-reports/20260502_162809_829947_57817/full/stdout.txt",
+  "junit_path": "test-reports/20260502_162809_829947_57817/full/junit.xml",
+  "command": [
+    "/home/dobo/anaconda3/bin/python",
+    "-m",
+    "pytest",
+    "tests",
+    "-m",
+    "not discovery and not backend and not hardware and not network and not llm",
+    "--maxfail=20",
+    "-q",
+    "--junitxml=test-reports/20260502_162809_829947_57817/full/junit.xml"
+  ],
+  "purpose": "All normal tests except discovery/backend/hardware/network/LLM gates.",
+  "allowed_to_fail": true,
+  "duplicates_path": "test-reports/20260502_162809_829947_57817/full/duplicates.json",
+  "duplicate_audio_hash_groups": 0
+}

@@ -1,0 +1,28 @@
+{
+  "index": 4,
+  "start_sec": 22.864482402801514,
+  "end_sec": 25.525756120681763,
+  "text": "",
+  "barge_in_fired": true,
+  "barge_in_events": [
+    {
+      "timestamp_sec": 23.848268508911133,
+      "rms": 0.04007365182042122,
+      "threshold": 0.01,
+      "voiced": true,
+      "echo_sim": 0.0,
+      "tts_turn_index": 4
+    },
+    {
+      "timestamp_sec": 23.84827184677124,
+      "rms": 0.04007365182042122,
+      "threshold": 0.01,
+      "voiced": true,
+      "echo_sim": 0.0,
+      "tts_turn_index": 4
+    }
+  ],
+  "mic_rms_mean": 0.010151313617825508,
+  "mic_rms_max": 0.0705186128616333,
+  "echo_sim_mean": 0.2810176903757134
+}

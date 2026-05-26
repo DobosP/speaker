@@ -1,0 +1,461 @@
+{"ts": 1771536548.739858, "event": "recorder_init", "device": 4, "device_sample_rate": 44100, "target_sample_rate": 16000, "adaptive_vad": true, "vad_threshold": 0.01, "noise_multiplier": 2.5, "barge_in_min_delay_sec": 0.5, "barge_in_min_delay_after_ref_sec": 0.35, "barge_in_min_rms_ratio": 3.0, "echo_corr_threshold": 0.45, "wakeword_enabled": true, "wakeword": "hey_dobby", "wakeword_threshold": 0.5, "wakeword_timeout_sec": 5.0, "wakeword_model_path": null, "wakeword_available": true, "speaker_verify_enabled": true, "speaker_verify_threshold": 0.55, "speaker_enrollment_wav": "./voice_enroll.wav", "speaker_verify_available": true}
+{"ts": 1771536552.9411306, "event": "wakeword_gate_blocked", "rms": 0.028933830559253693, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536552.941127}
+{"ts": 1771536552.9872668, "event": "wakeword_gate_blocked", "rms": 0.04268861189484596, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536552.9872642}
+{"ts": 1771536552.988163, "event": "wakeword_gate_blocked", "rms": 0.046230997890233994, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536552.9881616}
+{"ts": 1771536553.0336473, "event": "wakeword_gate_blocked", "rms": 0.050710778683423996, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.0336444}
+{"ts": 1771536553.0345511, "event": "wakeword_gate_blocked", "rms": 0.05381426960229874, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.0345495}
+{"ts": 1771536553.0570092, "event": "wakeword_gate_blocked", "rms": 0.04343100264668465, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.0570076}
+{"ts": 1771536553.1033282, "event": "wakeword_gate_blocked", "rms": 0.028886672109365463, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.1033263}
+{"ts": 1771536553.104184, "event": "wakeword_gate_blocked", "rms": 0.02215435355901718, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.1041825}
+{"ts": 1771536553.1263208, "event": "wakeword_gate_blocked", "rms": 0.030205490067601204, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.1263192}
+{"ts": 1771536553.150214, "event": "wakeword_gate_blocked", "rms": 0.050522081553936005, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.1502116}
+{"ts": 1771536553.1963265, "event": "wakeword_gate_blocked", "rms": 0.04773510992527008, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.196324}
+{"ts": 1771536553.1972194, "event": "wakeword_gate_blocked", "rms": 0.04175056889653206, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.1972175}
+{"ts": 1771536553.2425706, "event": "wakeword_gate_blocked", "rms": 0.03452281281352043, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.2425683}
+{"ts": 1771536553.2434855, "event": "wakeword_gate_blocked", "rms": 0.02375747635960579, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.243484}
+{"ts": 1771536553.2662437, "event": "wakeword_gate_blocked", "rms": 0.013538139872252941, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.2662416}
+{"ts": 1771536553.312047, "event": "wakeword_gate_blocked", "rms": 0.018268248066306114, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.3120456}
+{"ts": 1771536553.3126876, "event": "wakeword_gate_blocked", "rms": 0.030491145327687263, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.3126867}
+{"ts": 1771536553.3352265, "event": "wakeword_gate_blocked", "rms": 0.03621528670191765, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.3352249}
+{"ts": 1771536553.382114, "event": "wakeword_gate_blocked", "rms": 0.03761674091219902, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.3821123}
+{"ts": 1771536553.3828838, "event": "wakeword_gate_blocked", "rms": 0.033676035702228546, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.3828828}
+{"ts": 1771536553.428357, "event": "wakeword_gate_blocked", "rms": 0.02328251302242279, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.4283547}
+{"ts": 1771536553.429162, "event": "wakeword_gate_blocked", "rms": 0.01764390990138054, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.42916}
+{"ts": 1771536553.4511886, "event": "wakeword_gate_blocked", "rms": 0.012447734363377094, "vad_threshold": 0.008455459213474285, "armed_until": 0.0, "now": 1771536553.4511867}
+{"ts": 1771536553.730098, "event": "wakeword_gate_blocked", "rms": 0.031385406851768494, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.7300959}
+{"ts": 1771536553.73084, "event": "wakeword_gate_blocked", "rms": 0.05225154757499695, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.7308388}
+{"ts": 1771536553.753449, "event": "wakeword_gate_blocked", "rms": 0.06147441640496254, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.7534463}
+{"ts": 1771536553.8009164, "event": "wakeword_gate_blocked", "rms": 0.055251941084861755, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.800913}
+{"ts": 1771536553.8018878, "event": "wakeword_gate_blocked", "rms": 0.04654746502637863, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.8018863}
+{"ts": 1771536553.8462896, "event": "wakeword_gate_blocked", "rms": 0.0537211112678051, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.8462877}
+{"ts": 1771536553.847139, "event": "wakeword_gate_blocked", "rms": 0.0530579648911953, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.8471375}
+{"ts": 1771536553.8694878, "event": "wakeword_gate_blocked", "rms": 0.055017489939928055, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.8694854}
+{"ts": 1771536553.8930874, "event": "wakeword_gate_blocked", "rms": 0.04983694851398468, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.8930857}
+{"ts": 1771536553.938999, "event": "wakeword_gate_blocked", "rms": 0.04094555974006653, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.9389975}
+{"ts": 1771536553.939658, "event": "wakeword_gate_blocked", "rms": 0.035800959914922714, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.9396567}
+{"ts": 1771536553.9855657, "event": "wakeword_gate_blocked", "rms": 0.02785002999007702, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.9855633}
+{"ts": 1771536553.9864159, "event": "wakeword_gate_blocked", "rms": 0.02053164504468441, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536553.9864144}
+{"ts": 1771536554.0092108, "event": "wakeword_gate_blocked", "rms": 0.02965983748435974, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536554.0092087}
+{"ts": 1771536554.0553114, "event": "wakeword_gate_blocked", "rms": 0.03319321200251579, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536554.0553086}
+{"ts": 1771536554.0564778, "event": "wakeword_gate_blocked", "rms": 0.015029295347630978, "vad_threshold": 0.009483746845401205, "armed_until": 0.0, "now": 1771536554.0564756}
+{"ts": 1771536554.1479673, "event": "wakeword_gate_blocked", "rms": 0.013502945192158222, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.147966}
+{"ts": 1771536554.148398, "event": "wakeword_gate_blocked", "rms": 0.05429694056510925, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.1483972}
+{"ts": 1771536554.194464, "event": "wakeword_gate_blocked", "rms": 0.06801443547010422, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.194462}
+{"ts": 1771536554.1953008, "event": "wakeword_gate_blocked", "rms": 0.07086314260959625, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.1952999}
+{"ts": 1771536554.2181666, "event": "wakeword_gate_blocked", "rms": 0.06110011413693428, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.2181644}
+{"ts": 1771536554.2645638, "event": "wakeword_gate_blocked", "rms": 0.047426458448171616, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.2645612}
+{"ts": 1771536554.265488, "event": "wakeword_gate_blocked", "rms": 0.03470052033662796, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.2654862}
+{"ts": 1771536554.2875607, "event": "wakeword_gate_blocked", "rms": 0.03057740442454815, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.287558}
+{"ts": 1771536554.3116562, "event": "wakeword_gate_blocked", "rms": 0.026706533506512642, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.311653}
+{"ts": 1771536554.357713, "event": "wakeword_gate_blocked", "rms": 0.028842749074101448, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.3576994}
+{"ts": 1771536554.3591187, "event": "wakeword_gate_blocked", "rms": 0.017169879749417305, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.3591168}
+{"ts": 1771536554.403605, "event": "wakeword_gate_blocked", "rms": 0.01811310090124607, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.4036026}
+{"ts": 1771536554.4044478, "event": "wakeword_gate_blocked", "rms": 0.01267518661916256, "vad_threshold": 0.009891484985465313, "armed_until": 0.0, "now": 1771536554.4044464}
+{"ts": 1771536556.5870428, "event": "wakeword_gate_blocked", "rms": 0.00811476819217205, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536556.5870407}
+{"ts": 1771536556.6093476, "event": "wakeword_gate_blocked", "rms": 0.009652668610215187, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536556.6093452}
+{"ts": 1771536556.6562614, "event": "wakeword_gate_blocked", "rms": 0.010349133051931858, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536556.656259}
+{"ts": 1771536557.701222, "event": "wakeword_gate_blocked", "rms": 0.0076555111445486546, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536557.7012198}
+{"ts": 1771536557.769837, "event": "wakeword_gate_blocked", "rms": 0.008404555730521679, "vad_threshold": 0.007967278890343387, "armed_until": 0.0, "now": 1771536557.7698357}
+{"ts": 1771536557.8640501, "event": "wakeword_gate_blocked", "rms": 0.010195999406278133, "vad_threshold": 0.009318156936193726, "armed_until": 0.0, "now": 1771536557.8640475}
+{"ts": 1771536558.18878, "event": "wakeword_gate_blocked", "rms": 0.009912967681884766, "vad_threshold": 0.008847437297014796, "armed_until": 0.0, "now": 1771536558.1887772}
+{"ts": 1771536558.281848, "event": "wakeword_gate_blocked", "rms": 0.010580756701529026, "vad_threshold": 0.009995431293256338, "armed_until": 0.0, "now": 1771536558.2818458}
+{"ts": 1771536558.3281713, "event": "wakeword_gate_blocked", "rms": 0.028881942853331566, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.3281696}
+{"ts": 1771536558.374393, "event": "wakeword_gate_blocked", "rms": 0.05308360978960991, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.374391}
+{"ts": 1771536558.3754113, "event": "wakeword_gate_blocked", "rms": 0.06741537153720856, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.3754094}
+{"ts": 1771536558.4204776, "event": "wakeword_gate_blocked", "rms": 0.054704394191503525, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.420476}
+{"ts": 1771536558.4212291, "event": "wakeword_gate_blocked", "rms": 0.03721246123313904, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.4212277}
+{"ts": 1771536558.444354, "event": "wakeword_gate_blocked", "rms": 0.035619985312223434, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.444352}
+{"ts": 1771536558.490449, "event": "wakeword_gate_blocked", "rms": 0.034607261419296265, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.4904463}
+{"ts": 1771536558.4913917, "event": "wakeword_gate_blocked", "rms": 0.0338282510638237, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.4913902}
+{"ts": 1771536558.537429, "event": "wakeword_gate_blocked", "rms": 0.0330788753926754, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.5374267}
+{"ts": 1771536558.5382094, "event": "wakeword_gate_blocked", "rms": 0.03539972007274628, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.538208}
+{"ts": 1771536558.583197, "event": "wakeword_gate_blocked", "rms": 0.03503495454788208, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.5831952}
+{"ts": 1771536558.583982, "event": "wakeword_gate_blocked", "rms": 0.02941296435892582, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.5839803}
+{"ts": 1771536558.6295934, "event": "wakeword_gate_blocked", "rms": 0.0269511379301548, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.6295907}
+{"ts": 1771536558.6304567, "event": "wakeword_gate_blocked", "rms": 0.025051623582839966, "vad_threshold": 0.010740232884011559, "armed_until": 0.0, "now": 1771536558.6304548}
+{"ts": 1771536558.6999614, "event": "wakeword_gate_blocked", "rms": 0.015935953706502914, "vad_threshold": 0.011959498727670567, "armed_until": 0.0, "now": 1771536558.6999588}
+{"ts": 1771536558.7224133, "event": "wakeword_gate_blocked", "rms": 0.016196900978684425, "vad_threshold": 0.011959498727670567, "armed_until": 0.0, "now": 1771536558.7224107}
+{"ts": 1771536558.839082, "event": "wakeword_gate_blocked", "rms": 0.014536550268530846, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.8390794}
+{"ts": 1771536558.8623943, "event": "wakeword_gate_blocked", "rms": 0.04319455847144127, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.862392}
+{"ts": 1771536558.908462, "event": "wakeword_gate_blocked", "rms": 0.05401826277375221, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.9084601}
+{"ts": 1771536558.909324, "event": "wakeword_gate_blocked", "rms": 0.05771270766854286, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.9093225}
+{"ts": 1771536558.9316971, "event": "wakeword_gate_blocked", "rms": 0.046193428337574005, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.9316945}
+{"ts": 1771536558.9787443, "event": "wakeword_gate_blocked", "rms": 0.03792765736579895, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.9787407}
+{"ts": 1771536558.9804785, "event": "wakeword_gate_blocked", "rms": 0.0347510389983654, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536558.9804757}
+{"ts": 1771536559.0244617, "event": "wakeword_gate_blocked", "rms": 0.034824926406145096, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.02446}
+{"ts": 1771536559.0253673, "event": "wakeword_gate_blocked", "rms": 0.029857099056243896, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.0253658}
+{"ts": 1771536559.046913, "event": "wakeword_gate_blocked", "rms": 0.026390928775072098, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.0469122}
+{"ts": 1771536559.0710733, "event": "wakeword_gate_blocked", "rms": 0.03219343721866608, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.0710719}
+{"ts": 1771536559.1175404, "event": "wakeword_gate_blocked", "rms": 0.03062630258500576, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.117538}
+{"ts": 1771536559.118475, "event": "wakeword_gate_blocked", "rms": 0.02917008101940155, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.118473}
+{"ts": 1771536559.140264, "event": "wakeword_gate_blocked", "rms": 0.0244526956230402, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.1402621}
+{"ts": 1771536559.1876707, "event": "wakeword_gate_blocked", "rms": 0.025019748136401176, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.187667}
+{"ts": 1771536559.188707, "event": "wakeword_gate_blocked", "rms": 0.021012552082538605, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.1887047}
+{"ts": 1771536559.2336714, "event": "wakeword_gate_blocked", "rms": 0.017549986019730568, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.2336686}
+{"ts": 1771536559.2346032, "event": "wakeword_gate_blocked", "rms": 0.012854100205004215, "vad_threshold": 0.011888436748427263, "armed_until": 0.0, "now": 1771536559.2346017}
+{"ts": 1771536559.7905893, "event": "wakeword_gate_blocked", "rms": 0.024560745805501938, "vad_threshold": 0.013559065879250284, "armed_until": 0.0, "now": 1771536559.7905872}
+{"ts": 1771536560.7671266, "event": "wakeword_gate_blocked", "rms": 0.02985234744846821, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.7671244}
+{"ts": 1771536560.8124938, "event": "wakeword_gate_blocked", "rms": 0.08459240198135376, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.8124912}
+{"ts": 1771536560.8134403, "event": "wakeword_gate_blocked", "rms": 0.08316387236118317, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.813439}
+{"ts": 1771536560.8356023, "event": "wakeword_gate_blocked", "rms": 0.08398653566837311, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.8356001}
+{"ts": 1771536560.8593564, "event": "wakeword_gate_blocked", "rms": 0.05630543828010559, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.8593538}
+{"ts": 1771536560.9053166, "event": "wakeword_gate_blocked", "rms": 0.055017199367284775, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.9053142}
+{"ts": 1771536560.9062455, "event": "wakeword_gate_blocked", "rms": 0.053588416427373886, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.906243}
+{"ts": 1771536560.9514277, "event": "wakeword_gate_blocked", "rms": 0.030437329784035683, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.9514258}
+{"ts": 1771536560.9521847, "event": "wakeword_gate_blocked", "rms": 0.02796793356537819, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.9521832}
+{"ts": 1771536560.9753044, "event": "wakeword_gate_blocked", "rms": 0.012736051343381405, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536560.9753022}
+{"ts": 1771536561.0212734, "event": "wakeword_gate_blocked", "rms": 0.02720799297094345, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536561.021271}
+{"ts": 1771536561.0221074, "event": "wakeword_gate_blocked", "rms": 0.05637709051370621, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536561.0221057}
+{"ts": 1771536561.0446537, "event": "wakeword_gate_blocked", "rms": 0.06922805309295654, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536561.0446515}
+{"ts": 1771536561.068384, "event": "wakeword_gate_blocked", "rms": 0.054024092853069305, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536561.068382}
+{"ts": 1771536561.1144552, "event": "wakeword_gate_blocked", "rms": 0.022726185619831085, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536561.1144533}
+{"ts": 1771536561.1153696, "event": "wakeword_gate_blocked", "rms": 0.022081220522522926, "vad_threshold": 0.011231090515092794, "armed_until": 0.0, "now": 1771536561.1153677}
+{"ts": 1771536561.1613007, "event": "wakeword_gate_blocked", "rms": 0.034068915992975235, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.1612988}
+{"ts": 1771536561.1843393, "event": "wakeword_gate_blocked", "rms": 0.05421065539121628, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.184337}
+{"ts": 1771536561.2303507, "event": "wakeword_gate_blocked", "rms": 0.05074206367135048, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.2303486}
+{"ts": 1771536561.2312365, "event": "wakeword_gate_blocked", "rms": 0.04619654268026352, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.2312353}
+{"ts": 1771536561.2534392, "event": "wakeword_gate_blocked", "rms": 0.03875058889389038, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.2534366}
+{"ts": 1771536561.3002217, "event": "wakeword_gate_blocked", "rms": 0.03388511762022972, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.3002203}
+{"ts": 1771536561.3009853, "event": "wakeword_gate_blocked", "rms": 0.025646697729825974, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.3009841}
+{"ts": 1771536561.3459902, "event": "wakeword_gate_blocked", "rms": 0.017317572608590126, "vad_threshold": 0.012056920942315454, "armed_until": 0.0, "now": 1771536561.3459885}
+{"ts": 1771536562.5077775, "event": "wakeword_gate_blocked", "rms": 0.0324811115860939, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.5077758}
+{"ts": 1771536562.5302737, "event": "wakeword_gate_blocked", "rms": 0.03457875922322273, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.5302718}
+{"ts": 1771536562.5541387, "event": "wakeword_gate_blocked", "rms": 0.04260588064789772, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.5541365}
+{"ts": 1771536562.600407, "event": "wakeword_gate_blocked", "rms": 0.04616640880703926, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.6004045}
+{"ts": 1771536562.6012838, "event": "wakeword_gate_blocked", "rms": 0.03490173816680908, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.6012826}
+{"ts": 1771536562.6237314, "event": "wakeword_gate_blocked", "rms": 0.027647247537970543, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.6237273}
+{"ts": 1771536562.6706738, "event": "wakeword_gate_blocked", "rms": 0.02962927706539631, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.670671}
+{"ts": 1771536562.671891, "event": "wakeword_gate_blocked", "rms": 0.030534910038113594, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.6718888}
+{"ts": 1771536562.715928, "event": "wakeword_gate_blocked", "rms": 0.030305540189146996, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.7159266}
+{"ts": 1771536562.716334, "event": "wakeword_gate_blocked", "rms": 0.021810712292790413, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.7163334}
+{"ts": 1771536562.7396939, "event": "wakeword_gate_blocked", "rms": 0.01858280412852764, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.7396913}
+{"ts": 1771536562.7636619, "event": "wakeword_gate_blocked", "rms": 0.01432334166020155, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.7636585}
+{"ts": 1771536562.8096685, "event": "wakeword_gate_blocked", "rms": 0.016154268756508827, "vad_threshold": 0.01120042283288091, "armed_until": 0.0, "now": 1771536562.8096654}
+{"ts": 1771536562.8800075, "event": "wakeword_gate_blocked", "rms": 0.03371623530983925, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536562.8800025}
+{"ts": 1771536562.8813167, "event": "wakeword_gate_blocked", "rms": 0.04915246739983559, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536562.8813152}
+{"ts": 1771536562.9254842, "event": "wakeword_gate_blocked", "rms": 0.04202576354146004, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536562.9254823}
+{"ts": 1771536562.9263473, "event": "wakeword_gate_blocked", "rms": 0.042338959872722626, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536562.9263458}
+{"ts": 1771536562.948096, "event": "wakeword_gate_blocked", "rms": 0.040467891842126846, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536562.9480946}
+{"ts": 1771536562.9723084, "event": "wakeword_gate_blocked", "rms": 0.031762294471263885, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536562.9723065}
+{"ts": 1771536563.0183601, "event": "wakeword_gate_blocked", "rms": 0.018781203776597977, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.018358}
+{"ts": 1771536563.0191507, "event": "wakeword_gate_blocked", "rms": 0.012568400241434574, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.0191498}
+{"ts": 1771536563.0415897, "event": "wakeword_gate_blocked", "rms": 0.012573069892823696, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.0415874}
+{"ts": 1771536563.0882268, "event": "wakeword_gate_blocked", "rms": 0.012428073212504387, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.0882246}
+{"ts": 1771536563.08907, "event": "wakeword_gate_blocked", "rms": 0.021325064823031425, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.089068}
+{"ts": 1771536563.1337276, "event": "wakeword_gate_blocked", "rms": 0.035205695778131485, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.1337268}
+{"ts": 1771536563.1340435, "event": "wakeword_gate_blocked", "rms": 0.03418506681919098, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.134043}
+{"ts": 1771536563.1573184, "event": "wakeword_gate_blocked", "rms": 0.028004076331853867, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.157317}
+{"ts": 1771536563.1813972, "event": "wakeword_gate_blocked", "rms": 0.02821364253759384, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.1813953}
+{"ts": 1771536563.2273834, "event": "wakeword_gate_blocked", "rms": 0.024602556601166725, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.227381}
+{"ts": 1771536563.228333, "event": "wakeword_gate_blocked", "rms": 0.023039046674966812, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.2283313}
+{"ts": 1771536563.2735627, "event": "wakeword_gate_blocked", "rms": 0.017145643010735512, "vad_threshold": 0.01236484425984257, "armed_until": 0.0, "now": 1771536563.2735605}
+{"ts": 1771536564.0403223, "event": "wakeword_gate_blocked", "rms": 0.01049792766571045, "vad_threshold": 0.010326447178671384, "armed_until": 0.0, "now": 1771536564.0403197}
+{"ts": 1771536565.8045032, "event": "wakeword_gate_blocked", "rms": 0.026208821684122086, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.8045015}
+{"ts": 1771536565.8053722, "event": "wakeword_gate_blocked", "rms": 0.039402350783348083, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.8053706}
+{"ts": 1771536565.8283734, "event": "wakeword_gate_blocked", "rms": 0.040775518864393234, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.8283715}
+{"ts": 1771536565.874379, "event": "wakeword_gate_blocked", "rms": 0.04404718428850174, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.8743773}
+{"ts": 1771536565.8751836, "event": "wakeword_gate_blocked", "rms": 0.0462617389857769, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.8751822}
+{"ts": 1771536565.897398, "event": "wakeword_gate_blocked", "rms": 0.04504863917827606, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.8973956}
+{"ts": 1771536565.9444113, "event": "wakeword_gate_blocked", "rms": 0.04422469437122345, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.944409}
+{"ts": 1771536565.945353, "event": "wakeword_gate_blocked", "rms": 0.0367732048034668, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.9453514}
+{"ts": 1771536565.9906807, "event": "wakeword_gate_blocked", "rms": 0.01788630336523056, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.9906774}
+{"ts": 1771536565.9918418, "event": "wakeword_gate_blocked", "rms": 0.016599135473370552, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536565.99184}
+{"ts": 1771536566.0139627, "event": "wakeword_gate_blocked", "rms": 0.011148003861308098, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536566.0139592}
+{"ts": 1771536566.0373302, "event": "wakeword_gate_blocked", "rms": 0.008849835023283958, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536566.0373285}
+{"ts": 1771536566.0834672, "event": "wakeword_gate_blocked", "rms": 0.008753256872296333, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771536566.0834649}
+{"ts": 1771536566.9892983, "event": "wakeword_gate_blocked", "rms": 0.04519277438521385, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536566.989296}
+{"ts": 1771536567.0355072, "event": "wakeword_gate_blocked", "rms": 0.06120596453547478, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.0355043}
+{"ts": 1771536567.0364609, "event": "wakeword_gate_blocked", "rms": 0.06070849671959877, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.0364587}
+{"ts": 1771536567.0589879, "event": "wakeword_gate_blocked", "rms": 0.04687837138772011, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.0589845}
+{"ts": 1771536567.1056201, "event": "wakeword_gate_blocked", "rms": 0.04306694492697716, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.1056175}
+{"ts": 1771536567.1067514, "event": "wakeword_gate_blocked", "rms": 0.028953883796930313, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.1067495}
+{"ts": 1771536567.151435, "event": "wakeword_gate_blocked", "rms": 0.014307213015854359, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.1514328}
+{"ts": 1771536567.152236, "event": "wakeword_gate_blocked", "rms": 0.01567130908370018, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.1522348}
+{"ts": 1771536567.1748986, "event": "wakeword_gate_blocked", "rms": 0.03928990662097931, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.1748958}
+{"ts": 1771536567.1985664, "event": "wakeword_gate_blocked", "rms": 0.05421913042664528, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.1985643}
+{"ts": 1771536567.2444835, "event": "wakeword_gate_blocked", "rms": 0.040732596069574356, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.2444816}
+{"ts": 1771536567.2454202, "event": "wakeword_gate_blocked", "rms": 0.029943343251943588, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.2454188}
+{"ts": 1771536567.2675552, "event": "wakeword_gate_blocked", "rms": 0.020299507305026054, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.2675533}
+{"ts": 1771536567.3143117, "event": "wakeword_gate_blocked", "rms": 0.014084093272686005, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.3143098}
+{"ts": 1771536567.3151207, "event": "wakeword_gate_blocked", "rms": 0.012502367608249187, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.3151193}
+{"ts": 1771536567.3600867, "event": "wakeword_gate_blocked", "rms": 0.01939057558774948, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.360085}
+{"ts": 1771536567.3607442, "event": "wakeword_gate_blocked", "rms": 0.02881103754043579, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.3607435}
+{"ts": 1771536567.3834844, "event": "wakeword_gate_blocked", "rms": 0.029220551252365112, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.3834827}
+{"ts": 1771536567.407377, "event": "wakeword_gate_blocked", "rms": 0.019741659983992577, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.4073749}
+{"ts": 1771536567.453412, "event": "wakeword_gate_blocked", "rms": 0.01794644258916378, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.4534094}
+{"ts": 1771536567.4542608, "event": "wakeword_gate_blocked", "rms": 0.010842643678188324, "vad_threshold": 0.008604018730317537, "armed_until": 0.0, "now": 1771536567.4542592}
+{"ts": 1771536570.6350863, "event": "wakeword_gate_blocked", "rms": 0.01876050792634487, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.6350844}
+{"ts": 1771536570.657411, "event": "wakeword_gate_blocked", "rms": 0.03696436807513237, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.6574092}
+{"ts": 1771536570.6814082, "event": "wakeword_gate_blocked", "rms": 0.04065081477165222, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.6814065}
+{"ts": 1771536570.727583, "event": "wakeword_gate_blocked", "rms": 0.04092127084732056, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.7275808}
+{"ts": 1771536570.7284515, "event": "wakeword_gate_blocked", "rms": 0.0385768748819828, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.7284503}
+{"ts": 1771536570.750231, "event": "wakeword_gate_blocked", "rms": 0.04351148009300232, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.7502296}
+{"ts": 1771536570.7971663, "event": "wakeword_gate_blocked", "rms": 0.04229891672730446, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.7971652}
+{"ts": 1771536570.7978275, "event": "wakeword_gate_blocked", "rms": 0.03945506364107132, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.7978265}
+{"ts": 1771536570.8431542, "event": "wakeword_gate_blocked", "rms": 0.033795617520809174, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.843153}
+{"ts": 1771536570.8438327, "event": "wakeword_gate_blocked", "rms": 0.03139936923980713, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.843832}
+{"ts": 1771536570.8663075, "event": "wakeword_gate_blocked", "rms": 0.031727135181427, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.8663058}
+{"ts": 1771536570.890069, "event": "wakeword_gate_blocked", "rms": 0.03384993225336075, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.8900673}
+{"ts": 1771536570.9363086, "event": "wakeword_gate_blocked", "rms": 0.034726113080978394, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.936307}
+{"ts": 1771536570.9370983, "event": "wakeword_gate_blocked", "rms": 0.03249622508883476, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.9370973}
+{"ts": 1771536570.9823008, "event": "wakeword_gate_blocked", "rms": 0.030972769483923912, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.982299}
+{"ts": 1771536570.9829037, "event": "wakeword_gate_blocked", "rms": 0.030899040400981903, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536570.9829028}
+{"ts": 1771536571.0062287, "event": "wakeword_gate_blocked", "rms": 0.023540563881397247, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536571.0062273}
+{"ts": 1771536571.0524147, "event": "wakeword_gate_blocked", "rms": 0.014014946296811104, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536571.052413}
+{"ts": 1771536571.0531337, "event": "wakeword_gate_blocked", "rms": 0.0137410843744874, "vad_threshold": 0.012393080898191283, "armed_until": 0.0, "now": 1771536571.0531328}
+{"ts": 1771536571.098977, "event": "wakeword_gate_blocked", "rms": 0.01593647338449955, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.0989752}
+{"ts": 1771536571.1451166, "event": "wakeword_gate_blocked", "rms": 0.03535890206694603, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.1451151}
+{"ts": 1771536571.1457884, "event": "wakeword_gate_blocked", "rms": 0.03385878726840019, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.1457875}
+{"ts": 1771536571.1917622, "event": "wakeword_gate_blocked", "rms": 0.033722229301929474, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.1917596}
+{"ts": 1771536571.1927066, "event": "wakeword_gate_blocked", "rms": 0.029400605708360672, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.1927044}
+{"ts": 1771536571.2153852, "event": "wakeword_gate_blocked", "rms": 0.022397292777895927, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.215383}
+{"ts": 1771536571.26126, "event": "wakeword_gate_blocked", "rms": 0.01608310639858246, "vad_threshold": 0.012992025189263085, "armed_until": 0.0, "now": 1771536571.2612581}
+{"ts": 1771536571.3083496, "event": "wakeword_gate_blocked", "rms": 0.021835632622241974, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.308348}
+{"ts": 1771536571.3543746, "event": "wakeword_gate_blocked", "rms": 0.029530027881264687, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.3543723}
+{"ts": 1771536571.3553593, "event": "wakeword_gate_blocked", "rms": 0.02153255045413971, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.3553574}
+{"ts": 1771536571.400617, "event": "wakeword_gate_blocked", "rms": 0.02204654924571514, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.400615}
+{"ts": 1771536571.401516, "event": "wakeword_gate_blocked", "rms": 0.02443227544426918, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.4015145}
+{"ts": 1771536571.4243517, "event": "wakeword_gate_blocked", "rms": 0.019996875897049904, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.424349}
+{"ts": 1771536571.470397, "event": "wakeword_gate_blocked", "rms": 0.01770271733403206, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.4703948}
+{"ts": 1771536571.4713378, "event": "wakeword_gate_blocked", "rms": 0.01518559455871582, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.4713356}
+{"ts": 1771536571.4937587, "event": "wakeword_gate_blocked", "rms": 0.014048462733626366, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.4937568}
+{"ts": 1771536571.5404255, "event": "wakeword_gate_blocked", "rms": 0.014524197205901146, "vad_threshold": 0.014005833288018028, "armed_until": 0.0, "now": 1771536571.5404234}
+{"ts": 1771536572.957152, "event": "wakeword_gate_blocked", "rms": 0.009771530516445637, "vad_threshold": 0.009544132732374151, "armed_until": 0.0, "now": 1771536572.9571497}
+{"ts": 1771536572.9794543, "event": "wakeword_gate_blocked", "rms": 0.01057873573154211, "vad_threshold": 0.009544132732374151, "armed_until": 0.0, "now": 1771536572.9794524}
+{"ts": 1771536573.9086244, "event": "wakeword_gate_blocked", "rms": 0.014886356890201569, "vad_threshold": 0.011640313533332223, "armed_until": 0.0, "now": 1771536573.9086215}
+{"ts": 1771536574.0018668, "event": "wakeword_gate_blocked", "rms": 0.014599848538637161, "vad_threshold": 0.014217166265539042, "armed_until": 0.0, "now": 1771536574.0018637}
+{"ts": 1771536576.4092984, "event": "assistant_speaking_end"}
+{"ts": 1771538516.8635094, "event": "recorder_init", "component": "audio", "device": 4, "device_sample_rate": 44100, "target_sample_rate": 16000, "adaptive_vad": true, "vad_threshold": 0.01, "noise_multiplier": 2.5, "barge_in_min_delay_sec": 0.5, "barge_in_min_delay_after_ref_sec": 0.35, "barge_in_min_rms_ratio": 3.0, "echo_corr_threshold": 0.45, "wakeword_enabled": true, "wakeword": "hey_jarvis", "wakeword_threshold": 0.5, "wakeword_timeout_sec": 5.0, "wakeword_model_path": null, "wakeword_service_mode": "local", "wakeword_policy": "strict_required", "wakeword_miss_limit": 80, "wakeword_recovery_window_sec": 3.0, "wakeword_available": true, "wakeword_labels": ["alexa", "hey_mycroft", "hey_jarvis", "1_minute_timer", "5_minute_timer", "10_minute_timer", "20_minute_timer", "30_minute_timer", "1_hour_timer", "weather"], "speaker_verify_enabled": true, "speaker_verify_threshold": 0.55, "speaker_enrollment_wav": "./voice_enroll.wav", "speaker_verify_available": true}
+{"ts": 1771538520.9061282, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.030107634142041206, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538520.9061236, "miss_count": 1}
+{"ts": 1771538520.9523134, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03800670802593231, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538520.9523103, "miss_count": 2}
+{"ts": 1771538520.953229, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02952991984784603, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538520.953227, "miss_count": 3}
+{"ts": 1771538520.998357, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02544107288122177, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538520.9983547, "miss_count": 4}
+{"ts": 1771538520.9992065, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02623356692492962, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538520.9992046, "miss_count": 5}
+{"ts": 1771538521.0222125, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02501596324145794, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.0222104, "miss_count": 6}
+{"ts": 1771538521.0680728, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020015770569443703, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.068071, "miss_count": 7}
+{"ts": 1771538521.0687482, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017662288621068, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.068747, "miss_count": 8}
+{"ts": 1771538521.0912254, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016810210421681404, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.0912232, "miss_count": 9}
+{"ts": 1771538521.1378849, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015444702468812466, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.1378827, "miss_count": 10}
+{"ts": 1771538521.138739, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01635432243347168, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.1387374, "miss_count": 11}
+{"ts": 1771538521.184255, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02018796093761921, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.1842523, "miss_count": 12}
+{"ts": 1771538521.185106, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.028160298243165016, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.1851044, "miss_count": 13}
+{"ts": 1771538521.2074165, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.028349237516522408, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.207414, "miss_count": 14}
+{"ts": 1771538521.2310517, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024647362530231476, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.23105, "miss_count": 15}
+{"ts": 1771538521.2768085, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.022864434868097305, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.2768068, "miss_count": 16}
+{"ts": 1771538521.2774227, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024441828951239586, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.277421, "miss_count": 17}
+{"ts": 1771538521.3234923, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024111954495310783, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.32349, "miss_count": 18}
+{"ts": 1771538521.3243697, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020002102479338646, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.3243675, "miss_count": 19}
+{"ts": 1771538521.347203, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01831965148448944, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.3472002, "miss_count": 20}
+{"ts": 1771538521.3931632, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017604975029826164, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.393161, "miss_count": 21}
+{"ts": 1771538521.394061, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018539361655712128, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.3940594, "miss_count": 22}
+{"ts": 1771538521.4162273, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018566248938441277, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.4162252, "miss_count": 23}
+{"ts": 1771538521.4401627, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020734207704663277, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.44016, "miss_count": 24}
+{"ts": 1771538521.4858522, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01688486337661743, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.48585, "miss_count": 25}
+{"ts": 1771538521.4865422, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016187451779842377, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.4865406, "miss_count": 26}
+{"ts": 1771538521.5324352, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015131618827581406, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.5324323, "miss_count": 27}
+{"ts": 1771538521.5332963, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.014485275372862816, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.5332947, "miss_count": 28}
+{"ts": 1771538521.556181, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01254306547343731, "vad_threshold": 0.01247752003361133, "armed_until": 0.0, "now": 1771538521.556178, "miss_count": 29}
+{"ts": 1771538522.7174196, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008525854907929897, "vad_threshold": 0.008438804417602145, "armed_until": 0.0, "now": 1771538522.7174165, "miss_count": 30}
+{"ts": 1771538522.7634377, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01049190852791071, "vad_threshold": 0.008438804417602145, "armed_until": 0.0, "now": 1771538522.7634351, "miss_count": 31}
+{"ts": 1771538522.7645774, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015470532700419426, "vad_threshold": 0.008438804417602145, "armed_until": 0.0, "now": 1771538522.7645752, "miss_count": 32}
+{"ts": 1771538522.786779, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.011850853450596333, "vad_threshold": 0.008438804417602145, "armed_until": 0.0, "now": 1771538522.7867758, "miss_count": 33}
+{"ts": 1771538523.7625542, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02368103712797165, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.7625499, "miss_count": 34}
+{"ts": 1771538523.8087394, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02421552687883377, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.8087351, "miss_count": 35}
+{"ts": 1771538523.809935, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.026921940967440605, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.809933, "miss_count": 36}
+{"ts": 1771538523.8548036, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03473289683461189, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.8548, "miss_count": 37}
+{"ts": 1771538523.8558013, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02602291665971279, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.8558, "miss_count": 38}
+{"ts": 1771538523.878349, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012154879048466682, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.8783455, "miss_count": 39}
+{"ts": 1771538523.9247558, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008914007805287838, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.9247518, "miss_count": 40}
+{"ts": 1771538523.9714868, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015090172179043293, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538523.9714835, "miss_count": 41}
+{"ts": 1771538524.017323, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.030459346249699593, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.0173202, "miss_count": 42}
+{"ts": 1771538524.0183775, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.04079199582338333, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.0183756, "miss_count": 43}
+{"ts": 1771538524.0640674, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.048540715128183365, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.0640635, "miss_count": 44}
+{"ts": 1771538524.065058, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.050636935979127884, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.0650563, "miss_count": 45}
+{"ts": 1771538524.0868473, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.043442223221063614, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.0868452, "miss_count": 46}
+{"ts": 1771538524.1333272, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02101544477045536, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.1333241, "miss_count": 47}
+{"ts": 1771538524.1342685, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010085312649607658, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.1342664, "miss_count": 48}
+{"ts": 1771538524.1566057, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008497780188918114, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538524.1566026, "miss_count": 49}
+{"ts": 1771538524.2270825, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.011944483034312725, "vad_threshold": 0.007585091904424544, "armed_until": 0.0, "now": 1771538524.2270796, "miss_count": 50}
+{"ts": 1771538524.2725, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018956782296299934, "vad_threshold": 0.007585091904424544, "armed_until": 0.0, "now": 1771538524.2724974, "miss_count": 51}
+{"ts": 1771538524.273292, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01662764884531498, "vad_threshold": 0.007585091904424544, "armed_until": 0.0, "now": 1771538524.2732904, "miss_count": 52}
+{"ts": 1771538524.296369, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012384303845465183, "vad_threshold": 0.007585091904424544, "armed_until": 0.0, "now": 1771538524.2963667, "miss_count": 53}
+{"ts": 1771538524.3424354, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008802573196589947, "vad_threshold": 0.007585091904424544, "armed_until": 0.0, "now": 1771538524.3424323, "miss_count": 54}
+{"ts": 1771538524.343378, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.007896224036812782, "vad_threshold": 0.007585091904424544, "armed_until": 0.0, "now": 1771538524.3433766, "miss_count": 55}
+{"ts": 1771538525.2245092, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.007817204110324383, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.2245069, "miss_count": 56}
+{"ts": 1771538525.248223, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015996171161532402, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.2482207, "miss_count": 57}
+{"ts": 1771538525.2943172, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023868953809142113, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.294315, "miss_count": 58}
+{"ts": 1771538525.2951033, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.030077805742621422, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.2951016, "miss_count": 59}
+{"ts": 1771538525.3174627, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.028624434024095535, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.3174603, "miss_count": 60}
+{"ts": 1771538525.3413079, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.026904737576842308, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.3413045, "miss_count": 61}
+{"ts": 1771538525.387258, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02511122263967991, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.387255, "miss_count": 62}
+{"ts": 1771538525.3881598, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.021162690594792366, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.3881578, "miss_count": 63}
+{"ts": 1771538525.4102354, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01846797578036785, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.4102328, "miss_count": 64}
+{"ts": 1771538525.433394, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016690829768776894, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.4333913, "miss_count": 65}
+{"ts": 1771538525.4573832, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016103330999612808, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.4573805, "miss_count": 66}
+{"ts": 1771538525.5033562, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01752454973757267, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.5033534, "miss_count": 67}
+{"ts": 1771538525.5042765, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.022549722343683243, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.5042748, "miss_count": 68}
+{"ts": 1771538525.5263944, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.022852443158626556, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.5263917, "miss_count": 69}
+{"ts": 1771538525.5502255, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.021099520847201347, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.5502229, "miss_count": 70}
+{"ts": 1771538525.5963311, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01416493859142065, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.596329, "miss_count": 71}
+{"ts": 1771538525.712322, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.013568991795182228, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.712319, "miss_count": 72}
+{"ts": 1771538525.7132092, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02051861211657524, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.713207, "miss_count": 73}
+{"ts": 1771538525.7587585, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023835133761167526, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.7587557, "miss_count": 74}
+{"ts": 1771538525.759656, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023159855976700783, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.759654, "miss_count": 75}
+{"ts": 1771538525.782117, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02209075726568699, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.7821143, "miss_count": 76}
+{"ts": 1771538525.8283894, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.022719653323292732, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.8283858, "miss_count": 77}
+{"ts": 1771538525.8293698, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020959820598363876, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.829368, "miss_count": 78}
+{"ts": 1771538525.8514333, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020395856350660324, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.851431, "miss_count": 79}
+{"ts": 1771538525.8754914, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018074994906783104, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.8754878, "miss_count": 80}
+{"ts": 1771538525.922014, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01581285521388054, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.9220092, "miss_count": 81}
+{"ts": 1771538525.923298, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.009280967526137829, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538525.923296, "miss_count": 82}
+{"ts": 1771538527.546631, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.019553745165467262, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.5466282, "miss_count": 83}
+{"ts": 1771538527.5474873, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02619830332696438, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.5474856, "miss_count": 84}
+{"ts": 1771538527.570142, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024097904562950134, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.5701392, "miss_count": 85}
+{"ts": 1771538527.6160636, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02713395282626152, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.6160614, "miss_count": 86}
+{"ts": 1771538527.6168602, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.028816722333431244, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.6168587, "miss_count": 87}
+{"ts": 1771538527.6392593, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03085571527481079, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.6392572, "miss_count": 88}
+{"ts": 1771538527.6631165, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02371932566165924, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.6631148, "miss_count": 89}
+{"ts": 1771538527.7094421, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023683777078986168, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.7094398, "miss_count": 90}
+{"ts": 1771538527.710343, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.026668323203921318, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.7103412, "miss_count": 91}
+{"ts": 1771538527.755586, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.028561117127537727, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.7555833, "miss_count": 92}
+{"ts": 1771538527.7563875, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015560016967356205, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.756386, "miss_count": 93}
+{"ts": 1771538527.779076, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010442045517265797, "vad_threshold": 0.009012619284822986, "armed_until": 0.0, "now": 1771538527.779074, "miss_count": 94}
+{"ts": 1771538527.9190974, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.014833103865385056, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538527.9190946, "miss_count": 95}
+{"ts": 1771538527.964754, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01881319470703602, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538527.9647512, "miss_count": 96}
+{"ts": 1771538527.9656293, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02154361829161644, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538527.9656277, "miss_count": 97}
+{"ts": 1771538527.9882312, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018058834597468376, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538527.988229, "miss_count": 98}
+{"ts": 1771538528.0344372, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01909772679209709, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.0344346, "miss_count": 99}
+{"ts": 1771538528.0353994, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.019595298916101456, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.0353975, "miss_count": 100}
+{"ts": 1771538528.0805955, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.022590884938836098, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.0805929, "miss_count": 101}
+{"ts": 1771538528.0814242, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017803722992539406, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.0814226, "miss_count": 102}
+{"ts": 1771538528.1042278, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015153586864471436, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.104226, "miss_count": 103}
+{"ts": 1771538528.1499822, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015280002728104591, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.14998, "miss_count": 104}
+{"ts": 1771538528.150603, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01166559662669897, "vad_threshold": 0.010096609430789338, "armed_until": 0.0, "now": 1771538528.1506016, "miss_count": 105}
+{"ts": 1771538528.2893317, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.014643784612417221, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.2893293, "miss_count": 106}
+{"ts": 1771538528.2899828, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.014499345794320107, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.2899816, "miss_count": 107}
+{"ts": 1771538528.3133268, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01558131817728281, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.313324, "miss_count": 108}
+{"ts": 1771538528.3591597, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018893880769610405, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.3591578, "miss_count": 109}
+{"ts": 1771538528.3598535, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018976595252752304, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.3598523, "miss_count": 110}
+{"ts": 1771538528.3826742, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016300566494464874, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.3826716, "miss_count": 111}
+{"ts": 1771538528.406471, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010677235201001167, "vad_threshold": 0.010609648131575432, "armed_until": 0.0, "now": 1771538528.4064686, "miss_count": 112}
+{"ts": 1771538533.0501852, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012110778130590916, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.0501828, "miss_count": 113}
+{"ts": 1771538533.0958698, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02199440263211727, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.0958683, "miss_count": 114}
+{"ts": 1771538533.0963702, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02193915657699108, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.0963688, "miss_count": 115}
+{"ts": 1771538533.1421187, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.019946714863181114, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.1421173, "miss_count": 116}
+{"ts": 1771538533.142596, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02111898362636566, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.142595, "miss_count": 117}
+{"ts": 1771538533.1664798, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017743747681379318, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.166478, "miss_count": 118}
+{"ts": 1771538533.2123713, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016386032104492188, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.212369, "miss_count": 119}
+{"ts": 1771538533.213342, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015656378120183945, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.2133398, "miss_count": 120}
+{"ts": 1771538533.2356699, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01615552231669426, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.235667, "miss_count": 121}
+{"ts": 1771538533.2591653, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018665680661797523, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.2591631, "miss_count": 122}
+{"ts": 1771538533.3051925, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01541865337640047, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.3051908, "miss_count": 123}
+{"ts": 1771538533.3059049, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012584434822201729, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.3059037, "miss_count": 124}
+{"ts": 1771538533.3516335, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015108495019376278, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.3516314, "miss_count": 125}
+{"ts": 1771538533.3525681, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012658566236495972, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.3525665, "miss_count": 126}
+{"ts": 1771538533.3753972, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.011015905067324638, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.3753948, "miss_count": 127}
+{"ts": 1771538533.4208922, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008700406178832054, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.4208906, "miss_count": 128}
+{"ts": 1771538533.4214284, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008751093409955502, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538533.4214272, "miss_count": 129}
+{"ts": 1771538534.6761835, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.007842554710805416, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538534.676181, "miss_count": 130}
+{"ts": 1771538535.4645553, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.025847896933555603, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.4645524, "miss_count": 131}
+{"ts": 1771538535.4654386, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.031757064163684845, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.4654365, "miss_count": 132}
+{"ts": 1771538535.488512, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03507401794195175, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.4885092, "miss_count": 133}
+{"ts": 1771538535.534801, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03821827471256256, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.5347967, "miss_count": 134}
+{"ts": 1771538535.535976, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.04386419430375099, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.5359735, "miss_count": 135}
+{"ts": 1771538535.5579169, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03386251628398895, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.557914, "miss_count": 136}
+{"ts": 1771538535.5813622, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023678509518504143, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.5813596, "miss_count": 137}
+{"ts": 1771538535.6272345, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012577124871313572, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.6272323, "miss_count": 138}
+{"ts": 1771538535.6280746, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010400435887277126, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.6280732, "miss_count": 139}
+{"ts": 1771538535.673508, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.00813453271985054, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.6735058, "miss_count": 140}
+{"ts": 1771538535.6743448, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008177686482667923, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.6743429, "miss_count": 141}
+{"ts": 1771538535.6969638, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.007652992382645607, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538535.696962, "miss_count": 142}
+{"ts": 1771538536.068285, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012689604423940182, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.0682821, "miss_count": 143}
+{"ts": 1771538536.069113, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.019922489300370216, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.0691116, "miss_count": 144}
+{"ts": 1771538536.091391, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023549828678369522, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.091389, "miss_count": 145}
+{"ts": 1771538536.115353, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.030147721990942955, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.115351, "miss_count": 146}
+{"ts": 1771538536.1613753, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.026081673800945282, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.161373, "miss_count": 147}
+{"ts": 1771538536.1622763, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024676820263266563, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.1622744, "miss_count": 148}
+{"ts": 1771538536.2077742, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03072461672127247, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.2077715, "miss_count": 149}
+{"ts": 1771538536.2086914, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02878151834011078, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.2086897, "miss_count": 150}
+{"ts": 1771538536.231228, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.031337931752204895, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.231226, "miss_count": 151}
+{"ts": 1771538536.2774415, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03269317373633385, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.2774386, "miss_count": 152}
+{"ts": 1771538536.2783756, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02202950231730938, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.2783735, "miss_count": 153}
+{"ts": 1771538536.3002002, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016174674034118652, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.3001983, "miss_count": 154}
+{"ts": 1771538536.3241534, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010119618847966194, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538536.3241515, "miss_count": 155}
+{"ts": 1771538536.4862382, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.016162807121872902, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.4862354, "miss_count": 156}
+{"ts": 1771538536.4870446, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017909739166498184, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.4870431, "miss_count": 157}
+{"ts": 1771538536.509426, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015737801790237427, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.5094244, "miss_count": 158}
+{"ts": 1771538536.5330276, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017379576340317726, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.5330262, "miss_count": 159}
+{"ts": 1771538536.5790505, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012528848834335804, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.5790496, "miss_count": 160}
+{"ts": 1771538536.5795548, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.009783524088561535, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.5795534, "miss_count": 161}
+{"ts": 1771538536.6257832, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010144517756998539, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.6257799, "miss_count": 162}
+{"ts": 1771538536.6267908, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.00952903926372528, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.6267889, "miss_count": 163}
+{"ts": 1771538536.6490145, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010333403013646603, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.649013, "miss_count": 164}
+{"ts": 1771538536.695013, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.009451275691390038, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.6950116, "miss_count": 165}
+{"ts": 1771538536.6956255, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.009503994137048721, "vad_threshold": 0.008182715024482477, "armed_until": 0.0, "now": 1771538536.6956239, "miss_count": 166}
+{"ts": 1771538538.390506, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.011556060053408146, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.390503, "miss_count": 167}
+{"ts": 1771538538.3915195, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.05082692205905914, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.3915172, "miss_count": 168}
+{"ts": 1771538538.4136648, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.05071062967181206, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.4136624, "miss_count": 169}
+{"ts": 1771538538.437475, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.06378728151321411, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.4374728, "miss_count": 170}
+{"ts": 1771538538.4836109, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.04220257326960564, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.4836075, "miss_count": 171}
+{"ts": 1771538538.4848669, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.018668537959456444, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.4848642, "miss_count": 172}
+{"ts": 1771538538.5295024, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010878799483180046, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.5294995, "miss_count": 173}
+{"ts": 1771538538.5303032, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01853189244866371, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.5303018, "miss_count": 174}
+{"ts": 1771538538.553042, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01601150818169117, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.5530393, "miss_count": 175}
+{"ts": 1771538538.599846, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.04166775941848755, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.5998409, "miss_count": 176}
+{"ts": 1771538538.601314, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.04696706309914589, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.601312, "miss_count": 177}
+{"ts": 1771538538.6225545, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03969106078147888, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.6225522, "miss_count": 178}
+{"ts": 1771538538.6466525, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03684045746922493, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.6466486, "miss_count": 179}
+{"ts": 1771538538.6927583, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024128247052431107, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.6927545, "miss_count": 180}
+{"ts": 1771538538.6938443, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.014316106215119362, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.6938422, "miss_count": 181}
+{"ts": 1771538538.739121, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01005513221025467, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.7391171, "miss_count": 182}
+{"ts": 1771538538.7403889, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.0135486526414752, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.7403867, "miss_count": 183}
+{"ts": 1771538538.7627392, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012243244796991348, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.7627356, "miss_count": 184}
+{"ts": 1771538538.808941, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.015115167014300823, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.8089375, "miss_count": 185}
+{"ts": 1771538538.810041, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.01879642903804779, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.8100388, "miss_count": 186}
+{"ts": 1771538538.8317525, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.021261338144540787, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.8317497, "miss_count": 187}
+{"ts": 1771538538.8555417, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.023485397920012474, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.855521, "miss_count": 188}
+{"ts": 1771538538.9012885, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.013451212085783482, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.901286, "miss_count": 189}
+{"ts": 1771538538.9022207, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012576702982187271, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.902219, "miss_count": 190}
+{"ts": 1771538538.948093, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012383059598505497, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.9480896, "miss_count": 191}
+{"ts": 1771538538.949233, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012007883749902248, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.9492311, "miss_count": 192}
+{"ts": 1771538538.9715824, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010699890553951263, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538538.971579, "miss_count": 193}
+{"ts": 1771538539.0177267, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.007784687913954258, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538539.0177224, "miss_count": 194}
+{"ts": 1771538540.8518682, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.0212753564119339, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.851864, "miss_count": 195}
+{"ts": 1771538540.852886, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02427257038652897, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.8528833, "miss_count": 196}
+{"ts": 1771538540.8752158, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.025700252503156662, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.8752131, "miss_count": 197}
+{"ts": 1771538540.9215646, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.027409637346863747, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.9215608, "miss_count": 198}
+{"ts": 1771538540.9225974, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.025460055097937584, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.9225945, "miss_count": 199}
+{"ts": 1771538540.9448438, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.0252444576472044, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.9448395, "miss_count": 200}
+{"ts": 1771538540.9682877, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.025247568264603615, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538540.9682846, "miss_count": 201}
+{"ts": 1771538541.0145605, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.026389382779598236, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.0145571, "miss_count": 202}
+{"ts": 1771538541.0154922, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.03214607387781143, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.015489, "miss_count": 203}
+{"ts": 1771538541.0600462, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.035816337913274765, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.0600448, "miss_count": 204}
+{"ts": 1771538541.0602796, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.028490163385868073, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.0602794, "miss_count": 205}
+{"ts": 1771538541.0838084, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017431950196623802, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.0838075, "miss_count": 206}
+{"ts": 1771538541.1305804, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.010990027338266373, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.1305773, "miss_count": 207}
+{"ts": 1771538541.1315155, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008395703509449959, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.1315129, "miss_count": 208}
+{"ts": 1771538541.223781, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.011486808769404888, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.2237785, "miss_count": 209}
+{"ts": 1771538541.2697668, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.022819234058260918, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.2697647, "miss_count": 210}
+{"ts": 1771538541.2706046, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02150787226855755, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.270603, "miss_count": 211}
+{"ts": 1771538541.2935839, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02868642844259739, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.2935805, "miss_count": 212}
+{"ts": 1771538541.3396106, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.024754909798502922, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.3396072, "miss_count": 213}
+{"ts": 1771538541.3405647, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02314704656600952, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.3405633, "miss_count": 214}
+{"ts": 1771538541.362709, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.021898992359638214, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.3627062, "miss_count": 215}
+{"ts": 1771538541.3865201, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020530734211206436, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.386517, "miss_count": 216}
+{"ts": 1771538541.4328015, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.017127152532339096, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.4327986, "miss_count": 217}
+{"ts": 1771538541.433758, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.009575588628649712, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.433756, "miss_count": 218}
+{"ts": 1771538541.5023823, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.012358780950307846, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.5023801, "miss_count": 219}
+{"ts": 1771538541.5485113, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.019882800057530403, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.5485084, "miss_count": 220}
+{"ts": 1771538541.5494437, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020876053720712662, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.549442, "miss_count": 221}
+{"ts": 1771538541.5714974, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.0191061832010746, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.5714948, "miss_count": 222}
+{"ts": 1771538541.618495, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.014964519999921322, "vad_threshold": 0.0075, "armed_until": 0.0, "now": 1771538541.6184921, "miss_count": 223}
+{"ts": 1771538541.664538, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.00944173987954855, "vad_threshold": 0.007539558301792091, "armed_until": 0.0, "now": 1771538541.6645346, "miss_count": 224}
+{"ts": 1771538541.6654332, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.009930865839123726, "vad_threshold": 0.007539558301792091, "armed_until": 0.0, "now": 1771538541.6654315, "miss_count": 225}
+{"ts": 1771538541.687559, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008828510530292988, "vad_threshold": 0.007539558301792091, "armed_until": 0.0, "now": 1771538541.6875565, "miss_count": 226}
+{"ts": 1771538541.7111726, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.008370215073227882, "vad_threshold": 0.007539558301792091, "armed_until": 0.0, "now": 1771538541.7111707, "miss_count": 227}
+{"ts": 1771538542.3384702, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.0157356895506382, "vad_threshold": 0.01467829170036697, "armed_until": 0.0, "now": 1771538542.3384676, "miss_count": 228}
+{"ts": 1771538542.98827, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.020395802333950996, "vad_threshold": 0.01720723279959704, "armed_until": 0.0, "now": 1771538542.9882677, "miss_count": 229}
+{"ts": 1771538543.081536, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.021842079237103462, "vad_threshold": 0.017896675657024484, "armed_until": 0.0, "now": 1771538543.0815334, "miss_count": 230}
+{"ts": 1771538543.1738827, "event": "wakeword_gate_blocked", "component": "wakeword", "rms": 0.02318083867430687, "vad_threshold": 0.0194961953513023, "armed_until": 0.0, "now": 1771538543.1738799, "miss_count": 231}
+{"ts": 1771538543.7585373, "event": "listener_state", "component": "audio", "from_state": "armed", "to_state": "recover", "reason": "tts_end"}
+{"ts": 1771538543.7587879, "event": "assistant_speaking_end", "component": "audio"}

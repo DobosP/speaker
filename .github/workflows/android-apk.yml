@@ -45,7 +45,17 @@ jobs:
         run: flutter pub get
 
       - name: Build debug APK
-        run: flutter build apk --debug
+        run: flutter build apk --debug 2>&1 | tee /tmp/build.log
+
+      - name: Surface build error on failure
+        if: failure()
+        run: |
+          echo "===== build log tail ====="
+          tail -n 200 /tmp/build.log || true
+          msg=$(tail -n 150 /tmp/build.log 2>/dev/null \
+            | python3 -c "import sys;print(sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'))")
+          echo "::error title=flutter_build_failure::$msg"
+
 
       - name: Stage APK with a friendly name
         run: cp build/app/outputs/flutter-apk/app-debug.apk speaker-android.apk

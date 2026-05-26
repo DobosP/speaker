@@ -47,25 +47,22 @@ jobs:
       - name: Build debug APK
         run: flutter build apk --debug 2>&1 | tee /tmp/build.log
 
-      - name: Surface build error on failure
-        if: failure()
+      - name: Report build output
+        if: always()
         run: |
-          echo "===== build log tail ====="
-          tail -n 200 /tmp/build.log || true
-          msg=$(tail -n 150 /tmp/build.log 2>/dev/null \
-            | python3 -c "import sys;print(sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'))")
-          echo "::error title=flutter_build_failure::$msg"
-
+          enc() { sed 's/%/%25/g' | sed 's/$/%0A/' | tr -d '\n'; }
+          tailmsg=$(tail -n 35 /tmp/build.log 2>/dev/null | enc)
+          apks=$(find . -name '*.apk' 2>/dev/null | enc)
+          echo "::warning title=build_report::FLUTTER TAIL:%0A$tailmsg%0A-- APKS FOUND --%0A$apks"
 
       - name: Stage APK with a friendly name
         run: |
-          echo "All APKs under build/:"
-          find build -name '*.apk' 2>/dev/null || true
-          apk=$(find build -name '*.apk' 2>/dev/null | grep -m1 'debug' || true)
-          [ -n "$apk" ] || apk=$(find build -name '*.apk' 2>/dev/null | head -1)
+          echo "All APKs:"
+          find . -name '*.apk' 2>/dev/null || true
+          apk=$(find . -name '*.apk' 2>/dev/null | grep -m1 'debug' || true)
+          [ -n "$apk" ] || apk=$(find . -name '*.apk' 2>/dev/null | head -1)
           if [ -z "$apk" ]; then
-            tree=$(find build -maxdepth 5 -type d 2>/dev/null | head -60 | sed 's/$/%0A/' | tr -d '\n')
-            echo "::error title=no_apk_found::No .apk under build/. Dir tree:%0A$tree"
+            echo "::error title=no_apk_found::No .apk produced by the build"
             exit 1
           fi
           echo "Staging $apk"

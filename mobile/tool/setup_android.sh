@@ -58,3 +58,47 @@ with open(path, "w", encoding="utf-8") as f:
     f.write(new)
 print(f"Set compileSdk = 36 in {path} ({n} occurrence(s))")
 PY
+
+# Flutter plugin sub-projects (record_android, audioplayers_android, ...) keep
+# their OWN compileSdk and ignore the app module's. Force every Android
+# sub-project to compileSdk 36 via the root Gradle file.
+python3 - <<'PY'
+import os
+
+groovy = "android/build.gradle"
+kts = "android/build.gradle.kts"
+
+if os.path.exists(kts):
+    path, block = kts, '''
+subprojects {
+    afterEvaluate {
+        extensions.findByName("android")?.withGroovyBuilder {
+            "compileSdkVersion"(36)
+        }
+    }
+}
+'''
+elif os.path.exists(groovy):
+    path, block = groovy, '''
+subprojects {
+    afterEvaluate { proj ->
+        if (proj.extensions.findByName("android") != null) {
+            proj.extensions.getByName("android").compileSdkVersion 36
+        }
+    }
+}
+'''
+else:
+    raise SystemExit("Could not find root android/build.gradle[.kts]")
+
+with open(path, encoding="utf-8") as f:
+    text = f.read()
+
+if "forced compileSdk for all subprojects" not in text:
+    text += "\n// forced compileSdk for all subprojects\n" + block
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"Forced compileSdk 36 on all subprojects in {path}")
+else:
+    print("Subproject compileSdk override already present")
+PY

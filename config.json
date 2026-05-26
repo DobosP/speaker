@@ -36,5 +36,51 @@
     "dedupe_similarity": 0.92,
     "persist_user_only": true,
     "save_control_phrases": false
+  },
+  "agent_brain": {
+    "model": "ollama/gemma3:latest",
+    "api_base": "http://localhost:11434",
+    "api_key_env": null,
+    "offline": true,
+    "local_only": true,
+    "local_fallback_model": null,
+    "vision_model": null,
+    "os_mode": false,
+    "web_tool": "oi",
+    "screenshot_dir": null,
+    "auto_run": false,
+    "confirm_mode": "auto_safe",
+    "allowlist": [
+      "^ls\\b",
+      "^pwd\\b",
+      "^cat\\b",
+      "^head\\b",
+      "^tail\\b",
+      "^echo\\b",
+      "^date\\b",
+      "^whoami\\b",
+      "^df\\b",
+      "^free\\b",
+      "^uname\\b",
+      "^uptime\\b",
+      "^git status\\b",
+      "^git log\\b",
+      "^python3?\\s+-c\\b"
+    ],
+    "denylist": [
+      "rm\\s+-rf",
+      "\\bdd\\b",
+      "mkfs",
+      "\\bsudo\\b",
+      ":\\(\\)\\s*\\{",
+      "shutdown",
+      "reboot",
+      ">\\s*/dev/",
+      "chmod\\s+-R",
+      "chown\\s+-R",
+      "curl[^|]*\\|\\s*(sh|bash)",
+      "wget[^|]*\\|\\s*(sh|bash)"
+    ],
+    "max_output_chars": 2000
   }
 }

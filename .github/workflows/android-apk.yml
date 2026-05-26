@@ -59,9 +59,16 @@ jobs:
 
       - name: Stage APK with a friendly name
         run: |
-          apk=$(find build -name "app-debug.apk" -print -quit)
-          [ -n "$apk" ] || { echo "No app-debug.apk found under build/"; find build -name '*.apk'; exit 1; }
-          echo "Found APK at: $apk"
+          echo "All APKs under build/:"
+          find build -name '*.apk' 2>/dev/null || true
+          apk=$(find build -name '*.apk' 2>/dev/null | grep -m1 'debug' || true)
+          [ -n "$apk" ] || apk=$(find build -name '*.apk' 2>/dev/null | head -1)
+          if [ -z "$apk" ]; then
+            tree=$(find build -maxdepth 5 -type d 2>/dev/null | head -60 | sed 's/$/%0A/' | tr -d '\n')
+            echo "::error title=no_apk_found::No .apk under build/. Dir tree:%0A$tree"
+            exit 1
+          fi
+          echo "Staging $apk"
           cp "$apk" speaker-android.apk
 
       - name: Upload APK artifact

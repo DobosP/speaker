@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from ..engine import AudioEngine, EngineCallbacks
+from .speaker_gate import SpeakerGate, sherpa_speaker_gate
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
@@ -39,6 +40,11 @@ class SherpaConfig:
     tts_speed: float = 1.0
     # Barge-in: seconds of detected voice during playback before we interrupt.
     barge_in_min_speech_sec: float = 0.2
+    # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
+    # the enrolled user (keeps the assistant's own TTS from self-interrupting).
+    speaker_embedding_model: str = ""
+    speaker_enroll_wav: str = ""
+    speaker_threshold: float = 0.5
     num_threads: int = 2
 
     @classmethod
@@ -67,6 +73,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._running = threading.Event()
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
+        self._speaker_gate: Optional[SpeakerGate] = None
 
     # --- lazy model construction ---
     def _build(self) -> None:
@@ -97,6 +104,15 @@ class SherpaOnnxEngine(AudioEngine):
                 tts_config.model.vits.data_dir = c.tts_data_dir
             tts_config.model.num_threads = c.num_threads
             self._tts = sherpa_onnx.OfflineTts(tts_config)
+        if c.speaker_embedding_model:
+            self._speaker_gate = sherpa_speaker_gate(
+                c.speaker_embedding_model,
+                threshold=c.speaker_threshold,
+                num_threads=c.num_threads,
+            )
+            if c.speaker_enroll_wav:
+                samples, sr = sherpa_onnx.read_wave(c.speaker_enroll_wav)
+                self._speaker_gate.enroll(samples, sr)
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
@@ -205,7 +221,10 @@ class SherpaOnnxEngine(AudioEngine):
                 on_done()
 
     def _looks_like_user(self, samples) -> bool:
-        # Placeholder for speaker-ID gating (sherpa-onnx speaker models) so the
-        # assistant's own TTS leaking into the mic isn't treated as barge-in.
-        # v1: accept any detected voice (use a headset for clean barge-in).
-        return True
+        # Speaker-ID gate: when enrolled, only the user's own voice counts as
+        # barge-in, so the assistant's TTS bleeding into the mic can't
+        # self-interrupt. Fail-open when no gate/enrollment is configured.
+        gate = self._speaker_gate
+        if gate is None or not gate.is_enrolled:
+            return True
+        return gate.accept(samples, self.config.sample_rate)

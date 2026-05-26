@@ -34,8 +34,8 @@ else:
     print("RECORD_AUDIO already present, no patch needed")
 PY
 
-# Some plugins (e.g. audioplayers) pull AndroidX libs that require compileSdk
-# >= 34, but `flutter create` may default to 33. Force a high enough compileSdk.
+# Plugins (record_android, audioplayers) pull AndroidX libs that require
+# compileSdk 36, but `flutter create` may default lower. Force compileSdk 36.
 python3 - <<'PY'
 import os
 import re
@@ -50,11 +50,11 @@ with open(path, encoding="utf-8") as f:
 
 # Normalize whatever compileSdk line is present to a fixed value (valid in
 # both Groovy and Kotlin DSL).
-new, n = re.subn(r"compileSdk(?:Version)?\s*=?\s*[^\n]+", "compileSdk = 34", text)
+new, n = re.subn(r"compileSdk(?:Version)?\s*=?\s*[^\n]+", "compileSdk = 36", text)
 if n == 0:
     raise SystemExit(f"No compileSdk declaration found in {path}")
 
 with open(path, "w", encoding="utf-8") as f:
     f.write(new)
-print(f"Set compileSdk = 34 in {path} ({n} occurrence(s))")
+print(f"Set compileSdk = 36 in {path} ({n} occurrence(s))")
 PY

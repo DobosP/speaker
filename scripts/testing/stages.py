@@ -60,6 +60,8 @@ class StageRegistry:
                     "tests/test_bargein_scenarios.py",
                     "tests/test_recorded_sessions.py",
                     "tests/test_voice_agent_metrics.py",
+                    "tests/test_dataset_router.py",
+                    "tests/test_dataset_analyzer.py",
                 ),
                 markers="audio and not discovery",
                 extra_args=("-q",),

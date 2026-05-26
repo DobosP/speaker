@@ -37,6 +37,7 @@ env/
 live_transcript.txt
 temp/
 transcripts/
+tests/datasets/_cache/
 *.wav
 *.mp3
 *.mp4

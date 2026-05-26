@@ -62,11 +62,13 @@ class MoonshineAdapter(SpeechToTextAdapter):
         self._model = None
 
     def _load(self):
-        if self._model is None:
-            from utils.stt import get_stt_model
-
-            self._model = get_stt_model(self.model_id)
-        return self._model
+        # STT is now provided on-device by core/engines/sherpa.py
+        # (sherpa-onnx). This adapter stub is retained only for the
+        # INTEGRATION_TARGETS documentation and is no longer wired.
+        raise NotImplementedError(
+            "STT is provided by core.engines.sherpa.SherpaOnnxEngine; "
+            "the MoonshineAdapter stub is no longer wired to a backend."
+        )
 
     def transcribe_partial(self, audio) -> str:
         return str(self._load().transcribe(audio))

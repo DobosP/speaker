@@ -77,6 +77,23 @@ def test_barge_in_during_llm_generation_suppresses_stale_answer(profile):
         assert sb.spoken == []  # stale answer suppressed
 
 
+def test_barge_in_cancels_llm_generation_early():
+    """Barge-in should interrupt the LLM mid-stream, not wait for the full
+    answer to generate. Uses the slow-phone profile so the generation window is
+    wide and easy to interrupt."""
+    long_reply = "this is a deliberately long answer with many tokens to generate"
+    total_tokens = len(long_reply.split())
+    profile = PHONE_LOW.scaled(0.1)
+    with Sandbox(profile, reply_fn=lambda p: long_reply) as sb:
+        sb.user_says("explain something at length")
+        assert sb.wait_task_active()
+        sb.barge_in()
+        sb.settle()
+        assert sb.spoken == []
+        # Generation stopped well before producing the whole answer.
+        assert sb.llm.tokens_yielded < total_tokens
+
+
 @pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
 def test_voice_mode_switch_then_research(profile):
     with Sandbox(profile, start_mode=Mode.ASSISTANT) as sb:

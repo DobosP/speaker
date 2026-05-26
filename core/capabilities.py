@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from threading import Event
+from typing import Iterator, Optional
+
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 
 from .llm import LLMClient
@@ -9,6 +12,22 @@ DEFAULT_SYSTEM = (
     "natural spoken sentences. Do not use markdown, lists, headings, or "
     "preambles like 'Sure'. If you don't know, say so briefly."
 )
+
+
+def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]:
+    """Drain a token stream, stopping early if ``cancel`` fires.
+
+    Returns ``(text, cancelled)``. Streaming (rather than a blocking
+    ``generate``) is what makes a slow local model interruptible: barge-in cuts
+    generation off mid-stream instead of waiting for the whole answer."""
+    parts: list[str] = []
+    cancelled = False
+    for token in tokens:
+        if cancel is not None and cancel.is_set():
+            cancelled = True
+            break
+        parts.append(token)
+    return "".join(parts).strip(), cancelled
 
 
 def attach_llm_capabilities(
@@ -27,7 +46,10 @@ def attach_llm_capabilities(
     """
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
-        text = llm.generate(query, system=system).strip()
+        cancel = context.get("cancel_event")
+        text, cancelled = _collect(llm.stream(query, system=system), cancel)  # type: ignore[arg-type]
+        if cancelled:
+            return CapabilityResult(True, text, data={"cancelled": True})
         return CapabilityResult(True, text or "Sorry, I don't have an answer for that.")
 
     def research_synth(query: str, context: dict[str, object]) -> CapabilityResult:
@@ -42,7 +64,9 @@ def attach_llm_capabilities(
             f"Local findings: {gathered or '(none)'}\n"
             "Give a brief spoken-style summary and one concrete recommendation."
         )
-        return CapabilityResult(True, llm.generate(prompt, system=system).strip())
+        cancel = context.get("cancel_event")
+        text, cancelled = _collect(llm.stream(prompt, system=system), cancel)  # type: ignore[arg-type]
+        return CapabilityResult(True, text, data={"cancelled": cancelled})
 
     registry.register("assistant.answer", assistant)
     registry.register("research.local", research_synth)

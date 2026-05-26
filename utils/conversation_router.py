@@ -87,11 +87,17 @@ class ConversationRouter:
         self,
         stop_phrases: tuple[str, ...] = ("stop", "quit", "exit"),
         stop_mode: str = "exact",
+        agent_trigger_phrases: tuple[str, ...] = (),
+        agent_capability_name: str = "agent.execute",
     ):
         self.stop_mode = stop_mode
         self._configured_stop_phrases = {
             normalize_transcript(phrase) for phrase in stop_phrases
         }
+        self._agent_capability_name = agent_capability_name
+        self._agent_trigger_phrases = tuple(
+            p for p in (normalize_transcript(x) for x in agent_trigger_phrases) if p
+        )
 
     def route(self, ctx: RouteContext) -> RouteDecision:
         text = normalize_transcript(ctx.transcript)
@@ -105,6 +111,17 @@ class ConversationRouter:
         stop_output = self._matches_stop_output(text)
         if stop_output:
             return RouteDecision(RouteAction.STOP_OUTPUT, "stop_output_phrase", text)
+
+        agent = self._route_agent(ctx.transcript, text, ctx.available_capabilities)
+        if agent is not None:
+            name, payload, reason = agent
+            return RouteDecision(
+                RouteAction.CAPABILITY,
+                reason,
+                text,
+                capability=name,
+                payload=payload,
+            )
 
         capability = self._route_capability(text, ctx.available_capabilities)
         if capability is not None:
@@ -149,6 +166,50 @@ class ConversationRouter:
             phrase and (text == phrase or text.startswith(f"{phrase} "))
             for phrase in phrases
         )
+
+    def _route_agent(
+        self,
+        original: str | None,
+        normalized: str,
+        available: tuple[str, ...],
+    ) -> tuple[str, dict[str, Any], str] | None:
+        """Route 'computer, <task>' style utterances to the action brain."""
+        if not self._agent_trigger_phrases:
+            return None
+        if self._agent_capability_name not in available:
+            return None
+        for phrase in self._agent_trigger_phrases:
+            if normalized == phrase:
+                return None  # bare trigger, no instruction -> let it fall to LLM
+            if normalized.startswith(f"{phrase} "):
+                instruction = self._strip_trigger(original or normalized, phrase)
+                if not instruction:
+                    return None
+                return (
+                    self._agent_capability_name,
+                    {"instruction": instruction},
+                    "agent_trigger",
+                )
+        return None
+
+    @staticmethod
+    def _strip_trigger(original: str, phrase: str) -> str:
+        """Strip the leading trigger phrase from the ORIGINAL transcript.
+
+        The trigger is matched on normalized text, but the instruction handed to
+        the action brain keeps the original case and punctuation.
+        """
+        if not original:
+            return ""
+        pattern = re.compile(
+            r"^\s*" + re.escape(phrase).replace(r"\ ", r"\s+") + r"\b[\s,:;.!-]*",
+            re.IGNORECASE,
+        )
+        stripped = pattern.sub("", original, count=1)
+        if stripped == original:
+            # punctuation/spacing differences: fall back to a word-count slice
+            stripped = " ".join(original.split()[len(phrase.split()):])
+        return stripped.strip()
 
     @staticmethod
     def _route_capability(

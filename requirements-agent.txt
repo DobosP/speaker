@@ -1,0 +1,19 @@
+# Action-brain (machine-control) dependencies -- OPTIONAL.
+#
+# Kept separate from requirements.txt so the lean, fully-local voice assistant
+# installs and runs without these. Install on the machine that should be able to
+# take actions (run code/shell, control the desktop, browse the web):
+#
+#     pip install -r requirements-agent.txt
+#
+# Open Interpreter pins several libs tightly (litellm<2, anthropic<0.38,
+# tiktoken<0.8, transformers==4.41.2). If these conflict with the base install,
+# use a dedicated virtualenv for the agent process (see the plan's dependency
+# strategy); utils/agent_brain.py is the single integration point either way.
+
+open-interpreter==0.4.3
+
+# Desktop GUI / "OS mode" control (Phase 3) additionally needs the [os] extra:
+#     pip install "open-interpreter[os]==0.4.3"
+# plus system packages on Linux/X11: scrot or gnome-screenshot, python3-tk,
+# tesseract-ocr. GUI control is unreliable under Wayland (pyautogui needs X11).

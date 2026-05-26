@@ -326,6 +326,9 @@ class VoiceAssistant:
         no_tts: bool = False,
         playback_backend: str = "auto",
         tts_debug_enabled: bool = False,
+        agent_enabled: bool = False,
+        agent_brain_config: dict | None = None,
+        agent_trigger_phrases: tuple[str, ...] = (),
     ):
         self.llm_model = llm_model
         self.stt_model = stt_model
@@ -456,9 +459,18 @@ class VoiceAssistant:
         self._stage_metrics = {}
         self._stage_metrics_lock = threading.Lock()
         self._capabilities = create_default_registry()
+        self.agent_enabled = bool(agent_enabled)
+        self.agent_brain_config = agent_brain_config or {}
+        self.agent_trigger_phrases = tuple(agent_trigger_phrases or ())
+        self._agent_brain = None
+        if self.agent_enabled:
+            self._setup_agent_brain()
         self._router = ConversationRouter(
             stop_phrases=tuple(stop_phrases),
             stop_mode=stop_mode,
+            agent_trigger_phrases=(
+                self.agent_trigger_phrases if self._agent_brain is not None else ()
+            ),
         )
         self._session_mux = SessionMux(mode=TransportMode(self.transport_mode))
         self._turn_detector = TurnDetector(
@@ -967,6 +979,10 @@ class VoiceAssistant:
                 session_id=self.session_id,
             )
             response = self._capabilities.invoke(req)
+            if response.ok and isinstance(response.data, dict) and response.data.get("streamed"):
+                # Streaming providers (e.g. agent.execute) already spoke their
+                # output via the injected speak callback; don't speak again.
+                return True
             if response.ok:
                 answer = self._capability_response_text(decision.capability, response.data)
             else:
@@ -979,6 +995,77 @@ class VoiceAssistant:
         if decision.action == RouteAction.LLM:
             return False
         return True
+
+    def _setup_agent_brain(self):
+        """Construct the Open Interpreter action brain and register agent.execute.
+
+        Any failure here only disables the agent capability; the assistant keeps
+        running as a normal voice chat assistant.
+        """
+        try:
+            import dataclasses
+
+            from utils.agent_brain import AgentBrain, AgentBrainConfig
+            from utils.agent_capability import create_agent_provider
+
+            cfg = dict(self.agent_brain_config or {})
+            cfg["allowlist"] = tuple(cfg.get("allowlist") or ())
+            cfg["denylist"] = tuple(cfg.get("denylist") or ())
+            valid = {f.name for f in dataclasses.fields(AgentBrainConfig)}
+            cfg = {k: v for k, v in cfg.items() if k in valid}
+
+            brain = AgentBrain(AgentBrainConfig(**cfg))
+            self._capabilities.register(
+                "agent.execute",
+                create_agent_provider(
+                    brain,
+                    speak_cb=self._agent_speak_chunk,
+                    confirm_cb=self._agent_confirm,
+                    cancel_cb=lambda: self._cancel_generation.is_set(),
+                ),
+                overwrite=True,
+            )
+            self._agent_brain = brain
+            print("[agent] action brain enabled (say a trigger phrase, e.g. 'computer, ...')")
+        except Exception as exc:
+            self._agent_brain = None
+            print(f"[agent] disabled: {exc}")
+
+    def _agent_speak_chunk(self, text: str):
+        """Speak one streamed phrase from the action brain.
+
+        Reuses the normal _speak path (which returns early when
+        _cancel_generation is set, so barge-in still works) and mirrors the LLM
+        path's console print + transport broadcast so remote clients see it too.
+        """
+        text = (text or "").strip()
+        if not text or self._cancel_generation.is_set():
+            return
+        cm = self._console_print_lock if self._console_print_lock else nullcontext()
+        with cm:
+            print(f"Assistant: {text}")
+        try:
+            with open("live_transcript.txt", "a") as f:
+                f.write(f"Assistant: {text}\n")
+        except Exception:
+            pass
+        self._session_mux.broadcast(
+            SessionEnvelope(
+                session_id=self.session_id or "local",
+                event_type="assistant_sentence",
+                payload={"text": text},
+            )
+        )
+        self._speak(text)
+
+    def _agent_confirm(self, code: str, language: str) -> bool:
+        """Spoken confirmation gate (Phase 2/3).
+
+        With confirm_mode=auto_safe the brain never calls this: allowlisted
+        commands auto-run and everything else is refused. Until the spoken
+        yes/no dialog lands, default to refuse for safety.
+        """
+        return False
 
     def _on_barge_in(self, info=None):
         """Called when user speaks while assistant is talking (barge-in)."""
@@ -2733,6 +2820,10 @@ def main():
         except Exception:
             print(f"TTS output: device {output_device} (matched to microphone)")
 
+    agent_enabled = bool(config.get("agent_enabled", False))
+    agent_brain_config = config.get("agent_brain") or {}
+    agent_trigger_phrases = tuple(config.get("agent_trigger_phrases", []) or [])
+
     assistant = VoiceAssistant(
         llm_model=llm_model,
         stt_model=stt_model,
@@ -2811,6 +2902,9 @@ def main():
         no_tts=no_tts,
         playback_backend=playback_backend,
         tts_debug_enabled=tts_debug_enabled,
+        agent_enabled=agent_enabled,
+        agent_brain_config=agent_brain_config,
+        agent_trigger_phrases=agent_trigger_phrases,
     )
 
     # Session recorder (opt-in via --record flag).

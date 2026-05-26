@@ -45,3 +45,53 @@ def test_partial_only_allows_control_commands():
     router = ConversationRouter()
     assert router.route_partial(_ctx("stop", partial=True)).action == RouteAction.STOP_OUTPUT
     assert router.route_partial(_ctx("what time is it", partial=True)).action == RouteAction.IGNORE
+
+
+# -- action-brain trigger routing -------------------------------------------
+
+def _agent_ctx(text: str) -> RouteContext:
+    return RouteContext(
+        transcript=text,
+        available_capabilities=("system.time", "debug.echo", "agent.execute"),
+    )
+
+
+def _agent_router() -> ConversationRouter:
+    return ConversationRouter(agent_trigger_phrases=("computer", "hey computer", "agent"))
+
+
+def test_agent_trigger_routes_to_agent_execute_keeping_case():
+    decision = _agent_router().route(_agent_ctx("Computer, list my Downloads folder."))
+    assert decision.action == RouteAction.CAPABILITY
+    assert decision.capability == "agent.execute"
+    # original case + punctuation preserved for the action brain
+    assert decision.payload["instruction"] == "list my Downloads folder."
+
+
+def test_agent_multiword_trigger_strips_only_the_trigger():
+    decision = _agent_router().route(_agent_ctx("Hey computer, what's my disk usage?"))
+    assert decision.capability == "agent.execute"
+    assert decision.payload["instruction"] == "what's my disk usage?"
+
+
+def test_bare_trigger_falls_through_to_llm():
+    assert _agent_router().route(_agent_ctx("computer")).action == RouteAction.LLM
+
+
+def test_non_trigger_utterance_is_unaffected():
+    assert _agent_router().route(_agent_ctx("what is the capital of france")).action == RouteAction.LLM
+
+
+def test_trigger_ignored_when_agent_capability_unavailable():
+    ctx = RouteContext(transcript="computer, list files", available_capabilities=("system.time",))
+    assert _agent_router().route(ctx).action == RouteAction.LLM
+
+
+def test_no_configured_trigger_means_no_agent_routing():
+    # default router has no agent trigger phrases -> behaves exactly as before
+    assert ConversationRouter().route(_agent_ctx("computer, list files")).action == RouteAction.LLM
+
+
+def test_stop_still_wins_over_agent_trigger():
+    # control phrases are checked before agent routing
+    assert _agent_router().route(_agent_ctx("stop")).action == RouteAction.STOP_OUTPUT

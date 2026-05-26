@@ -1,0 +1,96 @@
+# Golden regression table for always_on_agent.speech_analyzer.LiveSpeechAnalyzer.
+#
+# Each row is a trusted (text, mode -> expected IntentDecision) pair, run as a
+# parametrized CI gate by tests/test_router_golden.py. `mode` is the current
+# Mode the analyzer is in when deciding. Rows tagged `gap` pin current behavior.
+version: 1
+layer: speech_analyzer
+cases:
+  - id: en_stop
+    text: "stop"
+    mode: passive
+    expect_kind: stop
+    expect_language: en
+    tags: [control]
+  - id: ro_stop
+    text: "opreste"
+    mode: passive
+    expect_kind: stop
+    expect_language: ro
+    tags: [control, bilingual]
+  - id: confirm_da
+    text: "da"
+    mode: command
+    expect_kind: confirm
+    tags: [control, bilingual]
+  - id: deny_nu
+    text: "nu"
+    mode: command
+    expect_kind: deny
+    tags: [control, bilingual]
+  - id: mode_switch_en
+    text: "search mode"
+    mode: passive
+    expect_kind: mode_switch
+    expect_target_mode: search
+    expect_language: en
+    tags: [mode]
+  - id: mode_switch_ro
+    text: "mod cautare"
+    mode: passive
+    expect_kind: mode_switch
+    expect_target_mode: search
+    expect_language: ro
+    tags: [mode, bilingual]
+  - id: en_search_prefix
+    text: "search local stt"
+    mode: passive
+    expect_kind: search
+    expect_language: en
+    tags: [intent]
+  - id: ro_search_prefix
+    text: "cauta moonshine local"
+    mode: passive
+    expect_kind: search
+    expect_language: ro
+    tags: [intent, bilingual]
+  - id: ro_research_prefix
+    text: "cerceteaza voice pipelines"
+    mode: passive
+    expect_kind: research
+    expect_language: ro
+    tags: [intent, bilingual]
+  - id: command_prefix_needs_confirm
+    text: "open browser"
+    mode: command
+    expect_kind: command
+    expect_requires_confirmation: true
+    tags: [intent, command]
+  - id: wake_word_activation
+    text: "assistant help me plan the pipeline"
+    mode: passive
+    expect_kind: assistant
+    expect_language: en
+    tags: [activation]
+  - id: passive_no_activation
+    text: "this is just background chatter"
+    mode: passive
+    expect_kind: ignore
+    tags: [activation]
+  - id: dictation_capture
+    text: "this is a clean note"
+    mode: dictation
+    expect_kind: dictation
+    tags: [mode]
+  - id: meeting_note_capture
+    text: "remember to send the report"
+    mode: meeting
+    expect_kind: meeting_note
+    tags: [mode]
+  # ── Pinned gap: leading filler breaks the explicit-prefix match ──
+  - id: leading_filler_gap
+    text: "uh search the web"
+    mode: passive
+    expect_kind: ignore   # GAP: "uh " prefix defeats the "search " prefix match
+    expect_language: en
+    tags: [gap, messy]

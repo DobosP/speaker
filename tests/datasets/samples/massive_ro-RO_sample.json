@@ -1,0 +1,458 @@
+{
+"_source": "MASSIVE 1.0 (alexa/massive)",
+"_license": "CC BY 4.0",
+"_url": "https://github.com/alexa/massive",
+"locale": "ro-RO",
+"records": [
+{
+"text": "trezește-mă la cinci dimineața săptămâna asta",
+"intent": "alarm_set",
+"scenario": "alarm"
+},
+{
+"text": "liniște",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "verifica cand incepe spectacolul",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "imi poti recomanda o mancare sanatoasa pentru cina",
+"intent": "cooking_recipe",
+"scenario": "cooking"
+},
+{
+"text": "cat este ceasul in romania",
+"intent": "datetime_query",
+"scenario": "datetime"
+},
+{
+"text": "nu voiam inca sa trimiti acel mesaj asteapta pana spun trimite",
+"intent": "email_sendemail",
+"scenario": "email"
+},
+{
+"text": "verifica daca masina mea e gata",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "roz e tot ce avem nevoie",
+"intent": "iot_hue_lightchange",
+"scenario": "iot"
+},
+{
+"text": "am finalizat lista de făcut",
+"intent": "lists_query",
+"scenario": "lists"
+},
+{
+"text": "îmi place muzica rock",
+"intent": "music_likeness",
+"scenario": "music"
+},
+{
+"text": "ce se intampla in fotbal azi",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "redă din nou cântecul trupei proconsul",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "ține-mă la curent cu preturile actiunilor la bursa",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "gaseste-mi un restaurant frumos pentru cina",
+"intent": "recommendation_locations",
+"scenario": "recommendation"
+},
+{
+"text": "du mă la pagina web a ziarului financiar",
+"intent": "social_post",
+"scenario": "social"
+},
+{
+"text": "olly enumeră cele mai bine cotate opțiuni de livrare pentru mâncare chinezească",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "trebuie sa-mi dai indicatii diferite",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "plouă",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "trezeste-ma vineri la noua dimineata",
+"intent": "alarm_set",
+"scenario": "alarm"
+},
+{
+"text": "olly liniște",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "te rog să îmi spui ce evenimente am astăzi",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "reteta ta de friptură a fost superba",
+"intent": "cooking_recipe",
+"scenario": "cooking"
+},
+{
+"text": "spune-mi ora în craiova",
+"intent": "datetime_query",
+"scenario": "datetime"
+},
+{
+"text": "e-mailuri",
+"intent": "email_query",
+"scenario": "email"
+},
+{
+"text": "verifică să îmi meargă laptopul",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "fă lumina un pic mai caldă aici",
+"intent": "iot_hue_lightchange",
+"scenario": "iot"
+},
+{
+"text": "sterge cumparaturile din lista mea de lucruri de facut pentru duminica",
+"intent": "lists_remove",
+"scenario": "lists"
+},
+{
+"text": "trupa mea favorită de muzică e queen",
+"intent": "music_likeness",
+"scenario": "music"
+},
+{
+"text": "spune stirile de pe antena trei",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "vreau să redai melodia aia încă o dată",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "care este produsul intern brut in romania",
+"intent": "qa_factoid",
+"scenario": "qa"
+},
+{
+"text": "spune-mi evenimentele curente în orașul natal",
+"intent": "recommendation_events",
+"scenario": "recommendation"
+},
+{
+"text": "ce se întâmplă acum pe twitter",
+"intent": "social_query",
+"scenario": "social"
+},
+{
+"text": "cele mai apreciate optiuni de livrare pentru mancare chinezeasca",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "olly trebuie sa-mi dai alte indicatii",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "o sa ploua",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "seteaza o alarma peste doua ore",
+"intent": "alarm_set",
+"scenario": "alarm"
+},
+{
+"text": "stop",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "poți confirma că întâlnirea mea de mâine a fost anulată",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "e branza moale mai buna decat cea tare",
+"intent": "cooking_recipe",
+"scenario": "cooking"
+},
+{
+"text": "spune-mi ora in g. m. t. plus cinci",
+"intent": "datetime_convert",
+"scenario": "datetime"
+},
+{
+"text": "te rog trimite email catre dl. robert si spune i ca o sa il intalnesc pe intai februarie doua mii saptesprezece la ora cinci p. m. la birou",
+"intent": "email_sendemail",
+"scenario": "email"
+},
+{
+"text": "scade cumva luminozitatea ecranului meu",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "redă te rog lumina potrivită pentru citit",
+"intent": "iot_hue_lightchange",
+"scenario": "iot"
+},
+{
+"text": "șterge totul din meniu",
+"intent": "lists_remove",
+"scenario": "lists"
+},
+{
+"text": "mie îmi plac melodiile lui johnny răducanu",
+"intent": "music_likeness",
+"scenario": "music"
+},
+{
+"text": "care sunt stirile pe stirile pro tv",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "asculta bunica bate toba de zdob si zdub",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "te rog spune-mi stiri legate de bursa de valori",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "ar trebui sa vad acest film",
+"intent": "recommendation_movies",
+"scenario": "recommendation"
+},
+{
+"text": "cum arata feedul meu de pe facebook",
+"intent": "social_query",
+"scenario": "social"
+},
+{
+"text": "enumerati cele mai apreciate optiuni de livrare pentru mancare chinezeasca",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "trebuie sa gasesti o ruta alternativa spre destinația mea",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "ninge momentan",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "anuleaza alarma mea de sapte dimineata",
+"intent": "alarm_remove",
+"scenario": "alarm"
+},
+{
+"text": "olly pune pauză pentru zece secunde",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "este întâlnirea programată pentru mâine",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "gătit",
+"intent": "cooking_query",
+"scenario": "cooking"
+},
+{
+"text": "andrei spune mi ora in g. m. t. plus cinci",
+"intent": "datetime_convert",
+"scenario": "datetime"
+},
+{
+"text": "te rog trimite un mesaj vocal în biroul domnului daniel despre ședința cu el pe întâi februarie două mii șaptesprezece la ora cinci p. m.",
+"intent": "email_sendemail",
+"scenario": "email"
+},
+{
+"text": "am nevoie de servicii de localizare deschise poți să verifici",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "stinge luminile te rog",
+"intent": "iot_hue_lightoff",
+"scenario": "iot"
+},
+{
+"text": "arată-mi doar ce e pe lista de cumpărături",
+"intent": "lists_query",
+"scenario": "lists"
+},
+{
+"text": "ce trupa canta acum",
+"intent": "music_query",
+"scenario": "music"
+},
+{
+"text": "care sunt cele mai recente stiri pe pro tv",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "vreau să aud holograf ti-am dat un inel",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "ce e nou la bursa de valori",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "care sunt cele mai apropiate restaurante disponibile",
+"intent": "recommendation_locations",
+"scenario": "recommendation"
+},
+{
+"text": "media de socializare",
+"intent": "social_query",
+"scenario": "social"
+},
+{
+"text": "olly cele mai bine cotate optiuni pentru livrare mancare chinezeasca",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "olly am nevoie sa gasesc ruta alternativa spre destinația mea",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "care e prognoza săptămânii",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "oprește alarma de la șapte dimineața",
+"intent": "alarm_remove",
+"scenario": "alarm"
+},
+{
+"text": "pune pauză pentru zece secunde",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "amintește-mi dacă se mai întâmplă orice altceva",
+"intent": "calendar_set",
+"scenario": "calendar"
+},
+{
+"text": "ce sa gatesc pentru pranz",
+"intent": "cooking_query",
+"scenario": "cooking"
+},
+{
+"text": "spune-mi ce zi e astazi",
+"intent": "datetime_query",
+"scenario": "datetime"
+},
+{
+"text": "te rog tine ma la curent cu vremea de saptamana viitoare in brasov",
+"intent": "email_query",
+"scenario": "email"
+},
+{
+"text": "verifica statusul consumului meu de energie",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "e vremea de culcare",
+"intent": "iot_hue_lightoff",
+"scenario": "iot"
+},
+{
+"text": "listează articolele din lista mea de cumpărături",
+"intent": "lists_query",
+"scenario": "lists"
+},
+{
+"text": "cine este compozitorul acestei muzici",
+"intent": "music_query",
+"scenario": "music"
+},
+{
+"text": "spune-mi cele mai recente stiri despre tehnologie",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "redă daca vrei de celalalte cuvinte",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "care sunt unele actualizari despre piata actiunilor",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "la ce film ar trebui să ma uit eu",
+"intent": "recommendation_movies",
+"scenario": "recommendation"
+},
+{
+"text": "trimite un mesaj pe facebook la solicitările de prietenie în așteptare că lista mea de prieteni este plină și voi crea un profil nou în curând",
+"intent": "social_post",
+"scenario": "social"
+},
+{
+"text": "vreau curry la pachet ceva recomandari",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "confirma biletul de tren spre germania",
+"intent": "transport_ticket",
+"scenario": "transport"
+},
+{
+"text": "care e prognoza saptamanii",
+"intent": "weather_query",
+"scenario": "weather"
+}
+]
+}

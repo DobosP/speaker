@@ -14,11 +14,23 @@ runs on Android and iOS.
 > before proposing structural changes. Short version: the hand-rolled audio
 > stack is being replaced by `sherpa-onnx`; the `always_on_agent/` "brain" is
 > being kept and made real; `main.py` shrinks to a thin adapter.
+>
+> **Phase 1 has landed in `core/`** — the new lean runtime (`VoiceRuntime`)
+> that wires a swappable `AudioEngine` (sherpa-onnx for production, a scripted
+> engine for tests) to the `always_on_agent` brain with a real LLM-backed
+> capability. New work goes in `core/`, not `main.py`. Try it without audio:
+> `python -m core --engine console --llm echo`.
 
 ## Layout
 
-- `main.py` — current monolithic orchestrator (`VoiceAssistant`, ~2,900 lines).
-  Being replaced by a thin runtime adapter. Don't add features here.
+- `core/` — **the new lean runtime (use this).** `engine.py` (the `AudioEngine`
+  seam), `engines/sherpa.py` (production, on-device), `engines/scripted.py`
+  (tests/console), `llm.py` (Ollama client + fake), `capabilities.py` (LLM-backed
+  providers), `runtime.py` (`VoiceRuntime` orchestrator), `app.py` (CLI). Tested
+  by `tests/test_core_runtime.py` with no audio/model deps.
+- `main.py` — **legacy** monolithic orchestrator (`VoiceAssistant`, ~2,900
+  lines). Superseded by `core/`. Don't add features here; slated for removal
+  once `core` is validated on real hardware (live mic + sherpa models + Ollama).
 - `utils/audio.py` — hand-rolled real-time DSP (NLMS AEC, VAD gate, barge-in).
   ~3,000 lines. **Scheduled for replacement** by `sherpa-onnx`. Don't extend it.
 - `utils/stt.py`, `utils/llm.py`, `utils/tts*` — STT/LLM/TTS plumbing.

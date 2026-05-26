@@ -58,3 +58,6 @@ config.local.json
 # Environment variables
 .env
 .env.local
+
+# Generated test reports (tools/run_tests.py)
+test-reports/

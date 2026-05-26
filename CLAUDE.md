@@ -46,8 +46,11 @@ runs on Android and iOS.
 
 ## Conventions
 
-- Python, standard `pytest`. Run tests: `python -m pytest tests -q`.
-- Run the app: `python main.py --profile mid` (needs `ollama serve` + a pulled model).
+- Python, standard `pytest`. Run tests: `python -m pytest tests -q`. For staged
+  runs with structured reports (per-stage + a tabular run summary under
+  `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|full`.
+- Run the app: `python -m core --engine console --llm echo` (no audio/models);
+  `python -m core --engine sherpa` for on-device audio.
 - Keep new control-plane logic in `always_on_agent/`, typed and testable, not in `main.py`.
 - Prefer replay/transcript tests over tests that require live audio devices.
 - Fully-local is a hard product requirement: no cloud STT/LLM/TTS by default.

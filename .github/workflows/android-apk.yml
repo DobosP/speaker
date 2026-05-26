@@ -1,11 +1,12 @@
 name: Build Android APK
 
 on:
+  # Only build/publish the APK when app-level code lands on main
+  # (i.e. on merge), not on every development push.
   push:
-    branches: [ main, claude/nice-planck-ZDr90 ]
+    branches: [ main ]
     paths:
       - 'mobile/**'
-      - '.github/workflows/android-apk.yml'
   workflow_dispatch:
 
 permissions:

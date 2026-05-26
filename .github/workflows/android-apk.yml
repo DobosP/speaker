@@ -1,0 +1,103 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, claude/nice-planck-ZDr90 ]
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+
+      - name: Generate Android platform files
+        run: bash tool/setup_android.sh
+
+      - name: Download on-device models
+        run: bash tool/download-models.sh
+
+      - name: Write asset list into pubspec
+        run: python3 tool/generate-asset-list.py
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Build debug APK
+        run: flutter build apk --debug 2>&1 | tee /tmp/build.log
+
+      - name: Report build output
+        if: always()
+        run: |
+          enc() { sed 's/%/%25/g' | sed 's/$/%0A/' | tr -d '\n'; }
+          tailmsg=$(tail -n 35 /tmp/build.log 2>/dev/null | enc)
+          apks=$(find . -name '*.apk' 2>/dev/null | enc)
+          echo "::warning title=build_report::FLUTTER TAIL:%0A$tailmsg%0A-- APKS FOUND --%0A$apks"
+
+      - name: Stage APK with a friendly name
+        run: |
+          echo "All APKs:"
+          find . -name '*.apk' 2>/dev/null || true
+          apk=$(find . -name '*.apk' 2>/dev/null | grep -m1 'debug' || true)
+          [ -n "$apk" ] || apk=$(find . -name '*.apk' 2>/dev/null | head -1)
+          if [ -z "$apk" ]; then
+            echo "::error title=no_apk_found::No .apk produced by the build"
+            exit 1
+          fi
+          echo "Staging $apk"
+          cp "$apk" speaker-android.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: speaker-mobile-debug-apk
+          path: mobile/speaker-android.apk
+          if-no-files-found: error
+
+      - name: Publish APK to a GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-latest
+          name: Android build (latest)
+          body: |
+            On-device Speaker test app — streaming ASR + TTS, fully local.
+            Download **speaker-android.apk** below on your phone and tap to install
+            (enable *Install unknown apps* if prompted).
+          files: mobile/speaker-android.apk
+          make_latest: true
+
+      - name: Download link
+        if: always()
+        run: |
+          {
+            echo "## Speaker on-device APK"
+            echo ""
+            echo "**Direct download (open on your phone):**"
+            echo ""
+            echo "https://github.com/${{ github.repository }}/releases/download/android-latest/speaker-android.apk"
+            echo ""
+            echo "Or browse all builds: https://github.com/${{ github.repository }}/releases/tag/android-latest"
+            echo ""
+            echo "Runs ASR and TTS **fully on-device** — no network at runtime."
+          } >> "$GITHUB_STEP_SUMMARY"

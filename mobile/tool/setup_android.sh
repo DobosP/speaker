@@ -71,19 +71,25 @@ kts = "android/build.gradle.kts"
 if os.path.exists(kts):
     path, block = kts, '''
 subprojects {
-    plugins.withId("com.android.library") {
+    if (state.executed) {
         extensions.findByName("android")?.withGroovyBuilder { "compileSdkVersion"(36) }
-    }
-    plugins.withId("com.android.application") {
-        extensions.findByName("android")?.withGroovyBuilder { "compileSdkVersion"(36) }
+    } else {
+        afterEvaluate {
+            extensions.findByName("android")?.withGroovyBuilder { "compileSdkVersion"(36) }
+        }
     }
 }
 '''
 elif os.path.exists(groovy):
     path, block = groovy, '''
 subprojects {
-    plugins.withId("com.android.library") { android.compileSdkVersion 36 }
-    plugins.withId("com.android.application") { android.compileSdkVersion 36 }
+    if (project.state.executed) {
+        if (project.extensions.findByName("android") != null) { project.android.compileSdkVersion 36 }
+    } else {
+        afterEvaluate {
+            if (project.extensions.findByName("android") != null) { project.android.compileSdkVersion 36 }
+        }
+    }
 }
 '''
 else:

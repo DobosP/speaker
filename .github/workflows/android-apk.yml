@@ -2,7 +2,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [ claude/nice-planck-ZDr90 ]
+    branches: [ main, claude/nice-planck-ZDr90 ]
     paths:
       - 'mobile/**'
       - '.github/workflows/android-apk.yml'

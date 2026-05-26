@@ -135,6 +135,12 @@ class TaskRuntime:
         if final_result is None:
             self._publish_failed(task, "plan produced no result")
             return
+        if task.cancel_event.is_set():
+            # Cancelled while the final step was running (e.g. user barged in
+            # during LLM generation): drop the now-stale result instead of
+            # speaking it.
+            self._publish_cancelled(task)
+            return
         task.output_text = final_result.text
         task.metadata["step_results"] = step_results
         task.metadata["result_data"] = final_result.data

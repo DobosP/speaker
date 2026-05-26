@@ -19,11 +19,23 @@ def _load_config(path: str = "config.json") -> dict:
     return {}
 
 
-def _build_llm(args, config: dict) -> LLMClient:
+def _build_llms(args, config: dict) -> tuple[LLMClient, LLMClient | None]:
+    """Return ``(main_llm, fast_llm)``.
+
+    ``main_llm`` is the larger multimodal model (research/vision); ``fast_llm``
+    is a small model for snappy spoken replies. With ``--llm echo`` both are the
+    same fake and ``fast_llm`` is ``None`` (main is reused everywhere).
+    """
     if args.llm == "echo":
-        return EchoLLM()
-    model = args.model or config.get("llm_model", "gemma3:latest")
-    return OllamaLLM(model=model)
+        return EchoLLM(), None
+    llm_cfg = config.get("llm", {})
+    options = llm_cfg.get("options")
+    host = llm_cfg.get("host")
+    main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
+    fast_model = args.fast_model or llm_cfg.get("fast_model")
+    main = OllamaLLM(model=main_model, host=host, options=options)
+    fast = OllamaLLM(model=fast_model, host=host, options=options) if fast_model else None
+    return main, fast
 
 
 def _build_engine(args, config: dict) -> AudioEngine:
@@ -76,7 +88,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
     parser.add_argument("--engine", choices=["console", "sherpa"], default="console")
     parser.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
-    parser.add_argument("--model", default=None, help="Ollama model name")
+    parser.add_argument("--model", default=None, help="main Ollama model (research/vision)")
+    parser.add_argument(
+        "--fast-model",
+        dest="fast_model",
+        default=None,
+        help="small Ollama model for quick spoken replies",
+    )
     parser.add_argument(
         "--mode",
         choices=[m.value for m in Mode],
@@ -92,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = _load_config()
-    llm = _build_llm(args, config)
+    llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
 
     agent_config = None
@@ -101,7 +119,9 @@ def main(argv: list[str] | None = None) -> int:
 
         agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
 
-    runtime = VoiceRuntime(engine, llm, start_mode=Mode(args.mode), agent_config=agent_config)
+    runtime = VoiceRuntime(
+        engine, llm, fast_llm=fast_llm, start_mode=Mode(args.mode), agent_config=agent_config
+    )
 
     if args.engine == "sherpa":
         _run_live(runtime)

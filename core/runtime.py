@@ -33,6 +33,7 @@ class VoiceRuntime:
         engine: AudioEngine,
         llm: Optional[LLMClient] = None,
         *,
+        fast_llm: Optional[LLMClient] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
     ):
@@ -40,7 +41,7 @@ class VoiceRuntime:
         self.bus = EventBus()
         memory = SessionMemory()
         registry = create_default_capabilities(memory)
-        attach_llm_capabilities(registry, llm or EchoLLM())
+        attach_llm_capabilities(registry, llm or EchoLLM(), fast_llm=fast_llm)
         if agent_config is not None:
             # Opt-in: route command-mode through the Open Interpreter action brain.
             from .agent import attach_agent_capability

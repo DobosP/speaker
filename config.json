@@ -1,5 +1,13 @@
 {
-  "llm_model": "gemma3:latest",
+  "llm_model": "gemma3:12b",
+  "llm": {
+    "main_model": "gemma3:12b",
+    "fast_model": "gemma3:4b",
+    "host": null,
+    "options": {
+      "num_ctx": 4096
+    }
+  },
   "mode": "assistant",
   "local_only": true,
   "sherpa": {
@@ -18,7 +26,10 @@
     "speaker_enroll_wav": "",
     "speaker_threshold": 0.5,
     "barge_in_min_speech_sec": 0.2,
-    "num_threads": 2
+    "provider": "cpu",
+    "num_threads": 0,
+    "asr_num_threads": 0,
+    "tts_num_threads": 0
   },
   "memory_smart_save": true,
   "memory_flush_interval_sec": 240,
@@ -30,7 +41,7 @@
     "min_confidence": 0.55,
     "llm_cleanup": true,
     "llm_gate": true,
-    "cleanup_model": "gemma3:1b",
+    "cleanup_model": "gemma3:4b",
     "max_buffer_items": 32,
     "min_chars": 3,
     "dedupe_similarity": 0.92,
@@ -38,13 +49,13 @@
     "save_control_phrases": false
   },
   "agent_brain": {
-    "model": "ollama/gemma3:latest",
+    "model": "ollama/gemma3:12b",
     "api_base": "http://localhost:11434",
     "api_key_env": null,
     "offline": true,
     "local_only": true,
     "local_fallback_model": null,
-    "vision_model": null,
+    "vision_model": "ollama/gemma3:12b",
     "os_mode": false,
     "web_tool": "oi",
     "screenshot_dir": null,

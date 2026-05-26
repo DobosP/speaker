@@ -34,6 +34,7 @@ def attach_llm_capabilities(
     registry: CapabilityRegistry,
     llm: LLMClient,
     *,
+    fast_llm: Optional[LLMClient] = None,
     system: str = DEFAULT_SYSTEM,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
@@ -43,11 +44,17 @@ def attach_llm_capabilities(
     ``assistant.answer`` (direct replies) and ``research.local`` (synthesis of
     the gathered search/scope steps). Local-only providers such as
     ``search.local`` and ``meeting.note`` are left untouched.
+
+    Two-model split: ``assistant.answer`` runs on ``fast_llm`` (a small, snappy
+    model for short spoken replies) while ``research.local`` runs on ``llm`` (the
+    larger, multimodal model). When ``fast_llm`` is omitted both use ``llm``.
     """
+
+    quick = fast_llm or llm
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
-        text, cancelled = _collect(llm.stream(query, system=system), cancel)  # type: ignore[arg-type]
+        text, cancelled = _collect(quick.stream(query, system=system), cancel)  # type: ignore[arg-type]
         if cancelled:
             return CapabilityResult(True, text, data={"cancelled": True})
         return CapabilityResult(True, text or "Sorry, I don't have an answer for that.")

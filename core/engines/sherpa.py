@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+
+def _auto_threads() -> int:
+    """Sensible CPU thread count for one ONNX model on a laptop.
+
+    STT/TTS run on the CPU (the GPU is reserved for the LLM), so we use about
+    half the logical cores, clamped to 2..4 -- sherpa-onnx rarely benefits from
+    more, and we leave headroom for the capture loop and the rest of the system.
+    """
+    cores = os.cpu_count() or 4
+    return max(2, min(4, cores // 2))
 
 from ..engine import AudioEngine, EngineCallbacks
 from .speaker_gate import SpeakerGate, sherpa_speaker_gate
@@ -45,12 +57,31 @@ class SherpaConfig:
     speaker_embedding_model: str = ""
     speaker_enroll_wav: str = ""
     speaker_threshold: float = 0.5
-    num_threads: int = 2
+    # ONNX execution provider for STT/TTS/speaker-ID. Keep "cpu" so the GPU
+    # stays free for the LLM; sherpa-onnx also supports "cuda"/"coreml".
+    provider: str = "cpu"
+    # CPU threads. ``num_threads`` is the base; ``asr_num_threads`` /
+    # ``tts_num_threads`` override per-model. 0 means auto-detect from cores.
+    num_threads: int = 0
+    asr_num_threads: int = 0
+    tts_num_threads: int = 0
 
     @classmethod
     def from_dict(cls, data: dict) -> "SherpaConfig":
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known})
+
+    @property
+    def base_threads(self) -> int:
+        return self.num_threads if self.num_threads > 0 else _auto_threads()
+
+    @property
+    def resolved_asr_threads(self) -> int:
+        return self.asr_num_threads if self.asr_num_threads > 0 else self.base_threads
+
+    @property
+    def resolved_tts_threads(self) -> int:
+        return self.tts_num_threads if self.tts_num_threads > 0 else self.base_threads
 
 
 class SherpaOnnxEngine(AudioEngine):
@@ -86,7 +117,8 @@ class SherpaOnnxEngine(AudioEngine):
                 encoder=c.asr_encoder,
                 decoder=c.asr_decoder,
                 joiner=c.asr_joiner,
-                num_threads=c.num_threads,
+                num_threads=c.resolved_asr_threads,
+                provider=c.provider,
                 sample_rate=c.sample_rate,
                 feature_dim=80,
                 enable_endpoint_detection=True,
@@ -95,6 +127,8 @@ class SherpaOnnxEngine(AudioEngine):
             vad_config = sherpa_onnx.VadModelConfig()
             vad_config.silero_vad.model = c.vad_model
             vad_config.sample_rate = c.sample_rate
+            vad_config.num_threads = c.resolved_asr_threads
+            vad_config.provider = c.provider
             self._vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=30)
         if c.tts_model:
             tts_config = sherpa_onnx.OfflineTtsConfig()
@@ -102,13 +136,15 @@ class SherpaOnnxEngine(AudioEngine):
             tts_config.model.vits.tokens = c.tts_tokens
             if c.tts_data_dir:
                 tts_config.model.vits.data_dir = c.tts_data_dir
-            tts_config.model.num_threads = c.num_threads
+            tts_config.model.num_threads = c.resolved_tts_threads
+            tts_config.model.provider = c.provider
             self._tts = sherpa_onnx.OfflineTts(tts_config)
         if c.speaker_embedding_model:
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
                 threshold=c.speaker_threshold,
-                num_threads=c.num_threads,
+                num_threads=c.resolved_asr_threads,
+                provider=c.provider,
             )
             if c.speaker_enroll_wav:
                 samples, sr = sherpa_onnx.read_wave(c.speaker_enroll_wav)

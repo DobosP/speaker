@@ -197,12 +197,17 @@ what lets desktop (Python) and mobile (native) share the same brain and tests.
 
 ## 8. Phased migration (each step independently useful)
 
-1. **Prove the engine on desktop (Python).** New lean entry point: `sherpa-onnx`
-   for VAD/STT/endpointing/barge-in/TTS, wired to the existing
-   `AgentSupervisor`, LLM via Ollama. Runs alongside the old `main.py`. *Exit
-   criteria:* lower end-to-end latency, reliable turn capture, no self-barge-in
-   — without any of the old tuning knobs. This validates the whole design
-   before touching mobile.
+1. **Prove the engine on desktop (Python).** ✅ *Landed in `core/`.* New lean
+   runtime (`VoiceRuntime`): a swappable `AudioEngine` seam with a `sherpa-onnx`
+   production implementation (VAD/STT/endpointing/barge-in/TTS) and a scripted
+   engine for tests, wired to the existing `AgentSupervisor`, plus real
+   LLM-backed `assistant.answer`/`research.local` capabilities (Ollama). Runs
+   alongside the old `main.py`. The full path is tested without audio/models
+   (`tests/test_core_runtime.py`) and runnable via `python -m core --engine
+   console`. **Remaining:** validate the `sherpa-onnx` engine on real hardware
+   (mic + model files + Ollama) and tune barge-in (headset or speaker-ID gating,
+   since sherpa has no AEC). *Exit criteria:* lower end-to-end latency, reliable
+   turn capture, no self-barge-in — without any of the old tuning knobs.
 2. **Make the brain real.** Replace the `drain()` simulation with a real
    threaded/async task runtime + true cancellation. Implement the requested
    modes (`quiet`, `assistant`, `research`, ...) and background concurrency on

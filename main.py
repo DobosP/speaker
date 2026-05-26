@@ -329,6 +329,9 @@ class VoiceAssistant:
         agent_enabled: bool = False,
         agent_brain_config: dict | None = None,
         agent_trigger_phrases: tuple[str, ...] = (),
+        agent_confirm_timeout_sec: float = 8.0,
+        agent_confirm_yes_phrases: tuple[str, ...] = (),
+        agent_confirm_no_phrases: tuple[str, ...] = (),
     ):
         self.llm_model = llm_model
         self.stt_model = stt_model
@@ -462,7 +465,12 @@ class VoiceAssistant:
         self.agent_enabled = bool(agent_enabled)
         self.agent_brain_config = agent_brain_config or {}
         self.agent_trigger_phrases = tuple(agent_trigger_phrases or ())
+        self.agent_confirm_timeout_sec = float(agent_confirm_timeout_sec)
         self._agent_brain = None
+        # spoken confirmation gate state (Phase 2): set by _agent_confirm while
+        # it waits for the next utterance, read by _consume_agent_confirmation.
+        self._awaiting_agent_confirm = None
+        self._agent_confirm_answer = False
         if self.agent_enabled:
             self._setup_agent_brain()
         self._router = ConversationRouter(
@@ -471,6 +479,8 @@ class VoiceAssistant:
             agent_trigger_phrases=(
                 self.agent_trigger_phrases if self._agent_brain is not None else ()
             ),
+            confirm_yes_phrases=tuple(agent_confirm_yes_phrases or ()),
+            confirm_no_phrases=tuple(agent_confirm_no_phrases or ()),
         )
         self._session_mux = SessionMux(mode=TransportMode(self.transport_mode))
         self._turn_detector = TurnDetector(
@@ -1059,13 +1069,68 @@ class VoiceAssistant:
         self._speak(text)
 
     def _agent_confirm(self, code: str, language: str) -> bool:
-        """Spoken confirmation gate (Phase 2/3).
+        """Speak 'should I run X?' and block until the user's spoken yes/no.
 
-        With confirm_mode=auto_safe the brain never calls this: allowlisted
-        commands auto-run and everything else is refused. Until the spoken
-        yes/no dialog lands, default to refuse for safety.
+        Runs in the action turn's thread. We publish _awaiting_agent_confirm
+        before speaking so the reply (which arrives on a NEW utterance thread) is
+        routed to _consume_agent_confirmation instead of the normal pipeline.
+        With confirm_mode=auto_safe the brain never calls this (safe commands
+        auto-run, the rest are refused); it is used in always_ask mode.
         """
-        return False
+        ev = threading.Event()
+        self._agent_confirm_answer = False
+        self._awaiting_agent_confirm = ev
+        self._cancel_generation.clear()  # ensure the question is audible
+        try:
+            question = self._summarize_command(code, language)
+            self._speak(f"Should I run {question}? Please say yes or no.")
+            if not ev.wait(timeout=self.agent_confirm_timeout_sec):
+                self._speak("I didn't hear a yes, so I won't run it.")
+                return False
+            return bool(self._agent_confirm_answer)
+        finally:
+            self._awaiting_agent_confirm = None
+
+    def _consume_agent_confirmation(self, audio_data) -> bool:
+        """Treat this utterance as the reply to a pending yes/no question.
+
+        Returns True when the utterance was consumed as a confirmation answer,
+        so _process_and_respond skips the normal turn pipeline (which would set
+        _cancel_generation and abort the in-flight action).
+        """
+        ev = self._awaiting_agent_confirm
+        if ev is None or ev.is_set():
+            return False
+        try:
+            text = self._stt_transcriber(
+                audio_data,
+                model_id=self.stt_model,
+                model_type=self._stt_model_type,
+                n_threads=self._stt_threads,
+            )
+        except Exception:
+            text = ""
+        answer = self._router.route_confirmation(text or "")
+        self._agent_confirm_answer = answer is True  # ambiguous / None -> no
+        # The reply triggered speech detection (maybe as barge-in), which can set
+        # _cancel_generation; clear it so an approved action actually resumes.
+        self._cancel_generation.clear()
+        cm = self._console_print_lock if self._console_print_lock else nullcontext()
+        with cm:
+            print(f"You: {text}  (confirm -> {'yes' if self._agent_confirm_answer else 'no'})")
+        ev.set()
+        return True
+
+    @staticmethod
+    def _summarize_command(code: str, language: str) -> str:
+        """Short, speakable description of the command awaiting approval."""
+        code = (code or "").strip()
+        first_line = code.splitlines()[0] if code else ""
+        if len(first_line) > 100:
+            first_line = first_line[:100] + ", and so on"
+        if (language or "").lower().startswith("py"):
+            return f"this Python code: {first_line}" if first_line else "this Python code"
+        return f"the command: {first_line}" if first_line else "this command"
 
     def _on_barge_in(self, info=None):
         """Called when user speaks while assistant is talking (barge-in)."""
@@ -1128,6 +1193,11 @@ class VoiceAssistant:
 
     def _process_and_respond(self, audio_data):
         """Process audio: hold pipeline lock only for STT + routing, not for LLM/TTS."""
+        # If the action brain is waiting for a spoken yes/no, this utterance is
+        # the answer: handle it here -- before the lock and before the per-turn
+        # _cancel_generation.set() below would abort the in-flight action.
+        if self._consume_agent_confirmation(audio_data):
+            return
         if not self._utterance_pipeline_lock.acquire(blocking=False):
             print("(queued: finishing previous turn...)", flush=True)
             self._cancel_current_output()
@@ -2823,6 +2893,9 @@ def main():
     agent_enabled = bool(config.get("agent_enabled", False))
     agent_brain_config = config.get("agent_brain") or {}
     agent_trigger_phrases = tuple(config.get("agent_trigger_phrases", []) or [])
+    agent_confirm_timeout_sec = float(config.get("agent_confirm_timeout_sec", 8.0))
+    agent_confirm_yes_phrases = tuple(config.get("agent_confirm_yes_phrases", []) or [])
+    agent_confirm_no_phrases = tuple(config.get("agent_confirm_no_phrases", []) or [])
 
     assistant = VoiceAssistant(
         llm_model=llm_model,
@@ -2905,6 +2978,9 @@ def main():
         agent_enabled=agent_enabled,
         agent_brain_config=agent_brain_config,
         agent_trigger_phrases=agent_trigger_phrases,
+        agent_confirm_timeout_sec=agent_confirm_timeout_sec,
+        agent_confirm_yes_phrases=agent_confirm_yes_phrases,
+        agent_confirm_no_phrases=agent_confirm_no_phrases,
     )
 
     # Session recorder (opt-in via --record flag).

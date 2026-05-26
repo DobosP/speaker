@@ -94,11 +94,16 @@
   },
   "agent_enabled": false,
   "agent_trigger_phrases": ["computer", "agent", "hey computer"],
+  "agent_confirm_timeout_sec": 8.0,
+  "agent_confirm_yes_phrases": [],
+  "agent_confirm_no_phrases": [],
   "agent_brain": {
     "model": "ollama/gemma3:latest",
     "api_base": "http://localhost:11434",
     "offline": true,
     "os_mode": false,
+    "web_tool": "oi",
+    "screenshot_dir": null,
     "auto_run": false,
     "confirm_mode": "auto_safe",
     "allowlist": [

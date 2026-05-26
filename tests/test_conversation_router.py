@@ -95,3 +95,28 @@ def test_no_configured_trigger_means_no_agent_routing():
 def test_stop_still_wins_over_agent_trigger():
     # control phrases are checked before agent routing
     assert _agent_router().route(_agent_ctx("stop")).action == RouteAction.STOP_OUTPUT
+
+
+# -- spoken yes/no confirmation routing -------------------------------------
+
+def test_route_confirmation_yes_no_ambiguous():
+    r = ConversationRouter()
+    assert r.route_confirmation("yes") is True
+    assert r.route_confirmation("yeah do it") is True
+    assert r.route_confirmation("sure") is True
+    assert r.route_confirmation("no") is False
+    assert r.route_confirmation("nope") is False
+    assert r.route_confirmation("cancel") is False
+    assert r.route_confirmation("what's the weather") is None
+    assert r.route_confirmation("") is None
+
+
+def test_route_confirmation_negative_checked_first():
+    assert ConversationRouter().route_confirmation("no thanks") is False
+
+
+def test_route_confirmation_custom_phrases_replace_defaults():
+    r = ConversationRouter(confirm_yes_phrases=("affirmative",), confirm_no_phrases=("negative",))
+    assert r.route_confirmation("affirmative") is True
+    assert r.route_confirmation("negative") is False
+    assert r.route_confirmation("yes") is None  # default 'yes' no longer recognized

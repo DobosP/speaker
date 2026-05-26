@@ -41,6 +41,14 @@ class RouteDecision:
 
 
 _FILLER_PHRASES = {"", ".", "uh", "um", "erm", "hmm", "mm"}
+_DEFAULT_CONFIRM_YES = (
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "go ahead",
+    "do it", "confirm", "affirmative", "please do", "run it", "yes please",
+)
+_DEFAULT_CONFIRM_NO = (
+    "no", "nope", "nah", "dont", "do not", "cancel", "stop", "negative",
+    "dont do it", "forget it", "no thanks", "abort",
+)
 _STOP_OUTPUT_PHRASES = {
     "stop",
     "stop talking",
@@ -89,6 +97,8 @@ class ConversationRouter:
         stop_mode: str = "exact",
         agent_trigger_phrases: tuple[str, ...] = (),
         agent_capability_name: str = "agent.execute",
+        confirm_yes_phrases: tuple[str, ...] = (),
+        confirm_no_phrases: tuple[str, ...] = (),
     ):
         self.stop_mode = stop_mode
         self._configured_stop_phrases = {
@@ -98,6 +108,14 @@ class ConversationRouter:
         self._agent_trigger_phrases = tuple(
             p for p in (normalize_transcript(x) for x in agent_trigger_phrases) if p
         )
+        self._confirm_yes = {
+            normalize_transcript(p)
+            for p in (confirm_yes_phrases or _DEFAULT_CONFIRM_YES)
+        }
+        self._confirm_no = {
+            normalize_transcript(p)
+            for p in (confirm_no_phrases or _DEFAULT_CONFIRM_NO)
+        }
 
     def route(self, ctx: RouteContext) -> RouteDecision:
         text = normalize_transcript(ctx.transcript)
@@ -148,6 +166,22 @@ class ConversationRouter:
         if self._matches_any(text, _STOP_OUTPUT_PHRASES):
             return RouteDecision(RouteAction.STOP_OUTPUT, "partial_stop_phrase", text)
         return RouteDecision(RouteAction.IGNORE, "partial_not_control", text)
+
+    def route_confirmation(self, text: str | None) -> bool | None:
+        """Interpret a spoken reply to a yes/no question.
+
+        Returns True (affirmative), False (negative), or None (unrecognized).
+        Negative is checked first and callers should treat None as 'no' for
+        safety-critical prompts.
+        """
+        t = normalize_transcript(text)
+        if not t:
+            return None
+        if self._matches_any(t, self._confirm_no):
+            return False
+        if self._matches_any(t, self._confirm_yes):
+            return True
+        return None
 
     def _matches_stop_output(self, text: str) -> bool:
         if self._matches_any(text, _STOP_OUTPUT_PHRASES):

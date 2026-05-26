@@ -29,7 +29,9 @@ class AgentBrainConfig:
     api_base: Optional[str] = "http://localhost:11434"
     api_key_env: Optional[str] = None            # name of env var holding the key
     offline: bool = True
-    os_mode: bool = False
+    os_mode: bool = False                        # desktop GUI control (OI "OS mode")
+    web_tool: str = "oi"                         # reserved: oi | browser_use | ui_tars
+    screenshot_dir: Optional[str] = None
     auto_run: bool = False
     confirm_mode: str = "auto_safe"              # auto_safe | always_ask
     allowlist: tuple[str, ...] = ()
@@ -102,10 +104,16 @@ class AgentBrain:
         # We always drive approval ourselves (chunk gate + stdin shim), so OI's
         # own auto_run stays off unless the operator explicitly opts in.
         oi.auto_run = bool(self.config.auto_run)
-        try:
-            oi.os = bool(self.config.os_mode)
-        except Exception:
-            pass
+        if self.config.os_mode:
+            from utils.agent_os import os_mode_preflight
+
+            for warning in os_mode_preflight():
+                print(f"[agent][os] {warning}")
+            with contextlib.suppress(Exception):
+                oi.os = True
+        else:
+            with contextlib.suppress(Exception):
+                oi.os = False
         with contextlib.suppress(Exception):
             oi.verbose = False
         self._interpreter = oi

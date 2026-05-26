@@ -88,6 +88,28 @@ class LocalLanTransport(BaseTransport):
 class WebRtcTransport(BaseTransport):
     def __init__(self):
         super().__init__("webrtc")
+        self._data_sink = None
+
+    def attach_data_sink(self, sink) -> None:
+        """Set a ``callable(dict)`` that publishes envelopes to a live LiveKit
+        data channel. When unset (default/tests) this stays a plain queue."""
+        self._data_sink = sink
+
+    def send(self, envelope: "SessionEnvelope"):
+        super().send(envelope)  # keep queue semantics (used by tests / pollers)
+        sink = self._data_sink
+        if sink is not None and self._started:
+            try:
+                sink(
+                    {
+                        "session_id": envelope.session_id,
+                        "event_type": envelope.event_type,
+                        "payload": envelope.payload,
+                        "timestamp": envelope.timestamp,
+                    }
+                )
+            except Exception:
+                pass
 
 
 class SessionMux:

@@ -1,0 +1,17 @@
+{
+  "name": "speaker-mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Speaker remote voice client - React Native MVP scaffold (see App.js header for setup; versions may need updating for your toolchain)",
+  "scripts": {
+    "start": "react-native start",
+    "ios": "react-native run-ios",
+    "android": "react-native run-android"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.74.5",
+    "@livekit/react-native": "^2.4.0",
+    "@livekit/react-native-webrtc": "^125.0.0"
+  }
+}

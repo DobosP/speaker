@@ -1,0 +1,16 @@
+# Remote access (web / phone-style live voice / mobile) dependencies -- OPTIONAL.
+#
+# Kept separate from requirements.txt so the local voice assistant installs and
+# runs without these. Install on the host that will serve remote clients:
+#
+#     pip install -r requirements-remote.txt
+#
+# Then run a LiveKit server (dev: `livekit-server --dev`, or LiveKit Cloud) and
+# set LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET in .env. See the module
+# docstrings in remote/ for how to launch the token server and agent worker.
+
+livekit-agents>=1.5,<2     # realtime agent worker framework
+livekit                    # rtc primitives (AudioSource/AudioStream/AudioFrame)
+livekit-api                # AccessToken / VideoGrants (token server)
+fastapi>=0.110             # token server + /chat + static web hosting
+uvicorn>=0.29              # ASGI server for the token/web server

@@ -119,5 +119,11 @@
       "curl[^|]*\\|\\s*(sh|bash)", "wget[^|]*\\|\\s*(sh|bash)"
     ],
     "max_output_chars": 2000
+  },
+  "remote": {
+    "livekit_url": "",
+    "token_server_port": 8080,
+    "room_prefix": "assistant",
+    "sample_rate": 48000
   }
 }

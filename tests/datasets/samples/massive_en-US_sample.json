@@ -1,0 +1,458 @@
+{
+"_source": "MASSIVE 1.0 (alexa/massive)",
+"_license": "CC BY 4.0",
+"_url": "https://github.com/alexa/massive",
+"locale": "en-US",
+"records": [
+{
+"text": "wake me up at five am this week",
+"intent": "alarm_set",
+"scenario": "alarm"
+},
+{
+"text": "quiet",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "check when the show starts",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "can you suggest me a healthy foods for dinner",
+"intent": "cooking_recipe",
+"scenario": "cooking"
+},
+{
+"text": "what's the time in australia",
+"intent": "datetime_query",
+"scenario": "datetime"
+},
+{
+"text": "i did not want you to send that text yet wait until i say send",
+"intent": "email_sendemail",
+"scenario": "email"
+},
+{
+"text": "check my car is ready",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "pink is all we need",
+"intent": "iot_hue_lightchange",
+"scenario": "iot"
+},
+{
+"text": "i finished my to do list",
+"intent": "lists_query",
+"scenario": "lists"
+},
+{
+"text": "i like rock music",
+"intent": "music_likeness",
+"scenario": "music"
+},
+{
+"text": "what's happening in football today",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "i want to listen arijit singh song once again",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "keep me updated on stock market prices",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "find me a nice restaurant for dinner",
+"intent": "recommendation_locations",
+"scenario": "recommendation"
+},
+{
+"text": "take me to the huffington post website",
+"intent": "social_post",
+"scenario": "social"
+},
+{
+"text": "olly list most rated delivery options for chinese food",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "you need to give me different directions",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "is it raining",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "wake me up at nine am on friday",
+"intent": "alarm_set",
+"scenario": "alarm"
+},
+{
+"text": "olly quiet",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "please tell me current events for the day",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "your recipe of steak was superb",
+"intent": "cooking_recipe",
+"scenario": "cooking"
+},
+{
+"text": "tell me the time in moscow",
+"intent": "datetime_query",
+"scenario": "datetime"
+},
+{
+"text": "emails",
+"intent": "email_query",
+"scenario": "email"
+},
+{
+"text": "check my laptop is working",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "make the lighting bit more warm here",
+"intent": "iot_hue_lightchange",
+"scenario": "iot"
+},
+{
+"text": "remove grocery shopping from my to do list on sunday",
+"intent": "lists_remove",
+"scenario": "lists"
+},
+{
+"text": "my favorite music band is queen",
+"intent": "music_likeness",
+"scenario": "music"
+},
+{
+"text": "tell me b. b. c. news",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "i want to play that music one again",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "what is the gross domestic product of us",
+"intent": "qa_factoid",
+"scenario": "qa"
+},
+{
+"text": "tell me all the current events in my hometown",
+"intent": "recommendation_events",
+"scenario": "recommendation"
+},
+{
+"text": "what is going on right now on twitter",
+"intent": "social_query",
+"scenario": "social"
+},
+{
+"text": "most rated delivery options for chinese food",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "olly you need to give me different directions",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "is it going to rain",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "set an alarm for two hours from now",
+"intent": "alarm_set",
+"scenario": "alarm"
+},
+{
+"text": "stop",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "can you confirm that my meeting for tomorrow has been canceled",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "is soft cheese better than hard",
+"intent": "cooking_recipe",
+"scenario": "cooking"
+},
+{
+"text": "tell me the time in g. m. t. plus five",
+"intent": "datetime_convert",
+"scenario": "datetime"
+},
+{
+"text": "please send a mail to mr. richard stating that i going to met him on first of february twenty seventeen at five p. m. at this office",
+"intent": "email_sendemail",
+"scenario": "email"
+},
+{
+"text": "is the brightness of my screen running low",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "please set the lighting suitable for reading",
+"intent": "iot_hue_lightchange",
+"scenario": "iot"
+},
+{
+"text": "delete everything on the menu",
+"intent": "lists_remove",
+"scenario": "lists"
+},
+{
+"text": "i like senatra songs",
+"intent": "music_likeness",
+"scenario": "music"
+},
+{
+"text": "what's the news on b. b. c. news",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "please play yesterday from beatles",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "please tell me news related to the stock market",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "should i watch this movie",
+"intent": "recommendation_movies",
+"scenario": "recommendation"
+},
+{
+"text": "what does my facebook feed look like",
+"intent": "social_query",
+"scenario": "social"
+},
+{
+"text": "list most rated delivery options for chinese food",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "you need to find an alternate route to my destination",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "is it currently snowing",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "cancel my seven am alarm",
+"intent": "alarm_remove",
+"scenario": "alarm"
+},
+{
+"text": "olly pause for ten seconds",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "is the meeting scheduled for tomorrow",
+"intent": "calendar_query",
+"scenario": "calendar"
+},
+{
+"text": "cooking",
+"intent": "cooking_query",
+"scenario": "cooking"
+},
+{
+"text": "olly tell me the time in g. m. t. plus five",
+"intent": "datetime_convert",
+"scenario": "datetime"
+},
+{
+"text": "please send a voicemail to mr. richard office about meting him on first of february twenty seventeen at five p. m.",
+"intent": "email_sendemail",
+"scenario": "email"
+},
+{
+"text": "i need to have location services on can you check",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "turn the lights off please",
+"intent": "iot_hue_lightoff",
+"scenario": "iot"
+},
+{
+"text": "list the items on my shopping list olly",
+"intent": "lists_query",
+"scenario": "lists"
+},
+{
+"text": "what's the band is playing now",
+"intent": "music_query",
+"scenario": "music"
+},
+{
+"text": "what is the b. b. c.'s latest news",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "i'd like to hear queen's barcelona",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "what's new with the stock market",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "which is the nearest restaurants available",
+"intent": "recommendation_locations",
+"scenario": "recommendation"
+},
+{
+"text": "social media",
+"intent": "social_query",
+"scenario": "social"
+},
+{
+"text": "olly most rated delivery options for chinese food",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "olly you need to find an alternate route to my destination",
+"intent": "transport_query",
+"scenario": "transport"
+},
+{
+"text": "what's the weeks forecast",
+"intent": "weather_query",
+"scenario": "weather"
+},
+{
+"text": "stop seven am alarm",
+"intent": "alarm_remove",
+"scenario": "alarm"
+},
+{
+"text": "pause for ten seconds",
+"intent": "audio_volume_mute",
+"scenario": "audio"
+},
+{
+"text": "remind me if anything else happens",
+"intent": "calendar_set",
+"scenario": "calendar"
+},
+{
+"text": "what to cook for lunch",
+"intent": "cooking_query",
+"scenario": "cooking"
+},
+{
+"text": "tell me today's date",
+"intent": "datetime_query",
+"scenario": "datetime"
+},
+{
+"text": "just let me know next weeks weather in california",
+"intent": "email_query",
+"scenario": "email"
+},
+{
+"text": "check the status of my power usage",
+"intent": "general_quirky",
+"scenario": "general"
+},
+{
+"text": "time to sleep",
+"intent": "iot_hue_lightoff",
+"scenario": "iot"
+},
+{
+"text": "list the items on my shopping list",
+"intent": "lists_query",
+"scenario": "lists"
+},
+{
+"text": "who's current music's author",
+"intent": "music_query",
+"scenario": "music"
+},
+{
+"text": "tell me the latest technology news",
+"intent": "news_query",
+"scenario": "news"
+},
+{
+"text": "play me barcelona by queen",
+"intent": "play_music",
+"scenario": "play"
+},
+{
+"text": "what are some updates about the stock market",
+"intent": "qa_stock",
+"scenario": "qa"
+},
+{
+"text": "what film should i watch",
+"intent": "recommendation_movies",
+"scenario": "recommendation"
+},
+{
+"text": "send a message on facebook to pending friend requests that my friend list is full and i will be creating a new profile soon",
+"intent": "social_post",
+"scenario": "social"
+},
+{
+"text": "i want some curry to go any recommendations",
+"intent": "takeaway_query",
+"scenario": "takeaway"
+},
+{
+"text": "confirm a travel ticket to german",
+"intent": "transport_ticket",
+"scenario": "transport"
+},
+{
+"text": "what's the week's forecast",
+"intent": "weather_query",
+"scenario": "weather"
+}
+]
+}

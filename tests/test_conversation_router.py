@@ -45,3 +45,15 @@ def test_partial_only_allows_control_commands():
     router = ConversationRouter()
     assert router.route_partial(_ctx("stop", partial=True)).action == RouteAction.STOP_OUTPUT
     assert router.route_partial(_ctx("what time is it", partial=True)).action == RouteAction.IGNORE
+
+
+def test_shutdown_prefix_allows_trailing_words():
+    decision = ConversationRouter().route(_ctx("shut down the system"))
+    assert decision.action == RouteAction.SHUTDOWN
+
+
+def test_capability_absent_falls_back_to_llm():
+    # When the capability is not registered, a time request must reach the LLM
+    # rather than dropping silently.
+    ctx = RouteContext(transcript="what time is it", available_capabilities=())
+    assert ConversationRouter().route(ctx).action == RouteAction.LLM

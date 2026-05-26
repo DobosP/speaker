@@ -12,6 +12,7 @@ from utils.agent_brain import (
     SAFE,
     BLOCKED,
     NEEDS_CONFIRM,
+    _is_local_model,
 )
 
 
@@ -138,3 +139,51 @@ def test_missing_open_interpreter_raises_runtimeerror():
     brain = AgentBrain(AgentBrainConfig())
     with pytest.raises(RuntimeError):
         list(brain.stream_run("do something"))
+
+
+# -- hybrid local/cloud model selection (Phase 4) ---------------------------
+
+def test_is_local_model():
+    assert _is_local_model("ollama/gemma3:latest")
+    assert _is_local_model("ollama_chat/llama3")
+    assert _is_local_model("local/whatever")
+    assert not _is_local_model("anthropic/claude-3-5-sonnet-latest")
+    assert not _is_local_model("gpt-4o")
+    assert not _is_local_model("")
+
+
+def test_effective_model_local_only_blocks_cloud_with_fallback():
+    brain = _brain(
+        [],
+        model="anthropic/claude-3-5-sonnet-latest",
+        local_only=True,
+        local_fallback_model="ollama/gemma3:latest",
+    )
+    assert brain._effective_model() == "ollama/gemma3:latest"
+
+
+def test_effective_model_local_only_no_fallback_raises():
+    brain = _brain([], model="gpt-4o", local_only=True, local_fallback_model=None)
+    with pytest.raises(RuntimeError):
+        brain._effective_model()
+
+
+def test_effective_model_cloud_allowed_when_not_local_only():
+    brain = _brain([], model="anthropic/claude-3-5-sonnet-latest", local_only=False)
+    assert brain._effective_model() == "anthropic/claude-3-5-sonnet-latest"
+
+
+def test_effective_model_local_passthrough():
+    brain = _brain([], model="ollama/gemma3:latest", local_only=True)
+    assert brain._effective_model() == "ollama/gemma3:latest"
+
+
+def test_effective_model_prefers_vision_model_in_os_mode():
+    brain = _brain(
+        [],
+        model="ollama/gemma3:latest",
+        os_mode=True,
+        vision_model="ollama/llava",
+        local_only=True,
+    )
+    assert brain._effective_model() == "ollama/llava"

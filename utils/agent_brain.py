@@ -29,6 +29,9 @@ class AgentBrainConfig:
     api_base: Optional[str] = "http://localhost:11434"
     api_key_env: Optional[str] = None            # name of env var holding the key
     offline: bool = True
+    local_only: bool = True                      # forbid cloud models when True
+    local_fallback_model: Optional[str] = None   # used if a cloud model is blocked
+    vision_model: Optional[str] = None           # preferred model for OS-mode screen vision
     os_mode: bool = False                        # desktop GUI control (OI "OS mode")
     web_tool: str = "oi"                         # reserved: oi | browser_use | ui_tars
     screenshot_dir: Optional[str] = None
@@ -58,6 +61,13 @@ BLOCKED = "blocked"
 _OI_YES = "y"
 _OI_NO = "n"
 
+# LiteLLM model-string prefixes that run on-device (no cloud round-trip)
+_LOCAL_MODEL_PREFIXES = ("ollama/", "ollama_chat/", "local/")
+
+
+def _is_local_model(model: str) -> bool:
+    return (model or "").lower().startswith(_LOCAL_MODEL_PREFIXES)
+
 _SENTENCE_END = re.compile(r"[.!?](\s|$)")
 
 
@@ -80,6 +90,31 @@ class AgentBrain:
         self._allow_res = [re.compile(p, re.I) for p in config.allowlist]
         self._deny_res = [re.compile(p, re.I) for p in config.denylist]
 
+    # -- model selection (hybrid local/cloud) --------------------------------
+    def _effective_model(self) -> str:
+        """Resolve the model to use, enforcing the local_only guard.
+
+        In OS mode a configured vision_model is preferred (screen understanding
+        needs vision). If local_only is set and the chosen model is a cloud
+        model, fall back to a local model when one is configured, else raise.
+        """
+        model = self.config.model
+        if self.config.os_mode and self.config.vision_model:
+            model = self.config.vision_model
+        if self.config.local_only and not _is_local_model(model):
+            fallback = self.config.local_fallback_model
+            if fallback and _is_local_model(fallback):
+                print(
+                    f"[agent] local_only=true: cloud model '{model}' blocked; "
+                    f"using local '{fallback}'."
+                )
+                return fallback
+            raise RuntimeError(
+                f"local_only=true forbids cloud model '{model}'. Set local_only "
+                f"to false to allow cloud, or use an 'ollama/...' model."
+            )
+        return model
+
     # -- lazy Open Interpreter construction ----------------------------------
     def _ensure_interpreter(self):
         if self._interpreter is not None:
@@ -93,14 +128,16 @@ class AgentBrain:
             ) from exc
 
         oi = OpenInterpreter()
-        oi.llm.model = self.config.model
-        if self.config.api_base:
+        model = self._effective_model()
+        oi.llm.model = model
+        if self.config.api_base and _is_local_model(model):
             oi.llm.api_base = self.config.api_base
         if self.config.api_key_env:
             key = os.environ.get(self.config.api_key_env)
             if key:
                 oi.llm.api_key = key
-        oi.offline = bool(self.config.offline)
+        # local models may stay offline; a cloud model needs network access
+        oi.offline = bool(self.config.offline) and _is_local_model(model)
         # We always drive approval ourselves (chunk gate + stdin shim), so OI's
         # own auto_run stays off unless the operator explicitly opts in.
         oi.auto_run = bool(self.config.auto_run)

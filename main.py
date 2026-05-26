@@ -2891,7 +2891,11 @@ def main():
             print(f"TTS output: device {output_device} (matched to microphone)")
 
     agent_enabled = bool(config.get("agent_enabled", False))
-    agent_brain_config = config.get("agent_brain") or {}
+    agent_brain_config = dict(config.get("agent_brain") or {})
+    # Inherit the project's local-only guarantee and use the chat model as the
+    # local fallback if a cloud action-model is blocked by local_only.
+    agent_brain_config.setdefault("local_only", local_only)
+    agent_brain_config.setdefault("local_fallback_model", f"ollama/{llm_model}")
     agent_trigger_phrases = tuple(config.get("agent_trigger_phrases", []) or [])
     agent_confirm_timeout_sec = float(config.get("agent_confirm_timeout_sec", 8.0))
     agent_confirm_yes_phrases = tuple(config.get("agent_confirm_yes_phrases", []) or [])

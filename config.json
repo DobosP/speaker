@@ -100,7 +100,9 @@
   "agent_brain": {
     "model": "ollama/gemma3:latest",
     "api_base": "http://localhost:11434",
+    "api_key_env": null,
     "offline": true,
+    "vision_model": null,
     "os_mode": false,
     "web_tool": "oi",
     "screenshot_dir": null,

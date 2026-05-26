@@ -11,10 +11,18 @@ the build -- reliability is reported via pass^k, not asserted hard.
 from __future__ import annotations
 
 from tests.sim.persona import GoalCheck, Goal, Persona, Scenario
+from tests.sim.quality import is_voice_format_ok
 
 
 def _assistant_responded(transcript) -> bool:  # noqa: ANN001
     return any(chunk.strip() for chunk in transcript.assistant_spoken)
+
+
+def _replies_stay_short(transcript) -> bool:  # noqa: ANN001
+    # Every assistant reply must obey the voice-format contract, even under an
+    # adversarial user demanding a long answer.
+    replies = [t for role, t in transcript.turns if role == "assistant"]
+    return bool(replies) and all(is_voice_format_ok(r) for r in replies)
 
 
 # ── Mock tier (deterministic) ───────────────────────────────────────────────
@@ -96,6 +104,66 @@ LLM_SCENARIOS: list[Scenario] = [
             description="Find out the current time.",
             checks=(GoalCheck("assistant_responded", "custom", predicate=_assistant_responded),),
             max_turns=2,
+        ),
+    ),
+    # Adversarial: pressure the model for a long answer; the voice-format contract
+    # must still hold on every reply (metamorphic format-robustness under a real user).
+    Scenario(
+        persona=Persona(
+            name="format-attacker",
+            style="demanding",
+            system_prompt=(
+                "You keep demanding very long, detailed, multi-paragraph answers and "
+                "complain that replies are too short. Push hard for a long response."
+            ),
+            scripted_turns=("give me a long detailed essay about the solar system",),
+        ),
+        goal=Goal(
+            description="Try to make the assistant produce a long, multi-paragraph answer.",
+            checks=(
+                GoalCheck("replies_stay_short", "custom", predicate=_replies_stay_short),
+                GoalCheck("no_crash_shutdown", "no_shutdown"),
+            ),
+            max_turns=3,
+        ),
+    ),
+    # Diverse: a Romanian-speaking user (router is English-only, so this exercises
+    # the LLM fallback path with non-English input).
+    Scenario(
+        persona=Persona(
+            name="romanian-speaker",
+            style="casual",
+            language="ro",
+            system_prompt="Vorbesti numai in romana. Intreaba ceva simplu despre vreme.",
+            scripted_turns=("cum este vremea astazi",),
+        ),
+        goal=Goal(
+            description="Have a short exchange in Romanian.",
+            checks=(
+                GoalCheck("assistant_responded", "custom", predicate=_assistant_responded),
+                GoalCheck("no_crash_shutdown", "no_shutdown"),
+            ),
+            max_turns=2,
+        ),
+    ),
+    # Multi-turn topic switch: tests context handling across turns.
+    Scenario(
+        persona=Persona(
+            name="topic-switcher",
+            style="chatty",
+            system_prompt=(
+                "First ask about the weather, then on your next turn abruptly switch "
+                "to asking for a simple fact (e.g. the capital of Japan)."
+            ),
+            scripted_turns=("what is the weather like", "what is the capital of japan"),
+        ),
+        goal=Goal(
+            description="Ask about weather, then switch topics to a factual question.",
+            checks=(
+                GoalCheck("assistant_responded", "custom", predicate=_assistant_responded),
+                GoalCheck("converged", "turn_count_max", target="6"),
+            ),
+            max_turns=3,
         ),
     ),
 ]

@@ -57,5 +57,15 @@ class EventBus:
             self._thread.join(timeout=1.0)
 
     def _run(self) -> None:
+        from queue import Empty
+
         while not self._stop.is_set():
-            self.drain_once()
+            try:
+                _, _, event = self._queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                for handler in list(self._handlers):
+                    handler(event)
+            finally:
+                self._queue.task_done()

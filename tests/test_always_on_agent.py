@@ -7,8 +7,15 @@ from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.bridge import TranscriptBridge
 from always_on_agent.replay import replay_records
 from always_on_agent.runtime import AlwaysOnAgentRuntime
+from always_on_agent.models import IntentKind
 from always_on_agent.speech_analyzer import LiveSpeechAnalyzer, ModePolicy
 from always_on_agent.supervisor import AgentSupervisor
+
+
+def _decide(text: str, mode: Mode = Mode.PASSIVE, *, is_final: bool = True):
+    """Run the analyzer's observe->decide directly (unit-level, no supervisor)."""
+    analyzer = LiveSpeechAnalyzer()
+    return analyzer.decide(analyzer.observe(text, is_final=is_final), mode)
 
 
 def _drain_until_idle(supervisor: AgentSupervisor, timeout: float = 1.0) -> None:
@@ -241,3 +248,24 @@ def test_research_tasks_queue_when_parallel_limit_is_reached():
         output for output in supervisor.state.spoken_outputs if output.startswith("Research summary")
     ]
     assert len(research_outputs) == 2
+
+
+# ── Direct decide() unit tests (the rest of this file goes through the supervisor) ──
+def test_decide_exact_control_stop():
+    assert _decide("stop").kind == IntentKind.STOP
+
+
+def test_decide_bilingual_confirm_and_deny():
+    assert _decide("da").kind == IntentKind.CONFIRM
+    assert _decide("nu").kind == IntentKind.DENY
+
+
+def test_decide_command_prefix_requires_confirmation():
+    decision = _decide("open browser", Mode.COMMAND)
+    assert decision.kind == IntentKind.COMMAND
+    assert decision.requires_confirmation is True
+
+
+def test_decide_partial_non_control_is_ignored():
+    # A non-control partial must not start a task before the transcript finalizes.
+    assert _decide("assistant help me plan", is_final=False).kind == IntentKind.IGNORE

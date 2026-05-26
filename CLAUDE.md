@@ -9,39 +9,40 @@ Today it runs on desktop (Linux/Windows/macOS) in Python. The **goal** is a
 fully on-device, fully-local, always-listening, mode-based assistant that also
 runs on Android and iOS.
 
-> Direction: we are mid-refactor. The target architecture and the
+> Direction: the refactor is underway. The target architecture and the
 > keep/replace/delete plan live in **`docs/target_architecture.md`** — read it
 > before proposing structural changes. Short version: the hand-rolled audio
-> stack is being replaced by `sherpa-onnx`; the `always_on_agent/` "brain" is
-> being kept and made real; `main.py` shrinks to a thin adapter.
+> stack has been **removed** in favour of `sherpa-onnx`; the `always_on_agent/`
+> "brain" is kept and made real; the old `main.py` monolith is **deleted**.
 >
-> **Phase 1 has landed in `core/`** — the new lean runtime (`VoiceRuntime`)
-> that wires a swappable `AudioEngine` (sherpa-onnx for production, a scripted
-> engine for tests) to the `always_on_agent` brain with a real LLM-backed
-> capability. New work goes in `core/`, not `main.py`. Try it without audio:
-> `python -m core --engine console --llm echo`.
+> **The runtime now lives in `core/`** (`VoiceRuntime`): a swappable
+> `AudioEngine` (sherpa-onnx for production, a scripted engine for tests) wired
+> to the `always_on_agent` brain with real LLM-backed, cancellable capabilities.
+> Try it without audio: `python -m core --engine console --llm echo`.
 
 ## Layout
 
-- `core/` — **the new lean runtime (use this).** `engine.py` (the `AudioEngine`
-  seam), `engines/sherpa.py` (production, on-device), `engines/scripted.py`
-  (tests/console), `llm.py` (Ollama client + fake), `capabilities.py` (LLM-backed
-  providers), `runtime.py` (`VoiceRuntime` orchestrator), `app.py` (CLI). Tested
-  by `tests/test_core_runtime.py` with no audio/model deps.
-- `main.py` — **legacy** monolithic orchestrator (`VoiceAssistant`, ~2,900
-  lines). Superseded by `core/`. Don't add features here; slated for removal
-  once `core` is validated on real hardware (live mic + sherpa models + Ollama).
-- `utils/audio.py` — hand-rolled real-time DSP (NLMS AEC, VAD gate, barge-in).
-  ~3,000 lines. **Scheduled for replacement** by `sherpa-onnx`. Don't extend it.
-- `utils/stt.py`, `utils/llm.py`, `utils/tts*` — STT/LLM/TTS plumbing.
-- `utils/memory.py` (+ `memory_writer.py`, `memory_config.py`) — Postgres-backed
-  smart memory. See `MEMORY.md`. Keep; will move to SQLite on mobile.
+- `core/` — **the runtime (all new work goes here).** `engine.py` (the
+  `AudioEngine` seam), `engines/sherpa.py` (production, on-device),
+  `engines/scripted.py` (tests/console), `engines/speaker_gate.py` (speaker-ID
+  barge-in gate), `llm.py` (Ollama client + fake), `capabilities.py` (LLM-backed,
+  cancellable providers), `runtime.py` (`VoiceRuntime` orchestrator), `app.py`
+  (CLI). Run: `python -m core --engine console --llm echo`.
 - `always_on_agent/` — the **control-plane "brain"** (modes, priority event bus,
-  supervisor, cancellable tasks, intent analyzer). This is the keeper. See its
+  supervisor, cancellable threaded tasks, intent analyzer). The keeper. See its
   `README.md` and `docs/always_on_agent_layer.md`.
-- `tests/` — pytest, heavily replay/transcript-driven. `config.json` — runtime
-  config (note: most `barge_in_*`/`aec_*` knobs go away post-refactor).
-- `docs/` — architecture and subsystem docs.
+- `utils/memory.py` (+ `memory_writer.py`, `memory_config.py`) — Postgres-backed
+  smart memory (the only surviving `utils/` modules). See `MEMORY.md`. Keep;
+  will move to SQLite on mobile.
+- `tests/` — pytest. `tests/sandbox/` is the device-simulation harness
+  (latency/LLM-weight profiles + simulated engine/LLM) for middle-layer tests;
+  `test_core_runtime.py` is fast logic; `test_sandbox_middle_layer.py` is
+  realistic-timing/concurrency. No audio/model deps.
+- `config.json` — runtime config. `docs/` — architecture and subsystem docs.
+
+> The legacy stack (`main.py`, `utils/audio.py`, the hand-rolled STT/TTS/LLM
+> plumbing, `benchmarks/`, `scripts/`, and their tests) was deleted in the
+> refactor. Don't try to import them.
 
 ## Conventions
 

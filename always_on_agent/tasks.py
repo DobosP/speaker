@@ -158,6 +158,7 @@ class TaskRuntime:
             "task_id": task.task_id,
             "mode": task.mode.value,
             "metadata": task.metadata,
+            "cancel_event": task.cancel_event,
         }
         if extra_context:
             context.update(extra_context)

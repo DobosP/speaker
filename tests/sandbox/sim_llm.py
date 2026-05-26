@@ -23,6 +23,7 @@ class SimulatedLLM:
         self.profile = profile
         self._reply_fn = reply_fn or (lambda prompt: f"You said: {prompt}")
         self.calls: list[str] = []
+        self.tokens_yielded = 0
 
     def _reply(self, prompt: str) -> str:
         self.calls.append(prompt)
@@ -40,4 +41,5 @@ class SimulatedLLM:
         time.sleep(self.profile.llm_ttft_sec)
         for token in reply.split():
             time.sleep(self.profile.llm_per_token_sec)
+            self.tokens_yielded += 1
             yield token + " "

@@ -22,8 +22,8 @@ class GemmaService {
       'Gemma3-1B-IT-q4.task';
 
   static const _systemInstruction =
-      'You are a concise, friendly on-device voice assistant. '
-      'Answer in one or two short, natural, speakable sentences.';
+      'You are a friendly on-device voice assistant. Answer in a few clear, '
+      'natural, speakable sentences — concise but complete, not clipped.';
 
   dynamic _model;
 

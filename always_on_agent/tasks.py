@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import Event, Thread
 import time
 import uuid
+
+log = logging.getLogger("speaker.tasks")
 
 from .capabilities import CapabilityRegistry, CapabilityResult
 from .events import AgentEvent, EventKind, Mode
@@ -93,6 +96,10 @@ class TaskRuntime:
         thread.start()
 
     def _run_task(self, task: AgentTask) -> None:
+        log.info(
+            "task %s started: mode=%s capability=%s input=%r",
+            task.task_id, task.mode.value, task.capability, task.input_text,
+        )
         task.state = TaskState.RUNNING
         self._publish(
             AgentEvent(
@@ -106,7 +113,14 @@ class TaskRuntime:
             )
         )
 
-        self._run_plan(task)
+        try:
+            self._run_plan(task)
+        except Exception as exc:  # noqa: BLE001
+            # Without this, a capability raising (e.g. Ollama unreachable) would
+            # kill the daemon thread silently and the task would sit "active"
+            # forever -- the app looks hung. Turn it into a visible failure.
+            log.exception("task %s raised in capability %r", task.task_id, task.capability)
+            self._publish_failed(task, f"{type(exc).__name__}: {exc}")
 
     def _run_plan(self, task: AgentTask) -> None:
         plan = task.plan
@@ -190,6 +204,10 @@ class TaskRuntime:
         )
 
     def _publish_completed(self, task: AgentTask) -> None:
+        log.info(
+            "task %s completed in %.2fs (%d chars)",
+            task.task_id, time.time() - task.created_at, len(task.output_text or ""),
+        )
         self._publish(
             AgentEvent(
                 EventKind.TASK_COMPLETED,
@@ -207,6 +225,7 @@ class TaskRuntime:
         )
 
     def _publish_cancelled(self, task: AgentTask) -> None:
+        log.info("task %s cancelled after %.2fs", task.task_id, time.time() - task.created_at)
         task.state = TaskState.CANCELLED
         self._publish(
             AgentEvent(
@@ -217,6 +236,8 @@ class TaskRuntime:
         )
 
     def _publish_failed(self, task: AgentTask, error: str) -> None:
+        log.error("task %s FAILED after %.2fs: %s", task.task_id,
+                  time.time() - task.created_at, error)
         task.state = TaskState.FAILED
         self._publish(
             AgentEvent(

@@ -29,7 +29,17 @@
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:12b",
-        "fast_model": "gemma3:4b"
+        "fast_model": "gemma3:4b",
+        "keep_alive": -1,
+        "options": {
+          "num_ctx": 4096,
+          "num_predict": 384,
+          "num_gpu": 999
+        }
+      },
+      "sherpa": {
+        "asr_num_threads": 4,
+        "tts_num_threads": 2
       }
     },
     "phone": {

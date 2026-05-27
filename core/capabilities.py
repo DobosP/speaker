@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import os
 from threading import Event
-from typing import Iterator, Optional
+from typing import Callable, Iterator, Mapping, Optional
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 
 from .llm import LLMClient
 from .routing import HeuristicRouter, Router
+
+# Predicate deciding whether an ASSISTANT-mode query should escalate to the
+# ReAct planner instead of a one-shot reply.
+EscalatePredicate = Callable[[str, Mapping[str, object]], bool]
 
 DEFAULT_SYSTEM = (
     "You are a local, on-device voice assistant. Reply in one or two short, "
@@ -39,6 +43,8 @@ def attach_llm_capabilities(
     fast_llm: Optional[LLMClient] = None,
     system: str = DEFAULT_SYSTEM,
     router: Optional[Router] = None,
+    escalate: Optional[EscalatePredicate] = None,
+    agent_capability: str = "agent.react",
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -60,6 +66,14 @@ def attach_llm_capabilities(
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
+        # Smart-mode escalation: hand reasoning/gathering queries to the ReAct
+        # planner (when registered) instead of a one-shot reply.
+        if (
+            escalate is not None
+            and agent_capability in registry.names()
+            and escalate(query, context)
+        ):
+            return registry.invoke(agent_capability, query, context)
         tier = router.choose(query, context)
         model = llm if tier == "main" else fast
         if debug_routing:

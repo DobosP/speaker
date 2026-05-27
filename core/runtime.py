@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional
 
@@ -18,6 +19,8 @@ from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, MetricsRecorder
 from .routing import Router
+
+log = logging.getLogger("speaker.runtime")
 
 
 class VoiceRuntime:
@@ -127,8 +130,10 @@ class VoiceRuntime:
 
     def _on_final(self, text: str) -> None:
         self.metrics.mark(ASR_FINAL)
+        log.info("final -> brain: %r (mode=%s)", text, self.mode.value)
         # Try the no-LLM fast-path first; only fall through to the brain on a miss.
         if self._intents is not None and self._intents.handle(text):
+            log.debug("handled by intent fast-path: %r", text)
             return
         self.bus.publish(AgentEvent.final(text))
 
@@ -169,6 +174,7 @@ class VoiceRuntime:
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
             if text:
+                log.debug("tts request: %r", text)
                 self.engine.speak(text)
         elif event.kind == EventKind.CONTROL_STOP:
             self.engine.stop_speaking()

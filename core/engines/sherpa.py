@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Optional
+
+log = logging.getLogger("speaker.sherpa")
 
 
 def _auto_threads() -> int:
@@ -185,6 +189,18 @@ class SherpaOnnxEngine(AudioEngine):
         self._cb = callbacks
         self._build()
         self._running.set()
+        try:
+            log.info("input device: %s", sd.query_devices(kind="input").get("name", "?"))
+            log.info("output device: %s", sd.query_devices(kind="output").get("name", "?"))
+        except Exception as exc:  # noqa: BLE001 - diagnostics only
+            log.warning("could not query audio devices: %s", exc)
+        log.info(
+            "models: recognizer=%s vad=%s tts=%s kws=%s",
+            self._recognizer is not None,
+            self._vad is not None,
+            self._tts is not None,
+            self._kws is not None,
+        )
         self._capture_sr = self.config.sample_rate
         try:
             self._stream_in = sd.InputStream(
@@ -256,47 +272,85 @@ class SherpaOnnxEngine(AudioEngine):
         last_partial = ""
         recognizer = self._recognizer
         if recognizer is None:
+            log.error("no recognizer built (ASR model paths missing in config?); "
+                      "capture loop idle -- the assistant will never hear you")
             return
         stream = recognizer.create_stream()
         voiced_run = 0.0
         block_sec = 0.1
-        while self._running.is_set():
-            audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
-            samples = np.asarray(audio, dtype="float32").reshape(-1)
-            if self._capture_sr != self.config.sample_rate:
-                samples = _resample_linear(samples, self._capture_sr, self.config.sample_rate)
+        # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
+        total_blocks = partials = finals = 0
+        beat_blocks = 0
+        beat_level = 0.0
+        last_beat = time.monotonic()
+        log.info("capture loop started (capture_sr=%d -> asr_sr=%d)",
+                 self._capture_sr, self.config.sample_rate)
+        try:
+            while self._running.is_set():
+                audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
+                samples = np.asarray(audio, dtype="float32").reshape(-1)
+                if self._capture_sr != self.config.sample_rate:
+                    samples = _resample_linear(samples, self._capture_sr, self.config.sample_rate)
 
-            # Command fast-path: keyword spotting runs every block, including
-            # during playback, so phrases like "stop" act with the lowest
-            # possible latency and never wait on ASR endpointing or the LLM.
-            self._poll_keywords(samples)
+                total_blocks += 1
+                beat_blocks += 1
+                if samples.size:
+                    beat_level += float(np.sqrt(np.mean(samples * samples)))
+                now = time.monotonic()
+                if now - last_beat >= 2.0:
+                    avg = beat_level / max(beat_blocks, 1)
+                    log.debug(
+                        "capture heartbeat: blocks=%d avg_rms=%.4f partials=%d finals=%d speaking=%s",
+                        total_blocks, avg, partials, finals, self._speaking.is_set(),
+                    )
+                    if avg < 1e-4:
+                        log.warning(
+                            "input is ~silent (avg_rms=%.6f) -- wrong mic, muted, or no "
+                            "permission? run `python -m sounddevice` to list devices", avg,
+                        )
+                    last_beat, beat_blocks, beat_level = now, 0, 0.0
 
-            # Barge-in watch while the assistant is speaking.
-            if self._speaking.is_set() and self._vad is not None:
-                self._vad.accept_waveform(samples)
-                if self._vad.is_speech_detected() and self._looks_like_user(samples):
-                    voiced_run += block_sec
-                    if voiced_run >= self.config.barge_in_min_speech_sec:
+                # Command fast-path: keyword spotting runs every block, including
+                # during playback, so phrases like "stop" act with the lowest
+                # possible latency and never wait on ASR endpointing or the LLM.
+                self._poll_keywords(samples)
+
+                # Barge-in watch while the assistant is speaking.
+                if self._speaking.is_set() and self._vad is not None:
+                    self._vad.accept_waveform(samples)
+                    if self._vad.is_speech_detected() and self._looks_like_user(samples):
+                        voiced_run += block_sec
+                        if voiced_run >= self.config.barge_in_min_speech_sec:
+                            voiced_run = 0.0
+                            log.info("barge-in detected")
+                            self._cb.on_barge_in()
+                    else:
                         voiced_run = 0.0
-                        self._cb.on_barge_in()
-                else:
-                    voiced_run = 0.0
-                continue
+                    continue
 
-            stream.accept_waveform(self.config.sample_rate, samples)
-            while recognizer.is_ready(stream):
-                recognizer.decode_stream(stream)
-            text = recognizer.get_result(stream)
-            if text and text != last_partial:
-                last_partial = text
-                self._cb.on_partial(text)
-            if recognizer.is_endpoint(stream):
-                final_text = recognizer.get_result(stream)
-                recognizer.reset(stream)
-                last_partial = ""
-                if final_text.strip():
-                    self._cb.on_metric(SPEECH_END)
-                    self._cb.on_final(final_text)
+                stream.accept_waveform(self.config.sample_rate, samples)
+                while recognizer.is_ready(stream):
+                    recognizer.decode_stream(stream)
+                text = recognizer.get_result(stream)
+                if text and text != last_partial:
+                    last_partial = text
+                    partials += 1
+                    log.debug("asr partial: %r", text)
+                    self._cb.on_partial(text)
+                if recognizer.is_endpoint(stream):
+                    final_text = recognizer.get_result(stream)
+                    recognizer.reset(stream)
+                    last_partial = ""
+                    if final_text.strip():
+                        finals += 1
+                        log.info("asr final: %r", final_text)
+                        self._cb.on_metric(SPEECH_END)
+                        self._cb.on_final(final_text)
+        except Exception:
+            # A daemon thread that dies silently is exactly what makes the app
+            # look "stuck": surface the traceback instead of vanishing.
+            log.exception("capture loop crashed -- the assistant has stopped listening")
+            self._running.clear()
 
     def _poll_keywords(self, samples) -> None:
         kws = self._kws
@@ -348,6 +402,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self._stop_speaking.clear()
                 self._speaking.set()
                 self._cb.on_speech_start()
+                log.debug("speaking: %r (queue depth=%d)", text, self._play_q.qsize())
                 played = {"any": False}
 
                 def write(samples) -> None:
@@ -369,6 +424,7 @@ class SherpaOnnxEngine(AudioEngine):
                             )
                             out.start()
                             self._play_sr = self._tts_sr
+                            log.info("playback opened at %d Hz", self._play_sr)
                         except sd.PortAudioError:
                             dev_sr = int(sd.query_devices(kind="output")["default_samplerate"])
                             out = sd.OutputStream(
@@ -376,9 +432,9 @@ class SherpaOnnxEngine(AudioEngine):
                             )
                             out.start()
                             self._play_sr = dev_sr
-                            print(
-                                f"[sherpa] speaker rejected {self._tts_sr} Hz; "
-                                f"playing at {dev_sr} Hz and resampling"
+                            log.warning(
+                                "speaker rejected %d Hz; playing at %d Hz and resampling",
+                                self._tts_sr, dev_sr,
                             )
                     self._synthesize(text, write)
                     if self._stop_speaking.is_set() and played["any"]:
@@ -391,6 +447,9 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._play_q.empty():
                         self._speaking.clear()
                         self._cb.on_speech_end()
+        except Exception:
+            log.exception("playback loop crashed -- the assistant has gone mute")
+            self._running.clear()
         finally:
             if out is not None:
                 out.stop()

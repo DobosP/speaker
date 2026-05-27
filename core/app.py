@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 
@@ -211,6 +212,22 @@ def _run_live(runtime: VoiceRuntime) -> None:
         runtime.stop()
 
 
+def _setup_logging(debug: bool) -> None:
+    """Configure the ``speaker.*`` loggers. ``--debug`` (or SPEAKER_DEBUG=1)
+    drops the level to DEBUG so the per-block audio heartbeat, ASR partials,
+    task timings, and worker-thread tracebacks all show. Default is a quiet
+    INFO so a normal run only prints milestones."""
+    level = logging.DEBUG if debug else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
+    logging.getLogger("speaker").setLevel(level)
+    if debug:
+        logging.getLogger("speaker").debug("debug logging enabled")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
     parser.add_argument(
@@ -262,7 +279,16 @@ def main(argv: list[str] | None = None) -> int:
         help="speak each sentence as it is generated (lower latency) instead "
         "of waiting for the full answer (reads the 'tts.streaming' config flag)",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="verbose diagnostics: audio levels, ASR partials/finals, task "
+        "timings, queue depth, and full tracebacks from worker threads. Also "
+        "enabled by SPEAKER_DEBUG=1 in the environment.",
+    )
     args = parser.parse_args(argv)
+
+    _setup_logging(args.debug or os.environ.get("SPEAKER_DEBUG") == "1")
 
     config = _load_config()
     device = args.device or config.get("device", "desktop")

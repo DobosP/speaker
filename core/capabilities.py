@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import logging
 import os
+import time
 from threading import Event
 from typing import Callable, Iterator, Mapping, Optional
 
@@ -10,6 +12,8 @@ from .contract import drain_complete_sentences
 from .llm import LLMClient
 from .metrics import MetricsRecorder, mark_first_token
 from .routing import HeuristicRouter, Router
+
+log = logging.getLogger("speaker.llm")
 
 # Predicate deciding whether an ASSISTANT-mode query should escalate to the
 # ReAct planner instead of a one-shot reply.
@@ -109,16 +113,26 @@ def attach_llm_capabilities(
         model = llm if tier == "main" else fast
         if debug_routing:
             print(f"[route] {tier} <- {query!r}", flush=True)
+        log.info("answering on %s tier: %r", tier, query)
         emit = context.get("emit_speech")
+        started = time.monotonic()
         tokens = mark_first_token(model.stream(query, system=system), recorder)
         if callable(emit):
             text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
+            log.info(
+                "%s tier %s in %.2fs (%d chars, streamed)",
+                tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
+            )
             return CapabilityResult(
                 True,
                 text or "Sorry, I don't have an answer for that.",
                 data={"route": tier, "streamed": True, "cancelled": cancelled},
             )
         text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
+        log.info(
+            "%s tier %s in %.2fs (%d chars)",
+            tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
+        )
         if cancelled:
             return CapabilityResult(True, text, data={"cancelled": True, "route": tier})
         return CapabilityResult(

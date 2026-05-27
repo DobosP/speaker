@@ -8,8 +8,8 @@ publish_to: 'none'
 version: 0.1.0
 
 environment:
-  sdk: ">=3.0.0 <4.0.0"
-  flutter: ">=3.10.0"
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.22.0"
 
 dependencies:
   flutter:
@@ -21,6 +21,7 @@ dependencies:
   record: ^6.1.2
   audioplayers: ^5.0.0
   sherpa_onnx: ^1.13.2
+  flutter_gemma: ^0.16.1
 
 dev_dependencies:
   flutter_lints: ^4.0.0

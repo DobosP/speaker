@@ -83,7 +83,10 @@ def run_fake(cases: list[tuple[str, str]], *, timeout: float = 5.0) -> list[Turn
 
     engine = ScriptedEngine()
     runtime = VoiceRuntime(engine, EchoLLM())
-    runtime.start(run_bus=True)
+    # Pump the bus synchronously (run_bus=False): wait_idle drains pending
+    # TTS_REQUESTs in-thread so tts_first_audio is stamped into the right turn
+    # before we close it -- an async bus races the turn boundary.
+    runtime.start(run_bus=False)
     spoke_before = 0
     responded: list[bool] = []
     try:
@@ -121,7 +124,9 @@ def run_real(
     runtime = VoiceRuntime(
         engine, main_llm, fast_llm=fast_llm, start_mode=start_mode, stream_tts=stream_tts
     )
-    runtime.start(run_bus=True)
+    # Synchronous bus pump (see run_fake): keeps tts_first_audio in-turn so the
+    # per-turn latency stamps are attributed correctly instead of racing.
+    runtime.start(run_bus=False)
     transcripts: list[str] = []
     responded: list[bool] = []
     spoke_before = 0

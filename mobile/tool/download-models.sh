@@ -8,6 +8,8 @@ mkdir -p assets
 cd assets
 
 ASR=sherpa-onnx-streaming-zipformer-en-2023-06-26
+# Second-pass (offline) recogniser used to revise the fast streaming transcript.
+WHISPER=sherpa-onnx-whisper-base.en
 TTS=vits-piper-en_US-amy-low
 BASE=https://github.com/k2-fsa/sherpa-onnx/releases/download
 
@@ -24,7 +26,15 @@ fetch() {
 }
 
 fetch "$ASR" "$BASE/asr-models/$ASR.tar.bz2"
+fetch "$WHISPER" "$BASE/asr-models/$WHISPER.tar.bz2"
 fetch "$TTS" "$BASE/tts-models/$TTS.tar.bz2"
 
+# The Whisper archive ships fp32 + int8 weights and sample wavs; we only load
+# the int8 model, so drop the rest to keep the bundled APK small.
+if [ -d "$WHISPER" ]; then
+  rm -f "$WHISPER/base.en-encoder.onnx" "$WHISPER/base.en-decoder.onnx"
+  rm -rf "$WHISPER/test_wavs"
+fi
+
 echo "==> models ready:"
-du -sh "$ASR" "$TTS"
+du -sh "$ASR" "$WHISPER" "$TTS"

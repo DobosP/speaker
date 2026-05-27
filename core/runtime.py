@@ -6,6 +6,7 @@ from typing import Optional
 from always_on_agent.capabilities import create_default_capabilities
 from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
+from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import SessionMemory
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.supervisor import AgentSupervisor
@@ -40,6 +41,8 @@ class VoiceRuntime:
         agent_config=None,
         router: Optional[Router] = None,
         planner_config: Optional[PlannerConfig] = None,
+        stream_tts: bool = False,
+        followup_config: Optional[FollowupConfig] = None,
     ):
         self.engine = engine
         self.bus = EventBus()
@@ -58,7 +61,13 @@ class VoiceRuntime:
             from .agent import attach_agent_capability
 
             attach_agent_capability(registry, agent_config)
-        self.supervisor = AgentSupervisor(bus=self.bus, capabilities=registry, memory=memory)
+        self.supervisor = AgentSupervisor(
+            bus=self.bus,
+            capabilities=registry,
+            memory=memory,
+            stream_tts=stream_tts,
+            followup_config=followup_config,
+        )
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)
         self._bus_threaded = False
@@ -80,6 +89,7 @@ class VoiceRuntime:
             self._bus_threaded = True
 
     def stop(self) -> None:
+        self.supervisor.shutdown()
         if self._bus_threaded:
             self.bus.stop()
             self._bus_threaded = False

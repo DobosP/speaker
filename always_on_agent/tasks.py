@@ -45,11 +45,25 @@ class AgentTask:
 class TaskRuntime:
     """Runs cancellable tasks and emits lifecycle events."""
 
-    def __init__(self, publish, capabilities: CapabilityRegistry):
+    def __init__(self, publish, capabilities: CapabilityRegistry, *, stream_tts: bool = False):
         self._publish = publish
         self._capabilities = capabilities
         self._planner = TaskPlanner()
         self._threads: dict[str, Thread] = {}
+        self._stream_tts = stream_tts
+
+    def _make_emitter(self, task: "AgentTask"):
+        """A callback the speaking capability uses to play each sentence as it
+        is generated. Stops emitting once the task is cancelled (barge-in)."""
+
+        def emit(sentence: str) -> None:
+            if task.cancel_event.is_set() or not sentence:
+                return
+            self._publish(
+                AgentEvent(EventKind.TTS_REQUEST, {"task_id": task.task_id, "text": sentence})
+            )
+
+        return emit
 
     def create_task(self, decision: IntentDecision) -> AgentTask:
         plan = self._planner.plan(decision)
@@ -117,7 +131,14 @@ class TaskRuntime:
                 )
             )
             time.sleep(0.01)
-            result = self._invoke(task, step.capability, {"previous_steps": step_results})
+            extra: dict[str, object] = {"previous_steps": step_results}
+            if (
+                self._stream_tts
+                and step.speak_result
+                and task.metadata.get("speak", True)
+            ):
+                extra["emit_speech"] = self._make_emitter(task)
+            result = self._invoke(task, step.capability, extra)
             if not result.ok:
                 self._publish_failed(task, result.error)
                 return
@@ -177,6 +198,7 @@ class TaskRuntime:
                     "mode": task.mode.value,
                     "text": task.output_text,
                     "speak": bool(task.metadata.get("speak", True)),
+                    "followup": bool(task.metadata.get("followup")),
                     "data": task.metadata.get("result_data", {}),
                     "citations": task.metadata.get("citations", ()),
                 },

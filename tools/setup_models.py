@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+from typing import Callable
 
 DEST = os.path.join("pretrained_models", "sherpa")
 CONFIG = "config.json"
@@ -31,6 +32,22 @@ FILE_KEYS = [
     "tts_model",
     "tts_tokens",
 ]
+
+
+def wire_sherpa_paths(
+    config: dict, resolved: dict, *, abspath: Callable[[str], str] = os.path.abspath
+) -> dict:
+    """Merge resolved model paths into ``config['sherpa']`` in place.
+
+    Empty paths are skipped (so a missing optional artifact like
+    ``tts_data_dir`` leaves the existing value alone) and every other config
+    section is preserved. Pure + injectable ``abspath`` so it is unit-testable
+    without touching the filesystem."""
+    sherpa = config.setdefault("sherpa", {})
+    for key, path in resolved.items():
+        if path:
+            sherpa[key] = abspath(path)
+    return config
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -82,13 +99,11 @@ def main(argv: list[str] | None = None) -> int:
     # Wire absolute paths into config.json, preserving everything else.
     with open(args.config, "r", encoding="utf-8") as fh:
         cfg = json.load(fh)
-    sherpa = cfg.setdefault("sherpa", {})
-    for key, path in resolved.items():
-        if path:
-            sherpa[key] = os.path.abspath(path)
+    wire_sherpa_paths(cfg, resolved)
     with open(args.config, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
 
+    sherpa = cfg["sherpa"]
     print(f"\n[models] {args.config} sherpa paths set:")
     for key in FILE_KEYS + ["tts_data_dir"]:
         print(f"  {key}: {sherpa.get(key, '')}")

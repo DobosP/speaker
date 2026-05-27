@@ -42,8 +42,12 @@ Future<void> copyAllAssetFiles() async {
 
 Float32List convertBytesToFloat32(Uint8List bytes, [Endian endian = Endian.little]) {
   final values = Float32List(bytes.length ~/ 2);
-  final data = ByteData.view(bytes.buffer);
-  for (var i = 0; i < bytes.length; i += 2) {
+  // sublistView honors this Uint8List's own offset/length. `record` hands back
+  // chunks that are often *views* into a larger reused buffer, so the old
+  // `ByteData.view(bytes.buffer)` read from the wrong offset and corrupted the
+  // audio (a full utterance decoded down to a word or two of garbage).
+  final data = ByteData.sublistView(bytes);
+  for (var i = 0; i + 1 < bytes.length; i += 2) {
     values[i ~/ 2] = data.getInt16(i, endian) / 32768.0;
   }
   return values;

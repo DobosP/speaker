@@ -1,7 +1,10 @@
-// Assistant screen: the full on-device loop.
-// Speak or type -> small Gemma 3 generates locally (GPU) -> reply is spoken.
+// Assistant screen: the full on-device loop, always-on.
+// Tap the mic once to start continuous listening: the streaming recognizer
+// shows words live, and when it detects the end of an utterance (endpoint) the
+// phrase is sent to Gemma automatically and the reply is spoken. The mic is
+// muted while the assistant talks (no echo cancellation on-device) and resumes
+// on its own afterwards. Tap again to stop.
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -35,18 +38,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool _thinking = false;
   String _answer = '';
 
-  // Voice input. Two passes: a fast streaming recognizer shows words live as
-  // they are spoken; when the user stops, the buffered audio is re-decoded by
-  // a heavier offline model (_offline) to produce a more accurate transcript.
+  // Always-on voice input: a streaming recognizer runs continuously and the
+  // utterance is submitted automatically when an endpoint is detected.
   sherpa_onnx.OnlineRecognizer? _recognizer;
   sherpa_onnx.OnlineStream? _stream;
-  sherpa_onnx.OfflineRecognizer? _offline;
   StreamSubscription<List<int>>? _audioSub;
-  bool _listening = false;
-  bool _revising = false;
-  // Raw mic samples for the current utterance, fed to the revision pass.
-  final List<double> _utterance = [];
-  static const int _maxUtteranceSamples = 16000 * 30; // Whisper handles ~30s.
+  bool _alwaysOn = false; // user has enabled continuous listening
+  bool _listening = false; // mic stream currently active
+  bool _busy = false; // answering an utterance; pauses mic intake
 
   // TTS.
   sherpa_onnx.OfflineTts? _tts;
@@ -57,10 +56,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   final List<String> _speechQueue = [];
   bool _draining = false;
   String _ttsBuffer = '';
-
-  // Command fast-path: control phrases act locally without the LLM. The shared
-  // contract (contract.dart) decides what counts as "stop" so desktop and mobile
-  // recognize the same phrases.
+  Completer<void>? _speechDone;
 
   Future<void> _downloadModel() async {
     setState(() {
@@ -72,7 +68,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       await GemmaService.instance.ensureReady(
         onProgress: (p) => setState(() => _downloadPct = p),
       );
-      setState(() => _status = 'Model ready — ask me anything.');
+      setState(() => _status = 'Model ready — tap the mic to start.');
     } catch (e) {
       setState(() => _status = 'Model download/init failed: $e');
     } finally {
@@ -80,19 +76,111 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
   }
 
-  Future<void> _ask() async {
-    final prompt = _promptController.text.trim();
-    if (prompt.isEmpty || !GemmaService.instance.isReady) return;
+  // --- always-on listening ---
 
-    // Command fast-path: a control phrase acts immediately, skipping the LLM.
-    if (_handleCommand(prompt)) {
-      _promptController.clear();
+  Future<void> _toggleAlwaysOn() async {
+    if (_alwaysOn) {
+      _alwaysOn = false;
+      await _stopListening();
+      if (mounted) setState(() => _status = 'Stopped.');
       return;
     }
+    if (!GemmaService.instance.isReady) return;
+    _alwaysOn = true;
+    await _startListening();
+  }
 
+  Future<void> _startListening() async {
+    if (!await _recorder.hasPermission()) {
+      _alwaysOn = false;
+      setState(() => _status =
+          'Microphone permission denied — enable it in system settings.');
+      return;
+    }
+    if (_recognizer == null) {
+      sherpa_onnx.initBindings();
+      final modelConfig = await getOnlineModelConfig();
+      _recognizer = sherpa_onnx.OnlineRecognizer(
+        sherpa_onnx.OnlineRecognizerConfig(model: modelConfig, ruleFsts: ''),
+      );
+    }
+    _stream = _recognizer!.createStream();
+
+    const config = RecordConfig(
+      encoder: AudioEncoder.pcm16bits,
+      sampleRate: 16000,
+      numChannels: 1,
+    );
+    final audioStream = await _recorder.startStream(config);
+    setState(() {
+      _listening = true;
+      _status = 'Listening…';
+      _promptController.clear();
+    });
+
+    // Synchronous handler: each chunk is decoded to completion before the next,
+    // and `_busy` blocks re-entry while an utterance is being answered.
+    _audioSub = audioStream.listen((data) {
+      if (_busy || _stream == null) return;
+      final samples = convertBytesToFloat32(data);
+      _stream!.acceptWaveform(samples: samples, sampleRate: 16000);
+      while (_recognizer!.isReady(_stream!)) {
+        _recognizer!.decode(_stream!);
+      }
+      final partial = _recognizer!.getResult(_stream!).text;
+      if (mounted && partial.isNotEmpty) {
+        _promptController.value = TextEditingValue(
+          text: partial,
+          selection: TextSelection.collapsed(offset: partial.length),
+        );
+      }
+      if (_recognizer!.isEndpoint(_stream!)) {
+        final utterance = _recognizer!.getResult(_stream!).text.trim();
+        _recognizer!.reset(_stream!);
+        if (utterance.isNotEmpty) {
+          _busy = true; // set synchronously so queued chunks are ignored
+          unawaited(_answerAndResume(utterance));
+        }
+      }
+    });
+  }
+
+  Future<void> _stopListening() async {
+    await _audioSub?.cancel();
+    _audioSub = null;
+    await _recorder.stop();
+    _stream?.free();
+    _stream = null;
+    if (mounted) setState(() => _listening = false);
+  }
+
+  // One completed utterance: a control phrase acts immediately and keeps the
+  // mic on; anything else is answered with the mic muted (so the assistant does
+  // not transcribe its own speech), then listening resumes.
+  Future<void> _answerAndResume(String utterance) async {
+    if (_handleCommand(utterance)) {
+      _busy = false;
+      return;
+    }
+    await _stopListening();
+    await _ask(utterance);
+    await _awaitSpeechDone();
+    _busy = false;
+    if (_alwaysOn && mounted) {
+      await _startListening();
+    }
+  }
+
+  // --- generation ---
+
+  // Generate a reply for [prompt] and stream it to TTS. Pure: callers handle
+  // command phrases and clearing the input field.
+  Future<void> _ask(String prompt) async {
+    if (prompt.isEmpty || !GemmaService.instance.isReady) return;
     setState(() {
       _thinking = true;
       _answer = '';
+      _status = 'Thinking…';
     });
     _ttsBuffer = '';
     try {
@@ -109,8 +197,18 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
   }
 
+  // Send whatever is typed in the field (the manual fallback to voice).
+  Future<void> _submitTyped() async {
+    final text = _promptController.text.trim();
+    if (text.isEmpty) return;
+    _promptController.clear();
+    if (_handleCommand(text)) return;
+    await _ask(text);
+  }
+
   // Map a recognized control phrase to a local action. Returns true if handled.
-  // "stop" is the only action the mobile shell takes (it has no modes/supervisor).
+  // "stop" is the only action the mobile shell takes (it has no modes/supervisor);
+  // the shared contract (contract.dart) decides what counts as "stop".
   bool _handleCommand(String prompt) {
     if (!isStopCommand(prompt)) return false;
     _stopSpeaking();
@@ -121,8 +219,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _speechQueue.clear();
     _ttsBuffer = '';
     await _player.stop();
+    // Unblock anyone awaiting the (now interrupted) speech.
+    if (!(_speechDone?.isCompleted ?? true)) _speechDone!.complete();
+    _draining = false;
     if (mounted) setState(() => _status = 'Stopped.');
   }
+
+  // --- streaming TTS ---
 
   // Pull every completed sentence out of the rolling buffer and queue it for
   // speech; with flushAll, also speak whatever remains at end of generation.
@@ -147,13 +250,21 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _speechQueue.add(sentence);
     if (_draining) return;
     _draining = true;
+    _speechDone = Completer<void>();
+    if (mounted) setState(() => _status = 'Speaking…');
     try {
       while (_speechQueue.isNotEmpty) {
         await _synthesizeAndPlay(_speechQueue.removeAt(0));
       }
     } finally {
       _draining = false;
+      if (!(_speechDone?.isCompleted ?? true)) _speechDone!.complete();
     }
+  }
+
+  // Resolve once the current run of speech has finished playing.
+  Future<void> _awaitSpeechDone() async {
+    if (_draining) await _speechDone?.future;
   }
 
   Future<void> _synthesizeAndPlay(String text) async {
@@ -176,129 +287,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
     await done;
   }
 
-  Future<void> _toggleMic() async {
-    if (_listening) {
-      await _stopListening();
-      return;
-    }
-    try {
-      if (!await _recorder.hasPermission()) {
-        setState(() => _status =
-            'Microphone permission denied — enable it in system settings.');
-        return;
-      }
-
-      if (_recognizer == null) {
-        sherpa_onnx.initBindings();
-        final modelConfig = await getOnlineModelConfig();
-        _recognizer = sherpa_onnx.OnlineRecognizer(
-          sherpa_onnx.OnlineRecognizerConfig(model: modelConfig, ruleFsts: ''),
-        );
-      }
-      _stream = _recognizer!.createStream();
-      _utterance.clear();
-
-      const config = RecordConfig(
-        encoder: AudioEncoder.pcm16bits,
-        sampleRate: 16000,
-        numChannels: 1,
-      );
-      final audioStream = await _recorder.startStream(config);
-      setState(() {
-        _listening = true;
-        _status = 'Listening…';
-        _promptController.clear();
-      });
-
-      _audioSub = audioStream.listen((data) {
-        final samples = convertBytesToFloat32(data);
-        // Buffer the raw audio for the offline revision pass (cap to ~30s).
-        _utterance.addAll(samples);
-        if (_utterance.length > _maxUtteranceSamples) {
-          _utterance.removeRange(0, _utterance.length - _maxUtteranceSamples);
-        }
-        _stream!.acceptWaveform(samples: samples, sampleRate: 16000);
-        while (_recognizer!.isReady(_stream!)) {
-          _recognizer!.decode(_stream!);
-        }
-        final text = _recognizer!.getResult(_stream!).text;
-        if (text.isNotEmpty && mounted) {
-          _promptController.value = TextEditingValue(
-            text: text,
-            selection: TextSelection.collapsed(offset: text.length),
-          );
-        }
-      });
-    } catch (e) {
-      setState(() {
-        _listening = false;
-        _status = 'Could not start the microphone: $e';
-      });
-    }
-  }
-
-  Future<void> _stopListening() async {
-    await _audioSub?.cancel();
-    _audioSub = null;
-    await _recorder.stop();
-    _stream?.free();
-    _stream = null;
-    setState(() => _listening = false);
-
-    // Second pass: re-decode the full utterance with the heavier offline model
-    // and replace the live transcript with the more accurate result.
-    final revised = await _reviseTranscript();
-    if (revised != null && revised.isNotEmpty) {
-      _promptController.value = TextEditingValue(
-        text: revised,
-        selection: TextSelection.collapsed(offset: revised.length),
-      );
-    }
-    if (_promptController.text.trim().isNotEmpty) await _ask();
-  }
-
-  // Run the buffered utterance through offline Whisper for a corrected
-  // transcript. Returns null (and leaves the live text in place) on failure so
-  // a missing/incompatible model never breaks voice input.
-  Future<String?> _reviseTranscript() async {
-    if (_utterance.isEmpty) return null;
-    setState(() {
-      _revising = true;
-      _status = 'Revising transcript…';
-    });
-    sherpa_onnx.OfflineStream? s;
-    try {
-      _offline ??= await _createOfflineRecognizer();
-      final samples = Float32List.fromList(_utterance);
-      s = _offline!.createStream();
-      s.acceptWaveform(samples: samples, sampleRate: 16000);
-      _offline!.decode(s);
-      final text = _offline!.getResult(s).text.trim();
-      setState(() => _status = text.isEmpty ? '' : 'Revised transcript ready.');
-      return text;
-    } catch (_) {
-      setState(() => _status = 'Used live transcript (revision unavailable).');
-      return null;
-    } finally {
-      s?.free();
-      if (mounted) setState(() => _revising = false);
-    }
-  }
-
-  Future<sherpa_onnx.OfflineRecognizer> _createOfflineRecognizer() async {
-    final model = await getOfflineWhisperConfig();
-    return sherpa_onnx.OfflineRecognizer(
-      sherpa_onnx.OfflineRecognizerConfig(model: model),
-    );
-  }
-
   @override
   void dispose() {
+    _alwaysOn = false;
     _audioSub?.cancel();
     _recorder.dispose();
     _stream?.free();
     _recognizer?.free();
-    _offline?.free();
     _tts?.free();
     _player.dispose();
     _promptController.dispose();
@@ -344,11 +339,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
               maxLines: 3,
               decoration: InputDecoration(
                 border: const OutlineInputBorder(),
-                labelText: _listening
-                    ? 'Listening…'
-                    : _revising
-                        ? 'Revising…'
-                        : 'Ask something',
+                labelText: _listening ? 'Listening…' : 'Ask something',
               ),
             ),
             const SizedBox(height: 8),
@@ -356,7 +347,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 FilledButton.icon(
-                  onPressed: (_thinking || _revising) ? null : _ask,
+                  onPressed: _thinking ? null : _submitTyped,
                   icon: _thinking
                       ? const SizedBox(
                           width: 16,
@@ -367,13 +358,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
                 ),
                 const SizedBox(width: 12),
                 IconButton.filledTonal(
-                  onPressed: (_thinking || _revising) ? null : _toggleMic,
-                  icon: _revising
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2))
-                      : Icon(_listening ? Icons.stop : Icons.mic),
+                  onPressed: _toggleAlwaysOn,
+                  isSelected: _alwaysOn,
+                  icon: Icon(_alwaysOn ? Icons.stop : Icons.mic),
                 ),
               ],
             ),
@@ -381,7 +368,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
             Expanded(
               child: SingleChildScrollView(
                 child: Text(
-                  _answer.isEmpty ? 'The reply appears here and is spoken aloud.' : _answer,
+                  _answer.isEmpty
+                      ? 'Tap the mic to start always-on listening. Replies appear here and are spoken aloud.'
+                      : _answer,
                   style: Theme.of(context).textTheme.bodyLarge,
                 ),
               ),

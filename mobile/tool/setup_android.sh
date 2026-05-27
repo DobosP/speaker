@@ -23,15 +23,35 @@ with open(path, encoding="utf-8") as f:
 perms = (
     '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
     '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n'
+    '    <uses-permission android:name="android.permission.INTERNET" />\n'
 )
 
+changed = False
 if "android.permission.RECORD_AUDIO" not in text:
     text = text.replace("    <application", perms + "    <application", 1)
+    changed = True
+    print("Patched AndroidManifest.xml with RECORD_AUDIO + INTERNET permissions")
+else:
+    print("RECORD_AUDIO already present, no permission patch needed")
+
+# MediaPipe's GPU LLM backend (flutter_gemma) dlopen()s OpenCL; declaring the
+# native libs as optional lets it use the GPU where present and fall back to
+# CPU elsewhere. These must live inside <application>.
+opencl = (
+    '        <uses-native-library android:name="libOpenCL.so" android:required="false" />\n'
+    '        <uses-native-library android:name="libOpenCL-car.so" android:required="false" />\n'
+    '        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />\n'
+)
+if "libOpenCL.so" not in text:
+    text = text.replace("    </application>", opencl + "    </application>", 1)
+    changed = True
+    print("Patched AndroidManifest.xml with OpenCL uses-native-library entries")
+else:
+    print("OpenCL uses-native-library already present, no patch needed")
+
+if changed:
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
-    print("Patched AndroidManifest.xml with RECORD_AUDIO permission")
-else:
-    print("RECORD_AUDIO already present, no patch needed")
 PY
 
 # Plugins (record_android, audioplayers) pull AndroidX libs that require
@@ -50,13 +70,19 @@ with open(path, encoding="utf-8") as f:
 
 # Normalize whatever compileSdk line is present to a fixed value (valid in
 # both Groovy and Kotlin DSL).
-new, n = re.subn(r"compileSdk(?:Version)?\s*=?\s*[^\n]+", "compileSdk = 36", text)
+text, n = re.subn(r"compileSdk(?:Version)?\s*=?\s*[^\n]+", "compileSdk = 36", text)
 if n == 0:
     raise SystemExit(f"No compileSdk declaration found in {path}")
 
+# flutter_gemma / MediaPipe GenAI require minSdk >= 24; flutter's default
+# (flutter.minSdkVersion) is lower, so pin it.
+text, m = re.subn(r"minSdk(?:Version)?\s*=?\s*[^\n]+", "minSdk = 24", text)
+if m == 0:
+    raise SystemExit(f"No minSdk declaration found in {path}")
+
 with open(path, "w", encoding="utf-8") as f:
-    f.write(new)
-print(f"Set compileSdk = 36 in {path} ({n} occurrence(s))")
+    f.write(text)
+print(f"Set compileSdk = 36 ({n}x) and minSdk = 24 ({m}x) in {path}")
 PY
 
 # Flutter plugin sub-projects (record_android, audioplayers_android, ...) keep

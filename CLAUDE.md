@@ -120,10 +120,13 @@ Linux/Windows/macOS/Android/iOS.
   audio/model-dep tests excluded) on every push to `main` and every pull request.
   Keep it green; it is the gate that lets the autofix loop below know when a
   change is safe. `.github/workflows/perf.yml` is the (heavier) real-model
-  latency benchmark — NOT on every push; trigger it with `workflow_dispatch` or
-  by adding the `perf` label to a PR. It downloads models (uses the `HF_TOKEN`
-  Actions secret), runs `python -m tools.bench`, and uploads the latency report
-  as an artifact (a GitHub CPU is a calibration baseline, not phone silicon).
+  latency benchmark. It runs on every push to `main` (post-merge), on manual
+  `workflow_dispatch`, and on PRs labelled `perf`. It downloads models (cached;
+  uses the `HF_TOKEN` Actions secret), runs `python -m tools.bench`, uploads the
+  report as an artifact + the headline table to the job summary, and (on
+  main/dispatch) publishes the full HTML report to GitHub Pages at
+  https://dobosp.github.io/speaker/ . A GitHub CPU is a repeatable baseline, not
+  phone silicon — read it as calibration against `specsim`.
   `android-apk.yml` builds + publishes the mobile APK on pushes touching
   `mobile/**`; `publish-model.yml` republishes the gated Gemma model (see
   Environment / git).

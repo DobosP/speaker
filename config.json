@@ -42,6 +42,15 @@
   },
   "mode": "assistant",
   "local_only": true,
+  "tts": {
+    "streaming": false
+  },
+  "followups": {
+    "enabled": false,
+    "delay_sec": 3.0,
+    "max_followups": 3,
+    "markers": ["[silent]", "[no response]", "[still waiting]"]
+  },
   "agent": {
     "planner": {
       "enabled": false,

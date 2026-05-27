@@ -6,6 +6,7 @@ import os
 import sys
 
 from always_on_agent.events import Mode
+from always_on_agent.followups import FollowupConfig
 from always_on_agent.react import PlannerConfig
 
 from .engine import AudioEngine
@@ -179,6 +180,13 @@ def main(argv: list[str] | None = None) -> int:
         "queries escalate to a bounded plan->execute loop over the "
         "capabilities (reads the 'agent.planner' config block)",
     )
+    parser.add_argument(
+        "--stream-tts",
+        dest="stream_tts",
+        action="store_true",
+        help="speak each sentence as it is generated (lower latency) instead "
+        "of waiting for the full answer (reads the 'tts.streaming' config flag)",
+    )
     args = parser.parse_args(argv)
 
     config = _load_config()
@@ -200,6 +208,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.planner:
         planner_config.enabled = True
 
+    stream_tts = bool((config.get("tts", {}) or {}).get("streaming", False)) or args.stream_tts
+    followup_config = FollowupConfig.from_dict(config.get("followups"))
+
     runtime = VoiceRuntime(
         engine,
         llm,
@@ -208,6 +219,8 @@ def main(argv: list[str] | None = None) -> int:
         agent_config=agent_config,
         router=router,
         planner_config=planner_config,
+        stream_tts=stream_tts,
+        followup_config=followup_config,
     )
 
     if args.engine in ("sherpa", "livekit"):

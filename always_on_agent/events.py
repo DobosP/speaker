@@ -22,6 +22,7 @@ class EventKind(str, Enum):
     TASK_FAILED = "task.failed"
     TTS_REQUEST = "tts.request"
     MEMORY_COMMIT = "memory.commit"
+    FOLLOWUP_TICK = "followup.tick"
 
 
 class Mode(str, Enum):

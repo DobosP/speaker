@@ -1,0 +1,76 @@
+name: Perf benchmark
+
+# Real-model latency benchmark on a fixed GitHub Actions CPU. Heavy (downloads
+# Gemma GGUF + sherpa ONNX), so it does NOT run on every push: trigger it by
+# hand (workflow_dispatch) or by adding the "perf" label to a PR. The report is
+# uploaded as an artifact and summarized in the job summary. A GitHub CPU is a
+# repeatable baseline, not phone silicon -- read it as calibration against the
+# specsim model (see tools/specsim), not an absolute phone number.
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: device profile to benchmark
+        default: phone
+        type: string
+      limit:
+        description: max fixtures to run
+        default: "12"
+        type: string
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    # On PRs, only when the "perf" label is applied.
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'perf'
+    runs-on: ubuntu-latest
+    env:
+      PROFILE: ${{ github.event.inputs.profile || 'phone' }}
+      LIMIT: ${{ github.event.inputs.limit || '12' }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache downloaded models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            .cache/bench-models
+          key: bench-models-${{ hashFiles('tools/bench/models.py', 'bench-models.json') }}
+          restore-keys: |
+            bench-models-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy pytest huggingface_hub sherpa-onnx
+          # Prefer a prebuilt CPU wheel so the job doesn't compile llama.cpp.
+          pip install llama-cpp-python \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+      - name: Run latency benchmark
+        run: |
+          python -m tools.bench \
+            --profile "$PROFILE" \
+            --fixtures tests/fixture_audio/virtual_real_world \
+            --limit "$LIMIT" \
+            --out test-reports/perf \
+            ${{ hashFiles('bench-models.json') != '' && '--models-manifest bench-models.json' || '' }}
+
+      - name: Upload perf report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-report-${{ env.PROFILE }}
+          path: test-reports/perf
+          if-no-files-found: warn

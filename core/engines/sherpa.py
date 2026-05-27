@@ -75,6 +75,14 @@ class SherpaConfig:
     speaker_embedding_model: str = ""
     speaker_enroll_wav: str = ""
     speaker_threshold: float = 0.5
+    # Audio device selection (sounddevice index or name; None/"" = system
+    # default). List them with `python -m core --list-devices`. Use these when
+    # the default output is e.g. an HDMI monitor with no speakers.
+    input_device: object = None
+    output_device: object = None
+    # Software gain applied to captured audio before ASR -- a quick boost for a
+    # quiet mic (1.0 = off). Prefer raising the OS mic level; this is a stopgap.
+    input_gain: float = 1.0
     # ONNX execution provider for STT/TTS/speaker-ID. Keep "cpu" so the GPU
     # stays free for the LLM; sherpa-onnx also supports "cuda"/"coreml".
     provider: str = "cpu"
@@ -100,6 +108,16 @@ class SherpaConfig:
     @property
     def resolved_tts_threads(self) -> int:
         return self.tts_num_threads if self.tts_num_threads > 0 else self.base_threads
+
+
+def _norm_device(dev):
+    """Normalize a device setting: '', None -> None (system default); a digit
+    string -> int index; anything else (a device name) is returned as-is."""
+    if dev in (None, ""):
+        return None
+    if isinstance(dev, str) and dev.lstrip("-").isdigit():
+        return int(dev)
+    return dev
 
 
 def _resample_linear(samples, src_sr: int, dst_sr: int):
@@ -197,9 +215,11 @@ class SherpaOnnxEngine(AudioEngine):
         self._cb = callbacks
         self._build()
         self._running.set()
+        in_dev = _norm_device(self.config.input_device)
+        out_dev = _norm_device(self.config.output_device)
         try:
-            log.info("input device: %s", sd.query_devices(kind="input").get("name", "?"))
-            log.info("output device: %s", sd.query_devices(kind="output").get("name", "?"))
+            log.info("input device: %s", sd.query_devices(in_dev, kind="input").get("name", "?"))
+            log.info("output device: %s", sd.query_devices(out_dev, kind="output").get("name", "?"))
         except Exception as exc:  # noqa: BLE001 - diagnostics only
             log.warning("could not query audio devices: %s", exc)
         log.info(
@@ -216,18 +236,20 @@ class SherpaOnnxEngine(AudioEngine):
                 samplerate=self.config.sample_rate,
                 dtype="float32",
                 blocksize=int(self.config.sample_rate * 0.1),
+                device=in_dev,
             )
             self._stream_in.start()
         except sd.PortAudioError:
             # Many sound cards (and conda's ALSA-only PortAudio) refuse 16 kHz.
             # Fall back to the device's native rate and resample in the loop.
-            dev_sr = int(sd.query_devices(kind="input")["default_samplerate"])
+            dev_sr = int(sd.query_devices(in_dev, kind="input")["default_samplerate"])
             self._capture_sr = dev_sr
             self._stream_in = sd.InputStream(
                 channels=1,
                 samplerate=dev_sr,
                 dtype="float32",
                 blocksize=int(dev_sr * 0.1),
+                device=in_dev,
             )
             self._stream_in.start()
             print(
@@ -310,6 +332,8 @@ class SherpaOnnxEngine(AudioEngine):
                 samples = np.asarray(audio, dtype="float32").reshape(-1)
                 if self._capture_sr != self.config.sample_rate:
                     samples = _resample_linear(samples, self._capture_sr, self.config.sample_rate)
+                if self.config.input_gain != 1.0:
+                    samples = np.clip(samples * self.config.input_gain, -1.0, 1.0)
 
                 if self._recorder is not None:
                     self._recorder.write(samples)
@@ -462,18 +486,22 @@ class SherpaOnnxEngine(AudioEngine):
 
                 try:
                     if out is None:
+                        out_dev = _norm_device(self.config.output_device)
                         self._tts_sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
                         try:
                             out = sd.OutputStream(
-                                channels=1, samplerate=self._tts_sr, dtype="float32"
+                                channels=1, samplerate=self._tts_sr, dtype="float32",
+                                device=out_dev,
                             )
                             out.start()
                             self._play_sr = self._tts_sr
-                            log.info("playback opened at %d Hz", self._play_sr)
+                            log.info("playback opened at %d Hz on device %s",
+                                     self._play_sr, out_dev if out_dev is not None else "default")
                         except sd.PortAudioError:
-                            dev_sr = int(sd.query_devices(kind="output")["default_samplerate"])
+                            dev_sr = int(sd.query_devices(out_dev, kind="output")["default_samplerate"])
                             out = sd.OutputStream(
-                                channels=1, samplerate=dev_sr, dtype="float32"
+                                channels=1, samplerate=dev_sr, dtype="float32",
+                                device=out_dev,
                             )
                             out.start()
                             self._play_sr = dev_sr

@@ -299,7 +299,36 @@ def main(argv: list[str] | None = None) -> int:
         help="also save the session's 16 kHz mic audio to the run bundle "
         "(logs/runs/run-<id>.wav). Replays via `--engine replay` to become a test.",
     )
+    parser.add_argument(
+        "--list-devices",
+        action="store_true",
+        help="print the available audio devices (with indices) and exit",
+    )
+    parser.add_argument(
+        "--input-device",
+        default=None,
+        help="mic device index or name (see --list-devices); default = system default",
+    )
+    parser.add_argument(
+        "--output-device",
+        default=None,
+        help="speaker device index or name; set this if the default is an HDMI "
+        "monitor with no speakers",
+    )
+    parser.add_argument(
+        "--input-gain",
+        type=float,
+        default=None,
+        help="software gain on captured audio for a quiet mic (e.g. 4.0); "
+        "prefer raising the OS mic level first",
+    )
     args = parser.parse_args(argv)
+
+    if args.list_devices:
+        import sounddevice as sd
+
+        print(sd.query_devices())
+        return 0
 
     runlog = setup_logging(args.debug or os.environ.get("SPEAKER_DEBUG") == "1")
     monitor = SystemMonitor(runlog.summary)
@@ -312,6 +341,15 @@ def main(argv: list[str] | None = None) -> int:
         model=args.model, fast_model=args.fast_model,
     )
     config = _apply_device_profile(config, device)
+    # CLI audio overrides win over config.json's sherpa block.
+    sherpa_overrides = {
+        "input_device": args.input_device,
+        "output_device": args.output_device,
+        "input_gain": args.input_gain,
+    }
+    for key, val in sherpa_overrides.items():
+        if val is not None:
+            config.setdefault("sherpa", {})[key] = val
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
     router = build_router(config)

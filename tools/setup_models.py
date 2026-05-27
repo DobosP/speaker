@@ -52,6 +52,17 @@ def dest_for(base: str, key: str) -> str:
     return os.path.join(base, SUBDIR.get(key, ""))
 
 
+def apply_accuracy(manifest: dict, accuracy: str) -> dict:
+    """For ``high`` accuracy, use the non-quantized (fp32) ASR encoder/joiner
+    from the same repo -- more accurate than the int8 default, cheap on a strong
+    CPU/GPU. ``fast`` keeps the small int8 weights (phone-tier). Mutates + returns
+    the manifest."""
+    if accuracy == "high":
+        for key in ("asr_encoder", "asr_joiner"):
+            manifest[key]["file"] = manifest[key]["file"].replace(".int8.onnx", ".onnx")
+    return manifest
+
+
 def wire_sherpa_paths(
     config: dict, resolved: dict, *, abspath: Callable[[str], str] = os.path.abspath
 ) -> dict:
@@ -71,6 +82,13 @@ def wire_sherpa_paths(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fetch sherpa models + wire config.json")
     parser.add_argument("--force", action="store_true", help="re-download even if files exist")
+    parser.add_argument(
+        "--accuracy",
+        choices=["high", "fast"],
+        default="high",
+        help="ASR weights: 'high' = fp32 (more accurate, default for a capable PC); "
+        "'fast' = int8 (smaller, phone-tier)",
+    )
     parser.add_argument("--dest", default=DEST, help=f"download dir (default: {DEST})")
     parser.add_argument(
         "--config", default=CONFIG, help=f"config file to update (default: {CONFIG})"
@@ -84,7 +102,8 @@ def main(argv: list[str] | None = None) -> int:
     from tools.bench.models import load_manifest
 
     token = os.environ.get("HUGGINGFACE_TOKEN") or None
-    manifest = load_manifest(None)
+    manifest = apply_accuracy(load_manifest(None), args.accuracy)
+    print(f"[models] accuracy={args.accuracy} (ASR encoder: {manifest['asr_encoder']['file']})")
     os.makedirs(args.dest, exist_ok=True)
 
     resolved: dict[str, str] = {}

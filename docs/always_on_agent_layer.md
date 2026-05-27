@@ -1,5 +1,15 @@
 # Always-On Agent Layer
 
+> **Status — design rationale (historical).** This doc captured *why* the brain
+> exists and is kept for that reasoning. Two things have since changed: the
+> "current code" it points at (`utils/audio.py`, `utils/stt.py`,
+> `utils/dialogue_controller.py`, `utils/wakeword_service.py`, …) was the
+> hand-rolled engine and is now **deleted** — replaced by **`sherpa-onnx`** in
+> `core/engines/sherpa.py`; and the proposed supervisor/event-bus/task-runtime
+> now **exists** in `always_on_agent/` (see the *Prototype Status* section).
+> For how things are wired today read [`architecture.md`](architecture.md); for
+> the roadmap read [`target_architecture.md`](target_architecture.md).
+
 ## Short Recommendation
 
 Keep Python for the audio and agent runtime. Do not rewrite the current project

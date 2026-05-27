@@ -4,28 +4,37 @@ Guidance for Claude Code working in this repo. Read this first every session.
 
 ## What this project is
 
-A fully-local, real-time voice assistant (`ASR → LLM → TTS`) with barge-in.
-Today it runs on desktop (Linux/Windows/macOS) in Python. The **goal** is a
-fully on-device, fully-local, always-listening, mode-based assistant that also
-runs on Android and iOS.
+A fully-local, real-time voice assistant (`ASR → LLM → TTS`) with barge-in and a
+mode-based control plane. The desktop Python runtime in `core/` is the reference
+implementation; an on-device **Android app** lives in `mobile/` (Flutter), and a
+**host + thin-client** path (`remote/` + `web/`, over LiveKit/WebRTC) lets a
+browser or phone talk to one running brain. The **goal** is a fully on-device,
+fully-local, always-listening, mode-based assistant across
+Linux/Windows/macOS/Android/iOS.
 
-> Direction: the refactor is underway. The target architecture and the
-> keep/replace/delete plan live in **`docs/target_architecture.md`** — read it
-> before proposing structural changes. Short version: the hand-rolled audio
-> stack has been **removed** in favour of `sherpa-onnx`; the `always_on_agent/`
-> "brain" is kept and made real; the old `main.py` monolith is **deleted**.
+> **Cross-platform shape (decided):** one portable **core** + thin **per-platform
+> shells** — *not* a monolith, *not* independent apps. Platforms share the
+> `always_on_agent` **`AgentEvent`/`Mode` contract** (plus its tests); the small
+> brain is reimplemented per runtime (Python on desktop/server, Dart on mobile).
+> Deployment topology is **hybrid**: on-device first (fully-local is a hard
+> requirement), with the `remote/` host path as the iOS-background story and the
+> instant-reach fallback. Full rationale + the resolved decisions live in
+> **`docs/target_architecture.md`** §9 — read it before structural changes.
 >
-> **The runtime now lives in `core/`** (`VoiceRuntime`): a swappable
-> `AudioEngine` (sherpa-onnx for production, a scripted engine for tests) wired
-> to the `always_on_agent` brain with real LLM-backed, cancellable capabilities.
-> Try it without audio: `python -m core --engine console --llm echo`.
+> The refactor removed the hand-rolled audio stack in favour of `sherpa-onnx`;
+> the `always_on_agent/` brain is kept and made real; the old `main.py` monolith
+> is **deleted**. The desktop runtime is `core/` (`VoiceRuntime`): a swappable
+> `AudioEngine` (sherpa-onnx production, scripted for tests, LiveKit for remote)
+> wired to the brain with real LLM-backed, cancellable capabilities. Try it
+> without audio: `python -m core --engine console --llm echo`.
 
 ## Layout
 
 - `core/` — **the runtime (all new work goes here).** `engine.py` (the
   `AudioEngine` seam), `engines/sherpa.py` (production, on-device; CPU STT/TTS
   with auto-tuned threads + explicit `provider`), `engines/scripted.py`
-  (tests/console), `engines/speaker_gate.py` (speaker-ID barge-in gate),
+  (tests/console), `engines/livekit.py` (WebRTC transport for the remote
+  host+thin-client path), `engines/speaker_gate.py` (speaker-ID barge-in gate),
   keyword-spotter **command fast-path** (sherpa KWS runs alongside ASR and
   fires `on_command`; the runtime maps it to a control event via the
   `commands` config block — instant actions like "stop" with no LLM in the loop),
@@ -38,7 +47,17 @@ runs on Android and iOS.
   `python -m core --engine console --llm echo`.
 - `always_on_agent/` — the **control-plane "brain"** (modes, priority event bus,
   supervisor, cancellable threaded tasks, intent analyzer). The keeper. See its
-  `README.md` and `docs/always_on_agent_layer.md`.
+  `README.md` and `docs/always_on_agent_layer.md`. Its `events.py`
+  (`AgentEvent`/`Mode`) is **the shell↔core contract** every platform shares.
+- `mobile/` — **on-device Android app** (Flutter): ASR/LLM/TTS fully local via
+  `sherpa_onnx` + `flutter_gemma` (Gemma 3 1B, MediaPipe/LiteRT). Today it is a
+  **parallel Dart loop** (`lib/assistant.dart`) that re-derives core behavior
+  (command fast-path, streaming TTS) rather than sharing the brain — the planned
+  convergence is onto the `AgentEvent` contract. See `mobile/README.md`.
+- `remote/` — **host + thin-client path** (optional; `requirements-remote.txt` +
+  `LIVEKIT_*`). `token_server.py` (FastAPI: mints LiveKit tokens, a text `/chat`,
+  serves `web/`), `worker.py` (joins a LiveKit room running the full Python brain
+  via `--engine livekit`). `web/index.html` is the browser client.
 - `utils/memory.py` (+ `memory_writer.py`, `memory_config.py`) — Postgres-backed
   smart memory (the only surviving `utils/` modules). See `MEMORY.md`. Keep;
   will move to SQLite on mobile.
@@ -63,7 +82,10 @@ runs on Android and iOS.
 - Run the app: `python -m core --engine console --llm echo` (no audio/models);
   `python -m core --engine sherpa` for on-device audio;
   `python -m core --engine replay --replay-dir <dir>` to run the real engine
-  headless over recorded `.npy`/`.wav` fixtures (no sound card).
+  headless over recorded `.npy`/`.wav` fixtures (no sound card);
+  `python -m remote.worker` for the host+thin-client path (joins a LiveKit room;
+  needs `LIVEKIT_*`). Engines: `--engine {console,sherpa,replay,livekit}`; LLM:
+  `--llm {echo,ollama,llamacpp}`.
 - Latency instrumentation: `core/metrics.py` records per-turn stage timings
   (`speech_end → asr_final → llm_first_token → tts_first_audio`, plus
   `barge_in → barge_in_stop`) via `runtime.metrics`. The real engine, the
@@ -81,9 +103,11 @@ runs on Android and iOS.
   (large/multimodal) and `fast_model` (snappy replies). `device_profiles`
   (`desktop`, `phone`, …) are shallow-merged over the base per section; pick one
   with `--device <name>` (default from `config.device`). Desktop runs
-  gemma3:12b + 4b on Ollama/GPU; phone runs small Gemma (4b/1b) GGUF on
-  llama.cpp with STT/TTS threads dialed down. Ollama is desktop-only — mobile
-  must use `llamacpp`.
+  gemma3:12b + 4b on Ollama/GPU; the `phone` profile runs the **Python core**
+  under phone-like limits (small Gemma 4b/1b GGUF on `llama.cpp`, STT/TTS threads
+  dialed down) — Ollama is desktop-only. Note: the **shipped Flutter app**
+  (`mobile/`) is separate from these profiles and uses `flutter_gemma`
+  (MediaPipe/LiteRT), not `llama.cpp`, for its on-device LLM.
 - Simulate specs without hardware: `python -m tools.specsim` renders
   `test-reports/specsim/index.html` (model-fit + responsiveness matrix + per-
   device ASR→LLM→TTS timelines across 4090/Mac/Windows/phone/web). Numbers are
@@ -103,6 +127,9 @@ runs on Android and iOS.
   main/dispatch) publishes the full HTML report to GitHub Pages at
   https://dobosp.github.io/speaker/ . A GitHub CPU is a repeatable baseline, not
   phone silicon — read it as calibration against `specsim`.
+  `android-apk.yml` builds + publishes the mobile APK on pushes touching
+  `mobile/**`; `publish-model.yml` republishes the gated Gemma model (see
+  Environment / git).
 
 ## Environment / git
 

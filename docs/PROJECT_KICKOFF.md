@@ -91,16 +91,26 @@ Legend: ⭐ = blocks real work until answered. 💡 = my current recommendation.
   built on sherpa-onnx + the existing brain. Agree / adjust?
   > _answer:_
 
-## 8. Open technical decisions (mirrors target_architecture.md §9)
+## 8. Technical decisions — RESOLVED (mirrors target_architecture.md §9)
 
 - UI shell: Flutter vs native? 💡 Flutter.
-  > _answer:_
+  > _answer:_ **Flutter** — chosen and built (`mobile/`).
 - Mobile LLM runtime: llama.cpp vs MLC-LLM vs ExecuTorch? 💡 decide after a phone spike.
-  > _answer:_
+  > _answer:_ **MediaPipe/LiteRT via `flutter_gemma`** (Gemma 3 1B) in the shipped
+  > app; `llama.cpp`/Ollama stay the runtimes for the Python core's desktop/phone
+  > profiles. (The shipped choice supersedes the three-way comparison.)
 - Core language for the eventual mobile port: Python-embedded vs Rust/C++? 💡 Rust/C++ core, Python desktop binding.
-  > _answer:_
+  > _answer:_ **Neither** — share the `AgentEvent`/`Mode` **contract + tests** and
+  > reimplement the small brain per runtime (Python desktop/server, Dart mobile).
+  > A Rust/C++ FFI core is the most work for the least gain now; revisit only if
+  > the Python↔Dart brains drift despite the shared golden tests.
 - iOS always-on is OS-restricted — accept push-to-talk/wakeword on iPhone? 💡 yes.
-  > _answer:_
+  > _answer:_ **Yes** — push-to-talk / wakeword-gated on iOS; the `remote/` host
+  > path covers continuous-listening needs where required.
+
+**Topology (one app or many?):** one portable **core** + thin per-platform
+**shells**, **hybrid** deployment (on-device first, host+thin-client fallback).
+Not a monolith, not independent apps. See target_architecture.md §0/§9.
 
 ---
 

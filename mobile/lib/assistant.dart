@@ -58,6 +58,20 @@ class _AssistantScreenState extends State<AssistantScreen> {
   String _ttsBuffer = '';
   Completer<void>? _speechDone;
 
+  // Latency profiling, shown on screen (stages mirror core/metrics.py):
+  //   silence wait : last speech -> endpoint (the trailing-silence timeout)
+  //   -> 1st token : endpoint -> first LLM token (time-to-first-token)
+  //   -> speaking  : endpoint -> first TTS audio (the felt round-trip)
+  //   gen          : token count and tokens/sec
+  // Lets us see on-device where each turn's seconds actually go.
+  DateTime? _tLastVoice; // last chunk with a non-empty partial (~ user talking)
+  DateTime? _tHeard; // endpoint fired / utterance submitted
+  DateTime? _tFirstToken;
+  DateTime? _tFirstAudio;
+  DateTime? _tGenDone;
+  int _genTokens = 0;
+  String _metrics = '';
+
   Future<void> _downloadModel() async {
     setState(() {
       _downloading = true;
@@ -128,16 +142,20 @@ class _AssistantScreenState extends State<AssistantScreen> {
         _recognizer!.decode(_stream!);
       }
       final partial = _recognizer!.getResult(_stream!).text;
-      if (mounted && partial.isNotEmpty) {
-        _promptController.value = TextEditingValue(
-          text: partial,
-          selection: TextSelection.collapsed(offset: partial.length),
-        );
+      if (partial.isNotEmpty) {
+        _tLastVoice = DateTime.now();
+        if (mounted) {
+          _promptController.value = TextEditingValue(
+            text: partial,
+            selection: TextSelection.collapsed(offset: partial.length),
+          );
+        }
       }
       if (_recognizer!.isEndpoint(_stream!)) {
         final utterance = _recognizer!.getResult(_stream!).text.trim();
         _recognizer!.reset(_stream!);
         if (utterance.isNotEmpty) {
+          _tHeard = DateTime.now();
           _busy = true; // set synchronously so queued chunks are ignored
           unawaited(_answerAndResume(utterance));
         }
@@ -183,13 +201,24 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _status = 'Thinking…';
     });
     _ttsBuffer = '';
+    _tFirstToken = null;
+    _tFirstAudio = null;
+    _tGenDone = null;
+    _genTokens = 0;
     try {
       await for (final token in GemmaService.instance.reply(prompt)) {
+        if (_tFirstToken == null) {
+          _tFirstToken = DateTime.now();
+          _updateMetrics();
+        }
+        _genTokens++;
         setState(() => _answer += token);
         _ttsBuffer += token;
         _flushSentences();
       }
+      _tGenDone = DateTime.now();
       _flushSentences(flushAll: true);
+      _updateMetrics();
     } catch (e) {
       setState(() => _answer = 'Generation failed: $e');
     } finally {
@@ -203,6 +232,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (text.isEmpty) return;
     _promptController.clear();
     if (_handleCommand(text)) return;
+    _tLastVoice = null; // typed input has no silence-wait stage
+    _tHeard = DateTime.now();
     await _ask(text);
   }
 
@@ -284,7 +315,35 @@ class _AssistantScreenState extends State<AssistantScreen> {
     // start awaiting (which would otherwise stall the queue).
     final done = _player.onPlayerComplete.first;
     await _player.play(DeviceFileSource(filename));
+    if (_tFirstAudio == null) {
+      _tFirstAudio = DateTime.now();
+      _updateMetrics();
+    }
     await done;
+  }
+
+  // --- latency profiling ---
+
+  int _ms(DateTime a, DateTime b) => b.difference(a).inMilliseconds;
+
+  void _updateMetrics() {
+    if (_tHeard == null) return;
+    final lines = <String>[];
+    if (_tLastVoice != null && _tLastVoice!.isBefore(_tHeard!)) {
+      lines.add('silence wait : ${_ms(_tLastVoice!, _tHeard!)} ms');
+    }
+    if (_tFirstToken != null) {
+      lines.add('-> 1st token : ${_ms(_tHeard!, _tFirstToken!)} ms');
+    }
+    if (_tFirstAudio != null) {
+      lines.add('-> speaking  : ${_ms(_tHeard!, _tFirstAudio!)} ms');
+    }
+    if (_tFirstToken != null && _tGenDone != null && _genTokens > 1) {
+      final secs = _ms(_tFirstToken!, _tGenDone!) / 1000.0;
+      final rate = secs > 0 ? _genTokens / secs : 0.0;
+      lines.add('gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s');
+    }
+    if (mounted) setState(() => _metrics = lines.join('\n'));
   }
 
   @override
@@ -331,6 +390,11 @@ class _AssistantScreenState extends State<AssistantScreen> {
           if (_status.isNotEmpty) ...[
             const SizedBox(height: 8),
             Text(_status, style: Theme.of(context).textTheme.bodySmall),
+          ],
+          if (_metrics.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(_metrics,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
           ],
           if (ready) ...[
             const SizedBox(height: 8),

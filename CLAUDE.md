@@ -92,6 +92,12 @@ runs on Android and iOS.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
   not a code problem.
+- Git access / automation token: routine git (push to `main`, branches) and
+  GitHub reads/writes go through the session harness (git proxy + repo-scoped
+  GitHub MCP) — no stored credential. Branch *deletion* (the proxy blocks it)
+  and CI-consumed secrets require a maintainer-supplied fine-grained PAT used
+  **out-of-band**; its value lives **only** in GitHub Actions secrets and is
+  **never** committed to the repo or written to any file.
 
 ## When unsure
 

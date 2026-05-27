@@ -4,12 +4,15 @@
 // is sent to Gemma automatically and the reply is spoken. The mic stays LIVE
 // while the assistant talks — with acoustic echo cancellation so it doesn't hear
 // its own voice — so you can interrupt (barge-in) just by talking, or say "stop".
-// Tap again to stop.
+// Tap again to stop. A per-turn latency readout + "Copy logs" export are wired in
+// for on-device profiling.
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
@@ -66,6 +69,26 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool _draining = false;
   String _ttsBuffer = '';
   Completer<void>? _playInterrupt; // completes to cut the current clip short
+
+  // Latency profiling, shown on screen (stages mirror core/metrics.py):
+  //   silence wait : last speech -> endpoint (the trailing-silence timeout)
+  //   -> 1st token : endpoint -> first LLM token (time-to-first-token)
+  //   -> speaking  : endpoint -> first TTS audio (the felt round-trip)
+  //   gen          : token count and tokens/sec
+  // Lets us see on-device where each turn's seconds actually go.
+  DateTime? _tLastVoice; // last chunk with a non-empty partial (~ user talking)
+  DateTime? _tHeard; // endpoint fired / utterance submitted
+  DateTime? _tFirstToken;
+  DateTime? _tFirstAudio;
+  DateTime? _tGenDone;
+  int _genTokens = 0;
+  String _metrics = '';
+
+  // Rolling per-turn log (timestamp + utterance + the metrics above, or an
+  // error). Exported via the "Copy logs" button — there is no embedded
+  // credential, so the only way logs leave the device is the user sharing them.
+  final List<String> _log = [];
+  String? _lastUtterance;
 
   Future<void> _downloadModel() async {
     setState(() {
@@ -174,11 +197,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
       unawaited(_stopSpeaking());
     }
 
-    if (mounted && partial.isNotEmpty) {
-      _promptController.value = TextEditingValue(
-        text: partial,
-        selection: TextSelection.collapsed(offset: partial.length),
-      );
+    if (partial.isNotEmpty) {
+      _tLastVoice = DateTime.now();
+      if (mounted) {
+        _promptController.value = TextEditingValue(
+          text: partial,
+          selection: TextSelection.collapsed(offset: partial.length),
+        );
+      }
     }
 
     if (_recognizer!.isEndpoint(_stream!)) {
@@ -198,6 +224,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
         }
         return;
       }
+      _tHeard = DateTime.now();
       unawaited(_answerUtterance(utterance, _turn));
     }
   }
@@ -219,22 +246,40 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // stops emitting tokens and queuing speech.
   Future<void> _answerUtterance(String prompt, int myTurn) async {
     if (prompt.isEmpty || !GemmaService.instance.isReady) return;
+    _lastUtterance = prompt;
     setState(() {
       _thinking = true;
       _answer = '';
       _status = 'Thinking…';
     });
     _ttsBuffer = '';
+    _tFirstToken = null;
+    _tFirstAudio = null;
+    _tGenDone = null;
+    _genTokens = 0;
     try {
       await for (final token in GemmaService.instance.reply(prompt)) {
         if (myTurn != _turn) return; // superseded by a newer utterance
+        if (_tFirstToken == null) {
+          _tFirstToken = DateTime.now();
+          _updateMetrics();
+        }
+        _genTokens++;
         setState(() => _answer += token);
         _ttsBuffer += token;
         _flushSentences();
       }
-      if (myTurn == _turn) _flushSentences(flushAll: true);
+      if (myTurn == _turn) {
+        _tGenDone = DateTime.now();
+        _flushSentences(flushAll: true);
+        _updateMetrics();
+        _appendLog();
+      }
     } catch (e) {
-      if (myTurn == _turn) setState(() => _answer = 'Generation failed: $e');
+      if (myTurn == _turn) {
+        setState(() => _answer = 'Generation failed: $e');
+        _appendLog(error: '$e');
+      }
     } finally {
       if (mounted && myTurn == _turn) setState(() => _thinking = false);
     }
@@ -251,6 +296,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
       if (mounted) setState(() => _status = 'Stopped.');
       return;
     }
+    _tLastVoice = null; // typed input has no silence-wait stage
+    _tHeard = DateTime.now();
     await _answerUtterance(text, _turn);
   }
 
@@ -320,8 +367,55 @@ class _AssistantScreenState extends State<AssistantScreen> {
     final done = _player.onPlayerComplete.first;
     _playInterrupt = Completer<void>();
     await _player.play(DeviceFileSource(filename));
+    if (_tFirstAudio == null) {
+      _tFirstAudio = DateTime.now();
+      _updateMetrics();
+    }
     // Whichever happens first: the clip finishes, or barge-in cuts it short.
     await Future.any([done, _playInterrupt!.future]);
+  }
+
+  // --- latency profiling ---
+
+  int _ms(DateTime a, DateTime b) => b.difference(a).inMilliseconds;
+
+  void _updateMetrics() {
+    if (_tHeard == null) return;
+    final lines = <String>[];
+    if (_tLastVoice != null && _tLastVoice!.isBefore(_tHeard!)) {
+      lines.add('silence wait : ${_ms(_tLastVoice!, _tHeard!)} ms');
+    }
+    if (_tFirstToken != null) {
+      lines.add('-> 1st token : ${_ms(_tHeard!, _tFirstToken!)} ms');
+    }
+    if (_tFirstAudio != null) {
+      lines.add('-> speaking  : ${_ms(_tHeard!, _tFirstAudio!)} ms');
+    }
+    if (_tFirstToken != null && _tGenDone != null && _genTokens > 1) {
+      final secs = _ms(_tFirstToken!, _tGenDone!) / 1000.0;
+      final rate = secs > 0 ? _genTokens / secs : 0.0;
+      lines.add('gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s');
+    }
+    if (mounted) setState(() => _metrics = lines.join('\n'));
+  }
+
+  void _appendLog({String? error}) {
+    final ts = DateTime.now().toIso8601String();
+    final header = '[$ts] "${_lastUtterance ?? ''}"';
+    _log.add(error != null ? '$header ERROR: $error' : '$header\n$_metrics');
+    if (_log.length > 100) _log.removeRange(0, _log.length - 100);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _copyLogs() async {
+    final head = 'speaker mobile — ${Platform.operatingSystem} '
+        '${Platform.operatingSystemVersion} — Gemma 3 1B';
+    await Clipboard.setData(ClipboardData(text: '$head\n\n${_log.join('\n')}'));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Logs copied — paste them to Claude.')),
+      );
+    }
   }
 
   @override
@@ -369,6 +463,11 @@ class _AssistantScreenState extends State<AssistantScreen> {
             const SizedBox(height: 8),
             Text(_status, style: Theme.of(context).textTheme.bodySmall),
           ],
+          if (_metrics.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Text(_metrics,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+          ],
           if (ready) ...[
             const SizedBox(height: 8),
             TextField(
@@ -401,6 +500,15 @@ class _AssistantScreenState extends State<AssistantScreen> {
                 ),
               ],
             ),
+            if (_log.isNotEmpty)
+              Align(
+                alignment: Alignment.center,
+                child: TextButton.icon(
+                  onPressed: _copyLogs,
+                  icon: const Icon(Icons.copy_all, size: 18),
+                  label: Text('Copy logs (${_log.length} turns)'),
+                ),
+              ),
             const SizedBox(height: 16),
             Expanded(
               child: SingleChildScrollView(

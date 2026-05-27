@@ -98,6 +98,22 @@ class SherpaConfig:
         return self.tts_num_threads if self.tts_num_threads > 0 else self.base_threads
 
 
+def _resample_linear(samples, src_sr: int, dst_sr: int):
+    """Linear-resample mono float32 audio. Bridges a sound card that only opens
+    at its native rate to sherpa's fixed 16 kHz (and TTS output back the other
+    way), so capture/playback work even when the device rejects the target rate."""
+    import numpy as np
+
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if src_sr == dst_sr or x.size == 0:
+        return x
+    n_out = int(round(x.shape[0] * float(dst_sr) / float(src_sr)))
+    if n_out <= 0:
+        return np.zeros(0, dtype="float32")
+    idx = np.linspace(0.0, x.shape[0] - 1, num=n_out)
+    return np.interp(idx, np.arange(x.shape[0]), x).astype("float32")
+
+
 class SherpaOnnxEngine(AudioEngine):
     """Real-time on-device engine. Requires model files in :class:`SherpaConfig`.
 
@@ -116,6 +132,12 @@ class SherpaOnnxEngine(AudioEngine):
         self._kws = None
         self._kws_stream = None
         self._stream_in = None
+        # Actual mic capture rate (may differ from config.sample_rate when the
+        # device won't open at 16 kHz); captured audio is resampled to 16 kHz.
+        self._capture_sr = config.sample_rate
+        # TTS native rate vs. the rate the speaker actually opened at.
+        self._tts_sr = 0
+        self._play_sr = 0
         self._capture_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._speaking = threading.Event()
@@ -163,13 +185,31 @@ class SherpaOnnxEngine(AudioEngine):
         self._cb = callbacks
         self._build()
         self._running.set()
-        self._stream_in = sd.InputStream(
-            channels=1,
-            samplerate=self.config.sample_rate,
-            dtype="float32",
-            blocksize=int(self.config.sample_rate * 0.1),
-        )
-        self._stream_in.start()
+        self._capture_sr = self.config.sample_rate
+        try:
+            self._stream_in = sd.InputStream(
+                channels=1,
+                samplerate=self.config.sample_rate,
+                dtype="float32",
+                blocksize=int(self.config.sample_rate * 0.1),
+            )
+            self._stream_in.start()
+        except sd.PortAudioError:
+            # Many sound cards (and conda's ALSA-only PortAudio) refuse 16 kHz.
+            # Fall back to the device's native rate and resample in the loop.
+            dev_sr = int(sd.query_devices(kind="input")["default_samplerate"])
+            self._capture_sr = dev_sr
+            self._stream_in = sd.InputStream(
+                channels=1,
+                samplerate=dev_sr,
+                dtype="float32",
+                blocksize=int(dev_sr * 0.1),
+            )
+            self._stream_in.start()
+            print(
+                f"[sherpa] mic rejected {self.config.sample_rate} Hz; "
+                f"capturing at {dev_sr} Hz and resampling to {self.config.sample_rate} Hz"
+            )
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
@@ -221,8 +261,10 @@ class SherpaOnnxEngine(AudioEngine):
         voiced_run = 0.0
         block_sec = 0.1
         while self._running.is_set():
-            audio, _ = self._stream_in.read(int(self.config.sample_rate * block_sec))
+            audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
             samples = np.asarray(audio, dtype="float32").reshape(-1)
+            if self._capture_sr != self.config.sample_rate:
+                samples = _resample_linear(samples, self._capture_sr, self.config.sample_rate)
 
             # Command fast-path: keyword spotting runs every block, including
             # during playback, so phrases like "stop" act with the lowest
@@ -314,13 +356,30 @@ class SherpaOnnxEngine(AudioEngine):
                     if not played["any"]:
                         played["any"] = True
                         self._cb.on_metric(TTS_FIRST_AUDIO)
+                    if self._play_sr != self._tts_sr:
+                        samples = _resample_linear(samples, self._tts_sr, self._play_sr)
                     out.write(samples)
 
                 try:
                     if out is None:
-                        sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
-                        out = sd.OutputStream(channels=1, samplerate=sr, dtype="float32")
-                        out.start()
+                        self._tts_sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
+                        try:
+                            out = sd.OutputStream(
+                                channels=1, samplerate=self._tts_sr, dtype="float32"
+                            )
+                            out.start()
+                            self._play_sr = self._tts_sr
+                        except sd.PortAudioError:
+                            dev_sr = int(sd.query_devices(kind="output")["default_samplerate"])
+                            out = sd.OutputStream(
+                                channels=1, samplerate=dev_sr, dtype="float32"
+                            )
+                            out.start()
+                            self._play_sr = dev_sr
+                            print(
+                                f"[sherpa] speaker rejected {self._tts_sr} Hz; "
+                                f"playing at {dev_sr} Hz and resampling"
+                            )
                     self._synthesize(text, write)
                     if self._stop_speaking.is_set() and played["any"]:
                         self._cb.on_metric(BARGE_IN_STOP)

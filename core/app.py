@@ -83,6 +83,25 @@ def _build_engine(args, config: dict) -> AudioEngine:
 
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
         return SherpaOnnxEngine(sherpa_cfg)
+    if args.engine == "livekit":
+        # Remote (WebRTC) engine: same sherpa STT/TTS, audio over a LiveKit room.
+        # URL + token come from the env so the base CLI stays decoupled from the
+        # optional remote package; `python -m remote.worker` mints the token for
+        # you. Install requirements-remote.txt to run it.
+        from .engines.livekit import LiveKitEngine
+        from .engines.sherpa import SherpaConfig
+
+        url = os.environ.get("LIVEKIT_URL")
+        token = os.environ.get("LIVEKIT_TOKEN")
+        if not url or not token:
+            raise SystemExit(
+                "--engine livekit needs LIVEKIT_URL and LIVEKIT_TOKEN in the env. "
+                "Run `python -m remote.worker` to mint a token automatically "
+                "(after installing requirements-remote.txt and starting a LiveKit server)."
+            )
+        sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
+        room = (config.get("remote", {}) or {}).get("room", "assistant")
+        return LiveKitEngine(sherpa_cfg, url=url, token=token, room=room)
     from .engines.scripted import ScriptedEngine
 
     return ScriptedEngine()
@@ -125,7 +144,7 @@ def _run_live(runtime: VoiceRuntime) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
-    parser.add_argument("--engine", choices=["console", "sherpa"], default="console")
+    parser.add_argument("--engine", choices=["console", "sherpa", "livekit"], default="console")
     parser.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
     parser.add_argument("--model", default=None, help="main Ollama model (research/vision)")
     parser.add_argument(
@@ -169,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         engine, llm, fast_llm=fast_llm, start_mode=Mode(args.mode), agent_config=agent_config
     )
 
-    if args.engine == "sherpa":
+    if args.engine in ("sherpa", "livekit"):
         _run_live(runtime)
     else:
         runtime.start(run_bus=False)

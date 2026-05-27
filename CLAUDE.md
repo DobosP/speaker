@@ -93,15 +93,27 @@ runs on Android and iOS.
   to fetch the gated Gemma 3 model and republish it to the public `gemma-model`
   release that the phone app downloads. The token value lives only in GitHub
   Actions secrets — never commit it to the repo or paste it into files.
+- HuggingFace model downloads: this session's environment provides a HuggingFace
+  read token as the **`HUGGINGFACE_TOKEN`** env var (Gemma license accepted).
+  Use it to pull the gated Gemma 3 models directly from HuggingFace for the app
+  (e.g. `huggingface-cli download` / `hf_hub_download` with
+  `token=os.environ["HUGGINGFACE_TOKEN"]`, or
+  `Authorization: Bearer $HUGGINGFACE_TOKEN` on `huggingface.co` requests).
+  Read the value from the env at runtime; **never** hard-code, echo, or commit
+  it — reference it only as `$HUGGINGFACE_TOKEN`.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
   not a code problem.
 - Git access / automation token: routine git (push to `main`, branches) and
   GitHub reads/writes go through the session harness (git proxy + repo-scoped
-  GitHub MCP) — no stored credential. Branch *deletion* (the proxy blocks it)
-  and CI-consumed secrets require a maintainer-supplied fine-grained PAT used
-  **out-of-band**; its value lives **only** in GitHub Actions secrets and is
-  **never** committed to the repo or written to any file.
+  GitHub MCP) — no stored credential. For the privileged operations the harness
+  blocks — branch *deletion*, triggering/re-running Actions
+  (`workflow_dispatch`, re-run), creating/updating Actions secrets, and similar
+  admin calls — this session's environment now provides a GitHub token as the
+  **`GIT_HUB_TOKEN`** env var. Use it out-of-band against the GitHub REST API
+  (e.g. `curl -H "Authorization: Bearer $GIT_HUB_TOKEN" https://api.github.com/...`),
+  reading the value straight from the env. **Never** echo the token, commit it,
+  or write it into any file — reference it only as `$GIT_HUB_TOKEN`.
 - Self-monitoring / autofix loop: put work in a PR, then a Claude session can
   `subscribe` to that PR's activity to receive its CI results (from
   `tests.yml`) and review comments as events, and push fixes until checks pass.

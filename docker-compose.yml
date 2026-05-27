@@ -1,0 +1,86 @@
+# Speaker remote host stack: one GPU box (your 4090 laptop, Linux) runs the LLM,
+# the WebRTC transport, and the brain; any laptop/phone reaches it via a browser.
+#
+#   GPU lever:  the `ollama` service gets the NVIDIA GPU (near-native CUDA);
+#               sherpa STT/TTS run on CPU in the worker (tiny int8 models).
+#   Networking: host mode (Linux) -- most efficient for WebRTC media, no NAT/ICE
+#               port juggling. Clients connect to ws://<this-host>:7880 and the
+#               web UI on http://<this-host>:8080.
+#
+# First run:
+#   cp docker/.env.example .env        # set LIVEKIT_URL to your LAN IP for remote laptops
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull gemma3:12b
+#   docker compose exec ollama ollama pull gemma3:4b
+#   # open http://<this-host>:8080
+#
+# Prereqs: NVIDIA driver + nvidia-container-toolkit configured on the host.
+
+x-speaker: &speaker
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: speaker-remote:latest
+  network_mode: host
+  environment: &speaker-env
+    LIVEKIT_URL: ${LIVEKIT_URL:-ws://127.0.0.1:7880}
+    LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+    LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+    HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+  volumes:
+    - ./models:/models
+
+services:
+  # GPU-accelerated local LLM. Persists pulled models in a named volume.
+  ollama:
+    image: ollama/ollama:latest
+    network_mode: host
+    volumes:
+      - ollama:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Self-hosted WebRTC SFU. --dev uses the well-known devkey/secret that match
+  # the .env defaults; replace both for anything exposed beyond your LAN.
+  livekit:
+    image: livekit/livekit-server:latest
+    network_mode: host
+    command: ["--dev", "--bind", "0.0.0.0"]
+    restart: unless-stopped
+
+  # One-shot: download sherpa ASR/VAD/TTS models into ./models (idempotent).
+  models:
+    <<: *speaker
+    entrypoint: ["python", "/usr/local/bin/download_models.py"]
+    restart: "no"
+
+  # The brain: joins the LiveKit room, runs sherpa STT/TTS + the LLM turn.
+  worker:
+    <<: *speaker
+    command: ["python", "-m", "remote.worker"]
+    depends_on:
+      models:
+        condition: service_completed_successfully
+      ollama:
+        condition: service_started
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+
+  # Mints LiveKit tokens, serves the web client, and exposes a text /chat.
+  token-server:
+    <<: *speaker
+    command: ["python", "-m", "remote.token_server"]
+    depends_on:
+      ollama:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  ollama:

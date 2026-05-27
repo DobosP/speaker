@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Speaker — remote</title>
+  <!-- LiveKit browser SDK (UMD global: LivekitClient) -->
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    #log { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; height: 50vh; overflow-y: auto; }
+    .you { color: #0a58ca; } .bot { color: #198754; } .sys { color: #888; font-style: italic; }
+    .row { display: flex; gap: .5rem; margin-top: .75rem; }
+    input[type=text] { flex: 1; padding: .5rem; } button { padding: .5rem .9rem; cursor: pointer; }
+    .line { margin: .25rem 0; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Speaker — remote</h1>
+  <p class="sys">Type to chat (uses /chat), or connect your mic for live voice (uses LiveKit).</p>
+  <div id="log"></div>
+  <div class="row">
+    <input id="msg" type="text" placeholder="Type a message and press Enter…" autocomplete="off" />
+    <button id="send">Send</button>
+    <button id="voice">Connect voice</button>
+  </div>
+
+  <script>
+    const logEl = document.getElementById("log");
+    const msgEl = document.getElementById("msg");
+
+    function line(text, cls) {
+      const d = document.createElement("div");
+      d.className = "line " + (cls || "");
+      d.textContent = text;
+      logEl.appendChild(d);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    // --- text chat -----------------------------------------------------------
+    async function sendText() {
+      const text = msgEl.value.trim();
+      if (!text) return;
+      msgEl.value = "";
+      line("You: " + text, "you");
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: text }),
+        });
+        const data = await res.json();
+        line("Assistant: " + (data.reply || "(no reply)"), "bot");
+      } catch (e) {
+        line("chat error: " + e, "sys");
+      }
+    }
+    document.getElementById("send").onclick = sendText;
+    msgEl.addEventListener("keydown", (e) => { if (e.key === "Enter") sendText(); });
+
+    // --- live voice via LiveKit ---------------------------------------------
+    document.getElementById("voice").onclick = async () => {
+      if (!window.LivekitClient) { line("LiveKit SDK failed to load", "sys"); return; }
+      try {
+        const params = new URLSearchParams({ identity: "web-" + Math.floor(Math.random() * 9999), room: "assistant" });
+        const tk = await (await fetch("/token?" + params.toString())).json();
+        if (!tk.url) { line("LIVEKIT_URL not configured on the server", "sys"); return; }
+
+        const { Room, RoomEvent } = window.LivekitClient;
+        const room = new Room();
+
+        room.on(RoomEvent.TrackSubscribed, (track) => {
+          if (track.kind === "audio") {
+            const el = track.attach();
+            el.autoplay = true;
+            document.body.appendChild(el);
+          }
+        });
+        room.on(RoomEvent.DataReceived, (payload) => {
+          try {
+            const msg = JSON.parse(new TextDecoder().decode(payload));
+            if (msg.event_type === "user_transcript") line("You (voice): " + msg.payload.text, "you");
+            else if (msg.event_type === "assistant_sentence") line("Assistant: " + msg.payload.text, "bot");
+          } catch (_) {}
+        });
+
+        await room.connect(tk.url, tk.token);
+        await room.localParticipant.setMicrophoneEnabled(true);
+        line("Voice connected to room '" + tk.room + "'. Speak now.", "sys");
+      } catch (e) {
+        line("voice error: " + e, "sys");
+      }
+    };
+  </script>
+</body>
+</html>

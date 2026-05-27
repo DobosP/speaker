@@ -38,6 +38,11 @@
   },
   "mode": "assistant",
   "local_only": true,
+  "remote": {
+    "room": "assistant",
+    "agent_identity": "assistant-agent",
+    "token_server_port": 8080
+  },
   "sherpa": {
     "sample_rate": 16000,
     "asr_tokens": "",

@@ -17,6 +17,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..engine import AudioEngine, EngineCallbacks
+from ._sherpa_models import build_recognizer, build_tts, build_vad
 from .speaker_gate import SpeakerGate, sherpa_speaker_gate
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
@@ -108,38 +109,13 @@ class SherpaOnnxEngine(AudioEngine):
 
     # --- lazy model construction ---
     def _build(self) -> None:
-        import sherpa_onnx  # lazy
-
         c = self.config
-        if c.asr_encoder:
-            self._recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
-                tokens=c.asr_tokens,
-                encoder=c.asr_encoder,
-                decoder=c.asr_decoder,
-                joiner=c.asr_joiner,
-                num_threads=c.resolved_asr_threads,
-                provider=c.provider,
-                sample_rate=c.sample_rate,
-                feature_dim=80,
-                enable_endpoint_detection=True,
-            )
-        if c.vad_model:
-            vad_config = sherpa_onnx.VadModelConfig()
-            vad_config.silero_vad.model = c.vad_model
-            vad_config.sample_rate = c.sample_rate
-            vad_config.num_threads = c.resolved_asr_threads
-            vad_config.provider = c.provider
-            self._vad = sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=30)
-        if c.tts_model:
-            tts_config = sherpa_onnx.OfflineTtsConfig()
-            tts_config.model.vits.model = c.tts_model
-            tts_config.model.vits.tokens = c.tts_tokens
-            if c.tts_data_dir:
-                tts_config.model.vits.data_dir = c.tts_data_dir
-            tts_config.model.num_threads = c.resolved_tts_threads
-            tts_config.model.provider = c.provider
-            self._tts = sherpa_onnx.OfflineTts(tts_config)
+        self._recognizer = build_recognizer(c)
+        self._vad = build_vad(c)
+        self._tts = build_tts(c)
         if c.speaker_embedding_model:
+            import sherpa_onnx  # lazy
+
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
                 threshold=c.speaker_threshold,

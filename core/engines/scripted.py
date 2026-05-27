@@ -4,6 +4,7 @@ import threading
 from typing import Callable, Optional
 
 from ..engine import AudioEngine, EngineCallbacks
+from ..metrics import TTS_FIRST_AUDIO
 
 
 class ScriptedEngine(AudioEngine):
@@ -39,6 +40,7 @@ class ScriptedEngine(AudioEngine):
             self._speaking = True
             self._pending_done = on_done
         self._cb.on_speech_start()
+        self._cb.on_metric(TTS_FIRST_AUDIO)
         if not self._hold:
             self._finish()
 

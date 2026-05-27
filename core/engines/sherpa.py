@@ -17,6 +17,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..engine import AudioEngine, EngineCallbacks
+from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._sherpa_models import build_keyword_spotter, build_recognizer, build_tts, build_vad
 from .speaker_gate import SpeakerGate, sherpa_speaker_gate
 
@@ -227,6 +228,7 @@ class SherpaOnnxEngine(AudioEngine):
                 recognizer.reset(stream)
                 last_partial = ""
                 if final_text.strip():
+                    self._cb.on_metric(SPEECH_END)
                     self._cb.on_final(final_text)
 
     def _poll_keywords(self, samples) -> None:
@@ -256,9 +258,14 @@ class SherpaOnnxEngine(AudioEngine):
             samples = np.asarray(audio.samples, dtype="float32")
             with sd.OutputStream(channels=1, samplerate=audio.sample_rate, dtype="float32") as out:
                 chunk = int(audio.sample_rate * 0.1)
+                first_chunk = True
                 for i in range(0, len(samples), chunk):
                     if self._stop_speaking.is_set():
+                        self._cb.on_metric(BARGE_IN_STOP)
                         break
+                    if first_chunk:
+                        self._cb.on_metric(TTS_FIRST_AUDIO)
+                        first_chunk = False
                     out.write(samples[i : i + chunk])
         finally:
             self._speaking.clear()

@@ -61,7 +61,21 @@ runs on Android and iOS.
   runs with structured reports (per-stage + a tabular run summary under
   `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|full`.
 - Run the app: `python -m core --engine console --llm echo` (no audio/models);
-  `python -m core --engine sherpa` for on-device audio.
+  `python -m core --engine sherpa` for on-device audio;
+  `python -m core --engine replay --replay-dir <dir>` to run the real engine
+  headless over recorded `.npy`/`.wav` fixtures (no sound card).
+- Latency instrumentation: `core/metrics.py` records per-turn stage timings
+  (`speech_end → asr_final → llm_first_token → tts_first_audio`, plus
+  `barge_in → barge_in_stop`) via `runtime.metrics`. The real engine, the
+  file-replay engine, and the sandbox sim engine all feed it through the
+  `on_metric` callback, so measured and simulated numbers share one shape.
+- Real-model latency benchmark: `python -m tools.bench --fake` is a no-download
+  plumbing smoke test; `python -m tools.bench --profile phone --fixtures
+  tests/fixture_audio/virtual_real_world` fetches small Gemma GGUF (via
+  `$HUGGINGFACE_TOKEN`) + sherpa ONNX and runs the REAL ASR→LLM→TTS pipeline
+  over fixtures, writing a measured-vs-`specsim`-budget report under
+  `test-reports/perf/`. Model coordinates are overridable via a
+  `--models-manifest` JSON / `SPEAKER_BENCH_*` env vars.
 - LLM/device config (`config.json`): the `llm` block selects a `backend`
   (`ollama` desktop-GPU, or `llamacpp` on-device GGUF) plus a `main_model`
   (large/multimodal) and `fast_model` (snappy replies). `device_profiles`
@@ -81,7 +95,12 @@ runs on Android and iOS.
 - CI: `.github/workflows/tests.yml` runs the logic suite (`python -m pytest tests`,
   audio/model-dep tests excluded) on every push to `main` and every pull request.
   Keep it green; it is the gate that lets the autofix loop below know when a
-  change is safe.
+  change is safe. `.github/workflows/perf.yml` is the (heavier) real-model
+  latency benchmark — it is NOT on every push; trigger it with
+  `workflow_dispatch` or by adding the `perf` label to a PR. It downloads
+  models (uses the `HF_TOKEN` Actions secret), runs `python -m tools.bench`,
+  and uploads the latency report as an artifact. A GitHub CPU is a repeatable
+  baseline, not phone silicon — read it as calibration against `specsim`.
 
 ## Environment / git
 

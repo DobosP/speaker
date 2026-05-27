@@ -190,6 +190,26 @@ class RunLog:
                 pass
 
 
+def prune_old_runs(log_dir: str, keep: int) -> int:
+    """Keep only the newest ``keep`` run bundles in ``log_dir`` so it doesn't
+    grow without bound. A bundle is all files sharing a ``run-<id>`` stem
+    (.txt/.summary.json/.wav). Run ids are timestamps, so a name sort is
+    chronological. Returns how many bundles were removed."""
+    if keep <= 0:
+        return 0
+    d = Path(log_dir)
+    stems = sorted({p.name.split(".", 1)[0] for p in d.glob("run-*.*")}, reverse=True)
+    removed = 0
+    for stem in stems[keep:]:
+        for f in d.glob(stem + ".*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        removed += 1
+    return removed
+
+
 def setup_logging(
     debug: bool = False,
     *,
@@ -207,6 +227,8 @@ def setup_logging(
 
     log_dir = log_dir or os.environ.get("SPEAKER_RUN_LOG_DIR", "logs/runs")
     Path(log_dir).mkdir(parents=True, exist_ok=True)
+    # Keep the bundle dir condensed: retain only the newest N runs (env override).
+    prune_old_runs(log_dir, int(os.environ.get("SPEAKER_KEEP_RUNS", "20")))
     run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = str(Path(log_dir) / f"run-{run_id}.txt")
     summary_path = str(Path(log_dir) / f"run-{run_id}.summary.json")

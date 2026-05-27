@@ -66,3 +66,9 @@ config.local.json
 
 # Generated test reports (tools/run_tests.py)
 test-reports/
+
+# Downloaded model weights -- large binaries, NEVER commit. Fetch on each
+# machine with `python -m tools.setup_models` (sherpa) or the phone GGUFs.
+pretrained_models/sherpa/
+models/
+*.gguf

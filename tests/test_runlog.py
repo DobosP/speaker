@@ -97,6 +97,32 @@ def test_async_formatting_preserves_args_and_traceback(tmp_path):
     assert err and err[0]["exc"] and "ValueError: boom" in err[0]["exc"]
 
 
+def test_prune_old_runs_keeps_newest(tmp_path):
+    from core.runlog import prune_old_runs
+
+    # Six runs, each a .txt + .summary.json (+ a .wav on one).
+    for i in range(6):
+        stem = f"run-2026010{i}-000000"
+        (tmp_path / f"{stem}.txt").write_text("x", encoding="utf-8")
+        (tmp_path / f"{stem}.summary.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "run-20260105-000000.wav").write_bytes(b"RIFF")
+
+    removed = prune_old_runs(str(tmp_path), keep=2)
+    assert removed == 4
+    remaining = sorted({p.name.split(".", 1)[0] for p in tmp_path.glob("run-*.*")})
+    assert remaining == ["run-20260104-000000", "run-20260105-000000"]
+    # The whole bundle for a kept run survives (incl. its .wav).
+    assert (tmp_path / "run-20260105-000000.wav").exists()
+
+
+def test_prune_keep_zero_is_noop(tmp_path):
+    from core.runlog import prune_old_runs
+
+    (tmp_path / "run-x.txt").write_text("x", encoding="utf-8")
+    assert prune_old_runs(str(tmp_path), keep=0) == 0
+    assert (tmp_path / "run-x.txt").exists()
+
+
 def test_finalize_is_idempotent(tmp_path):
     runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="idem", console=False)
     runlog.finalize()

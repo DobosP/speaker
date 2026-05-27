@@ -65,6 +65,10 @@ class ScriptedEngine(AudioEngine):
     def barge_in(self) -> None:
         self._cb.on_barge_in()
 
+    def command(self, keyword: str) -> None:
+        """Simulate the keyword spotter firing a control phrase."""
+        self._cb.on_command(keyword)
+
     def finish_speaking(self) -> None:
         self._finish()
 

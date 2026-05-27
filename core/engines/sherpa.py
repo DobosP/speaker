@@ -17,7 +17,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..engine import AudioEngine, EngineCallbacks
-from ._sherpa_models import build_recognizer, build_tts, build_vad
+from ._sherpa_models import build_keyword_spotter, build_recognizer, build_tts, build_vad
 from .speaker_gate import SpeakerGate, sherpa_speaker_gate
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
@@ -45,6 +45,17 @@ class SherpaConfig:
     asr_joiner: str = ""
     # Silero VAD model (.onnx). Required for endpointing / barge-in.
     vad_model: str = ""
+    # Command fast-path: a streaming keyword spotter (separate small transducer)
+    # that runs continuously -- even during playback -- so control phrases like
+    # "stop" trigger an action instantly without waiting for ASR + LLM. All
+    # empty -> the spotter is disabled and only the normal ASR path runs.
+    kws_tokens: str = ""
+    kws_encoder: str = ""
+    kws_decoder: str = ""
+    kws_joiner: str = ""
+    kws_keywords_file: str = ""
+    kws_threshold: float = 0.25
+    kws_score: float = 1.0
     # Offline TTS (e.g. vits / kokoro export). Required for speech output.
     tts_model: str = ""
     tts_tokens: str = ""
@@ -100,6 +111,8 @@ class SherpaOnnxEngine(AudioEngine):
         self._recognizer = None
         self._vad = None
         self._tts = None
+        self._kws = None
+        self._kws_stream = None
         self._stream_in = None
         self._capture_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
@@ -113,6 +126,9 @@ class SherpaOnnxEngine(AudioEngine):
         self._recognizer = build_recognizer(c)
         self._vad = build_vad(c)
         self._tts = build_tts(c)
+        self._kws = build_keyword_spotter(c)
+        if self._kws is not None:
+            self._kws_stream = self._kws.create_stream()
         if c.speaker_embedding_model:
             import sherpa_onnx  # lazy
 
@@ -182,6 +198,11 @@ class SherpaOnnxEngine(AudioEngine):
             audio, _ = self._stream_in.read(int(self.config.sample_rate * block_sec))
             samples = np.asarray(audio, dtype="float32").reshape(-1)
 
+            # Command fast-path: keyword spotting runs every block, including
+            # during playback, so phrases like "stop" act with the lowest
+            # possible latency and never wait on ASR endpointing or the LLM.
+            self._poll_keywords(samples)
+
             # Barge-in watch while the assistant is speaking.
             if self._speaking.is_set() and self._vad is not None:
                 self._vad.accept_waveform(samples)
@@ -207,6 +228,19 @@ class SherpaOnnxEngine(AudioEngine):
                 last_partial = ""
                 if final_text.strip():
                     self._cb.on_final(final_text)
+
+    def _poll_keywords(self, samples) -> None:
+        kws = self._kws
+        ks = self._kws_stream
+        if kws is None or ks is None:
+            return
+        ks.accept_waveform(self.config.sample_rate, samples)
+        while kws.is_ready(ks):
+            kws.decode_stream(ks)
+        keyword = kws.get_result(ks)
+        if keyword:
+            kws.reset_stream(ks)
+            self._cb.on_command(keyword)
 
     def _speak_blocking(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
         import numpy as np

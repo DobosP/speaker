@@ -185,7 +185,12 @@ def main(argv: list[str] | None = None) -> int:
         agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
 
     runtime = VoiceRuntime(
-        engine, llm, fast_llm=fast_llm, start_mode=Mode(args.mode), agent_config=agent_config
+        engine,
+        llm,
+        fast_llm=fast_llm,
+        start_mode=Mode(args.mode),
+        agent_config=agent_config,
+        command_map=config.get("commands"),
     )
 
     if args.engine in ("sherpa", "livekit"):

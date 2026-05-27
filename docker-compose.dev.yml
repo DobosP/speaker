@@ -1,0 +1,25 @@
+# Fast dev loop overlay. Use with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Bind-mounts the source over /app so code edits take effect WITHOUT rebuilding,
+# relaxes the read-only root filesystem so editing is frictionless, and runs the
+# token server with --reload so the web/text path hot-reloads on save. Hardening
+# (non-root, dropped caps, no-new-privileges) stays on.
+services:
+  worker:
+    read_only: false
+    volumes:
+      - ./:/app
+
+  token-server:
+    read_only: false
+    volumes:
+      - ./:/app
+    command:
+      - uvicorn
+      - remote.token_server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --reload

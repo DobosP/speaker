@@ -95,7 +95,12 @@ def _make_llm(config: dict):
             options=llm_cfg.get("options"),
         )
     model = llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
-    return OllamaLLM(model=model, host=llm_cfg.get("host"), options=llm_cfg.get("options"))
+    return OllamaLLM(
+        model=model,
+        host=llm_cfg.get("host"),
+        options=llm_cfg.get("options"),
+        keep_alive=llm_cfg.get("keep_alive"),
+    )
 
 
 def create_app(config: Optional[dict] = None):

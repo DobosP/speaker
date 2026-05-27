@@ -78,6 +78,10 @@ runs on Android and iOS.
 - Keep new control-plane logic in `always_on_agent/`, typed and testable, not in `main.py`.
 - Prefer replay/transcript tests over tests that require live audio devices.
 - Fully-local is a hard product requirement: no cloud STT/LLM/TTS by default.
+- CI: `.github/workflows/tests.yml` runs the logic suite (`python -m pytest tests`,
+  audio/model-dep tests excluded) on every push to `main` and every pull request.
+  Keep it green; it is the gate that lets the autofix loop below know when a
+  change is safe.
 
 ## Environment / git
 
@@ -98,6 +102,14 @@ runs on Android and iOS.
   and CI-consumed secrets require a maintainer-supplied fine-grained PAT used
   **out-of-band**; its value lives **only** in GitHub Actions secrets and is
   **never** committed to the repo or written to any file.
+- Self-monitoring / autofix loop: put work in a PR, then a Claude session can
+  `subscribe` to that PR's activity to receive its CI results (from
+  `tests.yml`) and review comments as events, and push fixes until checks pass.
+  The loop is driven by the live session (subscription is per-session, not
+  stored state); on merge/abandon, unsubscribe. Claude can edit pipelines
+  (`.github/workflows/*`) and watch runs, but cannot trigger/re-run a workflow
+  or create Actions secrets from its in-session toolset — those need the API
+  with an out-of-band token.
 
 ## When unsure
 

@@ -124,3 +124,33 @@ def test_passive_mode_ignores_unaddressed_then_activates():
         sb.user_says("assistant please help")
         assert sb.wait_spoke_count(1)
         assert sb.spoken == ["Yes?"]
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
+def test_runtime_records_first_audio_latency(profile):
+    """A full turn populates the metrics recorder end-to-end: speech_end,
+    asr_final, llm_first_token, tts_first_audio -- so first-audio latency is a
+    real measured delta, not a model estimate."""
+    with Sandbox(profile, reply_fn=lambda p: "The time is noon.") as sb:
+        sb.user_says("what time is it")
+        assert sb.wait_spoke_count(1)
+        assert sb.wait_idle()
+        [record] = sb.runtime.metrics.records()
+        assert record.first_audio_latency is not None
+        assert record.first_audio_latency > 0
+        assert record.final_to_first_token is not None
+        assert record.endpoint_latency is not None
+        # Faster profiles must measure as faster first-audio than slow ones.
+        assert record.first_audio_latency >= profile.llm_ttft_sec
+
+
+@pytest.mark.parametrize("profile", PROFILES, ids=PROFILE_IDS)
+def test_runtime_records_barge_in_latency(profile):
+    with Sandbox(profile, reply_fn=lambda p: "here is a fairly long spoken answer") as sb:
+        sb.user_says("tell me something")
+        assert sb.wait_speaking()
+        sb.barge_in()
+        assert sb.wait_not_speaking(timeout=1.0)
+        records = sb.runtime.metrics.records()
+        assert records and records[-1].barge_in_latency is not None
+        assert records[-1].barge_in_latency >= 0

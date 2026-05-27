@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from threading import Timer
+
+log = logging.getLogger("speaker.supervisor")
 
 from .capabilities import CapabilityRegistry, create_default_capabilities
 from .event_bus import EventBus
@@ -100,6 +103,11 @@ class AgentSupervisor:
         self._cancel_followup()
 
     def cancel_all(self) -> None:
+        log.info(
+            "cancel_all: %d active, %d queued, %d pending-confirm",
+            len(self.state.active_tasks), len(self.state.queued_tasks),
+            len(self.state.pending_confirmations),
+        )
         for task in list(self.state.active_tasks.values()):
             task.cancel()
         self.state.queued_tasks.clear()
@@ -166,6 +174,11 @@ class AgentSupervisor:
 
         decision = self.analyzer.decide(observation, self.state.mode)
         self.state.decisions.append(decision)
+        log.debug(
+            "decision: kind=%s confidence=%.2f reason=%s mode=%s text=%r",
+            decision.kind.value, decision.confidence, decision.reason,
+            self.state.mode.value, decision.text,
+        )
         self.publish(
             AgentEvent(
                 EventKind.INTENT_DECISION,

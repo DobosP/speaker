@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import sys
 
@@ -13,6 +12,7 @@ from always_on_agent.react import PlannerConfig
 from .engine import AudioEngine
 from .llm import EchoLLM, HedgeLLM, LlamaCppLLM, LLMClient, OllamaLLM, OpenAICompatLLM
 from .routing import build_router
+from .runlog import setup_logging
 from .runtime import VoiceRuntime
 
 
@@ -212,22 +212,6 @@ def _run_live(runtime: VoiceRuntime) -> None:
         runtime.stop()
 
 
-def _setup_logging(debug: bool) -> None:
-    """Configure the ``speaker.*`` loggers. ``--debug`` (or SPEAKER_DEBUG=1)
-    drops the level to DEBUG so the per-block audio heartbeat, ASR partials,
-    task timings, and worker-thread tracebacks all show. Default is a quiet
-    INFO so a normal run only prints milestones."""
-    level = logging.DEBUG if debug else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
-    logging.getLogger("speaker").setLevel(level)
-    if debug:
-        logging.getLogger("speaker").debug("debug logging enabled")
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
     parser.add_argument(
@@ -288,10 +272,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    _setup_logging(args.debug or os.environ.get("SPEAKER_DEBUG") == "1")
+    runlog = setup_logging(args.debug or os.environ.get("SPEAKER_DEBUG") == "1")
 
     config = _load_config()
     device = args.device or config.get("device", "desktop")
+    runlog.summary.note(
+        engine=args.engine, llm=args.llm, device=device, mode=args.mode,
+        model=args.model, fast_model=args.fast_model,
+    )
     config = _apply_device_profile(config, device)
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
@@ -333,15 +321,24 @@ def main(argv: list[str] | None = None) -> int:
         intents=intents,
     )
 
-    if args.engine == "replay":
-        if not args.replay_dir:
-            raise SystemExit("--engine replay needs --replay-dir <fixtures>")
-        _run_replay(runtime, engine, args.replay_dir)
-    elif args.engine in ("sherpa", "livekit"):
-        _run_live(runtime)
-    else:
-        runtime.start(run_bus=False)
-        _run_console(runtime, engine)
+    try:
+        if args.engine == "replay":
+            if not args.replay_dir:
+                raise SystemExit("--engine replay needs --replay-dir <fixtures>")
+            _run_replay(runtime, engine, args.replay_dir)
+        elif args.engine in ("sherpa", "livekit"):
+            _run_live(runtime)
+        else:
+            runtime.start(run_bus=False)
+            _run_console(runtime, engine)
+    finally:
+        try:
+            records = [r.as_dict() for r in runtime.metrics.records()]
+        except Exception:  # noqa: BLE001 - never let logging hide the real error
+            records = None
+        runlog.finalize(records)
+        print(f"[log] full log: {runlog.log_path}")
+        print(f"[log] summary:  {runlog.summary_path}")
     return 0
 
 

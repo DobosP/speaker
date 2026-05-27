@@ -1,10 +1,55 @@
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
 import time
 from typing import Iterator, Optional, Protocol, Sequence, runtime_checkable
+
+_ollama_log = logging.getLogger("speaker.llm.ollama")
+
+
+def _log_llm_request(
+    log: logging.Logger,
+    model: str,
+    prompt: str,
+    system: Optional[str],
+    *,
+    dt: float,
+    out_chars: int,
+    tokens: Optional[int] = None,
+    ttft: Optional[float] = None,
+    streamed: bool,
+    cancelled: bool = False,
+) -> None:
+    """One structured line per LLM call -> feeds the run summary via ``extra``.
+
+    The full prompt goes to the DEBUG file (so a committed log shows exactly what
+    was asked); the INFO line carries timings + a short preview."""
+    preview = " ".join((prompt or "").split())[:200]
+    req = {
+        "model": model,
+        "prompt_chars": len(prompt or ""),
+        "system_chars": len(system or ""),
+        "prompt_preview": preview,
+        "duration_sec": round(dt, 3),
+        "ttft_sec": round(ttft, 3) if ttft is not None else None,
+        "out_chars": out_chars,
+        "tokens": tokens,
+        "streamed": streamed,
+        "cancelled": cancelled,
+    }
+    log.debug("ollama %s full prompt: %s", model, prompt)
+    log.info(
+        "ollama %s: %.2fs ttft=%s out=%dch tokens=%s%s | %r",
+        model, dt,
+        f"{ttft:.2f}s" if ttft is not None else "-",
+        out_chars, tokens if tokens is not None else "-",
+        " CANCELLED" if cancelled else "",
+        preview,
+        extra={"llm_request": req},
+    )
 
 # An "image" is either a path to an image file or raw image bytes. The Ollama
 # client accepts both for multimodal models (e.g. Gemma 3 4b/12b/27b). Text-only
@@ -133,8 +178,14 @@ class OllamaLLM:
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
     ) -> str:
+        t0 = time.perf_counter()
         resp = self._ensure().chat(**self._chat_kwargs(prompt, system, images, stream=False))
-        return resp["message"]["content"]
+        out = resp["message"]["content"]
+        _log_llm_request(
+            _ollama_log, self.model, prompt, system,
+            dt=time.perf_counter() - t0, out_chars=len(out or ""), streamed=False,
+        )
+        return out
 
     def stream(
         self,
@@ -143,10 +194,31 @@ class OllamaLLM:
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
     ) -> Iterator[str]:
-        for chunk in self._ensure().chat(**self._chat_kwargs(prompt, system, images, stream=True)):
-            piece = chunk.get("message", {}).get("content", "")
-            if piece:
-                yield piece
+        t0 = time.perf_counter()
+        ttft: Optional[float] = None
+        tokens = 0
+        out_chars = 0
+        cancelled = True  # flipped to False only on natural exhaustion
+        try:
+            for chunk in self._ensure().chat(
+                **self._chat_kwargs(prompt, system, images, stream=True)
+            ):
+                piece = chunk.get("message", {}).get("content", "")
+                if piece:
+                    if ttft is None:
+                        ttft = time.perf_counter() - t0
+                    tokens += 1
+                    out_chars += len(piece)
+                    yield piece
+            cancelled = False
+        finally:
+            # Runs even if the consumer stops early (barge-in / cancel), so a
+            # cut-off generation is still recorded -- useful for "where it stuck".
+            _log_llm_request(
+                _ollama_log, self.model, prompt, system,
+                dt=time.perf_counter() - t0, out_chars=out_chars, tokens=tokens,
+                ttft=ttft, streamed=True, cancelled=cancelled,
+            )
 
 
 class LlamaCppLLM:

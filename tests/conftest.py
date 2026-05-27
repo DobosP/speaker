@@ -2,11 +2,96 @@
 
 Ensures the repository root is importable so tests can ``import core``,
 ``always_on_agent``, ``utils.memory``, and ``tests.sandbox``.
+
+It also writes a committable log of every local test run under
+``logs/tests/`` -- a full DEBUG ``.txt`` capturing all ``speaker.*`` logging
+during the session, plus a ``.summary.json`` digest (counts, failures, and the
+slowest tests). Push those files and they show exactly what happened.
+Disable with ``SPEAKER_TEST_LOG=0``.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import sys
+import time
+from datetime import datetime
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+_ENABLED = os.environ.get("SPEAKER_TEST_LOG", "1") != "0"
+_LOG_DIR = Path(__file__).resolve().parent.parent / "logs" / "tests"
+_RESULTS: list[dict] = []
+_STATE: dict = {}
+
+
+def pytest_configure(config):
+    if not _ENABLED:
+        return
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    txt_path = _LOG_DIR / f"tests-{run_id}.txt"
+    handler = logging.FileHandler(txt_path, encoding="utf-8")
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s.%(msecs)03d %(levelname)-5s %(name)s | %(message)s", "%H:%M:%S")
+    )
+    speaker = logging.getLogger("speaker")
+    speaker.setLevel(logging.DEBUG)
+    speaker.addHandler(handler)
+    _STATE.update(
+        run_id=run_id,
+        txt_path=str(txt_path),
+        summary_path=str(_LOG_DIR / f"tests-{run_id}.summary.json"),
+        handler=handler,
+        started=time.time(),
+    )
+
+
+def pytest_runtest_logreport(report):
+    # One report per phase; record the call phase (and setup failures).
+    if not _ENABLED:
+        return
+    if report.when == "call" or (report.when == "setup" and report.outcome == "failed"):
+        _RESULTS.append(
+            {
+                "test": report.nodeid,
+                "outcome": report.outcome,
+                "duration_sec": round(report.duration, 3),
+                "longrepr": str(report.longrepr)[:2000] if report.failed else None,
+            }
+        )
+
+
+def pytest_sessionfinish(session, exitstatus):
+    if not _ENABLED or "run_id" not in _STATE:
+        return
+    passed = sum(1 for r in _RESULTS if r["outcome"] == "passed")
+    failed = [r for r in _RESULTS if r["outcome"] == "failed"]
+    skipped = sum(1 for r in _RESULTS if r["outcome"] == "skipped")
+    slowest = sorted(_RESULTS, key=lambda r: r["duration_sec"], reverse=True)[:10]
+    summary = {
+        "run_id": _STATE["run_id"],
+        "log_path": _STATE["txt_path"],
+        "exit_status": int(exitstatus),
+        "duration_sec": round(time.time() - _STATE["started"], 2),
+        "counts": {
+            "total": len(_RESULTS),
+            "passed": passed,
+            "failed": len(failed),
+            "skipped": skipped,
+        },
+        "failures": [
+            {"test": r["test"], "duration_sec": r["duration_sec"], "longrepr": r["longrepr"]}
+            for r in failed
+        ],
+        "slowest": [{"test": r["test"], "duration_sec": r["duration_sec"]} for r in slowest],
+    }
+    Path(_STATE["summary_path"]).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    logging.getLogger("speaker").removeHandler(_STATE["handler"])
+    _STATE["handler"].close()
+    print(f"\n[test-log] {_STATE['txt_path']}")
+    print(f"[test-log] {_STATE['summary_path']}")

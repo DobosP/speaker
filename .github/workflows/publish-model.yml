@@ -31,32 +31,22 @@ jobs:
       - name: Inspect repo and pick model file
         run: |
           set +e
-          enc(){ sed 's/%/%25/g' | sed 's/$/%0A/' | tr -d '\n'; }
           info=$(curl -s -H "Authorization: Bearer $HF" "https://huggingface.co/api/models/$REPO_ID")
-          picked=$(printf '%s' "$info" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-except Exception as e:
-    print('PARSE_ERROR:' + str(e)); sys.exit(0)
-print('GATED=%s' % d.get('gated'))
-sibs=[s.get('rfilename','') for s in d.get('siblings',[])]
-models=[f for f in sibs if f.endswith(('.litertlm','.task'))]
-print('FILES=' + ','.join(models))
-def rank(f):
-    return (f.endswith('.litertlm'), 'q4' in f, '4096' in f)
-pick = sorted(models, key=rank, reverse=True)[0] if models else ''
-print('PICK=' + pick)
-")
-          echo "$picked"
-          echo "::warning title=hf_inspect::$(printf '%s' "$picked" | enc)"
-          pick=$(printf '%s' "$picked" | sed -n 's/^PICK=//p')
+          gated=$(printf '%s' "$info" | jq -r '.gated // "unknown"')
+          models=$(printf '%s' "$info" | jq -r '.siblings[].rfilename | select(endswith(".litertlm") or endswith(".task"))' 2>/dev/null)
+          flat=$(printf '%s' "$models" | tr '\n' ' ')
+          echo "gated=$gated"
+          echo "model files: $flat"
+          echo "::warning title=hf_inspect::gated=$gated files=$flat"
+          pick=$(printf '%s\n' "$models" | grep '\.litertlm$' | grep -i q4 | head -1)
+          [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | grep '\.litertlm$' | head -1)
+          [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | head -1)
           if [ -z "$pick" ]; then
-            echo "::error title=no_model_file::Could not list/access model files — token may lack Gemma license access (accept it at huggingface.co/$REPO_ID)."
+            echo "::error title=no_model_file::No .litertlm/.task found or repo inaccessible (gated=$gated) — token may lack Gemma license access (accept it at huggingface.co/$REPO_ID)."
             exit 1
           fi
+          echo "picked: $pick"
           echo "PICK=$pick" >> "$GITHUB_ENV"
-          # Match the published asset extension to the source format.
           case "$pick" in
             *.task) echo "ASSET=Gemma3-1B-IT-q4.task" >> "$GITHUB_ENV" ;;
           esac

@@ -19,7 +19,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 import './asr_model.dart';
 import './contract.dart';
 import './llm.dart';
-import './tts_model.dart';
+import './tts_isolate.dart';
 import './utils.dart';
 
 class AssistantScreen extends StatefulWidget {
@@ -63,9 +63,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // sherpa's default is 1.2s, which feels laggy; 0.8 trims the felt wait while
   // still tolerating short natural pauses. Lower = snappier, riskier mid-pause cuts.
   static const _endpointSilenceSec = 0.8;
-
-  // TTS.
-  sherpa_onnx.OfflineTts? _tts;
 
   // Streaming TTS pipeline: completed sentences are queued and played back in
   // order while later sentences are still being generated, so the first words
@@ -154,6 +151,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       return;
     }
     await _configureAudioSession();
+    unawaited(TtsService.instance.ensureReady()); // warm the TTS worker isolate
     if (_recognizer == null) {
       sherpa_onnx.initBindings();
       final modelConfig = await getOnlineModelConfig();
@@ -369,23 +367,16 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 
   Future<void> _synthesizeAndPlay(String text) async {
-    _tts ??= await createOfflineTts();
-    final audio = _tts!.generateWithConfig(
-      text: text,
-      config: sherpa_onnx.OfflineTtsGenerationConfig(sid: 0, speed: 1.0),
-    );
+    // Synthesis runs on a worker isolate (tts_isolate.dart) so the synchronous
+    // native call doesn't freeze the UI/ASR on the main thread.
     final filename = await generateWaveFilename();
-    final ok = sherpa_onnx.writeWave(
-      filename: filename,
-      samples: audio.samples,
-      sampleRate: audio.sampleRate,
-    );
-    if (!ok) return;
+    final path = await TtsService.instance.synthesize(text, filename);
+    if (path == null) return;
     // Subscribe before playing so a fast/short clip can't complete before we
     // start awaiting (which would otherwise stall the queue).
     final done = _player.onPlayerComplete.first;
     _playInterrupt = Completer<void>();
-    await _player.play(DeviceFileSource(filename));
+    await _player.play(DeviceFileSource(path));
     if (_tFirstAudio == null) {
       _tFirstAudio = DateTime.now();
       _updateMetrics();
@@ -460,7 +451,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _recorder.dispose();
     _stream?.free();
     _recognizer?.free();
-    _tts?.free();
     _player.dispose();
     _promptController.dispose();
     super.dispose();

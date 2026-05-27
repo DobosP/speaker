@@ -1,0 +1,44 @@
+name: Mobile tests
+
+# Runs the Dart half of the cross-language golden contract (and any other Flutter
+# unit tests) so the mobile shell can't drift from the Python core. Triggered
+# only when the mobile app or the shared golden fixtures change. Pure Dart unit
+# tests -- no emulator, no device, no model downloads.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'mobile/**'
+      - 'tests/golden/**'
+      - '.github/workflows/mobile-tests.yml'
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - 'tests/golden/**'
+      - '.github/workflows/mobile-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  flutter-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - run: flutter --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      - name: Run Flutter unit tests (incl. the golden contract)
+        run: flutter test

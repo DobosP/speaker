@@ -12,6 +12,7 @@ from always_on_agent.react import PlannerConfig, attach_react_capability, should
 from always_on_agent.supervisor import AgentSupervisor
 
 from .capabilities import attach_llm_capabilities
+from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
@@ -58,7 +59,7 @@ class VoiceRuntime:
         # action ("stop", "confirm", "deny", or "mode:<name>"). Keys are matched
         # case-insensitively. Empty -> unmapped keywords fall back to the normal
         # transcript path so nothing is silently dropped.
-        self._command_map = {k.strip().lower(): v for k, v in (command_map or {}).items()}
+        self._command_map = {normalize_command(k): v for k, v in (command_map or {}).items()}
         self.bus = EventBus()
         # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
@@ -139,7 +140,11 @@ class VoiceRuntime:
 
     def _on_command(self, keyword: str) -> None:
         # Spotted control phrase: act immediately, bypassing analyzer + LLM.
-        action = self._command_map.get(keyword.strip().lower())
+        # Normalization and the stop-class fall back to the shared contract so
+        # the desktop and mobile shells recognize the same control phrases.
+        action = self._command_map.get(normalize_command(keyword))
+        if action is None and is_stop_command(keyword):
+            action = "stop"
         if action is None:
             # Unmapped keyword: try the intent fast-path, else the normal path.
             if self._intents is not None and self._intents.handle(keyword):

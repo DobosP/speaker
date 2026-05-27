@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import os
-import re
 from threading import Event
 from typing import Callable, Iterator, Mapping, Optional
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 
+from .contract import drain_complete_sentences
 from .llm import LLMClient
 from .metrics import MetricsRecorder, mark_first_token
 from .routing import HeuristicRouter, Router
@@ -38,19 +38,16 @@ def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]
     return "".join(parts).strip(), cancelled
 
 
-# A sentence terminator followed by whitespace marks a chunk safe to speak
-# while the rest of the answer is still being generated.
-_SENTENCE_END = re.compile(r"[.!?]\s")
-
-
 def _stream_and_speak(
     tokens: Iterator[str], cancel: Optional[Event], emit: Callable[[str], None]
 ) -> tuple[str, bool]:
     """Drain a token stream, speaking each complete sentence as it lands.
 
     This is the latency win: playback of sentence one starts while the model is
-    still generating sentence two. Returns the full ``(text, cancelled)`` so the
-    caller can still log/remember the whole answer."""
+    still generating sentence two. Sentence boundaries follow the shared contract
+    (:mod:`core.contract`) so the desktop and mobile shells split identically.
+    Returns the full ``(text, cancelled)`` so the caller can still log/remember
+    the whole answer."""
     parts: list[str] = []
     buffer = ""
     cancelled = False
@@ -60,14 +57,9 @@ def _stream_and_speak(
             break
         parts.append(token)
         buffer += token
-        while True:
-            match = _SENTENCE_END.search(buffer)
-            if not match:
-                break
-            sentence = buffer[: match.start() + 1].strip()
-            buffer = buffer[match.end():]
-            if sentence:
-                emit(sentence)
+        sentences, buffer = drain_complete_sentences(buffer)
+        for sentence in sentences:
+            emit(sentence)
     tail = buffer.strip()
     if tail and not cancelled:
         emit(tail)

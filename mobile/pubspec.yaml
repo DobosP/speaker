@@ -24,6 +24,8 @@ dependencies:
   flutter_gemma: ^0.16.1
 
 dev_dependencies:
+  flutter_test:
+    sdk: flutter
   flutter_lints: ^4.0.0
 
 # NOTE: the `assets:` list below is rewritten by tool/generate-asset-list.py

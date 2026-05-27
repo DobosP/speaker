@@ -136,32 +136,20 @@ Linux/Windows/macOS/Android/iOS.
 - `main` is the integration branch and holds the latest work. Do feature work
   on a short-lived branch and merge back to `main`.
 - Web sessions run in an ephemeral container; commit anything worth keeping.
-- CI secrets: the repo has an Actions secret **`HF_TOKEN`** (a HuggingFace read
-  token, Gemma license accepted) used only by `.github/workflows/publish-model.yml`
-  to fetch the gated Gemma 3 model and republish it to the public `gemma-model`
-  release that the phone app downloads. The token value lives only in GitHub
-  Actions secrets — never commit it to the repo or paste it into files.
-- HuggingFace model downloads: this session's environment provides a HuggingFace
-  read token as the **`HUGGINGFACE_TOKEN`** env var (Gemma license accepted).
-  Use it to pull the gated Gemma 3 models directly from HuggingFace for the app
-  (e.g. `huggingface-cli download` / `hf_hub_download` with
-  `token=os.environ["HUGGINGFACE_TOKEN"]`, or
-  `Authorization: Bearer $HUGGINGFACE_TOKEN` on `huggingface.co` requests).
-  Read the value from the env at runtime; **never** hard-code, echo, or commit
-  it — reference it only as `$HUGGINGFACE_TOKEN`.
+- **Secrets & tokens live in [`CREDENTIALS.md`](CREDENTIALS.md)** — the single
+  source of truth for every credential (the CI `HF_TOKEN` Actions secret, the
+  session `HUGGINGFACE_TOKEN` and `GIT_HUB_TOKEN` env vars, and `LIVEKIT_*`):
+  where each comes from, what it unlocks, and how it's consumed. **Golden rule
+  for all of them:** read from the env at runtime; **never** hard-code, echo, or
+  commit a token — reference it only as `$VAR`.
+- `GIT_HUB_TOKEN` is the **maximum-access** key: it performs the privileged ops
+  the session harness blocks — branch deletion, `workflow_dispatch`, re-running
+  Actions, reading/writing Actions secrets. The `tools/gh_admin.py` helper wraps
+  these (dry-run by default; `--execute` to send, `--yes` for destructive ops)
+  and never prints the token; raw `curl` recipes are in `CREDENTIALS.md`.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
-  not a code problem.
-- Git access / automation token: routine git (push to `main`, branches) and
-  GitHub reads/writes go through the session harness (git proxy + repo-scoped
-  GitHub MCP) — no stored credential. For the privileged operations the harness
-  blocks — branch *deletion*, triggering/re-running Actions
-  (`workflow_dispatch`, re-run), creating/updating Actions secrets, and similar
-  admin calls — this session's environment now provides a GitHub token as the
-  **`GIT_HUB_TOKEN`** env var. Use it out-of-band against the GitHub REST API
-  (e.g. `curl -H "Authorization: Bearer $GIT_HUB_TOKEN" https://api.github.com/...`),
-  reading the value straight from the env. **Never** echo the token, commit it,
-  or write it into any file — reference it only as `$GIT_HUB_TOKEN`.
+  not a code problem (and `GIT_HUB_TOKEN` does not change it).
 - Self-monitoring / autofix loop: put work in a PR, then a Claude session can
   `subscribe` to that PR's activity to receive its CI results (from
   `tests.yml`) and review comments as events, and push fixes until checks pass.

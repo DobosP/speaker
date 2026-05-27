@@ -14,6 +14,7 @@ from .llm import EchoLLM, HedgeLLM, LlamaCppLLM, LLMClient, OllamaLLM, OpenAICom
 from .routing import build_router
 from .runlog import setup_logging
 from .runtime import VoiceRuntime
+from .sysinfo import SystemMonitor
 
 
 def _load_config(path: str = "config.json") -> dict:
@@ -265,23 +266,27 @@ def main(argv: list[str] | None = None) -> int:
         help="speak each sentence as it is generated (lower latency) instead "
         "of waiting for the full answer (reads the 'tts.streaming' config flag)",
     )
+    # Three independent capture axes that share one run bundle (logs/runs/run-<id>.*):
+    #   (always)   .txt full DEBUG log + .summary.json (timings, transcript, system stats)
+    #   --debug    louder CONSOLE only (the file is always full DEBUG)
+    #   --record   also save the session AUDIO (.wav), the heavy/opt-in artifact
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="verbose diagnostics: audio levels, ASR partials/finals, task "
-        "timings, queue depth, and full tracebacks from worker threads. Also "
-        "enabled by SPEAKER_DEBUG=1 in the environment.",
+        help="louder console (mirror DEBUG to the terminal). The run bundle "
+        "under logs/runs/ is written either way. Also SPEAKER_DEBUG=1.",
     )
     parser.add_argument(
         "--record",
         action="store_true",
-        help="record the session's 16 kHz mic audio to logs/runs/run-<id>.wav "
-        "(grouped with that run's log + summary). The WAV replays through "
-        "`--engine replay` so a captured run can become a regression test.",
+        help="also save the session's 16 kHz mic audio to the run bundle "
+        "(logs/runs/run-<id>.wav). Replays via `--engine replay` to become a test.",
     )
     args = parser.parse_args(argv)
 
     runlog = setup_logging(args.debug or os.environ.get("SPEAKER_DEBUG") == "1")
+    monitor = SystemMonitor(runlog.summary)
+    monitor.start()  # baseline compute reading before anything heavy loads
 
     config = _load_config()
     device = args.device or config.get("device", "desktop")
@@ -293,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
     router = build_router(config)
+    monitor.mark("after_build")  # compute reading once clients/engine are built
 
     if args.record and hasattr(engine, "set_record_path"):
         record_path = os.path.join(
@@ -351,12 +357,18 @@ def main(argv: list[str] | None = None) -> int:
             _run_console(runtime, engine)
     finally:
         try:
+            monitor.stop()  # folds baseline/peak/final/deltas into the summary
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             records = [r.as_dict() for r in runtime.metrics.records()]
         except Exception:  # noqa: BLE001 - never let logging hide the real error
             records = None
         runlog.finalize(records)
         print(f"[log] full log: {runlog.log_path}")
         print(f"[log] summary:  {runlog.summary_path}")
+        if args.record:
+            print(f"[log] audio:    {os.path.join('logs/runs', f'run-{runlog.run_id}.wav')}")
     return 0
 
 

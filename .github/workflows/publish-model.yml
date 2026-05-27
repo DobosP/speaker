@@ -38,6 +38,12 @@ jobs:
           echo "gated=$gated"
           echo "model files: $flat"
           echo "::warning title=hf_inspect::gated=$gated files=$flat"
+          # Who does this token belong to, and what scope does it have? This
+          # distinguishes "license not accepted" from "token lacks gated scope".
+          who=$(curl -s -H "Authorization: Bearer $HF" https://huggingface.co/api/whoami-v2)
+          uname=$(printf '%s' "$who" | jq -r '.name // .error // "unknown"')
+          role=$(printf '%s' "$who" | jq -r '.auth.accessToken.role // .auth.type // "?"')
+          echo "::warning title=hf_whoami::user=$uname token_role=$role"
           pick=$(printf '%s\n' "$models" | grep '\.litertlm$' | grep -i q4 | head -1)
           [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | grep '\.litertlm$' | head -1)
           [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | head -1)
@@ -60,7 +66,11 @@ jobs:
           echo "::warning title=download::file=$PICK http=$code bytes=$bytes"
           ls -lh "$ASSET" || true
           if [ "$code" != "200" ] || [ "$bytes" -lt 100000000 ]; then
-            echo "::error title=bad_download::http=$code bytes=$bytes (expected 200 and >100MB)"
+            # Capture HuggingFace's own refusal reason so the cause is explicit.
+            hdr=$(curl -s -I -L -H "Authorization: Bearer $HF" "$url" \
+                  | grep -iE 'x-error|HTTP/' | tr '\n' '|')
+            body=$(head -c 200 "$ASSET" 2>/dev/null | tr '\n' ' ')
+            echo "::error title=bad_download::http=$code bytes=$bytes hdr=[$hdr] body=[$body]"
             exit 1
           fi
           echo "Downloaded $PICK -> $ASSET ($bytes bytes)"

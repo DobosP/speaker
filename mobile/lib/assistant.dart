@@ -8,15 +8,13 @@
 // for on-device profiling.
 import 'dart:async';
 import 'dart:io' show Platform;
-import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:record/record.dart';
-import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
-import './asr_model.dart';
+import './asr_isolate.dart';
 import './contract.dart';
 import './llm.dart';
 import './tts_isolate.dart';
@@ -43,11 +41,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool _thinking = false;
   String _answer = '';
 
-  // Always-on voice input: a streaming recognizer runs continuously. The mic
-  // stays live even while the assistant speaks (echo cancellation keeps its own
-  // voice out) so the user can interrupt — barge-in — by talking or saying stop.
-  sherpa_onnx.OnlineRecognizer? _recognizer;
-  sherpa_onnx.OnlineStream? _stream;
+  // Always-on voice input: the mic stays live even while the assistant speaks
+  // (echo cancellation keeps its own voice out) so the user can interrupt —
+  // barge-in. Mic bytes are forwarded to the ASR worker isolate (asr_isolate),
+  // which decodes off the main thread and calls back with partials/endpoints.
   StreamSubscription<List<int>>? _audioSub;
   bool _alwaysOn = false; // user has enabled continuous listening
   bool _listening = false; // mic stream currently active
@@ -58,11 +55,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // as "the user is talking" and should cut the assistant off. Tune per device:
   // lower = snappier but more prone to false trips from residual echo.
   static const _bargeInChars = 2;
-
-  // Endpoint trailing-silence (seconds) before a finished utterance is submitted.
-  // sherpa's default is 1.2s, which feels laggy; 0.8 trims the felt wait while
-  // still tolerating short natural pauses. Lower = snappier, riskier mid-pause cuts.
-  static const _endpointSilenceSec = 0.8;
 
   // Streaming TTS pipeline: completed sentences are queued and played back in
   // order while later sentences are still being generated, so the first words
@@ -85,7 +77,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
   DateTime? _tGenDone;
   int _genTokens = 0;
   String _metrics = '';
-  String _lastPartial = ''; // last recognized text; voice-time advances on change
   int? _logIndex; // index of the current turn's log entry (updated in place)
 
   // Rolling per-turn log (timestamp + utterance + the metrics above, or an
@@ -152,19 +143,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
     await _configureAudioSession();
     unawaited(TtsService.instance.ensureReady()); // warm the TTS worker isolate
-    if (_recognizer == null) {
-      sherpa_onnx.initBindings();
-      final modelConfig = await getOnlineModelConfig();
-      _recognizer = sherpa_onnx.OnlineRecognizer(
-        sherpa_onnx.OnlineRecognizerConfig(
-          model: modelConfig,
-          ruleFsts: '',
-          enableEndpoint: true,
-          rule2MinTrailingSilence: _endpointSilenceSec,
-        ),
-      );
-    }
-    _stream = _recognizer!.createStream();
+
+    // The recognizer lives on a worker isolate; wire its callbacks and start it.
+    AsrService.instance.onPartial = _onPartial;
+    AsrService.instance.onEndpoint = _onEndpoint;
+    await AsrService.instance.ensureReady();
+    AsrService.instance.reset(); // fresh recognizer stream for this session
 
     // voiceCommunication + echoCancel let the mic stay open during playback
     // without the recognizer transcribing the assistant's own TTS.
@@ -186,64 +170,47 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _promptController.clear();
     });
 
-    _audioSub = audioStream.listen(_onAudio);
+    // Forward mic bytes to the worker — no decoding on the main thread.
+    _audioSub = audioStream.listen(AsrService.instance.feed);
   }
 
-  // Each audio chunk is decoded to completion in order. The mic never pauses, so
-  // this also runs while the assistant is speaking — that is what enables
-  // barge-in.
-  void _onAudio(Uint8List data) {
-    if (_stream == null) return;
-    final samples = convertBytesToFloat32(data);
-    _stream!.acceptWaveform(samples: samples, sampleRate: 16000);
-    while (_recognizer!.isReady(_stream!)) {
-      _recognizer!.decode(_stream!);
-    }
-    final partial = _recognizer!.getResult(_stream!).text.trim();
-
+  // Live partial from the ASR worker. The worker emits only on change, so this
+  // is where "last voice" advances (drives the silence-wait metric) and where
+  // barge-in fires.
+  void _onPartial(String partial) {
+    if (partial.isEmpty) return;
+    _tLastVoice = DateTime.now();
     // Barge-in: the user starts talking while the assistant speaks -> cut the
     // playback immediately so we stop talking over them.
     if (_speaking && partial.length >= _bargeInChars) {
       unawaited(_stopSpeaking());
     }
+    if (mounted) {
+      _promptController.value = TextEditingValue(
+        text: partial,
+        selection: TextSelection.collapsed(offset: partial.length),
+      );
+    }
+  }
 
-    if (partial.isNotEmpty) {
-      // Stamp "last voice" only when the text actually grows — it persists
-      // unchanged through the trailing silence, so stamping every chunk would
-      // make the silence-wait metric read ~0 instead of the real endpoint delay.
-      if (partial != _lastPartial) {
-        _tLastVoice = DateTime.now();
-        _lastPartial = partial;
-      }
+  // A finished utterance from the ASR worker.
+  void _onEndpoint(String utterance) {
+    if (utterance.isEmpty) return;
+    // A completed utterance supersedes any in-flight reply (its tokens stop
+    // feeding TTS) and silences whatever is still playing.
+    _turn++;
+    unawaited(_stopSpeaking());
+    if (isStopCommand(utterance)) {
       if (mounted) {
-        _promptController.value = TextEditingValue(
-          text: partial,
-          selection: TextSelection.collapsed(offset: partial.length),
-        );
+        setState(() {
+          _status = 'Stopped.';
+          _promptController.clear();
+        });
       }
+      return;
     }
-
-    if (_recognizer!.isEndpoint(_stream!)) {
-      final utterance = _recognizer!.getResult(_stream!).text.trim();
-      _recognizer!.reset(_stream!);
-      _lastPartial = '';
-      if (utterance.isEmpty) return;
-      // A completed utterance supersedes any in-flight reply (its tokens stop
-      // feeding TTS) and silences whatever is still playing.
-      _turn++;
-      unawaited(_stopSpeaking());
-      if (isStopCommand(utterance)) {
-        if (mounted) {
-          setState(() {
-            _status = 'Stopped.';
-            _promptController.clear();
-          });
-        }
-        return;
-      }
-      _tHeard = DateTime.now();
-      unawaited(_answerUtterance(utterance, _turn));
-    }
+    _tHeard = DateTime.now();
+    unawaited(_answerUtterance(utterance, _turn));
   }
 
   Future<void> _stopListening() async {
@@ -251,8 +218,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _audioSub = null;
     await _recorder.stop();
     await _stopSpeaking();
-    _stream?.free();
-    _stream = null;
     if (mounted) setState(() => _listening = false);
   }
 
@@ -449,8 +414,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _alwaysOn = false;
     _audioSub?.cancel();
     _recorder.dispose();
-    _stream?.free();
-    _recognizer?.free();
+    unawaited(AsrService.instance.stop());
+    unawaited(TtsService.instance.dispose());
     _player.dispose();
     _promptController.dispose();
     super.dispose();

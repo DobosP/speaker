@@ -193,13 +193,19 @@ class RunLog:
 def setup_logging(
     debug: bool = False,
     *,
-    log_dir: str = "logs/runs",
+    log_dir: Optional[str] = None,
     run_id: Optional[str] = None,
     console: bool = True,
 ) -> RunLog:
     """Wire the ``speaker`` logger to a non-blocking queue feeding a background
     listener (rich DEBUG file + console + summary aggregation). Returns a
-    :class:`RunLog`; its ``finalize()`` also runs at interpreter exit."""
+    :class:`RunLog`; its ``finalize()`` also runs at interpreter exit.
+
+    ``log_dir`` defaults to ``$SPEAKER_RUN_LOG_DIR`` or ``logs/runs`` (the env
+    override lets tests redirect the bundle to a tmp dir)."""
+    import os
+
+    log_dir = log_dir or os.environ.get("SPEAKER_RUN_LOG_DIR", "logs/runs")
     Path(log_dir).mkdir(parents=True, exist_ok=True)
     run_id = run_id or datetime.now().strftime("%Y%m%d-%H%M%S")
     log_path = str(Path(log_dir) / f"run-{run_id}.txt")

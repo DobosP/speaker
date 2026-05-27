@@ -1,0 +1,50 @@
+{
+  "description": "Canonical streaming-TTS sentence splitting, shared by core/contract.py (stream_sentences) and mobile/lib/contract.dart (streamSentences). 'tokens' are concatenated in order to simulate a model token stream; 'expect' is the ordered list of sentence chunks that must be spoken. A boundary is a newline, or a .!? immediately followed by whitespace (so decimals/abbreviations are not split mid-stream); the trailing remainder is flushed at the end.",
+  "cases": [
+    {
+      "name": "basic_three_sentences",
+      "tokens": ["First ", "one. ", "Second ", "two. ", "Third ", "three."],
+      "expect": ["First one.", "Second two.", "Third three."]
+    },
+    {
+      "name": "decimal_not_split",
+      "tokens": ["Pi is ", "3.14", " roughly."],
+      "expect": ["Pi is 3.14 roughly."]
+    },
+    {
+      "name": "newline_is_a_boundary",
+      "tokens": ["Line one", "\n", "Line two"],
+      "expect": ["Line one", "Line two"]
+    },
+    {
+      "name": "terminator_without_space_not_split",
+      "tokens": ["a.b.c"],
+      "expect": ["a.b.c"]
+    },
+    {
+      "name": "question_and_exclamation",
+      "tokens": ["Really? ", "Yes! ", "Done."],
+      "expect": ["Really?", "Yes!", "Done."]
+    },
+    {
+      "name": "extra_whitespace_trimmed",
+      "tokens": ["Hello.  ", "World."],
+      "expect": ["Hello.", "World."]
+    },
+    {
+      "name": "whitespace_only_emits_nothing",
+      "tokens": ["   ", "\n", "  "],
+      "expect": []
+    },
+    {
+      "name": "consecutive_newlines",
+      "tokens": ["a\n\nb"],
+      "expect": ["a", "b"]
+    },
+    {
+      "name": "terminator_then_newline",
+      "tokens": ["Hi.\nThere."],
+      "expect": ["Hi.", "There."]
+    }
+  ]
+}

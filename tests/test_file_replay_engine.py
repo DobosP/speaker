@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import glob
 
-import numpy as np
 import pytest
+
+np = pytest.importorskip("numpy")
 
 import core.engines.file_replay as fr
 from core.engine import EngineCallbacks

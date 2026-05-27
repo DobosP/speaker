@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tools.bench import report, runner
 
 
@@ -58,7 +60,7 @@ def test_markdown_summary_renders_table():
 
 
 def test_discover_fixtures_reads_metadata(tmp_path):
-    import numpy as np
+    np = pytest.importorskip("numpy")
 
     (tmp_path / "metadata.json").write_text(
         json.dumps({"cases": [{"name": "clip_a", "expectation": "callback"}]}),

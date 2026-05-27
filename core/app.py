@@ -17,11 +17,26 @@ from .runtime import VoiceRuntime
 from .sysinfo import SystemMonitor
 
 
-def _load_config(path: str = "config.json") -> dict:
+def _load_config(path: str = "config.json", *, local: str = "config.local.json") -> dict:
+    """Load ``config.json`` (the committed template) and shallow-merge a
+    machine-local ``config.local.json`` over it per top-level section. Keeping
+    machine-specific values (e.g. the sherpa model paths written by
+    ``tools.setup_models``) in the gitignored local file keeps the template
+    portable and out of git."""
+    config: dict = {}
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as fh:
-            return json.load(fh)
-    return {}
+            config = json.load(fh)
+    if os.path.exists(local):
+        with open(local, "r", encoding="utf-8") as fh:
+            overrides = json.load(fh)
+        for section, value in overrides.items():
+            base = config.get(section)
+            if isinstance(value, dict) and isinstance(base, dict):
+                config[section] = {**base, **value}
+            else:
+                config[section] = value
+    return config
 
 
 def _apply_device_profile(config: dict, device: str) -> dict:

@@ -108,6 +108,23 @@ def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):
     assert "no sherpa model paths" in msg.lower()
 
 
+def test_load_config_merges_config_local(tmp_path):
+    from core.app import _load_config
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"sherpa": {"asr_encoder": "", "sample_rate": 16000}, "device": "desktop"}),
+        encoding="utf-8",
+    )
+    (tmp_path / "config.local.json").write_text(
+        json.dumps({"sherpa": {"asr_encoder": "/m/asr/enc.onnx"}}), encoding="utf-8"
+    )
+    cfg = _load_config(str(tmp_path / "config.json"), local=str(tmp_path / "config.local.json"))
+    # local override wins, untouched template fields survive, other sections kept
+    assert cfg["sherpa"]["asr_encoder"] == "/m/asr/enc.onnx"
+    assert cfg["sherpa"]["sample_rate"] == 16000
+    assert cfg["device"] == "desktop"
+
+
 def test_build_engine_requires_models_for_replay():
     import argparse
 

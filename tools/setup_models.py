@@ -22,7 +22,10 @@ import sys
 from typing import Callable
 
 DEST = os.path.join("pretrained_models", "sherpa")
-CONFIG = "config.json"
+# Machine-local overrides (gitignored), merged over config.json at load time.
+# Model paths are machine-specific, so they belong here, not in the committed
+# config.json template.
+CONFIG = "config.local.json"
 FILE_KEYS = [
     "asr_tokens",
     "asr_encoder",
@@ -136,9 +139,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[models] espeak-ng-data not fetched ({exc}); continuing", file=sys.stderr)
         resolved["tts_data_dir"] = ""
 
-    # Wire absolute paths into config.json, preserving everything else.
-    with open(args.config, "r", encoding="utf-8") as fh:
-        cfg = json.load(fh)
+    # Write the absolute model paths into the machine-local overrides file
+    # (gitignored, merged over config.json at load). Start from whatever is
+    # already there so other local overrides survive.
+    cfg: dict = {}
+    if os.path.exists(args.config):
+        with open(args.config, "r", encoding="utf-8") as fh:
+            cfg = json.load(fh)
     wire_sherpa_paths(cfg, resolved)
     with open(args.config, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)

@@ -23,11 +23,16 @@ runs on Android and iOS.
 ## Layout
 
 - `core/` — **the runtime (all new work goes here).** `engine.py` (the
-  `AudioEngine` seam), `engines/sherpa.py` (production, on-device),
-  `engines/scripted.py` (tests/console), `engines/speaker_gate.py` (speaker-ID
-  barge-in gate), `llm.py` (Ollama client + fake), `capabilities.py` (LLM-backed,
-  cancellable providers), `runtime.py` (`VoiceRuntime` orchestrator), `app.py`
-  (CLI). Run: `python -m core --engine console --llm echo`.
+  `AudioEngine` seam), `engines/sherpa.py` (production, on-device; CPU STT/TTS
+  with auto-tuned threads + explicit `provider`), `engines/scripted.py`
+  (tests/console), `engines/speaker_gate.py` (speaker-ID barge-in gate),
+  `llm.py` (the `LLMClient` protocol + `EchoLLM` fake, `OllamaLLM` for desktop
+  GPU, `LlamaCppLLM` for on-device GGUF; all accept optional `images=` for
+  multimodal Gemma 3), `capabilities.py` (LLM-backed cancellable providers;
+  two-model split — fast model answers, main/multimodal model researches),
+  `runtime.py` (`VoiceRuntime` orchestrator), `app.py` (CLI; builds models from
+  the `llm` config block and applies the selected device profile). Run:
+  `python -m core --engine console --llm echo`.
 - `always_on_agent/` — the **control-plane "brain"** (modes, priority event bus,
   supervisor, cancellable threaded tasks, intent analyzer). The keeper. See its
   `README.md` and `docs/always_on_agent_layer.md`.
@@ -38,6 +43,9 @@ runs on Android and iOS.
   (latency/LLM-weight profiles + simulated engine/LLM) for middle-layer tests;
   `test_core_runtime.py` is fast logic; `test_sandbox_middle_layer.py` is
   realistic-timing/concurrency. No audio/model deps.
+- `tools/` — dev tooling (no app code). `run_tests.py` + `testing/` (staged
+  pytest runner with reports under `test-reports/`); `specsim/` (machine-spec
+  simulator that renders an HTML capability report — see Conventions).
 - `config.json` — runtime config. `docs/` — architecture and subsystem docs.
 
 > The legacy stack (`main.py`, `utils/audio.py`, the hand-rolled STT/TTS/LLM
@@ -51,13 +59,27 @@ runs on Android and iOS.
   `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|full`.
 - Run the app: `python -m core --engine console --llm echo` (no audio/models);
   `python -m core --engine sherpa` for on-device audio.
+- LLM/device config (`config.json`): the `llm` block selects a `backend`
+  (`ollama` desktop-GPU, or `llamacpp` on-device GGUF) plus a `main_model`
+  (large/multimodal) and `fast_model` (snappy replies). `device_profiles`
+  (`desktop`, `phone`, …) are shallow-merged over the base per section; pick one
+  with `--device <name>` (default from `config.device`). Desktop runs
+  gemma3:12b + 4b on Ollama/GPU; phone runs small Gemma (4b/1b) GGUF on
+  llama.cpp with STT/TTS threads dialed down. Ollama is desktop-only — mobile
+  must use `llamacpp`.
+- Simulate specs without hardware: `python -m tools.specsim` renders
+  `test-reports/specsim/index.html` (model-fit + responsiveness matrix + per-
+  device ASR→LLM→TTS timelines across 4090/Mac/Windows/phone/web). Numbers are
+  modelled estimates, not measurements — calibrate `tools/specsim/specs.py` from
+  real runs before trusting absolutes.
 - Keep new control-plane logic in `always_on_agent/`, typed and testable, not in `main.py`.
 - Prefer replay/transcript tests over tests that require live audio devices.
 - Fully-local is a hard product requirement: no cloud STT/LLM/TTS by default.
 
 ## Environment / git
 
-- This repo is developed on branch `claude/nice-planck-ZDr90`.
+- `main` is the integration branch and holds the latest work. Do feature work
+  on a short-lived branch and merge back to `main`.
 - Web sessions run in an ephemeral container; commit anything worth keeping.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,

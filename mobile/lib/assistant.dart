@@ -42,6 +42,23 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // TTS.
   sherpa_onnx.OfflineTts? _tts;
 
+  // Streaming TTS pipeline: completed sentences are queued and played back in
+  // order while later sentences are still being generated, so the first words
+  // are spoken almost immediately instead of after the whole answer.
+  final List<String> _speechQueue = [];
+  bool _draining = false;
+  String _ttsBuffer = '';
+
+  // Command fast-path: control phrases act locally without invoking the LLM.
+  // On mobile the meaningful action is interrupting playback ("stop").
+  static const Map<String, String> _commands = {
+    'stop': 'stop',
+    'cancel': 'stop',
+    'quiet': 'stop',
+    'stop talking': 'stop',
+    'be quiet': 'stop',
+  };
+
   Future<void> _downloadModel() async {
     setState(() {
       _downloading = true;
@@ -63,15 +80,25 @@ class _AssistantScreenState extends State<AssistantScreen> {
   Future<void> _ask() async {
     final prompt = _promptController.text.trim();
     if (prompt.isEmpty || !GemmaService.instance.isReady) return;
+
+    // Command fast-path: a control phrase acts immediately, skipping the LLM.
+    if (_handleCommand(prompt)) {
+      _promptController.clear();
+      return;
+    }
+
     setState(() {
       _thinking = true;
       _answer = '';
     });
+    _ttsBuffer = '';
     try {
       await for (final token in GemmaService.instance.reply(prompt)) {
         setState(() => _answer += token);
+        _ttsBuffer += token;
+        _flushSentences();
       }
-      await _speak(_answer);
+      _flushSentences(flushAll: true);
     } catch (e) {
       setState(() => _answer = 'Generation failed: $e');
     } finally {
@@ -79,8 +106,63 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
   }
 
-  Future<void> _speak(String text) async {
-    if (text.trim().isEmpty) return;
+  // Map a recognized control phrase to a local action. Returns true if handled.
+  bool _handleCommand(String prompt) {
+    final key = prompt.toLowerCase().replaceAll(RegExp(r'[^a-z ]'), '').trim();
+    final action = _commands[key];
+    if (action == null) return false;
+    if (action == 'stop') _stopSpeaking();
+    return true;
+  }
+
+  Future<void> _stopSpeaking() async {
+    _speechQueue.clear();
+    _ttsBuffer = '';
+    await _player.stop();
+    if (mounted) setState(() => _status = 'Stopped.');
+  }
+
+  // Pull every completed sentence out of the rolling buffer and queue it for
+  // speech; with flushAll, also speak whatever remains at end of generation.
+  void _flushSentences({bool flushAll = false}) {
+    var idx = _firstSentenceBoundary(_ttsBuffer);
+    while (idx != -1) {
+      final sentence = _ttsBuffer.substring(0, idx).trim();
+      _ttsBuffer = _ttsBuffer.substring(idx);
+      if (sentence.isNotEmpty) unawaited(_enqueueSpeech(sentence));
+      idx = _firstSentenceBoundary(_ttsBuffer);
+    }
+    if (flushAll) {
+      final rest = _ttsBuffer.trim();
+      _ttsBuffer = '';
+      if (rest.isNotEmpty) unawaited(_enqueueSpeech(rest));
+    }
+  }
+
+  int _firstSentenceBoundary(String s) {
+    for (var i = 0; i < s.length; i++) {
+      final c = s[i];
+      if (c == '.' || c == '!' || c == '?' || c == '\n') return i + 1;
+    }
+    return -1;
+  }
+
+  // Sequential player: synthesize + play one sentence at a time so audio never
+  // overlaps, while generation of later sentences continues in parallel.
+  Future<void> _enqueueSpeech(String sentence) async {
+    _speechQueue.add(sentence);
+    if (_draining) return;
+    _draining = true;
+    try {
+      while (_speechQueue.isNotEmpty) {
+        await _synthesizeAndPlay(_speechQueue.removeAt(0));
+      }
+    } finally {
+      _draining = false;
+    }
+  }
+
+  Future<void> _synthesizeAndPlay(String text) async {
     _tts ??= await createOfflineTts();
     final audio = _tts!.generateWithConfig(
       text: text,
@@ -92,10 +174,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
       samples: audio.samples,
       sampleRate: audio.sampleRate,
     );
-    if (ok) {
-      await _player.stop();
-      await _player.play(DeviceFileSource(filename));
-    }
+    if (!ok) return;
+    // Subscribe before playing so a fast/short clip can't complete before we
+    // start awaiting (which would otherwise stall the queue).
+    final done = _player.onPlayerComplete.first;
+    await _player.play(DeviceFileSource(filename));
+    await done;
   }
 
   Future<void> _toggleMic() async {

@@ -6,6 +6,7 @@
 // offline. We host the weights on our own release so the app needs no
 // HuggingFace token — the gated download happens in CI (see
 // .github/workflows/publish-model.yml), not on the phone.
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_gemma/flutter_gemma.dart';
 
 class GemmaService {
@@ -27,6 +28,11 @@ class GemmaService {
   dynamic _model;
 
   bool get isReady => _model != null;
+
+  // Test seam: inject a fake engine so the chat-per-turn + sampling behavior can
+  // be unit-tested without a real model (see test/llm_glue_test.dart).
+  @visibleForTesting
+  set debugModel(dynamic model) => _model = model;
 
   // Download (first run only) + initialize the GPU inference engine.
   // [onProgress] receives 0..100 during the one-time download.

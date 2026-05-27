@@ -19,6 +19,12 @@
 # host-local Ollama at localhost:11434 with no extra config. Isolation instead
 # comes from least privilege below: non-root, all capabilities dropped,
 # no-new-privileges, a read-only root filesystem, and read-only model access.
+#
+# Native vs remote (latency): this stack is for reaching the brain from OTHER
+# devices (browser/phone) over WebRTC. If you are sitting AT the GPU box, the
+# lowest-latency path is the native run `python -m core --engine sherpa` -- no
+# WebRTC hop. Streaming token output + sentence-batched TTS + barge-in work on
+# both paths (tts.streaming is on in config.json).
 
 x-hardening: &hardening
   read_only: true
@@ -42,6 +48,8 @@ x-speaker: &speaker
     LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
     # Empty -> the app defaults to localhost:11434 (host Ollama via host net).
     OLLAMA_HOST: ${OLLAMA_HOST:-}
+    # Empty -> use the config.json default ("30m"). "-1" keeps models resident.
+    OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-}
     HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
 
 services:

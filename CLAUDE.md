@@ -91,6 +91,16 @@ Linux/Windows/macOS/Android/iOS.
   `barge_in → barge_in_stop`) via `runtime.metrics`. The real engine, the
   file-replay engine, and the sandbox sim engine all feed it through the
   `on_metric` callback, so measured and simulated numbers share one shape.
+- **Run logs & debugging — read [`docs/debugging.md`](docs/debugging.md) when the
+  user reports a failed/stuck/slow run or attaches files.** Every run writes a
+  committable bundle under `logs/runs/run-<id>.{txt,summary.json}` (+ `.wav` with
+  `--record`): the `summary.json` has `stuck_hints`, per-turn latencies, every
+  LLM request, the conversation transcript, CPU/GPU/RAM telemetry, and errors;
+  the `.txt` is the full async DEBUG trace. `./session.sh` captures everything in
+  one go (`--debug` = console only; `--record` = audio). Recorded WAVs replay via
+  `python -m core --engine replay --replay-dir logs/runs` and become regression
+  tests. Preflight with `python -m tools.doctor`. `pytest` runs write the same
+  shape under `logs/tests/`.
 - Real-model latency benchmark: `python -m tools.bench --fake` is a no-download
   plumbing smoke test; `python -m tools.bench --profile phone --fixtures
   tests/fixture_audio/virtual_real_world` fetches small Gemma GGUF (via

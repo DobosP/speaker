@@ -43,8 +43,14 @@ class VoiceRuntime:
         planner_config: Optional[PlannerConfig] = None,
         stream_tts: bool = False,
         followup_config: Optional[FollowupConfig] = None,
+        command_map: Optional[dict[str, str]] = None,
     ):
         self.engine = engine
+        # Command fast-path policy: maps a spotted keyword phrase to a control
+        # action ("stop", "confirm", "deny", or "mode:<name>"). Keys are matched
+        # case-insensitively. Empty -> unmapped keywords fall back to the normal
+        # transcript path so nothing is silently dropped.
+        self._command_map = {k.strip().lower(): v for k, v in (command_map or {}).items()}
         self.bus = EventBus()
         memory = SessionMemory()
         llm = llm or EchoLLM()
@@ -82,6 +88,7 @@ class VoiceRuntime:
                 on_partial=self._on_partial,
                 on_final=self._on_final,
                 on_barge_in=self._on_barge_in,
+                on_command=self._on_command,
             )
         )
         if run_bus:
@@ -110,6 +117,26 @@ class VoiceRuntime:
         # User spoke over the assistant: cut playback now, cancel in-flight work.
         self.engine.stop_speaking()
         self.bus.publish(AgentEvent.stop("barge_in"))
+
+    def _on_command(self, keyword: str) -> None:
+        # Spotted control phrase: act immediately, bypassing analyzer + LLM.
+        action = self._command_map.get(keyword.strip().lower())
+        if action is None:
+            # Unmapped keyword: don't drop it -- hand it to the normal path.
+            self.bus.publish(AgentEvent.final(keyword))
+            return
+        if action == "stop":
+            self.engine.stop_speaking()
+            self.bus.publish(AgentEvent.stop("command"))
+        elif action == "confirm":
+            self.bus.publish(AgentEvent.confirm("command"))
+        elif action == "deny":
+            self.bus.publish(AgentEvent.deny("command"))
+        elif action.startswith("mode:"):
+            try:
+                self.bus.publish(AgentEvent.mode(Mode(action.split(":", 1)[1]), source="command"))
+            except ValueError:
+                pass
 
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:

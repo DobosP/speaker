@@ -26,6 +26,10 @@ class EngineCallbacks:
     on_barge_in: Callable[[], None] = _noop
     on_speech_start: Callable[[], None] = _noop
     on_speech_end: Callable[[], None] = _noop
+    # Command fast-path: a spotted control keyword (e.g. "stop") that the brain
+    # should act on directly, skipping ASR-text -> analyzer -> LLM. The argument
+    # is the matched keyword phrase; the runtime maps it to a control event.
+    on_command: Callable[[str], None] = _noop_text
 
 
 class AudioEngine(ABC):

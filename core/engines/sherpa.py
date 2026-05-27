@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import threading
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -119,6 +120,18 @@ class SherpaOnnxEngine(AudioEngine):
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
         self._speaker_gate: Optional[SpeakerGate] = None
+        # Single playback sink: every utterance is queued onto one worker thread
+        # so sentences play in order and never overlap (streaming TTS emits many
+        # short sentences in quick succession). Bounded so a runaway producer
+        # can't grow memory; oldest is dropped under backpressure to stay fresh.
+        self._play_q: "queue.Queue[tuple[Optional[str], Optional[Callable[[], None]]]]" = (
+            queue.Queue(maxsize=64)
+        )
+        self._play_thread: Optional[threading.Thread] = None
+        # Whether this sherpa-onnx build supports the streaming TTS callback
+        # (play audio as it is synthesized). Flipped off on the first build that
+        # rejects the ``callback`` kwarg, after which we chunk the finished wave.
+        self._tts_can_stream = True
 
     # --- lazy model construction ---
     def _build(self) -> None:
@@ -158,26 +171,38 @@ class SherpaOnnxEngine(AudioEngine):
         self._stream_in.start()
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
+        self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
+        self._play_thread.start()
 
     def stop(self) -> None:
         self._running.clear()
         self._stop_speaking.set()
+        self._drain_play_q()
+        self._play_q.put((None, None))  # sentinel: wake the worker so it exits
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=1.0)
+        if self._play_thread is not None:
+            self._play_thread.join(timeout=1.0)
         if self._stream_in is not None:
             self._stream_in.stop()
             self._stream_in.close()
             self._stream_in = None
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
+        # Non-blocking: hand the utterance to the single playback worker. Keeping
+        # one sink (instead of a thread per call) is what makes sentence-level
+        # streaming play in order rather than on top of itself.
         if self._tts is None:
             if on_done:
                 on_done()
             return
-        threading.Thread(target=self._speak_blocking, args=(text, on_done), daemon=True).start()
+        self._enqueue_play(text, on_done)
 
     def stop_speaking(self) -> None:
+        # Cut the current utterance and discard whatever is queued behind it, so
+        # a barge-in flushes pending speech instead of letting it play out.
         self._stop_speaking.set()
+        self._drain_play_q()
 
     @property
     def is_speaking(self) -> bool:
@@ -242,29 +267,97 @@ class SherpaOnnxEngine(AudioEngine):
             kws.reset_stream(ks)
             self._cb.on_command(keyword)
 
-    def _speak_blocking(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
-        import numpy as np
+    def _enqueue_play(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
+        try:
+            self._play_q.put_nowait((text, on_done))
+        except queue.Full:
+            # Drop the oldest queued sentence rather than block or lag playback.
+            try:
+                self._play_q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._play_q.put_nowait((text, on_done))
+            except queue.Full:
+                if on_done:
+                    on_done()
+
+    def _drain_play_q(self) -> None:
+        try:
+            while True:
+                self._play_q.get_nowait()
+        except queue.Empty:
+            pass
+
+    def _playback_loop(self) -> None:
         import sounddevice as sd
 
-        self._stop_speaking.clear()
-        self._speaking.set()
-        self._cb.on_speech_start()
+        out = None
         try:
-            audio = self._tts.generate(
-                text, sid=self.config.tts_speaker_id, speed=self.config.tts_speed
-            )
-            samples = np.asarray(audio.samples, dtype="float32")
-            with sd.OutputStream(channels=1, samplerate=audio.sample_rate, dtype="float32") as out:
-                chunk = int(audio.sample_rate * 0.1)
-                for i in range(0, len(samples), chunk):
-                    if self._stop_speaking.is_set():
-                        break
-                    out.write(samples[i : i + chunk])
+            while self._running.is_set():
+                try:
+                    text, on_done = self._play_q.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if text is None:  # shutdown sentinel from stop()
+                    break
+                self._stop_speaking.clear()
+                self._speaking.set()
+                self._cb.on_speech_start()
+                try:
+                    if out is None:
+                        sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
+                        out = sd.OutputStream(channels=1, samplerate=sr, dtype="float32")
+                        out.start()
+                    self._synthesize(text, lambda s: self._write_chunk(out, s))
+                finally:
+                    if on_done:
+                        on_done()
+                    # Only fall idle once the queue drains, so the capture loop
+                    # doesn't flap ASR/barge-in on/off between adjacent sentences.
+                    if self._play_q.empty():
+                        self._speaking.clear()
+                        self._cb.on_speech_end()
         finally:
-            self._speaking.clear()
-            self._cb.on_speech_end()
-            if on_done:
-                on_done()
+            if out is not None:
+                out.stop()
+                out.close()
+
+    def _synthesize(self, text: str, write: Callable[[object], None]) -> None:
+        """Synthesize ``text``, handing each audio chunk to ``write`` as it is
+        produced. sherpa-onnx ``OfflineTts.generate`` streams via a ``callback``,
+        so the first samples play before the whole sentence is synthesized; a
+        build without that param falls back to chunking the finished waveform."""
+        import numpy as np
+
+        tts = self._tts
+        sid = self.config.tts_speaker_id
+        speed = self.config.tts_speed
+        if self._tts_can_stream:
+
+            def on_chunk(samples, *_progress) -> int:
+                write(np.asarray(samples, dtype="float32").reshape(-1))
+                return 0 if self._stop_speaking.is_set() else 1
+
+            try:
+                tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
+                return
+            except TypeError:
+                self._tts_can_stream = False  # this build has no streaming callback
+
+        audio = tts.generate(text, sid=sid, speed=speed)
+        samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
+        sr = int(getattr(audio, "sample_rate", 0)) or 22050
+        chunk = max(1, int(sr * 0.1))
+        for i in range(0, len(samples), chunk):
+            if self._stop_speaking.is_set():
+                break
+            write(samples[i : i + chunk])
+
+    def _write_chunk(self, out, samples) -> None:
+        if self._stop_speaking.is_set():
+            return
+        out.write(samples)
 
     def _looks_like_user(self, samples) -> bool:
         # Speaker-ID gate: when enrolled, only the user's own voice counts as

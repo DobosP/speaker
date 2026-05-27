@@ -26,6 +26,7 @@ unit-tested with fakes.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import queue
 import threading
@@ -112,6 +113,9 @@ class LiveKitEngine(AudioEngine):
         self._running = threading.Event()
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
+        # Serialize TTS so streamed sentences publish in order on the room track
+        # instead of interleaving frames. Created on the loop in _run_loop.
+        self._speak_lock: Optional[asyncio.Lock] = None
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
@@ -204,6 +208,7 @@ class LiveKitEngine(AudioEngine):
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._speak_lock = asyncio.Lock()
         try:
             self._loop.run_until_complete(self._session())
         except Exception as exc:  # pragma: no cover - needs a live server
@@ -258,36 +263,41 @@ class LiveKitEngine(AudioEngine):
         import numpy as np
         from livekit import rtc
 
-        self._stop_speaking.clear()
-        self._speaking.set()
-        self._cb.on_speech_start()
-        try:
-            await self._publish_data("assistant_sentence", {"text": text})
-            audio = await asyncio.to_thread(
-                lambda: self._tts.generate(
-                    text, sid=self._cfg.tts_speaker_id, speed=self._cfg.tts_speed
-                )
-            )
-            samples = np.asarray(audio.samples, dtype=np.float32)
-            out = float32_to_pcm_int16(
-                resample_linear(samples, audio.sample_rate, self._out_sr)
-            )
-            chunk = int(self._out_sr * FRAME_MS / 1000)
-            for i in range(0, len(out), chunk):
-                if self._stop_speaking.is_set():
-                    break
-                seg = out[i : i + chunk]
-                await self._source.capture_frame(
-                    rtc.AudioFrame(
-                        data=seg.tobytes(),
-                        sample_rate=self._out_sr,
-                        num_channels=1,
-                        samples_per_channel=len(seg),
+        # One sentence on the track at a time: streamed sentences arrive as
+        # separate _speak coroutines, and interleaving their frames would garble
+        # the audio. The lock makes them publish back-to-back, in order.
+        lock = self._speak_lock
+        async with lock if lock is not None else contextlib.nullcontext():
+            self._stop_speaking.clear()
+            self._speaking.set()
+            self._cb.on_speech_start()
+            try:
+                await self._publish_data("assistant_sentence", {"text": text})
+                audio = await asyncio.to_thread(
+                    lambda: self._tts.generate(
+                        text, sid=self._cfg.tts_speaker_id, speed=self._cfg.tts_speed
                     )
                 )
-        finally:
-            self._speaking.clear()
-            self._cb.on_speech_end()
+                samples = np.asarray(audio.samples, dtype=np.float32)
+                out = float32_to_pcm_int16(
+                    resample_linear(samples, audio.sample_rate, self._out_sr)
+                )
+                chunk = int(self._out_sr * FRAME_MS / 1000)
+                for i in range(0, len(out), chunk):
+                    if self._stop_speaking.is_set():
+                        break
+                    seg = out[i : i + chunk]
+                    await self._source.capture_frame(
+                        rtc.AudioFrame(
+                            data=seg.tobytes(),
+                            sample_rate=self._out_sr,
+                            num_channels=1,
+                            samples_per_channel=len(seg),
+                        )
+                    )
+            finally:
+                self._speaking.clear()
+                self._cb.on_speech_end()
 
     # --- data channel (transcripts for the web/mobile UI) ---
     def _publish(self, event_type: str, payload: dict) -> None:

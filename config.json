@@ -43,7 +43,7 @@
   "mode": "assistant",
   "local_only": true,
   "tts": {
-    "streaming": false
+    "streaming": true
   },
   "followups": {
     "enabled": false,

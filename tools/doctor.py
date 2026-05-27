@@ -193,8 +193,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default="config.json")
     args = parser.parse_args(argv)
     try:
-        with open(args.config, "r", encoding="utf-8") as fh:
-            config = json.load(fh)
+        # Use the app loader so config.local.json (the machine-local model paths
+        # written by tools.setup_models) is merged in.
+        from core.app import _load_config
+
+        config = _load_config(args.config)
     except Exception:
         config = {}
     ready, text = summarize(run_all(config))

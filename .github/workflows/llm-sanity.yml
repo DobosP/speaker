@@ -1,0 +1,53 @@
+name: LLM sanity (real model on CPU)
+
+# Runs the real fast Gemma (1B GGUF) on a GitHub CPU and asserts a few prompts
+# give distinct, non-degenerate answers — the canned/looping output that broke
+# the mobile app. Heavy-ish (downloads the 1B model, cached), so it runs on
+# manual dispatch and when the LLM code changes, not on every push. Exercises the
+# Python llama.cpp path; the mobile flutter_gemma glue is guarded by the Dart
+# unit test in the mobile-tests workflow.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'core/llm.py'
+      - 'core/capabilities.py'
+      - 'tools/llm_sanity.py'
+      - '.github/workflows/llm-sanity.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  llm-sanity:
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache the downloaded model
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            .cache/bench-models
+          key: llm-sanity-${{ hashFiles('tools/bench/models.py') }}
+          restore-keys: llm-sanity-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install huggingface_hub
+          # Prebuilt CPU wheel so the job doesn't compile llama.cpp.
+          pip install llama-cpp-python \
+            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+
+      - name: Run LLM output sanity check (real model, CPU)
+        run: python -m tools.llm_sanity

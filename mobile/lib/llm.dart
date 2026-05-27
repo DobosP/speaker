@@ -9,6 +9,8 @@
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:flutter_gemma/flutter_gemma.dart';
 
+import './model_store.dart';
+
 class GemmaService {
   GemmaService._();
   static final GemmaService instance = GemmaService._();
@@ -29,19 +31,31 @@ class GemmaService {
 
   bool get isReady => _model != null;
 
+  // Whether the weights are already on the device (sideloaded via adb push or
+  // kept from a previous run). Lets the UI say "loading" instead of
+  // "downloading" when no network fetch is needed.
+  Future<bool> isModelPresent() => ModelStore.hasModel();
+
   // Test seam: inject a fake engine so the chat-per-turn + sampling behavior can
   // be unit-tested without a real model (see test/llm_glue_test.dart).
   @visibleForTesting
   set debugModel(dynamic model) => _model = model;
 
-  // Download (first run only) + initialize the GPU inference engine.
+  // Make the model ready, then initialize the GPU inference engine.
   // [onProgress] receives 0..100 during the one-time download.
+  //
+  // The weights are loaded from a fixed on-disk path (ModelStore) and only
+  // downloaded when that file is genuinely absent — so a reinstall reuses the
+  // sideloaded/cached model instead of re-fetching ~550 MB every time.
   Future<void> ensureReady({void Function(double percent)? onProgress}) async {
     if (_model != null) return;
 
+    if (!await ModelStore.hasModel()) {
+      await ModelStore.download(modelUrl, onProgress: onProgress);
+    }
+    final file = await ModelStore.modelFile();
     await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
-        .fromNetwork(modelUrl)
-        .withProgress((p) => onProgress?.call((p as num).toDouble()))
+        .fromFile(file.path)
         .install();
 
     // Prefer the GPU engine; fall back to CPU if the device can't create it

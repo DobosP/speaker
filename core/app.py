@@ -9,6 +9,7 @@ from always_on_agent.events import Mode
 
 from .engine import AudioEngine
 from .llm import EchoLLM, LlamaCppLLM, LLMClient, OllamaLLM
+from .routing import build_router
 from .runtime import VoiceRuntime
 
 
@@ -177,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
     config = _apply_device_profile(config, device)
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
+    router = build_router(config)
 
     agent_config = None
     if args.agent:
@@ -185,7 +187,12 @@ def main(argv: list[str] | None = None) -> int:
         agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
 
     runtime = VoiceRuntime(
-        engine, llm, fast_llm=fast_llm, start_mode=Mode(args.mode), agent_config=agent_config
+        engine,
+        llm,
+        fast_llm=fast_llm,
+        start_mode=Mode(args.mode),
+        agent_config=agent_config,
+        router=router,
     )
 
     if args.engine in ("sherpa", "livekit"):

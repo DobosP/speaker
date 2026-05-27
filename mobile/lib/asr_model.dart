@@ -20,3 +20,18 @@ Future<sherpa_onnx.OnlineModelConfig> getOnlineModelConfig() async {
     modelType: 'zipformer2',
   );
 }
+
+// Offline (non-streaming) Whisper base.en, used for the second-pass revision:
+// after the fast streaming model produces a live transcript, the buffered
+// utterance is re-decoded here for a more accurate result.
+Future<sherpa_onnx.OfflineModelConfig> getOfflineWhisperConfig() async {
+  const modelDir = 'assets/sherpa-onnx-whisper-base.en';
+  return sherpa_onnx.OfflineModelConfig(
+    whisper: sherpa_onnx.OfflineWhisperModelConfig(
+      encoder: await copyAssetFile('$modelDir/base.en-encoder.int8.onnx'),
+      decoder: await copyAssetFile('$modelDir/base.en-decoder.int8.onnx'),
+    ),
+    tokens: await copyAssetFile('$modelDir/base.en-tokens.txt'),
+    modelType: 'whisper',
+  );
+}

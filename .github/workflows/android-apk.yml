@@ -45,6 +45,18 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Use a stable debug signing key
+        # The Android Gradle Plugin signs --debug builds with
+        # ~/.android/debug.keystore. On ephemeral CI runners that file is
+        # regenerated every run, so each APK got a different signature and
+        # Android refused to install one build over another
+        # (INSTALL_FAILED_UPDATE_INCOMPATIBLE). Drop in our committed keystore
+        # (standard debug creds) so every build shares one signature and
+        # updates install in place.
+        run: |
+          mkdir -p "$HOME/.android"
+          cp tool/debug.keystore "$HOME/.android/debug.keystore"
+
       - name: Build debug APK
         run: flutter build apk --debug 2>&1 | tee /tmp/build.log
 

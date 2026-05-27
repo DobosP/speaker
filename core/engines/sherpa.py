@@ -136,6 +136,10 @@ class SherpaOnnxEngine(AudioEngine):
         self._kws = None
         self._kws_stream = None
         self._stream_in = None
+        # Optional session recording (the 16 kHz audio fed to the recognizer,
+        # written to WAV so the run can be replayed and frozen into a test).
+        self._record_path: Optional[str] = None
+        self._recorder = None
         # Actual mic capture rate (may differ from config.sample_rate when the
         # device won't open at 16 kHz); captured audio is resampled to 16 kHz.
         self._capture_sr = config.sample_rate
@@ -159,6 +163,10 @@ class SherpaOnnxEngine(AudioEngine):
         # (play audio as it is synthesized). Flipped off on the first build that
         # rejects the ``callback`` kwarg, after which we chunk the finished wave.
         self._tts_can_stream = True
+
+    def set_record_path(self, path: Optional[str]) -> None:
+        """Record this session's recognizer-rate audio to ``path`` (WAV)."""
+        self._record_path = path
 
     # --- lazy model construction ---
     def _build(self) -> None:
@@ -226,6 +234,11 @@ class SherpaOnnxEngine(AudioEngine):
                 f"[sherpa] mic rejected {self.config.sample_rate} Hz; "
                 f"capturing at {dev_sr} Hz and resampling to {self.config.sample_rate} Hz"
             )
+        if self._record_path:
+            from ..recorder import WavRecorder
+
+            self._recorder = WavRecorder(self._record_path, self.config.sample_rate)
+            log.info("recording session audio -> %s", self._record_path)
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
@@ -244,6 +257,11 @@ class SherpaOnnxEngine(AudioEngine):
             self._stream_in.stop()
             self._stream_in.close()
             self._stream_in = None
+        if self._recorder is not None:
+            log.info("recorded %.1fs of session audio -> %s",
+                     self._recorder.seconds, self._recorder.path)
+            self._recorder.close()
+            self._recorder = None
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
         # Non-blocking: hand the utterance to the single playback worker. Keeping
@@ -291,6 +309,9 @@ class SherpaOnnxEngine(AudioEngine):
                 samples = np.asarray(audio, dtype="float32").reshape(-1)
                 if self._capture_sr != self.config.sample_rate:
                     samples = _resample_linear(samples, self._capture_sr, self.config.sample_rate)
+
+                if self._recorder is not None:
+                    self._recorder.write(samples)
 
                 total_blocks += 1
                 beat_blocks += 1

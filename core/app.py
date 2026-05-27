@@ -270,6 +270,13 @@ def main(argv: list[str] | None = None) -> int:
         "timings, queue depth, and full tracebacks from worker threads. Also "
         "enabled by SPEAKER_DEBUG=1 in the environment.",
     )
+    parser.add_argument(
+        "--record",
+        action="store_true",
+        help="record the session's 16 kHz mic audio to logs/runs/run-<id>.wav "
+        "(grouped with that run's log + summary). The WAV replays through "
+        "`--engine replay` so a captured run can become a regression test.",
+    )
     args = parser.parse_args(argv)
 
     runlog = setup_logging(args.debug or os.environ.get("SPEAKER_DEBUG") == "1")
@@ -284,6 +291,15 @@ def main(argv: list[str] | None = None) -> int:
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
     router = build_router(config)
+
+    if args.record and hasattr(engine, "set_record_path"):
+        record_path = os.path.join(
+            os.path.dirname(runlog.log_path), f"run-{runlog.run_id}.wav"
+        )
+        engine.set_record_path(record_path)
+        runlog.summary.note(recording=record_path)
+    elif args.record:
+        runlog.logger.warning("--record ignored: %s engine has no recorder", args.engine)
 
     agent_config = None
     if args.agent:

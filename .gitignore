@@ -41,6 +41,11 @@ transcripts/
 *.mp3
 *.mp4
 
+# ...but DO commit session recordings captured alongside a run's logs, so they
+# can be replayed (`--engine replay`) and frozen into regression tests.
+!logs/runs/*.wav
+!logs/runs/*.mp3
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

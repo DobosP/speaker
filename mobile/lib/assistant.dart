@@ -8,6 +8,8 @@
 // for on-device profiling.
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -56,6 +58,20 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // as "the user is talking" and should cut the assistant off. Tune per device:
   // lower = snappier but more prone to false trips from residual echo.
   static const _bargeInChars = 2;
+
+  // Energy barge-in: talking over the assistant should cut it off even when the
+  // recognizer can't transcribe the interruption (echo, or a short word). We
+  // watch near-end loudness on the mic stream during playback and stop on
+  // sustained sound. Thresholds are device-dependent — calibrate from the
+  // "spoke: … peakRms" line in the exported logs.
+  static const _bargeInRms = 0.08; // near-end RMS (0..1) that counts as speech
+  static const _bargeInMs = 150; // sustained loud audio (ms) before cutting off
+  int _loudMs = 0; // accumulated loud-audio time in the current window
+  // Per speaking-window diagnostics (exported via Copy logs) so we can see
+  // whether the mic is even live during playback and how loud near-end is.
+  int _spkChunks = 0; // mic chunks observed while speaking
+  double _spkPeakRms = 0; // loudest near-end chunk while speaking
+  int _spkPartials = 0; // partials received while speaking
 
   // Streaming TTS pipeline: completed sentences are queued and played back in
   // order while later sentences are still being generated, so the first words
@@ -185,8 +201,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _promptController.clear();
     });
 
-    // Forward mic bytes to the worker — no decoding on the main thread.
-    _audioSub = audioStream.listen(AsrService.instance.feed);
+    // Forward mic bytes to the worker (no decoding here) and watch loudness for
+    // energy barge-in while the assistant speaks.
+    _audioSub = audioStream.listen(_onMicChunk);
   }
 
   // Live partial from the ASR worker. The worker emits only on change, so this
@@ -195,10 +212,14 @@ class _AssistantScreenState extends State<AssistantScreen> {
   void _onPartial(String partial) {
     if (partial.isEmpty) return;
     _tLastVoice = DateTime.now();
-    // Barge-in: the user starts talking while the assistant speaks -> cut the
-    // playback immediately so we stop talking over them.
-    if (_speaking && partial.length >= _bargeInChars) {
-      unawaited(_stopSpeaking());
+    // Barge-in via transcription (complements the energy path): the user talking
+    // — or saying a stop word — while the assistant speaks cuts it off.
+    if (_speaking) {
+      _spkPartials++;
+      if (partial.length >= _bargeInChars || _looksLikeStop(partial)) {
+        _appendBargeLog('partial "$partial"');
+        unawaited(_stopSpeaking());
+      }
     }
     if (mounted) {
       _promptController.value = TextEditingValue(
@@ -215,7 +236,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     // feeding TTS) and silences whatever is still playing.
     _turn++;
     unawaited(_stopSpeaking());
-    if (isStopCommand(utterance)) {
+    if (isStopCommand(utterance) || _looksLikeStop(utterance)) {
       if (mounted) {
         setState(() {
           _status = 'Stopped.';
@@ -234,6 +255,51 @@ class _AssistantScreenState extends State<AssistantScreen> {
     await _recorder.stop();
     await _stopSpeaking();
     if (mounted) setState(() => _listening = false);
+  }
+
+  // Mic bytes (PCM16) on the main isolate: forward to the ASR worker, and while
+  // the assistant is speaking, watch near-end loudness so the user can cut it
+  // off by talking even when the words aren't cleanly transcribed (energy
+  // barge-in, independent of the recognizer).
+  void _onMicChunk(Uint8List chunk) {
+    AsrService.instance.feed(chunk);
+    if (!_speaking) {
+      _loudMs = 0;
+      return;
+    }
+    _spkChunks++;
+    final rms = _rms(chunk);
+    if (rms > _spkPeakRms) _spkPeakRms = rms;
+    if (rms >= _bargeInRms) {
+      _loudMs += 1000 * (chunk.length ~/ 2) ~/ 16000;
+      if (_loudMs >= _bargeInMs) {
+        _appendBargeLog('energy ${rms.toStringAsFixed(3)}');
+        unawaited(_stopSpeaking());
+      }
+    } else {
+      _loudMs = 0;
+    }
+  }
+
+  // Root-mean-square loudness of a PCM16 chunk, normalized to 0..1.
+  double _rms(Uint8List bytes) {
+    final n = bytes.length ~/ 2;
+    if (n == 0) return 0;
+    final data = ByteData.sublistView(bytes);
+    var sumSq = 0.0;
+    for (var i = 0; i + 1 < bytes.length; i += 2) {
+      final s = data.getInt16(i, Endian.little) / 32768.0;
+      sumSq += s * s;
+    }
+    return math.sqrt(sumSq / n);
+  }
+
+  // Lenient, mobile-local stop check for cutting off playback — broader than the
+  // shared exact-match contract (which mobile and Python pin via golden tests),
+  // so "stop", "stop speaking", "be quiet", etc. all interrupt.
+  bool _looksLikeStop(String text) {
+    final t = text.toLowerCase();
+    return t.contains('stop') || t.contains('quiet') || t.contains('cancel');
   }
 
   // --- generation ---
@@ -335,6 +401,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_draining) return;
     _draining = true;
     _speaking = true;
+    _spkChunks = 0;
+    _spkPeakRms = 0;
+    _spkPartials = 0;
+    _loudMs = 0;
     if (mounted) setState(() => _status = 'Speaking…');
     try {
       while (_speechQueue.isNotEmpty) {
@@ -343,6 +413,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
     } finally {
       _draining = false;
       _speaking = false;
+      // Window summary: if chunks==0 the mic was starved during playback; if
+      // peakRms stayed below _bargeInRms, near-end speech isn't reaching us.
+      _logLine('spoke: chunks=$_spkChunks '
+          'peakRms=${_spkPeakRms.toStringAsFixed(3)} partials=$_spkPartials');
     }
   }
 
@@ -412,6 +486,16 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_log.length > 100) _log.removeRange(0, _log.length - 100);
     if (mounted) setState(() {});
   }
+
+  // Append a free-standing diagnostic line (barge-in events, per-window near-end
+  // loudness) to the exported log — separate from the per-turn metrics entries.
+  void _logLine(String s) {
+    _log.add('[${DateTime.now().toIso8601String()}] $s');
+    if (_log.length > 200) _log.removeRange(0, _log.length - 200);
+    if (mounted) setState(() {});
+  }
+
+  void _appendBargeLog(String reason) => _logLine('BARGE-IN ($reason)');
 
   Future<void> _copyLogs() async {
     final head = 'speaker mobile — ${Platform.operatingSystem} '

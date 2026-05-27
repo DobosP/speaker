@@ -2,6 +2,10 @@
 
 This guide will help you set up the voice assistant with persistent memory.
 
+> **Credentials & API tokens** (HuggingFace, the `GIT_HUB_TOKEN` admin key,
+> LiveKit) are documented separately in [`CREDENTIALS.md`](CREDENTIALS.md). This
+> guide covers the local PostgreSQL memory store only.
+
 ## Quick Setup (Automated)
 
 The easiest way to set up everything:

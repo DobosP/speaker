@@ -29,6 +29,10 @@ pulls from. One-time setup:
 3. Run the **Publish Gemma model** workflow (Actions tab → Run workflow). It
    fetches the gated model and publishes it to the `gemma-model` release.
 
+> See [`CREDENTIALS.md`](../CREDENTIALS.md) for the full token reference
+> (`HF_TOKEN`, `HUGGINGFACE_TOKEN`, `GIT_HUB_TOKEN`, `LIVEKIT_*`) — where each
+> lives and what it unlocks.
+
 The app downloads from
 `releases/download/gemma-model/Gemma3-1B-IT-q4.litertlm` (the URL constant in
 `lib/llm.dart`). Until that release exists, the app installs and the ASR/TTS

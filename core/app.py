@@ -221,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_config=planner_config,
         stream_tts=stream_tts,
         followup_config=followup_config,
+        command_map=config.get("commands"),
     )
 
     if args.engine in ("sherpa", "livekit"):

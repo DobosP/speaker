@@ -12,3 +12,4 @@ sherpa-onnx            # on-device streaming ASR + VITS TTS (CPU, int8)
 numpy>=1.24.0          # audio resample / PCM conversion
 ollama>=0.1.0          # LLM client -> the GPU Ollama service
 huggingface-hub>=0.20.0  # one-shot sherpa model download
+psutil>=5.9.0          # CPU/RAM telemetry for the run summary

@@ -56,6 +56,7 @@ class RunSummary:
     errors: list = field(default_factory=list)
     transcript: list = field(default_factory=list)
     turns: list = field(default_factory=list)
+    system: dict = field(default_factory=dict)
 
     def note(self, **meta) -> None:
         self.meta.update({k: v for k, v in meta.items() if v is not None})
@@ -90,6 +91,7 @@ class RunSummary:
                 "log_lines_by_level": dict(self.level_counts),
             },
             "transcript": self.transcript,
+            "system": self.system,
             "llm": {
                 "total_time_sec": total_llm,
                 "avg_time_sec": round(total_llm / len(llm_times), 2) if llm_times else None,

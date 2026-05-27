@@ -50,7 +50,8 @@ VPY=.venv/bin/python
 "$VPY" -m pip install --upgrade pip >/dev/null
 
 echo "==> 3/5 Python dependencies (lean runtime, no torch)"
-"$VPY" -m pip install sounddevice sherpa-onnx numpy ollama huggingface-hub
+# psutil powers the CPU/RAM telemetry in the run summary (GPU uses nvidia-smi).
+"$VPY" -m pip install sounddevice sherpa-onnx numpy ollama huggingface-hub psutil
 
 echo "==> 4/5 Speech models + config wiring"
 "$VPY" -m tools.setup_models

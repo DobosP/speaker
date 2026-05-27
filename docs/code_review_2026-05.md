@@ -98,23 +98,26 @@ Per the "only if it clearly wins" steer:
 
 Net: nothing compelling to import right now.
 
-## 6. Recommended next step — cross-language golden test suite
+## 6. Cross-language golden test suite — BUILT
 
-Designed but not yet built (separate change, on the user's go-ahead):
-- Language-neutral fixtures in `tests/golden/*.json`: `{input: [...], expect: [...]}`
-  (transcript/control events → expected sentence chunks and/or `AgentEvent` +
-  `Mode` transitions). One format, two consumers.
-- First fixtures pin the known duplication: (a) sentence splitting, (b) command
-  fast-path.
-- Two runners over the same files: `tests/test_golden_contract.py` (pytest, runs
+Landed on branch `claude/golden-contract-tests`. The known duplication is now a
+single tested contract, reconciled to one canonical spec (the safer behavior):
+- **Shared pure modules:** `core/contract.py` and `mobile/lib/contract.dart`,
+  used by production on each side (`core/capabilities.py` + `core/runtime.py`;
+  `mobile/lib/assistant.dart`). Same algorithm, two languages.
+- **Shared fixtures:** `tests/golden/sentence_split.json` + `commands.json`.
+- **Two runners over the same files:** `tests/test_golden_contract.py` (pytest,
   in `tests.yml`) and `mobile/test/golden_contract_test.dart` (`flutter test`,
-  wired via a step in `android-apk.yml` or a small `mobile-tests.yml`).
-- Realizes the §9 mitigation: any brain change must update fixtures, so the two
-  shells can't silently diverge.
+  via the new `.github/workflows/mobile-tests.yml`).
+- **Canonical reconciliation:** sentence boundary = newline OR `.!?`+whitespace
+  (mobile no longer splits `"3.14"`; desktop now honors bare newlines); commands
+  share one normalization + the `{stop,cancel,quiet,stop talking,be quiet}` stop
+  set (mode/confirm/deny stay desktop-only). Any future change must update the
+  fixtures, so the shells can't silently diverge (§9 mitigation, realized).
 
 ## Prioritized backlog (pick from these)
 
-1. **Golden test suite** (§6) — highest value; locks in the chosen direction.
+1. ~~Golden test suite (§6)~~ — **DONE** (branch `claude/golden-contract-tests`).
 2. CI marker hygiene + add `test_core_routing.py` to the `core` stage (§3) — cheap.
 3. Tests for `bridge`/`adapters`/`diagnostics`/`snapshots` (§3) — fills real gaps.
 4. Answer `PROJECT_KICKOFF.md` §1 (§4) — unblocks scoping.

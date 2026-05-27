@@ -22,3 +22,7 @@ pubspec.lock
 # Downloaded models (fetched by tool/download-models.sh at build time)
 /assets/*
 !/assets/.gitkeep
+
+# Local dev cache for the on-device test loop (holds the ~550 MB Gemma .task
+# that tool/push-model.sh pushes to the phone). Never commit model binaries.
+/.dev-cache/

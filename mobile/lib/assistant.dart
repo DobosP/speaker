@@ -35,6 +35,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // Model lifecycle.
   bool _downloading = false;
   double _downloadPct = 0;
+  bool _modelPresent = false; // weights already on disk -> load, don't download
   String _status = '';
 
   // Generation.
@@ -85,11 +86,25 @@ class _AssistantScreenState extends State<AssistantScreen> {
   final List<String> _log = [];
   String? _lastUtterance;
 
-  Future<void> _downloadModel() async {
+  @override
+  void initState() {
+    super.initState();
+    // Probe disk so the button/status reflect whether a network download is
+    // actually needed (the model persists across reinstalls).
+    GemmaService.instance.isModelPresent().then((present) {
+      if (mounted) setState(() => _modelPresent = present);
+    });
+  }
+
+  Future<void> _prepareModel() async {
+    final present = await GemmaService.instance.isModelPresent();
     setState(() {
       _downloading = true;
-      _downloadPct = 0;
-      _status = 'Downloading Gemma 3 1B (one time, ~550 MB)…';
+      _modelPresent = present;
+      _downloadPct = present ? 100 : 0;
+      _status = present
+          ? 'Loading model from device…'
+          : 'Downloading Gemma 3 1B (one time, ~550 MB)…';
     });
     try {
       await GemmaService.instance.ensureReady(
@@ -97,7 +112,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       );
       setState(() => _status = 'Model ready — tap the mic to start.');
     } catch (e) {
-      setState(() => _status = 'Model download/init failed: $e');
+      setState(() => _status = 'Model load failed: $e');
     } finally {
       if (mounted) setState(() => _downloading = false);
     }
@@ -437,16 +452,22 @@ class _AssistantScreenState extends State<AssistantScreen> {
             if (_downloading)
               Column(
                 children: [
-                  LinearProgressIndicator(value: _downloadPct / 100.0),
-                  const SizedBox(height: 8),
-                  Text('${_downloadPct.toStringAsFixed(0)}%'),
+                  // No byte-accurate percent when loading an on-disk model, so
+                  // show an indeterminate bar in that case.
+                  LinearProgressIndicator(
+                      value: _modelPresent ? null : _downloadPct / 100.0),
+                  if (!_modelPresent) ...[
+                    const SizedBox(height: 8),
+                    Text('${_downloadPct.toStringAsFixed(0)}%'),
+                  ],
                 ],
               )
             else
               FilledButton.icon(
-                onPressed: _downloadModel,
-                icon: const Icon(Icons.download),
-                label: const Text('Download model (one time)'),
+                onPressed: _prepareModel,
+                icon: Icon(_modelPresent ? Icons.play_arrow : Icons.download),
+                label: Text(
+                    _modelPresent ? 'Load model' : 'Download model (one time)'),
               ),
           ],
           if (_status.isNotEmpty) ...[

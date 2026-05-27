@@ -61,7 +61,21 @@ runs on Android and iOS.
   runs with structured reports (per-stage + a tabular run summary under
   `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|full`.
 - Run the app: `python -m core --engine console --llm echo` (no audio/models);
-  `python -m core --engine sherpa` for on-device audio.
+  `python -m core --engine sherpa` for on-device audio;
+  `python -m core --engine replay --replay-dir <dir>` to run the real engine
+  headless over recorded `.npy`/`.wav` fixtures (no sound card).
+- Latency instrumentation: `core/metrics.py` records per-turn stage timings
+  (`speech_end → asr_final → llm_first_token → tts_first_audio`, plus
+  `barge_in → barge_in_stop`) via `runtime.metrics`. The real engine, the
+  file-replay engine, and the sandbox sim engine all feed it through the
+  `on_metric` callback, so measured and simulated numbers share one shape.
+- Real-model latency benchmark: `python -m tools.bench --fake` is a no-download
+  plumbing smoke test; `python -m tools.bench --profile phone --fixtures
+  tests/fixture_audio/virtual_real_world` fetches small Gemma GGUF (via
+  `$HUGGINGFACE_TOKEN`) + sherpa ONNX and runs the REAL ASR→LLM→TTS pipeline
+  over fixtures, writing a measured-vs-`specsim`-budget report under
+  `test-reports/perf/`. Model coordinates are overridable via a
+  `--models-manifest` JSON / `SPEAKER_BENCH_*` env vars.
 - LLM/device config (`config.json`): the `llm` block selects a `backend`
   (`ollama` desktop-GPU, or `llamacpp` on-device GGUF) plus a `main_model`
   (large/multimodal) and `fast_model` (snappy replies). `device_profiles`
@@ -81,7 +95,12 @@ runs on Android and iOS.
 - CI: `.github/workflows/tests.yml` runs the logic suite (`python -m pytest tests`,
   audio/model-dep tests excluded) on every push to `main` and every pull request.
   Keep it green; it is the gate that lets the autofix loop below know when a
-  change is safe.
+  change is safe. `.github/workflows/perf.yml` is the (heavier) real-model
+  latency benchmark — it is NOT on every push; trigger it with
+  `workflow_dispatch` or by adding the `perf` label to a PR. It downloads
+  models (uses the `HF_TOKEN` Actions secret), runs `python -m tools.bench`,
+  and uploads the latency report as an artifact. A GitHub CPU is a repeatable
+  baseline, not phone silicon — read it as calibration against `specsim`.
 
 ## Environment / git
 
@@ -93,15 +112,27 @@ runs on Android and iOS.
   to fetch the gated Gemma 3 model and republish it to the public `gemma-model`
   release that the phone app downloads. The token value lives only in GitHub
   Actions secrets — never commit it to the repo or paste it into files.
+- HuggingFace model downloads: this session's environment provides a HuggingFace
+  read token as the **`HUGGINGFACE_TOKEN`** env var (Gemma license accepted).
+  Use it to pull the gated Gemma 3 models directly from HuggingFace for the app
+  (e.g. `huggingface-cli download` / `hf_hub_download` with
+  `token=os.environ["HUGGINGFACE_TOKEN"]`, or
+  `Authorization: Bearer $HUGGINGFACE_TOKEN` on `huggingface.co` requests).
+  Read the value from the env at runtime; **never** hard-code, echo, or commit
+  it — reference it only as `$HUGGINGFACE_TOKEN`.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
   not a code problem.
 - Git access / automation token: routine git (push to `main`, branches) and
   GitHub reads/writes go through the session harness (git proxy + repo-scoped
-  GitHub MCP) — no stored credential. Branch *deletion* (the proxy blocks it)
-  and CI-consumed secrets require a maintainer-supplied fine-grained PAT used
-  **out-of-band**; its value lives **only** in GitHub Actions secrets and is
-  **never** committed to the repo or written to any file.
+  GitHub MCP) — no stored credential. For the privileged operations the harness
+  blocks — branch *deletion*, triggering/re-running Actions
+  (`workflow_dispatch`, re-run), creating/updating Actions secrets, and similar
+  admin calls — this session's environment now provides a GitHub token as the
+  **`GIT_HUB_TOKEN`** env var. Use it out-of-band against the GitHub REST API
+  (e.g. `curl -H "Authorization: Bearer $GIT_HUB_TOKEN" https://api.github.com/...`),
+  reading the value straight from the env. **Never** echo the token, commit it,
+  or write it into any file — reference it only as `$GIT_HUB_TOKEN`.
 - Self-monitoring / autofix loop: put work in a PR, then a Claude session can
   `subscribe` to that PR's activity to receive its CI results (from
   `tests.yml`) and review comments as events, and push fixes until checks pass.

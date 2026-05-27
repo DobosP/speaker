@@ -112,7 +112,7 @@ def _deltas(before: Optional[dict], after: Optional[dict]) -> dict:
 class SystemMonitor:
     """Background sampler that records baseline/peak/final compute usage."""
 
-    def __init__(self, summary=None, *, interval: float = 5.0, sampler: Callable[[], dict] = snapshot):
+    def __init__(self, summary=None, *, interval: float = 10.0, sampler: Callable[[], dict] = snapshot):
         self._summary = summary
         self.interval = interval
         self._sampler = sampler

@@ -100,7 +100,11 @@ Linux/Windows/macOS/Android/iOS.
   one go (`--debug` = console only; `--record` = audio). Recorded WAVs replay via
   `python -m core --engine replay --replay-dir logs/runs` and become regression
   tests. Preflight with `python -m tools.doctor`. `pytest` runs write the same
-  shape under `logs/tests/`.
+  shape under `logs/tests/`. Capture is built to stay off the hot path: logging
+  is fully async (a queue handler that defers all formatting + I/O to one
+  background listener thread), recording uses a writer thread, and telemetry is
+  sampled on its own thread — so `--debug`/`--record` don't slow the real-time
+  pipeline. See `docs/debugging.md` §Performance for the reliability tradeoffs.
 - Real-model latency benchmark: `python -m tools.bench --fake` is a no-download
   plumbing smoke test; `python -m tools.bench --profile phone --fixtures
   tests/fixture_audio/virtual_real_world` fetches small Gemma GGUF (via

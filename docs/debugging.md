@@ -43,6 +43,36 @@ thread over a queue. So capturing does not slow the real-time pipeline.
 
 ---
 
+## Performance & reliability (why capturing is cheap)
+
+Capturing is designed to **never block the real-time audio/LLM threads**:
+
+- **Logging is fully async.** The `speaker` logger holds a custom
+  `_ThreadQueueHandler` whose only job on the hot path is to drop the raw
+  `LogRecord` onto an in-memory queue — no string interpolation, no traceback
+  rendering, no disk I/O (we override the stock `QueueHandler.prepare()` that
+  would otherwise format on the calling thread). A single background
+  `QueueListener` thread does *all* formatting + disk writes + summary
+  aggregation.
+- **Recording is async.** The capture loop copies a block (~6 KB) and enqueues
+  it; a dedicated writer thread does the float32→int16 conversion and the WAV
+  writes. A bounded queue drops (and counts) under backpressure rather than
+  stalling capture — it never does in practice at 16 kHz mono.
+- **Telemetry is sampled, not continuous.** `SystemMonitor` runs on its own
+  thread at a 10 s interval (plus one-off baseline/mark/final reads), so
+  `nvidia-smi`/`psutil` cost stays off the main thread and infrequent.
+- **The summary is written once**, at `finalize()` — not per event.
+
+Reliability tradeoffs we chose: the background listener flushes **per record**
+(not buffered into large chunks), so a `Ctrl-C` or crash still leaves a complete
+`.txt`; and `finalize()` is idempotent + `atexit`-registered so the
+`.summary.json` is written on clean exit, interrupt, or unhandled exception.
+The only thing a hard `SIGKILL` can lose is the in-flight queue tail. Net: hot
+path pays ~a queue append per log line; everything heavy is on background
+threads that communicate via queues/events only.
+
+---
+
 ## `run-<id>.summary.json` — read this first
 
 Top-level keys:

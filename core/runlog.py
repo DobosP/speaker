@@ -138,6 +138,23 @@ class _SummaryHandler(logging.Handler):
             )
 
 
+class _ThreadQueueHandler(QueueHandler):
+    """QueueHandler for an in-process *thread* queue.
+
+    The stock ``QueueHandler.prepare()`` formats the message and strips
+    ``args``/``exc_info`` on the **calling** thread (so the record is picklable
+    for a multiprocessing queue). We use a plain thread queue, so we skip that:
+    returning the record untouched defers all string formatting and traceback
+    rendering to the listener thread. Logging on the hot path is then just a
+    record allocation + a lock-free-ish ``deque.append`` -- no interpolation,
+    no I/O. Safe because our log args are immutable (str/num) or freshly-built
+    dicts that are never mutated after the call.
+    """
+
+    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
+        return record
+
+
 @dataclass
 class RunLog:
     run_id: str
@@ -210,7 +227,7 @@ def setup_logging(
     root.propagate = False
     for h in list(root.handlers):
         root.removeHandler(h)
-    root.addHandler(QueueHandler(log_q))
+    root.addHandler(_ThreadQueueHandler(log_q))
 
     runlog = RunLog(run_id, log_path, summary_path, summary, root, listener, handlers)
     atexit.register(runlog.finalize)

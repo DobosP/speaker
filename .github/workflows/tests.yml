@@ -23,6 +23,8 @@ jobs:
           python-version: '3.11'
 
       - name: Install test dependencies
+        # numpy: the audio fixtures are .npy and the replay/bench tests build
+        # waveforms with it. Still a pure-Python-friendly dep -- no audio/models.
         run: pip install pytest numpy
 
       - name: Run test suite (no audio/model deps)

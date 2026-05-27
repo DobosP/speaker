@@ -113,6 +113,14 @@ def _build_engine(args, config: dict) -> AudioEngine:
 
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
         return SherpaOnnxEngine(sherpa_cfg)
+    if args.engine == "replay":
+        # Headless: run the real recognizer + TTS over recorded audio (no sound
+        # card), for latency measurement on a server/CI. See tools/bench.
+        from .engines.file_replay import FileReplayEngine
+        from .engines.sherpa import SherpaConfig
+
+        sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
+        return FileReplayEngine(sherpa_cfg)
     if args.engine == "livekit":
         # Remote (WebRTC) engine: same sherpa STT/TTS, audio over a LiveKit room.
         # URL + token come from the env so the base CLI stays decoupled from the
@@ -158,6 +166,32 @@ def _run_console(runtime: VoiceRuntime, engine) -> None:
         runtime.stop()
 
 
+def _run_replay(runtime: VoiceRuntime, engine, replay_dir: str) -> None:
+    import glob
+
+    from .engines.file_replay import load_waveform
+
+    paths = sorted(glob.glob(os.path.join(replay_dir, "*.npy")))
+    paths += sorted(glob.glob(os.path.join(replay_dir, "*.wav")))
+    if not paths:
+        raise SystemExit(f"No .npy/.wav fixtures found in {replay_dir!r}")
+    runtime.start(run_bus=True)
+    print(f"[replay] {len(paths)} fixture(s) from {replay_dir}")
+    try:
+        for path in paths:
+            samples, sample_rate = load_waveform(path)
+            runtime.metrics.close_turn()
+            engine.replay_samples(samples, sample_rate)
+            runtime.wait_idle(timeout=30.0)
+        runtime.metrics.close_turn()
+        for i, record in enumerate(runtime.metrics.records()):
+            fa = record.first_audio_latency
+            print(f"  turn {i}: first_audio={fa:.3f}s" if fa is not None
+                  else f"  turn {i}: (incomplete) {record.as_dict()}")
+    finally:
+        runtime.stop()
+
+
 def _run_live(runtime: VoiceRuntime) -> None:
     import time
 
@@ -174,7 +208,16 @@ def _run_live(runtime: VoiceRuntime) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
-    parser.add_argument("--engine", choices=["console", "sherpa", "livekit"], default="console")
+    parser.add_argument(
+        "--engine", choices=["console", "sherpa", "livekit", "replay"], default="console"
+    )
+    parser.add_argument(
+        "--replay-dir",
+        dest="replay_dir",
+        default=None,
+        help="with --engine replay: a dir of .npy/.wav fixtures to run headless "
+        "through the real recognizer + TTS and print per-turn latencies",
+    )
     parser.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
     parser.add_argument("--model", default=None, help="main Ollama model (research/vision)")
     parser.add_argument(
@@ -259,7 +302,11 @@ def main(argv: list[str] | None = None) -> int:
         intents=intents,
     )
 
-    if args.engine in ("sherpa", "livekit"):
+    if args.engine == "replay":
+        if not args.replay_dir:
+            raise SystemExit("--engine replay needs --replay-dir <fixtures>")
+        _run_replay(runtime, engine, args.replay_dir)
+    elif args.engine in ("sherpa", "livekit"):
         _run_live(runtime)
     else:
         runtime.start(run_bus=False)

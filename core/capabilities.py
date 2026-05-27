@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from threading import Event
 from typing import Iterator, Optional
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 
 from .llm import LLMClient
+from .routing import HeuristicRouter, Router
 
 DEFAULT_SYSTEM = (
     "You are a local, on-device voice assistant. Reply in one or two short, "
@@ -36,6 +38,7 @@ def attach_llm_capabilities(
     *,
     fast_llm: Optional[LLMClient] = None,
     system: str = DEFAULT_SYSTEM,
+    router: Optional[Router] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -45,19 +48,30 @@ def attach_llm_capabilities(
     the gathered search/scope steps). Local-only providers such as
     ``search.local`` and ``meeting.note`` are left untouched.
 
-    Two-model split: ``assistant.answer`` runs on ``fast_llm`` (a small, snappy
-    model for short spoken replies) while ``research.local`` runs on ``llm`` (the
-    larger, multimodal model). When ``fast_llm`` is omitted both use ``llm``.
+    Two-model split: ``assistant.answer`` picks its model per query via
+    ``router`` (a small ``fast_llm`` for snappy replies, the larger ``llm`` for
+    reasoning-heavy asks) while ``research.local`` always runs on ``llm``. When
+    ``fast_llm`` is omitted both tiers collapse to ``llm`` (routing is a no-op).
     """
 
-    quick = fast_llm or llm
+    fast = fast_llm or llm
+    router = router or HeuristicRouter()
+    debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
-        text, cancelled = _collect(quick.stream(query, system=system), cancel)  # type: ignore[arg-type]
+        tier = router.choose(query, context)
+        model = llm if tier == "main" else fast
+        if debug_routing:
+            print(f"[route] {tier} <- {query!r}", flush=True)
+        text, cancelled = _collect(model.stream(query, system=system), cancel)  # type: ignore[arg-type]
         if cancelled:
-            return CapabilityResult(True, text, data={"cancelled": True})
-        return CapabilityResult(True, text or "Sorry, I don't have an answer for that.")
+            return CapabilityResult(True, text, data={"cancelled": True, "route": tier})
+        return CapabilityResult(
+            True,
+            text or "Sorry, I don't have an answer for that.",
+            data={"route": tier},
+        )
 
     def research_synth(query: str, context: dict[str, object]) -> CapabilityResult:
         previous = context.get("previous_steps", [])

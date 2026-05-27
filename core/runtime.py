@@ -12,6 +12,7 @@ from always_on_agent.supervisor import AgentSupervisor
 from .capabilities import attach_llm_capabilities
 from .engine import AudioEngine, EngineCallbacks
 from .llm import EchoLLM, LLMClient
+from .routing import Router
 
 
 class VoiceRuntime:
@@ -36,12 +37,13 @@ class VoiceRuntime:
         fast_llm: Optional[LLMClient] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
+        router: Optional[Router] = None,
     ):
         self.engine = engine
         self.bus = EventBus()
         memory = SessionMemory()
         registry = create_default_capabilities(memory)
-        attach_llm_capabilities(registry, llm or EchoLLM(), fast_llm=fast_llm)
+        attach_llm_capabilities(registry, llm or EchoLLM(), fast_llm=fast_llm, router=router)
         if agent_config is not None:
             # Opt-in: route command-mode through the Open Interpreter action brain.
             from .agent import attach_agent_capability

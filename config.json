@@ -8,6 +8,10 @@
     "host": null,
     "options": {
       "num_ctx": 4096
+    },
+    "router": {
+      "backend": "heuristic",
+      "threshold": 0.5
     }
   },
   "device_profiles": {

@@ -19,7 +19,7 @@ jobs:
     env:
       HF: ${{ secrets.HF_TOKEN }}
       REPO_ID: litert-community/Gemma3-1B-IT
-      ASSET: Gemma3-1B-IT-q4.litertlm
+      ASSET: Gemma3-1B-IT-q4.task
     steps:
       - name: Check token is configured
         run: |
@@ -44,8 +44,13 @@ jobs:
           uname=$(printf '%s' "$who" | jq -r '.name // .error // "unknown"')
           role=$(printf '%s' "$who" | jq -r '.auth.accessToken.role // .auth.type // "?"')
           echo "::warning title=hf_whoami::user=$uname token_role=$role"
-          pick=$(printf '%s\n' "$models" | grep '\.litertlm$' | grep -i q4 | head -1)
-          [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | grep '\.litertlm$' | head -1)
+          # Prefer the portable MediaPipe int4 .task -- flutter_gemma's canonical
+          # Android/iOS mobile format, loaded via the stable MediaPipe engine
+          # factory. (.litertlm on Android goes through a fragile FFI path that
+          # mis-routes to the engine factory and returns a null engine.)
+          pick=$(printf '%s\n' "$models" | grep -ix 'gemma3-1b-it-int4.task' | head -1)
+          [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | grep '\.task$' | grep -i q4 | grep -iv web | head -1)
+          [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | grep '\.task$' | grep -iv web | head -1)
           [ -z "$pick" ] && pick=$(printf '%s\n' "$models" | head -1)
           if [ -z "$pick" ]; then
             echo "::error title=no_model_file::No .litertlm/.task found or repo inaccessible (gated=$gated) — token may lack Gemma license access (accept it at huggingface.co/$REPO_ID)."
@@ -54,7 +59,7 @@ jobs:
           echo "picked: $pick"
           echo "PICK=$pick" >> "$GITHUB_ENV"
           case "$pick" in
-            *.task) echo "ASSET=Gemma3-1B-IT-q4.task" >> "$GITHUB_ENV" ;;
+            *.litertlm) echo "ASSET=Gemma3-1B-IT-q4.litertlm" >> "$GITHUB_ENV" ;;
           esac
 
       - name: Download model

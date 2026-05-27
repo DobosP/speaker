@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass, field
+from typing import Callable, Iterator, Optional
+
+# Per-turn latency instrumentation shared by the real engine, the file-replay
+# engine, and the simulated sandbox engine, so measured and simulated numbers
+# land in the same shape and can be compared against the specsim budgets.
+#
+# A "turn" is one user utterance and the assistant's response to it. We record
+# monotonic ``time.perf_counter()`` stamps at named stage boundaries; the
+# deltas between them are the user-facing latencies (first audio, barge-in
+# stop). Stamps are fed from three threads -- the capture loop, the bus/worker
+# thread that plays TTS, and the task thread running the LLM -- so the recorder
+# is lock-guarded. It computes nothing on the hot path beyond a dict write.
+
+SPEECH_END = "speech_end"          # user stopped speaking (last voiced audio)
+ASR_FINAL = "asr_final"            # recognizer emitted the final transcript
+LLM_FIRST_TOKEN = "llm_first_token"  # first token streamed from the model
+TTS_FIRST_AUDIO = "tts_first_audio"  # assistant's first audio sample played
+BARGE_IN = "barge_in"              # user spoke over playback
+BARGE_IN_STOP = "barge_in_stop"    # playback actually halted
+
+# A new utterance begins at whichever of these we see first (speech_end leads
+# asr_final, but the real streaming engine only knows the latter).
+_TURN_START = (SPEECH_END, ASR_FINAL)
+
+
+def _delta(stamps: dict[str, float], a: str, b: str) -> Optional[float]:
+    if a in stamps and b in stamps:
+        return stamps[b] - stamps[a]
+    return None
+
+
+@dataclass
+class TurnRecord:
+    """Stage stamps for one turn (seconds, ``perf_counter`` epoch) + deltas."""
+
+    stamps: dict[str, float] = field(default_factory=dict)
+
+    @property
+    def _anchor(self) -> Optional[str]:
+        # First-audio latency is measured from when the user stopped speaking.
+        # Prefer a true speech_end; fall back to the ASR final (the streaming
+        # endpointer fires it at end-of-speech, so they nearly coincide).
+        if SPEECH_END in self.stamps:
+            return SPEECH_END
+        if ASR_FINAL in self.stamps:
+            return ASR_FINAL
+        return None
+
+    @property
+    def first_audio_latency(self) -> Optional[float]:
+        anchor = self._anchor
+        if anchor is None or TTS_FIRST_AUDIO not in self.stamps:
+            return None
+        return self.stamps[TTS_FIRST_AUDIO] - self.stamps[anchor]
+
+    @property
+    def endpoint_latency(self) -> Optional[float]:
+        return _delta(self.stamps, SPEECH_END, ASR_FINAL)
+
+    @property
+    def final_to_first_token(self) -> Optional[float]:
+        return _delta(self.stamps, ASR_FINAL, LLM_FIRST_TOKEN)
+
+    @property
+    def first_token_to_audio(self) -> Optional[float]:
+        return _delta(self.stamps, LLM_FIRST_TOKEN, TTS_FIRST_AUDIO)
+
+    @property
+    def barge_in_latency(self) -> Optional[float]:
+        return _delta(self.stamps, BARGE_IN, BARGE_IN_STOP)
+
+    def as_dict(self) -> dict[str, Optional[float]]:
+        return {
+            "first_audio_latency": _round(self.first_audio_latency),
+            "endpoint_latency": _round(self.endpoint_latency),
+            "final_to_first_token": _round(self.final_to_first_token),
+            "first_token_to_audio": _round(self.first_token_to_audio),
+            "barge_in_latency": _round(self.barge_in_latency),
+        }
+
+
+def _round(value: Optional[float]) -> Optional[float]:
+    return round(value, 4) if value is not None else None
+
+
+class MetricsRecorder:
+    """Collects :class:`TurnRecord`s as stage stamps arrive from any thread."""
+
+    def __init__(self, clock: Callable[[], float] = time.perf_counter):
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._current: Optional[TurnRecord] = None
+        self._completed: list[TurnRecord] = []
+
+    def mark(self, stage: str) -> None:
+        now = self._clock()
+        with self._lock:
+            if stage in _TURN_START:
+                # A repeat of the same start stage signals the next utterance:
+                # bank the open turn before opening a fresh one.
+                if self._current is not None and stage in self._current.stamps:
+                    self._completed.append(self._current)
+                    self._current = None
+                if self._current is None:
+                    self._current = TurnRecord()
+                self._current.stamps.setdefault(stage, now)
+            else:
+                # Mid-turn stamps only count once and only inside an open turn;
+                # a stray late event (e.g. trailing speech_end) is ignored.
+                if self._current is not None:
+                    self._current.stamps.setdefault(stage, now)
+
+    def close_turn(self) -> None:
+        """Bank the open turn (call once a replayed utterance has settled)."""
+        with self._lock:
+            if self._current is not None:
+                self._completed.append(self._current)
+                self._current = None
+
+    def records(self) -> list[TurnRecord]:
+        with self._lock:
+            out = list(self._completed)
+            if self._current is not None:
+                out.append(self._current)
+            return out
+
+    def reset(self) -> None:
+        with self._lock:
+            self._current = None
+            self._completed = []
+
+
+def mark_first_token(tokens: Iterator[str], recorder: Optional[MetricsRecorder]) -> Iterator[str]:
+    """Wrap an LLM token stream to stamp ``llm_first_token`` on the first token."""
+    if recorder is None:
+        yield from tokens
+        return
+    first = True
+    for token in tokens:
+        if first:
+            recorder.mark(LLM_FIRST_TOKEN)
+            first = False
+        yield token

@@ -44,6 +44,8 @@ dependency-light (phone-safe); `learned` lazy-imports torch (desktop).
 
 - `console` — typed I/O, no audio/models (tests + demo).
 - `sherpa` — on-device mic/speaker via sherpa-onnx (the local product path).
+- `replay` — the real pipeline over recorded `.npy`/`.wav` fixtures, headless (no
+  sound card); used for latency benchmarks and CI.
 - `livekit` — audio over a LiveKit/WebRTC room (the remote host+thin-client path).
 
 ## Deployment topologies

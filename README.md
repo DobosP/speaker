@@ -54,7 +54,7 @@ Run the on-device pipeline (needs sherpa-onnx model files + a mic; point the
 python -m core --engine sherpa --llm ollama --model gemma3:latest
 ```
 
-Flags: `--engine {console,sherpa,livekit}`, `--llm {echo,ollama,llamacpp}`,
+Flags: `--engine {console,sherpa,replay,livekit}`, `--llm {echo,ollama,llamacpp}`,
 `--model NAME`, `--device {desktop,phone}`, `--mode {passive,assistant,research,...}`.
 
 For the host + thin-client path (browser/phone as endpoints), see

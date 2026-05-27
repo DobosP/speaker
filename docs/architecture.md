@@ -37,6 +37,8 @@ contract. Two deployment topologies, both built: **on-device** and
   the shared model builders; `engines/speaker_gate.py` is the speaker-ID barge-in
   gate (no AEC needed).
 - **`engines/scripted.py`** — pure-Python engine for tests/console (zero deps).
+- **`engines/file_replay.py`** — replays recorded `.npy`/`.wav` fixtures through
+  the real pipeline, headless (latency benchmarks / CI).
 - **`engines/livekit.py`** — WebRTC transport: same STT/TTS models, audio over a
   LiveKit room instead of the local mic/speaker (the remote path).
 - **`llm.py`** — `LLMClient` protocol + `EchoLLM` (fake), `OllamaLLM` (desktop

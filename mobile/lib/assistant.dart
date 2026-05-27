@@ -59,6 +59,11 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // lower = snappier but more prone to false trips from residual echo.
   static const _bargeInChars = 2;
 
+  // Endpoint trailing-silence (seconds) before a finished utterance is submitted.
+  // sherpa's default is 1.2s, which feels laggy; 0.8 trims the felt wait while
+  // still tolerating short natural pauses. Lower = snappier, riskier mid-pause cuts.
+  static const _endpointSilenceSec = 0.8;
+
   // TTS.
   sherpa_onnx.OfflineTts? _tts;
 
@@ -83,6 +88,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
   DateTime? _tGenDone;
   int _genTokens = 0;
   String _metrics = '';
+  String _lastPartial = ''; // last recognized text; voice-time advances on change
+  int? _logIndex; // index of the current turn's log entry (updated in place)
 
   // Rolling per-turn log (timestamp + utterance + the metrics above, or an
   // error). Exported via the "Copy logs" button — there is no embedded
@@ -151,7 +158,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
       sherpa_onnx.initBindings();
       final modelConfig = await getOnlineModelConfig();
       _recognizer = sherpa_onnx.OnlineRecognizer(
-        sherpa_onnx.OnlineRecognizerConfig(model: modelConfig, ruleFsts: ''),
+        sherpa_onnx.OnlineRecognizerConfig(
+          model: modelConfig,
+          ruleFsts: '',
+          enableEndpoint: true,
+          rule2MinTrailingSilence: _endpointSilenceSec,
+        ),
       );
     }
     _stream = _recognizer!.createStream();
@@ -198,7 +210,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
     }
 
     if (partial.isNotEmpty) {
-      _tLastVoice = DateTime.now();
+      // Stamp "last voice" only when the text actually grows — it persists
+      // unchanged through the trailing silence, so stamping every chunk would
+      // make the silence-wait metric read ~0 instead of the real endpoint delay.
+      if (partial != _lastPartial) {
+        _tLastVoice = DateTime.now();
+        _lastPartial = partial;
+      }
       if (mounted) {
         _promptController.value = TextEditingValue(
           text: partial,
@@ -210,6 +228,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (_recognizer!.isEndpoint(_stream!)) {
       final utterance = _recognizer!.getResult(_stream!).text.trim();
       _recognizer!.reset(_stream!);
+      _lastPartial = '';
       if (utterance.isEmpty) return;
       // A completed utterance supersedes any in-flight reply (its tokens stop
       // feeding TTS) and silences whatever is still playing.
@@ -257,6 +276,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _tFirstAudio = null;
     _tGenDone = null;
     _genTokens = 0;
+    _logIndex = null; // a new turn gets a fresh log entry
     try {
       await for (final token in GemmaService.instance.reply(prompt)) {
         if (myTurn != _turn) return; // superseded by a newer utterance
@@ -273,7 +293,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
         _tGenDone = DateTime.now();
         _flushSentences(flushAll: true);
         _updateMetrics();
-        _appendLog();
       }
     } catch (e) {
       if (myTurn == _turn) {
@@ -396,13 +415,29 @@ class _AssistantScreenState extends State<AssistantScreen> {
       final rate = secs > 0 ? _genTokens / secs : 0.0;
       lines.add('gen          : $_genTokens tok @ ${rate.toStringAsFixed(1)}/s');
     }
-    if (mounted) setState(() => _metrics = lines.join('\n'));
+    final text = lines.join('\n');
+    if (mounted) setState(() => _metrics = text);
+    _logTurn(text);
   }
 
-  void _appendLog({String? error}) {
-    final ts = DateTime.now().toIso8601String();
-    final header = '[$ts] "${_lastUtterance ?? ''}"';
-    _log.add(error != null ? '$header ERROR: $error' : '$header\n$_metrics');
+  // Keep the current turn's log entry in sync with the latest metrics, so the
+  // exported log includes the speaking + gen lines that land after first token.
+  void _logTurn(String metrics) {
+    if (_tHeard == null) return;
+    final entry =
+        '[${_tHeard!.toIso8601String()}] "${_lastUtterance ?? ''}"\n$metrics';
+    if (_logIndex == null || _logIndex! < 0 || _logIndex! >= _log.length) {
+      _log.add(entry);
+      if (_log.length > 100) _log.removeRange(0, _log.length - 100);
+      _logIndex = _log.length - 1;
+    } else {
+      _log[_logIndex!] = entry;
+    }
+  }
+
+  void _appendLog({required String error}) {
+    final ts = (_tHeard ?? DateTime.now()).toIso8601String();
+    _log.add('[$ts] "${_lastUtterance ?? ''}" ERROR: $error');
     if (_log.length > 100) _log.removeRange(0, _log.length - 100);
     if (mounted) setState(() {});
   }

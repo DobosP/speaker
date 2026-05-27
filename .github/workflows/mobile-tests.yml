@@ -40,5 +40,11 @@ jobs:
       - name: Resolve dependencies
         run: flutter pub get
 
+      - name: Analyze (compile-check the whole app, errors only)
+        # flutter test only compiles imported test sources, so this is what
+        # actually compile-checks lib/ (e.g. assistant.dart). Gate on analyzer
+        # errors, not style lints.
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
       - name: Run Flutter unit tests (incl. the golden contract)
         run: flutter test

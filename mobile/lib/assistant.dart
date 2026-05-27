@@ -5,9 +5,11 @@
 // muted while the assistant talks (no echo cancellation on-device) and resumes
 // on its own afterwards. Tap again to stop.
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
@@ -71,6 +73,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
   DateTime? _tGenDone;
   int _genTokens = 0;
   String _metrics = '';
+
+  // Rolling per-turn log (timestamp + utterance + the metrics above, or an
+  // error). Exported via the "Copy logs" button — there is no embedded
+  // credential, so the only way logs leave the device is the user sharing them.
+  final List<String> _log = [];
+  String? _lastUtterance;
 
   Future<void> _downloadModel() async {
     setState(() {
@@ -200,6 +208,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _answer = '';
       _status = 'Thinking…';
     });
+    _lastUtterance = prompt;
     _ttsBuffer = '';
     _tFirstToken = null;
     _tFirstAudio = null;
@@ -219,8 +228,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
       _tGenDone = DateTime.now();
       _flushSentences(flushAll: true);
       _updateMetrics();
+      _appendLog();
     } catch (e) {
       setState(() => _answer = 'Generation failed: $e');
+      _appendLog(error: '$e');
     } finally {
       if (mounted) setState(() => _thinking = false);
     }
@@ -346,6 +357,25 @@ class _AssistantScreenState extends State<AssistantScreen> {
     if (mounted) setState(() => _metrics = lines.join('\n'));
   }
 
+  void _appendLog({String? error}) {
+    final ts = DateTime.now().toIso8601String();
+    final header = '[$ts] "${_lastUtterance ?? ''}"';
+    _log.add(error != null ? '$header ERROR: $error' : '$header\n$_metrics');
+    if (_log.length > 100) _log.removeRange(0, _log.length - 100);
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _copyLogs() async {
+    final head = 'speaker mobile — ${Platform.operatingSystem} '
+        '${Platform.operatingSystemVersion} — Gemma 3 1B';
+    await Clipboard.setData(ClipboardData(text: '$head\n\n${_log.join('\n')}'));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Logs copied — paste them to Claude.')),
+      );
+    }
+  }
+
   @override
   void dispose() {
     _alwaysOn = false;
@@ -428,6 +458,15 @@ class _AssistantScreenState extends State<AssistantScreen> {
                 ),
               ],
             ),
+            if (_log.isNotEmpty)
+              Align(
+                alignment: Alignment.center,
+                child: TextButton.icon(
+                  onPressed: _copyLogs,
+                  icon: const Icon(Icons.copy_all, size: 18),
+                  label: Text('Copy logs (${_log.length} turns)'),
+                ),
+              ),
             const SizedBox(height: 16),
             Expanded(
               child: SingleChildScrollView(

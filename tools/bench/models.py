@@ -19,25 +19,15 @@ from typing import Optional
 # Small, on-device-representative defaults (phone tier). These are best-effort
 # public coordinates; if a pull 404s, override via the manifest rather than
 # editing code.
+_ASR_REPO = "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+_ASR_SUFFIX = "epoch-99-avg-1-chunk-16-left-128"  # the streaming chunk variant
 DEFAULT_MANIFEST: dict[str, dict[str, str]] = {
-    "asr_tokens": {
-        "repo": "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
-        "file": "tokens.txt",
-    },
-    "asr_encoder": {
-        "repo": "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
-        "file": "encoder-epoch-99-avg-1.int8.onnx",
-    },
-    "asr_decoder": {
-        "repo": "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
-        "file": "decoder-epoch-99-avg-1.onnx",
-    },
-    "asr_joiner": {
-        "repo": "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26",
-        "file": "joiner-epoch-99-avg-1.int8.onnx",
-    },
+    "asr_tokens": {"repo": _ASR_REPO, "file": "tokens.txt"},
+    "asr_encoder": {"repo": _ASR_REPO, "file": f"encoder-{_ASR_SUFFIX}.int8.onnx"},
+    "asr_decoder": {"repo": _ASR_REPO, "file": f"decoder-{_ASR_SUFFIX}.onnx"},
+    "asr_joiner": {"repo": _ASR_REPO, "file": f"joiner-{_ASR_SUFFIX}.int8.onnx"},
     "vad_model": {
-        "repo": "csukuangfj/sherpa-onnx-vad",
+        "repo": "csukuangfj/vad",
         "file": "silero_vad.onnx",
     },
     "tts_model": {
@@ -70,6 +60,7 @@ class ModelPaths:
     tts_tokens: str
     main_gguf: str
     fast_gguf: str
+    tts_data_dir: str = ""  # espeak-ng-data dir (piper VITS phonemization)
 
     def sherpa_overrides(self) -> dict[str, str]:
         return {
@@ -80,6 +71,7 @@ class ModelPaths:
             "vad_model": self.vad_model,
             "tts_model": self.tts_model,
             "tts_tokens": self.tts_tokens,
+            "tts_data_dir": self.tts_data_dir,
         }
 
     def as_dict(self) -> dict[str, str]:
@@ -120,7 +112,7 @@ def fetch_models(
     manifest, not the code.
     """
     try:
-        from huggingface_hub import hf_hub_download  # lazy
+        from huggingface_hub import hf_hub_download, snapshot_download  # lazy
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise SystemExit(
             "tools.bench needs huggingface_hub: pip install huggingface_hub"
@@ -146,4 +138,21 @@ def fetch_models(
                 f"Override its coordinates via a --models-manifest JSON or the "
                 f"SPEAKER_BENCH_{key.upper()}_REPO / _FILE env vars."
             ) from exc
+
+    # Piper VITS needs the espeak-ng-data phoneme tables (a whole directory),
+    # which ships in the TTS repo. Pull just that subtree if the model wants it.
+    if (which is None or "tts_data_dir" in which) and "tts_model" in resolved:
+        tts_repo = manifest["tts_model"]["repo"]
+        try:
+            snap = snapshot_download(
+                repo_id=tts_repo,
+                cache_dir=cache_dir,
+                token=token,
+                allow_patterns=["espeak-ng-data/*"],
+            )
+            data_dir = os.path.join(snap, "espeak-ng-data")
+            resolved["tts_data_dir"] = data_dir if os.path.isdir(data_dir) else ""
+        except Exception:  # noqa: BLE001 - data dir is optional for some models
+            resolved["tts_data_dir"] = ""
+
     return ModelPaths(**resolved)

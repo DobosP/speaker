@@ -15,6 +15,7 @@ from .capabilities import attach_llm_capabilities
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
+from .metrics import ASR_FINAL, BARGE_IN, MetricsRecorder
 from .routing import Router
 
 
@@ -59,13 +60,18 @@ class VoiceRuntime:
         # transcript path so nothing is silently dropped.
         self._command_map = {k.strip().lower(): v for k, v in (command_map or {}).items()}
         self.bus = EventBus()
+        # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
+        # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
+        # and the LLM capability (llm_first_token). Read via ``runtime.metrics``.
+        self.metrics = MetricsRecorder()
         memory = SessionMemory()
         llm = llm or EchoLLM()
         registry = create_default_capabilities(memory)
         planner_on = planner_config is not None and planner_config.enabled
         escalate = should_escalate if (planner_on and planner_config.escalate) else None
         attach_llm_capabilities(
-            registry, llm, fast_llm=fast_llm, router=router, escalate=escalate
+            registry, llm, fast_llm=fast_llm, router=router, escalate=escalate,
+            recorder=self.metrics,
         )
         if planner_on:
             attach_react_capability(registry, llm, config=planner_config)
@@ -96,6 +102,7 @@ class VoiceRuntime:
                 on_final=self._on_final,
                 on_barge_in=self._on_barge_in,
                 on_command=self._on_command,
+                on_metric=self.metrics.mark,
             )
         )
         if run_bus:
@@ -118,6 +125,7 @@ class VoiceRuntime:
         self.bus.publish(AgentEvent.partial(text))
 
     def _on_final(self, text: str) -> None:
+        self.metrics.mark(ASR_FINAL)
         # Try the no-LLM fast-path first; only fall through to the brain on a miss.
         if self._intents is not None and self._intents.handle(text):
             return
@@ -125,6 +133,7 @@ class VoiceRuntime:
 
     def _on_barge_in(self) -> None:
         # User spoke over the assistant: cut playback now, cancel in-flight work.
+        self.metrics.mark(BARGE_IN)
         self.engine.stop_speaking()
         self.bus.publish(AgentEvent.stop("barge_in"))
 

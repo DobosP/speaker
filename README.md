@@ -20,13 +20,19 @@ dependency. Target: on-device across Linux/Windows/macOS and (later) Android/iOS
 ```
 
 - **`core/`** — the runtime. `engine.py` is the `AudioEngine` seam; swap
-  `engines/sherpa.py` (on-device production) for `engines/scripted.py` (tests).
+  `engines/sherpa.py` (on-device production), `engines/scripted.py` (tests), or
+  `engines/livekit.py` (remote/WebRTC).
 - **`always_on_agent/`** — the control-plane brain: modes
   (`passive/assistant/command/search/research/dictation/meeting`), a priority
   event bus, a supervisor, and cancellable tasks that run on their own threads.
+  Its `AgentEvent`/`Mode` contract is what every platform shell shares.
 - **`core/engines/speaker_gate.py`** — speaker-ID barge-in gate so the
   assistant's own TTS can't self-interrupt (no AEC required).
 - **`utils/memory*`** — Postgres-backed smart memory (see [`MEMORY.md`](MEMORY.md)).
+- **`mobile/`** — on-device **Android app** (Flutter): `sherpa_onnx` +
+  `flutter_gemma`, fully local. See [`mobile/README.md`](mobile/README.md).
+- **`remote/`** + **`web/`** — optional **host + thin-client** path: run the brain
+  on one machine; browsers/phones connect over LiveKit/WebRTC.
 
 ## Quick start
 
@@ -48,8 +54,12 @@ Run the on-device pipeline (needs sherpa-onnx model files + a mic; point the
 python -m core --engine sherpa --llm ollama --model gemma3:latest
 ```
 
-Flags: `--engine {console,sherpa}`, `--llm {echo,ollama}`, `--model NAME`,
-`--mode {passive,assistant,research,...}`.
+Flags: `--engine {console,sherpa,replay,livekit}`, `--llm {echo,ollama,llamacpp}`,
+`--model NAME`, `--device {desktop,phone}`, `--mode {passive,assistant,research,...}`.
+
+For the host + thin-client path (browser/phone as endpoints), see
+[`docs/deployment_profiles.md`](docs/deployment_profiles.md):
+`python -m remote.worker` + `uvicorn remote.token_server:app --port 8080`.
 
 ## Models (on-device, ONNX)
 

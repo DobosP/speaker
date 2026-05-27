@@ -30,6 +30,10 @@ class EngineCallbacks:
     # should act on directly, skipping ASR-text -> analyzer -> LLM. The argument
     # is the matched keyword phrase; the runtime maps it to a control event.
     on_command: Callable[[str], None] = _noop_text
+    # Latency instrumentation: the engine reports stage boundaries it alone can
+    # time precisely (user speech end, first TTS audio, barge-in stop) by name;
+    # the runtime forwards them to its MetricsRecorder. See ``core.metrics``.
+    on_metric: Callable[[str], None] = _noop_text
 
 
 class AudioEngine(ABC):

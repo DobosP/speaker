@@ -8,6 +8,7 @@ from typing import Callable, Iterator, Mapping, Optional
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 
 from .llm import LLMClient
+from .metrics import MetricsRecorder, mark_first_token
 from .routing import HeuristicRouter, Router
 
 # Predicate deciding whether an ASSISTANT-mode query should escalate to the
@@ -82,6 +83,7 @@ def attach_llm_capabilities(
     router: Optional[Router] = None,
     escalate: Optional[EscalatePredicate] = None,
     agent_capability: str = "agent.react",
+    recorder: Optional[MetricsRecorder] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -116,14 +118,15 @@ def attach_llm_capabilities(
         if debug_routing:
             print(f"[route] {tier} <- {query!r}", flush=True)
         emit = context.get("emit_speech")
+        tokens = mark_first_token(model.stream(query, system=system), recorder)
         if callable(emit):
-            text, cancelled = _stream_and_speak(model.stream(query, system=system), cancel, emit)  # type: ignore[arg-type]
+            text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
             return CapabilityResult(
                 True,
                 text or "Sorry, I don't have an answer for that.",
                 data={"route": tier, "streamed": True, "cancelled": cancelled},
             )
-        text, cancelled = _collect(model.stream(query, system=system), cancel)  # type: ignore[arg-type]
+        text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
         if cancelled:
             return CapabilityResult(True, text, data={"cancelled": True, "route": tier})
         return CapabilityResult(
@@ -146,10 +149,11 @@ def attach_llm_capabilities(
         )
         cancel = context.get("cancel_event")
         emit = context.get("emit_speech")
+        tokens = mark_first_token(llm.stream(prompt, system=system), recorder)
         if callable(emit):
-            text, cancelled = _stream_and_speak(llm.stream(prompt, system=system), cancel, emit)  # type: ignore[arg-type]
+            text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
             return CapabilityResult(True, text, data={"cancelled": cancelled, "streamed": True})
-        text, cancelled = _collect(llm.stream(prompt, system=system), cancel)  # type: ignore[arg-type]
+        text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
         return CapabilityResult(True, text, data={"cancelled": cancelled})
 
     registry.register("assistant.answer", assistant)

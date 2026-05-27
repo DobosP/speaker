@@ -18,6 +18,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..engine import AudioEngine, EngineCallbacks
+from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._sherpa_models import build_keyword_spotter, build_recognizer, build_tts, build_vad
 from .speaker_gate import SpeakerGate, sherpa_speaker_gate
 
@@ -252,6 +253,7 @@ class SherpaOnnxEngine(AudioEngine):
                 recognizer.reset(stream)
                 last_partial = ""
                 if final_text.strip():
+                    self._cb.on_metric(SPEECH_END)
                     self._cb.on_final(final_text)
 
     def _poll_keywords(self, samples) -> None:
@@ -304,12 +306,24 @@ class SherpaOnnxEngine(AudioEngine):
                 self._stop_speaking.clear()
                 self._speaking.set()
                 self._cb.on_speech_start()
+                played = {"any": False}
+
+                def write(samples) -> None:
+                    if self._stop_speaking.is_set():
+                        return
+                    if not played["any"]:
+                        played["any"] = True
+                        self._cb.on_metric(TTS_FIRST_AUDIO)
+                    out.write(samples)
+
                 try:
                     if out is None:
                         sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
                         out = sd.OutputStream(channels=1, samplerate=sr, dtype="float32")
                         out.start()
-                    self._synthesize(text, lambda s: self._write_chunk(out, s))
+                    self._synthesize(text, write)
+                    if self._stop_speaking.is_set() and played["any"]:
+                        self._cb.on_metric(BARGE_IN_STOP)
                 finally:
                     if on_done:
                         on_done()
@@ -353,11 +367,6 @@ class SherpaOnnxEngine(AudioEngine):
             if self._stop_speaking.is_set():
                 break
             write(samples[i : i + chunk])
-
-    def _write_chunk(self, out, samples) -> None:
-        if self._stop_speaking.is_set():
-            return
-        out.write(samples)
 
     def _looks_like_user(self, samples) -> bool:
         # Speaker-ID gate: when enrolled, only the user's own voice counts as

@@ -1,9 +1,29 @@
 # Target Architecture: Fully On-Device, Cross-Platform Voice Assistant
 
-Status: proposal / decision record. Supersedes the implicit architecture in
-`main.py`. Written to answer the refactor question: *"rebuild lighter, run on
-Android/iOS/Linux/Windows/Mac, fully local, always-listening, mode-based,
-multithreaded."*
+Status: decision record — the structural choices in §9 are now **resolved**
+(2026-05). Supersedes the implicit architecture in `main.py`. Written to answer
+the refactor question: *"rebuild lighter, run on Android/iOS/Linux/Windows/Mac,
+fully local, always-listening, mode-based, multithreaded."*
+
+---
+
+## 0. One app or many? (the headline decision)
+
+**Neither a single monolith nor independent per-platform apps — one portable
+*core* + thin per-platform *shells*.** A monolith can't ship on iOS (Python is
+not an always-on background voice app there); N independent apps would duplicate
+the brain and break shared tests. So:
+
+- **Shared:** the `always_on_agent` **`AgentEvent` / `Mode` contract** (and its
+  tests). The small brain is reimplemented faithfully per runtime — *contract +
+  tests are shared, not a binary core.*
+- **Per-platform:** a thin UI shell + the native audio/LLM bindings.
+- **"Server" is a deployment topology, not a separate app.** Two topologies, both
+  built: **on-device** (desktop `core/`; the `mobile/` Flutter app) and
+  **brain-on-host + thin clients** (`remote/` + LiveKit/WebRTC + `web/`). The
+  product target is the **hybrid**: on-device first, host path as fallback.
+
+Full rationale and the resolved sub-decisions are in §9.
 
 ---
 
@@ -35,10 +55,12 @@ around, not coded around:**
    throttles. Desktop can run larger models; phones cannot. Mode behavior
    should be tunable per device class.
 
-If either constraint is a dealbreaker, the alternative is **"brain on a host +
-thin clients"** (one machine runs the agent; phones/laptops are WebRTC mic+
-speaker endpoints). That path sidesteps both limits and reuses more of the
-current Python code. This document assumes the on-device path was chosen.
+The complementary path is **"brain on a host + thin clients"** (one machine runs
+the agent; phones/laptops are WebRTC mic+speaker endpoints). It sidesteps both
+limits and reuses the current Python code as-is. **Both paths are now built** —
+on-device (`core/`, `mobile/`) *and* the host path (`remote/` + LiveKit + `web/`)
+— and the product target is the **hybrid** of the two (see §0). The on-device
+path remains the north star because fully-local is a hard requirement.
 
 ---
 
@@ -138,10 +160,13 @@ easy to port and test deterministically:
 engine, and (b) the task runtime backed by real threads/async with true
 cancellation. The *interfaces* don't change; the execution backend does.
 
-If/when the core is ported off Python (for mobile), this is the module to
-**reimplement faithfully** in the core language (or expose Python core via
-embedded interpreter only on desktop). Keep the event/mode contract identical
-so tests transfer.
+This is the module to **reimplement faithfully** per runtime — keep the
+`AgentEvent`/`Mode` contract identical so tests transfer. **Status:** the
+`mobile/` Flutter app currently runs a *parallel Dart loop* (`lib/assistant.dart`)
+that re-derives core behavior (command fast-path, streaming TTS) **without** the
+brain yet; converging it onto this contract — backed by a cross-language golden
+test suite (transcript → expected `AgentEvent` sequence) — is the open work that
+keeps "one core, many shells" from drifting into "many apps" (see §9.1).
 
 ---
 
@@ -222,16 +247,32 @@ what lets desktop (Python) and mobile (native) share the same brain and tests.
 
 ---
 
-## 9. Risks / decisions still open
+## 9. Decisions (resolved 2026-05)
 
-- **Flutter vs. native shells** — recommend Flutter; confirm.
-- **`llama.cpp` vs MLC-LLM vs ExecuTorch** for mobile LLM — decide after a phone
-  perf spike; affects model selection and battery story.
-- **Core language for the eventual port** — Python-embedded (simplest, but heavy
-  on mobile) vs. Rust/C++ core with a Python desktop binding (more work, best
-  mobile result). Decide before Phase 4; Phases 1–3 are unaffected.
-- **iOS always-on** — confirm acceptable degraded UX (push-to-talk / wakeword)
-  or reconsider the "brain on a host" alternative for mobile specifically.
-- **Memory on mobile** — SQLite + optional on-device embeddings; confirm whether
-  vector search is needed on phones or desktop-only.
+The forks that were open are now decided. Rationale is grounded in what shipped.
+
+1. **Core-sharing strategy — share the contract + tests, not a binary core.**
+   The shared seam is the `always_on_agent` `AgentEvent`/`Mode` model; the small
+   brain is **reimplemented per runtime** (Python desktop/server, Dart mobile).
+   This *supersedes* the earlier "Rust/C++ FFI core vs. embedded Python" framing:
+   the Dart mobile loop already ships, and an FFI core is the most expensive path
+   with the least to show. **Risk:** logic drift between the Python and Dart
+   brains. **Mitigation:** a cross-language **golden test suite** (transcript →
+   expected `AgentEvent` sequence) both runtimes must pass, plus the §5
+   convergence work (`mobile/lib/assistant.dart` onto the contract).
+2. **Deployment topology — hybrid (both paths first-class).** On-device leads
+   (fully-local is a hard requirement); the host + thin-client path (`remote/` +
+   LiveKit + `web/`) is the iOS-background story and the instant-reach fallback.
+   No longer hypothetical — it is built.
+3. **UI shell — Flutter.** Confirmed and built (`mobile/`).
+4. **Mobile LLM runtime — MediaPipe/LiteRT via `flutter_gemma`** (Gemma 3 1B) in
+   the shipped Flutter app; `llama.cpp`/Ollama remain the runtimes for the
+   **Python core**'s desktop/`phone` profiles. (Resolves the
+   llama.cpp-vs-MLC-vs-ExecuTorch question with the de-facto, shipped choice.)
+5. **iOS always-on — accept push-to-talk / wakeword-gated** listening (OS limit);
+   the host path covers continuous-listening needs where required.
+6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search
+   stays desktop-first (`utils/memory.py` Postgres+pgvector), optional on phones.
+
+Mirrored for *intent* in `PROJECT_KICKOFF.md` §8.
 ```

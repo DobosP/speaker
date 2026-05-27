@@ -5,6 +5,7 @@ import time
 from typing import Callable, Optional
 
 from core.engine import AudioEngine, EngineCallbacks
+from core.metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 
 from .profiles import DeviceProfile
 
@@ -57,12 +58,14 @@ class SimulatedEngine(AudioEngine):
     def _play(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
         self._cb.on_speech_start()
         time.sleep(self.profile.tts_ttfa_sec)
+        self._cb.on_metric(TTS_FIRST_AUDIO)
         duration = max(1, len(text.split())) * self.profile.tts_realtime_factor
         end = time.time() + duration
         interrupted = False
         while time.time() < end:
             if self._interrupt.is_set():
                 interrupted = True
+                self._cb.on_metric(BARGE_IN_STOP)
                 break
             time.sleep(0.005)
         self._speaking.clear()
@@ -80,6 +83,7 @@ class SimulatedEngine(AudioEngine):
                 accumulated.append(word)
                 self._cb.on_partial(" ".join(accumulated))
                 time.sleep(self.profile.stt_partial_interval_sec)
+        self._cb.on_metric(SPEECH_END)
         time.sleep(self.profile.stt_endpoint_delay_sec)
         self._cb.on_final(text)
 

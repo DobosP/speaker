@@ -12,11 +12,13 @@ class GemmaService {
   GemmaService._();
   static final GemmaService instance = GemmaService._();
 
-  // Public, ungated mirror of litert-community/Gemma3-1B-IT (q4, GPU-friendly),
-  // republished by CI to our own release tag.
+  // MediaPipe .task bundle (q4) of litert-community/Gemma3-1B-IT, republished by
+  // CI to our own release tag. We use .task (not .litertlm) because on Android
+  // flutter_gemma loads .task via the stable MediaPipe engine factory; .litertlm
+  // routes through a fragile FFI path that mis-routes and yields a null engine.
   static const modelUrl =
       'https://github.com/DobosP/speaker/releases/download/gemma-model/'
-      'Gemma3-1B-IT-q4.litertlm';
+      'Gemma3-1B-IT-q4.task';
 
   static const _systemInstruction =
       'You are a concise, friendly on-device voice assistant. '
@@ -37,11 +39,25 @@ class GemmaService {
         .withProgress((p) => onProgress?.call((p as num).toDouble()))
         .install();
 
-    _model = await FlutterGemma.getActiveModel(
-      maxTokens: 1024,
-      preferredBackend: PreferredBackend.gpu,
-    );
+    // Prefer the GPU engine; fall back to CPU if the device can't create it
+    // (some GPUs/drivers return a null engine instead of throwing).
+    _model = await _activate(PreferredBackend.gpu);
+    _model ??= await _activate(PreferredBackend.cpu);
+    if (_model == null) {
+      throw Exception('Failed to initialize the on-device model engine.');
+    }
     _chat = await _model.createChat(systemInstruction: _systemInstruction);
+  }
+
+  Future<dynamic> _activate(PreferredBackend backend) async {
+    try {
+      return await FlutterGemma.getActiveModel(
+        maxTokens: 1024,
+        preferredBackend: backend,
+      );
+    } catch (_) {
+      return null;
+    }
   }
 
   // Stream the assistant's reply token-by-token.

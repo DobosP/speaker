@@ -25,7 +25,6 @@ class GemmaService {
       'Answer in one or two short, natural, speakable sentences.';
 
   dynamic _model;
-  dynamic _chat;
 
   bool get isReady => _model != null;
 
@@ -46,7 +45,6 @@ class GemmaService {
     if (_model == null) {
       throw Exception('Failed to initialize the on-device model engine.');
     }
-    _chat = await _model.createChat(systemInstruction: _systemInstruction);
   }
 
   Future<dynamic> _activate(PreferredBackend backend) async {
@@ -60,10 +58,20 @@ class GemmaService {
     }
   }
 
-  // Stream the assistant's reply token-by-token.
+  // Stream the assistant's reply token-by-token. A FRESH chat per turn keeps
+  // each request independent: reusing one session let the tiny 1B model
+  // accumulate state and degenerate into the same looping reply. Explicit
+  // sampling (topK/temperature) also stops the greedy (topK=1) repetition that
+  // made it answer the same thing regardless of input.
   Stream<String> reply(String prompt) async* {
-    await _chat.addQueryChunk(Message.text(text: prompt, isUser: true));
-    await for (final response in _chat.generateChatResponseAsync()) {
+    final chat = await _model.createChat(
+      systemInstruction: _systemInstruction,
+      temperature: 0.8,
+      topK: 40,
+      randomSeed: DateTime.now().millisecondsSinceEpoch & 0x7fffffff,
+    );
+    await chat.addQueryChunk(Message.text(text: prompt, isUser: true));
+    await for (final response in chat.generateChatResponseAsync()) {
       if (response is TextResponse) {
         yield response.token;
       }
@@ -73,6 +81,5 @@ class GemmaService {
   Future<void> dispose() async {
     await _model?.close();
     _model = null;
-    _chat = null;
   }
 }

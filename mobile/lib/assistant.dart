@@ -9,6 +9,7 @@ import 'package:record/record.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
 
 import './asr_model.dart';
+import './contract.dart';
 import './llm.dart';
 import './tts_model.dart';
 import './utils.dart';
@@ -57,15 +58,9 @@ class _AssistantScreenState extends State<AssistantScreen> {
   bool _draining = false;
   String _ttsBuffer = '';
 
-  // Command fast-path: control phrases act locally without invoking the LLM.
-  // On mobile the meaningful action is interrupting playback ("stop").
-  static const Map<String, String> _commands = {
-    'stop': 'stop',
-    'cancel': 'stop',
-    'quiet': 'stop',
-    'stop talking': 'stop',
-    'be quiet': 'stop',
-  };
+  // Command fast-path: control phrases act locally without the LLM. The shared
+  // contract (contract.dart) decides what counts as "stop" so desktop and mobile
+  // recognize the same phrases.
 
   Future<void> _downloadModel() async {
     setState(() {
@@ -115,11 +110,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
   }
 
   // Map a recognized control phrase to a local action. Returns true if handled.
+  // "stop" is the only action the mobile shell takes (it has no modes/supervisor).
   bool _handleCommand(String prompt) {
-    final key = prompt.toLowerCase().replaceAll(RegExp(r'[^a-z ]'), '').trim();
-    final action = _commands[key];
-    if (action == null) return false;
-    if (action == 'stop') _stopSpeaking();
+    if (!isStopCommand(prompt)) return false;
+    _stopSpeaking();
     return true;
   }
 
@@ -132,27 +126,19 @@ class _AssistantScreenState extends State<AssistantScreen> {
 
   // Pull every completed sentence out of the rolling buffer and queue it for
   // speech; with flushAll, also speak whatever remains at end of generation.
+  // Sentence boundaries follow the shared contract (contract.dart) so mobile and
+  // the Python core split identically.
   void _flushSentences({bool flushAll = false}) {
-    var idx = _firstSentenceBoundary(_ttsBuffer);
-    while (idx != -1) {
-      final sentence = _ttsBuffer.substring(0, idx).trim();
-      _ttsBuffer = _ttsBuffer.substring(idx);
-      if (sentence.isNotEmpty) unawaited(_enqueueSpeech(sentence));
-      idx = _firstSentenceBoundary(_ttsBuffer);
+    final (sentences, rest) = drainCompleteSentences(_ttsBuffer);
+    _ttsBuffer = rest;
+    for (final sentence in sentences) {
+      unawaited(_enqueueSpeech(sentence));
     }
     if (flushAll) {
-      final rest = _ttsBuffer.trim();
+      final tail = _ttsBuffer.trim();
       _ttsBuffer = '';
-      if (rest.isNotEmpty) unawaited(_enqueueSpeech(rest));
+      if (tail.isNotEmpty) unawaited(_enqueueSpeech(tail));
     }
-  }
-
-  int _firstSentenceBoundary(String s) {
-    for (var i = 0; i < s.length; i++) {
-      final c = s[i];
-      if (c == '.' || c == '!' || c == '?' || c == '\n') return i + 1;
-    }
-    return -1;
   }
 
   // Sequential player: synthesize + play one sentence at a time so audio never

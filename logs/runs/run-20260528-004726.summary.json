@@ -1,0 +1,254 @@
+{
+  "run_id": "20260528-004726",
+  "log_path": "logs/runs/run-20260528-004726.txt",
+  "duration_sec": 55.08,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260528-004726.wav"
+  },
+  "counts": {
+    "llm_requests": 4,
+    "turns": 4,
+    "transcript_entries": 12,
+    "errors": 0,
+    "warnings": 1,
+    "log_lines_by_level": {
+      "INFO": 66,
+      "DEBUG": 72,
+      "WARNING": 1
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "HE MURMURED HIS MURDERING",
+      "mode": "assistant",
+      "at_sec": 11.11
+    },
+    {
+      "role": "assistant",
+      "text": "I\u2019m sorry, I didn\u2019t quite catch that.",
+      "at_sec": 11.56
+    },
+    {
+      "role": "assistant",
+      "text": "Could you repeat it, please?",
+      "at_sec": 11.61
+    },
+    {
+      "role": "user",
+      "text": "CAN YOU MEET LITTLE FLURRY",
+      "mode": "assistant",
+      "at_sec": 23.72
+    },
+    {
+      "role": "assistant",
+      "text": "I\u2019m sorry, I don\u2019t recognize that name.",
+      "at_sec": 23.98
+    },
+    {
+      "role": "assistant",
+      "text": "Can you tell me a little more about who you\u2019re referring to?",
+      "at_sec": 24.09
+    },
+    {
+      "role": "user",
+      "text": "AN OLD FURY",
+      "mode": "assistant",
+      "at_sec": 36.43
+    },
+    {
+      "role": "assistant",
+      "text": "\"Old Fury?",
+      "at_sec": 36.66
+    },
+    {
+      "role": "assistant",
+      "text": "I don't recognize that name from my local records, sorry!\"",
+      "at_sec": 36.76
+    },
+    {
+      "role": "user",
+      "text": "IN THE LOW STORY",
+      "mode": "assistant",
+      "at_sec": 53.05
+    },
+    {
+      "role": "assistant",
+      "text": "\"The Low Story?",
+      "at_sec": 53.29
+    },
+    {
+      "role": "assistant",
+      "text": "I don't have information about that specific title, sorry!\"",
+      "at_sec": 53.39
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1779918446.371,
+      "cpu_percent": 50.0,
+      "ram_used_mb": 10224.8,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 36.1,
+      "proc_rss_mb": 19.9,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 36.0,
+          "mem_used_mb": 4068.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 51.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1779918501.414,
+      "cpu_percent": 22.8,
+      "ram_used_mb": 10715.2,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 37.5,
+      "proc_rss_mb": 369.2,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 5.0,
+          "mem_used_mb": 4068.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 64.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 50.0,
+      "ram_used_mb": 10715.2,
+      "ram_percent": 37.5,
+      "proc_rss_mb": 369.2,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 36.0,
+      "gpu_mem_used_mb": 4068.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1779918446.4,
+        "cpu_percent": 10.5,
+        "ram_used_mb": 10242.5,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 36.1,
+        "proc_rss_mb": 20.4,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 36.0,
+            "mem_used_mb": 4068.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 51.0
+          }
+        ]
+      }
+    },
+    "samples": 5,
+    "deltas": {
+      "ram_used_mb_delta": 490.4,
+      "proc_rss_mb_delta": 349.3,
+      "gpu_mem_used_mb_delta": 0.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 1.5,
+    "avg_time_sec": 0.38,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 25,
+        "system_chars": 195,
+        "prompt_preview": "HE MURMURED HIS MURDERING",
+        "duration_sec": 0.49,
+        "ttft_sec": 0.337,
+        "out_chars": 66,
+        "tokens": 20,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 26,
+        "system_chars": 195,
+        "prompt_preview": "CAN YOU MEET LITTLE FLURRY",
+        "duration_sec": 0.361,
+        "ttft_sec": 0.157,
+        "out_chars": 100,
+        "tokens": 28,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 11,
+        "system_chars": 195,
+        "prompt_preview": "AN OLD FURY",
+        "duration_sec": 0.32,
+        "ttft_sec": 0.184,
+        "out_chars": 69,
+        "tokens": 18,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 16,
+        "system_chars": 195,
+        "prompt_preview": "IN THE LOW STORY",
+        "duration_sec": 0.326,
+        "ttft_sec": 0.194,
+        "out_chars": 75,
+        "tokens": 18,
+        "streamed": true,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": 0.5933,
+      "endpoint_latency": 0.0,
+      "final_to_first_token": 0.3482,
+      "first_token_to_audio": 0.2451,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 0.4171,
+      "endpoint_latency": 0.0,
+      "final_to_first_token": 0.1673,
+      "first_token_to_audio": 0.2497,
+      "barge_in_latency": 0.9371
+    },
+    {
+      "first_audio_latency": 0.2856,
+      "endpoint_latency": 0.0,
+      "final_to_first_token": 0.195,
+      "first_token_to_audio": 0.0906,
+      "barge_in_latency": 0.6924
+    },
+    {
+      "first_audio_latency": 0.3087,
+      "endpoint_latency": 0.0,
+      "final_to_first_token": 0.2046,
+      "first_token_to_audio": 0.104,
+      "barge_in_latency": 0.7154
+    }
+  ],
+  "stuck_hints": [],
+  "errors": [
+    {
+      "t": "00:47:37",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "speaker rejected 22050 Hz; playing at 44100 Hz and resampling",
+      "exc": null
+    }
+  ]
+}

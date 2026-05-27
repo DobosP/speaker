@@ -17,28 +17,63 @@ jobs:
   publish-model:
     runs-on: ubuntu-latest
     env:
-      SRC_URL: https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm
+      HF: ${{ secrets.HF_TOKEN }}
+      REPO_ID: litert-community/Gemma3-1B-IT
       ASSET: Gemma3-1B-IT-q4.litertlm
     steps:
       - name: Check token is configured
         run: |
-          if [ -z "${{ secrets.HF_TOKEN }}" ]; then
-            echo "::error title=missing_secret::HF_TOKEN secret is not set. Add a HuggingFace token (with the Gemma license accepted) as a repo secret named HF_TOKEN."
+          if [ -z "$HF" ]; then
+            echo "::error title=missing_secret::HF_TOKEN secret is not set."
             exit 1
           fi
 
-      - name: Download gated model from HuggingFace
+      - name: Inspect repo and pick model file
         run: |
-          set -euo pipefail
-          curl -fSL -H "Authorization: Bearer ${{ secrets.HF_TOKEN }}" \
-            "$SRC_URL" -o "$ASSET"
-          ls -lh "$ASSET"
-          # A gated/denied response is small HTML, not a model — sanity check size.
-          bytes=$(stat -c%s "$ASSET")
-          if [ "$bytes" -lt 100000000 ]; then
-            echo "::error title=bad_download::Downloaded file is only $bytes bytes — token likely lacks Gemma license access."
+          set +e
+          enc(){ sed 's/%/%25/g' | sed 's/$/%0A/' | tr -d '\n'; }
+          info=$(curl -s -H "Authorization: Bearer $HF" "https://huggingface.co/api/models/$REPO_ID")
+          picked=$(printf '%s' "$info" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception as e:
+    print('PARSE_ERROR:' + str(e)); sys.exit(0)
+print('GATED=%s' % d.get('gated'))
+sibs=[s.get('rfilename','') for s in d.get('siblings',[])]
+models=[f for f in sibs if f.endswith(('.litertlm','.task'))]
+print('FILES=' + ','.join(models))
+def rank(f):
+    return (f.endswith('.litertlm'), 'q4' in f, '4096' in f)
+pick = sorted(models, key=rank, reverse=True)[0] if models else ''
+print('PICK=' + pick)
+")
+          echo "$picked"
+          echo "::warning title=hf_inspect::$(printf '%s' "$picked" | enc)"
+          pick=$(printf '%s' "$picked" | sed -n 's/^PICK=//p')
+          if [ -z "$pick" ]; then
+            echo "::error title=no_model_file::Could not list/access model files — token may lack Gemma license access (accept it at huggingface.co/$REPO_ID)."
             exit 1
           fi
+          echo "PICK=$pick" >> "$GITHUB_ENV"
+          # Match the published asset extension to the source format.
+          case "$pick" in
+            *.task) echo "ASSET=Gemma3-1B-IT-q4.task" >> "$GITHUB_ENV" ;;
+          esac
+
+      - name: Download model
+        run: |
+          set +e
+          url="https://huggingface.co/$REPO_ID/resolve/main/$PICK"
+          code=$(curl -s -L -o "$ASSET" -w '%{http_code}' -H "Authorization: Bearer $HF" "$url")
+          bytes=$(stat -c%s "$ASSET" 2>/dev/null || echo 0)
+          echo "::warning title=download::file=$PICK http=$code bytes=$bytes"
+          ls -lh "$ASSET" || true
+          if [ "$code" != "200" ] || [ "$bytes" -lt 100000000 ]; then
+            echo "::error title=bad_download::http=$code bytes=$bytes (expected 200 and >100MB)"
+            exit 1
+          fi
+          echo "Downloaded $PICK -> $ASSET ($bytes bytes)"
 
       - name: Publish to public release
         uses: softprops/action-gh-release@v2

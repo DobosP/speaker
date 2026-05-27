@@ -81,6 +81,11 @@ runs on Android and iOS.
 - `main` is the integration branch and holds the latest work. Do feature work
   on a short-lived branch and merge back to `main`.
 - Web sessions run in an ephemeral container; commit anything worth keeping.
+- CI secrets: the repo has an Actions secret **`HF_TOKEN`** (a HuggingFace read
+  token, Gemma license accepted) used only by `.github/workflows/publish-model.yml`
+  to fetch the gated Gemma 3 model and republish it to the public `gemma-model`
+  release that the phone app downloads. The token value lives only in GitHub
+  Actions secrets — never commit it to the repo or paste it into files.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
   not a code problem.

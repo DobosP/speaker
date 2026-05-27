@@ -36,6 +36,7 @@ class StageRegistry:
                     "tests/test_core_agent.py",
                     "tests/test_core_multimodal.py",
                     "tests/test_device_profiles.py",
+                    "tests/test_specsim.py",
                     "tests/test_always_on_agent.py",
                     "tests/test_speaker_gate.py",
                 ),

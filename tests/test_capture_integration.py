@@ -95,3 +95,25 @@ def test_app_main_record_ignored_on_console_engine(tmp_path, monkeypatch):
     assert data["counts"]["warnings"] >= 1
     assert any("record ignored" in e["message"].lower() for e in data["errors"])
     assert "recording" not in data["meta"]
+
+
+def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):
+    # The shipped config has empty sherpa paths; selecting sherpa must exit with
+    # the setup_models instruction rather than starting a deaf engine.
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        app.main(["--engine", "sherpa"])
+    msg = str(exc.value)
+    assert "tools.setup_models" in msg
+    assert "no sherpa model paths" in msg.lower()
+
+
+def test_build_engine_requires_models_for_replay():
+    import argparse
+
+    from core.app import _build_engine
+
+    args = argparse.Namespace(engine="replay", replay_dir="x")
+    with pytest.raises(SystemExit) as exc:
+        _build_engine(args, {"sherpa": {}})  # no model paths
+    assert "tools.setup_models" in str(exc.value)

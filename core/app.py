@@ -10,7 +10,7 @@ from always_on_agent.followups import FollowupConfig
 from always_on_agent.react import PlannerConfig
 
 from .engine import AudioEngine
-from .llm import EchoLLM, LlamaCppLLM, LLMClient, OllamaLLM
+from .llm import EchoLLM, HedgeLLM, LlamaCppLLM, LLMClient, OllamaLLM, OpenAICompatLLM
 from .routing import build_router
 from .runtime import VoiceRuntime
 
@@ -70,14 +70,41 @@ def _build_llms(args, config: dict) -> tuple[LLMClient, LLMClient | None]:
             raise SystemExit("llamacpp backend needs llm.main_model_path (a GGUF file).")
         main = LlamaCppLLM(main_path, **common)
         fast = LlamaCppLLM(fast_path, **common) if fast_path else None
-        return main, fast
+        return _wrap_cloud(main, llm_cfg), fast
 
     host = llm_cfg.get("host")
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
     main = OllamaLLM(model=main_model, host=host, options=options)
     fast = OllamaLLM(model=fast_model, host=host, options=options) if fast_model else None
-    return main, fast
+    return _wrap_cloud(main, llm_cfg), fast
+
+
+def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
+    """Optionally hedge the main tier against a cloud provider for lower latency.
+
+    Off unless ``llm.cloud.enabled`` is true, so the fully-local default is
+    preserved. Only the main/reasoning tier is wrapped -- the fast tier is
+    already snappy and stays on-device.
+    """
+    cloud_cfg = llm_cfg.get("cloud") or {}
+    strategy = cloud_cfg.get("strategy", "hedge")
+    model = cloud_cfg.get("model")
+    if not cloud_cfg.get("enabled") or strategy == "local_only" or not model:
+        return local_main
+    cloud = OpenAICompatLLM(
+        model=model,
+        base_url=cloud_cfg.get("base_url"),
+        api_key_env=cloud_cfg.get("api_key_env"),
+        options=cloud_cfg.get("options"),
+    )
+    return HedgeLLM(
+        local=local_main,
+        cloud=cloud,
+        strategy=strategy,
+        hedge_delay_ms=int(cloud_cfg.get("hedge_delay_ms", 150)),
+        ttft_deadline_ms=int(cloud_cfg.get("ttft_deadline_ms", 1200)),
+    )
 
 
 def _build_engine(args, config: dict) -> AudioEngine:

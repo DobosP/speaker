@@ -14,11 +14,16 @@ from core.llm import EchoLLM
 from core.runtime import VoiceRuntime
 
 
-def _runtime(start_mode=Mode.ASSISTANT, hold_speech=False, reply=None):
+def _runtime(start_mode=Mode.ASSISTANT, hold_speech=False, reply=None, command_map=None):
     engine = ScriptedEngine(hold_speech=hold_speech)
-    runtime = VoiceRuntime(engine, EchoLLM(reply=reply), start_mode=start_mode)
+    runtime = VoiceRuntime(
+        engine, EchoLLM(reply=reply), start_mode=start_mode, command_map=command_map
+    )
     runtime.start(run_bus=False)
     return runtime, engine
+
+
+_COMMANDS = {"stop": "stop", "command mode": "mode:command", "yes do it": "confirm"}
 
 
 def test_assistant_reply_is_spoken():
@@ -64,6 +69,33 @@ def test_barge_in_stops_playback():
     engine.barge_in()
     runtime.wait_idle()
     assert not engine.is_speaking
+
+
+def test_command_fast_path_stop_halts_playback_without_llm():
+    runtime, engine = _runtime(hold_speech=True, reply="a long winded answer", command_map=_COMMANDS)
+    engine.final("tell me a story")
+    assert runtime.wait_idle()
+    assert engine.is_speaking  # held mid-utterance
+
+    engine.command("stop")  # spotted keyword, not a transcript
+    runtime.wait_idle()
+    assert not engine.is_speaking
+
+
+def test_command_fast_path_switches_mode():
+    runtime, engine = _runtime(start_mode=Mode.ASSISTANT, command_map=_COMMANDS)
+    engine.command("command mode")
+    assert runtime.wait_idle()
+    assert runtime.mode == Mode.COMMAND
+
+
+def test_unmapped_command_falls_back_to_transcript():
+    # A keyword with no action mapping must not be dropped: it should behave
+    # like a normal final transcript and get a spoken reply.
+    runtime, engine = _runtime(reply="Sure.", command_map=_COMMANDS)
+    engine.command("what time is it")
+    assert runtime.wait_idle()
+    assert engine.spoken == ["Sure."]
 
 
 def test_passive_mode_ignores_unaddressed_speech():

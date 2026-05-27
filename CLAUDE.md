@@ -26,6 +26,9 @@ runs on Android and iOS.
   `AudioEngine` seam), `engines/sherpa.py` (production, on-device; CPU STT/TTS
   with auto-tuned threads + explicit `provider`), `engines/scripted.py`
   (tests/console), `engines/speaker_gate.py` (speaker-ID barge-in gate),
+  keyword-spotter **command fast-path** (sherpa KWS runs alongside ASR and
+  fires `on_command`; the runtime maps it to a control event via the
+  `commands` config block — instant actions like "stop" with no LLM in the loop),
   `llm.py` (the `LLMClient` protocol + `EchoLLM` fake, `OllamaLLM` for desktop
   GPU, `LlamaCppLLM` for on-device GGUF; all accept optional `images=` for
   multimodal Gemma 3), `capabilities.py` (LLM-backed cancellable providers;

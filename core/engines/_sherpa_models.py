@@ -46,6 +46,31 @@ def build_vad(c: "SherpaConfig"):
     return sherpa_onnx.VoiceActivityDetector(vad_config, buffer_size_in_seconds=30)
 
 
+def build_keyword_spotter(c: "SherpaConfig"):
+    """Streaming keyword spotter for the command fast-path, or ``None``.
+
+    A separate, small streaming transducer (sherpa-onnx ships pretrained KWS
+    models) that runs alongside the ASR recognizer and fires the moment a
+    configured control phrase is heard -- the lowest-latency path to an action,
+    since it never touches the LLM. Disabled (``None``) when no model is set.
+    """
+    if not c.kws_encoder:
+        return None
+    import sherpa_onnx
+
+    return sherpa_onnx.KeywordSpotter(
+        tokens=c.kws_tokens,
+        encoder=c.kws_encoder,
+        decoder=c.kws_decoder,
+        joiner=c.kws_joiner,
+        keywords_file=c.kws_keywords_file,
+        num_threads=c.resolved_asr_threads,
+        provider=c.provider,
+        keywords_threshold=c.kws_threshold,
+        keywords_score=c.kws_score,
+    )
+
+
 def build_tts(c: "SherpaConfig"):
     """Offline VITS TTS, or ``None`` if no model configured."""
     if not c.tts_model:

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import os
+import queue
+import threading
+import time
 from typing import Iterator, Optional, Protocol, Sequence, runtime_checkable
 
 # An "image" is either a path to an image file or raw image bytes. The Ollama
@@ -231,6 +235,236 @@ class LlamaCppLLM:
             piece = chunk["choices"][0].get("delta", {}).get("content")
             if piece:
                 yield piece
+
+
+def _openai_messages(
+    prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]]
+) -> list[dict]:
+    """OpenAI-style chat messages (also used by llama-server, Groq, etc.)."""
+    msgs: list[dict] = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    if images:
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        for img in images:
+            url = img if isinstance(img, str) else _to_data_uri(img)
+            content.append({"type": "image_url", "image_url": {"url": url}})
+        msgs.append({"role": "user", "content": content})
+    else:
+        msgs.append({"role": "user", "content": prompt})
+    return msgs
+
+
+class OpenAICompatLLM:
+    """Streaming LLM over any OpenAI-compatible ``/v1/chat/completions`` endpoint.
+
+    One client covers Groq, Together, Fireworks, SambaNova, Cerebras, OpenAI and
+    a local llama.cpp ``llama-server`` -- they differ only in ``base_url``,
+    ``model`` and api key. This is the optional "intelligence from a streaming
+    source" tier: it is built only when ``llm.cloud.enabled`` is set, so the
+    fully-local default is preserved. Rank providers by time-to-first-token.
+
+    The ``openai`` package is imported lazily so the runtime and test suite work
+    without it; pass ``client`` to inject a fake. ``api_key_env`` names the env
+    var holding the key (so secrets never live in config.json).
+    """
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        api_key_env: Optional[str] = None,
+        timeout: float = 30.0,
+        options: Optional[dict] = None,
+        client=None,
+    ):
+        self.model = model
+        self._base_url = base_url
+        self._api_key = api_key or (os.environ.get(api_key_env) if api_key_env else None)
+        self._timeout = timeout
+        self._options = dict(options) if options else {}
+        self._client = client
+
+    def _ensure(self):
+        if self._client is None:
+            from openai import OpenAI  # lazy
+
+            self._client = OpenAI(
+                base_url=self._base_url,
+                api_key=self._api_key or "not-needed",
+                timeout=self._timeout,
+            )
+        return self._client
+
+    def _create_kwargs(self, prompt, system, images, *, stream: bool) -> dict:
+        kwargs = {
+            "model": self.model,
+            "messages": _openai_messages(prompt, system, images),
+            "stream": stream,
+        }
+        kwargs.update(self._options)
+        return kwargs
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+    ) -> str:
+        resp = self._ensure().chat.completions.create(
+            **self._create_kwargs(prompt, system, images, stream=False)
+        )
+        return resp.choices[0].message.content or ""
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+    ) -> Iterator[str]:
+        for chunk in self._ensure().chat.completions.create(
+            **self._create_kwargs(prompt, system, images, stream=True)
+        ):
+            choices = getattr(chunk, "choices", None)
+            if not choices:
+                continue
+            piece = choices[0].delta.content
+            if piece:
+                yield piece
+
+
+class HedgeLLM:
+    """Race a local LLM against an optional cloud one for the lowest latency.
+
+    Strategies (all keep local as the safety net -- any cloud error/timeout
+    falls back to local, honoring the fully-local requirement):
+
+    - ``hedge`` (default): start local now; if it produces no token within
+      ``hedge_delay_ms``, also start cloud and stream whichever yields the FIRST
+      token. Caps cloud spend/exposure while still racing when local is slow.
+      ``hedge_delay_ms=0`` makes it a full race (both start immediately).
+    - ``fallback``: start cloud first with a ``ttft_deadline_ms`` first-token
+      deadline; on timeout/error, fall back to local.
+
+    Cancellation: the loser worker is signalled to stop and stops consuming
+    between tokens; the brain's ``cancel_event`` still cuts the winner's stream
+    in the capability layer, so barge-in works unchanged.
+    """
+
+    def __init__(
+        self,
+        *,
+        local: "LLMClient",
+        cloud: Optional["LLMClient"],
+        strategy: str = "hedge",
+        hedge_delay_ms: int = 150,
+        ttft_deadline_ms: int = 1200,
+    ):
+        self.local = local
+        self.cloud = cloud
+        self.strategy = strategy
+        self.hedge_delay = max(0.0, hedge_delay_ms / 1000.0)
+        self.ttft_deadline = max(0.0, ttft_deadline_ms / 1000.0)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+    ) -> str:
+        return "".join(self.stream(prompt, system=system, images=images)).strip()
+
+    @staticmethod
+    def _worker(client, tag, prompt, system, images, q, stop) -> None:
+        try:
+            for token in client.stream(prompt, system=system, images=images):
+                if stop.is_set():
+                    break
+                q.put((tag, "tok", token))
+            q.put((tag, "done", None))
+        except Exception as exc:  # cloud down / rate-limited -> let local win
+            q.put((tag, "err", str(exc)))
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+    ) -> Iterator[str]:
+        if self.cloud is None:
+            yield from self.local.stream(prompt, system=system, images=images)
+            return
+
+        q: "queue.Queue[tuple[str, str, object]]" = queue.Queue()
+        stops = {"local": threading.Event(), "cloud": threading.Event()}
+        clients = {"local": self.local, "cloud": self.cloud}
+        started: set[str] = set()
+
+        def launch(tag: str) -> None:
+            if tag in started or clients[tag] is None:
+                return
+            started.add(tag)
+            threading.Thread(
+                target=self._worker,
+                args=(clients[tag], tag, prompt, system, images, q, stops[tag]),
+                daemon=True,
+            ).start()
+
+        if self.strategy == "fallback":
+            primary, secondary, delay = "cloud", "local", self.ttft_deadline
+        else:  # hedge
+            primary, secondary, delay = "local", "cloud", self.hedge_delay
+        launch(primary)
+        live = 1 if primary in started else 0
+        deadline = time.monotonic() + delay
+
+        winner: Optional[str] = None
+        buffered: list[str] = []
+        while winner is None and live > 0:
+            secondary_started = secondary in started
+            if secondary_started or deadline == float("inf"):
+                timeout = None
+            else:
+                timeout = max(0.0, deadline - time.monotonic())
+            try:
+                tag, kind, val = q.get(timeout=timeout)
+            except queue.Empty:
+                # Primary was too slow: bring up the secondary, then wait.
+                launch(secondary)
+                live += 1 if secondary in started else 0
+                deadline = float("inf")
+                continue
+            if kind == "tok":
+                winner = tag
+                buffered.append(str(val))
+            else:  # this source produced nothing (finished or errored)
+                live -= 1
+                if not secondary_started:
+                    launch(secondary)
+                    live += 1 if secondary in started else 0
+                    deadline = float("inf")
+
+        if winner is None:
+            return  # nothing produced (e.g. no cloud and local empty) -> empty
+        for tag, ev in stops.items():
+            if tag != winner:
+                ev.set()
+        for token in buffered:
+            yield token
+        while True:
+            tag, kind, val = q.get()
+            if tag != winner:
+                continue  # drain the loser's late tokens
+            if kind == "tok":
+                yield str(val)
+            else:
+                break
 
 
 def _to_data_uri(raw: bytes) -> str:

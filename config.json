@@ -12,6 +12,15 @@
     "router": {
       "backend": "heuristic",
       "threshold": 0.5
+    },
+    "cloud": {
+      "enabled": false,
+      "strategy": "hedge",
+      "base_url": "https://api.groq.com/openai/v1",
+      "model": "llama-3.3-70b-versatile",
+      "api_key_env": "GROQ_API_KEY",
+      "hedge_delay_ms": 150,
+      "ttft_deadline_ms": 1200
     }
   },
   "device_profiles": {
@@ -43,7 +52,11 @@
   "mode": "assistant",
   "local_only": true,
   "tts": {
-    "streaming": false
+    "streaming": true
+  },
+  "intents": {
+    "enabled": true,
+    "phrases": {}
   },
   "followups": {
     "enabled": false,

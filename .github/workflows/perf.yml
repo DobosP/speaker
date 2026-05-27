@@ -1,9 +1,11 @@
 name: Perf benchmark
 
 # Real-model latency benchmark on a fixed GitHub Actions CPU. Heavy (downloads
-# Gemma GGUF + sherpa ONNX), so it does NOT run on every push: trigger it by
-# hand (workflow_dispatch) or by adding the "perf" label to a PR. The report is
-# uploaded as an artifact and summarized in the job summary. A GitHub CPU is a
+# Gemma GGUF + sherpa ONNX, cached between runs), so on PRs it is opt-in via the
+# "perf" label; it also runs on every push to main (post-merge) and on manual
+# dispatch. Every run uploads the report as an artifact and writes the headline
+# table to the job summary; main/dispatch runs also publish the full HTML report
+# to GitHub Pages: https://dobosp.github.io/speaker/ . A GitHub CPU is a
 # repeatable baseline, not phone silicon -- read it as calibration against the
 # specsim model (see tools/specsim), not an absolute phone number.
 
@@ -18,16 +20,29 @@ on:
         description: max fixtures to run
         default: "12"
         type: string
+  push:
+    branches: [main]
   pull_request:
     types: [labeled]
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
+
+# Serialize Pages publishes; don't cancel an in-flight deploy.
+concurrency:
+  group: perf-pages
+  cancel-in-progress: false
 
 jobs:
   bench:
-    # On PRs, only when the "perf" label is applied.
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'perf'
+    # PRs: only when the "perf" label is applied. Also runs on push (main) and
+    # manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event.label.name == 'perf'
     runs-on: ubuntu-latest
     env:
       PROFILE: ${{ github.event.inputs.profile || 'phone' }}
@@ -67,10 +82,48 @@ jobs:
             --out test-reports/perf \
             ${{ hashFiles('bench-models.json') != '' && '--models-manifest bench-models.json' || '' }}
 
-      - name: Upload perf report
+      - name: Build Pages site index
+        run: |
+          # Pages serves the report dir at the site root; add a landing page that
+          # points at the just-built profile report.
+          cat > test-reports/perf/index.html <<HTML
+          <!doctype html><meta charset="utf-8">
+          <title>Speaker perf reports</title>
+          <body style="font:15px/1.6 system-ui,sans-serif;margin:3rem">
+          <h1>Speaker real-model latency report</h1>
+          <p>Latest run: <a href="./${PROFILE}/index.html">${PROFILE} profile</a></p>
+          </body>
+          HTML
+
+      - name: Upload perf report (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: perf-report-${{ env.PROFILE }}
           path: test-reports/perf
           if-no-files-found: warn
+
+      - name: Upload Pages artifact
+        # Only publish from main / manual runs -- never PR content.
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: test-reports/perf
+
+  deploy:
+    needs: bench
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy report to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Link the published report in the run summary
+        run: |
+          echo "### Published perf report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.deployment.outputs.page_url }}" >> "$GITHUB_STEP_SUMMARY"

@@ -114,11 +114,26 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
     )
 
 
+def _require_asr_models(sherpa_cfg, engine_name: str) -> None:
+    """Fail fast with an actionable message when the sherpa ASR models aren't
+    configured, instead of starting an engine that can never hear anything."""
+    if not getattr(sherpa_cfg, "asr_encoder", "") or not getattr(sherpa_cfg, "asr_tokens", ""):
+        raise SystemExit(
+            f"\n--engine {engine_name} needs the on-device speech models, but "
+            "config.json has no sherpa model paths set.\n\n"
+            "  Run once:   python -m tools.setup_models\n"
+            "  (or full:   ./install.sh)\n\n"
+            "That downloads the ASR/VAD/TTS models and writes their paths into "
+            f"config.json. Then re-run:\n  python -m core --engine {engine_name}\n"
+        )
+
+
 def _build_engine(args, config: dict) -> AudioEngine:
     if args.engine == "sherpa":
         from .engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
+        _require_asr_models(sherpa_cfg, "sherpa")
         return SherpaOnnxEngine(sherpa_cfg)
     if args.engine == "replay":
         # Headless: run the real recognizer + TTS over recorded audio (no sound
@@ -127,6 +142,7 @@ def _build_engine(args, config: dict) -> AudioEngine:
         from .engines.sherpa import SherpaConfig
 
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
+        _require_asr_models(sherpa_cfg, "replay")
         return FileReplayEngine(sherpa_cfg)
     if args.engine == "livekit":
         # Remote (WebRTC) engine: same sherpa STT/TTS, audio over a LiveKit room.
@@ -145,6 +161,7 @@ def _build_engine(args, config: dict) -> AudioEngine:
                 "(after installing requirements-remote.txt and starting a LiveKit server)."
             )
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
+        _require_asr_models(sherpa_cfg, "livekit")
         room = (config.get("remote", {}) or {}).get("room", "assistant")
         return LiveKitEngine(sherpa_cfg, url=url, token=token, room=room)
     from .engines.scripted import ScriptedEngine

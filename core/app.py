@@ -8,7 +8,7 @@ import sys
 from always_on_agent.events import Mode
 
 from .engine import AudioEngine
-from .llm import EchoLLM, LLMClient, OllamaLLM
+from .llm import EchoLLM, LlamaCppLLM, LLMClient, OllamaLLM
 from .runtime import VoiceRuntime
 
 
@@ -19,17 +19,56 @@ def _load_config(path: str = "config.json") -> dict:
     return {}
 
 
+def _apply_device_profile(config: dict, device: str) -> dict:
+    """Layer ``device_profiles[device]`` over the base config.
+
+    A profile holds per-section overrides (``llm``, ``sherpa``); each is shallow-
+    merged onto the base so a phone profile can swap the LLM backend/models and
+    retune CPU threads without restating every field. Unknown device -> no-op.
+    """
+    profile = config.get("device_profiles", {}).get(device)
+    if not profile:
+        return config
+    merged = dict(config)
+    for section, overrides in profile.items():
+        base = config.get(section)
+        if isinstance(overrides, dict) and isinstance(base, dict):
+            merged[section] = {**base, **overrides}
+        else:
+            merged[section] = overrides
+    return merged
+
+
 def _build_llms(args, config: dict) -> tuple[LLMClient, LLMClient | None]:
     """Return ``(main_llm, fast_llm)``.
 
-    ``main_llm`` is the larger multimodal model (research/vision); ``fast_llm``
+    ``main_llm`` is the larger/multimodal model (research/vision); ``fast_llm``
     is a small model for snappy spoken replies. With ``--llm echo`` both are the
-    same fake and ``fast_llm`` is ``None`` (main is reused everywhere).
+    same fake and ``fast_llm`` is ``None``. The backend is chosen by the ``llm``
+    config block: ``ollama`` (desktop, GPU) or ``llamacpp`` (on-device GGUF).
     """
     if args.llm == "echo":
         return EchoLLM(), None
     llm_cfg = config.get("llm", {})
     options = llm_cfg.get("options")
+    backend = llm_cfg.get("backend", "ollama")
+
+    if backend == "llamacpp":
+        common = dict(
+            n_ctx=llm_cfg.get("n_ctx", 4096),
+            n_threads=llm_cfg.get("n_threads"),
+            n_gpu_layers=llm_cfg.get("n_gpu_layers", 0),
+            chat_format=llm_cfg.get("chat_format"),
+            options=options,
+        )
+        main_path = args.model or llm_cfg.get("main_model_path")
+        fast_path = args.fast_model or llm_cfg.get("fast_model_path")
+        if not main_path:
+            raise SystemExit("llamacpp backend needs llm.main_model_path (a GGUF file).")
+        main = LlamaCppLLM(main_path, **common)
+        fast = LlamaCppLLM(fast_path, **common) if fast_path else None
+        return main, fast
+
     host = llm_cfg.get("host")
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
@@ -96,6 +135,11 @@ def main(argv: list[str] | None = None) -> int:
         help="small Ollama model for quick spoken replies",
     )
     parser.add_argument(
+        "--device",
+        default=None,
+        help="device profile from config 'device_profiles' (e.g. desktop, phone)",
+    )
+    parser.add_argument(
         "--mode",
         choices=[m.value for m in Mode],
         default=Mode.ASSISTANT.value,
@@ -110,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     config = _load_config()
+    device = args.device or config.get("device", "desktop")
+    config = _apply_device_profile(config, device)
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
 

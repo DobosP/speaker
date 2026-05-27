@@ -1,26 +1,51 @@
 # mobile/ — on-device Android test harness
 
-A minimal Flutter app that proves the **on-device audio loop** of the speaker
-assistant on a real phone: streaming speech recognition (**Listen**) and speech
-synthesis (**Speak**), both running fully locally via
-[`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx) with **no network at
-runtime**.
+A Flutter app that runs the speaker assistant loop on a real phone, fully
+on-device:
 
-This is Phase 4 groundwork from `docs/target_architecture.md` — deliberately
-scoped to ASR + TTS. The LLM and the `always_on_agent` brain are **not** wired
-in yet; this exists to validate that on-device speech and the build-and-install
-pipeline work end-to-end first.
+- **Assistant** — speak or type, a small **Gemma 3 (1B, int4)** generates the
+  reply on-device (GPU via MediaPipe / `flutter_gemma`), and the answer is
+  spoken back. ASR + LLM + TTS, all local.
+- **Listen** — streaming speech recognition via
+  [`sherpa-onnx`](https://github.com/k2-fsa/sherpa-onnx).
+- **Speak** — local text-to-speech via sherpa-onnx.
+
+Inference is **fully offline**. The only network use is a one-time model
+download on first launch (see *The LLM model* below).
+
+### The LLM model (download on first launch)
+
+The Gemma weights (~0.5 GB) are **not** bundled in the APK — that would push it
+past a gigabyte. Instead the app downloads the model once on first use, caches
+it on device, and runs offline thereafter.
+
+Gemma is **license-gated**, so the app does not carry a HuggingFace token.
+Instead, CI republishes the model to a *public* GitHub release that the app
+pulls from. One-time setup:
+
+1. On a HuggingFace account, accept the Gemma license at
+   `huggingface.co/litert-community/Gemma3-1B-IT` and create a read token.
+2. Add it as the repo secret **`HF_TOKEN`**.
+3. Run the **Publish Gemma model** workflow (Actions tab → Run workflow). It
+   fetches the gated model and publishes it to the `gemma-model` release.
+
+The app downloads from
+`releases/download/gemma-model/Gemma3-1B-IT-q4.litertlm` (the URL constant in
+`lib/llm.dart`). Until that release exists, the app installs and the ASR/TTS
+tabs work, but the Assistant tab's download will fail.
 
 ## Get an APK onto your phone (no local toolchain needed)
 
-1. Push to `claude/nice-planck-ZDr90` (or run the **Build Android APK** workflow
-   manually from the Actions tab).
-2. Open the finished run, download the **speaker-mobile-debug-apk** artifact.
-3. Copy the `.apk` to your Android phone and tap to install (you may need to
-   allow *Install unknown apps* for your browser/file manager).
+Pushing app changes under `mobile/**` to `main` (or running **Build Android
+APK** manually from the Actions tab) builds and publishes the APK. Download it
+on your phone from
+`https://github.com/DobosP/speaker/releases/download/android-latest/speaker-android.apk`
+and tap to install (allow *Install unknown apps* if prompted).
 
-The CI job downloads the models, generates the Android project, and builds the
-APK — the repo itself stays free of model binaries and platform scaffolding.
+The CI job downloads the ASR/TTS models, generates the Android project, and
+builds the APK — the repo itself stays free of model binaries and platform
+scaffolding. The Gemma LLM is fetched on the phone at first launch, not baked
+into the APK (see above).
 
 ## Build locally instead
 
@@ -47,7 +72,9 @@ Swap them by editing `tool/download-models.sh` and the paths in
 
 ## Caveat
 
-The Dart UI mirrors the official sherpa-onnx Flutter examples, but this app has
-not yet been compiled — the CI run is its first real build. If the first build
-fails, it's almost certainly a version/toolchain pin in `pubspec.yaml` or
-`tool/setup_android.sh`, not the app logic.
+The ASR/TTS UI mirrors the official sherpa-onnx Flutter examples; the Assistant
+tab wires in `flutter_gemma`. On-device LLM runtime behaviour (GPU init, model
+load) can only be verified on a real phone — CI confirms it compiles and
+produces an APK, not that Gemma runs on your specific device. If a build fails,
+it's most likely a version/toolchain pin in `pubspec.yaml` or
+`tool/setup_android.sh` (e.g. `minSdk`/`compileSdk`), not the app logic.

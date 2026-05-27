@@ -1,0 +1,52 @@
+name: Publish Gemma model
+
+# Fetches the license-gated Gemma 3 1B (LiteRT, int4) once and republishes it as
+# a PUBLIC release asset, so the phone app can download it on first launch with
+# no HuggingFace token. Run this manually after setting the HF_TOKEN secret.
+#
+# Requires repo secret HF_TOKEN: a HuggingFace access token on an account that
+# has accepted the Gemma license at huggingface.co/litert-community/Gemma3-1B-IT.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-model:
+    runs-on: ubuntu-latest
+    env:
+      SRC_URL: https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm
+      ASSET: Gemma3-1B-IT-q4.litertlm
+    steps:
+      - name: Check token is configured
+        run: |
+          if [ -z "${{ secrets.HF_TOKEN }}" ]; then
+            echo "::error title=missing_secret::HF_TOKEN secret is not set. Add a HuggingFace token (with the Gemma license accepted) as a repo secret named HF_TOKEN."
+            exit 1
+          fi
+
+      - name: Download gated model from HuggingFace
+        run: |
+          set -euo pipefail
+          curl -fSL -H "Authorization: Bearer ${{ secrets.HF_TOKEN }}" \
+            "$SRC_URL" -o "$ASSET"
+          ls -lh "$ASSET"
+          # A gated/denied response is small HTML, not a model — sanity check size.
+          bytes=$(stat -c%s "$ASSET")
+          if [ "$bytes" -lt 100000000 ]; then
+            echo "::error title=bad_download::Downloaded file is only $bytes bytes — token likely lacks Gemma license access."
+            exit 1
+          fi
+
+      - name: Publish to public release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: gemma-model
+          name: Gemma 3 1B (on-device model)
+          body: |
+            License-gated Gemma 3 1B (LiteRT int4) republished for on-device use
+            by the Speaker mobile app. Subject to the Gemma Terms of Use.
+          files: ${{ env.ASSET }}
+          make_latest: false

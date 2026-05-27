@@ -23,6 +23,22 @@ def test_asr_and_tts_tokens_download_to_separate_dirs():
     assert dest_for("/m", "asr_encoder") == dest_for("/m", "asr_tokens")
 
 
+def test_apply_accuracy_high_uses_fp32_weights():
+    from tools.setup_models import apply_accuracy
+
+    m = {
+        "asr_encoder": {"file": "encoder-x.int8.onnx"},
+        "asr_joiner": {"file": "joiner-x.int8.onnx"},
+        "asr_decoder": {"file": "decoder-x.onnx"},
+    }
+    high = apply_accuracy({k: dict(v) for k, v in m.items()}, "high")
+    assert high["asr_encoder"]["file"] == "encoder-x.onnx"
+    assert high["asr_joiner"]["file"] == "joiner-x.onnx"
+
+    fast = apply_accuracy({k: dict(v) for k, v in m.items()}, "fast")
+    assert fast["asr_encoder"]["file"] == "encoder-x.int8.onnx"
+
+
 # --- setup_models.wire_sherpa_paths -----------------------------------------
 
 

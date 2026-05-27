@@ -73,10 +73,15 @@ def _build_llms(args, config: dict) -> tuple[LLMClient, LLMClient | None]:
         return _wrap_cloud(main, llm_cfg), fast
 
     host = llm_cfg.get("host")
+    keep_alive = llm_cfg.get("keep_alive")
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
-    main = OllamaLLM(model=main_model, host=host, options=options)
-    fast = OllamaLLM(model=fast_model, host=host, options=options) if fast_model else None
+    main = OllamaLLM(model=main_model, host=host, options=options, keep_alive=keep_alive)
+    fast = (
+        OllamaLLM(model=fast_model, host=host, options=options, keep_alive=keep_alive)
+        if fast_model
+        else None
+    )
     return _wrap_cloud(main, llm_cfg), fast
 
 

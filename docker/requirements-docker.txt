@@ -1,0 +1,14 @@
+# Lean dependency set for the remote host image (worker + token server).
+# Deliberately excludes the on-device desktop stack (torch/transformers/
+# faster-whisper/etc. from requirements.txt) -- the LiveKit worker only needs
+# sherpa-onnx for STT/TTS, numpy for audio math, the ollama client for the LLM,
+# and the LiveKit/FastAPI transport. Keeping it lean keeps the image small and
+# cold-start fast.
+livekit                # rtc primitives (Room/AudioSource/AudioStream/AudioFrame)
+livekit-api            # AccessToken / VideoGrants (token server)
+fastapi>=0.110         # token server + /chat + static web hosting
+uvicorn>=0.29          # ASGI server for the token/web server
+sherpa-onnx            # on-device streaming ASR + VITS TTS (CPU, int8)
+numpy>=1.24.0          # audio resample / PCM conversion
+ollama>=0.1.0          # LLM client -> the GPU Ollama service
+huggingface-hub>=0.20.0  # one-shot sherpa model download

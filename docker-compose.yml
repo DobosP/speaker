@@ -1,0 +1,105 @@
+# Speaker remote host stack. Keeps every capability (live voice + text /chat) but
+# light and hardened. The LLM is your HOST-LOCAL Ollama -- there is no Ollama
+# container here.
+#
+# Prereqs on the host:
+#   - Ollama running:  `ollama serve`  (or the systemd service)
+#   - Models pulled:   `ollama pull gemma3:12b && ollama pull gemma3:4b`
+#   - NVIDIA driver (Ollama uses the GPU directly on the host)
+#
+# First run:
+#   cp docker/.env.example .env        # set LIVEKIT_URL to your LAN IP for remote laptops
+#   docker compose up -d --build
+#   # open http://<this-host>:8080
+#
+# Fast dev loop (bind-mount source, no rebuild on edits, hot reload):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# Networking is host mode (Linux): most efficient for WebRTC media and reaches
+# host-local Ollama at localhost:11434 with no extra config. Isolation instead
+# comes from least privilege below: non-root, all capabilities dropped,
+# no-new-privileges, a read-only root filesystem, and read-only model access.
+#
+# Native vs remote (latency): this stack is for reaching the brain from OTHER
+# devices (browser/phone) over WebRTC. If you are sitting AT the GPU box, the
+# lowest-latency path is the native run `python -m core --engine sherpa` -- no
+# WebRTC hop. Streaming token output + sentence-batched TTS + barge-in work on
+# both paths (tts.streaming is on in config.json).
+
+x-hardening: &hardening
+  read_only: true
+  tmpfs:
+    - /tmp
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+
+x-speaker: &speaker
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+  image: speaker-remote:latest
+  network_mode: host
+  user: "10001:10001"
+  environment: &speaker-env
+    LIVEKIT_URL: ${LIVEKIT_URL:-ws://127.0.0.1:7880}
+    LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
+    LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+    # Empty -> the app defaults to localhost:11434 (host Ollama via host net).
+    OLLAMA_HOST: ${OLLAMA_HOST:-}
+    # Empty -> use the config.json default ("30m"). "-1" keeps models resident.
+    OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-}
+    HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+
+services:
+  # Self-hosted WebRTC SFU. --dev uses the well-known devkey/secret that match
+  # the .env defaults; replace both for anything exposed beyond your LAN.
+  livekit:
+    image: livekit/livekit-server:latest
+    network_mode: host
+    command: ["--dev", "--bind", "0.0.0.0"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  # One-shot: download sherpa ASR/VAD/TTS models into the volume (idempotent).
+  # Runs as root and read-write ONLY so it can populate the shared model dir;
+  # every long-lived service below mounts that dir read-only.
+  models:
+    <<: *speaker
+    user: "0:0"
+    entrypoint: ["python", "/usr/local/bin/download_models.py"]
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - models:/models
+    restart: "no"
+
+  # The brain: joins the LiveKit room, runs sherpa STT/TTS + the host-Ollama LLM.
+  worker:
+    <<: [*speaker, *hardening]
+    command: ["python", "-m", "remote.worker"]
+    volumes:
+      - models:/models:ro
+    depends_on:
+      models:
+        condition: service_completed_successfully
+      livekit:
+        condition: service_started
+    restart: unless-stopped
+
+  # Mints LiveKit tokens, serves the web client, and exposes a text /chat.
+  token-server:
+    <<: [*speaker, *hardening]
+    command: ["python", "-m", "remote.token_server"]
+    volumes:
+      - models:/models:ro
+    restart: unless-stopped
+
+volumes:
+  models:

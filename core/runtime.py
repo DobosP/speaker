@@ -7,6 +7,7 @@ from always_on_agent.capabilities import create_default_capabilities
 from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.memory import SessionMemory
+from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.supervisor import AgentSupervisor
 
 from .capabilities import attach_llm_capabilities
@@ -38,12 +39,20 @@ class VoiceRuntime:
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         router: Optional[Router] = None,
+        planner_config: Optional[PlannerConfig] = None,
     ):
         self.engine = engine
         self.bus = EventBus()
         memory = SessionMemory()
+        llm = llm or EchoLLM()
         registry = create_default_capabilities(memory)
-        attach_llm_capabilities(registry, llm or EchoLLM(), fast_llm=fast_llm, router=router)
+        planner_on = planner_config is not None and planner_config.enabled
+        escalate = should_escalate if (planner_on and planner_config.escalate) else None
+        attach_llm_capabilities(
+            registry, llm, fast_llm=fast_llm, router=router, escalate=escalate
+        )
+        if planner_on:
+            attach_react_capability(registry, llm, config=planner_config)
         if agent_config is not None:
             # Opt-in: route command-mode through the Open Interpreter action brain.
             from .agent import attach_agent_capability

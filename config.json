@@ -42,6 +42,14 @@
   },
   "mode": "assistant",
   "local_only": true,
+  "agent": {
+    "planner": {
+      "enabled": false,
+      "max_steps": 4,
+      "tools": ["search.local", "research.scope", "research.local"],
+      "escalate": true
+    }
+  },
   "remote": {
     "room": "assistant",
     "agent_identity": "assistant-agent",

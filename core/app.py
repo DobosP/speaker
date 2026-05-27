@@ -6,6 +6,7 @@ import os
 import sys
 
 from always_on_agent.events import Mode
+from always_on_agent.react import PlannerConfig
 
 from .engine import AudioEngine
 from .llm import EchoLLM, LlamaCppLLM, LLMClient, OllamaLLM
@@ -171,6 +172,13 @@ def main(argv: list[str] | None = None) -> int:
         help="enable the Open Interpreter action brain for command-mode "
         "(voice -> machine control); reads the 'agent_brain' config block",
     )
+    parser.add_argument(
+        "--planner",
+        action="store_true",
+        help="enable the ReAct planner: assistant-mode reasoning/gathering "
+        "queries escalate to a bounded plan->execute loop over the "
+        "capabilities (reads the 'agent.planner' config block)",
+    )
     args = parser.parse_args(argv)
 
     config = _load_config()
@@ -186,6 +194,12 @@ def main(argv: list[str] | None = None) -> int:
 
         agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
 
+    planner_config = PlannerConfig.from_dict(
+        (config.get("agent", {}) or {}).get("planner")
+    )
+    if args.planner:
+        planner_config.enabled = True
+
     runtime = VoiceRuntime(
         engine,
         llm,
@@ -193,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         start_mode=Mode(args.mode),
         agent_config=agent_config,
         router=router,
+        planner_config=planner_config,
     )
 
     if args.engine in ("sherpa", "livekit"):

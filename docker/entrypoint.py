@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Container entrypoint: point config.json at the downloaded sherpa models, then
-exec the real command (worker or token server).
+"""Container entrypoint: assemble a runtime config.json, then exec the real
+command (worker or token server).
 
-The sherpa model paths are not known until they are fetched into the /models
-volume, so the one-shot `download_models.py` step writes the resolved absolute
-paths to /models/sherpa_paths.json and this script merges them into the image's
-config.json at startup. If the file is absent (models not downloaded yet) the
-config is left untouched -- the worker then runs without ASR/TTS rather than
-crashing, which is what you want for `--llm echo` smoke tests.
+The image runs unprivileged with a read-only root filesystem, so /app is not
+writable. We therefore read the baked-in /app/config.json, merge in:
+
+  * the sherpa model paths fetched into the read-only /models volume (recorded
+    by download_models.py at /models/sherpa_paths.json), and
+  * OLLAMA_HOST -> llm.host, so the LLM points at your host-local Ollama,
+
+and write the result to a writable tmpfs dir, which becomes the working
+directory (core.app and token_server both load ./config.json from the cwd).
+If the model-paths file is absent the worker simply runs without ASR/TTS, which
+is what you want for `--llm echo` smoke tests.
 """
 from __future__ import annotations
 
@@ -15,37 +20,47 @@ import json
 import os
 import sys
 
-CONFIG = "/app/config.json"
-PATHS = "/models/sherpa_paths.json"
+SRC_CONFIG = "/app/config.json"
+RUN_DIR = os.environ.get("SPEAKER_RUNTIME_DIR", "/tmp/speaker")
+RUN_CONFIG = os.path.join(RUN_DIR, "config.json")
+MODEL_PATHS = "/models/sherpa_paths.json"
 
 
-def patch_config() -> None:
-    if not os.path.exists(PATHS):
-        print(f"[entrypoint] {PATHS} not found; leaving sherpa config empty", file=sys.stderr)
-        return
-    try:
-        with open(CONFIG, "r", encoding="utf-8") as fh:
-            cfg = json.load(fh)
-        with open(PATHS, "r", encoding="utf-8") as fh:
-            paths = json.load(fh)
-    except Exception as exc:  # noqa: BLE001 - surface and continue
-        print(f"[entrypoint] could not merge model paths: {exc}", file=sys.stderr)
-        return
-    sherpa = cfg.setdefault("sherpa", {})
-    for key, value in paths.items():
-        if value:
-            sherpa[key] = value
-    with open(CONFIG, "w", encoding="utf-8") as fh:
+def build_config() -> str:
+    with open(SRC_CONFIG, "r", encoding="utf-8") as fh:
+        cfg = json.load(fh)
+
+    if os.path.exists(MODEL_PATHS):
+        try:
+            with open(MODEL_PATHS, "r", encoding="utf-8") as fh:
+                paths = json.load(fh)
+            sherpa = cfg.setdefault("sherpa", {})
+            for key, value in paths.items():
+                if value:
+                    sherpa[key] = value
+            print("[entrypoint] merged sherpa model paths from /models")
+        except Exception as exc:  # noqa: BLE001 - surface and continue
+            print(f"[entrypoint] could not merge model paths: {exc}", file=sys.stderr)
+    else:
+        print(f"[entrypoint] {MODEL_PATHS} not found; sherpa STT/TTS disabled", file=sys.stderr)
+
+    ollama_host = os.environ.get("OLLAMA_HOST")
+    if ollama_host:
+        cfg.setdefault("llm", {})["host"] = ollama_host
+        print(f"[entrypoint] llm.host -> {ollama_host}")
+
+    os.makedirs(RUN_DIR, exist_ok=True)
+    with open(RUN_CONFIG, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
-    print("[entrypoint] merged sherpa model paths from /models/sherpa_paths.json")
+    return RUN_DIR
 
 
 def main() -> int:
-    patch_config()
+    run_dir = build_config()
     if len(sys.argv) < 2:
         print("[entrypoint] no command to run", file=sys.stderr)
         return 1
-    os.chdir("/app")
+    os.chdir(run_dir)  # core.app / token_server read ./config.json from here
     os.execvp(sys.argv[1], sys.argv[1:])
 
 

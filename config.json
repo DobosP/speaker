@@ -6,6 +6,7 @@
     "main_model": "gemma3:12b",
     "fast_model": "gemma3:4b",
     "host": null,
+    "keep_alive": "30m",
     "options": {
       "num_ctx": 4096
     },

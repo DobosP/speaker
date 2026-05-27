@@ -83,11 +83,16 @@ class OllamaLLM:
         host: Optional[str] = None,
         *,
         options: Optional[dict] = None,
+        keep_alive: Optional[str | int] = None,
         client=None,
     ):
         self.model = model
         self._host = host
         self._options = dict(options) if options else None
+        # How long Ollama keeps the model resident after a request. A long value
+        # (e.g. "30m") or -1 (forever) avoids a cold reload on the next turn --
+        # the single biggest win for a snappy first token on a warm box.
+        self._keep_alive = keep_alive
         self._client = client
 
     def _ensure(self):
@@ -117,6 +122,8 @@ class OllamaLLM:
         }
         if self._options:
             kwargs["options"] = self._options
+        if self._keep_alive is not None:
+            kwargs["keep_alive"] = self._keep_alive
         return kwargs
 
     def generate(

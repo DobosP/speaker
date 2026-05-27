@@ -49,6 +49,11 @@ def build_config() -> str:
         cfg.setdefault("llm", {})["host"] = ollama_host
         print(f"[entrypoint] llm.host -> {ollama_host}")
 
+    keep_alive = os.environ.get("OLLAMA_KEEP_ALIVE")
+    if keep_alive:
+        cfg.setdefault("llm", {})["keep_alive"] = keep_alive
+        print(f"[entrypoint] llm.keep_alive -> {keep_alive}")
+
     os.makedirs(RUN_DIR, exist_ok=True)
     with open(RUN_CONFIG, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)

@@ -54,6 +54,10 @@
   "tts": {
     "streaming": true
   },
+  "intents": {
+    "enabled": true,
+    "phrases": {}
+  },
   "followups": {
     "enabled": false,
     "delay_sec": 3.0,

@@ -238,6 +238,13 @@ def main(argv: list[str] | None = None) -> int:
     stream_tts = bool((config.get("tts", {}) or {}).get("streaming", False)) or args.stream_tts
     followup_config = FollowupConfig.from_dict(config.get("followups"))
 
+    intents_cfg = config.get("intents", {}) or {}
+    intents = None
+    if intents_cfg.get("enabled", False):
+        from .intents import LocalIntentHandler
+
+        intents = LocalIntentHandler(engine.speak, phrases=intents_cfg.get("phrases"))
+
     runtime = VoiceRuntime(
         engine,
         llm,
@@ -249,6 +256,7 @@ def main(argv: list[str] | None = None) -> int:
         stream_tts=stream_tts,
         followup_config=followup_config,
         command_map=config.get("commands"),
+        intents=intents,
     )
 
     if args.engine in ("sherpa", "livekit"):

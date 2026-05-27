@@ -13,6 +13,7 @@ from always_on_agent.supervisor import AgentSupervisor
 
 from .capabilities import attach_llm_capabilities
 from .engine import AudioEngine, EngineCallbacks
+from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
 from .routing import Router
 
@@ -44,8 +45,14 @@ class VoiceRuntime:
         stream_tts: bool = False,
         followup_config: Optional[FollowupConfig] = None,
         command_map: Optional[dict[str, str]] = None,
+        intents: Optional[LocalIntentHandler] = None,
     ):
         self.engine = engine
+        # Optional deterministic speech-to-intent fast-path. When present it
+        # answers frequent commands directly (no LLM); a miss falls through to
+        # the brain. ``None`` -> disabled (the default, preserving the bare
+        # transcript->brain path).
+        self._intents = intents
         # Command fast-path policy: maps a spotted keyword phrase to a control
         # action ("stop", "confirm", "deny", or "mode:<name>"). Keys are matched
         # case-insensitively. Empty -> unmapped keywords fall back to the normal
@@ -111,6 +118,9 @@ class VoiceRuntime:
         self.bus.publish(AgentEvent.partial(text))
 
     def _on_final(self, text: str) -> None:
+        # Try the no-LLM fast-path first; only fall through to the brain on a miss.
+        if self._intents is not None and self._intents.handle(text):
+            return
         self.bus.publish(AgentEvent.final(text))
 
     def _on_barge_in(self) -> None:
@@ -122,7 +132,9 @@ class VoiceRuntime:
         # Spotted control phrase: act immediately, bypassing analyzer + LLM.
         action = self._command_map.get(keyword.strip().lower())
         if action is None:
-            # Unmapped keyword: don't drop it -- hand it to the normal path.
+            # Unmapped keyword: try the intent fast-path, else the normal path.
+            if self._intents is not None and self._intents.handle(keyword):
+                return
             self.bus.publish(AgentEvent.final(keyword))
             return
         if action == "stop":
@@ -146,6 +158,9 @@ class VoiceRuntime:
                 self.engine.speak(text)
         elif event.kind == EventKind.CONTROL_STOP:
             self.engine.stop_speaking()
+            # Stop also cancels pending fast-path actions (e.g. a running timer).
+            if self._intents is not None:
+                self._intents.cancel_all()
 
     # --- synchronous helper for tests / console demo ---
     def wait_idle(self, timeout: float = 3.0) -> bool:

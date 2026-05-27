@@ -6,6 +6,7 @@
 // its own voice — so you can interrupt (barge-in) just by talking, or say "stop".
 // Tap again to stop.
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
@@ -158,7 +159,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // Each audio chunk is decoded to completion in order. The mic never pauses, so
   // this also runs while the assistant is speaking — that is what enables
   // barge-in.
-  void _onAudio(List<int> data) {
+  void _onAudio(Uint8List data) {
     if (_stream == null) return;
     final samples = convertBytesToFloat32(data);
     _stream!.acceptWaveform(samples: samples, sampleRate: 16000);

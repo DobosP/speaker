@@ -201,9 +201,11 @@ def _run_replay(runtime: VoiceRuntime, engine, replay_dir: str) -> None:
 def _run_live(runtime: VoiceRuntime) -> None:
     import time
 
-    runtime.start(run_bus=True)
-    print(f"[live] engine running, mode={runtime.mode.value}. Ctrl-C to quit.")
+    # start() is inside the try so a failure mid-startup still flushes the
+    # recorder + logs via runtime.stop() in finally (artifacts on crash too).
     try:
+        runtime.start(run_bus=True)
+        print(f"[live] engine running, mode={runtime.mode.value}. Ctrl-C to quit.")
         while True:
             time.sleep(0.5)
     except KeyboardInterrupt:

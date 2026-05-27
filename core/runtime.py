@@ -114,9 +114,17 @@ class VoiceRuntime:
             self._bus_threaded = True
 
     def stop(self) -> None:
-        self.supervisor.shutdown()
+        # Guard each step so a teardown error never prevents the engine from
+        # stopping -- that is what flushes the session recording to disk.
+        try:
+            self.supervisor.shutdown()
+        except Exception:  # noqa: BLE001
+            log.exception("supervisor shutdown failed")
         if self._bus_threaded:
-            self.bus.stop()
+            try:
+                self.bus.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("bus stop failed")
             self._bus_threaded = False
         self.engine.stop()
 
@@ -130,7 +138,10 @@ class VoiceRuntime:
 
     def _on_final(self, text: str) -> None:
         self.metrics.mark(ASR_FINAL)
-        log.info("final -> brain: %r (mode=%s)", text, self.mode.value)
+        log.info(
+            "final -> brain: %r (mode=%s)", text, self.mode.value,
+            extra={"transcript": {"role": "user", "text": text, "mode": self.mode.value}},
+        )
         # Try the no-LLM fast-path first; only fall through to the brain on a miss.
         if self._intents is not None and self._intents.handle(text):
             log.debug("handled by intent fast-path: %r", text)
@@ -174,7 +185,10 @@ class VoiceRuntime:
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
             if text:
-                log.debug("tts request: %r", text)
+                log.info(
+                    "assistant: %r", text,
+                    extra={"transcript": {"role": "assistant", "text": text}},
+                )
                 self.engine.speak(text)
         elif event.kind == EventKind.CONTROL_STOP:
             self.engine.stop_speaking()

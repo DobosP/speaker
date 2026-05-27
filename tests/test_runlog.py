@@ -43,11 +43,18 @@ def test_setup_logging_writes_files_and_aggregates(tmp_path):
             }
         },
     )
+    # Transcript entries (user + assistant) flow through the same async path.
+    logging.getLogger("speaker.runtime").info(
+        "final", extra={"transcript": {"role": "user", "text": "hello there"}}
+    )
+    logging.getLogger("speaker.runtime").info(
+        "assistant", extra={"transcript": {"role": "assistant", "text": "hi!"}}
+    )
     logging.getLogger("speaker.tasks").error("task boom: ConnectionError")
 
     runlog.finalize(metrics_records=[{"first_audio_latency": 0.5}])
 
-    # The .txt log exists and captured our lines.
+    # The .txt log exists and captured our lines (listener.stop() flushed it).
     text = (tmp_path / "run-unit.txt").read_text(encoding="utf-8")
     assert "ollama gemma3:4b done" in text
     assert "task boom" in text
@@ -60,6 +67,19 @@ def test_setup_logging_writes_files_and_aggregates(tmp_path):
     assert data["llm"]["requests"][0]["model"] == "gemma3:4b"
     assert data["llm"]["total_time_sec"] == 0.42
     assert any("boom" in e["message"] for e in data["errors"])
+    # Transcript captured in order, with relative stage timing.
+    roles = [t["role"] for t in data["transcript"]]
+    assert roles == ["user", "assistant"]
+    assert data["transcript"][0]["text"] == "hello there"
+    assert all("at_sec" in t for t in data["transcript"])
+    assert data["counts"]["transcript_entries"] == 2
+
+
+def test_finalize_is_idempotent(tmp_path):
+    runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="idem", console=False)
+    runlog.finalize()
+    runlog.finalize()  # second call is a no-op, not an error
+    assert (tmp_path / "run-idem.summary.json").exists()
 
 
 def test_summary_flags_all_cancelled_llm(tmp_path):

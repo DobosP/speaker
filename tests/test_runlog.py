@@ -75,6 +75,28 @@ def test_setup_logging_writes_files_and_aggregates(tmp_path):
     assert data["counts"]["transcript_entries"] == 2
 
 
+def test_async_formatting_preserves_args_and_traceback(tmp_path):
+    # With the deferred-formatting queue handler, args + exc_info reach the
+    # listener thread intact: the message interpolates and the traceback is
+    # captured as a structured field (not just embedded in the text).
+    runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="exc", console=False)
+    log = logging.getLogger("speaker.tasks")
+    log.info("answered in %.2fs (%d chars)", 0.5, 42)  # %-args formatted off-thread
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        log.exception("task blew up")
+    runlog.finalize()
+
+    text = (tmp_path / "run-exc.txt").read_text(encoding="utf-8")
+    assert "answered in 0.50s (42 chars)" in text
+    assert "Traceback (most recent call last)" in text  # traceback rendered to file
+
+    data = json.loads((tmp_path / "run-exc.summary.json").read_text(encoding="utf-8"))
+    err = [e for e in data["errors"] if "blew up" in e["message"]]
+    assert err and err[0]["exc"] and "ValueError: boom" in err[0]["exc"]
+
+
 def test_finalize_is_idempotent(tmp_path):
     runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="idem", console=False)
     runlog.finalize()

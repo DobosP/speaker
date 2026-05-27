@@ -300,6 +300,7 @@ class SherpaOnnxEngine(AudioEngine):
         total_blocks = partials = finals = 0
         beat_blocks = 0
         beat_level = 0.0
+        asr_errors = 0
         last_beat = time.monotonic()
         log.info("capture loop started (capture_sr=%d -> asr_sr=%d)",
                  self._capture_sr, self.config.sample_rate)
@@ -349,24 +350,47 @@ class SherpaOnnxEngine(AudioEngine):
                         voiced_run = 0.0
                     continue
 
-                stream.accept_waveform(self.config.sample_rate, samples)
-                while recognizer.is_ready(stream):
-                    recognizer.decode_stream(stream)
-                text = recognizer.get_result(stream)
-                if text and text != last_partial:
-                    last_partial = text
-                    partials += 1
-                    log.debug("asr partial: %r", text)
-                    self._cb.on_partial(text)
-                if recognizer.is_endpoint(stream):
-                    final_text = recognizer.get_result(stream)
-                    recognizer.reset(stream)
+                try:
+                    stream.accept_waveform(self.config.sample_rate, samples)
+                    while recognizer.is_ready(stream):
+                        recognizer.decode_stream(stream)
+                    text = recognizer.get_result(stream)
+                    if text and text != last_partial:
+                        last_partial = text
+                        partials += 1
+                        log.debug("asr partial: %r", text)
+                        self._cb.on_partial(text)
+                    if recognizer.is_endpoint(stream):
+                        final_text = recognizer.get_result(stream)
+                        recognizer.reset(stream)
+                        last_partial = ""
+                        if final_text.strip():
+                            finals += 1
+                            log.info("asr final: %r", final_text)
+                            self._cb.on_metric(SPEECH_END)
+                            self._cb.on_final(final_text)
+                    asr_errors = 0
+                except Exception:
+                    # Recover from a transient decode error by resetting the
+                    # stream; bail with a clear message if it keeps failing
+                    # (almost always an ASR model/tokens mismatch -- re-run
+                    # `python -m tools.setup_models`).
+                    asr_errors += 1
+                    log.warning("ASR decode error #%d (resetting stream)", asr_errors,
+                                exc_info=(asr_errors == 1))
                     last_partial = ""
-                    if final_text.strip():
-                        finals += 1
-                        log.info("asr final: %r", final_text)
-                        self._cb.on_metric(SPEECH_END)
-                        self._cb.on_final(final_text)
+                    try:
+                        recognizer.reset(stream)
+                    except Exception:
+                        stream = recognizer.create_stream()
+                    if asr_errors >= 10:
+                        log.error(
+                            "ASR failed %d times in a row -- likely an ASR model/tokens "
+                            "mismatch. Re-run `python -m tools.setup_models` to refetch.",
+                            asr_errors,
+                        )
+                        self._running.clear()
+                        break
         except Exception:
             # A daemon thread that dies silently is exactly what makes the app
             # look "stuck": surface the traceback instead of vanishing.

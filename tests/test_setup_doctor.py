@@ -13,7 +13,14 @@ from tools.doctor import (
     run_all,
     summarize,
 )
-from tools.setup_models import wire_sherpa_paths
+from tools.setup_models import dest_for, wire_sherpa_paths
+
+
+def test_asr_and_tts_tokens_download_to_separate_dirs():
+    # Both models ship a file literally named tokens.txt; they must not share a
+    # folder or one clobbers the other (wrong ASR vocab -> garbage + crash).
+    assert dest_for("/m", "asr_tokens") != dest_for("/m", "tts_tokens")
+    assert dest_for("/m", "asr_encoder") == dest_for("/m", "asr_tokens")
 
 
 # --- setup_models.wire_sherpa_paths -----------------------------------------

@@ -32,6 +32,24 @@ FILE_KEYS = [
     "tts_model",
     "tts_tokens",
 ]
+# The ASR and TTS models each ship their OWN tokens.txt with different
+# vocabularies, so they must land in separate folders -- a flat dir lets the
+# second tokens.txt clobber the first, which loads the recognizer with the
+# wrong vocab (garbage transcripts + get_result crashes).
+SUBDIR = {
+    "asr_tokens": "asr",
+    "asr_encoder": "asr",
+    "asr_decoder": "asr",
+    "asr_joiner": "asr",
+    "vad_model": "vad",
+    "tts_model": "tts",
+    "tts_tokens": "tts",
+}
+
+
+def dest_for(base: str, key: str) -> str:
+    """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
+    return os.path.join(base, SUBDIR.get(key, ""))
 
 
 def wire_sherpa_paths(
@@ -72,25 +90,28 @@ def main(argv: list[str] | None = None) -> int:
     resolved: dict[str, str] = {}
     for key in FILE_KEYS:
         coords = manifest[key]
-        print(f"[models] fetching {key}: {coords['repo']}/{coords['file']}")
+        dest = dest_for(args.dest, key)
+        os.makedirs(dest, exist_ok=True)
+        print(f"[models] fetching {key}: {coords['repo']}/{coords['file']} -> {dest}")
         resolved[key] = hf_hub_download(
             repo_id=coords["repo"],
             filename=coords["file"],
-            local_dir=args.dest,
+            local_dir=dest,
             token=token,
             force_download=args.force,
         )
 
     # Piper VITS needs the espeak-ng-data phoneme tables (a directory subtree).
     tts_repo = manifest["tts_model"]["repo"]
+    tts_dest = dest_for(args.dest, "tts_model")
     try:
         snapshot_download(
             repo_id=tts_repo,
-            local_dir=args.dest,
+            local_dir=tts_dest,
             token=token,
             allow_patterns=["espeak-ng-data/*"],
         )
-        data_dir = os.path.join(args.dest, "espeak-ng-data")
+        data_dir = os.path.join(tts_dest, "espeak-ng-data")
         resolved["tts_data_dir"] = data_dir if os.path.isdir(data_dir) else ""
     except Exception as exc:  # noqa: BLE001 - optional for some voices
         print(f"[models] espeak-ng-data not fetched ({exc}); continuing", file=sys.stderr)

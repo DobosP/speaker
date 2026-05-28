@@ -76,7 +76,9 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
   simulator that renders an HTML capability report — see Conventions);
   `cloudchat.py` (parallel cloud-LLM REPL: fires N prompts in parallel at the
   endpoint in `config.llm.cloud`, streams them with `[Qn]` prefixes, `/cancel`
-  hard-closes the HTTP stream so the provider stops billing; needs `openai`).
+  hard-closes the HTTP stream so the provider stops billing; needs `openai`);
+  `recommend_profile.py` (stdlib hardware probe → prints which
+  `device_profiles` entry to use; see `docs/target_architecture.md` §10).
 - `config.json` — runtime config. `docs/` — architecture and subsystem docs.
 
 > The legacy stack (`main.py`, `utils/audio.py`, the hand-rolled STT/TTS/LLM
@@ -87,7 +89,11 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 
 - Python, standard `pytest`. Run tests: `python -m pytest tests -q`. For staged
   runs with structured reports (per-stage + a tabular run summary under
-  `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|full`.
+  `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|cloud|imports|full`.
+  The `imports` stage is a whole-tree import smoke that catches syntax errors
+  and missing optional libs across `core/`/`always_on_agent/`/`remote/`/`tools/`
+  before any logic test runs — use it as a "does the code compile and are the
+  libraries present" preflight.
 - Run the app: `python -m core --engine console --llm echo` (no audio/models);
   `python -m core --engine sherpa` for on-device audio;
   `python -m core --engine replay --replay-dir <dir>` to run the real engine

@@ -7,11 +7,14 @@ from threading import Event
 from typing import Callable, Iterator, Mapping, Optional
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
+from always_on_agent.events import Mode
+from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
-from .llm import LLMClient
+from .llm import LLMClient, capability_context
 from .metrics import MetricsRecorder, mark_first_token
 from .routing import HeuristicRouter, Router
+from .sensitivity import classify_sensitivity
 
 log = logging.getLogger("speaker.llm")
 
@@ -99,6 +102,32 @@ def attach_llm_capabilities(
     router = router or HeuristicRouter()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
 
+    def _enrich_context(query: str, context: dict[str, object]) -> dict[str, object]:
+        """Add ``intent_kind`` + ``sensitivity`` to the context before routing.
+
+        Both are downstream signals for the router (tier choice) and the
+        SensitivityRouterLLM (cloud-chain choice). Tasks publish ``intent_kind``
+        in ``task.intent``; capabilities invoked outside the task layer get a
+        default of ``IntentKind.ASSISTANT``. Sensitivity is classified here so
+        a single source of truth feeds both router signals."""
+        if "intent_kind" not in context:
+            context["intent_kind"] = IntentKind.ASSISTANT.value
+        intent_raw = context.get("intent_kind")
+        try:
+            intent_kind = IntentKind(intent_raw) if intent_raw else IntentKind.ASSISTANT
+        except ValueError:
+            intent_kind = IntentKind.ASSISTANT
+        mode_raw = context.get("mode")
+        try:
+            mode = Mode(mode_raw) if mode_raw else None
+        except ValueError:
+            mode = None
+        if "sensitivity" not in context:
+            context["sensitivity"] = classify_sensitivity(
+                query, mode=mode, intent_kind=intent_kind
+            )
+        return context
+
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
         # Smart-mode escalation: hand reasoning/gathering queries to the ReAct
@@ -109,37 +138,59 @@ def attach_llm_capabilities(
             and escalate(query, context)
         ):
             return registry.invoke(agent_capability, query, context)
+        _enrich_context(query, context)
         tier = router.choose(query, context)
         model = llm if tier == "main" else fast
         if debug_routing:
-            print(f"[route] {tier} <- {query!r}", flush=True)
-        log.info("answering on %s tier: %r", tier, query)
+            print(
+                f"[route] {tier} sens={context.get('sensitivity')} <- {query!r}",
+                flush=True,
+            )
+        log.info(
+            "answering on %s tier (sensitivity=%s, intent=%s): %r",
+            tier, context.get("sensitivity"), context.get("intent_kind"), query,
+        )
         emit = context.get("emit_speech")
         started = time.monotonic()
-        tokens = mark_first_token(model.stream(query, system=system), recorder)
-        if callable(emit):
-            text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
+        # Publish the per-turn context so SensitivityRouterLLM can pick the
+        # right cloud chain at stream() time. Reset on the way out so the
+        # ContextVar doesn't leak between unrelated turns.
+        ctx_token = capability_context.set(context)
+        try:
+            tokens = mark_first_token(model.stream(query, system=system), recorder)
+            if callable(emit):
+                text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
+                log.info(
+                    "%s tier %s in %.2fs (%d chars, streamed)",
+                    tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
+                )
+                return CapabilityResult(
+                    True,
+                    text or "Sorry, I don't have an answer for that.",
+                    data={
+                        "route": tier,
+                        "streamed": True,
+                        "cancelled": cancelled,
+                        "sensitivity": context.get("sensitivity"),
+                    },
+                )
+            text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
             log.info(
-                "%s tier %s in %.2fs (%d chars, streamed)",
+                "%s tier %s in %.2fs (%d chars)",
                 tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
             )
+            if cancelled:
+                return CapabilityResult(
+                    True, text,
+                    data={"cancelled": True, "route": tier, "sensitivity": context.get("sensitivity")},
+                )
             return CapabilityResult(
                 True,
                 text or "Sorry, I don't have an answer for that.",
-                data={"route": tier, "streamed": True, "cancelled": cancelled},
+                data={"route": tier, "sensitivity": context.get("sensitivity")},
             )
-        text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
-        log.info(
-            "%s tier %s in %.2fs (%d chars)",
-            tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
-        )
-        if cancelled:
-            return CapabilityResult(True, text, data={"cancelled": True, "route": tier})
-        return CapabilityResult(
-            True,
-            text or "Sorry, I don't have an answer for that.",
-            data={"route": tier},
-        )
+        finally:
+            capability_context.reset(ctx_token)
 
     def research_synth(query: str, context: dict[str, object]) -> CapabilityResult:
         previous = context.get("previous_steps", [])

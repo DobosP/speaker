@@ -10,6 +10,9 @@ fastapi>=0.110         # token server + /chat + static web hosting
 uvicorn>=0.29          # ASGI server for the token/web server
 sherpa-onnx            # on-device streaming ASR + VITS TTS (CPU, int8)
 numpy>=1.24.0          # audio resample / PCM conversion
-ollama>=0.1.0          # LLM client -> the GPU Ollama service
+ollama>=0.1.0          # LLM client -> the GPU Ollama service (fast + local main)
+openai>=1.0            # OpenAI-compat HTTP client for the cloud middle layer
+                       # (Cerebras / Groq / DeepSeek / Moonshot all share this shape;
+                       # see core.llm.OpenAICompatLLM + tools/llm_sanity.py).
 huggingface-hub>=0.20.0  # one-shot sherpa model download
 psutil>=5.9.0          # CPU/RAM telemetry for the run summary

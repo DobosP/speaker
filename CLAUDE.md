@@ -73,7 +73,10 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
   realistic-timing/concurrency. No audio/model deps.
 - `tools/` — dev tooling (no app code). `run_tests.py` + `testing/` (staged
   pytest runner with reports under `test-reports/`); `specsim/` (machine-spec
-  simulator that renders an HTML capability report — see Conventions).
+  simulator that renders an HTML capability report — see Conventions);
+  `cloudchat.py` (parallel cloud-LLM REPL: fires N prompts in parallel at the
+  endpoint in `config.llm.cloud`, streams them with `[Qn]` prefixes, `/cancel`
+  hard-closes the HTTP stream so the provider stops billing; needs `openai`).
 - `config.json` — runtime config. `docs/` — architecture and subsystem docs.
 
 > The legacy stack (`main.py`, `utils/audio.py`, the hand-rolled STT/TTS/LLM

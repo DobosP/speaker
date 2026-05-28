@@ -31,8 +31,14 @@ Full rationale and the resolved sub-decisions are in §9.
 
 **Product goals (from the brief):**
 
-- Always-listening assistant, fully **on-device** and **fully local** (no cloud).
-- Runs on **Linux, Windows, macOS, Android, iOS**.
+- Always-listening assistant; **local-first with a hybrid cloud thinking tier**
+  (resolved 2026-05-28 — see §9.7). The always-on capture loop (STT / TTS / VAD
+  / speaker-ID / fast-answering LLM) runs on-device; raw audio never leaves the
+  device. The *thinking tier* (main planner, research, multimodal summarize) and
+  web search may use cloud — only post-ASR text + screen captures + files cross
+  over, and only when the thinking tier is invoked.
+- Runs on **Linux, Windows, macOS, Android, iOS** *eventually*. **v1 is
+  desktop Linux only** (mobile/multilingual/sync deferred — see §9.10).
 - **Modes** (e.g. `passive/quiet`, `assistant`, `research`, `command`,
   `dictation`) that change how speech is interpreted and what runs in the
   background.
@@ -60,7 +66,9 @@ the agent; phones/laptops are WebRTC mic+speaker endpoints). It sidesteps both
 limits and reuses the current Python code as-is. **Both paths are now built** —
 on-device (`core/`, `mobile/`) *and* the host path (`remote/` + LiveKit + `web/`)
 — and the product target is the **hybrid** of the two (see §0). The on-device
-path remains the north star because fully-local is a hard requirement.
+path remains the north star for the always-on capture/respond loop (raw audio
+never leaves the device); the cloud thinking tier (§9.7) extends it where local
+headroom isn't enough.
 
 ---
 
@@ -261,9 +269,11 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    expected `AgentEvent` sequence) both runtimes must pass, plus the §5
    convergence work (`mobile/lib/assistant.dart` onto the contract).
 2. **Deployment topology — hybrid (both paths first-class).** On-device leads
-   (fully-local is a hard requirement); the host + thin-client path (`remote/` +
-   LiveKit + `web/`) is the iOS-background story and the instant-reach fallback.
-   No longer hypothetical — it is built.
+   for the always-on loop (raw audio + STT/TTS + fast-answering LLM stay
+   local); the host + thin-client path (`remote/` + LiveKit + `web/`) is the
+   iOS-background story and the instant-reach fallback. The local/cloud
+   boundary inside a single deployment is §9.7. No longer hypothetical — it
+   is built.
 3. **UI shell — Flutter.** Confirmed and built (`mobile/`).
 4. **Mobile LLM runtime — MediaPipe/LiteRT via `flutter_gemma`** (Gemma 3 1B) in
    the shipped Flutter app; `llama.cpp`/Ollama remain the runtimes for the
@@ -273,6 +283,39 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    the host path covers continuous-listening needs where required.
 6. **Memory on mobile — SQLite** (+ optional on-device embeddings); vector search
    stays desktop-first (`utils/memory.py` Postgres+pgvector), optional on phones.
+7. **Local/cloud boundary — local-first with a hybrid cloud thinking tier**
+   (resolved 2026-05-28). *Local:* STT, TTS, VAD, speaker-ID, the always-on
+   capture loop, the fast/answering LLM tier (gemma3:4b-class), conversation
+   memory. *Cloud (optional, opt-in):* the *thinking* tier (main planner,
+   research, multimodal summarize) and **web search**. *Invariant:* raw audio
+   never leaves the device — only post-ASR text + screen captures + files
+   given to the assistant may cross to cloud, and only when the thinking
+   tier is invoked. Supersedes the earlier "fully-local, no cloud LLM"
+   stance; the always-on loop is still fully local.
+8. **Input gate — implicit addressing, speaker-ID gated** (resolved
+   2026-05-28). The brain transcribes everything but only *acts* when (a)
+   the speaker-ID matches the enrolled user and (b) the model judges the
+   utterance is addressed to it (no wake word). This is the central design
+   bottleneck and the next concrete PR after this docs landing. Today's
+   behavior — every clean ASR final is a query — is explicitly rejected
+   (see `logs/runs/run-20260528-004726.summary.json` for the symptom: four
+   nonsense transcripts answered as queries because the gate doesn't
+   exist).
+9. **Microphone is variable; speaker-ID is essential** (resolved
+   2026-05-28). v1 must handle headset *and* laptop-mic-plus-speakers in
+   the same session. Without speaker-ID, TTS leaks into the mic when
+   using speakers and produces barge-in storms (see
+   `logs/runs/run-20260528-004726.txt` lines 68–75). The speaker-ID gate
+   in `core/engines/speaker_gate.py` is therefore not optional in v1.
+10. **v1 scope — desktop-Linux-only with four modes** (resolved
+    2026-05-28). v1 ships: desktop Linux; English; four modes
+    (quiet/assistant/research/command); four background-task families
+    (research / summarize / reminders / watch) with per-task delivery
+    preference; 2–3 concurrent tasks; spoken confirmation on destructive
+    actions only; sherpa-onnx + existing brain + the cloud thinking tier
+    from §9.7. **Out of v1:** mobile shell, multilingual, cross-device
+    sync. Hardware target: workstation with ~16 GB VRAM GPU + 32 GB RAM
+    (the rig already running `gemma3:12b` + `4b` on Ollama).
 
-Mirrored for *intent* in `PROJECT_KICKOFF.md` §8.
+Mirrored for *intent* in `PROJECT_KICKOFF.md` §§1–7.
 ```

@@ -180,3 +180,99 @@ def test_thread_lifecycle_starts_and_stops_cleanly():
     wd.start()  # idempotent
     wd.stop()
     wd.stop()  # idempotent
+
+
+# --- capture-stream lifecycle (PR-3 PortAudio recovery integration) -------
+
+
+def test_recovering_state_suppresses_false_stalled_warning(fake_clock, caplog):
+    """While the engine is mid-recovery (its capture loop is sleeping
+    through PortAudio backoffs), the heartbeat will legitimately go
+    silent for several seconds. The watchdog must NOT fire the
+    'audio thread stalled' warning during that window -- that was
+    the noisy mis-attribution audited in PR-3."""
+    t, rec, wd = _make(fake_clock)
+    wd.CAPTURE_SILENT_DEADLINE_SEC = 0.5
+    wd.note_heartbeat()  # at t=0.0
+    # Engine reports it's recovering -- heartbeat will stop coming.
+    wd.note_capture_state("recovering", "PortAudio -9985")
+    t[0] = 1.0  # deadline exceeded by 2x
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    # No false-positive: state was recovering, so the silence is expected.
+    assert "capture silent" not in caplog.text
+
+
+def test_silent_warning_resumes_after_state_returns_to_open(fake_clock, caplog):
+    """Once the engine reports it recovered (state=open), the watchdog
+    re-arms. If the heartbeat then goes truly silent again, the warning
+    fires as normal."""
+    t, rec, wd = _make(fake_clock)
+    wd.CAPTURE_SILENT_DEADLINE_SEC = 0.5
+    wd.note_heartbeat()  # t=0.0
+    # Brief recovery; engine reports it's back.
+    wd.note_capture_state("recovering", "test")
+    t[0] = 0.6
+    wd.note_capture_state("open", "recovered")
+    wd.note_heartbeat()  # fresh heartbeat at t=0.6
+    t[0] = 1.3  # now silent for 0.7s -- past the 0.5s deadline
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "capture silent" in caplog.text
+
+
+def test_fatal_state_logs_capture_lost_error(fake_clock, caplog):
+    """When the engine reports FATAL (recovery exhausted), the watchdog
+    emits an error-level 'capture lost' message so the run bundle
+    records that capture truly stopped (not just stalled)."""
+    t, rec, wd = _make(fake_clock)
+    with caplog.at_level(logging.ERROR, logger="speaker.watchdog"):
+        wd.note_capture_state("fatal", "recovery exhausted")
+    assert "capture lost" in caplog.text
+
+
+def test_open_after_recovering_clears_warning_token(fake_clock, caplog):
+    """The first warning per silent-incident is one-shot via
+    ``_heartbeat_warned``. Returning to OPEN must reset that token so a
+    subsequent stall (after some healthy time) warns again -- otherwise
+    a single warned-then-recovered turn would mute the next legitimate
+    stall."""
+    t, rec, wd = _make(fake_clock)
+    wd.CAPTURE_SILENT_DEADLINE_SEC = 0.5
+
+    # First stall + warning.
+    wd.note_heartbeat()
+    t[0] = 0.6
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert caplog.text.count("capture silent") == 1
+
+    # Engine recovers. note_capture_state("open") clears the warning
+    # token so the next stall re-fires.
+    wd.note_capture_state("open", "recovered")
+    wd.note_heartbeat()
+    t[0] = 1.0
+    # No stall yet (just 0.4s after heartbeat).
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert caplog.text.count("capture silent") == 1  # still just the first
+
+    # Now stall again.
+    t[0] = 1.7
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert caplog.text.count("capture silent") == 2  # warned again
+
+
+def test_recovering_state_does_not_block_other_checks(fake_clock, caplog):
+    """A capture-state warning shouldn't gate the LLM-stuck heuristic --
+    those are independent. If the user is in recovering+LLM-stuck both,
+    we still want the LLM warning."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    wd.note_capture_state("recovering", "stuff")
+    rec.mark(ASR_FINAL)  # t=0
+    t[0] = 0.6
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" in caplog.text

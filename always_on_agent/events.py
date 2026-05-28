@@ -23,6 +23,11 @@ class EventKind(str, Enum):
     TTS_REQUEST = "tts.request"
     MEMORY_COMMIT = "memory.commit"
     FOLLOWUP_TICK = "followup.tick"
+    # Engine -> brain: input-stream lifecycle. ``payload`` carries
+    # ``{"state": "open"|"recovering"|"fatal", "message": "..."}``. Lets
+    # the brain surface "I'm reconnecting" feedback and stops the
+    # watchdog from misattributing reopen gaps as "stuck turn".
+    CAPTURE_STATE = "capture.state"
 
 
 class Mode(str, Enum):

@@ -39,6 +39,12 @@ class EngineCallbacks:
     # crashed/stalled capture thread. Engines without an audio loop leave the
     # default no-op (the watchdog then silently skips its silence check).
     on_heartbeat: Callable[[], None] = _noop
+    # Capture-stream lifecycle signal: ``state`` is one of "open" / "recovering"
+    # / "fatal" (mirroring :class:`core.engines._recovering_input.StreamState`).
+    # The runtime publishes it as an AgentEvent so the brain knows a silent
+    # gap is a device error, not a user pause; the watchdog uses it to
+    # suppress its "audio thread stalled" warning during legitimate reopens.
+    on_capture_state: Callable[[str, str], None] = lambda state, message: None
 
 
 class AudioEngine(ABC):

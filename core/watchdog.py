@@ -77,6 +77,12 @@ class StuckWatchdog:
         self._heartbeat_warned: bool = False
         self._barge_ins: deque = deque()
         self._storm_warned_at: Optional[float] = None
+        # Last reported capture-stream state from the engine ("open" /
+        # "recovering" / "fatal"). The heartbeat check skips its warning
+        # while we're known-recovering -- a 6 s reopen is intentional, not
+        # a stall.
+        self._capture_state: str = "open"
+        self._capture_state_at: float = self._clock()
 
     # --- lifecycle -----------------------------------------------------------
     def start(self) -> None:
@@ -105,6 +111,24 @@ class StuckWatchdog:
     def note_barge_in(self) -> None:
         """Runtime reports a barge-in event; the watchdog tracks the rate."""
         self._barge_ins.append(self._clock())
+
+    def note_capture_state(self, state: str, message: str = "") -> None:
+        """Runtime forwards the engine's capture-stream lifecycle.
+
+        Recording this state has two effects:
+
+        - the heartbeat check is suppressed while ``state == "recovering"``
+          (a legitimate 6 s reopen is not a stalled audio thread);
+        - on ``state == "fatal"`` we emit a one-shot ``log.error`` so the
+          run bundle records that capture has truly stopped.
+        """
+        self._capture_state = state
+        self._capture_state_at = self._clock()
+        if state == "fatal":
+            log.error("capture lost (device hardware): %s", message or "unknown")
+        # Returning from "recovering" -> "open" re-arms the silence check.
+        if state == "open":
+            self._heartbeat_warned = False
 
     # --- inspection (one pass; tests drive this directly) --------------------
     def tick(self) -> None:
@@ -137,6 +161,11 @@ class StuckWatchdog:
         if self._last_heartbeat is None:
             return  # engine hasn't reported any heartbeats; not applicable
         if self._heartbeat_warned:
+            return
+        # While the engine is mid-recover, the absence of heartbeats is
+        # expected -- the capture loop is sleeping during backoff. Don't
+        # mis-attribute the gap as a stalled thread.
+        if self._capture_state == "recovering":
             return
         elapsed = now - self._last_heartbeat
         if elapsed >= self.CAPTURE_SILENT_DEADLINE_SEC:

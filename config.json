@@ -42,6 +42,64 @@
         "tts_num_threads": 2
       }
     },
+    "desktop_gpu_4090": {
+      "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; both gates ON (fast tier has plenty of headroom). Specsim quick TTFA 0.96s. Cloud hedge off by default; flip llm.cloud.enabled in config.local.json to add cloud-backed research mode.",
+      "llm": {
+        "backend": "ollama",
+        "main_model": "gemma3:12b",
+        "fast_model": "gemma3:4b",
+        "keep_alive": -1,
+        "options": {
+          "num_ctx": 8192,
+          "num_predict": 512,
+          "num_gpu": 999
+        }
+      },
+      "sherpa": {
+        "asr_num_threads": 4,
+        "tts_num_threads": 2
+      },
+      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
+      "cleanup": {"enabled": true, "max_context": 3}
+    },
+    "macbook_m_series": {
+      "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. For research mode set llm.cloud.enabled=true with a DeepSeek/OpenAI/Together key to keep paragraph answers under 3s.",
+      "llm": {
+        "backend": "ollama",
+        "main_model": "gemma3:4b",
+        "fast_model": "gemma3:1b",
+        "keep_alive": "30m",
+        "options": {
+          "num_ctx": 4096,
+          "num_predict": 384
+        }
+      },
+      "sherpa": {
+        "asr_num_threads": 4,
+        "tts_num_threads": 2
+      },
+      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
+      "cleanup": {"enabled": true, "max_context": 3}
+    },
+    "cpu_laptop": {
+      "_comment": "Mid-range Windows/Linux laptop, no dedicated GPU (8 cores, 16GB). Local gemma3:1b only -- the 4b main is too slow on pure CPU (specsim quick TTFA would be ~3.5s+). Cloud hedge STRONGLY recommended for the main tier: enable llm.cloud, set the api_key_env var, and the hedge handles paragraph answers in ~1-2s. Both gates OFF (no fast-tier headroom on CPU).",
+      "llm": {
+        "backend": "ollama",
+        "main_model": "gemma3:4b",
+        "fast_model": "gemma3:1b",
+        "keep_alive": "10m",
+        "options": {
+          "num_ctx": 2048,
+          "num_predict": 256
+        }
+      },
+      "sherpa": {
+        "asr_num_threads": 4,
+        "tts_num_threads": 2
+      },
+      "input_gate": {"enabled": false, "unsure_acts": true, "max_context": 4},
+      "cleanup": {"enabled": false, "max_context": 3}
+    },
     "phone": {
       "llm": {
         "backend": "llamacpp",
@@ -58,6 +116,26 @@
         "asr_num_threads": 2,
         "tts_num_threads": 1
       }
+    },
+    "phone_lite": {
+      "_comment": "Low-end phone (6GB RAM, mid-range SoC): single-tier gemma3:1b GGUF Q4 only. The 4b model thrashes RAM at this tier. Cloud REQUIRED for research mode -- enable llm.cloud and set DEEPSEEK_API_KEY (or equivalent) for paragraph answers. Specsim quick TTFA on-device 5s; with cloud hedge 1-2s. Gates OFF.",
+      "llm": {
+        "backend": "llamacpp",
+        "main_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
+        "fast_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
+        "n_ctx": 1536,
+        "n_gpu_layers": 0,
+        "options": {
+          "temperature": 0.7
+        }
+      },
+      "sherpa": {
+        "num_threads": 2,
+        "asr_num_threads": 1,
+        "tts_num_threads": 1
+      },
+      "input_gate": {"enabled": false, "unsure_acts": true, "max_context": 4},
+      "cleanup": {"enabled": false, "max_context": 3}
     }
   },
   "mode": "assistant",

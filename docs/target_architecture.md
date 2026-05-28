@@ -318,4 +318,88 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
     (the rig already running `gemma3:12b` + `4b` on Ollama).
 
 Mirrored for *intent* in `PROJECT_KICKOFF.md` §§1–7.
-```
+
+---
+
+## 10. Performance plan — balanced cost × speed × intelligence
+
+A tiered routing strategy that the existing code already supports (the
+`device_profiles`, `llm.cloud` and `input_gate`/`cleanup` config blocks). The
+`tools.recommend_profile` script probes the host and prints the matching
+profile so users don't have to read this section first.
+
+### 10.1 Device tiers (specsim modelled estimates, 2026-05)
+
+Numbers from `python -m tools.specsim`. ✓ = inside the budget (≤1.2 s first
+audio · ≤0.3 s barge-in stop); ~ = inside the relaxed budget (≤2.5 s / ≤0.5
+s); ✗ = miss. Validate per machine with `python -m tools.bench --profile
+<name>`.
+
+| Device class | Profile | LLM tier | LLM speed | quick TTFA | research TTFA | barge-in |
+|---|---|---|---|---|---|---|
+| RTX 4090 / 5090 | `desktop_gpu_4090` | gemma3:12b on GPU | 111 tok/s | 0.96s ✓ | 1.63s ✓ | 0.30s ✓ |
+| MacBook M2/M3/M4 (16+ GB) | `macbook_m_series` | gemma3:4b on Metal | 50 tok/s | 1.46s ~ | 2.96s ✗ | 0.30s ✓ |
+| Windows/Linux laptop, no dGPU | `cpu_laptop` | gemma3:4b on CPU | 12.5 tok/s | 3.54s ✗ | 9.54s ✗ | 0.35s ~ |
+| Android 12 GB | `phone` | gemma3:4b GGUF | 8.3 tok/s | 5.26s ✗ | 14.26s ✗ | 0.40s ~ |
+| Low-end phone / web | `phone_lite` | gemma3:1b GGUF | 11.1 tok/s | 5.07s ✗ | 11.82s ✗ | 0.45s ~ |
+
+**The takeaway:** only the dGPU profile hits the snappy budget locally; the
+Mac is borderline; every other on-device target falls off a cliff.
+Barge-in is fine everywhere — the cancellation path is cheap.
+
+### 10.2 The tiered strategy
+
+The pipeline already has three independent LLM-using surfaces. Tier them by
+*how often they run* and *how local they must be*:
+
+| Tier | Where it runs | Latency target | Intelligence | Cost / turn |
+|---|---|---|---|---|
+| Wake / KWS / intent fast-path | always local (sherpa-onnx KWS, deterministic) | <100 ms | rule-based | 0 |
+| Input gate + cleanup | local fast tier *if* the device has headroom | +150–300 ms each | small LM (1b–4b) | 0 |
+| Fast spoken reply (`assistant.answer`) | local fast tier | 0.3–2 s | conversational | 0 |
+| Main planner / multimodal | local main tier *or* cloud hedge | 1–3 s | strong | 0 or ~$0.0008 |
+| Research / web / vision summarize | cloud-only when enabled (§9.7) | 2–5 s | frontier | ~$0.005 |
+
+The fully-local fast-tier loop (STT → fast LM → TTS) is the always-on
+contract from §9.7 and §1 — it never leaves the device. The cloud appears
+only where the local headroom isn't there.
+
+### 10.3 Profile → strategy mapping
+
+Each profile under `config.json.device_profiles` codifies one row of the
+matrix below; flip `llm.cloud.enabled` in a gitignored `config.local.json`
+to add a cloud hedge without editing the committed template.
+
+| Profile | Models on-device | Gates ON? | Cloud hedge | Notes |
+|---|---|---|---|---|
+| `desktop_gpu_4090` | gemma3:12b + 4b | both | off | The fully-local north-star config. |
+| `desktop` | gemma3:12b + 4b | off (compat) | off | The existing profile; left alone for backward-compat. |
+| `macbook_m_series` | gemma3:4b + 1b on Metal | both | off (recommended for research mode) | M-series Macs hit ~50 tok/s on Metal — fast tier has headroom for the gates. |
+| `cpu_laptop` | gemma3:4b + 1b on CPU (Ollama) | **off** | **on, strongly recommended** | CPU LLM TTFT (~0.8 s) leaves no slack for the gates. Cloud hedge keeps research-mode under 3 s. |
+| `phone` | gemma3:4b + 1b GGUF | off | optional | Android/iOS class; same cost story as `cpu_laptop`. |
+| `phone_lite` | gemma3:1b GGUF only (single-tier) | off | **required for research** | Sub-8 GB hosts thrash on the 4b model. |
+
+### 10.4 Cost envelope (when cloud is enabled)
+
+For the cloud thinking tier, the cheapest *frontier-class* option in 2026 is
+DeepSeek V4-Flash at ≈$0.30 / MTok (see §9 references). Per-turn token
+estimates:
+
+- Quick reply: ~250 tokens → ≈ $0.00007 / turn
+- Research turn: ~1.3 k tokens → ≈ $0.0004 / turn
+
+Heavy use: 100 quick + 20 research turns/day → **~$0.014/day**. A daily
+research-heavy user lands under $1/month. The hedge strategy makes this an
+upper bound — when local beats the deadline, cloud isn't called at all.
+
+### 10.5 What this changes in the repo
+
+- `config.json.device_profiles`: adds `desktop_gpu_4090`,
+  `macbook_m_series`, `cpu_laptop`, `phone_lite` alongside the existing
+  `desktop` and `phone`. The new profiles also set `input_gate` and
+  `cleanup` to their per-tier defaults.
+- `tools/recommend_profile.py`: probes cores / RAM / GPU and prints the
+  matching profile. Stdlib-only; on Apple Silicon and NVIDIA cards it
+  identifies the device automatically, on plain Linux/Windows CPUs it
+  defaults to `cpu_laptop`. Run once per machine.
+- No runtime changes — every device profile is opt-in via `--device`.

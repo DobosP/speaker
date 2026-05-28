@@ -75,6 +75,11 @@
     "unsure_acts": true,
     "max_context": 4
   },
+  "cleanup": {
+    "_comment": "Optional ASR transcript cleanup (core/cleanup.py). Disabled by default; enable to rewrite the raw final into the user's intended sentence -- drops fillers, resolves self-corrections, handles the word-repeat-at-end correction signal. Needs llm.fast_model. Adds one fast-tier LLM call per ACT'd final.",
+    "enabled": false,
+    "max_context": 3
+  },
   "followups": {
     "enabled": false,
     "delay_sec": 3.0,

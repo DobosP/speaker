@@ -14,6 +14,7 @@ from always_on_agent.supervisor import AgentSupervisor
 
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
 from .capabilities import attach_llm_capabilities
+from .cleanup import TranscriptCleaner
 from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
@@ -55,6 +56,7 @@ class VoiceRuntime:
         intents: Optional[LocalIntentHandler] = None,
         addressing: Optional[AddressingClassifier] = None,
         unsure_acts: bool = True,
+        cleaner: Optional[TranscriptCleaner] = None,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -74,6 +76,10 @@ class VoiceRuntime:
         # preserves prior behavior (respond on ambiguity); False is conservative.
         self._addressing = addressing
         self._unsure_acts = unsure_acts
+        # Optional transcript cleaner. When present, every ACT'd final goes
+        # through an LLM rewrite to drop disfluencies and resolve self-
+        # corrections before the brain sees it. See core/cleanup.py.
+        self._cleaner = cleaner
         self.bus = EventBus()
         # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
@@ -174,11 +180,33 @@ class VoiceRuntime:
                 self.memory.add(text, tags=("ingested",))
                 return
         self.metrics.mark(ASR_FINAL)
+        # Cleanup pass: rewrite disfluencies / self-corrections so the brain
+        # acts on what the user meant, not on every "um" + word-repeat. The
+        # raw text was already logged above; emit a second transcript entry
+        # with the cleaned version (and the raw retained in 'raw') so the
+        # user can audit every rewrite in run-<id>.summary.json.
+        final_text = text
+        if self._cleaner is not None:
+            recent_for_cleaner = [item.text for item in self.memory.all()[-4:]]
+            try:
+                cleaned = self._cleaner.clean(text, recent=recent_for_cleaner)
+            except Exception:  # noqa: BLE001
+                log.exception("transcript cleaner failed; passing raw text through")
+                cleaned = text
+            if cleaned and cleaned != text:
+                log.info(
+                    "cleaned: %r -> %r", text, cleaned,
+                    extra={"transcript": {
+                        "role": "user", "text": cleaned, "raw": text,
+                        "mode": self.mode.value,
+                    }},
+                )
+                final_text = cleaned
         # Try the no-LLM fast-path next; only fall through to the brain on a miss.
-        if self._intents is not None and self._intents.handle(text):
-            log.debug("handled by intent fast-path: %r", text)
+        if self._intents is not None and self._intents.handle(final_text):
+            log.debug("handled by intent fast-path: %r", final_text)
             return
-        self.bus.publish(AgentEvent.final(text))
+        self.bus.publish(AgentEvent.final(final_text))
 
     def _on_barge_in(self) -> None:
         # User spoke over the assistant: cut playback now, cancel in-flight work.

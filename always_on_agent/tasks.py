@@ -189,12 +189,17 @@ class TaskRuntime:
         capability: str,
         extra_context: dict[str, object] | None = None,
     ) -> CapabilityResult:
-        context = {
+        context: dict[str, object] = {
             "task_id": task.task_id,
             "mode": task.mode.value,
             "metadata": task.metadata,
             "cancel_event": task.cancel_event,
         }
+        # Forward the IntentKind so downstream routers (HeuristicRouter,
+        # SensitivityRouterLLM) can factor it into tier / cloud-chain
+        # choice -- e.g. RESEARCH -> main tier, COMMAND -> private chain.
+        if task.intent is not None:
+            context["intent_kind"] = task.intent.value
         if extra_context:
             context.update(extra_context)
         return self._capabilities.invoke(

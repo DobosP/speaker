@@ -5,7 +5,16 @@ import os
 import queue
 import threading
 import time
-from typing import Iterator, Optional, Protocol, Sequence, runtime_checkable
+from contextvars import ContextVar
+from typing import Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
+
+# Per-turn context published by the capability layer so the LLM stack can
+# pick a routing chain (sensitivity / intent_kind / mode) without changing
+# the LLMClient protocol. Default is an empty mapping so callers that don't
+# set it always land on the safe-default chain.
+capability_context: ContextVar[Mapping[str, object]] = ContextVar(
+    "speaker_capability_context", default={}
+)
 
 _ollama_log = logging.getLogger("speaker.llm.ollama")
 
@@ -417,37 +426,60 @@ class OpenAICompatLLM:
 
 
 class HedgeLLM:
-    """Race a local LLM against an optional cloud one for the lowest latency.
+    """Race a local LLM against an optional cloud chain for the lowest latency.
 
     Strategies (all keep local as the safety net -- any cloud error/timeout
-    falls back to local, honoring the fully-local requirement):
+    falls through to the next cloud, finally to local, honoring the fully-
+    local requirement):
 
     - ``hedge`` (default): start local now; if it produces no token within
-      ``hedge_delay_ms``, also start cloud and stream whichever yields the FIRST
-      token. Caps cloud spend/exposure while still racing when local is slow.
-      ``hedge_delay_ms=0`` makes it a full race (both start immediately).
-    - ``fallback``: start cloud first with a ``ttft_deadline_ms`` first-token
-      deadline; on timeout/error, fall back to local.
+      ``hedge_delay_ms``, also start the first cloud and stream whichever
+      yields the FIRST token. Caps cloud spend/exposure while still racing
+      when local is slow. ``hedge_delay_ms=0`` makes it a full race.
+    - ``fallback``: start the first cloud with a ``ttft_deadline_ms`` first-
+      token deadline; on timeout/error, advance to the next cloud; after the
+      chain is exhausted, fall back to local with no deadline.
 
-    Cancellation: the loser worker is signalled to stop and stops consuming
-    between tokens; the brain's ``cancel_event`` still cuts the winner's stream
-    in the capability layer, so barge-in works unchanged.
+    The ``cloud`` parameter accepts either a single :class:`LLMClient` (back-
+    compat) or a list of them (a failover chain). When any cloud in the chain
+    finishes without producing a token (error or empty stream), HedgeLLM
+    advances to the next cloud and races it against local with the same
+    rules.
+
+    Cancellation: losing workers are signalled to stop between tokens; the
+    brain's ``cancel_event`` still cuts the winner's stream in the
+    capability layer, so barge-in works unchanged.
     """
 
     def __init__(
         self,
         *,
         local: "LLMClient",
-        cloud: Optional["LLMClient"],
+        cloud: "Optional[LLMClient | Sequence[LLMClient]]",
         strategy: str = "hedge",
         hedge_delay_ms: int = 150,
         ttft_deadline_ms: int = 1200,
     ):
         self.local = local
-        self.cloud = cloud
+        if cloud is None:
+            self._clouds: list["LLMClient"] = []
+        elif isinstance(cloud, (list, tuple)):
+            self._clouds = [c for c in cloud if c is not None]
+        else:
+            self._clouds = [cloud]
         self.strategy = strategy
         self.hedge_delay = max(0.0, hedge_delay_ms / 1000.0)
         self.ttft_deadline = max(0.0, ttft_deadline_ms / 1000.0)
+
+    @property
+    def cloud(self) -> "Optional[LLMClient]":
+        """Back-compat: the first cloud in the chain (or ``None``)."""
+        return self._clouds[0] if self._clouds else None
+
+    @property
+    def clouds(self) -> list["LLMClient"]:
+        """The full cloud failover chain (empty list when no cloud is set)."""
+        return list(self._clouds)
 
     def generate(
         self,
@@ -466,7 +498,7 @@ class HedgeLLM:
                     break
                 q.put((tag, "tok", token))
             q.put((tag, "done", None))
-        except Exception as exc:  # cloud down / rate-limited -> let local win
+        except Exception as exc:  # cloud down / rate-limited -> chain advances
             q.put((tag, "err", str(exc)))
 
     def stream(
@@ -476,17 +508,25 @@ class HedgeLLM:
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
     ) -> Iterator[str]:
-        if self.cloud is None:
+        if not self._clouds:
             yield from self.local.stream(prompt, system=system, images=images)
             return
 
         q: "queue.Queue[tuple[str, str, object]]" = queue.Queue()
-        stops = {"local": threading.Event(), "cloud": threading.Event()}
-        clients = {"local": self.local, "cloud": self.cloud}
+        cloud_tags = [f"cloud_{i}" for i in range(len(self._clouds))]
+        stops: dict[str, threading.Event] = {
+            "local": threading.Event(),
+            **{tag: threading.Event() for tag in cloud_tags},
+        }
+        clients: dict[str, "LLMClient"] = {
+            "local": self.local,
+            **dict(zip(cloud_tags, self._clouds)),
+        }
         started: set[str] = set()
+        dead: set[str] = set()
 
         def launch(tag: str) -> None:
-            if tag in started or clients[tag] is None:
+            if tag in started:
                 return
             started.add(tag)
             threading.Thread(
@@ -495,42 +535,85 @@ class HedgeLLM:
                 daemon=True,
             ).start()
 
+        cloud_iter = iter(cloud_tags)
+
+        def next_cloud() -> Optional[str]:
+            try:
+                return next(cloud_iter)
+            except StopIteration:
+                return None
+
+        current_cloud = next_cloud()
         if self.strategy == "fallback":
-            primary, secondary, delay = "cloud", "local", self.ttft_deadline
+            # Cloud-first: launch the first cloud with a ttft_deadline; on
+            # error/timeout, advance the chain; finally fall back to local.
+            if current_cloud is not None:
+                launch(current_cloud)
+            deadline = time.monotonic() + self.ttft_deadline
+            local_pending = True
         else:  # hedge
-            primary, secondary, delay = "local", "cloud", self.hedge_delay
-        launch(primary)
-        live = 1 if primary in started else 0
-        deadline = time.monotonic() + delay
+            # Local-first: kick local now; after hedge_delay also launch the
+            # first cloud. On cloud error/finish-without-tokens, advance the
+            # chain and keep racing against local.
+            launch("local")
+            deadline = time.monotonic() + self.hedge_delay
+            local_pending = False
 
         winner: Optional[str] = None
         buffered: list[str] = []
-        while winner is None and live > 0:
-            secondary_started = secondary in started
-            if secondary_started or deadline == float("inf"):
-                timeout = None
-            else:
-                timeout = max(0.0, deadline - time.monotonic())
+
+        def kick_chain() -> bool:
+            """Bring up whatever is next in line. Returns True if launched."""
+            nonlocal current_cloud, deadline, local_pending
+            if self.strategy == "hedge":
+                if current_cloud is not None and current_cloud not in started:
+                    launch(current_cloud)
+                    deadline = float("inf")
+                    return True
+            else:  # fallback
+                if current_cloud is not None and current_cloud not in started:
+                    launch(current_cloud)
+                    deadline = time.monotonic() + self.ttft_deadline
+                    return True
+            if local_pending:
+                launch("local")
+                local_pending = False
+                deadline = float("inf")
+                return True
+            return False
+
+        while winner is None:
+            live = started - dead
+            if not live:
+                if not kick_chain():
+                    break
+                continue
+            timeout = None if deadline == float("inf") else max(0.0, deadline - time.monotonic())
             try:
                 tag, kind, val = q.get(timeout=timeout)
             except queue.Empty:
-                # Primary was too slow: bring up the secondary, then wait.
-                launch(secondary)
-                live += 1 if secondary in started else 0
-                deadline = float("inf")
+                # Deadline hit. Hedge: kick the current cloud; fallback:
+                # retire the current cloud and advance the chain.
+                if self.strategy == "fallback" and current_cloud is not None:
+                    stops[current_cloud].set()
+                    dead.add(current_cloud)
+                    current_cloud = next_cloud()
+                kick_chain()
                 continue
             if kind == "tok":
                 winner = tag
                 buffered.append(str(val))
-            else:  # this source produced nothing (finished or errored)
-                live -= 1
-                if not secondary_started:
-                    launch(secondary)
-                    live += 1 if secondary in started else 0
-                    deadline = float("inf")
+            else:  # this source died (error or empty stream)
+                dead.add(tag)
+                if tag == current_cloud:
+                    current_cloud = next_cloud()
+                    kick_chain()
+                elif tag == "local":
+                    # Local crashed; nothing to do but ride the cloud chain.
+                    pass
 
         if winner is None:
-            return  # nothing produced (e.g. no cloud and local empty) -> empty
+            return  # nothing produced (every source errored or was empty)
         for tag, ev in stops.items():
             if tag != winner:
                 ev.set()
@@ -544,6 +627,63 @@ class HedgeLLM:
                 yield str(val)
             else:
                 break
+
+
+class SensitivityRouterLLM:
+    """Dispatch ``generate``/``stream`` to one of several backing LLMs based
+    on the data-sensitivity tag of the current turn.
+
+    Each backing LLM is typically a :class:`HedgeLLM` (local + cloud
+    failover chain). The selection happens at call time using a context
+    selector that reads :data:`capability_context` -- a ``ContextVar`` set
+    by the capability layer before invoking the LLM. This keeps the
+    LLMClient protocol unchanged (no extra parameter on ``stream``) while
+    letting the routing decision flow from the brain's per-turn context.
+    """
+
+    def __init__(
+        self,
+        chains: Mapping[str, "LLMClient"],
+        selector,
+        *,
+        default_chain: str = "private",
+    ):
+        if not chains:
+            raise ValueError("SensitivityRouterLLM requires at least one chain")
+        if default_chain not in chains:
+            raise ValueError(
+                f"default_chain {default_chain!r} not in chains {sorted(chains)}"
+            )
+        self.chains: dict[str, "LLMClient"] = dict(chains)
+        self.selector = selector
+        self.default_chain = default_chain
+
+    def _pick(self) -> "LLMClient":
+        ctx = capability_context.get()
+        name = self.selector.choose_chain(ctx) if self.selector is not None else self.default_chain
+        return self.chains.get(name, self.chains[self.default_chain])
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+    ) -> str:
+        # Pick happens eagerly so any sensitivity-driven routing is logged
+        # at the call site (via _pick) rather than at first-yield.
+        impl = self._pick()
+        return impl.generate(prompt, system=system, images=images)
+
+    def stream(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+    ) -> Iterator[str]:
+        impl = self._pick()
+        return impl.stream(prompt, system=system, images=images)
 
 
 def _to_data_uri(raw: bytes) -> str:

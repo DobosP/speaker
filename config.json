@@ -15,6 +15,7 @@
       "threshold": 0.5
     },
     "cloud": {
+      "_comment": "Single-cloud back-compat: when cloud_providers/cloud_chains are absent, this block configures one cloud client. Set enabled=true and pick a base_url/model/api_key_env. For multi-provider sensitivity-routed chains, use llm.cloud_providers + llm.cloud_chains below and leave this block disabled.",
       "enabled": false,
       "strategy": "hedge",
       "base_url": "https://api.groq.com/openai/v1",
@@ -22,6 +23,66 @@
       "api_key_env": "GROQ_API_KEY",
       "hedge_delay_ms": 150,
       "ttft_deadline_ms": 1200
+    },
+    "cloud_providers": {
+      "_comment": "Named OpenAI-compatible cloud LLM presets. Each entry is one provider+model pairing. Selected from a chain in llm.cloud_chains.",
+      "cerebras_qwen_235b": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "model": "qwen-3-235b-instruct",
+        "api_key_env": "CEREBRAS_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.60, "out": 1.20, "ttft_ms": 75, "host": "US"}
+      },
+      "cerebras_qwen_coder": {
+        "base_url": "https://api.cerebras.ai/v1",
+        "model": "qwen-3-coder-480b",
+        "api_key_env": "CEREBRAS_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 2.00, "out": 2.00, "ttft_ms": 80, "host": "US"}
+      },
+      "groq_llama_70b": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "llama-3.3-70b-versatile",
+        "api_key_env": "GROQ_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.59, "out": 0.79, "ttft_ms": 120, "host": "US"}
+      },
+      "groq_kimi_k2": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "model": "moonshotai/kimi-k2-instruct",
+        "api_key_env": "GROQ_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 1.00, "out": 3.00, "ttft_ms": 250, "host": "US"}
+      },
+      "deepseek_v4_flash": {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-v4-flash",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.14, "out": 0.28, "ttft_ms": 400, "host": "CN"}
+      },
+      "deepseek_r1": {
+        "base_url": "https://api.deepseek.com/v1",
+        "model": "deepseek-r1",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.55, "out": 2.19, "ttft_ms": 500, "host": "CN", "_note": "reasoning chains balloon output"}
+      },
+      "moonshot_k2_5": {
+        "base_url": "https://api.moonshot.cn/v1",
+        "model": "moonshot-v1-k2.5",
+        "api_key_env": "MOONSHOT_API_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.60, "out": 2.50, "ttft_ms": 300, "host": "CN"}
+      }
+    },
+    "cloud_chains": {
+      "_comment": "Ordered failover chains by data-sensitivity. HedgeLLM tries the first cloud; on error/timeout it advances to the next; finally falls back to the local main LLM. US-only chains keep personal data under US legal jurisdiction; the public chain uses cheaper CN-hosted providers when the content isn't about the user.",
+      "private": ["cerebras_qwen_235b", "groq_llama_70b"],
+      "code":    ["cerebras_qwen_coder", "groq_kimi_k2"],
+      "public":  ["deepseek_v4_flash", "cerebras_qwen_235b"]
+    },
+    "cloud_routing": {
+      "_comment": "Maps Sensitivity tag (from core/sensitivity.py) -> chain name above. default_chain is used when sensitivity is missing/unknown -- 'private' is the safe default.",
+      "default_chain": "private",
+      "sensitivity_to_chain": {
+        "private": "private",
+        "code": "code",
+        "public": "public"
+      }
     }
   },
   "device_profiles": {
@@ -43,7 +104,7 @@
       }
     },
     "desktop_gpu_4090": {
-      "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; both gates ON (fast tier has plenty of headroom). Specsim quick TTFA 0.96s. Cloud hedge off by default; flip llm.cloud.enabled in config.local.json to add cloud-backed research mode.",
+      "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; both gates ON (fast tier has plenty of headroom). Specsim quick TTFA 0.96s. Cloud chains off by default -- local 12b is fast enough; enable in config.local.json for paragraph-length research-mode answers.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:12b",
@@ -53,7 +114,8 @@
           "num_ctx": 8192,
           "num_predict": 512,
           "num_gpu": 999
-        }
+        },
+        "cloud": {"enabled": false}
       },
       "sherpa": {
         "asr_num_threads": 4,
@@ -63,7 +125,7 @@
       "cleanup": {"enabled": true, "max_context": 3}
     },
     "macbook_m_series": {
-      "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. For research mode set llm.cloud.enabled=true with a DeepSeek/OpenAI/Together key to keep paragraph answers under 3s.",
+      "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. Sensitivity-routed cloud chains ENABLED (hedge strategy): private turns -> Cerebras+Groq (US); code turns -> Cerebras Coder+Kimi; public turns -> DeepSeek-Flash (CN, cheap). Provide the four API keys via env to activate; missing keys disable that chain individually.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",
@@ -72,7 +134,8 @@
         "options": {
           "num_ctx": 4096,
           "num_predict": 384
-        }
+        },
+        "cloud": {"enabled": true, "strategy": "hedge", "hedge_delay_ms": 150}
       },
       "sherpa": {
         "asr_num_threads": 4,
@@ -82,7 +145,7 @@
       "cleanup": {"enabled": true, "max_context": 3}
     },
     "cpu_laptop": {
-      "_comment": "Mid-range Windows/Linux laptop, no dedicated GPU (8 cores, 16GB). Local gemma3:1b only -- the 4b main is too slow on pure CPU (specsim quick TTFA would be ~3.5s+). Cloud hedge STRONGLY recommended for the main tier: enable llm.cloud, set the api_key_env var, and the hedge handles paragraph answers in ~1-2s. Both gates OFF (no fast-tier headroom on CPU).",
+      "_comment": "Mid-range Windows/Linux laptop, no dedicated GPU (8 cores, 16GB). Local gemma3:1b only -- the 4b main is too slow on pure CPU (specsim quick TTFA would be ~3.5s+). Sensitivity-routed cloud chains ENABLED with hedge_delay_ms=0 (kick cloud immediately, don't wait for local). Both gates OFF (no fast-tier headroom on CPU).",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",
@@ -91,7 +154,8 @@
         "options": {
           "num_ctx": 2048,
           "num_predict": 256
-        }
+        },
+        "cloud": {"enabled": true, "strategy": "hedge", "hedge_delay_ms": 0}
       },
       "sherpa": {
         "asr_num_threads": 4,
@@ -118,7 +182,7 @@
       }
     },
     "phone_lite": {
-      "_comment": "Low-end phone (6GB RAM, mid-range SoC): single-tier gemma3:1b GGUF Q4 only. The 4b model thrashes RAM at this tier. Cloud REQUIRED for research mode -- enable llm.cloud and set DEEPSEEK_API_KEY (or equivalent) for paragraph answers. Specsim quick TTFA on-device 5s; with cloud hedge 1-2s. Gates OFF.",
+      "_comment": "Low-end phone (6GB RAM, mid-range SoC): single-tier gemma3:1b GGUF Q4 only. The 4b model thrashes RAM at this tier. Cloud chains ENABLED with fallback strategy -- cloud-first (with ttft_deadline), local-only as last resort. Specsim quick TTFA on-device 5s; with cloud hedge 1-2s. Gates OFF.",
       "llm": {
         "backend": "llamacpp",
         "main_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
@@ -127,7 +191,8 @@
         "n_gpu_layers": 0,
         "options": {
           "temperature": 0.7
-        }
+        },
+        "cloud": {"enabled": true, "strategy": "fallback", "ttft_deadline_ms": 1500}
       },
       "sherpa": {
         "num_threads": 2,

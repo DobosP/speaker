@@ -401,6 +401,19 @@ def main(argv: list[str] | None = None) -> int:
 
         intents = LocalIntentHandler(engine.speak, phrases=intents_cfg.get("phrases"))
 
+    # Input gate: optional ACT/INGEST classifier between ASR_FINAL and the
+    # brain (core/addressing.py). Requires a fast LLM client; if either is
+    # missing, the runtime falls back to legacy behavior (every final acts).
+    input_gate_cfg = config.get("input_gate", {}) or {}
+    addressing = None
+    if input_gate_cfg.get("enabled", False) and fast_llm is not None:
+        from .addressing import LLMAddressingClassifier
+
+        addressing = LLMAddressingClassifier(
+            fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
+        )
+    unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
+
     runtime = VoiceRuntime(
         engine,
         llm,
@@ -413,6 +426,8 @@ def main(argv: list[str] | None = None) -> int:
         followup_config=followup_config,
         command_map=config.get("commands"),
         intents=intents,
+        addressing=addressing,
+        unsure_acts=unsure_acts,
     )
 
     try:

@@ -12,6 +12,7 @@ from always_on_agent.memory import SessionMemory
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.supervisor import AgentSupervisor
 
+from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
 from .capabilities import attach_llm_capabilities
 from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
@@ -52,6 +53,8 @@ class VoiceRuntime:
         followup_config: Optional[FollowupConfig] = None,
         command_map: Optional[dict[str, str]] = None,
         intents: Optional[LocalIntentHandler] = None,
+        addressing: Optional[AddressingClassifier] = None,
+        unsure_acts: bool = True,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -64,12 +67,20 @@ class VoiceRuntime:
         # case-insensitively. Empty -> unmapped keywords fall back to the normal
         # transcript path so nothing is silently dropped.
         self._command_map = {normalize_command(k): v for k, v in (command_map or {}).items()}
+        # Input gate (optional). When set, every ASR final is classified before
+        # reaching the brain so background speech / read-aloud quotations don't
+        # trigger replies. See core/addressing.py and docs/target_architecture.md
+        # §9.8. ``unsure_acts`` decides what to do with UNSURE -- True (default)
+        # preserves prior behavior (respond on ambiguity); False is conservative.
+        self._addressing = addressing
+        self._unsure_acts = unsure_acts
         self.bus = EventBus()
         # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
         # and the LLM capability (llm_first_token). Read via ``runtime.metrics``.
         self.metrics = MetricsRecorder()
-        memory = SessionMemory()
+        self.memory = SessionMemory()
+        memory = self.memory
         llm = llm or EchoLLM()
         registry = create_default_capabilities(memory)
         planner_on = planner_config is not None and planner_config.enabled
@@ -148,12 +159,22 @@ class VoiceRuntime:
         self.bus.publish(AgentEvent.partial(text))
 
     def _on_final(self, text: str) -> None:
-        self.metrics.mark(ASR_FINAL)
         log.info(
             "final -> brain: %r (mode=%s)", text, self.mode.value,
             extra={"transcript": {"role": "user", "text": text, "mode": self.mode.value}},
         )
-        # Try the no-LLM fast-path first; only fall through to the brain on a miss.
+        # Input gate: classify before opening a metrics turn so an INGEST'd
+        # utterance doesn't trip the watchdog's "no llm_first_token" check.
+        # When no classifier is configured this is a no-op (legacy behavior).
+        if self._addressing is not None:
+            recent = [item.text for item in self.memory.all()[-4:]]
+            decision = self._addressing.classify(text, recent=recent)
+            log.info("addressing decision: %s for %r", decision, text)
+            if decision == INGEST or (decision == UNSURE and not self._unsure_acts):
+                self.memory.add(text, tags=("ingested",))
+                return
+        self.metrics.mark(ASR_FINAL)
+        # Try the no-LLM fast-path next; only fall through to the brain on a miss.
         if self._intents is not None and self._intents.handle(text):
             log.debug("handled by intent fast-path: %r", text)
             return

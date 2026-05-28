@@ -32,8 +32,53 @@ Short-term **in-session** history still includes assistant turns for the current
 | `source` | `user_final` (partials not persisted) |
 | `confidence` | STT confidence when available (default 1.0) |
 | `saved_at` | Persist timestamp |
+| `embedding` | pgvector `vector` (unconstrained dim) |
+| `embedding_dim` | Integer dim; CHECK enforces match with `vector_dims(embedding)` |
+| `embedder_id` | e.g. `all-MiniLM-L6-v2`; partial HNSW indexes filter on this |
 
-Run `python setup_database.py` on existing DBs; `MemoryManager` also migrates columns on connect.
+**Index policy (post-May-2026 hardening, PR-2):**
+
+- One **HNSW partial index** per `(embedder_id, embedding_dim)` pair --
+  e.g. `idx_messages_emb_minilm_l6 WHERE embedder_id = 'all-MiniLM-L6-v2'`.
+  HNSW (not IVFFlat) because HNSW has no "training" step that requires
+  a populated table -- it builds correctly on a fresh empty DB, which was
+  the audited IVFFlat bug.
+- Partial-per-embedder so swapping models (e.g. adding `bge-small-en` for
+  768-d) is non-destructive -- old 384-d rows keep their index, new 768-d
+  rows get a new partial index, queries never mix dimensions.
+- Cosine ops (`vector_cosine_ops`); per-query `SET LOCAL hnsw.ef_search = N`
+  is tunable (defaults to 40, pgvector default).
+
+**Connection management:** A thread-safe `psycopg_pool.ConnectionPool`
+(psycopg3, `min_size=2`, `max_size=5`) replaces the previous single shared
+`psycopg2.connection`. Every DB call site uses
+`with self._pool.connection() as conn: with conn.cursor() as cur: ...`
+so the background writer thread + the request thread + the summary thread
+get their own short-lived connections. This is what `mem0` does for its
+PGVector backend (issue #3332 documents the same bug we had and the same fix).
+
+## Schema migrations (`migrations/`, run via `tools/migrate.py`)
+
+Yoyo-migrations manages schema state. Files: `001_init.sql` (tables +
+indexes), `002_constraints.sql` (CHECK constraints), `003_backfill_dim_embedder.sql`
+(legacy-DB upgrade hook -- backfills 384-d rows with `embedder_id`),
+`004_hnsw_indexes.sql` (drops old IVFFlat, adds partial HNSW per embedder).
+Each has a matching `*.rollback.sql`.
+
+Usage:
+
+```sh
+# Default DATABASE_URL = postgresql:///voice_assistant
+python tools/migrate.py status              # show applied / pending
+python tools/migrate.py apply               # apply all pending
+python tools/migrate.py apply --dry-run     # preview without writing
+python tools/migrate.py rollback --count 1  # rollback the most recent
+```
+
+For the demo / dev path (`python utils/memory.py`), `MemoryManager`
+ensures the same schema idempotently on first connect -- production
+deploys should still use the migration tool so applied versions are
+tracked in `_yoyo_migration`.
 
 ## Configuration
 

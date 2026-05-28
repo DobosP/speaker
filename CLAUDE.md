@@ -76,7 +76,9 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
   simulator that renders an HTML capability report — see Conventions);
   `cloudchat.py` (parallel cloud-LLM REPL: fires N prompts in parallel at the
   endpoint in `config.llm.cloud`, streams them with `[Qn]` prefixes, `/cancel`
-  hard-closes the HTTP stream so the provider stops billing; needs `openai`).
+  hard-closes the HTTP stream so the provider stops billing; needs `openai`);
+  `recommend_profile.py` (stdlib hardware probe → prints which
+  `device_profiles` entry to use; see `docs/target_architecture.md` §10).
 - `config.json` — runtime config. `docs/` — architecture and subsystem docs.
 
 > The legacy stack (`main.py`, `utils/audio.py`, the hand-rolled STT/TTS/LLM

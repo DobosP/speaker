@@ -56,13 +56,16 @@ class StageRegistry:
             ),
             TestStage(
                 name="cloud",
-                purpose="Cloud LLM middle layer: providers, hedge chain, sensitivity routing.",
+                purpose="Cloud LLM middle layer: providers, hedge chain, sensitivity routing, end-to-end integration.",
                 paths=(
                     "tests/test_multi_provider_llm.py",
                     "tests/test_hedge_chain.py",
+                    "tests/test_hedge_chain_advanced.py",
                     "tests/test_cloud_providers.py",
                     "tests/test_routing_intent.py",
                     "tests/test_sensitivity.py",
+                    "tests/test_cloud_integration.py",
+                    "tests/test_capability_context_isolation.py",
                 ),
             ),
             TestStage(

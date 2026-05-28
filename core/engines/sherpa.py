@@ -74,7 +74,15 @@ class SherpaConfig:
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
     speaker_enroll_wav: str = ""
+    # Persisted enrollment embedding (JSON written by ``python -m core --enroll``).
+    # Preferred over re-extracting from ``speaker_enroll_wav`` every boot: cheaper
+    # startup and it can average several passes. Empty -> fall back to the WAV.
+    speaker_enroll_embedding: str = ""
     speaker_threshold: float = 0.5
+    # When enrolled, also gate the *normal* ASR finals on speaker identity (not
+    # just barge-in), so ambient voices / a TV / a read-aloud quotation aren't
+    # answered as if addressed to the assistant. Fail-open when unenrolled.
+    speaker_gate_input: bool = True
     # Audio device selection (sounddevice index or name; None/"" = system
     # default). List them with `python -m core --list-devices`. Use these when
     # the default output is e.g. an HDMI monitor with no speakers.
@@ -196,17 +204,56 @@ class SherpaOnnxEngine(AudioEngine):
         if self._kws is not None:
             self._kws_stream = self._kws.create_stream()
         if c.speaker_embedding_model:
-            import sherpa_onnx  # lazy
-
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
                 threshold=c.speaker_threshold,
                 num_threads=c.resolved_asr_threads,
                 provider=c.provider,
             )
-            if c.speaker_enroll_wav:
-                samples, sr = sherpa_onnx.read_wave(c.speaker_enroll_wav)
-                self._speaker_gate.enroll(samples, sr)
+            self._enroll_speaker_gate()
+        if self._speaker_gate is not None and self._speaker_gate.is_enrolled:
+            log.info(
+                "speaker-ID gate enrolled (threshold=%.2f, input gating=%s)",
+                c.speaker_threshold, c.speaker_gate_input,
+            )
+        elif c.speaker_embedding_model:
+            log.warning(
+                "speaker-ID model loaded but no enrollment found -- gate is fail-open "
+                "(everything passes). Run `python -m core --enroll` to enroll your voice."
+            )
+
+    def _enroll_speaker_gate(self) -> None:
+        """Load the enrolled reference into the gate.
+
+        Prefer the persisted embedding JSON (cheap, multi-pass averaged); fall
+        back to extracting from ``speaker_enroll_wav``. A reference produced by a
+        different embedding model is skipped (incomparable vector space) rather
+        than trusted. Any failure leaves the gate unenrolled (fail-open)."""
+        c = self.config
+        gate = self._speaker_gate
+        if gate is None:
+            return
+        if c.speaker_enroll_embedding and os.path.exists(c.speaker_enroll_embedding):
+            from ..enroll import enrollment_matches_model, load_enrollment
+
+            try:
+                enrollment = load_enrollment(c.speaker_enroll_embedding)
+            except Exception as exc:  # noqa: BLE001 - corrupt/old file shouldn't crash boot
+                log.warning("could not load enrollment %s: %s", c.speaker_enroll_embedding, exc)
+            else:
+                if enrollment_matches_model(enrollment, c.speaker_embedding_model):
+                    gate.enroll_embedding(enrollment.embedding)
+                    return
+                log.warning(
+                    "enrollment %s was made with a different model (%s); ignoring it -- "
+                    "re-run `python -m core --enroll`.",
+                    c.speaker_enroll_embedding, enrollment.model or "?",
+                )
+        if c.speaker_enroll_wav:
+            import sherpa_onnx  # lazy
+
+            samples, sr = sherpa_onnx.read_wave(c.speaker_enroll_wav)
+            gate.enroll(samples, sr)
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
@@ -345,6 +392,13 @@ class SherpaOnnxEngine(AudioEngine):
         stream = recognizer.create_stream()
         voiced_run = 0.0
         block_sec = 0.1
+        # Rolling buffer of the current (non-speaking) ASR segment, used to embed
+        # the speaker when an endpoint fires so input can be gated on identity.
+        # Capped so a long monologue can't grow memory; the tail is what the
+        # speaker model needs. Reset on every endpoint and on decode-recovery.
+        utterance: list = []
+        utterance_len = 0
+        max_utterance = int(self.config.sample_rate * 10)
         # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
         total_blocks = partials = finals = 0
         beat_blocks = 0
@@ -403,6 +457,11 @@ class SherpaOnnxEngine(AudioEngine):
                     continue
 
                 try:
+                    utterance.append(samples)
+                    utterance_len += samples.size
+                    while utterance_len > max_utterance and len(utterance) > 1:
+                        utterance_len -= utterance[0].size
+                        utterance.pop(0)
                     stream.accept_waveform(self.config.sample_rate, samples)
                     while recognizer.is_ready(stream):
                         recognizer.decode_stream(stream)
@@ -416,11 +475,20 @@ class SherpaOnnxEngine(AudioEngine):
                         final_text = recognizer.get_result(stream)
                         recognizer.reset(stream)
                         last_partial = ""
+                        seg = np.concatenate(utterance) if utterance else samples
+                        utterance, utterance_len = [], 0
                         if final_text.strip():
                             finals += 1
                             log.info("asr final: %r", final_text)
-                            self._cb.on_metric(SPEECH_END)
-                            self._cb.on_final(final_text)
+                            if self._should_act_on_final(seg):
+                                self._cb.on_metric(SPEECH_END)
+                                self._cb.on_final(final_text)
+                            else:
+                                log.info(
+                                    "dropping final %r -- speaker is not the enrolled user",
+                                    final_text,
+                                )
+                                self._cb.on_metric("speaker_rejected_final")
                     asr_errors = 0
                 except Exception:
                     # Recover from a transient decode error by resetting the
@@ -431,6 +499,7 @@ class SherpaOnnxEngine(AudioEngine):
                     log.warning("ASR decode error #%d (resetting stream)", asr_errors,
                                 exc_info=(asr_errors == 1))
                     last_partial = ""
+                    utterance, utterance_len = [], 0
                     try:
                         recognizer.reset(stream)
                     except Exception:
@@ -611,6 +680,21 @@ class SherpaOnnxEngine(AudioEngine):
         # Speaker-ID gate: when enrolled, only the user's own voice counts as
         # barge-in, so the assistant's TTS bleeding into the mic can't
         # self-interrupt. Fail-open when no gate/enrollment is configured.
+        gate = self._speaker_gate
+        if gate is None or not gate.is_enrolled:
+            return True
+        return gate.accept(samples, self.config.sample_rate)
+
+    def _should_act_on_final(self, samples) -> bool:
+        """Whether a completed ASR utterance should be delivered to the runtime.
+
+        With the gate enrolled and ``speaker_gate_input`` on, only the enrolled
+        user's speech is answered -- a TV, another person, or a read-aloud
+        quotation is dropped instead of being treated as a request. Fail-open
+        when gating is off, there's no gate, or no enrollment, so an
+        unconfigured setup behaves exactly as before."""
+        if not self.config.speaker_gate_input:
+            return True
         gate = self._speaker_gate
         if gate is None or not gate.is_enrolled:
             return True

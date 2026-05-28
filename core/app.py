@@ -437,6 +437,27 @@ def main(argv: list[str] | None = None) -> int:
         help="software gain on captured audio for a quiet mic (e.g. 4.0); "
         "prefer raising the OS mic level first",
     )
+    parser.add_argument(
+        "--enroll",
+        action="store_true",
+        help="record your voice and save a speaker-ID reference, then exit. "
+        "Gates barge-in and (when enabled) input on your voice so the assistant "
+        "stops answering ambient audio and its own TTS. Run once before --engine sherpa.",
+    )
+    parser.add_argument(
+        "--enroll-seconds",
+        dest="enroll_seconds",
+        type=float,
+        default=4.0,
+        help="with --enroll: seconds of audio per clip (default: 4.0)",
+    )
+    parser.add_argument(
+        "--enroll-passes",
+        dest="enroll_passes",
+        type=int,
+        default=3,
+        help="with --enroll: number of clips to average into the reference (default: 3)",
+    )
     args = parser.parse_args(argv)
 
     if args.list_devices:
@@ -465,6 +486,23 @@ def main(argv: list[str] | None = None) -> int:
     for key, val in sherpa_overrides.items():
         if val is not None:
             config.setdefault("sherpa", {})[key] = val
+
+    # One-shot enrollment: record the user's voice, save the reference, exit.
+    # Runs after the device profile + audio overrides so it uses the same mic
+    # settings the live engine will, but before any model/LLM is built.
+    if args.enroll:
+        from .enroll import run_enrollment
+
+        code = run_enrollment(
+            config, passes=args.enroll_passes, seconds=args.enroll_seconds
+        )
+        try:
+            monitor.stop()
+        except Exception:  # noqa: BLE001 - telemetry must never mask the exit code
+            pass
+        runlog.finalize(None)
+        return code
+
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)
     router = build_router(config)

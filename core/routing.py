@@ -78,6 +78,12 @@ _COMPLEXITY_MARKERS = (
 _MAIN_MODES = {"research", "search", "meeting"}
 _FAST_MODES = {"dictation"}
 
+# IntentKind values (as strings -- the enum is in always_on_agent and we
+# don't import it here to keep this module phone-safe / dependency-light;
+# values come through ``context['intent_kind']`` as the enum's string value).
+_MAIN_INTENTS = {"research", "search"}
+_FAST_INTENTS = {"command", "dictation", "meeting_note"}
+
 
 class HeuristicRouter(BaseRouter):
     """Dependency-light router: combines mode, length and complexity signals.
@@ -90,12 +96,22 @@ class HeuristicRouter(BaseRouter):
     def score(self, query: str, context: Mapping[str, object]) -> float:
         q = query.lower().strip()
         n = len(q.split())
-        mode = str((context or {}).get("mode", "")).lower()
+        ctx = context or {}
+        mode = str(ctx.get("mode", "")).lower()
+        intent_kind = str(ctx.get("intent_kind", "")).lower()
 
         s = 0.0
         if mode in _MAIN_MODES:
             s += 0.6
         elif mode in _FAST_MODES:
+            s -= 0.3
+
+        # Intent signal: the deterministic classifier already decided this is
+        # a research/search turn, so escalate to main even if the mode hasn't
+        # switched yet (and conversely keep COMMAND/DICTATION on fast).
+        if intent_kind in _MAIN_INTENTS:
+            s += 0.6
+        elif intent_kind in _FAST_INTENTS:
             s -= 0.3
 
         if n >= 40:
@@ -170,3 +186,44 @@ def build_router(config: Optional[Mapping[str, object]]) -> Router:
         model = cfg.get("model", "routellm/bert_gpt4_augmented")
         return LearnedRouter(model=model, threshold=threshold)
     return HeuristicRouter(threshold=threshold)
+
+
+class ChainSelector:
+    """Pick a cloud-provider-chain name from a turn's sensitivity tag.
+
+    The chain selector is the second axis of routing (the first being tier
+    ``main`` vs ``fast``): given a query's ``Sensitivity``, return the key
+    into ``llm.cloud_chains`` that the brain should use. Defaults route to
+    the ``private`` chain whenever the sensitivity is unknown or missing.
+
+    Held as a plain class rather than a Protocol so the runtime can keep a
+    single instance and tests can construct one directly with a mapping.
+    """
+
+    def __init__(
+        self,
+        mapping: Optional[Mapping[str, str]] = None,
+        *,
+        default_chain: str = "private",
+    ):
+        self.mapping = dict(mapping or {})
+        self.default_chain = default_chain
+
+    def choose_chain(self, context: Mapping[str, object]) -> str:
+        sensitivity = str((context or {}).get("sensitivity", "") or "").lower()
+        if sensitivity and sensitivity in self.mapping:
+            return self.mapping[sensitivity]
+        return self.default_chain
+
+
+def build_chain_selector(config: Optional[Mapping[str, object]]) -> ChainSelector:
+    """Build a ChainSelector from the ``llm.cloud_routing`` config block.
+
+    Without configuration: a no-op selector that always returns
+    ``"private"`` -- the safe default that matches a US-only chain.
+    """
+    llm_cfg = (config or {}).get("llm", {}) or {}
+    routing = llm_cfg.get("cloud_routing", {}) or {}
+    mapping = routing.get("sensitivity_to_chain", {}) or {}
+    default = str(routing.get("default_chain", "private") or "private")
+    return ChainSelector(mapping, default_chain=default)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import time
@@ -9,6 +10,28 @@ from .artifacts import ArtifactStore
 from .reports import ReportParser
 from .stages import TestStage
 from .summary import LLMSummary
+
+
+def _pytest_invocation() -> list[str]:
+    """Return the argv prefix that launches pytest.
+
+    Prefers ``python -m pytest`` (so the test process inherits the same
+    interpreter + sys.path as the runner). Falls back to a standalone
+    ``pytest`` binary on PATH when pytest isn't importable from
+    ``sys.executable`` -- e.g. uv-managed tool installs that ship pytest
+    in a separate venv from the project's interpreter."""
+    try:
+        subprocess.run(
+            [sys.executable, "-c", "import pytest"],
+            check=True, capture_output=True, timeout=5,
+        )
+        return [sys.executable, "-m", "pytest"]
+    except Exception:
+        pass
+    pytest_bin = shutil.which("pytest")
+    if pytest_bin:
+        return [pytest_bin]
+    return [sys.executable, "-m", "pytest"]  # surfaces a familiar error message
 
 
 class PytestRunner:
@@ -35,9 +58,7 @@ class PytestRunner:
     ) -> dict[str, object]:
         artifacts = self.artifact_store.for_stage(stage.name)
         args = [
-            sys.executable,
-            "-m",
-            "pytest",
+            *_pytest_invocation(),
             *stage.pytest_args(maxfail=maxfail),
             f"--junitxml={artifacts.junit_path}",
         ]

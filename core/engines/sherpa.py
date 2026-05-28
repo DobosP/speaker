@@ -229,32 +229,55 @@ class SherpaOnnxEngine(AudioEngine):
             self._tts is not None,
             self._kws is not None,
         )
-        self._capture_sr = self.config.sample_rate
+        # Build the fallback chain: (preferred_device, preferred_sr) ->
+        # (preferred_device, native_sr) -> (system_default, preferred_sr)
+        # -> (system_default, 16000). The recovering wrapper walks this
+        # list on every (re)open, so the same logic that covers initial
+        # bring-up also covers reopen after a mid-session PortAudio error.
+        from ._recovering_input import _RecoveringInputStream, OpenAttempt
+
+        preferred_sr = self.config.sample_rate
         try:
-            self._stream_in = sd.InputStream(
-                channels=1,
-                samplerate=self.config.sample_rate,
-                dtype="float32",
-                blocksize=int(self.config.sample_rate * 0.1),
-                device=in_dev,
+            dev_sr_in = int(
+                sd.query_devices(in_dev, kind="input")["default_samplerate"]
             )
-            self._stream_in.start()
-        except sd.PortAudioError:
-            # Many sound cards (and conda's ALSA-only PortAudio) refuse 16 kHz.
-            # Fall back to the device's native rate and resample in the loop.
-            dev_sr = int(sd.query_devices(in_dev, kind="input")["default_samplerate"])
-            self._capture_sr = dev_sr
-            self._stream_in = sd.InputStream(
+        except Exception:
+            dev_sr_in = preferred_sr
+        attempts: list[OpenAttempt] = []
+        # 1) preferred device at preferred rate
+        attempts.append(OpenAttempt(device=in_dev, samplerate=preferred_sr))
+        # 2) preferred device at its native rate (deduped)
+        if dev_sr_in != preferred_sr:
+            attempts.append(OpenAttempt(device=in_dev, samplerate=dev_sr_in))
+        # 3) system-default device at preferred rate
+        if in_dev is not None:
+            attempts.append(OpenAttempt(device=None, samplerate=preferred_sr))
+        # 4) system-default device at 16k (lowest common denominator)
+        if preferred_sr != 16000:
+            attempts.append(OpenAttempt(device=None, samplerate=16000))
+
+        def _open(device, samplerate):
+            return sd.InputStream(
                 channels=1,
-                samplerate=dev_sr,
+                samplerate=samplerate,
                 dtype="float32",
-                blocksize=int(dev_sr * 0.1),
-                device=in_dev,
+                blocksize=int(samplerate * 0.1),
+                device=device,
             )
-            self._stream_in.start()
+
+        self._stream_in = _RecoveringInputStream(
+            attempts,
+            opener=_open,
+            on_state=self._on_capture_state,
+            channels=1,
+            block_seconds=0.1,
+        )
+        self._stream_in.open()
+        self._capture_sr = self._stream_in.actual_samplerate
+        if self._capture_sr != preferred_sr:
             print(
-                f"[sherpa] mic rejected {self.config.sample_rate} Hz; "
-                f"capturing at {dev_sr} Hz and resampling to {self.config.sample_rate} Hz"
+                f"[sherpa] mic rejected {preferred_sr} Hz; "
+                f"capturing at {self._capture_sr} Hz and resampling to {preferred_sr} Hz"
             )
         if self._record_path:
             from ..recorder import WavRecorder
@@ -276,8 +299,12 @@ class SherpaOnnxEngine(AudioEngine):
         if self._play_thread is not None:
             self._play_thread.join(timeout=1.0)
         if self._stream_in is not None:
-            self._stream_in.stop()
-            self._stream_in.close()
+            # The recovering wrapper handles its own internal close-best-effort;
+            # we just need to release its handle so the engine can be GC'd.
+            try:
+                self._stream_in.close()
+            except Exception:  # noqa: BLE001 - device may already be gone
+                pass
             self._stream_in = None
         if self._recorder is not None:
             log.info("recorded %.1fs of session audio -> %s",
@@ -421,6 +448,26 @@ class SherpaOnnxEngine(AudioEngine):
             # look "stuck": surface the traceback instead of vanishing.
             log.exception("capture loop crashed -- the assistant has stopped listening")
             self._running.clear()
+
+    def _on_capture_state(self, state, message: str) -> None:
+        """Forward the recovering wrapper's state changes up to the runtime.
+
+        ``state`` is a :class:`core.engines._recovering_input.StreamState`
+        but we marshal it to its string value so the engine callback
+        contract stays plain-Python -- no cross-module enum imports
+        required of shells. The runtime publishes it as an AgentEvent;
+        the watchdog uses it to suppress its 'audio thread stalled'
+        warning during legitimate reopens."""
+        state_str = getattr(state, "value", str(state))
+        try:
+            self._cb.on_capture_state(state_str, message)
+        except Exception:  # noqa: BLE001
+            log.exception("on_capture_state callback raised")
+        # Metric for the run summary: every reopen leaves a trace.
+        if state_str == "recovering":
+            self._cb.on_metric("capture_recovery_start")
+        elif state_str == "open":
+            self._cb.on_metric("capture_recovery_end")
 
     def _poll_keywords(self, samples) -> None:
         kws = self._kws

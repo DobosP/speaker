@@ -69,6 +69,12 @@
     "enabled": true,
     "phrases": {}
   },
+  "input_gate": {
+    "_comment": "Optional ACT/INGEST gate (core/addressing.py). Disabled by default; enable to stop the assistant from answering ambient speech / read-aloud text. Needs llm.fast_model. unsure_acts=true preserves prior behavior; false is conservative (silently ingest).",
+    "enabled": false,
+    "unsure_acts": true,
+    "max_context": 4
+  },
   "followups": {
     "enabled": false,
     "delay_sec": 3.0,

@@ -116,7 +116,13 @@ def _build_cloud_client(preset_name: str, preset: dict) -> Optional[OpenAICompat
 
     Returns ``None`` when the entry's API-key env var isn't set -- so missing
     credentials disable that provider individually (the rest of the chain
-    keeps working) rather than crashing the whole runtime."""
+    keeps working) rather than crashing the whole runtime.
+
+    The preset's ``profile`` key (e.g. ``"cerebras"``, ``"deepseek_reasoning"``,
+    ``"moonshot"``) selects a :class:`core.llm.ProviderProfile` so per-vendor
+    quirks (forbidden params, extra_body routing, reasoning-field streaming,
+    max_tokens caps) apply without per-call adapter logic. Unknown profile
+    names fall back to the safe generic shape."""
     if not isinstance(preset, dict):
         return None
     model = preset.get("model")
@@ -130,6 +136,7 @@ def _build_cloud_client(preset_name: str, preset: dict) -> Optional[OpenAICompat
         base_url=preset.get("base_url"),
         api_key_env=api_key_env,
         options=preset.get("options"),
+        profile=preset.get("profile"),
     )
 
 

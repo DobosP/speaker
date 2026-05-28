@@ -1,0 +1,49 @@
+name: cloud-llm-smoke
+
+# Probes every cloud provider preset in config.json with a real API call to
+# catch provider drift (deprecated model ids, broken endpoints, rotated
+# base_urls) before users do. A weekly cron is enough -- the failure mode is
+# "all my queries return 4xx," which the next user contact would surface
+# anyway, but this catches it first and writes a markdown summary into the
+# Actions UI.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"  # Mondays 07:00 UTC
+  pull_request:
+    paths:
+      - "config.json"
+      - "core/llm.py"
+      - "tools/llm_sanity.py"
+      - ".github/workflows/llm-cloud-smoke.yml"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps (openai client + nothing else)
+        run: pip install --quiet openai
+
+      - name: Probe every cloud provider
+        env:
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          MOONSHOT_API_KEY: ${{ secrets.MOONSHOT_API_KEY }}
+        run: python tools/llm_sanity.py --smoke --config config.json
+
+      - name: Upload smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-smoke-${{ github.run_id }}
+          path: |
+            tools/litellm_model_registry.json

@@ -383,24 +383,37 @@ to add a cloud hedge without editing the committed template.
 
 When the local main tier can't meet the deadline (CPU laptops, phones, web)
 the brain hedges or falls back to a low-latency cloud LLM. The supported
-providers, verified against their public pricing pages in May 2026, are:
+providers, **verified against vendor docs on 2026-05-28** (6 of the 7 IDs
+shipped a week earlier had silently deprecated; see commit history):
 
-| Model | Provider | Hosting | $/MTok in | $/MTok out | TTFT |
-|---|---|---|---|---|---|
-| qwen-3-coder-480B | Cerebras | **US** | ~$2.00 | ~$2.00 | 50–100 ms |
-| qwen-3-235B-instruct | Cerebras | **US** | ~$0.60–1.00 | ~$1.00–2.00 | 50–100 ms |
-| llama-3.3-70b-versatile | Groq | **US** | $0.59 | $0.79 | 100–150 ms |
-| kimi-k2 (Moonshot model, on Groq) | Groq | **US** | $1.00 | $3.00 | 200–400 ms |
-| deepseek-v4 | DeepSeek | CN | $0.30 | $0.50 | ~500 ms |
-| **deepseek-v4-flash** | DeepSeek | CN | **$0.14** | **$0.28** | ~400 ms |
-| deepseek-r1 (reasoning) | DeepSeek | CN | $0.55 | $2.19 | ~500 ms |
-| kimi-k2.5 | Moonshot | CN | $0.60 | $2.50 | 200–500 ms |
-| kimi-k2.6 | Moonshot | CN | $0.95 / $0.16 cached | $4.00 | 200–500 ms |
+| Preset key | Model id | Provider | Hosting | $/MTok in | $/MTok out | TTFT |
+|---|---|---|---|---|---|---|
+| `cerebras_gpt_oss_120b`   | `gpt-oss-120b`         | Cerebras | **US** | $0.50 | $1.00 | ~80 ms |
+| `cerebras_glm_4_7_coder`  | `zai-glm-4.7`          | Cerebras | **US** | $0.60 | $1.20 | ~80 ms |
+| `groq_gpt_oss_120b`       | `openai/gpt-oss-120b`  | Groq     | **US** | $0.15 | $0.60 | ~100 ms |
+| `deepseek_v4_flash`       | `deepseek-v4-flash`    | DeepSeek | CN     | $0.14 | $0.28 | ~400 ms |
+| `deepseek_v4_pro`         | `deepseek-v4-pro`      | DeepSeek | CN     | $0.55 | $2.19 | ~500 ms (reasoning) |
+| `moonshot_kimi_k2_6`      | `kimi-k2.6`            | Moonshot | CN     | $0.95 ($0.16 cache hit) | $4.00 | ~300 ms |
 
-Sources: Groq pricing page; DeepSeek API docs; Cerebras pricing; Moonshot
-Kimi pricing. Cerebras additionally offers flat-rate subscriptions —
-`Code Pro` $50/mo and `Code Max` $200/mo — that replace per-token billing
-for heavy coding workflows; per-token is enough for v1.
+Each preset declares a `profile` (`cerebras` / `groq` / `deepseek` /
+`deepseek_reasoning` / `moonshot`) that maps to a `core.llm.ProviderProfile`
+encoding the per-vendor quirks: Cerebras free-tier caps `max_tokens=8192`
+and routes non-standard params via `extra_body=`; Groq fixes `n=1` and
+streams reasoning in `delta.reasoning`; DeepSeek V4-Pro streams
+`delta.reasoning_content` BEFORE `delta.content` (the assistant must not
+speak the CoT but must count it for run-summary metrics); Moonshot Kimi
+rejects custom `temperature`/`top_p`/`n`. `tools/llm_sanity.py --smoke`
+exercises each profile against real keys; `.github/workflows/llm-cloud-smoke.yml`
+runs it weekly to catch provider drift before users do.
+
+Sources verified 2026-05-28: [Cerebras models](https://inference-docs.cerebras.ai/models/),
+[Cerebras deprecation](https://inference-docs.cerebras.ai/support/deprecation),
+[Groq deprecations](https://console.groq.com/docs/deprecations),
+[DeepSeek pricing](https://api-docs.deepseek.com/quick_start/pricing),
+[DeepSeek reasoning model](https://api-docs.deepseek.com/guides/reasoning_model),
+[Kimi K2.6 quickstart](https://platform.kimi.ai/docs/guide/kimi-k2-6-quickstart),
+[LiteLLM model registry](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json)
+(vendored at `tools/litellm_model_registry.json` as a build-time validator).
 
 Per-turn cost (quick ≈ 250 tokens; research ≈ 1.3 k; 80/20 in:out split):
 
@@ -426,9 +439,9 @@ The runtime tags every turn with one of three *sensitivity* values
 
 | Sensitivity | What triggers it | Chain (config default) |
 |---|---|---|
-| `private` | `my <noun>`, `IntentKind.COMMAND/DICTATION/MEETING_NOTE`, `Mode.MEETING`, **everything unclassified (safe default)** | `[cerebras_qwen_235b, groq_llama_70b]` — US-only |
-| `code` | code markers (`function`, `class`, `refactor`, `debug`, language names) | `[cerebras_qwen_coder, groq_kimi_k2]` — US-hosted |
-| `public` | encyclopedic openers (`what is`, `who was`, `how does`) with no personal-data markers | `[deepseek_v4_flash, cerebras_qwen_235b]` — cheapest first |
+| `private` | `my <noun>`, `IntentKind.COMMAND/DICTATION/MEETING_NOTE`, `Mode.MEETING`, **everything unclassified (safe default)** | `[cerebras_gpt_oss_120b, groq_gpt_oss_120b]` — US-only |
+| `code` | code markers (`function`, `class`, `refactor`, `debug`, language names) | `[cerebras_glm_4_7_coder, groq_gpt_oss_120b]` — US-hosted |
+| `public` | encyclopedic openers (`what is`, `who was`, `how does`) with no personal-data markers | `[deepseek_v4_flash, cerebras_gpt_oss_120b]` — cheapest first |
 
 `HedgeLLM` tries chain entries in order, falling through on
 timeout/error; local is the final fallback. The classifier is a deliberate

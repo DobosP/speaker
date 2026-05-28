@@ -42,7 +42,12 @@ ollama>=0.1.0
 huggingface-hub>=0.20.0
 
 # Memory & Database (optional but recommended)
-psycopg2-binary>=2.9.0      # PostgreSQL driver
+# PostgreSQL driver + thread-safe connection pool (psycopg3 in-tree).
+# psycopg2 was in maintenance mode; the audited bug (single shared
+# psycopg2.connection across threads) is fixed by ConnectionPool from
+# psycopg_pool, which only ships under psycopg3.
+psycopg[binary,pool]>=3.2
+yoyo-migrations>=8           # Schema migrations for migrations/*.sql
 sentence-transformers>=2.2.0 # For embeddings/vector search
 
 # Environment

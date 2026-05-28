@@ -4,22 +4,28 @@ Guidance for Claude Code working in this repo. Read this first every session.
 
 ## What this project is
 
-A fully-local, real-time voice assistant (`ASR → LLM → TTS`) with barge-in and a
-mode-based control plane. The desktop Python runtime in `core/` is the reference
-implementation; an on-device **Android app** lives in `mobile/` (Flutter), and a
-**host + thin-client** path (`remote/` + `web/`, over LiveKit/WebRTC) lets a
-browser or phone talk to one running brain. The **goal** is a fully on-device,
-fully-local, always-listening, mode-based assistant across
-Linux/Windows/macOS/Android/iOS.
+A local-first, real-time voice assistant (`ASR → LLM → TTS`) with barge-in and
+a mode-based control plane. The desktop Python runtime in `core/` is the
+reference implementation; an on-device **Android app** lives in `mobile/`
+(Flutter), and a **host + thin-client** path (`remote/` + `web/`, over
+LiveKit/WebRTC) lets a browser or phone talk to one running brain. The **goal**
+is an always-listening, mode-based assistant across
+Linux/Windows/macOS/Android/iOS; the always-on capture/respond loop runs
+on-device (raw audio never leaves), with an optional cloud *thinking tier*
+(main planner / research / multimodal summarize / web search) for work that
+exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 
 > **Cross-platform shape (decided):** one portable **core** + thin **per-platform
 > shells** — *not* a monolith, *not* independent apps. Platforms share the
 > `always_on_agent` **`AgentEvent`/`Mode` contract** (plus its tests); the small
 > brain is reimplemented per runtime (Python on desktop/server, Dart on mobile).
-> Deployment topology is **hybrid**: on-device first (fully-local is a hard
-> requirement), with the `remote/` host path as the iOS-background story and the
-> instant-reach fallback. Full rationale + the resolved decisions live in
-> **`docs/target_architecture.md`** §9 — read it before structural changes.
+> Deployment topology is **hybrid**: on-device first for the always-on loop
+> (STT/TTS/VAD/speaker-ID + the fast LLM tier stay local; raw audio never
+> leaves), with the `remote/` host path as the iOS-background story and the
+> instant-reach fallback. The thinking tier (main LLM / research / multimodal
+> summarize / web search) may use cloud — see §9.7. Full rationale + the
+> resolved decisions live in **`docs/target_architecture.md`** §9 — read it
+> before structural changes.
 >
 > The refactor removed the hand-rolled audio stack in favour of `sherpa-onnx`;
 > the `always_on_agent/` brain is kept and made real; the old `main.py` monolith
@@ -129,7 +135,14 @@ Linux/Windows/macOS/Android/iOS.
   real runs before trusting absolutes.
 - Keep new control-plane logic in `always_on_agent/`, typed and testable, not in `main.py`.
 - Prefer replay/transcript tests over tests that require live audio devices.
-- Fully-local is a hard product requirement: no cloud STT/LLM/TTS by default.
+- **Local/cloud boundary (`docs/target_architecture.md` §9.7).** STT, TTS,
+  VAD, speaker-ID, the always-on capture loop, and the fast/answering LLM
+  tier stay **on-device** — raw audio must never leave the device. The
+  *thinking tier* (main planner / research / multimodal summarize) and web
+  search **may use cloud**; only post-ASR text + screen captures + files
+  given to the assistant may cross over, and only when invoked. The earlier
+  "no cloud STT/LLM/TTS by default" stance is superseded by this boundary;
+  the always-on loop is still fully local.
 - CI: `.github/workflows/tests.yml` runs the logic suite (`python -m pytest tests`,
   audio/model-dep tests excluded) on every push to `main` and every pull request.
   Keep it green; it is the gate that lets the autofix loop below know when a

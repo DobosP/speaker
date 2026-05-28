@@ -1,0 +1,18 @@
+{
+  "swarm": "speaker-improvement",
+  "mode": "supervised-burst",
+  "version": 1,
+  "machine": {
+    "cpu": "i9-13980HX (32 threads)",
+    "ram_gib": 30,
+    "gpu": "RTX 4090 Laptop (16 GB)",
+    "python": "3.12",
+    "target_profile": "desktop_gpu_4090"
+  },
+  "last_verdict": {
+    "tests": "613 passed, 7 skipped, 0 failed",
+    "green": true,
+    "note": "hermetic with config.local.json present"
+  },
+  "next": "Architect audit + 4090 perf baseline -> fill P1 backlog -> promote to /loop"
+}

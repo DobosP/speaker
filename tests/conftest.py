@@ -58,6 +58,11 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_configure(config):
+    # Hermetic tests: ignore the machine-local config.local.json overlay so a
+    # dev box with real model paths behaves like CI (empty sherpa paths ->
+    # `--engine sherpa` fails fast instead of starting the live loop and
+    # hanging). Honoured by core.app._load_config. Override with =0 to opt in.
+    os.environ.setdefault("SPEAKER_NO_LOCAL_CONFIG", "1")
     # Register the marker so the strict-markers mode doesn't complain.
     config.addinivalue_line(
         "markers",

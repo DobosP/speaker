@@ -414,6 +414,18 @@ def main(argv: list[str] | None = None) -> int:
         )
     unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
 
+    # Transcript cleanup: optional LLM rewrite that drops fillers / resolves
+    # self-corrections so the brain acts on the intended sentence. Same
+    # opt-in shape as the input gate; needs llm.fast_model.
+    cleanup_cfg = config.get("cleanup", {}) or {}
+    cleaner = None
+    if cleanup_cfg.get("enabled", False) and fast_llm is not None:
+        from .cleanup import LLMTranscriptCleaner
+
+        cleaner = LLMTranscriptCleaner(
+            fast_llm, max_context=int(cleanup_cfg.get("max_context", 3))
+        )
+
     runtime = VoiceRuntime(
         engine,
         llm,
@@ -428,6 +440,7 @@ def main(argv: list[str] | None = None) -> int:
         intents=intents,
         addressing=addressing,
         unsure_acts=unsure_acts,
+        cleaner=cleaner,
     )
 
     try:

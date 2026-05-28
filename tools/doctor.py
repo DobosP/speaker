@@ -91,6 +91,37 @@ def check_sherpa_models(
     return Check("sherpa models", True, "ASR + TTS paths set")
 
 
+def check_speaker_id(config: dict, exists: Callable[[str], bool] = os.path.exists) -> Check:
+    """Advisory check for the speaker-ID gate (barge-in + input gating).
+
+    Speaker-ID is optional: the assistant runs without it (fail-open), so a
+    missing model or enrollment is never a hard FAIL that blocks readiness --
+    it's surfaced as an OK line with a nudge. The one genuine failure is a
+    configured model path that isn't on disk (a broken setup)."""
+    sherpa = (config or {}).get("sherpa", {}) or {}
+    model = sherpa.get("speaker_embedding_model", "")
+    if not model:
+        return Check(
+            "speaker-ID", True,
+            "not configured (optional; barge-in/input gating off) -- "
+            "enable with `python -m tools.setup_models`",
+        )
+    if not exists(model):
+        return Check(
+            "speaker-ID", False, "model path set but missing on disk",
+            "python -m tools.setup_models",
+        )
+    enroll_emb = sherpa.get("speaker_enroll_embedding", "")
+    enroll_wav = sherpa.get("speaker_enroll_wav", "")
+    if (enroll_emb and exists(enroll_emb)) or (enroll_wav and exists(enroll_wav)):
+        return Check("speaker-ID", True, "model + enrollment present")
+    return Check(
+        "speaker-ID", True,
+        "model present but not enrolled -- gate is fail-open; "
+        "run `python -m core --enroll` to enroll your voice",
+    )
+
+
 def _default_ollama_lister() -> list[str]:
     import ollama
 
@@ -169,6 +200,7 @@ def run_all(
     checks = [check_python()]
     checks += check_imports(import_fn=import_fn)
     checks.append(check_sherpa_models(config, exists=exists))
+    checks.append(check_speaker_id(config, exists=exists))
     checks += check_ollama(models_needed=models_needed, lister=ollama_lister)
     checks += check_audio(sd=sd)
     return checks

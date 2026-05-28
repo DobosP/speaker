@@ -72,6 +72,14 @@ class SpeakerGate:
             return 0.0
         return cosine_similarity(embedding, self._enrolled)
 
+    def embed(self, samples: Sequence[float], sample_rate: int) -> Optional[Embedding]:
+        """Public embedding accessor used by the enrollment flow (core.enroll).
+
+        Returns the raw speaker embedding for ``samples`` (or ``None`` if the
+        model couldn't produce one), without touching the enrolled reference --
+        enrollment needs the per-recording vectors to average them itself."""
+        return self._embed(samples, sample_rate)
+
     def _embed(self, samples: Sequence[float], sample_rate: int) -> Optional[Embedding]:
         if self._embed_fn is None:
             raise RuntimeError("SpeakerGate has no embed_fn configured")

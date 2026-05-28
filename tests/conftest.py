@@ -8,6 +8,14 @@ It also writes a committable log of every local test run under
 during the session, plus a ``.summary.json`` digest (counts, failures, and the
 slowest tests). Push those files and they show exactly what happened.
 Disable with ``SPEAKER_TEST_LOG=0``.
+
+Custom flags:
+
+- ``--postgres``: enable the ``postgres`` marker so
+  ``tests/test_memory_postgres_integration.py`` actually runs (requires
+  ``pg_ctl`` on PATH + pgvector installed). Without it, those tests are
+  collected but skip with a clear reason -- so a developer without a local
+  Postgres setup still sees what they're missing.
 """
 
 from __future__ import annotations
@@ -20,6 +28,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _ENABLED = os.environ.get("SPEAKER_TEST_LOG", "1") != "0"
@@ -28,7 +38,31 @@ _RESULTS: list[dict] = []
 _STATE: dict = {}
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--postgres",
+        action="store_true",
+        default=False,
+        help="run tests marked @pytest.mark.postgres (needs pg_ctl + pgvector)",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip tests marked ``postgres`` unless ``--postgres`` was passed."""
+    if config.getoption("postgres"):
+        return
+    skip = pytest.mark.skip(reason="requires --postgres (pg_ctl + pgvector)")
+    for item in items:
+        if "postgres" in item.keywords:
+            item.add_marker(skip)
+
+
 def pytest_configure(config):
+    # Register the marker so the strict-markers mode doesn't complain.
+    config.addinivalue_line(
+        "markers",
+        "postgres: integration tests that need a real PostgreSQL with pgvector",
+    )
     if not _ENABLED:
         return
     _LOG_DIR.mkdir(parents=True, exist_ok=True)

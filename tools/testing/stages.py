@@ -48,10 +48,13 @@ class StageRegistry:
             ),
             TestStage(
                 name="memory",
-                purpose="Smart-memory save/writer logic.",
+                purpose="Smart-memory save/writer logic + pool concurrency contract. "
+                        "Integration tests run only with --pytest-arg=--postgres.",
                 paths=(
                     "tests/test_memory_smart_save.py",
                     "tests/test_memory_writer.py",
+                    "tests/test_memory_pool.py",
+                    "tests/test_memory_postgres_integration.py",
                 ),
             ),
             TestStage(

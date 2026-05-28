@@ -46,6 +46,10 @@ transcripts/
 !logs/runs/*.wav
 !logs/runs/*.mp3
 
+# Per-run pytest log bundles are transient (timestamped trace + summary for the
+# machine they ran on); curated logs/runs/ bundles are committed, these are not.
+logs/tests/
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 # Per-turn context published by the capability layer so the LLM stack can
@@ -343,6 +344,77 @@ def _openai_messages(
     return msgs
 
 
+@dataclass(frozen=True)
+class ProviderProfile:
+    """Per-provider quirks layered on top of the generic OpenAI-compat shape.
+
+    Each major cloud sharing the ``/v1/chat/completions`` endpoint still has
+    small departures that, ignored, cause silent failures: Moonshot rejects
+    custom temperature; Cerebras requires non-standard params via
+    ``extra_body=``; DeepSeek's reasoning models stream the chain-of-thought
+    in a separate ``delta.reasoning_content`` field that the generic loop
+    drops on the floor; Groq's gpt-oss-120b puts reasoning in ``delta.reasoning``
+    and rejects ``n != 1``. This dataclass captures those quirks declaratively
+    so :class:`OpenAICompatLLM` consumes them uniformly.
+
+    Names are looked up via :data:`PROVIDER_PROFILES` from a string tag
+    stored on the cloud preset in ``config.json`` (e.g. ``"profile":
+    "deepseek_reasoning"``).
+    """
+
+    name: str
+    # Param keys stripped from the generic kwargs dict before calling .create().
+    forbidden_params: frozenset[str] = field(default_factory=frozenset)
+    # Param keys routed through ``extra_body={...}`` instead of as top-level
+    # kwargs (the OpenAI SDK rejects unknown top-level keys).
+    extra_body_keys: frozenset[str] = field(default_factory=frozenset)
+    # Name of the delta field that carries reasoning tokens (CoT), if any.
+    # ``"reasoning_content"`` for DeepSeek V4-Pro; ``"reasoning"`` for Groq
+    # gpt-oss-120b; ``None`` for plain chat models.
+    reasoning_field: Optional[str] = None
+    # When True, reasoning tokens are observed (for metrics) but NOT yielded
+    # to the consumer -- the voice assistant shouldn't speak the CoT.
+    suppress_reasoning_in_stream: bool = True
+    # Hard cap on ``max_tokens`` enforced before sending (Cerebras free tier
+    # rejects > 8192).
+    max_tokens_cap: Optional[int] = None
+
+
+# Pre-defined profiles for the cloud providers we ship presets for.
+# ``"openai_compat"`` is the safe default for any unrecognized endpoint.
+PROVIDER_PROFILES: dict[str, "ProviderProfile"] = {
+    "openai_compat": ProviderProfile(name="openai_compat"),
+    # Cerebras: free tier caps max_tokens at 8192. Non-OpenAI params (e.g. GLM's
+    # ``clear_thinking``, ``reasoning_effort``) must go in extra_body=.
+    "cerebras": ProviderProfile(
+        name="cerebras",
+        extra_body_keys=frozenset({"clear_thinking", "reasoning_effort"}),
+        max_tokens_cap=8192,
+    ),
+    # Groq: ``n`` is fixed at 1 (any other value 400s). gpt-oss-120b streams
+    # reasoning in delta.reasoning (separate from delta.content).
+    "groq": ProviderProfile(
+        name="groq",
+        forbidden_params=frozenset({"n"}),
+        reasoning_field="reasoning",
+    ),
+    # DeepSeek non-reasoning models (V4-Flash) -- plain chat.
+    "deepseek": ProviderProfile(name="deepseek"),
+    # DeepSeek V4-Pro (reasoning): streams delta.reasoning_content ahead of
+    # delta.content. The API also rejects echoing reasoning_content back on
+    # the next turn -- callers must strip it from prior assistant messages.
+    "deepseek_reasoning": ProviderProfile(
+        name="deepseek_reasoning",
+        reasoning_field="reasoning_content",
+    ),
+    # Moonshot Kimi: temperature, top_p, n are server-fixed (any value 400s).
+    "moonshot": ProviderProfile(
+        name="moonshot",
+        forbidden_params=frozenset({"temperature", "top_p", "n"}),
+    ),
+}
+
+
 class OpenAICompatLLM:
     """Streaming LLM over any OpenAI-compatible ``/v1/chat/completions`` endpoint.
 
@@ -351,6 +423,13 @@ class OpenAICompatLLM:
     ``model`` and api key. This is the optional "intelligence from a streaming
     source" tier: it is built only when ``llm.cloud.enabled`` is set, so the
     fully-local default is preserved. Rank providers by time-to-first-token.
+
+    Provider quirks are layered via ``profile`` (a :class:`ProviderProfile`
+    instance or a string key into :data:`PROVIDER_PROFILES`): forbidden
+    params are stripped, extra-body keys are routed correctly, and
+    reasoning-field streaming (DeepSeek ``reasoning_content``, Groq
+    ``reasoning``) is consumed and metric-tracked without being yielded to
+    the speaker (the assistant shouldn't speak the CoT).
 
     The ``openai`` package is imported lazily so the runtime and test suite work
     without it; pass ``client`` to inject a fake. ``api_key_env`` names the env
@@ -366,6 +445,7 @@ class OpenAICompatLLM:
         api_key_env: Optional[str] = None,
         timeout: float = 30.0,
         options: Optional[dict] = None,
+        profile: "ProviderProfile | str | None" = None,
         client=None,
     ):
         self.model = model
@@ -374,6 +454,16 @@ class OpenAICompatLLM:
         self._timeout = timeout
         self._options = dict(options) if options else {}
         self._client = client
+        if profile is None:
+            self.profile = PROVIDER_PROFILES["openai_compat"]
+        elif isinstance(profile, str):
+            self.profile = PROVIDER_PROFILES.get(profile, PROVIDER_PROFILES["openai_compat"])
+        else:
+            self.profile = profile
+        # Last-call observability: bytes seen on the reasoning field, exposed
+        # so HedgeLLM / capabilities can log a "thought N chars before
+        # answering" metric without inspecting the raw stream.
+        self.last_reasoning_chars = 0
 
     def _ensure(self):
         if self._client is None:
@@ -387,12 +477,31 @@ class OpenAICompatLLM:
         return self._client
 
     def _create_kwargs(self, prompt, system, images, *, stream: bool) -> dict:
-        kwargs = {
+        kwargs: dict = {
             "model": self.model,
             "messages": _openai_messages(prompt, system, images),
             "stream": stream,
         }
-        kwargs.update(self._options)
+        # Merge caller-supplied options; the profile may then strip / reroute.
+        merged: dict = dict(self._options)
+        extra_body: dict = {}
+        for key in list(merged):
+            if key in self.profile.forbidden_params:
+                merged.pop(key, None)
+            elif key in self.profile.extra_body_keys:
+                extra_body[key] = merged.pop(key)
+        # max_tokens cap (Cerebras free tier).
+        cap = self.profile.max_tokens_cap
+        if cap is not None:
+            requested = merged.get("max_tokens")
+            if requested is None or int(requested) > cap:
+                merged["max_tokens"] = cap
+        kwargs.update(merged)
+        if extra_body:
+            # Merge with any caller-supplied extra_body rather than clobbering.
+            existing = kwargs.get("extra_body") or {}
+            existing.update(extra_body)
+            kwargs["extra_body"] = existing
         return kwargs
 
     def generate(
@@ -414,13 +523,26 @@ class OpenAICompatLLM:
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
     ) -> Iterator[str]:
+        self.last_reasoning_chars = 0
+        reasoning_field = self.profile.reasoning_field
+        suppress = self.profile.suppress_reasoning_in_stream
         for chunk in self._ensure().chat.completions.create(
             **self._create_kwargs(prompt, system, images, stream=True)
         ):
             choices = getattr(chunk, "choices", None)
             if not choices:
                 continue
-            piece = choices[0].delta.content
+            delta = choices[0].delta
+            # Reasoning-channel tokens (DeepSeek reasoning_content / Groq
+            # gpt-oss reasoning). Count for metrics; yield only if not
+            # suppressed (default: suppressed -- assistant shouldn't speak CoT).
+            if reasoning_field:
+                reasoning_piece = getattr(delta, reasoning_field, None)
+                if reasoning_piece:
+                    self.last_reasoning_chars += len(reasoning_piece)
+                    if not suppress:
+                        yield reasoning_piece
+            piece = getattr(delta, "content", None)
             if piece:
                 yield piece
 

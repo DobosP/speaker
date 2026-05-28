@@ -25,55 +25,55 @@
       "ttft_deadline_ms": 1200
     },
     "cloud_providers": {
-      "_comment": "Named OpenAI-compatible cloud LLM presets. Each entry is one provider+model pairing. Selected from a chain in llm.cloud_chains.",
-      "cerebras_qwen_235b": {
+      "_comment": "Named OpenAI-compatible cloud LLM presets verified 2026-05-28. Each entry: base_url + model + api_key_env + profile (selects per-provider quirk handler in core/llm.py::PROVIDER_PROFILES) + pricing metadata. Selected from a chain in llm.cloud_chains.",
+      "cerebras_gpt_oss_120b": {
         "base_url": "https://api.cerebras.ai/v1",
-        "model": "qwen-3-235b-instruct",
+        "model": "gpt-oss-120b",
         "api_key_env": "CEREBRAS_API_KEY",
-        "_pricing_usd_per_mtok": {"in": 0.60, "out": 1.20, "ttft_ms": 75, "host": "US"}
+        "profile": "cerebras",
+        "_pricing_usd_per_mtok": {"in": 0.50, "out": 1.00, "ttft_ms": 80, "host": "US"}
       },
-      "cerebras_qwen_coder": {
+      "cerebras_glm_4_7_coder": {
         "base_url": "https://api.cerebras.ai/v1",
-        "model": "qwen-3-coder-480b",
+        "model": "zai-glm-4.7",
         "api_key_env": "CEREBRAS_API_KEY",
-        "_pricing_usd_per_mtok": {"in": 2.00, "out": 2.00, "ttft_ms": 80, "host": "US"}
+        "profile": "cerebras",
+        "_pricing_usd_per_mtok": {"in": 0.60, "out": 1.20, "ttft_ms": 80, "host": "US"}
       },
-      "groq_llama_70b": {
+      "groq_gpt_oss_120b": {
         "base_url": "https://api.groq.com/openai/v1",
-        "model": "llama-3.3-70b-versatile",
+        "model": "openai/gpt-oss-120b",
         "api_key_env": "GROQ_API_KEY",
-        "_pricing_usd_per_mtok": {"in": 0.59, "out": 0.79, "ttft_ms": 120, "host": "US"}
-      },
-      "groq_kimi_k2": {
-        "base_url": "https://api.groq.com/openai/v1",
-        "model": "moonshotai/kimi-k2-instruct",
-        "api_key_env": "GROQ_API_KEY",
-        "_pricing_usd_per_mtok": {"in": 1.00, "out": 3.00, "ttft_ms": 250, "host": "US"}
+        "profile": "groq",
+        "_pricing_usd_per_mtok": {"in": 0.15, "out": 0.60, "ttft_ms": 100, "host": "US"}
       },
       "deepseek_v4_flash": {
         "base_url": "https://api.deepseek.com/v1",
         "model": "deepseek-v4-flash",
         "api_key_env": "DEEPSEEK_API_KEY",
+        "profile": "deepseek",
         "_pricing_usd_per_mtok": {"in": 0.14, "out": 0.28, "ttft_ms": 400, "host": "CN"}
       },
-      "deepseek_r1": {
+      "deepseek_v4_pro": {
         "base_url": "https://api.deepseek.com/v1",
-        "model": "deepseek-r1",
+        "model": "deepseek-v4-pro",
         "api_key_env": "DEEPSEEK_API_KEY",
+        "profile": "deepseek_reasoning",
         "_pricing_usd_per_mtok": {"in": 0.55, "out": 2.19, "ttft_ms": 500, "host": "CN", "_note": "reasoning chains balloon output"}
       },
-      "moonshot_k2_5": {
-        "base_url": "https://api.moonshot.cn/v1",
-        "model": "moonshot-v1-k2.5",
+      "moonshot_kimi_k2_6": {
+        "base_url": "https://api.moonshot.ai/v1",
+        "model": "kimi-k2.6",
         "api_key_env": "MOONSHOT_API_KEY",
-        "_pricing_usd_per_mtok": {"in": 0.60, "out": 2.50, "ttft_ms": 300, "host": "CN"}
+        "profile": "moonshot",
+        "_pricing_usd_per_mtok": {"in": 0.95, "out": 4.00, "ttft_ms": 300, "host": "CN", "_note": "platform.moonshot.ai (intl, not .cn); cache-hit input $0.16"}
       }
     },
     "cloud_chains": {
       "_comment": "Ordered failover chains by data-sensitivity. HedgeLLM tries the first cloud; on error/timeout it advances to the next; finally falls back to the local main LLM. US-only chains keep personal data under US legal jurisdiction; the public chain uses cheaper CN-hosted providers when the content isn't about the user.",
-      "private": ["cerebras_qwen_235b", "groq_llama_70b"],
-      "code":    ["cerebras_qwen_coder", "groq_kimi_k2"],
-      "public":  ["deepseek_v4_flash", "cerebras_qwen_235b"]
+      "private": ["cerebras_gpt_oss_120b", "groq_gpt_oss_120b"],
+      "code":    ["cerebras_glm_4_7_coder", "groq_gpt_oss_120b"],
+      "public":  ["deepseek_v4_flash", "cerebras_gpt_oss_120b"]
     },
     "cloud_routing": {
       "_comment": "Maps Sensitivity tag (from core/sensitivity.py) -> chain name above. default_chain is used when sensitivity is missing/unknown -- 'private' is the safe default.",

@@ -4,14 +4,23 @@ import argparse
 import json
 import os
 import sys
+from typing import Optional
 
 from always_on_agent.events import Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.react import PlannerConfig
 
 from .engine import AudioEngine
-from .llm import EchoLLM, HedgeLLM, LlamaCppLLM, LLMClient, OllamaLLM, OpenAICompatLLM
-from .routing import build_router
+from .llm import (
+    EchoLLM,
+    HedgeLLM,
+    LlamaCppLLM,
+    LLMClient,
+    OllamaLLM,
+    OpenAICompatLLM,
+    SensitivityRouterLLM,
+)
+from .routing import build_chain_selector, build_router
 from .runlog import setup_logging
 from .runtime import VoiceRuntime
 from .sysinfo import SystemMonitor
@@ -102,17 +111,107 @@ def _build_llms(args, config: dict) -> tuple[LLMClient, LLMClient | None]:
     return _wrap_cloud(main, llm_cfg), fast
 
 
-def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
-    """Optionally hedge the main tier against a cloud provider for lower latency.
+def _build_cloud_client(preset_name: str, preset: dict) -> Optional[OpenAICompatLLM]:
+    """Build one :class:`OpenAICompatLLM` from a ``cloud_providers`` entry.
 
-    Off unless ``llm.cloud.enabled`` is true, so the fully-local default is
-    preserved. Only the main/reasoning tier is wrapped -- the fast tier is
-    already snappy and stays on-device.
+    Returns ``None`` when the entry's API-key env var isn't set -- so missing
+    credentials disable that provider individually (the rest of the chain
+    keeps working) rather than crashing the whole runtime."""
+    if not isinstance(preset, dict):
+        return None
+    model = preset.get("model")
+    if not model:
+        return None
+    api_key_env = preset.get("api_key_env")
+    if api_key_env and not os.environ.get(api_key_env):
+        return None
+    return OpenAICompatLLM(
+        model=model,
+        base_url=preset.get("base_url"),
+        api_key_env=api_key_env,
+        options=preset.get("options"),
+    )
+
+
+def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
+    """Optionally route the main tier through cloud LLM(s) for lower latency.
+
+    Off unless ``llm.cloud.enabled`` (or a populated ``cloud_providers`` +
+    ``cloud_chains``) is configured, so the fully-local default is preserved.
+    Only the main/reasoning tier is wrapped -- the fast tier is already
+    snappy and stays on-device.
+
+    Two configuration shapes:
+
+    - **Multi-provider sensitivity-routed (preferred).** When
+      ``llm.cloud_providers`` and ``llm.cloud_chains`` are present, build
+      one :class:`HedgeLLM` per chain (each racing local + the chain's
+      ordered list of clouds, with failover on error/timeout) and wrap
+      them in a :class:`SensitivityRouterLLM` that picks per turn based on
+      ``llm.cloud_routing.sensitivity_to_chain``. Missing API keys cause
+      that provider to silently drop out of its chains.
+
+    - **Single-cloud back-compat.** When only ``llm.cloud`` is set (no
+      providers/chains), use the existing single-HedgeLLM path.
     """
     cloud_cfg = llm_cfg.get("cloud") or {}
+    providers = llm_cfg.get("cloud_providers") or {}
+    chains_cfg = llm_cfg.get("cloud_chains") or {}
     strategy = cloud_cfg.get("strategy", "hedge")
+
+    if strategy == "local_only" or not cloud_cfg.get("enabled", False):
+        return local_main
+
+    hedge_kwargs = dict(
+        strategy=strategy,
+        hedge_delay_ms=int(cloud_cfg.get("hedge_delay_ms", 150)),
+        ttft_deadline_ms=int(cloud_cfg.get("ttft_deadline_ms", 1200)),
+    )
+
+    # Multi-provider path.
+    if providers and chains_cfg:
+        # Resolve each provider lazily; drop ones with missing API keys.
+        resolved: dict[str, OpenAICompatLLM] = {}
+        for name, preset in providers.items():
+            if isinstance(preset, dict) and name.startswith("_"):
+                continue  # skip _comment / metadata keys
+            client = _build_cloud_client(name, preset)
+            if client is not None:
+                resolved[name] = client
+
+        hedged_chains: dict[str, LLMClient] = {}
+        any_clouds = False
+        for chain_name, preset_names in chains_cfg.items():
+            if chain_name.startswith("_"):
+                continue
+            if not isinstance(preset_names, (list, tuple)):
+                continue
+            chain_clouds = [resolved[n] for n in preset_names if n in resolved]
+            if chain_clouds:
+                any_clouds = True
+            hedged_chains[chain_name] = HedgeLLM(
+                local=local_main, cloud=chain_clouds, **hedge_kwargs
+            )
+
+        if not hedged_chains or not any_clouds:
+            # Every chain ended up empty (e.g. no API keys set): fall through
+            # to the local main tier without surprise wrappers. Otherwise
+            # SensitivityRouterLLM would wrap an all-local hedge that adds
+            # threading overhead for no benefit.
+            return local_main
+
+        routing_cfg = llm_cfg.get("cloud_routing") or {}
+        default_chain = str(routing_cfg.get("default_chain", "private") or "private")
+        if default_chain not in hedged_chains:
+            default_chain = next(iter(hedged_chains))
+        selector = build_chain_selector({"llm": llm_cfg})
+        return SensitivityRouterLLM(
+            hedged_chains, selector=selector, default_chain=default_chain
+        )
+
+    # Single-cloud back-compat path.
     model = cloud_cfg.get("model")
-    if not cloud_cfg.get("enabled") or strategy == "local_only" or not model:
+    if not model:
         return local_main
     cloud = OpenAICompatLLM(
         model=model,
@@ -120,13 +219,7 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         api_key_env=cloud_cfg.get("api_key_env"),
         options=cloud_cfg.get("options"),
     )
-    return HedgeLLM(
-        local=local_main,
-        cloud=cloud,
-        strategy=strategy,
-        hedge_delay_ms=int(cloud_cfg.get("hedge_delay_ms", 150)),
-        ttft_deadline_ms=int(cloud_cfg.get("ttft_deadline_ms", 1200)),
-    )
+    return HedgeLLM(local=local_main, cloud=cloud, **hedge_kwargs)
 
 
 def _require_asr_models(sherpa_cfg, engine_name: str) -> None:

@@ -318,4 +318,160 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
     (the rig already running `gemma3:12b` + `4b` on Ollama).
 
 Mirrored for *intent* in `PROJECT_KICKOFF.md` §§1–7.
-```
+
+---
+
+## 10. Performance plan — balanced cost × speed × intelligence
+
+A tiered routing strategy that the existing code already supports (the
+`device_profiles`, `llm.cloud` and `input_gate`/`cleanup` config blocks). The
+`tools.recommend_profile` script probes the host and prints the matching
+profile so users don't have to read this section first.
+
+### 10.1 Device tiers (specsim modelled estimates, 2026-05)
+
+Numbers from `python -m tools.specsim`. ✓ = inside the budget (≤1.2 s first
+audio · ≤0.3 s barge-in stop); ~ = inside the relaxed budget (≤2.5 s / ≤0.5
+s); ✗ = miss. Validate per machine with `python -m tools.bench --profile
+<name>`.
+
+| Device class | Profile | LLM tier | LLM speed | quick TTFA | research TTFA | barge-in |
+|---|---|---|---|---|---|---|
+| RTX 4090 / 5090 | `desktop_gpu_4090` | gemma3:12b on GPU | 111 tok/s | 0.96s ✓ | 1.63s ✓ | 0.30s ✓ |
+| MacBook M2/M3/M4 (16+ GB) | `macbook_m_series` | gemma3:4b on Metal | 50 tok/s | 1.46s ~ | 2.96s ✗ | 0.30s ✓ |
+| Windows/Linux laptop, no dGPU | `cpu_laptop` | gemma3:4b on CPU | 12.5 tok/s | 3.54s ✗ | 9.54s ✗ | 0.35s ~ |
+| Android 12 GB | `phone` | gemma3:4b GGUF | 8.3 tok/s | 5.26s ✗ | 14.26s ✗ | 0.40s ~ |
+| Low-end phone / web | `phone_lite` | gemma3:1b GGUF | 11.1 tok/s | 5.07s ✗ | 11.82s ✗ | 0.45s ~ |
+
+**The takeaway:** only the dGPU profile hits the snappy budget locally; the
+Mac is borderline; every other on-device target falls off a cliff.
+Barge-in is fine everywhere — the cancellation path is cheap.
+
+### 10.2 The tiered strategy
+
+The pipeline already has three independent LLM-using surfaces. Tier them by
+*how often they run* and *how local they must be*:
+
+| Tier | Where it runs | Latency target | Intelligence | Cost / turn |
+|---|---|---|---|---|
+| Wake / KWS / intent fast-path | always local (sherpa-onnx KWS, deterministic) | <100 ms | rule-based | 0 |
+| Input gate + cleanup | local fast tier *if* the device has headroom | +150–300 ms each | small LM (1b–4b) | 0 |
+| Fast spoken reply (`assistant.answer`) | local fast tier | 0.3–2 s | conversational | 0 |
+| Main planner / multimodal | local main tier *or* cloud hedge | 1–3 s | strong | 0 or ~$0.0008 |
+| Research / web / vision summarize | cloud-only when enabled (§9.7) | 2–5 s | frontier | ~$0.005 |
+
+The fully-local fast-tier loop (STT → fast LM → TTS) is the always-on
+contract from §9.7 and §1 — it never leaves the device. The cloud appears
+only where the local headroom isn't there.
+
+### 10.3 Profile → strategy mapping
+
+Each profile under `config.json.device_profiles` codifies one row of the
+matrix below; flip `llm.cloud.enabled` in a gitignored `config.local.json`
+to add a cloud hedge without editing the committed template.
+
+| Profile | Models on-device | Gates ON? | Cloud hedge | Notes |
+|---|---|---|---|---|
+| `desktop_gpu_4090` | gemma3:12b + 4b | both | off | The fully-local north-star config. |
+| `desktop` | gemma3:12b + 4b | off (compat) | off | The existing profile; left alone for backward-compat. |
+| `macbook_m_series` | gemma3:4b + 1b on Metal | both | off (recommended for research mode) | M-series Macs hit ~50 tok/s on Metal — fast tier has headroom for the gates. |
+| `cpu_laptop` | gemma3:4b + 1b on CPU (Ollama) | **off** | **on, strongly recommended** | CPU LLM TTFT (~0.8 s) leaves no slack for the gates. Cloud hedge keeps research-mode under 3 s. |
+| `phone` | gemma3:4b + 1b GGUF | off | optional | Android/iOS class; same cost story as `cpu_laptop`. |
+| `phone_lite` | gemma3:1b GGUF only (single-tier) | off | **required for research** | Sub-8 GB hosts thrash on the 4b model. |
+
+### 10.4 Cloud middle layer — providers and pricing (verified May 2026)
+
+When the local main tier can't meet the deadline (CPU laptops, phones, web)
+the brain hedges or falls back to a low-latency cloud LLM. The supported
+providers, verified against their public pricing pages in May 2026, are:
+
+| Model | Provider | Hosting | $/MTok in | $/MTok out | TTFT |
+|---|---|---|---|---|---|
+| qwen-3-coder-480B | Cerebras | **US** | ~$2.00 | ~$2.00 | 50–100 ms |
+| qwen-3-235B-instruct | Cerebras | **US** | ~$0.60–1.00 | ~$1.00–2.00 | 50–100 ms |
+| llama-3.3-70b-versatile | Groq | **US** | $0.59 | $0.79 | 100–150 ms |
+| kimi-k2 (Moonshot model, on Groq) | Groq | **US** | $1.00 | $3.00 | 200–400 ms |
+| deepseek-v4 | DeepSeek | CN | $0.30 | $0.50 | ~500 ms |
+| **deepseek-v4-flash** | DeepSeek | CN | **$0.14** | **$0.28** | ~400 ms |
+| deepseek-r1 (reasoning) | DeepSeek | CN | $0.55 | $2.19 | ~500 ms |
+| kimi-k2.5 | Moonshot | CN | $0.60 | $2.50 | 200–500 ms |
+| kimi-k2.6 | Moonshot | CN | $0.95 / $0.16 cached | $4.00 | 200–500 ms |
+
+Sources: Groq pricing page; DeepSeek API docs; Cerebras pricing; Moonshot
+Kimi pricing. Cerebras additionally offers flat-rate subscriptions —
+`Code Pro` $50/mo and `Code Max` $200/mo — that replace per-token billing
+for heavy coding workflows; per-token is enough for v1.
+
+Per-turn cost (quick ≈ 250 tokens; research ≈ 1.3 k; 80/20 in:out split):
+
+| Model | Quick | Research | 100 quick + 20 research / day |
+|---|---|---|---|
+| qwen-3-coder-480B (Cerebras) | $0.0005 | $0.0026 | **$0.10/day** |
+| qwen-3-235B (Cerebras) | $0.0002 | $0.0012 | **$0.04/day** |
+| llama-3.3-70b (Groq) | $0.0002 | $0.0009 | **$0.04/day** |
+| kimi-k2 (Groq) | $0.0006 | $0.0035 | **$0.13/day** |
+| deepseek-v4-flash | $0.00007 | $0.0004 | **$0.014/day** |
+| deepseek-r1 | $0.0003 | $0.0017 | **$0.07/day** |
+
+Heavy daily use stays under ~$0.20/day in every realistic mix. Hedging
+(see `core/llm.py::HedgeLLM`) makes these an *upper bound* — when local
+beats the deadline, the cloud isn't called at all.
+
+### 10.5 Sensitivity-routed cloud chains
+
+Among the providers above, **hosting jurisdiction matters**. Cerebras and
+Groq are US-incorporated; DeepSeek and Moonshot route through PRC servers.
+The runtime tags every turn with one of three *sensitivity* values
+(`core/sensitivity.py`) and dispatches to a named chain accordingly:
+
+| Sensitivity | What triggers it | Chain (config default) |
+|---|---|---|
+| `private` | `my <noun>`, `IntentKind.COMMAND/DICTATION/MEETING_NOTE`, `Mode.MEETING`, **everything unclassified (safe default)** | `[cerebras_qwen_235b, groq_llama_70b]` — US-only |
+| `code` | code markers (`function`, `class`, `refactor`, `debug`, language names) | `[cerebras_qwen_coder, groq_kimi_k2]` — US-hosted |
+| `public` | encyclopedic openers (`what is`, `who was`, `how does`) with no personal-data markers | `[deepseek_v4_flash, cerebras_qwen_235b]` — cheapest first |
+
+`HedgeLLM` tries chain entries in order, falling through on
+timeout/error; local is the final fallback. The classifier is a deliberate
+floor — pattern-based, fail-safe-to-`private`. A learned classifier
+replaces it only if the heuristic mis-routes in practice.
+
+### 10.6 The tiered strategy in summary
+
+The pipeline now has four LLM-using surfaces, ordered by frequency:
+
+| Tier | Where it runs | Latency target | Cost / turn |
+|---|---|---|---|
+| Wake / KWS / intent fast-path | local (sherpa-onnx KWS, deterministic) | <100 ms | 0 |
+| Input gate + cleanup | local fast tier *if* the device has headroom | +150–300 ms each | 0 |
+| Fast spoken reply (`assistant.answer`, fast tier) | local fast tier | 0.3–2 s | 0 |
+| Main planner / multimodal | local main tier hedged against the sensitivity-routed cloud chain | 1–3 s | $0 or ~$0.0008 |
+
+The always-on capture loop never leaves the device (§9.7). Only post-ASR
+text crosses the local↔cloud boundary, and only to the chain selected by
+sensitivity.
+
+### 10.7 What this changes in the repo
+
+- `config.json` — adds `llm.cloud_providers` (named OpenAI-compatible
+  presets), `llm.cloud_chains` (failover chains by sensitivity), and
+  `llm.cloud_routing` (sensitivity → chain mapping). Each `device_profile`
+  picks a sensible `cloud` strategy (off / hedge / fallback) plus
+  per-tier deadlines.
+- `core/sensitivity.py` (new) — heuristic `Sensitivity` classifier.
+- `core/llm.py` — `HedgeLLM` now accepts a *list* of clouds (failover
+  chain); `SensitivityRouterLLM` dispatches `stream`/`generate` to one
+  of several backing LLMs via a `ContextVar`-published per-turn context.
+- `core/routing.py` — `HeuristicRouter` factors `IntentKind` (research →
+  main, command/dictation → fast); new `ChainSelector` picks chain by
+  sensitivity.
+- `core/capabilities.py` — `assistant.answer` enriches the context with
+  `intent_kind` + `sensitivity`, publishes it via `capability_context`,
+  then resets it after the turn.
+- `always_on_agent/tasks.py` — task `_invoke` forwards
+  `task.intent.value` into the capability context.
+- `tools/recommend_profile.py` (existing) — still picks the device
+  profile; cloud chains activate automatically once API keys are present.
+- Tests: `tests/test_sensitivity.py`, `tests/test_hedge_chain.py`,
+  `tests/test_cloud_providers.py`, `tests/test_routing_intent.py`,
+  `tests/test_imports_smoke.py` — plus `tools/run_tests.py` gains
+  `cloud` and `imports` stages for fast feedback.

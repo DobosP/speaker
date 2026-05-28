@@ -354,6 +354,7 @@ class SherpaOnnxEngine(AudioEngine):
                             "input is ~silent (avg_rms=%.6f) -- wrong mic, muted, or no "
                             "permission? run `python -m sounddevice` to list devices", avg,
                         )
+                    self._cb.on_heartbeat()
                     last_beat, beat_blocks, beat_level = now, 0, 0.0
 
                 # Command fast-path: keyword spotting runs every block, including

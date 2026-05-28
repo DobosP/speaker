@@ -79,10 +79,17 @@ Top-level keys:
 
 - **`meta`** — `engine`, `llm`, `device`, `mode`, `model`, `fast_model`, and
   `recording` (path) when `--record` was used.
-- **`stuck_hints`** — plain-English flags computed for you, e.g.
-  *"no LLM request was ever issued (ASR never produced a final?)"*,
-  *"every LLM request was cancelled"*, *"empty transcript"*,
-  *"N error(s) — see the .txt traceback"*. **Start here.**
+- **`stuck_hints`** — plain-English flags computed for you. Two sources feed
+  this list:
+  - *post-hoc* checks on the whole bundle: *"no LLM request was ever issued
+    (ASR never produced a final?)"*, *"every LLM request was cancelled"*,
+    *"empty transcript"*, *"N error(s) — see the .txt traceback"*;
+  - *live watchdog* (`core/watchdog.py`) warnings promoted at finalize time:
+    *"LLM stalled mid-turn"*, *"TTS stalled mid-turn"*, *"capture thread went
+    silent"*, *"barge-in gate flapping"*. The watchdog runs on a daemon
+    thread alongside the session and logs a WARNING the moment it detects a
+    stalled stage — so a run that froze for 15s mid-turn no longer looks
+    clean. **Start here.**
 - **`counts`** — `llm_requests`, `turns`, `transcript_entries`, `errors`,
   `warnings`, and `log_lines_by_level`.
 - **`transcript`** — ordered conversation: `[{role: user|assistant, text,
@@ -157,6 +164,44 @@ Async DEBUG log from these loggers (grep by prefix):
 
 ---
 
+## Reproducing a stuck-state run
+
+The hard ones to debug are runs that *worked but felt wrong*: the model went
+quiet for 10 seconds; the assistant talked over you and wouldn't stop; the
+mic seemed to give up. The watchdog above flips those into evidence — but
+**only if the session is long enough to surface the failure**. A clean
+55-second test like `run-20260528-004726.summary.json` won't catch a stuck
+case that needs a few minutes of real talking to trigger.
+
+When the assistant has misbehaved in real life and you want to debug it:
+
+1. **Capture a long-form session.** `./session.sh` (= `--debug --record`).
+   Run at least 3 minutes; longer is better. Don't stop early to "save the
+   bundle" — the bundle is written on Ctrl-C and on crash, so let the
+   misbehavior actually happen.
+2. **Stress the patterns you've seen fail** during that session:
+   - barge in mid-reply repeatedly (this is what would trip the barge-in
+     storm watcher);
+   - cause background noise while the assistant is speaking (TTS leaking
+     into the mic also trips the storm watcher);
+   - ask a long, slow query that should take a few seconds on the main
+     model (catches LLM stalls);
+   - if you can reproduce a "freeze," let it freeze — don't Ctrl-C; the
+     watchdog will warn at the deadline.
+3. **Push the bundle to a branch.** `git checkout -b repro/<date>-<symptom>`,
+   `git add logs/runs/run-*.{txt,summary.json,wav}`, commit + push. The WAV
+   becomes a deterministic replay fixture (`python -m core --engine replay
+   --replay-dir logs/runs --debug`), and the `summary.json` makes the
+   failure mode searchable.
+4. **Open `summary.json` → `stuck_hints` first.** If the list is non-empty
+   the watchdog or post-hoc check has named the failure; if it's still
+   empty, the watchdog deadlines may be too generous for what you saw — the
+   thresholds live in `core/watchdog.py` (`LLM_FIRST_TOKEN_DEADLINE_SEC`,
+   `TTS_FIRST_AUDIO_DEADLINE_SEC`, `CAPTURE_SILENT_DEADLINE_SEC`,
+   `BARGE_IN_STORM_*`) and are safe to tune.
+
+---
+
 ## Preflight & setup (when a run won't even start)
 
 - **`python -m tools.doctor`** — checks Python, required imports, sherpa model
@@ -187,10 +232,13 @@ slowest tests.
 ## Source map
 
 - `core/runlog.py` — async logging (`QueueHandler`/`QueueListener`), `RunSummary`
-  aggregation, crash-safe `finalize()`.
+  aggregation, crash-safe `finalize()`, watchdog-warning → `stuck_hints` promotion.
+- `core/watchdog.py` — live `StuckWatchdog`: per-second inspection of metrics
+  anchors + heartbeat + barge-in rate; logs WARNINGs the moment a stage stalls.
 - `core/recorder.py` — background-threaded WAV writer (`WavRecorder`).
 - `core/sysinfo.py` — `snapshot()` + `SystemMonitor` (CPU/GPU/RAM).
-- `core/engines/sherpa.py` — capture/playback instrumentation + recorder hook.
+- `core/engines/sherpa.py` — capture/playback instrumentation + recorder hook
+  + heartbeat callback into the watchdog.
 - `tools/doctor.py`, `tools/setup_models.py`, `install.sh`, `session.sh`.
-- Tests: `tests/test_runlog.py`, `tests/test_recorder.py`,
+- Tests: `tests/test_runlog.py`, `tests/test_watchdog.py`, `tests/test_recorder.py`,
   `tests/test_sysinfo.py`, `tests/test_setup_doctor.py`.

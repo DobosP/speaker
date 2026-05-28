@@ -34,6 +34,11 @@ class EngineCallbacks:
     # time precisely (user speech end, first TTS audio, barge-in stop) by name;
     # the runtime forwards them to its MetricsRecorder. See ``core.metrics``.
     on_metric: Callable[[str], None] = _noop_text
+    # Liveness signal: the engine fires this from its capture loop on its
+    # existing heartbeat cadence. The runtime's watchdog uses it to detect a
+    # crashed/stalled capture thread. Engines without an audio loop leave the
+    # default no-op (the watchdog then silently skips its silence check).
+    on_heartbeat: Callable[[], None] = _noop
 
 
 class AudioEngine(ABC):

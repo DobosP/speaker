@@ -69,3 +69,11 @@ def test_unusable_embedding_fails_open():
     gate = SpeakerGate(threshold=0.5, embed_fn=lambda samples, sr: None)
     gate.enroll_embedding(USER)
     assert gate.accept([0.0], 16000) is True  # None embedding -> don't block
+
+
+def test_embed_returns_raw_vector_without_enrolling():
+    # enroll_from_recordings relies on embed() exposing the per-recording vector
+    # without mutating the enrolled reference.
+    gate = SpeakerGate(threshold=0.5, embed_fn=lambda samples, sr: USER)
+    assert list(gate.embed([0.1, 0.2], 16000)) == USER
+    assert not gate.is_enrolled

@@ -10,6 +10,7 @@ from tools.doctor import (
     check_ollama,
     check_python,
     check_sherpa_models,
+    check_speaker_id,
     run_all,
     summarize,
 )
@@ -102,6 +103,41 @@ def test_check_sherpa_models_path_set_but_file_absent():
     res = check_sherpa_models({"sherpa": paths}, exists=lambda p: False)
     assert not res.ok
     assert "missing on disk" in res.detail
+
+
+def test_check_speaker_id_unconfigured_is_ok_advisory():
+    # Optional feature: unset model is OK (never blocks readiness), just advised.
+    c = check_speaker_id({"sherpa": {}})
+    assert c.ok
+    assert "optional" in c.detail
+
+
+def test_check_speaker_id_model_set_but_missing_is_fail():
+    c = check_speaker_id(
+        {"sherpa": {"speaker_embedding_model": "/m/spk.onnx"}}, exists=lambda p: False
+    )
+    assert not c.ok
+    assert "setup_models" in c.hint
+
+
+def test_check_speaker_id_model_present_not_enrolled_is_ok_with_nudge():
+    c = check_speaker_id(
+        {"sherpa": {"speaker_embedding_model": "/m/spk.onnx"}}, exists=lambda p: True
+    )
+    assert c.ok  # fail-open: not enrolled must not block readiness
+    assert "enroll" in c.detail
+
+
+def test_check_speaker_id_enrolled_is_ok():
+    cfg = {
+        "sherpa": {
+            "speaker_embedding_model": "/m/spk.onnx",
+            "speaker_enroll_embedding": "/m/enroll.json",
+        }
+    }
+    c = check_speaker_id(cfg, exists=lambda p: True)
+    assert c.ok
+    assert "enrollment present" in c.detail
 
 
 def test_check_ollama_models_present_and_missing():

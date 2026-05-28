@@ -48,11 +48,44 @@ SUBDIR = {
     "tts_model": "tts",
     "tts_tokens": "tts",
 }
+# Speaker-embedding model for the speaker-ID gate (barge-in + input gating).
+# It ships as a GitHub *release asset* (not a HF repo file), so it's fetched by
+# direct URL rather than huggingface_hub. Override with --speaker-model-url or
+# the SPEAKER_EMBEDDING_MODEL_URL env var. NOTE: the upstream release tag spells
+# "recongition" -- that typo is real, keep it. CAM++ is small (~28 MB), CPU-only,
+# ONNX (no torch), 16 kHz -- a good fit for the on-device gate.
+SPEAKER_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
+)
 
 
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
     return os.path.join(base, SUBDIR.get(key, ""))
+
+
+def fetch_speaker_model(dest_dir: str, url: str, *, force: bool = False) -> str:
+    """Download the speaker-embedding ONNX from a direct URL into ``dest_dir``.
+
+    Returns the local path. Skips the download when the file already exists
+    (unless ``force``). Streams to a ``.part`` file and renames on success so an
+    interrupted fetch never leaves a truncated model in place. Uses urllib (no
+    HF dependency) because the model is a GitHub release asset, not a repo file.
+    """
+    import shutil
+    import urllib.request
+
+    os.makedirs(dest_dir, exist_ok=True)
+    filename = url.rsplit("/", 1)[-1] or "speaker.onnx"
+    path = os.path.join(dest_dir, filename)
+    if os.path.exists(path) and not force:
+        return path
+    tmp = path + ".part"
+    with urllib.request.urlopen(url) as resp, open(tmp, "wb") as fh:  # noqa: S310 - trusted release URL
+        shutil.copyfileobj(resp, fh)
+    os.replace(tmp, path)
+    return path
 
 
 def apply_accuracy(manifest: dict, accuracy: str) -> dict:
@@ -95,6 +128,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dest", default=DEST, help=f"download dir (default: {DEST})")
     parser.add_argument(
         "--config", default=CONFIG, help=f"config file to update (default: {CONFIG})"
+    )
+    parser.add_argument(
+        "--speaker-model-url",
+        dest="speaker_model_url",
+        default=os.environ.get("SPEAKER_EMBEDDING_MODEL_URL", SPEAKER_MODEL_URL),
+        help="URL of the speaker-ID embedding model (default: the sherpa-onnx "
+        "CAM++ release asset; override or set SPEAKER_EMBEDDING_MODEL_URL)",
+    )
+    parser.add_argument(
+        "--no-speaker-model",
+        dest="speaker_model",
+        action="store_false",
+        help="skip the optional speaker-ID model download",
     )
     args = parser.parse_args(argv)
 
@@ -139,6 +185,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[models] espeak-ng-data not fetched ({exc}); continuing", file=sys.stderr)
         resolved["tts_data_dir"] = ""
 
+    # Speaker-ID model (optional). Non-fatal: a failed fetch must not block the
+    # core ASR/TTS setup -- the gate just stays unconfigured (fail-open) until
+    # the user re-runs. It's a GitHub release asset, so fetched by direct URL.
+    if args.speaker_model:
+        speaker_dest = os.path.join(args.dest, "speaker")
+        print(f"[models] fetching speaker-ID model: {args.speaker_model_url} -> {speaker_dest}")
+        try:
+            resolved["speaker_embedding_model"] = fetch_speaker_model(
+                speaker_dest, args.speaker_model_url, force=args.force
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] speaker-ID model not fetched ({exc}); continuing without it. "
+                "Speaker gating stays off until you re-run.",
+                file=sys.stderr,
+            )
+
     # Write the absolute model paths into the machine-local overrides file
     # (gitignored, merged over config.json at load). Start from whatever is
     # already there so other local overrides survive.
@@ -152,8 +215,10 @@ def main(argv: list[str] | None = None) -> int:
 
     sherpa = cfg["sherpa"]
     print(f"\n[models] {args.config} sherpa paths set:")
-    for key in FILE_KEYS + ["tts_data_dir"]:
+    for key in FILE_KEYS + ["tts_data_dir", "speaker_embedding_model"]:
         print(f"  {key}: {sherpa.get(key, '')}")
+    if sherpa.get("speaker_embedding_model"):
+        print("\nSpeaker-ID model ready. Enroll your voice:  python -m core --enroll")
     print("\nNow run:  python -m core --engine sherpa")
     return 0
 

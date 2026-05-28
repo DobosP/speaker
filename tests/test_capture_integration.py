@@ -108,8 +108,12 @@ def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):
     assert "no sherpa model paths" in msg.lower()
 
 
-def test_load_config_merges_config_local(tmp_path):
+def test_load_config_merges_config_local(tmp_path, monkeypatch):
     from core.app import _load_config
+
+    # This test exercises the merge mechanism itself, so opt out of the
+    # session-wide hermetic guard (conftest sets SPEAKER_NO_LOCAL_CONFIG=1).
+    monkeypatch.delenv("SPEAKER_NO_LOCAL_CONFIG", raising=False)
 
     (tmp_path / "config.json").write_text(
         json.dumps({"sherpa": {"asr_encoder": "", "sample_rate": 16000}, "device": "desktop"}),

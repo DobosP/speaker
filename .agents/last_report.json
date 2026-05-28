@@ -1,0 +1,23 @@
+{
+  "ts": "2026-05-28T20:33:13Z",
+  "sha": "5bab7fa",
+  "machine": "dobo-ROG-Strix-G634JY-G634JY",
+  "tests": {
+    "ok": true,
+    "returncode": 0,
+    "duration_sec": 16.59,
+    "passed": 615,
+    "failed": 0,
+    "skipped": 1,
+    "failures": [],
+    "digest": "/home/dobo/work/speaker/logs/tests/tests-20260528-233314.summary.json"
+  },
+  "perf": {
+    "ok": true,
+    "mode": "fake",
+    "returncode": 0,
+    "duration_sec": 1.2,
+    "tail": "[bench] wrote test-reports/perf/phone/index.html\n## Speaker perf \u2014 `phone`\n\n100 turn(s), 100 answered.\n\n| metric | measured median | modelled | budget | status |\n| --- | --- | --- | --- | --- |\n| first_audio_latency | 0.011s | 5.260s | \u22641.2 / \u22642.5 | good |\n| barge_in_latency | \u2014 | 0.400s | \u22640.3 / \u22640.5 | n/a |"
+  },
+  "green": true
+}

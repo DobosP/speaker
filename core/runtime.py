@@ -130,6 +130,7 @@ class VoiceRuntime:
                 on_command=self._on_command,
                 on_metric=self.metrics.mark,
                 on_heartbeat=self._watchdog.note_heartbeat,
+                on_capture_state=self._on_capture_state,
             )
         )
         if run_bus:
@@ -240,6 +241,29 @@ class VoiceRuntime:
                 self.bus.publish(AgentEvent.mode(Mode(action.split(":", 1)[1]), source="command"))
             except ValueError:
                 pass
+
+    def _on_capture_state(self, state: str, message: str) -> None:
+        """Engine reports a change in the capture stream's lifecycle.
+
+        Three forks: ``"open"`` means we're capturing audio normally;
+        ``"recovering"`` means the engine hit a PortAudio error and is
+        retrying with backoff; ``"fatal"`` means recovery exhausted and
+        the capture loop will not produce more audio.
+
+        Publishes a ``CAPTURE_STATE`` :class:`AgentEvent` so the brain
+        can react (today: just log + tell the watchdog; future: spoken
+        feedback "reconnecting microphone"), and tells the watchdog so
+        it skips the false "audio thread stalled" warning during a
+        legitimate reopen."""
+        self._watchdog.note_capture_state(state, message)
+        log.info("capture state: %s (%s)", state, message)
+        self.bus.publish(
+            AgentEvent(
+                EventKind.CAPTURE_STATE,
+                {"state": state, "message": message},
+                priority=30,
+            )
+        )
 
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:

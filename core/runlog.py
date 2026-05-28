@@ -77,6 +77,22 @@ class RunSummary:
             stuck.append("no LLM request was ever issued (ASR never produced a final?)")
         if not self.transcript and self.meta.get("engine") in ("sherpa", "livekit"):
             stuck.append("empty transcript (nothing was recognized or spoken)")
+        # Promote watchdog warnings (logger='speaker.watchdog') to named hints.
+        # The watchdog emits a WARNING the moment it detects a stalled stage,
+        # so this surfaces real-time stuck states that the post-hoc checks
+        # above can't see (clean run, but the LLM hung for 15s mid-turn).
+        wd_msgs = [
+            e.get("message", "") for e in self.errors
+            if e.get("logger") == "speaker.watchdog"
+        ]
+        if any("llm stuck" in m for m in wd_msgs):
+            stuck.append("LLM stalled mid-turn (asr_final fired but no first token; see watchdog warnings)")
+        if any("tts stuck" in m for m in wd_msgs):
+            stuck.append("TTS stalled mid-turn (LLM streamed tokens but no audio; see watchdog warnings)")
+        if any("capture silent" in m for m in wd_msgs):
+            stuck.append("capture thread went silent (audio loop crashed or stalled; see watchdog warnings)")
+        if any("barge-in storm" in m for m in wd_msgs):
+            stuck.append("barge-in gate flapping (many detections in <2s; TTS likely leaking into mic)")
         return {
             "run_id": self.run_id,
             "log_path": self.log_path,

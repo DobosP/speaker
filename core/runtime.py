@@ -19,6 +19,7 @@ from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, MetricsRecorder
 from .routing import Router
+from .watchdog import StuckWatchdog
 
 log = logging.getLogger("speaker.runtime")
 
@@ -94,6 +95,10 @@ class VoiceRuntime:
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)
         self._bus_threaded = False
+        # Live watchdog: warns when a turn stalls or the barge-in gate flaps.
+        # See core.watchdog for the heuristics; WARNINGs land in the run
+        # bundle so the next stuck reproduction leaves visible evidence.
+        self._watchdog = StuckWatchdog(self.metrics)
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:
@@ -107,15 +112,21 @@ class VoiceRuntime:
                 on_barge_in=self._on_barge_in,
                 on_command=self._on_command,
                 on_metric=self.metrics.mark,
+                on_heartbeat=self._watchdog.note_heartbeat,
             )
         )
         if run_bus:
             self.bus.start()
             self._bus_threaded = True
+        self._watchdog.start()
 
     def stop(self) -> None:
         # Guard each step so a teardown error never prevents the engine from
         # stopping -- that is what flushes the session recording to disk.
+        try:
+            self._watchdog.stop()
+        except Exception:  # noqa: BLE001
+            log.exception("watchdog stop failed")
         try:
             self.supervisor.shutdown()
         except Exception:  # noqa: BLE001
@@ -151,6 +162,7 @@ class VoiceRuntime:
     def _on_barge_in(self) -> None:
         # User spoke over the assistant: cut playback now, cancel in-flight work.
         self.metrics.mark(BARGE_IN)
+        self._watchdog.note_barge_in()
         self.engine.stop_speaking()
         self.bus.publish(AgentEvent.stop("barge_in"))
 

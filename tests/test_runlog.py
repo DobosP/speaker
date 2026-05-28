@@ -147,3 +147,23 @@ def test_summary_flags_no_llm_request_for_voice_engine(tmp_path):
     runlog.finalize()
     data = json.loads((tmp_path / "run-nollm.summary.json").read_text(encoding="utf-8"))
     assert any("no LLM request" in hint for hint in data["stuck_hints"])
+
+
+@pytest.mark.parametrize(
+    "wd_message, expected_hint_substring",
+    [
+        ("llm stuck: turn 0 had asr_final but no llm_first_token after 12.0s", "LLM stalled mid-turn"),
+        ("tts stuck: turn 0 had llm_first_token but no tts_first_audio after 7.0s", "TTS stalled mid-turn"),
+        ("capture silent: no heartbeat for 8.0s (audio thread crashed?)", "capture thread went silent"),
+        ("barge-in storm: 4 detections in the last 1.5s (gate flapping)", "barge-in gate flapping"),
+    ],
+)
+def test_watchdog_warnings_promote_to_named_stuck_hints(tmp_path, wd_message, expected_hint_substring):
+    runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="wd", console=False)
+    runlog.summary.note(engine="sherpa")
+    logging.getLogger("speaker.watchdog").warning(wd_message)
+    runlog.finalize()
+    data = json.loads((tmp_path / "run-wd.summary.json").read_text(encoding="utf-8"))
+    assert any(expected_hint_substring in hint for hint in data["stuck_hints"]), (
+        f"expected {expected_hint_substring!r} in stuck_hints, got {data['stuck_hints']}"
+    )

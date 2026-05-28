@@ -1,0 +1,15 @@
+{
+  "_comment": "Docker-compose overlay applied by docker/entrypoint.py. Flips cloud=true on the desktop_gpu_4090 device profile so the console runs through HedgeLLM (local gemma3:12b + the cloud chain). hedge_delay_ms=50 starts the cloud client almost immediately so the user sees cloud-sourced tokens win the race against the still-warming local model. No other change vs the committed config.json -- the overlay is per-top-level-section + per-device-profile deep merge (see _shallow_merge in entrypoint.py).",
+  "device_profiles": {
+    "desktop_gpu_4090": {
+      "llm": {
+        "cloud": {
+          "enabled": true,
+          "strategy": "hedge",
+          "hedge_delay_ms": 50,
+          "ttft_deadline_ms": 1500
+        }
+      }
+    }
+  }
+}

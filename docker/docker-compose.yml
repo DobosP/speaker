@@ -1,0 +1,104 @@
+# Console + cloud-streaming flow for the laptop dev box.
+#
+# What this gives you: an interactive ``python -m core --engine console``
+# running inside a tiny container, with ``--llm ollama`` for the FAST
+# tier (gemma3:4b on your 4090) and HedgeLLM + SensitivityRouterLLM
+# racing it against the four cloud providers (PR-1) for the MAIN tier.
+# Type a question into stdin; tokens stream back from whichever path
+# wins. Set zero API keys and you get pure local; set one and the
+# private chain has cloud failover; set all four and every chain has
+# real failover. ``tools/llm_sanity.py --smoke`` works in this image
+# too.
+#
+# Run with:
+#
+#     cd docker && cp .env.example .env && $EDITOR .env   # paste your keys
+#     docker compose -f docker/docker-compose.yml up -d ollama
+#     docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma3:4b
+#     docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma3:1b
+#     docker compose -f docker/docker-compose.yml run --rm speaker
+#
+# See docs/docker_quickstart.md for the full command sequence + why each
+# step matters.
+#
+# This compose file is INDEPENDENT of the remote/LiveKit compose flow
+# (the existing docker/Dockerfile serves both -- we just give it a
+# different command + a different overlay here).
+
+services:
+  # GPU-resident LLM server. Pulls gemma3 models on first ``ollama pull``;
+  # the named volume persists them across runs.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: speaker-ollama
+    # NVIDIA Container Toolkit must be installed on the host for this
+    # device-reservation block to take effect. On Windows the same flag
+    # works under WSL2 + nvidia-container-toolkit.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      # Keep models resident on the GPU between turns (no cold reload).
+      OLLAMA_KEEP_ALIVE: "30m"
+    volumes:
+      - ollama_models:/root/.ollama
+    # Expose 11434 so ``python tools/llm_sanity.py --all`` can also
+    # probe ollama from the host if you ever want to compare TTFTs.
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  # The speaker app -- console engine + cloud middle layer. NO GPU
+  # request here; ollama is on the GPU, this container just speaks HTTP.
+  speaker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: speaker:console
+    container_name: speaker-console
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # Cloud middle-layer keys (PR-1). Missing keys silently disable
+      # that provider; the chain falls through to whichever providers
+      # ARE set, finally to the local main via HedgeLLM.
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      GROQ_API_KEY:     ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      # Point the entrypoint at the docker-only overlay that turns
+      # cloud=true on the 4090 profile (committed config has it OFF
+      # because local-only is the safe default).
+      SPEAKER_CONFIG_OVERLAY: /app/config.overlay.json
+      # Point the Ollama client at the sibling service. The entrypoint
+      # also drops this into llm.host so OllamaLLM picks it up.
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_KEEP_ALIVE: "30m"
+    volumes:
+      # Bind-mount the overlay read-only so edits on the host take
+      # effect on the next ``docker compose run`` without rebuild.
+      - ./config.overlay.json:/app/config.overlay.json:ro
+      # Persist the run bundles (logs/runs/run-*.txt + summary.json)
+      # to the host so each session's transcript + per-turn latency
+      # stamps survive the container.
+      - ../logs:/app/logs
+    # ``console`` engine needs stdin + a TTY to feel like a normal REPL.
+    stdin_open: true
+    tty: true
+    # Default to console + ollama + 4090 profile (which the overlay
+    # turned cloud-on). ``docker compose run --rm speaker --help`` or
+    # any other args override this.
+    command: ["python", "-m", "core", "--engine", "console", "--llm", "ollama", "--device", "desktop_gpu_4090"]
+
+volumes:
+  ollama_models:
+    name: speaker_ollama_models

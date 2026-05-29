@@ -12,7 +12,13 @@ from __future__ import annotations
 from always_on_agent.events import Mode
 from always_on_agent.models import IntentKind
 
-from core.sensitivity import CODE, PRIVATE, PUBLIC, classify_sensitivity
+from core.sensitivity import (
+    CODE,
+    PRIVATE,
+    PUBLIC,
+    classify_sensitivity,
+    may_leave_device,
+)
 
 
 # --- defaults --------------------------------------------------------------
@@ -190,3 +196,63 @@ def test_classify_returns_valid_sensitivity_strings():
     ]
     for s in samples:
         assert classify_sensitivity(s) in valid
+
+
+# --- §9.7 egress gate (may_leave_device) -----------------------------------
+# BR3 (LOCKED, "block PII only"): the web-search surface egress predicate.
+# Any PII/personal/possessive query => False (corpus only, no egress); a
+# plain non-PII public lookup => True (reaches self-hosted SearXNG). PII
+# precedence wins even for CODE-with-credential queries (BR5). MEETING mode
+# and COMMAND/DICTATION/MEETING_NOTE intents also block egress.
+
+
+def test_pii_possessive_query_may_not_leave_device():
+    """The canonical leak: a possessive + name + money phrasing is blocked
+    from egress, never reaching the web-search backend (BR3)."""
+    assert may_leave_device("my coworker John's salary") is False
+
+
+def test_plain_public_query_may_leave_device():
+    """A plain non-PII public lookup is permitted to egress to the
+    self-hosted SearXNG backend (BR3 block-PII-only)."""
+    assert may_leave_device("weather in Berlin") is True
+    assert may_leave_device("who won the 2022 world cup") is True
+
+
+def test_code_with_credential_may_not_leave_device():
+    """PII precedence wins (BR5): a CODE query carrying a credential phrase
+    is blocked even though CODE != PRIVATE -- ``_is_personal`` fires first."""
+    assert may_leave_device("debug this, the api key is sk-abc123") is False
+
+
+def test_meeting_mode_may_not_leave_device():
+    assert may_leave_device("what is the agenda", mode=Mode.MEETING) is False
+
+
+def test_command_intent_may_not_leave_device():
+    assert (
+        may_leave_device("what time is it", intent_kind=IntentKind.COMMAND)
+        is False
+    )
+
+
+def test_dictation_and_meeting_note_intents_may_not_leave_device():
+    assert (
+        may_leave_device("how does this work", intent_kind=IntentKind.DICTATION)
+        is False
+    )
+    assert (
+        may_leave_device(
+            "summarize the discussion", intent_kind=IntentKind.MEETING_NOTE
+        )
+        is False
+    )
+
+
+def test_research_intent_does_not_block_public_egress():
+    """RESEARCH/SEARCH intent signals the user wants an external lookup, so a
+    non-PII query under RESEARCH still egresses (it is not a blocked intent)."""
+    assert (
+        may_leave_device("what is climate change", intent_kind=IntentKind.RESEARCH)
+        is True
+    )

@@ -31,9 +31,18 @@ class SupportsLLM(Protocol):
 
 # Capabilities the planner may call by default: read-only gather/synthesis tools.
 # ``assistant.answer`` is excluded so the planner never recurses into itself.
-DEFAULT_TOOLS: tuple[str, ...] = ("search.local", "research.scope", "research.local")
+# ``web.search`` leads ``search.local``: it queries real web search (self-hosted
+# SearXNG) when permitted by the §9.7 egress gate, and falls back to the local
+# corpus otherwise -- so it's the right default gather tool.
+DEFAULT_TOOLS: tuple[str, ...] = (
+    "web.search",
+    "search.local",
+    "research.scope",
+    "research.local",
+)
 
 _TOOL_DESCRIPTIONS = {
+    "web.search": "search the web for current information on a topic",
     "search.local": "look up a topic in the local knowledge corpus",
     "research.scope": "outline the scope and key questions for a topic",
     "research.local": "synthesize gathered findings into a recommendation",

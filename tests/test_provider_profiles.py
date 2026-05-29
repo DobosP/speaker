@@ -131,6 +131,52 @@ def test_extra_body_merges_with_caller_supplied():
     assert kw["extra_body"] == {"foo": "bar", "clear_thinking": True}
 
 
+# --- max_tokens per-turn ceiling (BR4) ------------------------------------
+
+
+def test_max_tokens_ceiling_injected_when_no_profile_cap():
+    """The per-turn max_tokens ceiling lands in the request kwargs for a plain
+    profile (no cap) -- the cost-control knob, BR4."""
+    llm = OpenAICompatLLM("m", profile="openai_compat", max_tokens=512)
+    kw = llm._create_kwargs("hi", system=None, images=None, stream=True)
+    assert kw["max_tokens"] == 512
+
+
+def test_max_tokens_ceiling_under_profile_cap_keeps_the_ceiling():
+    """A 100-token turn ceiling under an 8192 Cerebras cap stays 100 --
+    min() composition, the ceiling is the smaller of the two (BR4)."""
+    llm = OpenAICompatLLM("gpt-oss-120b", profile="cerebras", max_tokens=100)
+    kw = llm._create_kwargs("hi", system=None, images=None, stream=True)
+    assert kw["max_tokens"] == 100
+
+
+def test_max_tokens_ceiling_above_profile_cap_is_clamped_to_the_cap():
+    """A 20000 turn ceiling above the 8192 Cerebras cap is clamped to 8192 --
+    the profile cap stays authoritative because the ceiling is injected BEFORE
+    the cap block (BR4)."""
+    llm = OpenAICompatLLM("gpt-oss-120b", profile="cerebras", max_tokens=20000)
+    kw = llm._create_kwargs("hi", system=None, images=None, stream=True)
+    assert kw["max_tokens"] == 8192
+
+
+def test_caller_options_max_tokens_wins_over_init_ceiling():
+    """An explicit options[max_tokens] is the per-call override and must win
+    over the __init__ ceiling (still subject to the profile cap)."""
+    llm = OpenAICompatLLM(
+        "m", profile="openai_compat", max_tokens=512, options={"max_tokens": 64}
+    )
+    kw = llm._create_kwargs("hi", system=None, images=None, stream=True)
+    assert kw["max_tokens"] == 64
+
+
+def test_no_max_tokens_ceiling_leaves_request_uncapped_for_plain_profile():
+    """Default max_tokens=None on a cap-less profile means the key is absent --
+    we don't invent a ceiling (preserves prior behaviour)."""
+    llm = OpenAICompatLLM("m", profile="openai_compat")
+    kw = llm._create_kwargs("hi", system=None, images=None, stream=True)
+    assert "max_tokens" not in kw
+
+
 # --- stream() reasoning-channel handling ----------------------------------
 
 

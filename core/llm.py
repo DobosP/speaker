@@ -458,6 +458,7 @@ class OpenAICompatLLM:
         api_key: Optional[str] = None,
         api_key_env: Optional[str] = None,
         timeout: float = 30.0,
+        max_tokens: Optional[int] = None,
         options: Optional[dict] = None,
         profile: "ProviderProfile | str | None" = None,
         client=None,
@@ -465,7 +466,16 @@ class OpenAICompatLLM:
         self.model = model
         self._base_url = base_url
         self._api_key = api_key or (os.environ.get(api_key_env) if api_key_env else None)
+        # Socket/read timeout (seconds) handed to the OpenAI client. A small
+        # value (BR1) reaps a losing cloud worker still blocked in the first-
+        # token read fast -- the HTTP hard-close in stream() is deterministic
+        # only after tokens flow, so a pre-first-token loser otherwise holds the
+        # socket + billing until this timeout. 30.0 keeps the prior behaviour.
         self._timeout = timeout
+        # Optional per-turn output ceiling (BR4). Injected into the merged
+        # request kwargs BEFORE the profile max_tokens cap so the profile cap
+        # stays authoritative via min() composition (e.g. Cerebras free tier).
+        self._max_tokens = max_tokens
         self._options = dict(options) if options else {}
         self._client = client
         if profile is None:
@@ -504,6 +514,14 @@ class OpenAICompatLLM:
                 merged.pop(key, None)
             elif key in self.profile.extra_body_keys:
                 extra_body[key] = merged.pop(key)
+        # Per-turn output ceiling (BR4): inject the configured max_tokens into
+        # merged BEFORE the profile-cap block below so the profile cap stays
+        # authoritative -- the cap's min()-style composition then keeps whichever
+        # is smaller (e.g. a 100-token turn ceiling under an 8192 Cerebras cap
+        # stays 100; a 20000 ceiling is clamped to 8192). A caller-supplied
+        # options["max_tokens"] still wins (it's already in merged).
+        if self._max_tokens is not None and merged.get("max_tokens") is None:
+            merged["max_tokens"] = self._max_tokens
         # max_tokens cap (Cerebras free tier).
         cap = self.profile.max_tokens_cap
         if cap is not None:
@@ -540,25 +558,45 @@ class OpenAICompatLLM:
         self.last_reasoning_chars = 0
         reasoning_field = self.profile.reasoning_field
         suppress = self.profile.suppress_reasoning_in_stream
-        for chunk in self._ensure().chat.completions.create(
-            **self._create_kwargs(prompt, system, images, stream=True)
-        ):
-            choices = getattr(chunk, "choices", None)
-            if not choices:
-                continue
-            delta = choices[0].delta
-            # Reasoning-channel tokens (DeepSeek reasoning_content / Groq
-            # gpt-oss reasoning). Count for metrics; yield only if not
-            # suppressed (default: suppressed -- assistant shouldn't speak CoT).
-            if reasoning_field:
-                reasoning_piece = getattr(delta, reasoning_field, None)
-                if reasoning_piece:
-                    self.last_reasoning_chars += len(reasoning_piece)
-                    if not suppress:
-                        yield reasoning_piece
-            piece = getattr(delta, "content", None)
-            if piece:
-                yield piece
+        # Bind the SDK Stream INSIDE the generator body so a HTTP hard-close on
+        # cancel/barge-in (GeneratorExit) runs the finally below, telling the
+        # provider to stop streaming + billing instead of leaking the socket
+        # until GC (ported from tools/cloudchat.py:181-185). Binding here (not
+        # before the loop's caller resumes) keeps a close() BEFORE the first
+        # token a no-op: sdk_stream is unbound, so the getattr guard returns
+        # None and finally does nothing rather than raising AttributeError (BR6).
+        try:
+            sdk_stream = self._ensure().chat.completions.create(
+                **self._create_kwargs(prompt, system, images, stream=True)
+            )
+            for chunk in sdk_stream:
+                choices = getattr(chunk, "choices", None)
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                # Reasoning-channel tokens (DeepSeek reasoning_content / Groq
+                # gpt-oss reasoning). Count for metrics; yield only if not
+                # suppressed (default: suppressed -- assistant shouldn't speak CoT).
+                if reasoning_field:
+                    reasoning_piece = getattr(delta, reasoning_field, None)
+                    if reasoning_piece:
+                        self.last_reasoning_chars += len(reasoning_piece)
+                        if not suppress:
+                            yield reasoning_piece
+                piece = getattr(delta, "content", None)
+                if piece:
+                    yield piece
+        finally:
+            # Hard-close the HTTP stream on natural exhaustion AND on early
+            # consumer close (cancel). Guarded so a pre-first-token close (where
+            # .create() never returned, sdk_stream unbound) is a NO-OP, and so a
+            # fake/iterator stream without .close() doesn't crash the worker.
+            closer = getattr(locals().get("sdk_stream"), "close", None)
+            if closer is not None:
+                try:
+                    closer()
+                except Exception:
+                    pass
 
 
 class HedgeLLM:

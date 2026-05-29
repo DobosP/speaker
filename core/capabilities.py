@@ -13,12 +13,62 @@ from always_on_agent.memory import Memory
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
-from .llm import LLMClient, capability_context
+from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
 from .metrics import MetricsRecorder, mark_first_token
-from .routing import LIVE_CONTEXT_KEY, HeuristicRouter, Router
+from .routing import (
+    LIVE_CONTEXT_KEY,
+    HeuristicRouter,
+    Router,
+    dynamic_hedge_delay_ms,
+)
 from .sensitivity import classify_sensitivity
 
 log = logging.getLogger("speaker.llm")
+
+
+def _answers_locally(model: LLMClient) -> bool:
+    """True when ``model`` can only answer from the on-device tier.
+
+    Gates the LOCAL TTFT EWMA fold (P4 low): a turn's ASR_FINAL -> first-token
+    delta is a *local* headroom sample only when the model has no cloud that
+    could have won the race. A :class:`HedgeLLM` with a non-empty cloud chain --
+    or a :class:`SensitivityRouterLLM`, whose chosen chain may be cloud-backed --
+    might have answered from cloud, so we conservatively do NOT fold those (a
+    fast cloud answer must not be mislabeled as a fast local tier). Anything
+    else (plain ``OllamaLLM`` / ``LlamaCppLLM`` / ``EchoLLM`` / a HedgeLLM with
+    no clouds) is purely local and folds. Best-effort: any introspection error
+    falls back to ``True`` (the historical fold-always behaviour)."""
+    try:
+        if isinstance(model, SensitivityRouterLLM):
+            return False
+        if isinstance(model, HedgeLLM):
+            return not model.clouds
+        return True
+    except Exception:  # noqa: BLE001 - never let a fold gate break a turn
+        return True
+
+
+def _base_hedge_delay_ms(model: LLMClient) -> Optional[float]:
+    """The static hedge delay (ms) of a cloud-racing model, or ``None``.
+
+    Used to derive the dynamic per-call hedge override (Task 4): only a
+    :class:`HedgeLLM` with a cloud chain -- or a :class:`SensitivityRouterLLM`
+    whose chains are such HedgeLLMs -- has a meaningful hedge delay to shorten.
+    The factory builds every chain with the same ``hedge_delay_ms``, so any
+    cloud-backed chain's delay is representative. Returns ``None`` for a
+    pure-local model (no race to start sooner) or on any introspection error."""
+    try:
+        if isinstance(model, HedgeLLM):
+            return model.hedge_delay * 1000.0 if model.clouds else None
+        if isinstance(model, SensitivityRouterLLM):
+            for chain in model.chains.values():
+                if isinstance(chain, HedgeLLM) and chain.clouds:
+                    return chain.hedge_delay * 1000.0
+            return None
+        return None
+    except Exception:  # noqa: BLE001 - hedge timing is best-effort, never fatal
+        return None
+
 
 # Predicate deciding whether an ASSISTANT-mode query should escalate to the
 # ReAct planner instead of a one-shot reply.
@@ -108,6 +158,7 @@ def attach_llm_capabilities(
     memory: Optional[Memory] = None,
     recall: Optional[RecallConfig] = None,
     live_routing: bool = False,
+    load_snapshot: Optional[Callable[[], Optional[float]]] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -127,6 +178,14 @@ def attach_llm_capabilities(
     to the router as a live nudge toward main/cloud when the local tier is slow.
     The nudge is additive-only + clamped (see :mod:`core.routing`) and a missing
     sample is a no-op, so it can never starve the local tier.
+
+    ``load_snapshot`` (optional) is a cheap ``() -> Optional[float]`` callable --
+    the :class:`core.sysinfo.SystemMonitor` ``load_fraction`` reader -- whose
+    0..1 value is added to the live context alongside the TTFT sample. Also
+    gated behind ``live_routing`` (default off) so default behaviour stays
+    byte-identical; ``live_nudge`` clamps the load and treats ``None`` as no
+    nudge, so a loaded device offloads while a missing reading never starves
+    local (the live-routing follow-up).
     """
 
     fast = fast_llm or llm
@@ -197,16 +256,29 @@ def attach_llm_capabilities(
                         system_for_call = recall_block[: recall_cfg.max_chars] + "\n\n" + system
             except Exception:  # noqa: BLE001 - recall is best-effort, never fatal
                 log.exception("memory recall failed; answering without it")
-        # Live headroom hint (smart-routing-2): publish the recorder's rolling
-        # local TTFT under context['live'] so HeuristicRouter can nudge a slow
-        # local tier toward main/cloud. Gated + fail-safe: only when enabled and
-        # a measurable sample exists; reading the EWMA is a cheap locked dict
-        # read. A SystemMonitor load snapshot is a follow-up (wiring it needs the
-        # monitor plumbed into this closure from runtime.py/app.py).
-        if live_routing and recorder is not None and LIVE_CONTEXT_KEY not in context:
-            ttft_ms = recorder.recent_ttft_ms()
-            if ttft_ms is not None:
-                context[LIVE_CONTEXT_KEY] = {"ttft_ms": ttft_ms}
+        # Live headroom hint (smart-routing-2 + load follow-up): publish the
+        # recorder's rolling local TTFT and an optional SystemMonitor load
+        # snapshot under context['live'] so HeuristicRouter can nudge a slow or
+        # loaded local tier toward main/cloud. Gated + fail-safe: only when
+        # live_routing is on and at least one signal is present; reading the
+        # EWMA is a cheap locked dict read and load_snapshot reads the last
+        # background sample (no hot-path sampling). A missing/garbage value is a
+        # no-op nudge in core.routing, so this can never starve the local tier.
+        if live_routing and LIVE_CONTEXT_KEY not in context:
+            live: dict[str, object] = {}
+            if recorder is not None:
+                ttft_ms = recorder.recent_ttft_ms()
+                if ttft_ms is not None:
+                    live["ttft_ms"] = ttft_ms
+            if load_snapshot is not None:
+                try:
+                    load = load_snapshot()
+                except Exception:  # noqa: BLE001 - load is best-effort, never fatal
+                    load = None
+                if load is not None:
+                    live["load"] = load
+            if live:
+                context[LIVE_CONTEXT_KEY] = live
         tier = router.choose(query, context)
         model = llm if tier == "main" else fast
         if debug_routing:
@@ -225,7 +297,29 @@ def attach_llm_capabilities(
         # ContextVar doesn't leak between unrelated turns.
         ctx_token = capability_context.set(context)
         try:
-            tokens = mark_first_token(model.stream(query, system=system_for_call), recorder)
+            # Only fold this turn's first-token latency into the LOCAL TTFT EWMA
+            # when the answering model is purely local; a cloud-hedge win would
+            # otherwise mislabel the headroom signal (P4 low).
+            fold_local = _answers_locally(model)
+            # Dynamic hedge timing (Task 4): when live routing is on and the
+            # local tier looks slow/loaded, shorten the per-call hedge delay so
+            # the cloud race starts sooner. Computed from the same live signal as
+            # the nudge and clamped to a floor (core.routing) so it can never
+            # reach zero/negative. ``None`` -> the constructor's static delay
+            # stands, so default behaviour (live_routing off, good/missing
+            # signal, or a pure-local model) is byte-identical. Forwarded only to
+            # a backend that accepts the PINNED-CONTRACT keyword.
+            stream_kwargs: dict[str, object] = {"system": system_for_call}
+            if live_routing:
+                base_ms = _base_hedge_delay_ms(model)
+                if base_ms is not None:
+                    hd = dynamic_hedge_delay_ms(context.get(LIVE_CONTEXT_KEY), base_ms)
+                    if hd is not None:
+                        stream_kwargs["hedge_delay_ms"] = hd
+            tokens = mark_first_token(
+                model.stream(query, **stream_kwargs), recorder,  # type: ignore[arg-type]
+                fold_local_ttft=fold_local,
+            )
             if callable(emit):
                 text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
                 log.info(
@@ -274,7 +368,10 @@ def attach_llm_capabilities(
         )
         cancel = context.get("cancel_event")
         emit = context.get("emit_speech")
-        tokens = mark_first_token(llm.stream(prompt, system=system), recorder)
+        tokens = mark_first_token(
+            llm.stream(prompt, system=system), recorder,
+            fold_local_ttft=_answers_locally(llm),
+        )
         if callable(emit):
             text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
             return CapabilityResult(True, text, data={"cancelled": cancelled, "streamed": True})

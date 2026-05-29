@@ -11,12 +11,16 @@ from typing import Iterator
 from always_on_agent.capabilities import CapabilityRegistry
 
 from core.capabilities import attach_llm_capabilities
-from core.metrics import ASR_FINAL, LLM_FIRST_TOKEN, MetricsRecorder
+from core.llm import HedgeLLM
+from core.llm_factory import _wrap_cloud
+from core.metrics import ASR_FINAL, LLM_FIRST_TOKEN, MetricsRecorder, mark_first_token
 from core.routing import (
     FAST,
+    HEDGE_DELAY_FLOOR_MS,
     MAIN,
     HeuristicRouter,
     build_router,
+    dynamic_hedge_delay_ms,
     live_nudge,
     order_presets_by_cost,
 )
@@ -337,3 +341,310 @@ def test_order_presets_all_unannotated_preserves_chain_order():
         "y",
         "z",
     ]
+
+
+# --- cost_order flag wiring in _wrap_cloud (smart-routing-5) -----------------
+#
+# The flag-gated reorder lands in the multi-provider HedgeLLM chain. Models are
+# distinct per preset so the resolved HedgeLLM.clouds order is verifiable; API
+# keys are set so every preset resolves. The flag default (off) must preserve
+# the configured failover order byte-for-byte.
+
+# ttft_ms decreasing in CONFIGURED order so a cost reorder visibly reverses it.
+_COST_PROVIDERS = {
+    "p_slow": {
+        "model": "model-slow", "api_key_env": "COST_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.10, "out": 0.20, "ttft_ms": 500, "host": "US"},
+    },
+    "p_mid": {
+        "model": "model-mid", "api_key_env": "COST_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.50, "out": 1.00, "ttft_ms": 200, "host": "US"},
+    },
+    "p_fast": {
+        "model": "model-fast", "api_key_env": "COST_KEY",
+        "_pricing_usd_per_mtok": {"in": 0.60, "out": 1.20, "ttft_ms": 80, "host": "US"},
+    },
+}
+
+
+def _cost_llm_cfg(*, cost_order: bool) -> dict:
+    return {
+        "cloud": {"enabled": True, "strategy": "hedge", "cost_order": cost_order},
+        "cloud_providers": dict(_COST_PROVIDERS),
+        "cloud_chains": {"private": ["p_slow", "p_mid", "p_fast"]},
+        "cloud_routing": {"default_chain": "private"},
+    }
+
+
+def _chain_models(wrapped) -> list[str]:
+    chain = wrapped.chains["private"]
+    assert isinstance(chain, HedgeLLM)
+    return [c.model for c in chain.clouds]
+
+
+def test_cost_order_off_preserves_configured_chain_order(monkeypatch):
+    monkeypatch.setenv("COST_KEY", "k")
+    wrapped = _wrap_cloud(EchoLLMStub(), _cost_llm_cfg(cost_order=False))
+    # Default (flag off): the configured failover order is unchanged.
+    assert _chain_models(wrapped) == ["model-slow", "model-mid", "model-fast"]
+
+
+def test_cost_order_on_reorders_chain_by_ttft(monkeypatch):
+    monkeypatch.setenv("COST_KEY", "k")
+    wrapped = _wrap_cloud(EchoLLMStub(), _cost_llm_cfg(cost_order=True))
+    # Flag on: cheapest/fastest (lowest ttft_ms) races first; same multiset.
+    assert _chain_models(wrapped) == ["model-fast", "model-mid", "model-slow"]
+
+
+class EchoLLMStub:
+    """Minimal local LLM the wrap-cloud chains race against (never invoked)."""
+
+    def generate(self, prompt, *, system=None, images=None) -> str:
+        return prompt
+
+    def stream(self, prompt, *, system=None, images=None) -> Iterator[str]:
+        yield prompt
+
+
+# --- EWMA folds only when the LOCAL tier answered (P4 low) ------------------
+#
+# mark_first_token forwards a fold_local_ttft flag to the recorder so a cloud
+# hedge winner is still recorded but kept out of the LOCAL TTFT EWMA.
+
+
+def test_mark_first_token_folds_local_sample_by_default():
+    clock = FakeClock()
+    rec = MetricsRecorder(clock=clock)
+    rec.mark(ASR_FINAL)
+    clock.t = 0.4
+    list(mark_first_token(iter(["tok"]), rec))  # default fold_local_ttft=True
+    assert rec.recent_ttft_ms() == 400.0
+
+
+def test_mark_first_token_skips_ewma_when_not_local():
+    clock = FakeClock()
+    rec = MetricsRecorder(clock=clock)
+    rec.mark(ASR_FINAL)
+    clock.t = 0.4
+    # A cloud hedge won: stamp the turn but do NOT fold into the local EWMA.
+    list(mark_first_token(iter(["tok"]), rec, fold_local_ttft=False))
+    assert rec.recent_ttft_ms() is None  # local headroom signal not mislabeled
+    # The stamp itself is still recorded (recording is unaffected by the gate).
+    [record] = rec.records()
+    assert record.final_to_first_token == 0.4
+
+
+def test_assistant_cloud_main_tier_does_not_fold_local_ewma():
+    # A cloud-racing HedgeLLM on the main tier answers a borderline-escalated
+    # turn; its first-token latency must NOT pollute the LOCAL TTFT EWMA.
+    cloud = RecordingLLM("cloud")
+    main = HedgeLLM(local=RecordingLLM("local"), cloud=cloud, hedge_delay_ms=0)
+    fast = RecordingLLM("fast")
+    rec = MetricsRecorder()
+    rec.mark(ASR_FINAL)  # a real open turn -> the fold WOULD fire if not gated
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast, recorder=rec,
+    )
+    # Force the main tier so the cloud-wrapped model answers.
+    registry.invoke(
+        "assistant.answer", "explain why", {"mode": "research"}
+    )
+    assert rec.recent_ttft_ms() is None
+
+
+def test_assistant_local_fast_tier_folds_local_ewma():
+    # The fast tier is always purely local, so its first-token latency DOES
+    # fold into the EWMA (the headroom signal we actually want).
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    rec = MetricsRecorder()
+    rec.mark(ASR_FINAL)  # open a turn so the first-token fold has an anchor
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast, recorder=rec,
+    )
+    registry.invoke("assistant.answer", "what time is it")  # -> fast tier
+    assert rec.recent_ttft_ms() is not None
+
+
+# --- SystemMonitor load snapshot into the live signal (P4 follow-up) --------
+#
+# load_snapshot feeds context['live']['load']; gated behind live_routing and
+# clamped/no-op in live_nudge so a missing reading never starves local.
+
+
+def test_load_nudge_clamped_in_live_nudge():
+    # High load saturates at the cap; load is clamped to [0,1] (a >1 reading
+    # cannot push the nudge past the cap), and a missing/garbage load is zero.
+    assert live_nudge({"load": 0.99}) == 0.25  # saturated
+    assert live_nudge({"load": 5.0}) == 0.25   # clamped, not amplified
+    assert live_nudge({"load": 0.5}) == 0.0    # below the load floor
+    assert live_nudge({"load": "hot"}) == 0.0  # garbage -> no nudge
+
+
+def test_load_snapshot_off_by_default_keeps_static_decision():
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    # A pegged-load snapshot is available, but live_routing defaults off, so the
+    # borderline query stays on fast (behaviour byte-identical to no signal).
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast, load_snapshot=lambda: 0.99,
+    )
+    result = registry.invoke("assistant.answer", _BORDERLINE_QUERY)
+    assert result.data["route"] == FAST
+    assert fast.prompts and not main.prompts
+
+
+def test_load_snapshot_on_with_high_load_escalates_to_main():
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast,
+        load_snapshot=lambda: 0.99, live_routing=True,
+    )
+    result = registry.invoke("assistant.answer", _BORDERLINE_QUERY)
+    assert result.data["route"] == MAIN
+    assert main.prompts and not fast.prompts
+
+
+def test_load_snapshot_none_reading_does_not_starve_local():
+    # live_routing on but the snapshot returns None (no telemetry): no nudge,
+    # borderline stays fast -- a missing reading can never starve local.
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast,
+        load_snapshot=lambda: None, live_routing=True,
+    )
+    result = registry.invoke("assistant.answer", _BORDERLINE_QUERY)
+    assert result.data["route"] == FAST
+
+
+def test_load_snapshot_raising_is_swallowed():
+    # A snapshot that raises must never break the turn (best-effort signal).
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+
+    def boom() -> float:
+        raise RuntimeError("psutil exploded")
+
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast,
+        load_snapshot=boom, live_routing=True,
+    )
+    result = registry.invoke("assistant.answer", _BORDERLINE_QUERY)
+    assert result.data["route"] == FAST  # static decision stands
+
+
+def test_system_monitor_load_fraction_reads_last_sample():
+    from core.sysinfo import SystemMonitor
+
+    gpu_lo = {"util_percent": 5.0, "mem_used_mb": 100.0, "mem_total_mb": 24000.0}
+    gpu_hi = {"util_percent": 30.0, "mem_used_mb": 200.0, "mem_total_mb": 24000.0}
+    seq = [
+        {"t": 1, "cpu_percent": 10.0, "gpu": [gpu_lo]},
+        {"t": 2, "cpu_percent": 90.0, "gpu": [gpu_hi]},
+    ]
+    it = iter(seq)
+    mon = SystemMonitor(interval=10_000, sampler=lambda: next(it))
+    assert mon.load_fraction() is None  # no sample yet
+    mon.start()  # baseline = seq[0] -> max(10,5)/100
+    assert mon.load_fraction() == 0.10
+    mon.stop()  # final = seq[1] -> max(90,30)/100
+    assert mon.load_fraction() == 0.90
+
+
+def test_system_monitor_load_fraction_none_without_telemetry():
+    from core.sysinfo import SystemMonitor
+
+    mon = SystemMonitor(interval=10_000, sampler=lambda: {"t": 1, "gpu": None})
+    mon.start()
+    assert mon.load_fraction() is None  # no cpu/gpu numbers -> no signal
+
+
+# --- Dynamic hedge delay override + floor (Task 4) --------------------------
+#
+# A slow/loaded local tier shortens the per-call hedge delay so the cloud race
+# starts sooner; clamped to a floor so it can never reach zero/negative, and a
+# no-op (None) when off / signal absent / good.
+
+
+def test_dynamic_hedge_delay_none_without_signal():
+    # No live signal, empty mapping, or garbage -> keep the static delay.
+    assert dynamic_hedge_delay_ms(None, 150) is None
+    assert dynamic_hedge_delay_ms({}, 150) is None
+    assert dynamic_hedge_delay_ms("nope", 150) is None
+    assert dynamic_hedge_delay_ms({"ttft_ms": "bad"}, 150) is None
+
+
+def test_dynamic_hedge_delay_none_for_snappy_local():
+    # A good (snappy) signal must not shorten the delay -> no override.
+    assert dynamic_hedge_delay_ms({"ttft_ms": 400}, 150) is None
+    assert dynamic_hedge_delay_ms({"load": 0.5}, 150) is None
+
+
+def test_dynamic_hedge_delay_shortens_when_local_slow():
+    # A slow local tier pulls the cloud race forward: a strictly smaller delay.
+    shortened = dynamic_hedge_delay_ms({"ttft_ms": 1600}, 150)
+    assert shortened is not None
+    assert HEDGE_DELAY_FLOOR_MS <= shortened < 150
+
+
+def test_dynamic_hedge_delay_clamped_to_floor():
+    # A pegged signal saturates the fraction; the result is clamped to the
+    # floor -- never zero/negative (which would be a full race every turn).
+    floored = dynamic_hedge_delay_ms({"ttft_ms": 99999, "load": 1.0}, 150)
+    assert floored == HEDGE_DELAY_FLOOR_MS
+    assert floored > 0
+
+
+def test_dynamic_hedge_delay_no_override_when_base_at_floor():
+    # If the static delay is already at/below the floor there's nothing to
+    # shorten, so the static delay stands (we never lengthen it).
+    assert dynamic_hedge_delay_ms({"ttft_ms": 99999}, HEDGE_DELAY_FLOOR_MS) is None
+    assert dynamic_hedge_delay_ms({"ttft_ms": 99999}, 0) is None
+
+
+class HedgeDelaySpy(HedgeLLM):
+    """HedgeLLM that records the resolved per-call hedge_delay_ms it streamed
+    with, so the capability wiring of the dynamic override is observable."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.seen_hedge_delay_ms: object = "unset"
+
+    def stream(self, prompt, *, system=None, images=None, hedge_delay_ms=None):
+        self.seen_hedge_delay_ms = hedge_delay_ms
+        return super().stream(prompt, system=system, images=images, hedge_delay_ms=hedge_delay_ms)
+
+
+def test_assistant_passes_dynamic_hedge_override_when_slow(monkeypatch):
+    # live_routing on + a slow local sample -> the assistant forwards a
+    # shortened (floored, positive) hedge_delay_ms into the cloud-racing model.
+    cloud = RecordingLLM("cloud")
+    model = HedgeDelaySpy(
+        local=RecordingLLM("local"), cloud=cloud, hedge_delay_ms=150,
+    )
+    rec = MetricsRecorder()
+    rec._observe_ttft_ms(3000.0)  # slow local tier on record
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), model, recorder=rec, live_routing=True,
+    )
+    registry.invoke("assistant.answer", "explain why", {"mode": "research"})
+    assert isinstance(model.seen_hedge_delay_ms, int)
+    assert HEDGE_DELAY_FLOOR_MS <= model.seen_hedge_delay_ms < 150
+
+
+def test_assistant_no_hedge_override_when_live_routing_off():
+    # Default (off): the per-call override is never passed, so the constructor
+    # static delay stands (seen value stays the contract default None).
+    cloud = RecordingLLM("cloud")
+    model = HedgeDelaySpy(
+        local=RecordingLLM("local"), cloud=cloud, hedge_delay_ms=150,
+    )
+    rec = MetricsRecorder()
+    rec._observe_ttft_ms(3000.0)
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), model, recorder=rec,  # live_routing off
+    )
+    registry.invoke("assistant.answer", "explain why", {"mode": "research"})
+    assert model.seen_hedge_delay_ms is None

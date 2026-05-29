@@ -40,8 +40,13 @@ models are warm: ~9 GB (fits comfortably in 16 GB).
   container can see your GPU. Linux: `apt install nvidia-container-toolkit`.
   Windows: WSL2 with NVIDIA drivers + the toolkit installed in WSL2.
   Verify with `docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi`.
-- API keys for at least one of the four cloud providers (PR-1). Free-tier
-  signup links are in `docker/.env.example`.
+- A cloud LLM key for at least one provider. **`OPENROUTER_API_KEY` is the
+  recommended US default** (P3): one key fronts the default `public` chain
+  (`gpt-oss-120b` / `llama-3.3-70b`, US-hosted). The PR-1 keys (Cerebras / Groq
+  / DeepSeek / Moonshot) still work alongside it. Signup links are in
+  `docker/.env.example`. **DeepSeek and Moonshot are PRC-hosted (host=CN) and
+  stay disabled** unless you opt in with `ALLOW_PRC=1` in your `.env` (default
+  OFF keeps the cloud chain US-only); see the cloud section below.
 
 ## Setup (one time)
 
@@ -94,6 +99,16 @@ Then type questions. Each turn the brain classifies sensitivity
 `public`), and `HedgeLLM` races local (Ollama via the sibling container)
 against the cloud chain. Whichever produces a token first wins.
 
+The default `public` chain leads with **OpenRouter** (`OPENROUTER_API_KEY`,
+US-hosted) — set that one key and you have a working US-only cloud tier.
+**DeepSeek and Moonshot are PRC-hosted (host=CN)** and are dropped from the
+chain unless you opt in with `ALLOW_PRC=1` in `docker/.env` (Locked Decision 2:
+US-hosted chains are the default). With `ALLOW_PRC` unset the entrypoint leaves
+`llm.cloud.allow_prc` at its config default (`false`); set `ALLOW_PRC=1` and the
+entrypoint flips it on so those PRC presets join the chain. Either way the §9.7
+boundary holds: raw audio + PII never leave the device — only post-ASR text the
+assistant was given crosses to the cloud.
+
 The streaming you'll see in the console output is the live token feed
 from whichever path won. `logs/runs/run-<id>.summary.json` (mirrored to
 the host via the `../logs:/app/logs` mount) records which chain ran +
@@ -135,8 +150,11 @@ docker compose -f docker/docker-compose.yml down --volumes  # also delete pulled
   prerequisites section -- on Linux it's `apt install nvidia-container-toolkit`
   + `systemctl restart docker`.
 
-- **All providers SKIP in the smoke test**: none of the four API key
-  env vars are set in your `.env`. Add at least one and re-run.
+- **All providers SKIP in the smoke test**: none of the cloud API key
+  env vars are set in your `.env`. Add at least one (`OPENROUTER_API_KEY`
+  is the US default) and re-run. Note DeepSeek/Moonshot also need
+  `ALLOW_PRC=1` to be exercised — without it those PRC presets are dropped
+  before the key is even checked.
 
 - **Console echoes nothing**: check `logs/runs/run-*.txt` -- if the
   Ollama call timed out (`OLLAMA_HOST` mis-set, model not pulled), the

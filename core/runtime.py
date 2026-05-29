@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 from always_on_agent.capabilities import create_default_capabilities
 from always_on_agent.event_bus import EventBus
@@ -61,6 +61,8 @@ class VoiceRuntime:
         addressing: Optional[AddressingClassifier] = None,
         unsure_acts: bool = True,
         cleaner: Optional[TranscriptCleaner] = None,
+        live_routing: bool = False,
+        load_snapshot: Optional[Callable[[], Optional[float]]] = None,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -107,6 +109,7 @@ class VoiceRuntime:
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, router=router, escalate=escalate,
             recorder=self.metrics, memory=memory, recall=recall_config,
+            live_routing=live_routing, load_snapshot=load_snapshot,
         )
         if planner_on:
             attach_react_capability(registry, llm, config=planner_config)

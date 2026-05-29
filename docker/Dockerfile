@@ -20,6 +20,12 @@ RUN pip install --no-cache-dir -r /tmp/requirements-docker.txt \
 # App code only (see .dockerignore for what is excluded).
 COPY always_on_agent/ always_on_agent/
 COPY core/ core/
+# utils/ holds the Postgres-backed smart-memory engine. always_on_agent.memory
+# lazily imports utils.memory only when DATABASE_URL is set (in-RAM default needs
+# neither this code nor psycopg), so copying it keeps that path resolvable; with
+# DATABASE_URL unset it is never imported. See docker/requirements-docker.txt for
+# the optional psycopg line that the real Postgres backend needs.
+COPY utils/ utils/
 COPY remote/ remote/
 COPY tools/ tools/
 COPY web/ web/

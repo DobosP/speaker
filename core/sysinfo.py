@@ -152,6 +152,35 @@ class SystemMonitor:
                     pk = f"gpu_{k}"
                     self.peak[pk] = max(self.peak.get(pk, v), v)
 
+    def load_fraction(self) -> Optional[float]:
+        """A cheap 0..1 system-load snapshot from the LAST background sample.
+
+        Reads the most recent sample the background thread already took (never
+        samples on the hot path) and returns the max of CPU% and GPU util%
+        scaled to ``[0, 1]``. ``None`` when no telemetry is available (psutil +
+        nvidia-smi both absent, or before the first sample) -- the router's
+        ``live_nudge`` treats a ``None``/garbage load as no nudge, so a missing
+        signal can never starve the local tier (the live-routing follow-up).
+
+        This is the cheapest honest signal: it reuses the sampler's existing
+        cadence rather than adding a synchronous CPU/GPU read to a turn."""
+        s = self.last
+        if not isinstance(s, dict):
+            return None
+        candidates: list[float] = []
+        cpu = s.get("cpu_percent")
+        if isinstance(cpu, (int, float)):
+            candidates.append(float(cpu))
+        gpu = s.get("gpu")
+        g = gpu[0] if isinstance(gpu, list) and gpu else None
+        if isinstance(g, dict):
+            util = g.get("util_percent")
+            if isinstance(util, (int, float)):
+                candidates.append(float(util))
+        if not candidates:
+            return None
+        return max(0.0, min(1.0, max(candidates) / 100.0))
+
     def mark(self, name: str) -> dict:
         """Snapshot at a named point (e.g. 'after_build') -> kept in the summary."""
         s = self._sampler()

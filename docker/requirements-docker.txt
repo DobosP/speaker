@@ -16,3 +16,9 @@ openai>=1.0            # OpenAI-compat HTTP client for the cloud middle layer
                        # see core.llm.OpenAICompatLLM + tools/llm_sanity.py).
 huggingface-hub>=0.20.0  # one-shot sherpa model download
 psutil>=5.9.0          # CPU/RAM telemetry for the run summary
+
+# Optional: real Postgres-backed layered memory (utils.memory, imported lazily by
+# always_on_agent.memory ONLY when DATABASE_URL is set). The in-RAM default tier
+# needs neither psycopg nor a database, so this stays commented out to keep the
+# image lean. Uncomment to build an image that can talk to Postgres + pgvector.
+# psycopg[binary,pool]>=3.1

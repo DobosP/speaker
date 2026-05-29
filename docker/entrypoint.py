@@ -32,26 +32,32 @@ MODEL_PATHS = "/models/sherpa_paths.json"
 OVERLAY_PATH = os.environ.get("SPEAKER_CONFIG_OVERLAY", "/app/config.overlay.json")
 
 
-def _shallow_merge(base: dict, overlay: dict) -> dict:
-    """Deep-merge an overlay onto a base config (dicts recurse, non-dicts
-    replace).
+# Reuse the runtime's single recursive merge (core.config.deep_merge): it walks
+# nested dicts so a one-line overlay (e.g. device_profiles.<p>.llm.cloud.enabled)
+# updates that leaf without stranding its siblings, and treats the ``options``
+# bag as OPAQUE (replaced wholesale, not merged) so a profile that switches
+# llm.backend doesn't inherit the base backend's generation params. PYTHONPATH=/app
+# (set in the Dockerfile) makes ``core`` importable at entrypoint runtime. The
+# tiny inline fallback below keeps the entrypoint runnable if ``core`` can't be
+# imported -- it intentionally mirrors deep_merge, including the opaque ``options``
+# carve-out, so behaviour is identical either way.
+try:
+    from core.config import deep_merge  # single source of truth (P4)
+except Exception:  # noqa: BLE001 - core may be unavailable in a stripped image
+    _OPAQUE_KEYS = frozenset({"options"})
 
-    Named ``_shallow_merge`` for continuity with the existing module
-    history; semantically it's a deep merge. The previous shallow shape
-    was insufficient -- to flip ``device_profiles.desktop_gpu_4090.llm.cloud.enabled``
-    from an overlay, the merger has to walk three levels (sections ->
-    profiles -> sub-sections) without flattening the base's siblings.
-    """
-    out = dict(base)
-    for key, value in overlay.items():
-        if (
-            isinstance(value, dict)
-            and isinstance(out.get(key), dict)
-        ):
-            out[key] = _shallow_merge(out[key], value)
-        else:
-            out[key] = value
-    return out
+    def deep_merge(base: dict, overrides: dict, *, opaque_keys=_OPAQUE_KEYS) -> dict:
+        """Inline fallback mirror of ``core.config.deep_merge`` (see import
+        above). Recurses into nested dicts; replaces ``opaque_keys`` (the
+        backend-specific ``options`` bag) wholesale; non-dicts replace."""
+        merged = dict(base)
+        for key, value in overrides.items():
+            existing = merged.get(key)
+            if key not in opaque_keys and isinstance(value, dict) and isinstance(existing, dict):
+                merged[key] = deep_merge(existing, value, opaque_keys=opaque_keys)
+            else:
+                merged[key] = value
+        return merged
 
 
 def build_config() -> str:
@@ -78,7 +84,7 @@ def build_config() -> str:
         try:
             with open(OVERLAY_PATH, "r", encoding="utf-8") as fh:
                 overlay = json.load(fh)
-            cfg = _shallow_merge(cfg, overlay)
+            cfg = deep_merge(cfg, overlay)
             print(f"[entrypoint] merged config overlay from {OVERLAY_PATH}")
         except Exception as exc:  # noqa: BLE001
             print(f"[entrypoint] could not merge overlay: {exc}", file=sys.stderr)
@@ -92,6 +98,17 @@ def build_config() -> str:
     if keep_alive:
         cfg.setdefault("llm", {})["keep_alive"] = keep_alive
         print(f"[entrypoint] llm.keep_alive -> {keep_alive}")
+
+    # PRC opt-in (Locked Decision 2): US-hosted chains (e.g. OpenRouter) are the
+    # default; the PRC-hosted presets (host=CN -- DeepSeek/Moonshot) are dropped
+    # unless allow_prc is set. Default OFF (US-only) -- a user opts in by setting
+    # ALLOW_PRC=1 in .env. We map the env flag into llm.cloud.allow_prc, which
+    # core.llm_factory._wrap_cloud reads. Anything other than a clearly-truthy
+    # value leaves the config default untouched (no surprise enable).
+    allow_prc_env = os.environ.get("ALLOW_PRC", "").strip().lower()
+    if allow_prc_env in ("1", "true", "yes", "on"):
+        cfg.setdefault("llm", {}).setdefault("cloud", {})["allow_prc"] = True
+        print("[entrypoint] llm.cloud.allow_prc -> true (PRC presets opted in)")
 
     os.makedirs(RUN_DIR, exist_ok=True)
     with open(RUN_CONFIG, "w", encoding="utf-8") as fh:

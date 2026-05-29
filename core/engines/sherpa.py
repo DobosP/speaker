@@ -115,11 +115,14 @@ class SherpaConfig:
     # to sit this many dB above the current playback level before it counts as a
     # barge-in -- a real user talking over the assistant clears the margin,
     # residual echo does not.
-    # DEFAULT 0.0 = OFF (legacy fail-open). The comparison is mic-capture RMS vs
-    # playback-buffer RMS -- different signal scales -- so a non-zero margin can
-    # suppress a genuine barge-in until calibrated on real hardware (the safer
-    # mitigation is speaker-ID enrollment). Opt in via config once tuned.
-    barge_in_output_margin_db: float = 0.0
+    # DEFAULT 6.0 dB. On-device calibration (docs/audio_calibration.md; Realtek
+    # laptop, unenrolled) showed 0.0 self-interrupts 15-21x at EVERY volume, while
+    # 6 dB -> 0 self-interruptions across 30-100% volume. The comparison is
+    # mic-capture RMS vs playback-buffer RMS (different scales), so this margin is
+    # DEVICE-SPECIFIC -- re-run `python -m tools.echo_probe` on other hardware, and
+    # prefer speaker-ID enrollment (level-independent) where possible. Set 0.0 to
+    # restore the legacy fail-open behaviour (no self-interruption suppression).
+    barge_in_output_margin_db: float = 6.0
     # After a barge-in fires (or a watchdog storm is reported) ignore further
     # barge-in triggers for this long. Debounces a flapping VAD gate / TTS-echo
     # storm into a single interrupt instead of a rapid-fire string of them.

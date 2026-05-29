@@ -1,0 +1,573 @@
+{
+  "cases": [
+    {
+      "name": "stop_phrase",
+      "input": {
+        "text": "stop",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "stop",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.0,
+        "keywords": [
+          "stop"
+        ]
+      },
+      "decision": {
+        "kind": "stop",
+        "confidence": 1.0,
+        "text": "stop",
+        "reason": "stop_phrase",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    },
+    {
+      "name": "confirm_phrase",
+      "input": {
+        "text": "yes",
+        "is_final": true,
+        "mode": "command"
+      },
+      "observation": {
+        "normalized": "yes",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "yes"
+        ]
+      },
+      "decision": {
+        "kind": "confirm",
+        "confidence": 0.98,
+        "text": "yes",
+        "reason": "confirm_phrase",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    },
+    {
+      "name": "deny_phrase",
+      "input": {
+        "text": "no",
+        "is_final": true,
+        "mode": "command"
+      },
+      "observation": {
+        "normalized": "no",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "no"
+        ]
+      },
+      "decision": {
+        "kind": "deny",
+        "confidence": 0.98,
+        "text": "no",
+        "reason": "deny_phrase",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    },
+    {
+      "name": "mode_alias_research",
+      "input": {
+        "text": "research mode",
+        "is_final": true,
+        "mode": "passive"
+      },
+      "observation": {
+        "normalized": "research mode",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.3,
+        "keywords": [
+          "research",
+          "mode"
+        ]
+      },
+      "decision": {
+        "kind": "mode_switch",
+        "confidence": 0.98,
+        "text": "research mode",
+        "reason": "mode_phrase",
+        "mode": null,
+        "target_mode": "research",
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    },
+    {
+      "name": "research_prefix",
+      "input": {
+        "text": "research local TTS options",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "research local tts options",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.3,
+        "keywords": [
+          "research",
+          "local",
+          "tts",
+          "options"
+        ]
+      },
+      "decision": {
+        "kind": "research",
+        "confidence": 0.95,
+        "text": "local TTS options",
+        "reason": "research_prefix",
+        "mode": "research",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "search_prefix",
+      "input": {
+        "text": "search for pipecat",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "search for pipecat",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.3,
+        "keywords": [
+          "search",
+          "pipecat"
+        ]
+      },
+      "decision": {
+        "kind": "search",
+        "confidence": 0.95,
+        "text": "for pipecat",
+        "reason": "search_prefix",
+        "mode": "search",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "dictate_prefix",
+      "input": {
+        "text": "dictate hello world",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "dictate hello world",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.0,
+        "keywords": [
+          "dictate",
+          "hello",
+          "world"
+        ]
+      },
+      "decision": {
+        "kind": "dictation",
+        "confidence": 0.95,
+        "text": "hello world",
+        "reason": "dictation_prefix",
+        "mode": "dictation",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": false,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "command_prefix",
+      "input": {
+        "text": "run the backup script",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "run the backup script",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "run",
+          "backup",
+          "script"
+        ]
+      },
+      "decision": {
+        "kind": "command",
+        "confidence": 0.9,
+        "text": "run the backup script",
+        "reason": "command_prefix",
+        "mode": "command",
+        "target_mode": null,
+        "requires_confirmation": true,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "partial_non_control",
+      "input": {
+        "text": "what is the weather",
+        "is_final": false,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "what is the weather",
+        "is_final": false,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "weather"
+        ]
+      },
+      "decision": {
+        "kind": "ignore",
+        "confidence": 0.8,
+        "text": "what is the weather",
+        "reason": "partial_non_control",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    },
+    {
+      "name": "passive_no_activation",
+      "input": {
+        "text": "the sky is blue",
+        "is_final": true,
+        "mode": "passive"
+      },
+      "observation": {
+        "normalized": "the sky is blue",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "sky",
+          "blue"
+        ]
+      },
+      "decision": {
+        "kind": "ignore",
+        "confidence": 0.9,
+        "text": "the sky is blue",
+        "reason": "passive_no_activation",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    },
+    {
+      "name": "passive_wake_activation",
+      "input": {
+        "text": "assistant please help me",
+        "is_final": true,
+        "mode": "passive"
+      },
+      "observation": {
+        "normalized": "assistant please help me",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.75,
+        "keywords": [
+          "assistant",
+          "help"
+        ]
+      },
+      "decision": {
+        "kind": "assistant",
+        "confidence": 0.75,
+        "text": "please help me",
+        "reason": "wake_word_activation",
+        "mode": "assistant",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "search_mode_default",
+      "input": {
+        "text": "find the report",
+        "is_final": true,
+        "mode": "search"
+      },
+      "observation": {
+        "normalized": "find the report",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "find",
+          "report"
+        ]
+      },
+      "decision": {
+        "kind": "search",
+        "confidence": 0.82,
+        "text": "find the report",
+        "reason": "search_mode",
+        "mode": "search",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "research_mode_default",
+      "input": {
+        "text": "the history of rome",
+        "is_final": true,
+        "mode": "research"
+      },
+      "observation": {
+        "normalized": "the history of rome",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "history",
+          "rome"
+        ]
+      },
+      "decision": {
+        "kind": "research",
+        "confidence": 0.82,
+        "text": "the history of rome",
+        "reason": "research_mode",
+        "mode": "research",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "dictation_mode_default",
+      "input": {
+        "text": "dear team comma",
+        "is_final": true,
+        "mode": "dictation"
+      },
+      "observation": {
+        "normalized": "dear team comma",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "dear",
+          "team",
+          "comma"
+        ]
+      },
+      "decision": {
+        "kind": "dictation",
+        "confidence": 0.9,
+        "text": "dear team comma",
+        "reason": "dictation_mode",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": false,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "meeting_mode_default",
+      "input": {
+        "text": "we agreed on friday",
+        "is_final": true,
+        "mode": "meeting"
+      },
+      "observation": {
+        "normalized": "we agreed on friday",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "we",
+          "agreed",
+          "friday"
+        ]
+      },
+      "decision": {
+        "kind": "meeting_note",
+        "confidence": 0.85,
+        "text": "we agreed on friday",
+        "reason": "meeting_mode",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": false,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "command_mode_default",
+      "input": {
+        "text": "lights on",
+        "is_final": true,
+        "mode": "command"
+      },
+      "observation": {
+        "normalized": "lights on",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "lights"
+        ]
+      },
+      "decision": {
+        "kind": "command",
+        "confidence": 0.82,
+        "text": "lights on",
+        "reason": "command_mode",
+        "mode": "command",
+        "target_mode": null,
+        "requires_confirmation": true,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "assistant_mode_default",
+      "input": {
+        "text": "what time is it",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "what time is it",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "time",
+          "it"
+        ]
+      },
+      "decision": {
+        "kind": "assistant",
+        "confidence": 0.75,
+        "text": "what time is it",
+        "reason": "assistant_mode",
+        "mode": "assistant",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "empty",
+      "input": {
+        "text": "",
+        "is_final": true,
+        "mode": "assistant"
+      },
+      "observation": {
+        "normalized": "",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": []
+      },
+      "decision": {
+        "kind": "ignore",
+        "confidence": 1.0,
+        "text": "",
+        "reason": "empty",
+        "mode": null,
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": false
+      }
+    }
+  ],
+  "sequence": {
+    "start_mode": "passive",
+    "utterances": [
+      "assistant mode",
+      "what is pipecat",
+      "research mode",
+      "the moon landing",
+      "stop",
+      "passive mode",
+      "the sky is blue"
+    ],
+    "steps": [
+      {
+        "text": "assistant mode",
+        "kind": "mode_switch",
+        "mode": "assistant"
+      },
+      {
+        "text": "what is pipecat",
+        "kind": "assistant",
+        "mode": "assistant"
+      },
+      {
+        "text": "research mode",
+        "kind": "mode_switch",
+        "mode": "research"
+      },
+      {
+        "text": "the moon landing",
+        "kind": "research",
+        "mode": "research"
+      },
+      {
+        "text": "stop",
+        "kind": "stop",
+        "mode": "research"
+      },
+      {
+        "text": "passive mode",
+        "kind": "mode_switch",
+        "mode": "passive"
+      },
+      {
+        "text": "the sky is blue",
+        "kind": "ignore",
+        "mode": "passive"
+      }
+    ]
+  }
+}

@@ -77,6 +77,17 @@ class StageRegistry:
                 paths=("tests/test_imports_smoke.py",),
             ),
             TestStage(
+                name="fast",
+                purpose="Quick dev subset: the whole tree minus slow/network/llm/backend/"
+                        "hardware/discovery tests (the everyday TDD loop).",
+                extra_args=("-q", "-m", "not slow and not network and not llm and not backend and not hardware and not discovery"),
+            ),
+            TestStage(
+                name="e2e",
+                purpose="Full end-to-end CLI/process tests (subprocess the real `python -m core`).",
+                extra_args=("-q", "-m", "e2e"),
+            ),
+            TestStage(
                 name="full",
                 purpose="The entire test suite.",
                 paths=("tests",),

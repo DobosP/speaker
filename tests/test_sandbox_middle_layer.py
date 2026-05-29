@@ -18,6 +18,11 @@ from always_on_agent.events import Mode
 from tests.sandbox import DESKTOP_HIGH, DESKTOP_MID, PHONE_LOW
 from tests.sandbox.scenario import Sandbox
 
+# Every test here drives the real threaded brain through sleep-bound device
+# timing sims, so the module is the slow tail of the suite. Mark it `slow`
+# wholesale so `-m "not slow"` skips the realistic-timing stage.
+pytestmark = pytest.mark.slow
+
 # Scale latencies down ~10x: relative timing (and thus concurrency) is
 # preserved, but the wall-clock cost per scenario stays small.
 PROFILES = [PHONE_LOW.scaled(0.1), DESKTOP_MID.scaled(0.1), DESKTOP_HIGH.scaled(0.1)]

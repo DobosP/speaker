@@ -212,6 +212,6 @@ def markdown_summary(profile: str, samples: list[TurnSample]) -> str:
     for r in cal["rows"]:
         lines.append(
             f"| {r['metric']} | {_fmt(r['measured_median'])} | {_fmt(r['modelled'])} "
-            f"| ≤{r['budget'][0]} / ≤{r['budget'][1]} | {r['status']} |"
+            f"| <={r['budget'][0]} / <={r['budget'][1]} | {r['status']} |"
         )
     return "\n".join(lines) + "\n"

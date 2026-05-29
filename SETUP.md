@@ -87,23 +87,39 @@ sudo -u postgres psql -d voice_assistant -c "CREATE EXTENSION vector;"
 sudo -u postgres psql -d voice_assistant -c "GRANT ALL ON SCHEMA public TO dobo;"
 ```
 
-### Step 4: Run Setup Script
+### Step 4: Apply the Schema (Migrations)
+
+`python -m tools.migrate apply` is **the single schema path** — it owns all
+table/index DDL (correct unconstrained-vector + per-row dim + partial HNSW;
+migrations are idempotent and additive, so they also reconcile legacy DBs).
 
 ```bash
 # For peer authentication (no password)
-python setup_database.py --db-url "postgresql:///voice_assistant"
+python -m tools.migrate apply --database-url "postgresql:///voice_assistant"
 
 # For password authentication
-python setup_database.py --db-url "postgresql://dobo:yourpassword@localhost/voice_assistant"
+python -m tools.migrate apply --database-url "postgresql://dobo:yourpassword@localhost/voice_assistant"
+
+# (If DATABASE_URL is exported, you can omit --database-url entirely)
+python -m tools.migrate apply
 ```
+
+> `setup_database.py` is now a thin role-create/verify wrapper around this
+> migrations path — use `--create-db` to bootstrap the database and
+> `--verify-only` to health-check it (see below); it no longer carries any
+> schema SQL of its own.
 
 ### Step 5: Verify Setup
 
 ```bash
+# Show which migrations are applied / pending
+python -m tools.migrate status --database-url "postgresql:///voice_assistant"
+
+# Or run the read-only health check via the wrapper
 python setup_database.py --db-url "postgresql:///voice_assistant" --verify-only
 ```
 
-You should see:
+The `--verify-only` check should show:
 ```
 📊 Database Status:
    Tables found: messages, summaries, user_profile
@@ -200,7 +216,7 @@ sudo -u postgres psql -d voice_assistant -c "
 
 2. **Or use password in connection string:**
    ```bash
-   python setup_database.py --db-url "postgresql://user:password@localhost/voice_assistant"
+   python -m tools.migrate apply --database-url "postgresql://user:password@localhost/voice_assistant"
    ```
 
 ### "Must be superuser to create this extension"

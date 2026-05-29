@@ -157,8 +157,8 @@ if [ -z "$DB_PASSWORD" ]; then
     " || print_warning "Could not grant permissions (may already be set)"
 fi
 
-# Step 6: Run Python setup script
-print_info "Step 5: Creating tables..."
+# Step 6: Apply schema migrations (canonical path)
+print_info "Step 5: Applying schema migrations..."
 
 # Build database URL
 if [ -n "$DB_PASSWORD" ]; then
@@ -170,13 +170,14 @@ fi
 # Update .env with final DATABASE_URL
 sed -i "s|^DATABASE_URL=.*|DATABASE_URL=$DB_URL|" .env
 
-# Run Python setup
-python3 setup_database.py --db-url "$DB_URL" || {
-    print_error "Failed to create tables"
+# Apply the schema via the canonical migrations path (yoyo-migrations).
+python3 -m tools.migrate apply --database-url "$DB_URL" || {
+    print_error "Failed to apply migrations"
+    print_info "Ensure deps are installed: pip install yoyo-migrations 'psycopg[binary,pool]'"
     exit 1
 }
 
-print_success "Tables created"
+print_success "Schema migrations applied"
 
 # Step 7: Verify setup
 print_info "Step 6: Verifying setup..."
@@ -194,9 +195,8 @@ print_info "Database URL: $DB_URL"
 print_info "Configuration saved to: .env"
 echo ""
 print_info "You can now run the voice assistant:"
-echo "  python main.py"
+echo "  python -m core --engine sherpa"
 echo ""
-print_info "Or with explicit database URL:"
-echo "  python main.py --db-url \"$DB_URL\""
+print_info "The database URL is read from \$DATABASE_URL / config (set it in .env)."
 echo ""
 

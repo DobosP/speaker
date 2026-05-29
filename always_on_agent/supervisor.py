@@ -10,7 +10,7 @@ from .capabilities import CapabilityRegistry, create_default_capabilities
 from .event_bus import EventBus
 from .events import AgentEvent, EventKind, Mode
 from .followups import FollowupConfig, FollowupState
-from .memory import SessionMemory
+from .memory import Memory, SessionMemory
 from .models import IntentDecision, IntentKind, SpeechObservation
 from .speech_analyzer import LiveSpeechAnalyzer
 from .tasks import AgentTask, TaskRuntime
@@ -39,7 +39,7 @@ class AgentSupervisor:
         bus: EventBus | None = None,
         analyzer: LiveSpeechAnalyzer | None = None,
         capabilities: CapabilityRegistry | None = None,
-        memory: SessionMemory | None = None,
+        memory: Memory | None = None,
         stream_tts: bool = False,
         followup_config: FollowupConfig | None = None,
     ):

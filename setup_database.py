@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
 """
-Database Setup Script for Voice Assistant Memory
+Database Setup Script for Voice Assistant Memory — thin wrapper.
 
-This script sets up the PostgreSQL database with pgvector extension
-for the voice assistant's multi-layer memory system.
+The schema is owned by the canonical migrations path
+(``python -m tools.migrate apply``); this script no longer carries any
+``CREATE TABLE`` SQL. It is reduced to two convenience helpers around that
+path:
+
+- ``--create-db``  : create the PostgreSQL *database* (role/db bootstrap) so
+  the migrations have somewhere to run.
+- ``--verify-only``: a small read-only health check of the resulting schema.
+
+The default ``main()`` flow shells the schema step to ``tools.migrate`` and
+then verifies — there is exactly one place the schema is defined.
 
 Requirements:
 - PostgreSQL 14+ with pgvector extension
-- psycopg2-binary
+- psycopg (psycopg3) + yoyo-migrations (both declared in requirements.txt)
 
 Usage:
-    # With default settings (localhost)
+    # Apply migrations against the default local socket DB
     python setup_database.py
-    
-    # With custom database URL
+
+    # Against a custom database URL
     python setup_database.py --db-url "postgresql://user:pass@host/dbname"
-    
-    # Create new database
+
+    # Create the database first, then apply migrations
     python setup_database.py --create-db --db-name voice_assistant
+
+    # Only verify an existing setup
+    python setup_database.py --verify-only
 """
 import argparse
 import sys
@@ -48,270 +60,139 @@ def _redact_db_url(db_url: str) -> str:
 
 
 try:
-    import psycopg2
-    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+    import psycopg  # psycopg3
 except ImportError:
-    print("❌ psycopg2 not installed. Install with: pip install psycopg2-binary")
+    print("❌ psycopg (psycopg3) not installed. Install with: pip install 'psycopg[binary,pool]'")
     sys.exit(1)
 
 
-# SQL to create tables (same as in memory.py)
-MIGRATE_MESSAGES_SQL = """
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'messages' AND column_name = 'raw_text'
-    ) THEN
-        ALTER TABLE messages ADD COLUMN raw_text TEXT;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'messages' AND column_name = 'cleaned_text'
-    ) THEN
-        ALTER TABLE messages ADD COLUMN cleaned_text TEXT;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'messages' AND column_name = 'source'
-    ) THEN
-        ALTER TABLE messages ADD COLUMN source VARCHAR(32) DEFAULT 'user_final';
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'messages' AND column_name = 'confidence'
-    ) THEN
-        ALTER TABLE messages ADD COLUMN confidence FLOAT DEFAULT 1.0;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'messages' AND column_name = 'saved_at'
-    ) THEN
-        ALTER TABLE messages ADD COLUMN saved_at TIMESTAMPTZ;
-    END IF;
-END $$;
-"""
-
-CREATE_TABLES_SQL = """
--- Enable pgvector extension
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- Messages table (all conversations)
-CREATE TABLE IF NOT EXISTS messages (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(64) NOT NULL,
-    role VARCHAR(20) NOT NULL,
-    content TEXT NOT NULL,
-    timestamp TIMESTAMPTZ DEFAULT NOW(),
-    embedding vector(384)  -- for all-MiniLM-L6-v2
-);
-
--- Summaries table (condensed history)
-CREATE TABLE IF NOT EXISTS summaries (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(64),
-    summary TEXT NOT NULL,
-    topics TEXT[],
-    user_preferences TEXT[],
-    start_time TIMESTAMPTZ,
-    end_time TIMESTAMPTZ,
-    message_count INT,
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    embedding vector(384)
-);
-
--- User profile (learned preferences)
-CREATE TABLE IF NOT EXISTS user_profile (
-    id SERIAL PRIMARY KEY,
-    key VARCHAR(255) UNIQUE NOT NULL,
-    value TEXT NOT NULL,
-    confidence FLOAT DEFAULT 1.0,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
--- Indexes for fast lookup
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
-"""
-
-# Vector indexes (created after data exists)
-CREATE_VECTOR_INDEXES_SQL = """
--- Vector indexes for semantic search (using IVFFlat for speed)
--- Note: These indexes work best with some data already in the tables
-CREATE INDEX IF NOT EXISTS idx_messages_embedding ON messages 
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-CREATE INDEX IF NOT EXISTS idx_summaries_embedding ON summaries 
-    USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-"""
-
-CREATE_TEXT_ONLY_TABLES_SQL = """
-CREATE TABLE IF NOT EXISTS messages (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(64) NOT NULL,
-    role VARCHAR(20) NOT NULL,
-    content TEXT NOT NULL,
-    timestamp TIMESTAMPTZ DEFAULT NOW(),
-    raw_text TEXT,
-    cleaned_text TEXT,
-    source VARCHAR(32) DEFAULT 'user_final',
-    confidence FLOAT DEFAULT 1.0,
-    saved_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS summaries (
-    id SERIAL PRIMARY KEY,
-    session_id VARCHAR(64),
-    summary TEXT NOT NULL,
-    topics TEXT[],
-    user_preferences TEXT[],
-    start_time TIMESTAMPTZ,
-    end_time TIMESTAMPTZ,
-    message_count INT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS user_profile (
-    id SERIAL PRIMARY KEY,
-    key VARCHAR(255) UNIQUE NOT NULL,
-    value TEXT NOT NULL,
-    confidence FLOAT DEFAULT 1.0,
-    updated_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_summaries_session ON summaries(session_id);
-"""
-
-
 def create_database(host: str, user: str, password: str, db_name: str):
-    """Create a new PostgreSQL database."""
+    """Create a new PostgreSQL database (psycopg3)."""
     try:
-        # Connect to default postgres database
-        conn = psycopg2.connect(
+        # Connect to the default ``postgres`` database in autocommit mode --
+        # CREATE DATABASE cannot run inside a transaction block.
+        conn = psycopg.connect(
             host=host,
             user=user,
             password=password,
-            database="postgres"
+            dbname="postgres",
+            autocommit=True,
         )
-        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
-        
-        with conn.cursor() as cur:
-            # Check if database exists
-            cur.execute(
-                "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s",
-                (db_name,)
-            )
-            exists = cur.fetchone()
-            
-            if exists:
-                print(f"⚠️  Database '{db_name}' already exists")
-            else:
-                cur.execute(f'CREATE DATABASE "{db_name}"')
-                print(f"✅ Created database: {db_name}")
-        
-        conn.close()
+        try:
+            with conn.cursor() as cur:
+                # Check if database exists
+                cur.execute(
+                    "SELECT 1 FROM pg_catalog.pg_database WHERE datname = %s",
+                    (db_name,),
+                )
+                exists = cur.fetchone()
+
+                if exists:
+                    print(f"⚠️  Database '{db_name}' already exists")
+                else:
+                    cur.execute(f'CREATE DATABASE "{db_name}"')
+                    print(f"✅ Created database: {db_name}")
+        finally:
+            conn.close()
         return True
-        
+
     except Exception as e:
         print(f"❌ Failed to create database: {e}")
         return False
 
 
-def setup_tables(db_url: str):
-    """Create tables and indexes in the database."""
-    try:
-        conn = psycopg2.connect(db_url)
-        conn.autocommit = True
-        
-        with conn.cursor() as cur:
-            # Create tables
-            print("📦 Creating tables...")
-            try:
-                cur.execute(CREATE_TABLES_SQL)
-            except Exception as exc:
-                print(f"⚠️  pgvector setup failed: {exc}")
-                print("📦 Creating text-only memory tables instead...")
-                cur.execute(CREATE_TEXT_ONLY_TABLES_SQL)
-            cur.execute(MIGRATE_MESSAGES_SQL)
-            print("✅ Tables created")
-            
-            # Check if pgvector is available
-            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-            if cur.fetchone():
-                print("✅ pgvector extension enabled")
-            else:
-                print("⚠️  pgvector extension not available")
-                print("   Install with: CREATE EXTENSION vector;")
-                print("   Or install pgvector: https://github.com/pgvector/pgvector")
-        
-        conn.close()
-        return True
-        
-    except Exception as e:
-        print(f"❌ Failed to setup tables: {e}")
-        return False
-
-
 def verify_setup(db_url: str):
-    """Verify the database setup is correct."""
+    """Verify the database setup is correct (psycopg3, read-only)."""
     try:
-        conn = psycopg2.connect(db_url)
-        
-        with conn.cursor() as cur:
-            # Check tables
-            cur.execute("""
-                SELECT table_name 
-                FROM information_schema.tables 
-                WHERE table_schema = 'public'
-                AND table_name IN ('messages', 'summaries', 'user_profile')
-            """)
-            tables = [row[0] for row in cur.fetchall()]
-            
-            print("\n📊 Database Status:")
-            print(f"   Tables found: {', '.join(tables) if tables else 'None'}")
-            
-            # Check message count
-            cur.execute("SELECT COUNT(*) FROM messages")
-            msg_count = cur.fetchone()[0]
-            print(f"   Total messages: {msg_count}")
-            
-            # Check summary count
-            cur.execute("SELECT COUNT(*) FROM summaries")
-            sum_count = cur.fetchone()[0]
-            print(f"   Total summaries: {sum_count}")
-            
-            # Check pgvector
-            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-            has_vector = cur.fetchone() is not None
-            print(f"   pgvector: {'✅ Enabled' if has_vector else '❌ Not installed'}")
-        
-        conn.close()
+        conn = psycopg.connect(db_url)
+        try:
+            with conn.cursor() as cur:
+                # Check tables
+                cur.execute(
+                    """
+                    SELECT table_name
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    AND table_name IN ('messages', 'summaries', 'user_profile')
+                    """
+                )
+                tables = [row[0] for row in cur.fetchall()]
+
+                print("\n📊 Database Status:")
+                print(f"   Tables found: {', '.join(tables) if tables else 'None'}")
+
+                # Check message count
+                cur.execute("SELECT COUNT(*) FROM messages")
+                msg_count = cur.fetchone()[0]
+                print(f"   Total messages: {msg_count}")
+
+                # Check summary count
+                cur.execute("SELECT COUNT(*) FROM summaries")
+                sum_count = cur.fetchone()[0]
+                print(f"   Total summaries: {sum_count}")
+
+                # Check pgvector
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                has_vector = cur.fetchone() is not None
+                print(f"   pgvector: {'✅ Enabled' if has_vector else '❌ Not installed'}")
+        finally:
+            conn.close()
         return True
-        
+
     except Exception as e:
         print(f"❌ Verification failed: {e}")
         return False
 
 
+def _apply_migrations(db_url: str) -> bool:
+    """Apply the canonical schema via ``tools.migrate apply``.
+
+    Wrapped in try/except so a missing optional dep (yoyo-migrations) or a
+    migration failure surfaces a friendly hint rather than a raw traceback.
+    Never echoes the password — only a redacted URL appears in messages.
+    """
+    try:
+        from tools.migrate import main as migrate_main
+    except ImportError:
+        print("❌ Could not import tools.migrate. Install schema deps with:")
+        print("      pip install yoyo-migrations 'psycopg[binary,pool]'")
+        return False
+    try:
+        rc = migrate_main(["apply", "--database-url", db_url])
+    except ModuleNotFoundError as exc:
+        # yoyo (or its driver) is imported lazily inside tools.migrate.
+        print(f"❌ Schema migration dependency missing ({exc.name}). Install with:")
+        print("      pip install yoyo-migrations 'psycopg[binary,pool]'")
+        return False
+    except Exception as exc:
+        print(f"❌ Schema migration failed: {exc}")
+        print("   Run the canonical path directly to see details:")
+        print(f"      python -m tools.migrate apply --database-url \"{_redact_db_url(db_url)}\"")
+        return False
+    return rc == 0
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Setup PostgreSQL database for Voice Assistant memory",
+        description="Setup PostgreSQL database for Voice Assistant memory (thin migrate wrapper)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Peer authentication (no password)
   python setup_database.py --db-url "postgresql:///voice_assistant"
-  
+
   # Password authentication
   python setup_database.py --db-url "postgresql://user:pass@localhost/voice_assistant"
-  
-  # Create new database
+
+  # Create new database, then apply migrations
   python setup_database.py --create-db --db-name voice_assistant
-  
+
   # Verify existing setup
   python setup_database.py --verify-only
+
+Note: the schema itself lives in the canonical migrations path
+(`python -m tools.migrate apply`); this script just creates the database
+(--create-db) and verifies the result (--verify-only).
         """
     )
     parser.add_argument(
@@ -354,21 +235,21 @@ Examples:
         action="store_true",
         help="Only verify existing setup, don't create anything"
     )
-    
+
     args = parser.parse_args()
-    
+
     print("=" * 50)
     print("🗄️  Voice Assistant Database Setup")
     print("=" * 50)
-    print("⚠️  DEPRECATED: schema setup should use the canonical migrations path:")
+    print("Schema is owned by the canonical migrations path:")
     print("      python -m tools.migrate apply")
-    print("    This script is retained for now but will be reduced to a thin")
-    print("    role-create/verify wrapper that defers to tools.migrate.")
+    print("This script creates the database (--create-db) and verifies it")
+    print("(--verify-only); the schema step below defers to tools.migrate.")
 
     if args.verify_only:
         verify_setup(args.db_url)
         return
-    
+
     # Create database if requested
     if args.create_db:
         print(f"\n📦 Creating database: {args.db_name}")
@@ -376,15 +257,15 @@ Examples:
             return
         # Update URL to use new database
         args.db_url = f"postgresql://{args.user}:{args.password}@{args.host}/{args.db_name}"
-    
-    # Setup tables
-    print(f"\n📦 Setting up tables in: {_redact_db_url(args.db_url)}")
-    if not setup_tables(args.db_url):
+
+    # Schema step: defer to the canonical migrations path.
+    print(f"\n📦 Applying migrations to: {_redact_db_url(args.db_url)}")
+    if not _apply_migrations(args.db_url):
         return
-    
+
     # Verify setup
     verify_setup(args.db_url)
-    
+
     print("\n" + "=" * 50)
     print("✅ Database setup complete!")
     print("=" * 50)

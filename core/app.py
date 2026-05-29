@@ -8,8 +8,10 @@ from typing import Optional
 
 from always_on_agent.events import Mode
 from always_on_agent.followups import FollowupConfig
+from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.react import PlannerConfig
 
+from .capabilities import RecallConfig
 from .engine import AudioEngine
 from .llm import (
     EchoLLM,
@@ -288,6 +290,70 @@ def _build_engine(args, config: dict) -> AudioEngine:
     from .engines.scripted import ScriptedEngine
 
     return ScriptedEngine()
+
+
+def _redact_db_url(db_url: str) -> str:
+    """Mask any password in a ``DATABASE_URL`` for safe logging (R12).
+
+    Reuses ``setup_database._redact_db_url`` when importable; otherwise falls
+    back to a host-only form. A connect error string may echo the DSN, so we
+    only ever log the redacted URL -- never the raw error."""
+    try:
+        from setup_database import _redact_db_url as _redact  # type: ignore
+
+        return _redact(db_url)
+    except Exception:  # noqa: BLE001 - never let redaction failure leak the URL
+        from urllib.parse import urlsplit, urlunsplit
+
+        try:
+            parts = urlsplit(db_url)
+            if parts.password is None:
+                return db_url
+            user = parts.username or ""
+            host = parts.hostname or ""
+            netloc = f"{user}:***@{host}" if user else f"***@{host}"
+            if parts.port:
+                netloc = f"{netloc}:{parts.port}"
+            return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        except Exception:  # noqa: BLE001
+            return db_url.split("@")[-1] if "@" in db_url else db_url
+
+
+def _build_memory(config: dict) -> Memory:
+    """Pick the memory backend (Locked Decision 4).
+
+    Postgres-backed :class:`MemoryManagerAdapter` when ``memory.backend`` is
+    ``postgres`` -- or when it is ``auto``/unset and ``$DATABASE_URL`` is set;
+    in-RAM :class:`SessionMemory` otherwise. The adapter build is wrapped so a
+    missing dependency (``ImportError``) or a connect failure falls back to the
+    in-RAM store rather than crashing. Any connect error is logged **redacted**
+    (R12) -- the message may carry the DSN.
+    """
+    mem_cfg = config.get("memory", {}) or {}
+    # In-RAM working window: the addressing/cleaner recent buffer read via
+    # memory.all()[-4:]. Independent of the Postgres Layer-1 cap, so size it from
+    # its own optional key (default 200) rather than coupling it to max_recent.
+    working_window = int(mem_cfg.get("working_window", 200) or 200)
+    backend = str(mem_cfg.get("backend", "auto") or "auto").lower()
+    db_url = os.environ.get("DATABASE_URL")
+    want_postgres = backend == "postgres" or (backend in ("auto", "") and bool(db_url))
+    if not want_postgres:
+        return SessionMemory(max_items=working_window)
+
+    try:
+        from always_on_agent.memory import MemoryManagerAdapter
+
+        return MemoryManagerAdapter(
+            enable_embeddings=bool(mem_cfg.get("embeddings", False)),
+            max_recent_messages=int(mem_cfg.get("max_recent", 20) or 20),
+        )
+    except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
+        redacted = _redact_db_url(db_url) if db_url else "(no DATABASE_URL)"
+        print(
+            f"[memory] Postgres backend unavailable ({type(exc).__name__}); "
+            f"falling back to in-RAM. db={redacted}"
+        )
+        return SessionMemory(max_items=working_window)
 
 
 def _run_console(runtime: VoiceRuntime, engine) -> None:
@@ -570,10 +636,15 @@ def main(argv: list[str] | None = None) -> int:
             fast_llm, max_context=int(cleanup_cfg.get("max_context", 3))
         )
 
+    memory = _build_memory(config)
+    recall_config = RecallConfig.from_dict(config.get("memory"))
+
     runtime = VoiceRuntime(
         engine,
         llm,
         fast_llm=fast_llm,
+        memory=memory,
+        recall_config=recall_config,
         start_mode=Mode(args.mode),
         agent_config=agent_config,
         router=router,

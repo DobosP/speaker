@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 import os
 import time
+from dataclasses import dataclass
 from threading import Event
 from typing import Callable, Iterator, Mapping, Optional
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
+from always_on_agent.memory import Memory
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -27,6 +29,26 @@ DEFAULT_SYSTEM = (
     "natural spoken sentences. Do not use markdown, lists, headings, or "
     "preambles like 'Sure'. If you don't know, say so briefly."
 )
+
+
+@dataclass(frozen=True)
+class RecallConfig:
+    """Gating for memory recall injection (the flat ``memory`` config block).
+
+    ``enabled`` defaults to **false**: the cheap config short-circuit before any
+    embedding/recall work happens. ``max_chars`` bounds how much of the recall
+    block is prepended so TTFT stays bounded."""
+
+    enabled: bool = False
+    max_chars: int = 600
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, object]]) -> "RecallConfig":
+        data = data or {}
+        return cls(
+            enabled=bool(data.get("recall_enabled", False)),
+            max_chars=int(data.get("recall_max_chars", 600) or 600),
+        )
 
 
 def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]:
@@ -83,6 +105,8 @@ def attach_llm_capabilities(
     escalate: Optional[EscalatePredicate] = None,
     agent_capability: str = "agent.react",
     recorder: Optional[MetricsRecorder] = None,
+    memory: Optional[Memory] = None,
+    recall: Optional[RecallConfig] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -100,6 +124,7 @@ def attach_llm_capabilities(
 
     fast = fast_llm or llm
     router = router or HeuristicRouter()
+    recall_cfg = recall or RecallConfig()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
 
     def _enrich_context(query: str, context: dict[str, object]) -> dict[str, object]:
@@ -139,6 +164,23 @@ def attach_llm_capabilities(
         ):
             return registry.invoke(agent_capability, query, context)
         _enrich_context(query, context)
+        # Memory recall (the headline P2 fix), assistant-only (R5):
+        #   1. Ingest the answered query first (R1) so recall has something to
+        #      find on the next turn. Never mutate ``query`` itself -- the
+        #      router/sensitivity inputs stay clean.
+        #   2. Gated prepend: only when recall is enabled (cheap config gate,
+        #      default off) AND the backend returns a non-empty (relevant)
+        #      block. Wrapped so a memory error can never break a live turn.
+        system_for_call = system
+        if memory is not None:
+            try:
+                memory.add(query, tags=("user",))
+                if recall_cfg.enabled:
+                    recall_block = memory.context_for_llm(query)
+                    if recall_block:
+                        system_for_call = recall_block[: recall_cfg.max_chars] + "\n\n" + system
+            except Exception:  # noqa: BLE001 - recall is best-effort, never fatal
+                log.exception("memory recall failed; answering without it")
         tier = router.choose(query, context)
         model = llm if tier == "main" else fast
         if debug_routing:
@@ -157,7 +199,7 @@ def attach_llm_capabilities(
         # ContextVar doesn't leak between unrelated turns.
         ctx_token = capability_context.set(context)
         try:
-            tokens = mark_first_token(model.stream(query, system=system), recorder)
+            tokens = mark_first_token(model.stream(query, system=system_for_call), recorder)
             if callable(emit):
                 text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
                 log.info(

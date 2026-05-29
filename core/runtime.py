@@ -8,12 +8,12 @@ from always_on_agent.capabilities import create_default_capabilities
 from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
-from always_on_agent.memory import SessionMemory
+from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.supervisor import AgentSupervisor
 
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
-from .capabilities import attach_llm_capabilities
+from .capabilities import RecallConfig, attach_llm_capabilities
 from .cleanup import TranscriptCleaner
 from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
@@ -46,6 +46,8 @@ class VoiceRuntime:
         llm: Optional[LLMClient] = None,
         *,
         fast_llm: Optional[LLMClient] = None,
+        memory: Optional[Memory] = None,
+        recall_config: Optional[RecallConfig] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         router: Optional[Router] = None,
@@ -85,7 +87,10 @@ class VoiceRuntime:
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
         # and the LLM capability (llm_first_token). Read via ``runtime.metrics``.
         self.metrics = MetricsRecorder()
-        self.memory = SessionMemory()
+        # One Memory instance shared by the capability recall, the default
+        # capabilities corpus, and the supervisor. Desktop defaults to in-RAM
+        # unless app.py built a Postgres-backed adapter and passed it in.
+        self.memory = memory or SessionMemory()
         memory = self.memory
         llm = llm or EchoLLM()
         registry = create_default_capabilities(memory)
@@ -93,7 +98,7 @@ class VoiceRuntime:
         escalate = should_escalate if (planner_on and planner_config.escalate) else None
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, router=router, escalate=escalate,
-            recorder=self.metrics,
+            recorder=self.metrics, memory=memory, recall=recall_config,
         )
         if planner_on:
             attach_react_capability(registry, llm, config=planner_config)
@@ -161,6 +166,15 @@ class VoiceRuntime:
             except Exception:  # noqa: BLE001
                 log.exception("bus stop failed")
             self._bus_threaded = False
+        # Flush + release the memory backend at close-time (R6). prune() runs
+        # the close-time retention pass (a no-op stub in P2a); close() flushes
+        # any pending writes and releases the pool. Guarded so a teardown error
+        # never prevents the engine from stopping (the recording flush).
+        try:
+            self.memory.prune()
+            self.memory.close()
+        except Exception:  # noqa: BLE001
+            log.exception("memory close failed")
         self.engine.stop()
 
     @property

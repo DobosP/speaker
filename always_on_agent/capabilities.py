@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .memory import SessionMemory
+from .memory import Memory, SessionMemory
 from .text import keywords, normalize_text
 
 
@@ -39,7 +39,7 @@ class CapabilityRegistry:
         return tuple(sorted(self._providers))
 
 
-def create_default_capabilities(memory: SessionMemory | None = None) -> CapabilityRegistry:
+def create_default_capabilities(memory: Memory | None = None) -> CapabilityRegistry:
     memory = memory or SessionMemory()
     registry = CapabilityRegistry()
     corpus = {

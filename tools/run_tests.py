@@ -3,9 +3,19 @@
 
     python tools/run_tests.py list           # show stages
     python tools/run_tests.py core            # run one stage
+    python tools/run_tests.py fast            # quick dev subset (skips slow/network/llm/backend)
     python tools/run_tests.py full            # run the whole suite
+    python tools/run_tests.py e2e             # end-to-end CLI/process tests
     python tools/run_tests.py all-stages      # run every stage in order
     python tools/run_tests.py full --json     # machine-readable summary
+
+Run any stage in parallel by passing pytest-xdist through ``--pytest-arg``
+(repeat the flag once per token -- they are forwarded verbatim to pytest):
+
+    python tools/run_tests.py full --pytest-arg=-n --pytest-arg=auto
+
+The suite is parallel-safe (~9s with ``-n auto`` vs ``~35s`` serial). Parallel
+is left opt-in here -- the default invocation stays serial for easy debugging.
 
 Reports land in ``test-reports/<run_id>/`` (with a ``latest`` pointer):
 per-stage ``summary.json`` / ``failures.json`` / ``llm-summary.md``, plus a
@@ -38,7 +48,9 @@ def _parse_args() -> argparse.Namespace:
         "--pytest-arg",
         action="append",
         default=[],
-        help="Extra argument passed through to pytest (repeatable).",
+        help="Extra argument passed through to pytest, repeatable "
+             "(e.g. parallel: --pytest-arg=-n --pytest-arg=auto; "
+             "postgres: --pytest-arg=--postgres).",
     )
     return parser.parse_args()
 

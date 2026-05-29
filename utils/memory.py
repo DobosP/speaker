@@ -351,12 +351,12 @@ class MemoryManager:
         try:
             fn()
         except Exception as exc:  # noqa: BLE001 - background jobs must not crash the thread
-            print(f"⚠️  Memory background job failed: {exc}")
+            print(f"[warn] Memory background job failed: {exc}")
 
     def _init_database(self):
         """Open the connection pool + ensure schema exists (demo/dev path)."""
         if not POSTGRES_AVAILABLE:
-            print("⚠️  psycopg + psycopg_pool not available. Memory will be in-memory only.")
+            print("[warn] psycopg + psycopg_pool not available. Memory will be in-memory only.")
             print("   Install with: pip install 'psycopg[binary,pool]'")
             return
 
@@ -388,9 +388,9 @@ class MemoryManager:
                     persist_fn=self._persist_user_message,
                     text_cleaner=self._text_cleaner,
                 )
-            print(f"✅ Database connected (session: {self.session_id[:8]}...)")
+            print(f"[ok] Database connected (session: {self.session_id[:8]}...)")
         except Exception as e:
-            print(f"⚠️  Database connection failed: {e}")
+            print(f"[warn] Database connection failed: {e}")
             print("   Memory will be in-memory only for this session.")
             self._pool = None
 
@@ -408,7 +408,7 @@ class MemoryManager:
                     # the new CHECK; the right path is to run the yoyo
                     # 003_backfill_dim_embedder migration first. Log and
                     # continue -- queries still work, just without constraints.
-                    print(f"⚠️  constraints not added: {exc}; run "
+                    print(f"[warn] constraints not added: {exc}; run "
                           "`python tools/migrate.py apply` to backfill.")
                 try:
                     cur.execute(hnsw_sql)
@@ -416,17 +416,17 @@ class MemoryManager:
                     # Index DDL is the most likely to fail on older pgvector
                     # versions (HNSW arrived in pgvector 0.5). Don't crash;
                     # search will fall back to a seq scan.
-                    print(f"⚠️  HNSW index DDL skipped: {exc}")
+                    print(f"[warn] HNSW index DDL skipped: {exc}")
 
     def _init_embeddings(self, model_name: str):
         """Initialize the embedding model."""
         if not EMBEDDINGS_AVAILABLE:
-            print("⚠️  sentence-transformers not available. Semantic search disabled.")
+            print("[warn] sentence-transformers not available. Semantic search disabled.")
             print("   Install with: pip install sentence-transformers")
             return
 
         try:
-            print(f"🔄 Loading embedding model: {model_name}...")
+            print(f"[..] Loading embedding model: {model_name}...")
             self.embedder = SentenceTransformer(model_name)
             # Get the real dim from the model so we don't shadow-assume 384.
             try:
@@ -434,9 +434,9 @@ class MemoryManager:
             except Exception:
                 self.embedder_dim = DEFAULT_EMBEDDER_DIM
             self._embeddings_available = True
-            print(f"✅ Embedding model loaded (dim={self.embedder_dim})!")
+            print(f"[ok] Embedding model loaded (dim={self.embedder_dim})!")
         except Exception as e:
-            print(f"⚠️  Failed to load embedding model: {e}")
+            print(f"[warn] Failed to load embedding model: {e}")
 
     def _get_embedding(self, text: str) -> Optional[np.ndarray]:
         """Get embedding vector for text. Returns ``None`` on failure so
@@ -447,7 +447,7 @@ class MemoryManager:
         try:
             return self.embedder.encode(text, convert_to_numpy=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"⚠️  Embedding failed: {exc}")
+            print(f"[warn] Embedding failed: {exc}")
             return None
 
     def _load_recent_messages(self):
@@ -473,7 +473,7 @@ class MemoryManager:
                 for row in reversed(rows)  # oldest first
             ]
         except Exception as e:
-            print(f"⚠️  Failed to load recent messages: {e}")
+            print(f"[warn] Failed to load recent messages: {e}")
 
     # --- message ingestion (the writer thread call site) -------------------
 
@@ -674,7 +674,7 @@ class MemoryManager:
                             ),
                         )
         except Exception as e:
-            print(f"⚠️  Failed to save message: {e}")
+            print(f"[warn] Failed to save message: {e}")
 
     def _estimate_tokens(self, text: str) -> int:
         """Rough estimate of token count (words * 1.3)."""
@@ -738,7 +738,7 @@ class MemoryManager:
             )
             if self._db_available:
                 self._save_summary_to_db(summary)
-            print(f"📝 Created summary of {summary.message_count} messages")
+            print(f"[mem] Created summary of {summary.message_count} messages")
         finally:
             with self._summary_lock:
                 self._summary_in_flight = False
@@ -759,7 +759,7 @@ class MemoryManager:
                 if rolled and rolled.strip():
                     return rolled.strip()
             except Exception as exc:  # noqa: BLE001 - fall back, never crash the thread
-                print(f"⚠️  Summarizer failed, using keyword fallback: {exc}")
+                print(f"[warn] Summarizer failed, using keyword fallback: {exc}")
         # Keyword fallback (R2): legacy topic-frequency body, folded onto prior.
         topics = self._extract_topics(conversation_text)
         new_body = (
@@ -824,7 +824,7 @@ class MemoryManager:
                             ),
                         )
         except Exception as e:
-            print(f"⚠️  Failed to save summary: {e}")
+            print(f"[warn] Failed to save summary: {e}")
 
     # --- retrieval ---------------------------------------------------------
 
@@ -904,7 +904,7 @@ class MemoryManager:
                             'similarity': float(row['similarity'] or 0.0),
                         })
         except Exception as e:
-            print(f"⚠️  Search failed: {e}")
+            print(f"[warn] Search failed: {e}")
 
         results.sort(key=lambda x: x.get('similarity', 0), reverse=True)
         return results[:limit]
@@ -959,7 +959,7 @@ class MemoryManager:
                         (key, value, confidence),
                     )
         except Exception as e:
-            print(f"⚠️  Failed to update profile: {e}")
+            print(f"[warn] Failed to update profile: {e}")
 
     def _extract_profile(self, text: str) -> None:
         """Ingest-time user-profile producer (R8): default-off, Postgres-only,
@@ -1007,7 +1007,7 @@ class MemoryManager:
                     )
                     return {row['key']: row['value'] for row in cur.fetchall()}
         except Exception as e:
-            print(f"⚠️  Failed to get profile: {e}")
+            print(f"[warn] Failed to get profile: {e}")
             return {}
 
     def get_conversation_stats(self) -> Dict[str, Any]:
@@ -1113,7 +1113,7 @@ class MemoryManager:
                         )
                         removed += cur.rowcount or 0
         except Exception as e:
-            print(f"⚠️  Retention pass failed: {e}")
+            print(f"[warn] Retention pass failed: {e}")
         return removed
 
     def clear_session(self):
@@ -1128,7 +1128,7 @@ class MemoryManager:
                             (self.session_id,),
                         )
             except Exception as e:
-                print(f"⚠️  Failed to clear session: {e}")
+                print(f"[warn] Failed to clear session: {e}")
 
     def close(self):
         """Flush pending user memory and close the pool."""
@@ -1140,7 +1140,7 @@ class MemoryManager:
             else:
                 self.flush_pending()
         except Exception as e:
-            print(f"⚠️  Failed to flush pending memory: {e}")
+            print(f"[warn] Failed to flush pending memory: {e}")
         self._writer = None
         if self._pool is not None:
             try:

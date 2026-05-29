@@ -18,7 +18,14 @@ import threading
 import time
 from typing import Iterator
 
+import pytest
+
 from core.llm import HedgeLLM
+
+# These cases pin HedgeLLM behaviour under real ttft/between-token delays and
+# cancellation races, so they sleep to reproduce the timing -- the slow tail of
+# the suite. Mark the module `slow` so `-m "not slow"` skips it.
+pytestmark = pytest.mark.slow
 
 
 class FakeStreamLLM:

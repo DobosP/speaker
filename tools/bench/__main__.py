@@ -56,7 +56,25 @@ def _build_llms(config: dict, paths):
     return main, fast
 
 
+def _make_stdio_utf8_safe() -> None:
+    """Best-effort: reconfigure stdout/stderr to UTF-8 with replacement so the
+    perf summary (which contains non-ASCII glyphs) prints cleanly on any
+    console -- notably the Windows cp1252 console, where the default codec
+    would otherwise raise UnicodeEncodeError. ``reconfigure`` exists on the
+    py3.7+ ``TextIOWrapper``; guard it so non-stream stdout (pytest capture,
+    pipes) is left untouched."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _make_stdio_utf8_safe()
     parser = argparse.ArgumentParser(description="Real-model latency benchmark.")
     parser.add_argument("--profile", default="phone", help="device profile (phone/desktop)")
     parser.add_argument("--fixtures", default="tests/fixture_audio/virtual_real_world")

@@ -24,6 +24,10 @@ from unittest import mock
 
 import pytest
 
+# setup_database imports psycopg3 at module top; skip (not error) where the
+# optional driver is absent (CI installs only pytest+numpy).
+pytest.importorskip("psycopg", reason="setup_database requires psycopg3 (optional dep)")
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))

@@ -184,22 +184,30 @@ def record_once(seconds: float, sample_rate: int = 16000, *, device=None, input_
     import numpy as np
     import sounddevice as sd
 
-    from .engines.sherpa import _norm_device, _resample_linear
+    from .audio_frontend import AudioResampler, apply_gain_soft_limit
+    from .engines.sherpa import _norm_device
 
     dev = _norm_device(device)
     try:
         frames = int(seconds * sample_rate)
         audio = sd.rec(frames, samplerate=sample_rate, channels=1, dtype="float32", device=dev)
         sd.wait()
-        samples = np.asarray(audio, dtype="float32").reshape(-1)
+        capture_sr = sample_rate
     except sd.PortAudioError:
-        dev_sr = int(sd.query_devices(dev, kind="input")["default_samplerate"])
-        frames = int(seconds * dev_sr)
-        audio = sd.rec(frames, samplerate=dev_sr, channels=1, dtype="float32", device=dev)
+        capture_sr = int(sd.query_devices(dev, kind="input")["default_samplerate"])
+        frames = int(seconds * capture_sr)
+        audio = sd.rec(frames, samplerate=capture_sr, channels=1, dtype="float32", device=dev)
         sd.wait()
-        samples = _resample_linear(np.asarray(audio, dtype="float32").reshape(-1), dev_sr, sample_rate)
+    samples = np.asarray(audio, dtype="float32").reshape(-1)
+    # Identical processing to the live capture path so the enrolled embedding
+    # matches what the recognizer / speaker-gate hear live: gain (soft-knee
+    # limiter, not a hard clip) BEFORE an anti-aliased downsample to the model
+    # rate. The old path hard-clipped then linear-resampled -> a corrupted,
+    # mismatched reference (the live speaker gate was rejecting the real user).
     if input_gain != 1.0:
-        samples = np.clip(samples * input_gain, -1.0, 1.0)
+        samples = apply_gain_soft_limit(samples, input_gain)
+    if capture_sr != sample_rate:
+        samples = AudioResampler(capture_sr, sample_rate).process(samples, last=True)
     return samples
 
 

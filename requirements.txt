@@ -52,3 +52,8 @@ sentence-transformers>=2.2.0 # For embeddings/vector search
 
 # Environment
 python-dotenv>=1.0.0
+
+# Anti-aliased capture-path resampling (44.1/48k mic -> 16k ASR). Falls back to
+# scipy.signal.resample_poly, then naive linear, if absent. See core/audio_frontend.py.
+soxr>=0.3
+scipy>=1.10  # polyphase resample fallback + signal utils

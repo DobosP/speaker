@@ -355,7 +355,10 @@ class MemoryManager:
 
     def _init_database(self):
         """Open the connection pool + ensure schema exists (demo/dev path)."""
-        if not POSTGRES_AVAILABLE:
+        # An injected ``pool_factory`` is a DI seam (tests / a custom pool) and
+        # must work even without the optional psycopg driver -- only fall back to
+        # in-memory when there's no driver AND no factory.
+        if not POSTGRES_AVAILABLE and self._pool_factory is None:
             print("[warn] psycopg + psycopg_pool not available. Memory will be in-memory only.")
             print("   Install with: pip install 'psycopg[binary,pool]'")
             return

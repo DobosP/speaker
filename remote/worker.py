@@ -53,13 +53,14 @@ def _parse(argv: Optional[list[str]]) -> argparse.Namespace:
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parse(argv)
 
-    from core.app import _apply_device_profile, _load_config, main as app_main
+    from core.app import main as app_main
+    from core.config import apply_device_profile, load_config
 
     from .token_server import create_access_token
 
-    config = _load_config()
+    config = load_config()
     device = args.device or config.get("device", "desktop")
-    config = _apply_device_profile(config, device)
+    config = apply_device_profile(config, device)
     remote_cfg = config.get("remote", {}) or {}
     room = args.room or remote_cfg.get("room", "assistant")
     identity = args.identity or remote_cfg.get("agent_identity", "assistant-agent")

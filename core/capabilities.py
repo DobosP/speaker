@@ -15,7 +15,7 @@ from always_on_agent.models import IntentKind
 from .contract import drain_complete_sentences
 from .llm import LLMClient, capability_context
 from .metrics import MetricsRecorder, mark_first_token
-from .routing import HeuristicRouter, Router
+from .routing import LIVE_CONTEXT_KEY, HeuristicRouter, Router
 from .sensitivity import classify_sensitivity
 
 log = logging.getLogger("speaker.llm")
@@ -107,6 +107,7 @@ def attach_llm_capabilities(
     recorder: Optional[MetricsRecorder] = None,
     memory: Optional[Memory] = None,
     recall: Optional[RecallConfig] = None,
+    live_routing: bool = False,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -120,12 +121,27 @@ def attach_llm_capabilities(
     ``router`` (a small ``fast_llm`` for snappy replies, the larger ``llm`` for
     reasoning-heavy asks) while ``research.local`` always runs on ``llm``. When
     ``fast_llm`` is omitted both tiers collapse to ``llm`` (routing is a no-op).
+
+    ``live_routing`` (default off; also honoured via ``SPEAKER_LIVE_ROUTING``)
+    opts into headroom-aware routing: the recorder's rolling local TTFT is fed
+    to the router as a live nudge toward main/cloud when the local tier is slow.
+    The nudge is additive-only + clamped (see :mod:`core.routing`) and a missing
+    sample is a no-op, so it can never starve the local tier.
     """
 
     fast = fast_llm or llm
     router = router or HeuristicRouter()
     recall_cfg = recall or RecallConfig()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
+    # Headroom-aware routing (smart-routing-2): feed the recorder's rolling
+    # local TTFT into the router as a live signal that NUDGES borderline turns
+    # toward main/cloud when the local tier is slow. Off by default so existing
+    # behaviour is byte-for-byte unchanged; opt in via the ``live_routing`` arg
+    # or ``SPEAKER_LIVE_ROUTING=1``. Even when on, the nudge is additive-only +
+    # clamped in core.routing, and a missing TTFT sample (cold start, no
+    # recorder) yields no nudge -- the static per-profile decision is the floor,
+    # so this can never starve the local tier.
+    live_routing = live_routing or bool(os.environ.get("SPEAKER_LIVE_ROUTING"))
 
     def _enrich_context(query: str, context: dict[str, object]) -> dict[str, object]:
         """Add ``intent_kind`` + ``sensitivity`` to the context before routing.
@@ -181,6 +197,16 @@ def attach_llm_capabilities(
                         system_for_call = recall_block[: recall_cfg.max_chars] + "\n\n" + system
             except Exception:  # noqa: BLE001 - recall is best-effort, never fatal
                 log.exception("memory recall failed; answering without it")
+        # Live headroom hint (smart-routing-2): publish the recorder's rolling
+        # local TTFT under context['live'] so HeuristicRouter can nudge a slow
+        # local tier toward main/cloud. Gated + fail-safe: only when enabled and
+        # a measurable sample exists; reading the EWMA is a cheap locked dict
+        # read. A SystemMonitor load snapshot is a follow-up (wiring it needs the
+        # monitor plumbed into this closure from runtime.py/app.py).
+        if live_routing and recorder is not None and LIVE_CONTEXT_KEY not in context:
+            ttft_ms = recorder.recent_ttft_ms()
+            if ttft_ms is not None:
+                context[LIVE_CONTEXT_KEY] = {"ttft_ms": ttft_ms}
         tier = router.choose(query, context)
         model = llm if tier == "main" else fast
         if debug_routing:

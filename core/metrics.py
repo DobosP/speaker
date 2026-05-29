@@ -88,6 +88,13 @@ def _round(value: Optional[float]) -> Optional[float]:
     return round(value, 4) if value is not None else None
 
 
+# EWMA smoothing factor for the rolling local time-to-first-token estimate.
+# Higher = more reactive to the latest turn (a freshly loaded model surfaces
+# fast); lower = steadier. 0.3 trusts recent turns while damping single-turn
+# spikes. Updated cheaply on the hot path -- one multiply-add per turn.
+_TTFT_EWMA_ALPHA = 0.3
+
+
 class MetricsRecorder:
     """Collects :class:`TurnRecord`s as stage stamps arrive from any thread."""
 
@@ -96,6 +103,11 @@ class MetricsRecorder:
         self._lock = threading.Lock()
         self._current: Optional[TurnRecord] = None
         self._completed: list[TurnRecord] = []
+        # Rolling local time-to-first-token estimate (milliseconds), updated as
+        # ``llm_first_token`` is stamped against the open turn's ASR_FINAL
+        # anchor. ``None`` until the first measurable turn -- the router treats
+        # an unknown signal as "no nudge" so a cold start can never bias it.
+        self._ttft_ewma_ms: Optional[float] = None
 
     def mark(self, stage: str) -> None:
         now = self._clock()
@@ -113,7 +125,41 @@ class MetricsRecorder:
                 # Mid-turn stamps only count once and only inside an open turn;
                 # a stray late event (e.g. trailing speech_end) is ignored.
                 if self._current is not None:
+                    if stage == LLM_FIRST_TOKEN and stage not in self._current.stamps:
+                        # First token of this turn just landed: fold the local
+                        # ASR_FINAL -> first-token delta into the rolling EWMA.
+                        # Cheap (one branch + one float op), no behaviour change
+                        # to recording -- the stamp itself is still set below.
+                        anchor = self._current.stamps.get(ASR_FINAL)
+                        if anchor is not None:
+                            self._observe_ttft_ms((now - anchor) * 1000.0)
                     self._current.stamps.setdefault(stage, now)
+
+    def _observe_ttft_ms(self, ttft_ms: float) -> None:
+        """Fold one observed local TTFT (ms) into the rolling EWMA.
+
+        Must be called under ``self._lock``. Ignores non-finite/negative
+        samples so a clock glitch can never poison the estimate."""
+        if not (ttft_ms >= 0.0):  # also rejects NaN
+            return
+        if self._ttft_ewma_ms is None:
+            self._ttft_ewma_ms = ttft_ms
+        else:
+            self._ttft_ewma_ms = (
+                _TTFT_EWMA_ALPHA * ttft_ms
+                + (1.0 - _TTFT_EWMA_ALPHA) * self._ttft_ewma_ms
+            )
+
+    def recent_ttft_ms(self) -> Optional[float]:
+        """Cheap read of the rolling local time-to-first-token EWMA (ms).
+
+        Returns ``None`` until at least one turn has produced a measurable
+        ASR_FINAL -> first-token delta. The router consumes this as a *live
+        signal*: a high value (local model slow/loaded) nudges borderline
+        turns toward the main/cloud tier, while ``None`` leaves the static
+        per-profile decision untouched (it can never starve the local tier)."""
+        with self._lock:
+            return self._ttft_ewma_ms
 
     def close_turn(self) -> None:
         """Bank the open turn (call once a replayed utterance has settled)."""
@@ -133,6 +179,7 @@ class MetricsRecorder:
         with self._lock:
             self._current = None
             self._completed = []
+            self._ttft_ewma_ms = None
 
 
 def mark_first_token(tokens: Iterator[str], recorder: Optional[MetricsRecorder]) -> Iterator[str]:

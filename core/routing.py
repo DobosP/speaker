@@ -18,6 +18,86 @@ ModelTier = str
 FAST: ModelTier = "fast"
 MAIN: ModelTier = "main"
 
+# --- Live headroom signal (smart-routing-2) --------------------------------
+#
+# The router's static per-profile decision is the floor. A *live* signal --
+# the local model's recent time-to-first-token (from core.metrics) and an
+# optional system-load fraction (from core.sysinfo) -- can NUDGE a borderline
+# turn toward the main/cloud tier when the local fast tier is slow or loaded,
+# so a busy device offloads to the bigger/cloud model instead of stalling.
+#
+# Hard guarantee (the gate): the nudge is ADDITIVE-ONLY toward main and
+# CLAMPED, and a missing / non-numeric / out-of-range signal contributes
+# exactly zero. It can therefore never lower the score and never demote a turn
+# the static config would have escalated -- it only ever escalates, and only on
+# a *good* signal. A bad or absent signal leaves the static decision untouched,
+# so the local tier's static per-profile behavior is the floor and is never
+# starved.
+#
+# The hint is read from ``context['live']`` (a plain mapping) so the Router
+# Protocol signature stays unchanged and every existing call site keeps
+# working with no live signal at all.
+LIVE_CONTEXT_KEY = "live"
+
+# Local TTFT (ms) at/above which the nudge saturates. ~2.5s to first token is
+# already a poor local experience; past it, lean on the cloud/main tier.
+_TTFT_NUDGE_FLOOR_MS = 800.0    # below this: local is snappy, no nudge
+_TTFT_NUDGE_CEIL_MS = 2500.0    # at/above this: full nudge
+# System load (0..1, e.g. CPU or GPU utilisation fraction) nudge band.
+_LOAD_NUDGE_FLOOR = 0.75        # below this: plenty of headroom, no nudge
+_LOAD_NUDGE_CEIL = 0.98         # at/above this: full nudge
+# Maximum total escalation the live signal may add to the static score. Kept
+# modest (< the 0.5 default threshold span) so the live signal only ever tips
+# *borderline* turns -- it cannot, on its own, drag a clearly-fast query to
+# main, and it can never subtract.
+_MAX_LIVE_NUDGE = 0.25
+
+
+def _as_float(value: object) -> Optional[float]:
+    """Best-effort float, returning ``None`` for missing/garbage/non-finite.
+
+    The router's fail-safe rests on this: any signal we can't trust becomes
+    ``None`` and contributes no nudge."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        f = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if f != f or f in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    return f
+
+
+def _ramp(value: float, lo: float, hi: float) -> float:
+    """Clamp ``value`` to ``[lo, hi]`` then scale to ``[0, 1]`` (0 at/below lo)."""
+    if hi <= lo:
+        return 0.0
+    if value <= lo:
+        return 0.0
+    if value >= hi:
+        return 1.0
+    return (value - lo) / (hi - lo)
+
+
+def live_nudge(live: object) -> float:
+    """Compute the additive-only escalation from a live headroom signal.
+
+    ``live`` is whatever sat at ``context['live']`` -- expected to be a mapping
+    with optional ``ttft_ms`` (local rolling TTFT) and/or ``load`` (0..1 system
+    utilisation) keys. Returns a value in ``[0, _MAX_LIVE_NUDGE]``; anything we
+    cannot interpret (wrong type, missing keys, NaN, negative) yields ``0.0``
+    so the static decision stands. The two sub-signals are combined by max (not
+    sum) so a single hot dimension is enough but two don't double-count past the
+    cap."""
+    if not isinstance(live, Mapping):
+        return 0.0
+    ttft = _as_float(live.get("ttft_ms"))
+    load = _as_float(live.get("load"))
+    ttft_frac = _ramp(ttft, _TTFT_NUDGE_FLOOR_MS, _TTFT_NUDGE_CEIL_MS) if ttft is not None else 0.0
+    load_frac = _ramp(load, _LOAD_NUDGE_FLOOR, _LOAD_NUDGE_CEIL) if load is not None else 0.0
+    return _MAX_LIVE_NUDGE * max(ttft_frac, load_frac)
+
 
 @runtime_checkable
 class Router(Protocol):
@@ -127,6 +207,12 @@ class HeuristicRouter(BaseRouter):
         if q.count("?") >= 2:
             s += 0.1
 
+        # The static score above is the floor. A live headroom signal (local
+        # slow/loaded) may only ADD to it -- clamped, additive-only -- so a
+        # missing/garbage signal leaves the decision unchanged and the local
+        # tier is never starved (smart-routing-2).
+        s += live_nudge(ctx.get(LIVE_CONTEXT_KEY))
+
         return max(0.0, min(1.0, s))
 
 
@@ -227,3 +313,52 @@ def build_chain_selector(config: Optional[Mapping[str, object]]) -> ChainSelecto
     mapping = routing.get("sensitivity_to_chain", {}) or {}
     default = str(routing.get("default_chain", "private") or "private")
     return ChainSelector(mapping, default_chain=default)
+
+
+def _preset_cost_key(preset: object) -> tuple[float, float, float]:
+    """Sort key for a ``cloud_providers`` preset: (ttft_ms, in_cost, out_cost).
+
+    Reads the documentation-only ``_pricing_usd_per_mtok`` metadata already in
+    config (``ttft_ms`` + ``in``/``out`` $/Mtok). Any preset missing a field
+    sorts *last* on that field (``+inf``) so well-annotated, cheaper/faster
+    presets float to the front while unannotated ones keep their relative
+    place behind them rather than jumping ahead on a phantom zero cost."""
+    pricing = preset.get("_pricing_usd_per_mtok") if isinstance(preset, Mapping) else None
+    if not isinstance(pricing, Mapping):
+        return (float("inf"), float("inf"), float("inf"))
+    ttft = _as_float(pricing.get("ttft_ms"))
+    cost_in = _as_float(pricing.get("in"))
+    cost_out = _as_float(pricing.get("out"))
+    return (
+        ttft if ttft is not None else float("inf"),
+        cost_in if cost_in is not None else float("inf"),
+        cost_out if cost_out is not None else float("inf"),
+    )
+
+
+def order_presets_by_cost(
+    preset_names: object,
+    providers: Optional[Mapping[str, object]],
+) -> list[str]:
+    """Stable-reorder a chain's preset names by ttft/cost metadata (smart-routing-5).
+
+    ADDITIVE + fail-safe: the chain's configured order is the floor. Presets are
+    stably sorted by ``(ttft_ms, in $/Mtok, out $/Mtok)`` read from each entry's
+    existing ``_pricing_usd_per_mtok`` block in ``providers`` (the same metadata
+    today documentation-only). A name with no metadata keeps its original
+    relative position (sorts last on each missing key). Anything malformed --
+    non-sequence input, missing ``providers``, an exploding comparison -- returns
+    the input order unchanged, so a bad signal can never reshuffle (let alone
+    empty) a chain. Names absent from ``providers`` are preserved in place too.
+    The result is the same multiset of names, only reordered."""
+    if not isinstance(preset_names, (list, tuple)):
+        return []
+    names = [n for n in preset_names if isinstance(n, str)]
+    if not providers or len(names) < 2:
+        return list(names)
+    try:
+        # ``sorted`` is stable: equal keys (incl. all-unannotated) preserve the
+        # original chain order, so failover semantics are unchanged on ties.
+        return sorted(names, key=lambda n: _preset_cost_key(providers.get(n, {})))
+    except Exception:  # noqa: BLE001 - ordering is best-effort; never break the chain
+        return list(names)

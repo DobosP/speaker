@@ -4,7 +4,7 @@ import argparse
 import json
 import os
 import sys
-from typing import Optional
+from typing import Callable, Optional
 
 from always_on_agent.events import Mode
 from always_on_agent.followups import FollowupConfig
@@ -319,7 +319,7 @@ def _redact_db_url(db_url: str) -> str:
             return db_url.split("@")[-1] if "@" in db_url else db_url
 
 
-def _build_memory(config: dict) -> Memory:
+def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
     """Pick the memory backend (Locked Decision 4).
 
     Postgres-backed :class:`MemoryManagerAdapter` when ``memory.backend`` is
@@ -328,6 +328,11 @@ def _build_memory(config: dict) -> Memory:
     missing dependency (``ImportError``) or a connect failure falls back to the
     in-RAM store rather than crashing. Any connect error is logged **redacted**
     (R12) -- the message may carry the DSN.
+
+    ``fast_llm`` (the snappy local tier) backs the P2b rolling-summary
+    ``summarizer`` closure passed into the adapter; the actual LLM call runs on
+    the ``MemoryWriter`` background thread, never the bus thread (R2). When it is
+    ``None`` (e.g. ``--llm echo``) the manager falls back to keyword summaries.
     """
     mem_cfg = config.get("memory", {}) or {}
     # In-RAM working window: the addressing/cleaner recent buffer read via
@@ -340,10 +345,22 @@ def _build_memory(config: dict) -> Memory:
     if not want_postgres:
         return SessionMemory(max_items=working_window)
 
+    # Rolling-summary closure over the fast tier. Built here where fast_llm is
+    # available; the manager schedules the call on its writer thread (R2), so
+    # this wrapper itself never runs on the bus thread.
+    summarizer: Optional[Callable[[str], str]] = None
+    if fast_llm is not None:
+        def summarizer(text: str) -> str:
+            return fast_llm.generate(text)
+
     try:
         from always_on_agent.memory import MemoryManagerAdapter
 
         return MemoryManagerAdapter(
+            summarizer=summarizer,
+            profile_enabled=bool(mem_cfg.get("profile_enabled", False)),
+            episodic_ttl_days=int(mem_cfg.get("episodic_ttl_days", 90) or 90),
+            summary_ttl_days=int(mem_cfg.get("summary_ttl_days", 365) or 365),
             enable_embeddings=bool(mem_cfg.get("embeddings", False)),
             max_recent_messages=int(mem_cfg.get("max_recent", 20) or 20),
         )
@@ -636,7 +653,7 @@ def main(argv: list[str] | None = None) -> int:
             fast_llm, max_context=int(cleanup_cfg.get("max_context", 3))
         )
 
-    memory = _build_memory(config)
+    memory = _build_memory(config, fast_llm)
     recall_config = RecallConfig.from_dict(config.get("memory"))
 
     runtime = VoiceRuntime(

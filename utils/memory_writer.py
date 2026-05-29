@@ -261,6 +261,27 @@ class MemoryWriter:
             self._timer.daemon = True
             self._timer.start()
 
+    def schedule_job(self, fn: Callable[[], None]) -> bool:
+        """Run ``fn`` on a background daemon thread, off the caller's thread.
+
+        The one off-the-hot-path scheduling primitive (R2): the rolling-summary
+        LLM call and any profile LLM extraction MUST NOT run on the single bus
+        thread that drives ASR/LLM/TTS. ``MemoryManager`` hands those jobs here
+        so the calling ``add_message``/``queue_user_utterance`` returns promptly.
+        Returns ``False`` (job dropped) if the writer is already closed."""
+        if self._closed:
+            return False
+        worker = threading.Thread(target=self._run_job, args=(fn,), daemon=True)
+        worker.start()
+        return True
+
+    @staticmethod
+    def _run_job(fn: Callable[[], None]) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - background jobs must not crash the thread
+            print(f"⚠️  Memory background job failed: {exc}")
+
     def _timer_flush(self) -> None:
         with self._lock:
             self._timer = None

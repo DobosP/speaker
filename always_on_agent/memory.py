@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import time
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
 
 from .text import keywords, normalize_text
 
@@ -125,10 +125,28 @@ class MemoryManagerAdapter:
     construct without a live database (the pool just never opens and every DB
     call no-ops)."""
 
-    def __init__(self, **manager_kwargs):
-        from utils.memory import MemoryManager  # lazy: keep the brain DB-free
+    def __init__(
+        self,
+        *,
+        summarizer: Optional[Callable[[str], str]] = None,
+        profile_enabled: bool = False,
+        episodic_ttl_days: int = 90,
+        summary_ttl_days: int = 365,
+        **manager_kwargs,
+    ):
+        from utils.memory import create_memory_manager  # lazy: keep the brain DB-free
 
-        self._manager = MemoryManager(**manager_kwargs)
+        # P2b knobs forwarded to the engine: the rolling-summary LLM callable
+        # (keyword fallback inside the manager when None), the default-off
+        # Postgres-only profile producer, and the episodic/summary age-TTLs that
+        # prune() -> apply_retention() enforces. user_profile is never TTL'd.
+        self._manager = create_memory_manager(
+            summarizer=summarizer,
+            profile_enabled=profile_enabled,
+            episodic_ttl_days=episodic_ttl_days,
+            summary_ttl_days=summary_ttl_days,
+            **manager_kwargs,
+        )
         # Our own small in-RAM ring buffer of the raw (text, tags) handed to
         # add() (R3). MemoryManager.recent_messages keeps only role + junk-
         # filters, so all() reads back from here to preserve tag fidelity --
@@ -176,9 +194,12 @@ class MemoryManagerAdapter:
         return self._manager.get_context_for_llm(query)
 
     def prune(self) -> int:
-        # Age-TTL retention (apply_retention) is P2b; close-time prune is a
-        # no-op this cycle.
-        return 0
+        # Age-TTL retention (P2b): episodic messages older than
+        # episodic_ttl_days are summarized-then-evicted, summaries older than
+        # summary_ttl_days are dropped, user_profile is never TTL'd. The manager
+        # no-ops + returns 0 without a live DB. Invoked from VoiceRuntime.stop()
+        # at close-time (R6). Returns rows removed.
+        return self._manager.apply_retention()
 
     def close(self) -> None:
         self._manager.close()

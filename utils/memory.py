@@ -164,6 +164,20 @@ CREATE INDEX IF NOT EXISTS idx_summaries_emb_{embedder_safe}
 """
 
 
+# Deterministic high-signal profile patterns (R8). Each maps a user phrase to a
+# ``user_profile`` (key, value) at a confidence FLOOR of >= 0.9 -- only crisp,
+# self-reported facts, never a fuzzy LLM guess (that path runs separately on the
+# writer thread). ``call me X`` and ``my name is X`` both populate ``name``; the
+# value is captured up to sentence-ending punctuation.
+_PROFILE_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("name", re.compile(r"\bmy name is\s+(?P<v>[^.,!?;]+)", re.IGNORECASE)),
+    ("name", re.compile(r"\bcall me\s+(?P<v>[^.,!?;]+)", re.IGNORECASE)),
+    ("location", re.compile(r"\bi live in\s+(?P<v>[^.,!?;]+)", re.IGNORECASE)),
+    ("preference", re.compile(r"\bi prefer\s+(?P<v>[^.,!?;]+)", re.IGNORECASE)),
+)
+_PROFILE_CONFIDENCE = 0.9
+
+
 @dataclass
 class Message:
     """A single message in the conversation."""
@@ -224,6 +238,10 @@ class MemoryManager:
         pool_min_size: int = 2,
         pool_max_size: int = 5,
         pool_factory: Optional[Callable] = None,
+        summarizer: Optional[Callable[[str], str]] = None,
+        profile_enabled: bool = False,
+        episodic_ttl_days: int = 90,
+        summary_ttl_days: int = 365,
     ):
         """Initialize the memory manager.
 
@@ -242,6 +260,16 @@ class MemoryManager:
                                   max_size, kwargs) -> pool``. Tests pass a fake
                                   with a ``BoundedSemaphore`` to exercise the
                                   concurrency contract without a real Postgres.
+            summarizer:           Fast-tier LLM callable ``str -> str`` for the
+                                  rolling summary (R2). Runs OFF the bus thread
+                                  on the writer background thread; keyword
+                                  fallback when ``None``.
+            profile_enabled:      Gate (default OFF, Postgres-only, R8) for the
+                                  ingest-time user-profile extractor.
+            episodic_ttl_days:    Age TTL for ``messages`` -- summarize-then-evict
+                                  past this age in ``apply_retention``.
+            summary_ttl_days:     Age TTL for ``summaries`` (long; profile never
+                                  TTL'd).
         """
         self.db_url = db_url or os.getenv('DATABASE_URL', 'postgresql:///voice_assistant')
         self.session_id = session_id or self._generate_session_id()
@@ -257,6 +285,20 @@ class MemoryManager:
         self._text_cleaner = text_cleaner
         self._writer: Optional[MemoryWriter] = None
         self._last_assistant_text = ""
+
+        # P2b producers (R2/R8). The summarizer + profile LLM work runs OFF the
+        # bus thread; these knobs are wired through create_memory_manager.
+        self._summarizer = summarizer
+        self.profile_enabled = bool(profile_enabled)
+        self.episodic_ttl_days = max(0, int(episodic_ttl_days))
+        self.summary_ttl_days = max(0, int(summary_ttl_days))
+        # Guards _check_and_summarize against scheduling a second summary job
+        # while one is already in flight on the background thread.
+        self._summary_in_flight = False
+        self._summary_lock = threading.Lock()
+        # Rolling summary head: the prior summary folded into the next one so
+        # the layer-2 record accumulates rather than fragmenting (R2).
+        self._summary_head = ""
 
         # In-memory recent messages (Layer 1)
         self.recent_messages: List[Message] = []
@@ -290,6 +332,26 @@ class MemoryManager:
         """Generate a unique session ID."""
         timestamp = datetime.now().isoformat()
         return hashlib.sha256(timestamp.encode()).hexdigest()[:16]
+
+    def _schedule_background(self, fn: Callable[[], None]) -> None:
+        """Run ``fn`` off the caller's thread (R2 -- never on the bus thread).
+
+        Prefers the ``MemoryWriter`` background worker so producer jobs share
+        the existing off-hot-path machinery; when no writer exists (no-DB /
+        smart-save off) it falls back to a one-off daemon thread. Either way the
+        summarizer/profile LLM call NEVER runs synchronously inside
+        ``add_message``/``queue_user_utterance`` on the single bus thread."""
+        if self._writer is not None and self._writer.schedule_job(fn):
+            return
+        worker = threading.Thread(target=self._run_background_job, args=(fn,), daemon=True)
+        worker.start()
+
+    @staticmethod
+    def _run_background_job(fn: Callable[[], None]) -> None:
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - background jobs must not crash the thread
+            print(f"⚠️  Memory background job failed: {exc}")
 
     def _init_database(self):
         """Open the connection pool + ensure schema exists (demo/dev path)."""
@@ -461,6 +523,11 @@ class MemoryManager:
     ) -> bool:
         if not self._db_available or "user" not in self.persist_roles:
             return False
+        # Profile producer (R8): default-off, Postgres-only. The regex match runs
+        # inline (cheap); the profile DB write is scheduled off the bus thread
+        # inside _extract_profile so it never inflates TTFT.
+        if self.profile_enabled:
+            self._extract_profile(cleaned)
         if self.smart_save and self._writer:
             return self._writer.enqueue(
                 raw_text,
@@ -614,36 +681,92 @@ class MemoryManager:
         return int(len(text.split()) * 1.3)
 
     def _check_and_summarize(self):
-        """Check if context is too long and create summary if needed."""
+        """TRIGGER a rolling summary when context grows too long (R2).
+
+        Runs on the single bus thread (via ``add_message`` ->
+        ``_handle_task_completed``), so it MUST return promptly: it only
+        snapshots the older half, trims ``recent_messages`` synchronously
+        (cheap, no I/O), and hands the LLM summarize + DB persist to the
+        background writer thread. The summarizer call itself NEVER runs here."""
         total_tokens = sum(self._estimate_tokens(m.content) for m in self.recent_messages)
-        if total_tokens > self.max_context_tokens and len(self.recent_messages) > 10:
-            self._create_summary()
-
-    def _create_summary(self):
-        """Create a summary of older messages.
-
-        NOTE: still the legacy keyword-frequency 'summary' from before the
-        audit -- a real LLM summary lands in Phase 4. Left here so the
-        layer-2 storage path exercises end-to-end (and future-replace is
-        a single function swap)."""
-        if len(self.recent_messages) < 10:
+        if total_tokens <= self.max_context_tokens or len(self.recent_messages) <= 10:
             return
-        messages_to_summarize = self.recent_messages[: len(self.recent_messages) // 2]
-        conversation_text = "\n".join(
-            f"{m.role}: {m.content}" for m in messages_to_summarize
-        )
+
+        # One summary in flight at a time -- avoid scheduling a second job while
+        # the first is still folding/persisting on the background thread.
+        with self._summary_lock:
+            if self._summary_in_flight:
+                return
+            self._summary_in_flight = True
+
+        split = len(self.recent_messages) // 2
+        messages_to_summarize = self.recent_messages[:split]
+        # Trim synchronously so the working window shrinks immediately; the LLM
+        # call + persist happen off-thread against this snapshot.
+        self.recent_messages = self.recent_messages[split:]
+        self._schedule_background(lambda: self._create_summary(messages_to_summarize))
+
+    def _create_summary(self, messages_to_summarize: List["Message"]):
+        """Roll the older messages into the accumulating summary (R2).
+
+        Runs on the ``MemoryWriter`` background thread (scheduled by
+        ``_check_and_summarize``), never on the bus thread. Uses the injected
+        fast-tier ``self._summarizer`` and FOLDS the prior summary head in so
+        the layer-2 record accumulates (rolling, not fragmented); falls back to
+        the legacy keyword/topic body when no summarizer is wired. Persists via
+        the unchanged ``_save_summary_to_db``."""
+        try:
+            if not messages_to_summarize:
+                return
+            conversation_text = "\n".join(
+                f"{m.role}: {m.content}" for m in messages_to_summarize
+            )
+            # Guard the rolling-head read/write with the lock (never held across
+            # the LLM call) so a concurrent apply_retention fold can't interleave.
+            with self._summary_lock:
+                prior = self._summary_head
+            summary_text = self._summarize_text(prior, conversation_text)
+            with self._summary_lock:
+                self._summary_head = summary_text
+            topics = self._extract_topics(conversation_text)
+            summary = ConversationSummary(
+                summary=summary_text,
+                topics=topics, user_preferences=[],
+                start_time=messages_to_summarize[0].timestamp,
+                end_time=messages_to_summarize[-1].timestamp,
+                message_count=len(messages_to_summarize),
+            )
+            if self._db_available:
+                self._save_summary_to_db(summary)
+            print(f"📝 Created summary of {summary.message_count} messages")
+        finally:
+            with self._summary_lock:
+                self._summary_in_flight = False
+
+    def _summarize_text(self, prior: str, conversation_text: str) -> str:
+        """Fold the prior summary head + new turns into one rolling summary.
+
+        No lock is held across this call -- it may invoke the fast LLM. When no
+        summarizer is injected, falls back to the legacy keyword/topic body so
+        the layer-2 path still exercises end-to-end."""
+        if self._summarizer is not None:
+            parts = []
+            if prior:
+                parts.append(f"Summary so far:\n{prior}")
+            parts.append(f"New conversation:\n{conversation_text}")
+            try:
+                rolled = self._summarizer("\n\n".join(parts))
+                if rolled and rolled.strip():
+                    return rolled.strip()
+            except Exception as exc:  # noqa: BLE001 - fall back, never crash the thread
+                print(f"⚠️  Summarizer failed, using keyword fallback: {exc}")
+        # Keyword fallback (R2): legacy topic-frequency body, folded onto prior.
         topics = self._extract_topics(conversation_text)
-        summary = ConversationSummary(
-            summary=f"Conversation with {len(messages_to_summarize)} messages about: {', '.join(topics[:5])}",
-            topics=topics, user_preferences=[],
-            start_time=messages_to_summarize[0].timestamp,
-            end_time=messages_to_summarize[-1].timestamp,
-            message_count=len(messages_to_summarize),
+        new_body = (
+            f"Conversation about: {', '.join(topics[:5])}" if topics
+            else "Conversation segment."
         )
-        if self._db_available:
-            self._save_summary_to_db(summary)
-        self.recent_messages = self.recent_messages[len(messages_to_summarize):]
-        print(f"📝 Created summary of {summary.message_count} messages")
+        return f"{prior}\n{new_body}".strip() if prior else new_body
 
     def _extract_topics(self, text: str) -> List[str]:
         """Simple keyword extraction (placeholder for the LLM summary path)."""
@@ -802,12 +925,15 @@ class MemoryManager:
                     elif item['type'] == 'summary':
                         context_parts.append(f"Summary: {item['content'][:150]}")
                 context_parts.append("")
-        profile = self.get_user_profile()
-        if profile:
-            context_parts.append("=== User Profile ===")
-            for key, value in profile.items():
-                context_parts.append(f"- {key}: {value}")
-            context_parts.append("")
+        # Profile block is gated behind profile_enabled (R8, default OFF): never
+        # injected when the producer is disabled.
+        if self.profile_enabled:
+            profile = self.get_user_profile()
+            if profile:
+                context_parts.append("=== User Profile ===")
+                for key, value in profile.items():
+                    context_parts.append(f"- {key}: {value}")
+                context_parts.append("")
         return "\n".join(context_parts)
 
     def get_chat_history(self) -> List[Dict[str, str]]:
@@ -834,6 +960,40 @@ class MemoryManager:
                     )
         except Exception as e:
             print(f"⚠️  Failed to update profile: {e}")
+
+    def _extract_profile(self, text: str) -> None:
+        """Ingest-time user-profile producer (R8): default-off, Postgres-only,
+        confidence-floored.
+
+        A deterministic regex pass over high-signal phrases ('my name is X',
+        'call me Z', 'I live in Y', 'I prefer ...') writes durable
+        ``user_profile`` rows at a confidence FLOOR of ``_PROFILE_CONFIDENCE``
+        (>= 0.9). The regex match is cheap and runs inline, but the matched rows
+        are a Postgres write and this path is reached from the answer/task thread
+        (the assistant capability ingests the query before ``model.stream``), so
+        the write is scheduled OFF-thread to avoid inflating TTFT."""
+        if not self.profile_enabled or not self._db_available or not text:
+            return
+        seen: set[str] = set()
+        matches: list[tuple[str, str]] = []
+        for key, pattern in _PROFILE_PATTERNS:
+            match = pattern.search(text)
+            if not match:
+                continue
+            value = match.group("v").strip(" -\"'")
+            if not value or key in seen:
+                continue
+            seen.add(key)
+            matches.append((key, value))
+        if matches:
+            def _write_profile() -> None:
+                for k, v in matches:
+                    self.update_user_profile(k, v, confidence=_PROFILE_CONFIDENCE)
+            self._schedule_background(_write_profile)
+        # An optional fuzzy LLM extraction would be scheduled here via
+        # ``self._schedule_background(...)`` so it runs off the bus thread; the
+        # deterministic pass above is the only confidence-floored writer this
+        # cycle.
 
     def get_user_profile(self) -> Dict[str, str]:
         """Get all user profile entries."""
@@ -874,6 +1034,87 @@ class MemoryManager:
             except Exception:
                 pass
         return stats
+
+    def apply_retention(self, now=None) -> int:
+        """Age-TTL retention pass (R6/§6); returns the number of rows removed.
+
+        - No-op (returns 0) without a live DB (guarded by ``_db_available``).
+        - Episodic ``messages`` older than ``episodic_ttl_days`` are
+          SUMMARIZED-THEN-EVICTED: their text is folded into the rolling summary
+          (persisted to ``summaries``) before the rows are deleted, so recall
+          keeps a condensed trace instead of losing the history outright.
+        - ``summaries`` older than ``summary_ttl_days`` are deleted.
+        - ``user_profile`` is durable and NEVER TTL'd.
+
+        ``now`` is injectable for tests; defaults to ``datetime.now()``. A TTL of
+        0 disables that tier's eviction (keep-forever)."""
+        if not self._db_available:
+            return 0
+        now = now or datetime.now()
+        removed = 0
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    if self.episodic_ttl_days > 0:
+                        # Summarize-then-evict: read the expiring episodic rows,
+                        # fold them into the rolling summary, then DELETE.
+                        cur.execute(
+                            """
+                            SELECT role, content, timestamp
+                            FROM messages
+                            WHERE COALESCE(saved_at, timestamp)
+                                  < %s - (%s || ' days')::interval
+                            ORDER BY COALESCE(saved_at, timestamp)
+                            """,
+                            (now, str(self.episodic_ttl_days)),
+                        )
+                        expiring = cur.fetchall()
+                        if expiring:
+                            conversation_text = "\n".join(
+                                f"{r['role']}: {r['content']}" for r in expiring
+                            )
+                            with self._summary_lock:
+                                prior_head = self._summary_head
+                            summary_text = self._summarize_text(
+                                prior_head, conversation_text
+                            )
+                            with self._summary_lock:
+                                self._summary_head = summary_text
+                            # NOTE: _save_summary_to_db acquires its own pool
+                            # connection while this outer one is held -> requires
+                            # pool_max_size >= 2 (default 5). A future polish could
+                            # de-nest by persisting outside this connection block.
+                            self._save_summary_to_db(
+                                ConversationSummary(
+                                    summary=summary_text,
+                                    topics=self._extract_topics(conversation_text),
+                                    user_preferences=[],
+                                    start_time=expiring[0]["timestamp"],
+                                    end_time=expiring[-1]["timestamp"],
+                                    message_count=len(expiring),
+                                )
+                            )
+                            cur.execute(
+                                """
+                                DELETE FROM messages
+                                WHERE COALESCE(saved_at, timestamp)
+                                      < %s - (%s || ' days')::interval
+                                """,
+                                (now, str(self.episodic_ttl_days)),
+                            )
+                            removed += cur.rowcount or 0
+                    if self.summary_ttl_days > 0:
+                        cur.execute(
+                            """
+                            DELETE FROM summaries
+                            WHERE created_at < %s - (%s || ' days')::interval
+                            """,
+                            (now, str(self.summary_ttl_days)),
+                        )
+                        removed += cur.rowcount or 0
+        except Exception as e:
+            print(f"⚠️  Retention pass failed: {e}")
+        return removed
 
     def clear_session(self):
         """Clear current session's messages (but keep summaries)."""

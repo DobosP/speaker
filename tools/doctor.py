@@ -54,6 +54,22 @@ def check_python(version=sys.version_info) -> Check:
     )
 
 
+def check_platform(platform: str = sys.platform, *, in_venv: Optional[bool] = None) -> Check:
+    """Report the OS + whether we're inside a venv (always OK; informational).
+
+    Surfaces the two cross-platform gotchas at a glance: which OS we detected
+    (Linux/Windows/macOS) and whether the interpreter is the project's venv --
+    a 'no' here is the usual cause of the conda/venv 'No module named pip' mess
+    the installer fixes, so we nudge toward it without failing readiness."""
+    name = {"win32": "Windows", "darwin": "macOS"}.get(platform, "Linux"
+            if platform.startswith("linux") else platform)
+    if in_venv is None:
+        in_venv = sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    detail = f"{name}; venv={'yes' if in_venv else 'no'}"
+    hint = "" if in_venv else "not in a venv -- run the installer (install.sh / install.ps1)"
+    return Check("platform", True, detail, hint)
+
+
 def check_imports(
     modules: Iterable[str] = REQUIRED_IMPORTS,
     import_fn: Callable[[str], object] = importlib.import_module,
@@ -168,7 +184,13 @@ def check_audio(sd=None) -> list[Check]:
     if sd is None:
         try:
             import sounddevice as sd  # noqa: PLC0415
-        except Exception as exc:  # noqa: BLE001
+        except OSError as exc:  # noqa: BLE001 - imported but native PortAudio missing
+            # Distinct from a missing pip package: the wheel is there but its
+            # native PortAudio lib isn't (common on a bare Linux box).
+            from tools.install import portaudio_hint
+
+            return [Check("audio", False, f"PortAudio not loadable: {exc}", portaudio_hint())]
+        except Exception as exc:  # noqa: BLE001 - package not installed
             return [Check("audio", False, str(exc), "python -m pip install sounddevice")]
     out: list[Check] = []
     for kind in ("input", "output"):
@@ -197,7 +219,7 @@ def run_all(
     exists: Callable[[str], bool] = os.path.exists,
     models_needed: Iterable[str] = DEFAULT_OLLAMA_MODELS,
 ) -> list[Check]:
-    checks = [check_python()]
+    checks = [check_python(), check_platform()]
     checks += check_imports(import_fn=import_fn)
     checks.append(check_sherpa_models(config, exists=exists))
     checks.append(check_speaker_id(config, exists=exists))

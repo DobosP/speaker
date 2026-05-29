@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from typing import Callable, Optional
@@ -26,6 +27,9 @@ from .routing import build_chain_selector, build_router
 from .runlog import setup_logging
 from .runtime import VoiceRuntime
 from .sysinfo import SystemMonitor
+from .websearch import WebSearchConfig
+
+log = logging.getLogger("speaker.app")
 
 
 def _load_config(path: str = "config.json", *, local: str = "config.local.json") -> dict:
@@ -119,30 +123,76 @@ def _build_llms(args, config: dict) -> tuple[LLMClient, LLMClient | None]:
     return _wrap_cloud(main, llm_cfg), fast
 
 
-def _build_cloud_client(preset_name: str, preset: dict) -> Optional[OpenAICompatLLM]:
+def _preset_host(preset: dict) -> Optional[str]:
+    """The hosting jurisdiction of a ``cloud_providers`` entry, if declared.
+
+    OpenRouter (and other US presets) carry a top-level ``"host": "US"``; the
+    pre-existing presets stash it inside ``_pricing_usd_per_mtok.host`` (e.g.
+    DeepSeek/Moonshot ``"host": "CN"``). Check both so the PRC opt-in gate
+    (Decision 2 / BR8) catches CN presets regardless of which form they use."""
+    host = preset.get("host")
+    if not host:
+        pricing = preset.get("_pricing_usd_per_mtok")
+        if isinstance(pricing, dict):
+            host = pricing.get("host")
+    return str(host).upper() if host else None
+
+
+def _build_cloud_client(
+    preset_name: str,
+    preset: dict,
+    *,
+    allow_prc: bool = False,
+    timeout_s: float = 30.0,
+    max_tokens: Optional[int] = None,
+) -> Optional[OpenAICompatLLM]:
     """Build one :class:`OpenAICompatLLM` from a ``cloud_providers`` entry.
 
     Returns ``None`` when the entry's API-key env var isn't set -- so missing
     credentials disable that provider individually (the rest of the chain
     keeps working) rather than crashing the whole runtime.
 
+    PRC opt-in (Locked Decision 2): a PRC-hosted preset (``host == "CN"``) is
+    dropped unless ``allow_prc`` is set, keeping US-hosted chains the default.
+    The drop is INFO-logged **distinctly** from the missing-API-key drop (BR8)
+    so a user who simply forgot ``allow_prc`` isn't silently degraded to local.
+
     The preset's ``profile`` key (e.g. ``"cerebras"``, ``"deepseek_reasoning"``,
     ``"moonshot"``) selects a :class:`core.llm.ProviderProfile` so per-vendor
     quirks (forbidden params, extra_body routing, reasoning-field streaming,
     max_tokens caps) apply without per-call adapter logic. Unknown profile
-    names fall back to the safe generic shape."""
+    names fall back to the safe generic shape.
+
+    ``timeout_s`` / ``max_tokens`` plumb the BR1 short cloud timeout and the
+    BR4 per-turn output ceiling into the client (both construction sites pass
+    them so a losing/over-long worker is reaped/capped)."""
     if not isinstance(preset, dict):
         return None
     model = preset.get("model")
     if not model:
         return None
+    if not allow_prc and _preset_host(preset) == "CN":
+        # Distinct from the missing-key drop below (BR8): the preset is fully
+        # configured but PRC-hosted, so it's intentionally held back.
+        log.info(
+            "cloud preset %r dropped: PRC-hosted (host=CN) and llm.cloud.allow_prc "
+            "is not set; set allow_prc=true to opt in",
+            preset_name,
+        )
+        return None
     api_key_env = preset.get("api_key_env")
     if api_key_env and not os.environ.get(api_key_env):
+        log.info(
+            "cloud preset %r dropped: api key env %s is not set",
+            preset_name, api_key_env,
+        )
         return None
     return OpenAICompatLLM(
         model=model,
         base_url=preset.get("base_url"),
         api_key_env=api_key_env,
+        timeout=timeout_s,
+        max_tokens=max_tokens,
         options=preset.get("options"),
         profile=preset.get("profile"),
     )
@@ -177,6 +227,16 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
     if strategy == "local_only" or not cloud_cfg.get("enabled", False):
         return local_main
 
+    # BR1: a short cloud socket timeout reaps a losing worker still blocked in
+    # its first-token read fast (the HTTP hard-close is deterministic only after
+    # tokens flow). BR4: an optional per-turn output ceiling. Both plumb into
+    # every OpenAICompatLLM built below. allow_prc (Decision 2/BR8) gates the
+    # PRC-hosted presets; default False keeps US-hosted chains the default.
+    allow_prc = bool(cloud_cfg.get("allow_prc", False))
+    timeout_s = float(cloud_cfg.get("timeout_s", 30.0) or 30.0)
+    max_tokens = cloud_cfg.get("max_tokens")
+    max_tokens = int(max_tokens) if max_tokens is not None else None
+
     hedge_kwargs = dict(
         strategy=strategy,
         hedge_delay_ms=int(cloud_cfg.get("hedge_delay_ms", 150)),
@@ -185,12 +245,16 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
 
     # Multi-provider path.
     if providers and chains_cfg:
-        # Resolve each provider lazily; drop ones with missing API keys.
+        # Resolve each provider lazily; drop ones with missing API keys or
+        # (without allow_prc) a PRC host.
         resolved: dict[str, OpenAICompatLLM] = {}
         for name, preset in providers.items():
             if isinstance(preset, dict) and name.startswith("_"):
                 continue  # skip _comment / metadata keys
-            client = _build_cloud_client(name, preset)
+            client = _build_cloud_client(
+                name, preset,
+                allow_prc=allow_prc, timeout_s=timeout_s, max_tokens=max_tokens,
+            )
             if client is not None:
                 resolved[name] = client
 
@@ -224,7 +288,8 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
             hedged_chains, selector=selector, default_chain=default_chain
         )
 
-    # Single-cloud back-compat path.
+    # Single-cloud back-compat path. Same BR1 timeout + BR4 max_tokens plumbing
+    # as the multi-provider site above (BR9: both sites must honour them).
     model = cloud_cfg.get("model")
     if not model:
         return local_main
@@ -232,6 +297,8 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         model=model,
         base_url=cloud_cfg.get("base_url"),
         api_key_env=cloud_cfg.get("api_key_env"),
+        timeout=timeout_s,
+        max_tokens=max_tokens,
         options=cloud_cfg.get("options"),
     )
     return HedgeLLM(local=local_main, cloud=cloud, **hedge_kwargs)
@@ -655,6 +722,10 @@ def main(argv: list[str] | None = None) -> int:
 
     memory = _build_memory(config, fast_llm)
     recall_config = RecallConfig.from_dict(config.get("memory"))
+    # Pluggable web.search (P3). The flat ``web_search`` block is disabled by
+    # default, so the runtime ships corpus-only until a user points base_url at
+    # their self-hosted SearXNG. Every query is gated (§9.7) before any egress.
+    web_search_config = WebSearchConfig.from_dict(config.get("web_search"))
 
     runtime = VoiceRuntime(
         engine,
@@ -662,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
         fast_llm=fast_llm,
         memory=memory,
         recall_config=recall_config,
+        web_search_config=web_search_config,
         start_mode=Mode(args.mode),
         agent_config=agent_config,
         router=router,

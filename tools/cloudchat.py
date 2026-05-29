@@ -4,8 +4,14 @@ Fire multiple prompts at a single OpenAI-compatible cloud endpoint
 (DeepSeek, OpenAI, Together, Groq, ...), stream their responses in
 parallel, and **hard-close** any stream the moment you don't need the
 rest -- which is the only way to stop the provider billing you for the
-tokens still in flight (the openai SDK's stream is exited as a context
-manager, which closes the underlying HTTP connection).
+tokens still in flight.
+
+The streaming, SSE parsing, per-provider quirk handling and the HTTP
+hard-close all live in ONE place -- :class:`core.llm.OpenAICompatLLM` --
+which this tool wraps via :class:`CompatCloudClient`. A cancel closes the
+LLM's token generator, raising ``GeneratorExit`` into it so its ``finally``
+calls ``sdk_stream.close()`` (severing the connection). There is no
+duplicate SSE loop here.
 
 Use it during research while building the assistant: ask N angles in
 parallel, kill the ones that aren't going anywhere, and keep a smart
@@ -16,8 +22,9 @@ Run:
     python -m tools.cloudchat
 
 It reads ``config.json``'s ``llm.cloud`` block for ``base_url`` /
-``model`` / ``api_key_env``; no separate config. The ``openai`` Python
-package is imported lazily so the rest of the repo stays unaffected;
+``model`` / ``api_key_env`` (plus optional ``timeout_s`` / ``max_tokens`` /
+``profile``); no separate config. The ``openai`` Python package is imported
+lazily inside ``OpenAICompatLLM`` so the rest of the repo stays unaffected;
 the tool prints an install hint if it's missing.
 
 This module is dev tooling -- it does NOT touch the voice runtime or
@@ -165,64 +172,60 @@ class CloudSession:
             state.finished = time.time()
 
 
-# --- openai SDK adapter (lazy) -----------------------------------------------
+# --- OpenAICompatLLM adapter (lazy) ------------------------------------------
 
-class _OpenAIStream:
-    """Wraps the openai SDK's chat completion stream as a :class:`CloudStream`.
-    The SDK object already supports ``.close()``; we call it on context exit
-    so cancel really does close the HTTP connection."""
+class _CompatStream:
+    """Wraps an :meth:`OpenAICompatLLM.stream` generator as a
+    :class:`CloudStream`. The generator owns the SSE parsing AND the HTTP
+    hard-close (its ``finally`` calls ``sdk_stream.close()`` -- see
+    ``core/llm.py``); exiting this context manager closes the generator,
+    which raises ``GeneratorExit`` into it so that ``finally`` runs and the
+    provider stops streaming + billing. The close lives ONLY in core/llm.py;
+    this tool just propagates the cancel."""
 
-    def __init__(self, sdk_stream: Any) -> None:
-        self._stream = sdk_stream
+    def __init__(self, tokens: Iterator[str]) -> None:
+        self._tokens = tokens
 
     def __enter__(self) -> Iterator[str]:
-        return self._iter()
+        return self._tokens
 
     def __exit__(self, *exc: Any) -> None:
-        try:
-            self._stream.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-    def _iter(self) -> Iterator[str]:
-        for chunk in self._stream:
-            choices = getattr(chunk, "choices", None)
-            if not choices:
-                continue
-            piece = getattr(choices[0].delta, "content", None)
-            if piece:
-                yield piece
+        # Closing the generator raises GeneratorExit inside core/llm.py's
+        # stream(), running its finally -> sdk_stream.close() (the hard-close).
+        # A generator that has not started / lacks .close() is a safe no-op.
+        closer = getattr(self._tokens, "close", None)
+        if closer is not None:
+            try:
+                closer()
+            except Exception:  # noqa: BLE001
+                pass
 
 
-class OpenAICloudClient:
-    """Real CloudClient using the openai SDK. Import is lazy so the rest
-    of the repo never pulls openai unless this tool actually runs."""
+class CompatCloudClient:
+    """Real CloudClient backed by :class:`core.llm.OpenAICompatLLM`, so the
+    SSE parsing, provider-quirk handling (forbidden/extra-body params,
+    reasoning-field suppression) and the HTTP hard-close all live in ONE
+    place (``core/llm.py``) instead of being duplicated here.
 
-    def __init__(
-        self,
-        *,
-        base_url: Optional[str],
-        api_key: Optional[str],
-        timeout: float = 60.0,
-    ) -> None:
-        try:
-            from openai import OpenAI  # lazy
-        except ImportError as exc:  # noqa: BLE001
-            raise SystemExit(
-                "tools.cloudchat needs the 'openai' Python package.\n"
-                "  pip install openai\n"
-                f"(import error: {exc})"
-            )
-        self._client = OpenAI(
-            base_url=base_url, api_key=api_key or "not-needed", timeout=timeout
-        )
+    The ``OpenAICompatLLM`` is built once from the ``llm.cloud`` config in
+    :func:`main` (lazy ``openai`` import happens inside it). Each
+    :meth:`stream_chat` reuses that instance: it splits the OpenAI-style
+    ``messages`` back into the ``prompt`` / ``system`` the LLM contract takes
+    (the per-call ``model`` is already baked into the LLM, so it's ignored)
+    and hands back a context-managed token stream."""
+
+    def __init__(self, llm: "Any") -> None:
+        self._llm = llm
 
     def stream_chat(self, model: str, messages: list[dict]) -> CloudStream:
-        return _OpenAIStream(
-            self._client.chat.completions.create(
-                model=model, messages=messages, stream=True
-            )
-        )
+        system: Optional[str] = None
+        prompt = ""
+        for msg in messages:
+            if msg.get("role") == "system":
+                system = msg.get("content")
+            elif msg.get("role") == "user":
+                prompt = msg.get("content", "")
+        return _CompatStream(self._llm.stream(prompt, system=system))
 
 
 # --- config + CLI ------------------------------------------------------------
@@ -412,12 +415,40 @@ def main(argv: Optional[list[str]] = None) -> int:
             '    "api_key_env": "DEEPSEEK_API_KEY"}}\n'
         )
         return 2
-    api_key = os.environ.get(cfg.get("api_key_env", "OPENAI_API_KEY"))
-    client = OpenAICloudClient(
+    # Build the shared OpenAICompatLLM from the same llm.cloud block core/app.py
+    # uses, so quirk-handling + the HTTP hard-close live only in core/llm.py.
+    # The key is read from the env (never config), and the openai import is lazy
+    # inside OpenAICompatLLM, so the rest of the repo stays unaffected.
+    from core.llm import OpenAICompatLLM  # lazy: keeps tool import cheap
+
+    # OpenAICompatLLM imports openai lazily (inside a worker thread on first
+    # stream), so probe it here for a friendly install hint up front instead
+    # of surfacing it later as a per-query error.
+    try:
+        import openai  # noqa: F401
+    except ImportError as exc:  # noqa: BLE001
+        sys.stderr.write(
+            "tools.cloudchat needs the 'openai' Python package.\n"
+            "  pip install openai\n"
+            f"(import error: {exc})\n"
+        )
+        return 2
+
+    max_tokens = cfg.get("max_tokens")
+    llm = OpenAICompatLLM(
+        model=model,
         base_url=cfg.get("base_url"),
-        api_key=api_key,
-        timeout=float(cfg.get("timeout", 60.0)),
+        api_key_env=cfg.get("api_key_env"),
+        # BR1: a short timeout reaps a pre-first-token loser fast; the tool's
+        # historical default was looser, so keep that unless overridden.
+        timeout=float(cfg.get("timeout_s", cfg.get("timeout", 60.0))),
+        # BR4: optional per-turn output ceiling, composed under the profile cap.
+        max_tokens=int(max_tokens) if max_tokens is not None else None,
+        options=cfg.get("options"),
+        # Per-provider quirks (forbidden/extra-body params, reasoning fields).
+        profile=cfg.get("profile"),
     )
+    client = CompatCloudClient(llm)
     session = CloudSession(client, model, system=cfg.get("system_prompt"))
     run_cli(session)
     return 0

@@ -128,6 +128,12 @@ def create_default_capabilities(memory: Memory | None = None) -> CapabilityRegis
 
     registry.register("assistant.answer", assistant)
     registry.register("search.local", search)
+    # ``web.search`` defaults to the local corpus so the core-free brain stays
+    # self-contained (RESEARCH/SEARCH plans + the ReAct catalog reference it).
+    # The integration layer (core/websearch.attach_web_search_capability, wired
+    # in core/runtime.py) OVERRIDES this with the §9.7-gated SearXNG-backed
+    # provider -- mirroring how attach_llm_capabilities overrides assistant.answer.
+    registry.register("web.search", search)
     registry.register("research.scope", research_scope)
     registry.register("research.local", research)
     registry.register("command.stage", command)

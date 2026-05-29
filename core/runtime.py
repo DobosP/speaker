@@ -22,6 +22,7 @@ from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, MetricsRecorder
 from .routing import Router
 from .watchdog import StuckWatchdog
+from .websearch import WebSearchConfig, attach_web_search_capability
 
 log = logging.getLogger("speaker.runtime")
 
@@ -48,6 +49,7 @@ class VoiceRuntime:
         fast_llm: Optional[LLMClient] = None,
         memory: Optional[Memory] = None,
         recall_config: Optional[RecallConfig] = None,
+        web_search_config: Optional[WebSearchConfig] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         router: Optional[Router] = None,
@@ -94,6 +96,12 @@ class VoiceRuntime:
         memory = self.memory
         llm = llm or EchoLLM()
         registry = create_default_capabilities(memory)
+        # Register the pluggable web.search provider on top of the corpus
+        # search.local (left intact as the offline fallback). The provider
+        # routes every query through the §9.7 egress gate before any network
+        # call; a missing/disabled config builds a corpus-only provider with no
+        # httpx dependency. See core/websearch.py.
+        attach_web_search_capability(registry, web_search_config or WebSearchConfig())
         planner_on = planner_config is not None and planner_config.enabled
         escalate = should_escalate if (planner_on and planner_config.escalate) else None
         attach_llm_capabilities(

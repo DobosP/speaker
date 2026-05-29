@@ -40,7 +40,7 @@ class TaskPlanner:
                 input_text=decision.text,
                 steps=(
                     PlanStep("scope", "research.scope"),
-                    PlanStep("search", "search.local"),
+                    PlanStep("search", "web.search"),
                     PlanStep("synthesize", "research.local", speak_result=True),
                 ),
                 priority=60,
@@ -52,7 +52,7 @@ class TaskPlanner:
                 intent=decision.kind,
                 mode=mode,
                 input_text=decision.text,
-                steps=(PlanStep("search", "search.local", speak_result=True),),
+                steps=(PlanStep("search", "web.search", speak_result=True),),
                 priority=70,
                 speak_final=decision.speak,
                 tags=tags,

@@ -15,14 +15,17 @@
       "threshold": 0.5
     },
     "cloud": {
-      "_comment": "Single-cloud back-compat: when cloud_providers/cloud_chains are absent, this block configures one cloud client. Set enabled=true and pick a base_url/model/api_key_env. For multi-provider sensitivity-routed chains, use llm.cloud_providers + llm.cloud_chains below and leave this block disabled.",
+      "_comment": "Single-cloud back-compat: when cloud_providers/cloud_chains are absent, this block configures one cloud client. Set enabled=true and pick a base_url/model/api_key_env. For multi-provider sensitivity-routed chains, use llm.cloud_providers + llm.cloud_chains below and leave this block disabled. allow_prc gates the PRC-hosted (host=CN) presets -- off by default so US-hosted chains are the default; set true to opt in (Decision 2). timeout_s is a short cloud socket timeout (BR1) that reaps a losing worker still blocked in its first-token read fast. max_tokens is an optional per-turn output ceiling (BR4; null = unbounded, composed under each profile's cap).",
       "enabled": false,
       "strategy": "hedge",
       "base_url": "https://api.groq.com/openai/v1",
       "model": "llama-3.3-70b-versatile",
       "api_key_env": "GROQ_API_KEY",
       "hedge_delay_ms": 150,
-      "ttft_deadline_ms": 1200
+      "ttft_deadline_ms": 1200,
+      "allow_prc": false,
+      "timeout_s": 5,
+      "max_tokens": null
     },
     "cloud_providers": {
       "_comment": "Named OpenAI-compatible cloud LLM presets verified 2026-05-28. Each entry: base_url + model + api_key_env + profile (selects per-provider quirk handler in core/llm.py::PROVIDER_PROFILES) + pricing metadata. Selected from a chain in llm.cloud_chains.",
@@ -67,13 +70,30 @@
         "api_key_env": "MOONSHOT_API_KEY",
         "profile": "moonshot",
         "_pricing_usd_per_mtok": {"in": 0.95, "out": 4.00, "ttft_ms": 300, "host": "CN", "_note": "platform.moonshot.ai (intl, not .cn); cache-hit input $0.16"}
+      },
+      "openrouter_gpt_oss_120b": {
+        "_comment": "OpenRouter (one key, many models; US-hosted aggregator). host=US so it survives the PRC opt-in gate by default (Decision 2). profile openai_compat is the safe generic shape.",
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "openai/gpt-oss-120b",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "profile": "openai_compat",
+        "host": "US",
+        "_pricing_usd_per_mtok": {"in": 0.15, "out": 0.60, "host": "US"}
+      },
+      "openrouter_llama_3_3_70b": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "model": "meta-llama/llama-3.3-70b-instruct",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "profile": "openai_compat",
+        "host": "US",
+        "_pricing_usd_per_mtok": {"in": 0.12, "out": 0.30, "host": "US"}
       }
     },
     "cloud_chains": {
       "_comment": "Ordered failover chains by data-sensitivity. HedgeLLM tries the first cloud; on error/timeout it advances to the next; finally falls back to the local main LLM. US-only chains keep personal data under US legal jurisdiction; the public chain uses cheaper CN-hosted providers when the content isn't about the user.",
       "private": ["cerebras_gpt_oss_120b", "groq_gpt_oss_120b"],
       "code":    ["cerebras_glm_4_7_coder", "groq_gpt_oss_120b"],
-      "public":  ["deepseek_v4_flash", "cerebras_gpt_oss_120b"]
+      "public":  ["openrouter_gpt_oss_120b", "deepseek_v4_flash", "cerebras_gpt_oss_120b"]
     },
     "cloud_routing": {
       "_comment": "Maps Sensitivity tag (from core/sensitivity.py) -> chain name above. default_chain is used when sensitivity is missing/unknown -- 'private' is the safe default.",
@@ -238,12 +258,20 @@
       "enabled": false,
       "max_steps": 4,
       "tools": [
+        "web.search",
         "search.local",
         "research.scope",
         "research.local"
       ],
       "escalate": true
     }
+  },
+  "web_search": {
+    "_comment": "FLAT web.search config (P3, Decision 3). Disabled by default: the runtime ships corpus-only (search.local). To enable real web research, set enabled=true and base_url to your self-hosted SearXNG (keyless). Every query is routed through the §9.7 egress gate (core.sensitivity.may_leave_device) BEFORE any network call -- PII/personal queries never egress (corpus only). timeout_s bounds the connect+read GET (BR7; the only wedge bound since a blocking GET can't poll cancel). max_results caps mapped hits.",
+    "enabled": false,
+    "base_url": "http://localhost:8888",
+    "timeout_s": 4,
+    "max_results": 5
   },
   "remote": {
     "room": "assistant",

@@ -15,6 +15,7 @@ from always_on_agent.capabilities import (
     create_default_capabilities,
 )
 from always_on_agent.react import (
+    DEFAULT_TOOLS,
     FINAL_SYSTEM,
     PlannerConfig,
     ReactPlanner,
@@ -23,6 +24,7 @@ from always_on_agent.react import (
 )
 
 from core.capabilities import attach_llm_capabilities
+from core.websearch import WebSearchConfig, attach_web_search_capability
 
 
 class ScriptLLM:
@@ -145,3 +147,40 @@ def test_simple_query_does_not_escalate():
     result = registry.invoke("assistant.answer", "hello there")
     assert result.data.get("agent") is None
     assert result.data.get("route") in ("fast", "main")
+
+
+# --- web.search is a default planner tool (P3 step 5) ----------------------
+
+
+def test_web_search_is_in_default_tools():
+    """web.search leads the default gather tools so the planner can reach real
+    web research (with corpus fallback) without per-config opt-in."""
+    assert "web.search" in DEFAULT_TOOLS
+    # search.local stays available as the offline fallback tool.
+    assert "search.local" in DEFAULT_TOOLS
+
+
+def test_web_search_appears_in_planner_catalog():
+    """The catalog the model sees (built from _TOOL_DESCRIPTIONS) lists
+    web.search with a description so the planner knows it can call it."""
+    registry = create_default_capabilities()
+    planner = ReactPlanner(registry=registry, llm=ScriptLLM([]))
+    catalog = planner._catalog()
+    assert "web.search" in catalog
+    # It's described, not the generic "a local capability" fallback.
+    assert "- web.search:" in catalog
+    assert "search the web" in catalog
+
+
+def test_planner_can_call_web_search_tool():
+    """End to end: the planner invokes the registered web.search capability and
+    folds its result into the final answer."""
+    registry = create_default_capabilities()
+    attach_web_search_capability(registry, WebSearchConfig(enabled=False))
+    llm = ScriptLLM(["TOOL web.search: pipecat", "FINAL: pipecat is a voice framework"])
+    planner = ReactPlanner(llm, registry, tools=("web.search",))
+
+    result = planner.run("what is pipecat", {})
+    assert result.ok
+    assert result.data["steps"] == ["web.search"]
+    assert result.text == "pipecat is a voice framework"

@@ -196,4 +196,59 @@ def classify_sensitivity(
     return PRIVATE
 
 
-__all__ = ["PRIVATE", "CODE", "PUBLIC", "Sensitivity", "classify_sensitivity"]
+def may_leave_device(
+    query: str,
+    *,
+    mode: Optional[Mode] = None,
+    intent_kind: Optional[IntentKind] = None,
+) -> bool:
+    """Return True when ``query`` is permitted to egress to the web-search
+    surface (the self-hosted SearXNG backend), per the §9.7 data boundary.
+
+    Decision BR3 (LOCKED, "block PII only"): a plain non-PII lookup such as
+    "weather in Berlin" may reach external (user-controlled) infra because a
+    SEARCH/RESEARCH intent signals the user wants an external lookup, but any
+    PII/personal/possessive query is hard-blocked to corpus-only. The PII
+    check is ``_is_personal`` -- the P0-hardened detector (security-5) that
+    also runs first inside ``classify_sensitivity`` -- so CODE-with-credential
+    queries ("debug this, the api key is sk-...") fail closed via the same
+    PII precedence (BR5): ``_is_personal`` fires before any CODE marker, so a
+    credential phrase never egresses even though CODE != PRIVATE.
+
+    Mode/intent that always implies personal data also blocks egress
+    (``Mode.MEETING`` and the ``COMMAND``/``DICTATION``/``MEETING_NOTE``
+    intents) -- these are exactly the signals that force PRIVATE in
+    ``classify_sensitivity`` above.
+
+    Cross-reference: this gate and ``core.routing.ChainSelector.choose_chain``
+    are the two consumers of this module's sensitivity signals -- the gate is
+    the binary §9.7 egress decision (leave the device or not), while
+    ChainSelector picks *which* cloud chain a permitted turn uses from the
+    ``classify_sensitivity`` tag. They share the same PII precedence (run
+    ``_is_personal`` first) so they MUST NOT drift: any new PII signal added
+    here belongs in ``_is_personal`` so both consumers see it. Callers pass a
+    raw ``query`` (NOT a trusted ``context['sensitivity']`` tag, which is only
+    set on the assistant path); enum coercion for ``mode``/``intent_kind`` is
+    the caller's responsibility and must fail safe to ``None`` (BR2).
+    """
+    if _is_personal(query or ""):
+        return False
+    if mode == Mode.MEETING:
+        return False
+    if intent_kind in {
+        IntentKind.COMMAND,
+        IntentKind.DICTATION,
+        IntentKind.MEETING_NOTE,
+    }:
+        return False
+    return True
+
+
+__all__ = [
+    "PRIVATE",
+    "CODE",
+    "PUBLIC",
+    "Sensitivity",
+    "classify_sensitivity",
+    "may_leave_device",
+]

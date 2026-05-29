@@ -18,6 +18,7 @@ from typing import Any, Iterator
 
 from tools.cloudchat import (
     CloudSession,
+    CompatCloudClient,
     QueryState,
     format_status,
     parse_command,
@@ -287,3 +288,122 @@ class _DripStream:
         if self._pause:
             time.sleep(self._pause)
         return self._lines.pop(0)
+
+
+# --- CompatCloudClient (wraps core.llm.OpenAICompatLLM) ----------------------
+
+class _FakeDelta:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeChoice:
+    def __init__(self, content):
+        self.delta = _FakeDelta(content)
+
+
+class _FakeChunk:
+    def __init__(self, content):
+        self.choices = [_FakeChoice(content)]
+
+
+class _RecordingOpenAI:
+    """Minimal fake of the openai SDK client injected into OpenAICompatLLM.
+
+    Records the kwargs passed to ``chat.completions.create`` so a test can
+    assert the provider profile stripped a forbidden param, and yields one
+    scripted content chunk so the stream produces a token. ``.close()`` on
+    the returned stream records that the HTTP hard-close fired."""
+
+    def __init__(self):
+        self.create_kwargs = None
+        self.closed = False
+
+        class _Completions:
+            def create(_self, **kwargs):
+                self.create_kwargs = kwargs
+                outer = self
+
+                class _Stream:
+                    def __iter__(_s):
+                        yield _FakeChunk("ok")
+
+                    def close(_s):
+                        outer.closed = True
+
+                return _Stream()
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
+def test_compat_client_strips_forbidden_profile_param():
+    """When cloudchat builds an OpenAICompatLLM with a provider profile that
+    forbids a param (moonshot forbids ``temperature``), a temperature passed
+    via ``options`` is stripped before the request reaches the SDK -- the
+    quirk handling lives in core/llm.py and CompatCloudClient inherits it
+    instead of re-implementing per-provider request shaping."""
+    from core.llm import OpenAICompatLLM
+
+    fake = _RecordingOpenAI()
+    llm = OpenAICompatLLM(
+        model="kimi-k2",
+        profile="moonshot",  # forbids temperature / top_p / n
+        options={"temperature": 0.9},
+        client=fake,
+    )
+    client = CompatCloudClient(llm)
+    session = CloudSession(client, "kimi-k2")
+    state = session.fire("hello")
+    assert _wait_for(lambda: state.status == "done")
+    assert state.text == "ok"
+    # The forbidden param never reached the SDK call.
+    assert fake.create_kwargs is not None
+    assert "temperature" not in fake.create_kwargs
+    assert fake.create_kwargs["stream"] is True
+    # Natural exhaustion still hard-closed the underlying stream.
+    assert fake.closed
+
+
+def test_compat_client_cancel_hard_closes_underlying_stream():
+    """Cancel through CompatCloudClient closes the OpenAICompatLLM token
+    generator, whose finally calls the SDK stream's .close() (the HTTP
+    hard-close) -- the close lives only in core/llm.py."""
+    from core.llm import OpenAICompatLLM
+
+    closed = threading.Event()
+    started = threading.Event()
+
+    class _SlowOpenAI:
+        def __init__(self):
+            class _Completions:
+                def create(_self, **kwargs):
+                    class _Stream:
+                        def __iter__(_s):
+                            started.set()
+                            # Stream many tokens slowly so cancel lands mid-stream.
+                            for _ in range(500):
+                                time.sleep(0.005)
+                                yield _FakeChunk("x")
+
+                        def close(_s):
+                            closed.set()
+
+                    return _Stream()
+
+            class _Chat:
+                completions = _Completions()
+
+            self.chat = _Chat()
+
+    llm = OpenAICompatLLM(model="m", client=_SlowOpenAI())
+    session = CloudSession(CompatCloudClient(llm), "m")
+    state = session.fire("slow")
+    assert started.wait(timeout=1.0)
+    assert _wait_for(lambda: state.tokens >= 2, timeout=1.0)
+    assert session.cancel(state.qid)
+    assert _wait_for(lambda: state.status == "cancelled")
+    # The generator's finally fired the SDK stream's .close() (hard-close).
+    assert closed.wait(timeout=1.0)

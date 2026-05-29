@@ -110,6 +110,13 @@ class SherpaConfig:
     tts_speed: float = 1.0
     # Barge-in: seconds of detected voice during playback before we interrupt.
     barge_in_min_speech_sec: float = 0.2
+    # Master switch for talk-over barge-in during playback. On OPEN SPEAKERS with
+    # no AEC, the assistant's own (loud) TTS leaks into the mic and a level-only
+    # gate self-interrupts longer responses (observed: a story reply cut itself
+    # off after 0.13s). Until AEC lands, set this False to let responses finish;
+    # ASR is still never fed while speaking, so it won't transcribe itself either.
+    # Re-enable once AEC (or a headset / reliable speaker-ID) removes the echo.
+    barge_in_enabled: bool = True
     # Self-interruption suppression (realtime-concurrency-5). Without AEC the
     # assistant's own TTS bleeds into the mic and can look like a barge-in.
     # When the speaker gate is *unenrolled* (fail-open), require detected speech
@@ -618,25 +625,29 @@ class SherpaOnnxEngine(AudioEngine):
                 self._poll_keywords(samples)
 
                 # Barge-in watch while the assistant is speaking.
-                if self._speaking.is_set() and self._vad is not None:
-                    self._vad.accept_waveform(samples)
-                    # Debounce: ignore triggers for a short window after a
-                    # barge-in / reported storm so a flapping VAD gate (TTS echo
-                    # with no AEC) collapses into a single interrupt.
-                    if now < self._barge_in_suppressed_until:
-                        voiced_run = 0.0
-                        continue
-                    if self._vad.is_speech_detected() and self._looks_like_user(samples):
-                        voiced_run += block_sec
-                        if voiced_run >= self.config.barge_in_min_speech_sec:
+                # While the assistant is speaking we NEVER feed ASR (so it can't
+                # transcribe its own TTS). Barge-in watch is gated by
+                # ``barge_in_enabled`` -- off until AEC, so the loud TTS leaking
+                # into an open-speaker mic can't self-interrupt.
+                if self._speaking.is_set():
+                    if self.config.barge_in_enabled and self._vad is not None:
+                        self._vad.accept_waveform(samples)
+                        # Debounce: ignore triggers for a short window after a
+                        # barge-in / reported storm so a flapping VAD gate (TTS
+                        # echo with no AEC) collapses into a single interrupt.
+                        if now < self._barge_in_suppressed_until:
                             voiced_run = 0.0
-                            self._barge_in_suppressed_until = (
-                                now + max(0.0, self.config.barge_in_suppress_sec)
-                            )
-                            log.info("barge-in detected")
-                            self._cb.on_barge_in()
-                    else:
-                        voiced_run = 0.0
+                        elif self._vad.is_speech_detected() and self._looks_like_user(samples):
+                            voiced_run += block_sec
+                            if voiced_run >= self.config.barge_in_min_speech_sec:
+                                voiced_run = 0.0
+                                self._barge_in_suppressed_until = (
+                                    now + max(0.0, self.config.barge_in_suppress_sec)
+                                )
+                                log.info("barge-in detected")
+                                self._cb.on_barge_in()
+                        else:
+                            voiced_run = 0.0
                     continue
 
                 try:

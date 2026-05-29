@@ -14,8 +14,10 @@
       "backend": "heuristic",
       "threshold": 0.5
     },
+    "live_routing": false,
+    "_live_routing_comment": "smart-routing-2 + load follow-up + dynamic hedge (Task 4). OFF by default so behaviour is byte-identical. When true, the runtime feeds the router an ADDITIVE-ONLY, clamped live nudge toward main/cloud from (a) the recorder's rolling local TTFT EWMA and (b) a cheap core.sysinfo SystemMonitor load snapshot (reads the last background sample, no hot-path sampling), and -- for a cloud-racing HedgeLLM -- shortens the per-call hedge_delay_ms (clamped to a floor) so the cloud race starts sooner when local is slow/loaded. A missing/garbage signal is a no-op, so the local tier is never starved. Also honoured via SPEAKER_LIVE_ROUTING=1.",
     "cloud": {
-      "_comment": "Single-cloud back-compat: when cloud_providers/cloud_chains are absent, this block configures one cloud client. Set enabled=true and pick a base_url/model/api_key_env. For multi-provider sensitivity-routed chains, use llm.cloud_providers + llm.cloud_chains below and leave this block disabled. allow_prc gates the PRC-hosted (host=CN) presets -- off by default so US-hosted chains are the default; set true to opt in (Decision 2). timeout_s is a short cloud socket timeout (BR1) that reaps a losing worker still blocked in its first-token read fast. max_tokens is an optional per-turn output ceiling (BR4; null = unbounded, composed under each profile's cap).",
+      "_comment": "Single-cloud back-compat: when cloud_providers/cloud_chains are absent, this block configures one cloud client. Set enabled=true and pick a base_url/model/api_key_env. For multi-provider sensitivity-routed chains, use llm.cloud_providers + llm.cloud_chains below and leave this block disabled. allow_prc gates the PRC-hosted (host=CN) presets -- off by default so US-hosted chains are the default; set true to opt in (Decision 2). timeout_s is a short cloud socket timeout (BR1) that reaps a losing worker still blocked in its first-token read fast. max_tokens is an optional per-turn output ceiling (BR4; null = unbounded, composed under each profile's cap). cost_order (smart-routing-5) is OFF by default; set true to stably reorder each cloud_chain's presets by ttft/$-per-Mtok metadata (fail-safe: same multiset, original order on any malformed input) so cheaper/faster providers race first.",
       "enabled": false,
       "strategy": "hedge",
       "base_url": "https://api.groq.com/openai/v1",
@@ -25,7 +27,8 @@
       "ttft_deadline_ms": 1200,
       "allow_prc": false,
       "timeout_s": 5,
-      "max_tokens": null
+      "max_tokens": null,
+      "cost_order": false
     },
     "cloud_providers": {
       "_comment": "Named OpenAI-compatible cloud LLM presets verified 2026-05-28. Each entry: base_url + model + api_key_env + profile (selects per-provider quirk handler in core/llm.py::PROVIDER_PROFILES) + pricing metadata. Selected from a chain in llm.cloud_chains.",

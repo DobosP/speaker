@@ -109,7 +109,17 @@ class MetricsRecorder:
         # an unknown signal as "no nudge" so a cold start can never bias it.
         self._ttft_ewma_ms: Optional[float] = None
 
-    def mark(self, stage: str) -> None:
+    def mark(self, stage: str, *, fold_local_ttft: bool = True) -> None:
+        """Stamp ``stage`` on the open turn.
+
+        ``fold_local_ttft`` (default True) controls only the LOCAL TTFT EWMA
+        fold on the ``llm_first_token`` stamp -- the stamp itself (and every
+        recorded latency) is always set regardless. Pass ``False`` so a turn
+        whose first token came from a CLOUD hedge winner is still *recorded*
+        but is NOT folded into the LOCAL headroom EWMA, which would otherwise
+        mislabel a fast cloud answer as a fast local tier (P4 low). The route
+        is known only at the capability call site, so the fold gate is decided
+        there (see :mod:`core.capabilities`) and threaded through here."""
         now = self._clock()
         with self._lock:
             if stage in _TURN_START:
@@ -127,11 +137,14 @@ class MetricsRecorder:
                 if self._current is not None:
                     if stage == LLM_FIRST_TOKEN and stage not in self._current.stamps:
                         # First token of this turn just landed: fold the local
-                        # ASR_FINAL -> first-token delta into the rolling EWMA.
-                        # Cheap (one branch + one float op), no behaviour change
-                        # to recording -- the stamp itself is still set below.
+                        # ASR_FINAL -> first-token delta into the rolling EWMA --
+                        # but ONLY when the answering tier was local
+                        # (``fold_local_ttft``). A cloud-hedge win is recorded
+                        # (stamp set below) yet skipped here so the LOCAL
+                        # headroom signal isn't mislabeled (P4 low). Cheap (one
+                        # branch + one float op), no change to recording.
                         anchor = self._current.stamps.get(ASR_FINAL)
-                        if anchor is not None:
+                        if fold_local_ttft and anchor is not None:
                             self._observe_ttft_ms((now - anchor) * 1000.0)
                     self._current.stamps.setdefault(stage, now)
 
@@ -182,14 +195,24 @@ class MetricsRecorder:
             self._ttft_ewma_ms = None
 
 
-def mark_first_token(tokens: Iterator[str], recorder: Optional[MetricsRecorder]) -> Iterator[str]:
-    """Wrap an LLM token stream to stamp ``llm_first_token`` on the first token."""
+def mark_first_token(
+    tokens: Iterator[str],
+    recorder: Optional[MetricsRecorder],
+    *,
+    fold_local_ttft: bool = True,
+) -> Iterator[str]:
+    """Wrap an LLM token stream to stamp ``llm_first_token`` on the first token.
+
+    ``fold_local_ttft`` (default True) is forwarded to :meth:`MetricsRecorder.mark`
+    so a caller that answered from a non-local source (a cloud hedge winner) can
+    still stamp the turn while keeping the sample out of the LOCAL TTFT EWMA
+    (P4 low). The default preserves the historical fold-always behaviour."""
     if recorder is None:
         yield from tokens
         return
     first = True
     for token in tokens:
         if first:
-            recorder.mark(LLM_FIRST_TOKEN)
+            recorder.mark(LLM_FIRST_TOKEN, fold_local_ttft=fold_local_ttft)
             first = False
         yield token

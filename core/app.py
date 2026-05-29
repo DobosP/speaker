@@ -456,6 +456,13 @@ def main(argv: list[str] | None = None) -> int:
 
     memory = _build_memory(config, fast_llm)
     recall_config = RecallConfig.from_dict(config.get("memory"))
+    # Headroom-aware live routing (smart-routing-2 + load follow-up). Flat flag
+    # (P4 deep-merge note) so a device-profile override survives the merge;
+    # default OFF so default behaviour is byte-identical. When on, the runtime
+    # feeds the router the rolling local TTFT plus a cheap SystemMonitor load
+    # snapshot (reads the last background sample -- no hot-path sampling) as an
+    # additive-only, clamped nudge toward main/cloud (core/routing.py).
+    live_routing = bool((config.get("llm", {}) or {}).get("live_routing", False))
     # Pluggable web.search (P3). The flat ``web_search`` block is disabled by
     # default, so the runtime ships corpus-only until a user points base_url at
     # their self-hosted SearXNG. Every query is gated (§9.7) before any egress.
@@ -479,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
         addressing=addressing,
         unsure_acts=unsure_acts,
         cleaner=cleaner,
+        live_routing=live_routing,
+        load_snapshot=monitor.load_fraction if live_routing else None,
     )
 
     try:

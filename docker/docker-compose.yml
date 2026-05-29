@@ -75,6 +75,15 @@ services:
       GROQ_API_KEY:     ${GROQ_API_KEY:-}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       MOONSHOT_API_KEY: ${MOONSHOT_API_KEY:-}
+      # OpenRouter (P3): one US-hosted aggregator key for the default
+      # public chain (gpt-oss-120b / llama-3.3-70b). Same default-empty
+      # shape -- unset just disables the OpenRouter presets.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # PRC opt-in (P3, Locked Decision 2). Default OFF: US-hosted chains
+      # (OpenRouter/Cerebras/Groq) are the default and the PRC-hosted
+      # DeepSeek/Moonshot presets (host=CN) are dropped. Set ALLOW_PRC=1 in
+      # .env to opt in; the entrypoint maps it to llm.cloud.allow_prc.
+      ALLOW_PRC: ${ALLOW_PRC:-}
       # Point the entrypoint at the docker-only overlay that turns
       # cloud=true on the 4090 profile (committed config has it OFF
       # because local-only is the safe default).

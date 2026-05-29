@@ -632,6 +632,27 @@ class HedgeLLM:
     # enough not to truncate a healthy-but-slow generation; the per-token gap on
     # any working stream is far below this.
     DRAIN_IDLE_TIMEOUT = 30.0
+    # Wall-clock budget for the PRE-first-token winner-selection wait, derived
+    # from ``ttft_deadline`` (see ``_winner_select_budget``). Distinct from
+    # DRAIN_IDLE_TIMEOUT, which is the POST-first-token between-token bound: this
+    # one caps the time spent waiting for the *first* token from *any* source so
+    # a hung source that never yields, errors, or completes cannot wedge the turn
+    # before a single token is produced. The hedge code only ever waits on
+    # ``deadline`` (hedge_delay / ttft_deadline) when a worker is still live, and
+    # in the hedge strategy that becomes ``inf`` once everything is launched -- so
+    # without this budget a stalled local source (notably the in-process
+    # ``LlamaCppLLM`` tier, which runs a GGUF in-process and therefore has NO
+    # socket/read timeout to reap a hung native call) would block the
+    # ``q.get(timeout=None)`` forever. This wall-clock budget IS that bound for
+    # the llama.cpp tier. The multiplier is generous: each launched source may
+    # legitimately consume up to ~``ttft_deadline`` of pre-first-token wait
+    # (a fallback chain retires each slow cloud only at its deadline), so the
+    # budget scales with the chain length; it must never be unbounded.
+    WINNER_SELECT_TTFT_BUDGET_MULT = 4
+    # Floor for the winner-selection budget so a tiny configured ttft_deadline
+    # (or a zero hedge_delay) still leaves a sane wall-clock window before a hung
+    # source is reaped. Shares the same scale as DRAIN_IDLE_TIMEOUT.
+    WINNER_SELECT_BUDGET_FLOOR = 30.0
     # Total budget the generator's cleanup spends joining worker threads once
     # they have been told to stop. A live worker stops at its next token
     # boundary (sub-ms once signalled) or when its socket read timeout fires;
@@ -705,13 +726,37 @@ class HedgeLLM:
                 except Exception:
                     pass
 
+    def _winner_select_budget(self) -> float:
+        """Bounded wall-clock window for the pre-first-token wait.
+
+        Derived from ``ttft_deadline`` and scaled by the number of launched
+        sources (local + every cloud) so a healthy fallback chain that retires
+        each slow cloud at its own ``ttft_deadline`` never trips it, while a
+        hung source still gets reaped. Always finite (never ``inf``)."""
+        sources = len(self._clouds) + 1  # + local
+        return max(
+            self.ttft_deadline * self.WINNER_SELECT_TTFT_BUDGET_MULT * sources,
+            self.WINNER_SELECT_BUDGET_FLOOR,
+        )
+
     def stream(
         self,
         prompt: str,
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        hedge_delay_ms: Optional[int] = None,
     ) -> Iterator[str]:
+        # Per-turn hedge-delay override (PINNED CONTRACT). ``None`` keeps the
+        # constructor's ``self.hedge_delay`` so default behaviour is byte-
+        # identical; an int overrides the local-vs-cloud start gap for THIS turn
+        # only (the hook for dynamic hedge timing from the routing layer). Only
+        # the ``hedge`` strategy uses a hedge delay; ``fallback`` is unaffected.
+        hedge_delay = (
+            self.hedge_delay
+            if hedge_delay_ms is None
+            else max(0.0, hedge_delay_ms / 1000.0)
+        )
         if not self._clouds:
             yield from self.local.stream(prompt, system=system, images=images)
             return
@@ -781,13 +826,23 @@ class HedgeLLM:
             else:  # hedge
                 # Local-first: kick local now; after hedge_delay also launch the
                 # first cloud. On cloud error/finish-without-tokens, advance the
-                # chain and keep racing against local.
+                # chain and keep racing against local. ``hedge_delay`` is the
+                # per-call override (or the constructor default when None).
                 launch("local")
-                deadline = time.monotonic() + self.hedge_delay
+                deadline = time.monotonic() + hedge_delay
                 local_pending = False
 
             winner: Optional[str] = None
             buffered: list[str] = []
+            # Bounded wall-clock budget for the whole pre-first-token wait. The
+            # per-iteration ``deadline`` becomes ``inf`` in hedge once every
+            # source is launched (and is None-timeout in the q.get below), so a
+            # source that hangs without ever yielding/erroring/completing -- e.g.
+            # an in-process LlamaCppLLM native call, which has no socket timeout
+            # to reap it -- would otherwise block here forever. This caps that
+            # wait; on expiry we stop the workers and end the stream cleanly with
+            # whatever (nothing) was produced, identical to an all-dead chain.
+            select_deadline = time.monotonic() + self._winner_select_budget()
 
             def kick_chain() -> bool:
                 """Bring up whatever is next in line. Returns True if launched."""
@@ -815,12 +870,30 @@ class HedgeLLM:
                     if not kick_chain():
                         break
                     continue
-                timeout = None if deadline == float("inf") else max(0.0, deadline - time.monotonic())
+                # Wall-clock budget guard: a hung source (no token, no error, no
+                # completion) must not wedge the turn pre-first-token. Reap and
+                # end cleanly once the budget is spent.
+                select_remaining = select_deadline - time.monotonic()
+                if select_remaining <= 0:
+                    break
+                # Clamp the per-iteration wait to the remaining budget so an
+                # ``inf`` deadline (hedge: everything launched) still wakes to
+                # re-check it instead of blocking forever.
+                step = (
+                    select_remaining
+                    if deadline == float("inf")
+                    else min(max(0.0, deadline - time.monotonic()), select_remaining)
+                )
                 try:
-                    tag, kind, val = q.get(timeout=timeout)
+                    tag, kind, val = q.get(timeout=step)
                 except queue.Empty:
-                    # Deadline hit. Hedge: kick the current cloud; fallback:
-                    # retire the current cloud and advance the chain.
+                    # Either the per-source deadline or the wall-clock budget
+                    # elapsed. If the budget is spent, the top-of-loop guard ends
+                    # the turn next iteration. Otherwise this is a per-source
+                    # deadline -- hedge: kick the current cloud; fallback: retire
+                    # the current cloud and advance the chain.
+                    if time.monotonic() >= select_deadline:
+                        continue
                     if self.strategy == "fallback" and current_cloud is not None:
                         stops[current_cloud].set()
                         dead.add(current_cloud)
@@ -920,8 +993,18 @@ class SensitivityRouterLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        hedge_delay_ms: Optional[int] = None,
     ) -> Iterator[str]:
         impl = self._pick()
+        # Transparent dispatch to the chosen per-chain backend. ``hedge_delay_ms``
+        # is the per-turn hedge-timing override (PINNED CONTRACT); forward it
+        # only when set AND only to a backend that accepts it (HedgeLLM), so the
+        # plain ``LLMClient`` protocol stream() of any other backing client is
+        # called unchanged -- keeping default (None) behaviour byte-identical.
+        if hedge_delay_ms is not None and isinstance(impl, HedgeLLM):
+            return impl.stream(
+                prompt, system=system, images=images, hedge_delay_ms=hedge_delay_ms
+            )
         return impl.stream(prompt, system=system, images=images)
 
 

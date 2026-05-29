@@ -53,6 +53,14 @@ x-speaker: &speaker
     # Empty -> use the config.json default ("30m"). "-1" keeps models resident.
     OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-}
     HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
+    # OpenRouter (P3): one US-hosted aggregator key for the cloud thinking tier.
+    # Same default-empty shape -- a missing key just disables the OpenRouter
+    # presets; the sensitivity-routed chain falls through to whatever else is set.
+    OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+    # PRC opt-in (P3, Locked Decision 2). Default OFF: US-hosted chains are the
+    # default and the PRC-hosted DeepSeek/Moonshot presets (host=CN) are dropped.
+    # Set ALLOW_PRC=1 to opt in; the entrypoint maps it to llm.cloud.allow_prc.
+    ALLOW_PRC: ${ALLOW_PRC:-}
 
 services:
   # Self-hosted WebRTC SFU. This default (non-dev) path requires real keys:

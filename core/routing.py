@@ -52,6 +52,14 @@ _LOAD_NUDGE_CEIL = 0.98         # at/above this: full nudge
 # main, and it can never subtract.
 _MAX_LIVE_NUDGE = 0.25
 
+# Floor (ms) for the dynamic per-call hedge delay. When live routing shortens
+# the local-vs-cloud start gap because local is slow/loaded, the delay is
+# clamped to this floor so it can never reach zero/negative (which would make a
+# *full* race -- starting the cloud with no local head start at all -- on every
+# loaded turn, the very starvation the live signal is meant to avoid). A small
+# positive floor still lets local win when it is briefly quick.
+HEDGE_DELAY_FLOOR_MS = 40
+
 
 def _as_float(value: object) -> Optional[float]:
     """Best-effort float, returning ``None`` for missing/garbage/non-finite.
@@ -97,6 +105,44 @@ def live_nudge(live: object) -> float:
     ttft_frac = _ramp(ttft, _TTFT_NUDGE_FLOOR_MS, _TTFT_NUDGE_CEIL_MS) if ttft is not None else 0.0
     load_frac = _ramp(load, _LOAD_NUDGE_FLOOR, _LOAD_NUDGE_CEIL) if load is not None else 0.0
     return _MAX_LIVE_NUDGE * max(ttft_frac, load_frac)
+
+
+def dynamic_hedge_delay_ms(live: object, base_delay_ms: object) -> Optional[int]:
+    """Shorten the hedge delay for a slow/loaded local tier (dynamic hedge).
+
+    The live signal (same ``ttft_ms`` / ``load`` shape as :func:`live_nudge`)
+    is reused: when local is slow or loaded, the cloud race should start sooner
+    so the user isn't stuck behind a stalling local tier. We scale the static
+    ``base_delay_ms`` down by the same 0..1 saturation fraction the nudge uses
+    (max of the two sub-signals) and clamp the result to
+    :data:`HEDGE_DELAY_FLOOR_MS` so it can never reach zero/negative.
+
+    Returns ``None`` (the per-call override is then NOT applied -> the
+    constructor's static delay stands) when there is no usable signal, the
+    fraction is zero (local is snappy / uninterpretable), or ``base_delay_ms``
+    is missing/non-positive. So a missing or good signal leaves hedge timing
+    byte-identical; only a genuinely slow/loaded signal pulls the cloud forward,
+    and never past the floor."""
+    base = _as_float(base_delay_ms)
+    if base is None or base <= 0.0:
+        return None
+    if not isinstance(live, Mapping):
+        return None
+    ttft = _as_float(live.get("ttft_ms"))
+    load = _as_float(live.get("load"))
+    ttft_frac = _ramp(ttft, _TTFT_NUDGE_FLOOR_MS, _TTFT_NUDGE_CEIL_MS) if ttft is not None else 0.0
+    load_frac = _ramp(load, _LOAD_NUDGE_FLOOR, _LOAD_NUDGE_CEIL) if load is not None else 0.0
+    frac = max(ttft_frac, load_frac)
+    if frac <= 0.0:
+        return None
+    shortened = base * (1.0 - frac)
+    clamped = max(float(HEDGE_DELAY_FLOOR_MS), shortened)
+    # Only an actual shortening is worth overriding; if the clamp floor is at or
+    # above the static delay there is nothing to gain (and we must never
+    # *lengthen* it), so leave the static delay in place.
+    if clamped >= base:
+        return None
+    return int(round(clamped))
 
 
 @runtime_checkable

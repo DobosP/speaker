@@ -22,7 +22,7 @@ from .llm import (
     OpenAICompatLLM,
     SensitivityRouterLLM,
 )
-from .routing import build_chain_selector
+from .routing import build_chain_selector, order_presets_by_cost
 
 # Keep the historical logger name ("speaker.app") so the cloud-drop INFO logs
 # land under the same logger the tests + run-bundle expect after this code
@@ -199,6 +199,12 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
     timeout_s = float(cloud_cfg.get("timeout_s", 30.0) or 30.0)
     max_tokens = cloud_cfg.get("max_tokens")
     max_tokens = int(max_tokens) if max_tokens is not None else None
+    # smart-routing-5: optional cost/ttft-aware chain ordering, default OFF so
+    # the configured failover order is unchanged. When on, each chain's preset
+    # list is stably reordered by the documentation-only ttft/$-per-Mtok
+    # metadata before the HedgeLLM is built (core.routing.order_presets_by_cost
+    # is fail-safe: same multiset, original order on any malformed input).
+    cost_order = bool(cloud_cfg.get("cost_order", False))
 
     hedge_kwargs = dict(
         strategy=strategy,
@@ -228,6 +234,12 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
                 continue
             if not isinstance(preset_names, (list, tuple)):
                 continue
+            # Optional cost/ttft ordering (smart-routing-5), flag-gated. Off by
+            # default -> the configured order is preserved byte-for-byte; on, a
+            # fail-safe stable reorder by ttft/$-per-Mtok floats the cheaper/
+            # faster presets to the front of the failover chain.
+            if cost_order:
+                preset_names = order_presets_by_cost(preset_names, providers)
             chain_clouds = [resolved[n] for n in preset_names if n in resolved]
             if chain_clouds:
                 any_clouds = True

@@ -53,9 +53,10 @@ Volume × margin sweep:
    `python -m core --enroll`. The gate then accepts only the enrolled user's voice;
    the assistant's own echo is rejected by *identity*, independent of volume, so no
    level margin tuning is needed. (The probe runs unenrolled, hence fail-open.)
-2. **Unenrolled fallback:** `barge_in_output_margin_db ≈ 6` is a good per-device
-   default on this hardware (0 self-interruptions, 30–100% volume). It is
-   **device-specific** — re-run the probe on other hardware. **Caveat:** a genuine
+2. **Unenrolled fallback:** `barge_in_output_margin_db = 6` is now the **shipped
+   default** (`config.json` + `SherpaConfig`), based on this calibration (0
+   self-interruptions, 30–100% volume). It is **device-specific** — re-run the
+   probe on other hardware (set `0` to restore the legacy fail-open). **Caveat:** a genuine
    barge-in must still clear the margin; verify a real "stop" still interrupts at
    the chosen margin before relying on it (speak over the assistant during a
    `--engine sherpa` run). For very loud speakers, prefer enrollment or ~8 dB.

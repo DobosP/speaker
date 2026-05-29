@@ -308,6 +308,7 @@
     "speaker_threshold": 0.5,
     "speaker_gate_input": true,
     "barge_in_min_speech_sec": 0.2,
+    "barge_in_output_margin_db": 6.0,
     "kws_tokens": "",
     "kws_encoder": "",
     "kws_decoder": "",

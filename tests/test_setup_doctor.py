@@ -4,6 +4,10 @@ All pure / injected fakes -- no network, no audio, no Ollama, no models.
 """
 from __future__ import annotations
 
+import os
+
+import pytest
+
 from tools.doctor import (
     check_audio,
     check_imports,
@@ -14,7 +18,7 @@ from tools.doctor import (
     run_all,
     summarize,
 )
-from tools.setup_models import dest_for, wire_sherpa_paths
+from tools.setup_models import dest_for, extract_member, wire_sherpa_paths
 
 
 def test_asr_and_tts_tokens_download_to_separate_dirs():
@@ -60,6 +64,45 @@ def test_wire_sherpa_paths_creates_sherpa_section_when_absent():
     cfg: dict = {}
     wire_sherpa_paths(cfg, {"asr_tokens": "t.txt"}, abspath=lambda p: p)
     assert cfg["sherpa"]["asr_tokens"] == "t.txt"
+
+
+# --- setup_models.extract_member (punctuation archive unpack) ----------------
+
+
+def test_extract_member_flattens_nested_model(tmp_path):
+    import io
+    import tarfile
+
+    # A release-style archive: model.onnx nested inside a directory.
+    archive = tmp_path / "punct.tar.bz2"
+    payload = b"ONNXMODELBYTES"
+    with tarfile.open(archive, "w:bz2") as tar:
+        info = tarfile.TarInfo("sherpa-onnx-punct-xyz/model.onnx")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+        readme = tarfile.TarInfo("sherpa-onnx-punct-xyz/README.md")
+        readme.size = 3
+        tar.addfile(readme, io.BytesIO(b"hi\n"))
+
+    out = extract_member(str(archive), "model.onnx", str(tmp_path / "out"))
+    assert out.endswith("model.onnx")
+    assert os.path.basename(out) == "model.onnx"  # flattened, no nested dir
+    with open(out, "rb") as fh:
+        assert fh.read() == payload
+
+
+def test_extract_member_missing_raises(tmp_path):
+    import io
+    import tarfile
+
+    archive = tmp_path / "empty.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tar:
+        info = tarfile.TarInfo("notes.txt")
+        info.size = 3
+        tar.addfile(info, io.BytesIO(b"hi\n"))
+
+    with pytest.raises(FileNotFoundError):
+        extract_member(str(archive), "model.onnx", str(tmp_path / "out"))
 
 
 # --- doctor checks -----------------------------------------------------------

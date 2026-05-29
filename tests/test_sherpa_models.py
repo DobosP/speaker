@@ -8,7 +8,13 @@ import sys
 
 import pytest
 
-from core.engines._sherpa_models import build_recognizer, build_tts, build_vad
+from core.engines._sherpa_models import (
+    _supported,
+    build_punctuation,
+    build_recognizer,
+    build_tts,
+    build_vad,
+)
 from core.engines.sherpa import SherpaConfig
 
 
@@ -66,6 +72,23 @@ class _FakeOfflineTts:
         self.config = config
 
 
+class _FakePunctModelConfig:
+    def __init__(self, ct_transformer=None, num_threads=None, provider=None):
+        self.ct_transformer = ct_transformer
+        self.num_threads = num_threads
+        self.provider = provider
+
+
+class _FakePunctConfig:
+    def __init__(self, model=None):
+        self.model = model
+
+
+class _FakePunctuation:
+    def __init__(self, config):
+        self.config = config
+
+
 @pytest.fixture
 def fake_sherpa(monkeypatch):
     import types
@@ -76,6 +99,9 @@ def fake_sherpa(monkeypatch):
     mod.VoiceActivityDetector = _FakeVad
     mod.OfflineTtsConfig = _FakeOfflineTtsConfig
     mod.OfflineTts = _FakeOfflineTts
+    mod.OfflinePunctuationConfig = _FakePunctConfig
+    mod.OfflinePunctuationModelConfig = _FakePunctModelConfig
+    mod.OfflinePunctuation = _FakePunctuation
     monkeypatch.setitem(sys.modules, "sherpa_onnx", mod)
     return mod
 
@@ -105,6 +131,49 @@ def test_build_recognizer_passes_config(fake_sherpa):
     assert rec.kwargs["enable_endpoint_detection"] is True
 
 
+def test_build_recognizer_wires_decoding_and_endpoint_rules(fake_sherpa):
+    c = SherpaConfig(
+        asr_encoder="enc",
+        asr_tokens="tok",
+        asr_decoding_method="modified_beam_search",
+        asr_max_active_paths=6,
+        asr_hotwords="Flurry\nParis",
+        asr_hotwords_score=2.0,
+        asr_rule2_min_trailing_silence=0.7,
+    )
+    rec = build_recognizer(c)
+    assert rec.kwargs["decoding_method"] == "modified_beam_search"
+    assert rec.kwargs["max_active_paths"] == 6
+    assert rec.kwargs["rule2_min_trailing_silence"] == 0.7
+    # Hotword score is passed only with beam search.
+    assert rec.kwargs["hotwords_score"] == 2.0
+
+
+def test_build_recognizer_no_hotword_score_under_greedy(fake_sherpa):
+    c = SherpaConfig(
+        asr_encoder="enc", asr_tokens="tok",
+        asr_decoding_method="greedy_search", asr_hotwords="Flurry",
+    )
+    rec = build_recognizer(c)
+    assert "hotwords_score" not in rec.kwargs
+
+
+def test_supported_drops_unknown_kwargs_for_narrow_signature():
+    def narrow(encoder, decoder):  # no **kwargs
+        return None
+
+    kept = _supported(narrow, {"encoder": 1, "decoder": 2, "rule2_min_trailing_silence": 0.7})
+    assert kept == {"encoder": 1, "decoder": 2}
+
+
+def test_supported_keeps_all_for_varkw_signature():
+    def wide(**kwargs):
+        return None
+
+    payload = {"a": 1, "b": 2}
+    assert _supported(wide, payload) == payload
+
+
 def test_build_vad_passes_config(fake_sherpa):
     c = SherpaConfig(vad_model="vad.onnx", sample_rate=16000, provider="cpu", asr_num_threads=2)
     vad = build_vad(c)
@@ -113,6 +182,18 @@ def test_build_vad_passes_config(fake_sherpa):
     assert vad.config.sample_rate == 16000
     assert vad.config.num_threads == 2
     assert vad.buffer == 30
+
+
+def test_build_punctuation_none_when_unconfigured(fake_sherpa):
+    assert build_punctuation(SherpaConfig()) is None
+
+
+def test_build_punctuation_passes_config(fake_sherpa):
+    c = SherpaConfig(punct_model="punct.onnx", provider="cpu", asr_num_threads=2)
+    punct = build_punctuation(c)
+    assert isinstance(punct, _FakePunctuation)
+    assert punct.config.model.ct_transformer == "punct.onnx"
+    assert punct.config.model.num_threads == 2
 
 
 def test_build_tts_passes_config(fake_sherpa):

@@ -12,6 +12,7 @@ from tools.doctor import (
     check_audio,
     check_imports,
     check_ollama,
+    check_platform,
     check_python,
     check_sherpa_models,
     check_speaker_id,
@@ -111,6 +112,17 @@ def test_extract_member_missing_raises(tmp_path):
 def test_check_python_version_gate():
     assert check_python((3, 11, 0)).ok
     assert not check_python((3, 8, 0)).ok
+
+
+def test_check_platform_names_os_and_venv_state():
+    # Always OK (informational); names the OS and venv state.
+    win = check_platform("win32", in_venv=True)
+    assert win.ok and "Windows" in win.detail and "venv=yes" in win.detail
+    lin = check_platform("linux", in_venv=False)
+    assert lin.ok and "Linux" in lin.detail and "venv=no" in lin.detail
+    # Not-in-venv nudges toward the installer but never fails readiness.
+    assert "install" in lin.hint
+    assert check_platform("darwin", in_venv=True).detail.startswith("macOS")
 
 
 def test_check_imports_flags_missing_with_pip_hint():

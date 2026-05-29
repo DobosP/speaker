@@ -22,6 +22,30 @@ Usage:
 import argparse
 import sys
 import os
+from urllib.parse import urlsplit, urlunsplit
+
+
+def _redact_db_url(db_url: str) -> str:
+    """Return ``db_url`` with any password component masked.
+
+    Never print a raw ``DATABASE_URL`` to stdout — it commonly carries a
+    password. This replaces the password with ``***`` while keeping the rest
+    of the URL legible (user, host, path) for setup hints.
+    """
+    try:
+        parts = urlsplit(db_url)
+    except Exception:
+        # If we can't parse it, fall back to host-only (drop any userinfo).
+        return db_url.split("@")[-1] if "@" in db_url else db_url
+    if parts.password is None:
+        return db_url
+    user = parts.username or ""
+    host = parts.hostname or ""
+    netloc = f"{user}:***@{host}" if user else f"***@{host}"
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
 
 try:
     import psycopg2
@@ -336,7 +360,11 @@ Examples:
     print("=" * 50)
     print("🗄️  Voice Assistant Database Setup")
     print("=" * 50)
-    
+    print("⚠️  DEPRECATED: schema setup should use the canonical migrations path:")
+    print("      python -m tools.migrate apply")
+    print("    This script is retained for now but will be reduced to a thin")
+    print("    role-create/verify wrapper that defers to tools.migrate.")
+
     if args.verify_only:
         verify_setup(args.db_url)
         return
@@ -350,7 +378,7 @@ Examples:
         args.db_url = f"postgresql://{args.user}:{args.password}@{args.host}/{args.db_name}"
     
     # Setup tables
-    print(f"\n📦 Setting up tables in: {args.db_url.split('@')[-1] if '@' in args.db_url else args.db_url}")
+    print(f"\n📦 Setting up tables in: {_redact_db_url(args.db_url)}")
     if not setup_tables(args.db_url):
         return
     
@@ -360,10 +388,14 @@ Examples:
     print("\n" + "=" * 50)
     print("✅ Database setup complete!")
     print("=" * 50)
+    # NOTE: never echo the full DATABASE_URL — it may contain a password.
+    # Show a password-redacted form for the hints below.
+    redacted_url = _redact_db_url(args.db_url)
     print(f"\nTo use this database, set the environment variable:")
-    print(f"  export DATABASE_URL=\"{args.db_url}\"")
+    print(f"  export DATABASE_URL=\"{redacted_url}\"")
+    print("  (password redacted above — substitute your real credentials)")
     print("\nOr pass it to the voice assistant:")
-    print(f"  python main.py --db-url \"{args.db_url}\"")
+    print(f"  python main.py --db-url \"{redacted_url}\"")
 
 
 if __name__ == "__main__":

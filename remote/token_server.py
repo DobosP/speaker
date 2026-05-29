@@ -3,7 +3,7 @@
 Run (after ``pip install -r requirements-remote.txt`` and setting LIVEKIT_* in
 the environment / .env):
 
-    uvicorn remote.token_server:app --host 0.0.0.0 --port 8080
+    uvicorn remote.token_server:app --host 127.0.0.1 --port 8080
     # or: python -m remote.token_server
 
 Endpoints:
@@ -13,8 +13,14 @@ Endpoints:
     GET  /                         -> serves web/ client when present
 
 LIVEKIT_URL / LIVEKIT_API_KEY / LIVEKIT_API_SECRET come from the environment.
-NOTE: as written this mints a token for any identity/room -- put real
-authentication in front of /token before exposing it.
+
+Auth (env-only, never hard-coded): /token and /chat require an
+``Authorization: Bearer <token>`` header matching ``SPEAKER_REMOTE_TOKEN``. If
+that env var is unset, the server refuses remote auth (every protected request
+401s) UNLESS ``SPEAKER_REMOTE_ALLOW_NOAUTH=1`` is set as an explicit dev opt-in
+(which logs a clear WARNING). The bind defaults to 127.0.0.1; set
+``SPEAKER_REMOTE_BIND_ALL=1`` to bind 0.0.0.0 (logs a prominent WARNING when
+bound publicly without a configured token).
 
 The live-voice path is handled by the LiveKit worker (``remote.worker``) driving
 :class:`core.engines.livekit.LiveKitEngine`; /chat here is a lightweight text
@@ -25,12 +31,22 @@ livekit installed; everything else lazy-imports those deps.
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
-from typing import Optional
+import time
+from collections import deque
+from typing import Deque, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 _ROOM_RE = re.compile(r"[^a-z0-9_-]+")
 _IDENT_BAD = re.compile(r"[^A-Za-z0-9_\-]+")
+
+# Safety limits for the public /chat surface.
+MAX_CHAT_BYTES = 16 * 1024  # 16 KiB request body cap
+RATE_LIMIT_MAX = 30  # requests ...
+RATE_LIMIT_WINDOW = 60.0  # ... per this many seconds, per client
 
 
 def sanitize_room_name(name: Optional[str], default: str = "assistant") -> str:
@@ -41,6 +57,81 @@ def sanitize_room_name(name: Optional[str], default: str = "assistant") -> str:
 def sanitize_identity(identity: Optional[str], default: str = "user") -> str:
     cleaned = _IDENT_BAD.sub("", re.sub(r"\s+", "-", (identity or "").strip()))
     return cleaned or default
+
+
+def _expected_token() -> Optional[str]:
+    # A whitespace-only value is treated as unset (not "configured but
+    # unmatchable"), so the posture logging stays accurate.
+    tok = (os.environ.get("SPEAKER_REMOTE_TOKEN") or "").strip()
+    return tok or None
+
+
+def _allow_noauth() -> bool:
+    return os.environ.get("SPEAKER_REMOTE_ALLOW_NOAUTH", "") == "1"
+
+
+def _bind_all() -> bool:
+    return os.environ.get("SPEAKER_REMOTE_BIND_ALL", "") == "1"
+
+
+def _extract_bearer(authorization: Optional[str]) -> Optional[str]:
+    """Pull the token out of an ``Authorization: Bearer <token>`` header value."""
+    if not authorization:
+        return None
+    parts = authorization.split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1].strip() or None
+
+
+def check_auth(authorization: Optional[str]) -> bool:
+    """Return True iff the request is allowed by the env-driven auth policy.
+
+    Pure and import-safe so it can be unit-tested without fastapi.
+
+    Policy:
+    - ``SPEAKER_REMOTE_TOKEN`` set  -> require a matching ``Bearer`` token.
+    - unset + ``SPEAKER_REMOTE_ALLOW_NOAUTH=1`` -> allow (dev opt-in; caller
+      logs a WARNING).
+    - unset + no opt-in            -> refuse (deny by default).
+    """
+    expected = _expected_token()
+    if expected is None:
+        return _allow_noauth()
+    presented = _extract_bearer(authorization)
+    if presented is None:
+        return False
+    # Constant-time compare to avoid leaking the token via timing.
+    import hmac
+
+    return hmac.compare_digest(presented, expected)
+
+
+class RateLimiter:
+    """Tiny in-process fixed-window-ish sliding rate limiter.
+
+    Not distributed and intentionally simple — a first line of defence on the
+    public /chat surface, not a substitute for an upstream gateway.
+    """
+
+    def __init__(self, max_requests: int = RATE_LIMIT_MAX, window: float = RATE_LIMIT_WINDOW):
+        self.max_requests = max_requests
+        self.window = window
+        self._hits: Dict[str, Deque[float]] = {}
+
+    def allow(self, key: str, now: Optional[float] = None) -> bool:
+        now = time.monotonic() if now is None else now
+        dq = self._hits.get(key)
+        if dq is None:
+            dq = deque()
+            self._hits[key] = dq
+        cutoff = now - self.window
+        while dq and dq[0] <= cutoff:
+            dq.popleft()
+        if len(dq) >= self.max_requests:
+            return False
+        dq.append(now)
+        return True
 
 
 def create_access_token(identity: str, room: str, ttl_seconds: int = 3600) -> str:
@@ -103,25 +194,71 @@ def _make_llm(config: dict):
     )
 
 
+def _log_auth_posture() -> None:
+    """Emit a WARNING describing the current (insecure) auth/bind posture."""
+    if _expected_token() is None:
+        if _allow_noauth():
+            logger.warning(
+                "SPEAKER_REMOTE_TOKEN is unset and SPEAKER_REMOTE_ALLOW_NOAUTH=1: "
+                "/token and /chat are UNAUTHENTICATED. Dev use only -- never expose this."
+            )
+        else:
+            logger.warning(
+                "SPEAKER_REMOTE_TOKEN is unset: /token and /chat will refuse all "
+                "requests (401). Set SPEAKER_REMOTE_TOKEN to enable remote auth."
+            )
+    if _bind_all() and _expected_token() is None:
+        logger.warning(
+            "SPEAKER_REMOTE_BIND_ALL=1 binds 0.0.0.0 with NO token configured -- "
+            "the token server is publicly reachable without authentication."
+        )
+
+
 def create_app(config: Optional[dict] = None):
     """Build the FastAPI app (lazy import so this module loads without fastapi)."""
-    from fastapi import Body, FastAPI, HTTPException
+    from fastapi import Depends, FastAPI, Header, HTTPException, Request
 
     config = config if config is not None else _load_config()
     app = FastAPI(title="Speaker remote")
     _holder = {"llm": None}
+    rate_limiter = RateLimiter()
+
+    _log_auth_posture()
 
     def llm():
         if _holder["llm"] is None:
             _holder["llm"] = _make_llm(config)
         return _holder["llm"]
 
+    def require_auth(authorization: Optional[str] = Header(default=None)):
+        if check_auth(authorization):
+            return
+        if _expected_token() is None and not _allow_noauth():
+            # Misconfigured / locked down: make the cause explicit.
+            raise HTTPException(
+                status_code=401,
+                detail="remote auth not configured (set SPEAKER_REMOTE_TOKEN)",
+            )
+        raise HTTPException(
+            status_code=401,
+            detail="missing or invalid bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    def _client_key(request: Request) -> str:
+        client = request.client
+        return client.host if client else "unknown"
+
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
 
     @app.get("/token")
-    def token(identity: str = "user", room: str = "assistant"):
+    def token(
+        identity: str = "user",
+        room: str = "assistant",
+        _: None = Depends(require_auth),
+    ):
         ident = sanitize_identity(identity)
         rm = sanitize_room_name(room)
         try:
@@ -131,7 +268,22 @@ def create_app(config: Optional[dict] = None):
         return {"token": jwt, "url": os.environ.get("LIVEKIT_URL", ""), "room": rm, "identity": ident}
 
     @app.post("/chat")
-    def chat(message: str = Body(..., embed=True)):
+    async def chat(
+        request: Request,
+        _: None = Depends(require_auth),
+    ):
+        if not rate_limiter.allow(_client_key(request)):
+            raise HTTPException(status_code=429, detail="rate limit exceeded")
+        raw = await request.body()
+        if len(raw) > MAX_CHAT_BYTES:
+            raise HTTPException(status_code=413, detail="request body too large")
+        try:
+            import json
+
+            payload = json.loads(raw or b"{}")
+            message = payload.get("message", "") if isinstance(payload, dict) else ""
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid JSON body")
         text = (message or "").strip()
         if not text:
             return {"reply": ""}
@@ -163,7 +315,16 @@ def main():  # pragma: no cover
 
     cfg = _load_config()
     port = int((cfg.get("remote") or {}).get("token_server_port", 8080))
-    uvicorn.run(create_app(cfg), host="0.0.0.0", port=port)
+    host = "0.0.0.0" if _bind_all() else "127.0.0.1"
+    if host == "0.0.0.0":
+        logger.warning(
+            "Binding token server to 0.0.0.0:%s (SPEAKER_REMOTE_BIND_ALL=1) -- "
+            "publicly reachable on this network.",
+            port,
+        )
+    else:
+        logger.info("Binding token server to 127.0.0.1:%s (set SPEAKER_REMOTE_BIND_ALL=1 to expose).", port)
+    uvicorn.run(create_app(cfg), host=host, port=port)
 
 
 if __name__ == "__main__":  # pragma: no cover

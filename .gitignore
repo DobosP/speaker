@@ -68,6 +68,12 @@ config.local.json
 .env
 .env.local
 
+# Claude Code local config: machine-specific autonomy permissions + guard hook
+# (hard-codes this machine's paths; not shared). Promote to .claude/settings.json
+# with relative paths if you ever want it committed.
+.claude/settings.local.json
+.claude/hooks/
+
 # Generated test reports (tools/run_tests.py)
 test-reports/
 

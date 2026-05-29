@@ -240,3 +240,37 @@ def test_watchdog_no_storm_no_hook():
     wd.tick()
     assert calls["n"] == 0
     assert wd.in_storm is False
+
+
+# --- barge-in honors speaker_gate_input; identity gates on open speakers ------
+# Re-applied after a reset. Bug: barge-in gated on a speaker-ID match whenever
+# enrolled, ignoring speaker_gate_input (0 barge-ins for a mismatched user). A
+# level-only gate then self-interrupted 134x on TTS echo on open speakers. Fix:
+# enrolled + gating on -> identity (rejects the loud TTS, accepts the user);
+# gating off / unenrolled -> level/margin gate (headset / high-margin escape).
+
+
+def test_enrolled_gating_on_rejects_loud_nonuser_echo():
+    eng = _engine(barge_in_output_margin_db=6.0)  # speaker_gate_input default True
+    gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)
+    gate.enroll_embedding(USER)
+    eng._speaker_gate = gate
+    eng._playback_level = 0.1
+    assert eng._looks_like_user([0.5, 0.5, 0.5]) is False  # loud, but not the user
+
+
+def test_gating_off_falls_back_to_margin_gate():
+    eng = _engine(barge_in_output_margin_db=6.0, speaker_gate_input=False)
+    gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)
+    gate.enroll_embedding(USER)
+    eng._speaker_gate = gate
+    eng._playback_level = 0.1
+    assert eng._looks_like_user([0.5, 0.5, 0.5]) is True   # loud clears margin
+    eng._playback_level = 0.2
+    assert eng._looks_like_user([0.2, 0.2]) is False        # echo at level: no
+
+
+def test_default_system_prompt_abstains_and_drops_persona():
+    from core.capabilities import DEFAULT_SYSTEM
+    s = DEFAULT_SYSTEM.lower()
+    assert "clarif" in s and "never invent" in s and ("tone" in s or "mood" in s)

@@ -890,29 +890,29 @@ class SherpaOnnxEngine(AudioEngine):
             write(samples[i : i + chunk])
 
     def _looks_like_user(self, samples) -> bool:
-        # Decide whether playback-time voice is a genuine barge-in.
+        # Decide whether playback-time voice is a genuine barge-in vs the
+        # assistant's own TTS echo. Without AEC the discriminator depends on the
+        # setup:
         #
-        # Enrolled gate: only the enrolled user's voice counts (speaker-ID does
-        # the echo rejection). Unenrolled / no gate: we can't rely on identity,
-        # so instead of blindly failing open into self-interruption
-        # (realtime-concurrency-5) we require the detected speech to stand a
-        # configurable margin *above* the current playback level -- a real user
-        # talking over the assistant clears it, residual TTS echo does not.
-        # With nothing playing (playback_level == 0) this still fails open, so a
-        # genuine interrupt is never suppressed.
+        # - Enrolled AND input gating on: gate on speaker IDENTITY. On OPEN
+        #   SPEAKERS the assistant's TTS is loud enough to clear any level margin
+        #   (a level-only gate self-interrupted 134x in one live session), so
+        #   identity is the only reliable rejector -- a genuine user matches the
+        #   enrolled voice, the TTS does not. If your OWN voice is rejected,
+        #   re-enroll (the soft-limiter+soxr capture fixes corrupted enrollments);
+        #   the escape hatch is speaker_gate_input=false (level gate below) which
+        #   is only safe on a headset or with a high margin.
+        # - Unenrolled OR gating off: best-effort output-margin level gate. A real
+        #   user stands a margin above playback; residual echo does not. With
+        #   nothing playing it fails open; margin_db <= 0 disables it.
         gate = self._speaker_gate
+        if gate is not None and gate.is_enrolled and self.config.speaker_gate_input:
+            return gate.accept(samples, self.config.sample_rate)
         margin_db = self.config.barge_in_output_margin_db
-        if gate is None or not gate.is_enrolled:
-            if margin_db <= 0.0:
-                return True
-            return passes_output_margin(
-                rms(samples), self._playback_level, margin_db=margin_db
-            )
-        return gate.accept(
-            samples,
-            self.config.sample_rate,
-            playback_level=self._playback_level,
-            output_margin_db=margin_db,
+        if margin_db <= 0.0:
+            return True
+        return passes_output_margin(
+            rms(samples), self._playback_level, margin_db=margin_db
         )
 
     def _note_playback_level(self, samples) -> None:

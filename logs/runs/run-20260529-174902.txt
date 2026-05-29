@@ -1,0 +1,637 @@
+17:49:02.034 INFO  speaker | run 20260529-174902 started (debug=True) -> logs\runs\run-20260529-174902.txt
+17:49:02.080 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=18343.3MB(54.0%) proc_rss=22.5MB gpu=2.0% gpu_mem=4744.0/16376.0MB
+17:49:02.125 INFO  speaker.sysinfo | system mark after_build: cpu=11.8% ram=18352.2MB(54.0%) proc_rss=23.3MB gpu=2.0% gpu_mem=4744.0/16376.0MB
+17:49:04.786 WARNING speaker.sherpa | speaker-ID model loaded but no enrollment found -- gate is fail-open (everything passes). Run `python -m core --enroll` to enroll your voice.
+17:49:04.786 INFO  speaker.sherpa | input device: Microphone Array (Realtek(R) Au
+17:49:04.786 INFO  speaker.sherpa | output device: Speakers (Realtek(R) Audio)
+17:49:04.786 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+17:49:05.107 INFO  speaker.runtime | capture state: open (opened at 16000 Hz)
+17:49:05.109 INFO  speaker.sherpa | recording session audio -> logs\runs\run-20260529-174902.wav
+17:49:05.111 INFO  speaker.sherpa | capture loop started (capture_sr=16000 -> asr_sr=16000)
+17:49:07.122 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0020 partials=0 finals=0 speaking=False
+17:49:09.122 DEBUG speaker.sherpa | capture heartbeat: blocks=40 avg_rms=0.0056 partials=0 finals=0 speaking=False
+17:49:11.222 DEBUG speaker.sherpa | capture heartbeat: blocks=61 avg_rms=0.0135 partials=0 finals=0 speaking=False
+17:49:12.131 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=19098.0MB(56.2%) proc_rss=479.3MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:49:13.222 DEBUG speaker.sherpa | capture heartbeat: blocks=81 avg_rms=0.0058 partials=0 finals=0 speaking=False
+17:49:15.222 DEBUG speaker.sherpa | capture heartbeat: blocks=101 avg_rms=0.0082 partials=0 finals=0 speaking=False
+17:49:17.222 DEBUG speaker.sherpa | capture heartbeat: blocks=121 avg_rms=0.0090 partials=0 finals=0 speaking=False
+17:49:19.221 DEBUG speaker.sherpa | capture heartbeat: blocks=141 avg_rms=0.0061 partials=0 finals=0 speaking=False
+17:49:21.222 DEBUG speaker.sherpa | capture heartbeat: blocks=161 avg_rms=0.0128 partials=0 finals=0 speaking=False
+17:49:22.182 DEBUG speaker.sysinfo | system sample: cpu=31.4% ram=19107.9MB(56.3%) proc_rss=479.6MB gpu=7.0% gpu_mem=4744.0/16376.0MB
+17:49:23.222 DEBUG speaker.sherpa | capture heartbeat: blocks=181 avg_rms=0.0106 partials=0 finals=0 speaking=False
+17:49:25.222 DEBUG speaker.sherpa | capture heartbeat: blocks=201 avg_rms=0.0109 partials=0 finals=0 speaking=False
+17:49:27.222 DEBUG speaker.sherpa | capture heartbeat: blocks=221 avg_rms=0.0076 partials=0 finals=0 speaking=False
+17:49:29.222 DEBUG speaker.sherpa | capture heartbeat: blocks=241 avg_rms=0.0114 partials=0 finals=0 speaking=False
+17:49:29.341 DEBUG speaker.sherpa | asr partial: 'Ira'
+17:49:29.341 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ira'
+17:49:30.338 INFO  speaker.sherpa | asr final: 'Ira' (raw 'IRA')
+17:49:30.338 INFO  speaker.runtime | final -> brain: 'Ira' (mode=assistant)
+17:49:30.338 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Ira'
+17:49:30.339 INFO  speaker.tasks | task 556b576a5139 started: mode=assistant capability=assistant.answer input='Ira'
+17:49:30.362 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Ira'
+17:49:30.362 INFO  speaker.llm | fast tier done in 0.00s (13 chars, streamed)
+17:49:30.362 INFO  speaker.tasks | task 556b576a5139 completed in 0.02s (13 chars)
+17:49:30.362 INFO  speaker.runtime | assistant: 'You said: Ira'
+17:49:30.362 DEBUG speaker.sherpa | speaking: 'You said: Ira' (queue depth=0)
+17:49:30.642 INFO  speaker.sherpa | playback opened at 22050 Hz on device default
+17:49:31.271 DEBUG speaker.sherpa | capture heartbeat: blocks=259 avg_rms=0.0145 partials=1 finals=1 speaking=True
+17:49:32.223 DEBUG speaker.sysinfo | system sample: cpu=31.1% ram=19145.9MB(56.4%) proc_rss=500.6MB gpu=1.0% gpu_mem=4744.0/16376.0MB
+17:49:33.272 DEBUG speaker.sherpa | capture heartbeat: blocks=279 avg_rms=0.0098 partials=1 finals=1 speaking=False
+17:49:35.190 DEBUG speaker.sherpa | asr partial: 'Oh'
+17:49:35.191 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh'
+17:49:35.271 DEBUG speaker.sherpa | capture heartbeat: blocks=299 avg_rms=0.0215 partials=2 finals=1 speaking=False
+17:49:35.490 DEBUG speaker.sherpa | asr partial: 'Who are'
+17:49:35.490 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Who are'
+17:49:35.788 DEBUG speaker.sherpa | asr partial: 'Who are running'
+17:49:35.788 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Who are running'
+17:49:36.088 DEBUG speaker.sherpa | asr partial: 'Who are running by now'
+17:49:36.088 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Who are running by now'
+17:49:37.089 INFO  speaker.sherpa | asr final: 'Who are running by now' (raw 'WHO ARE RUNNING BY NOW')
+17:49:37.089 INFO  speaker.runtime | final -> brain: 'Who are running by now' (mode=assistant)
+17:49:37.089 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Who are running by now'
+17:49:37.090 INFO  speaker.tasks | task c4468bdca5a2 started: mode=assistant capability=assistant.answer input='Who are running by now'
+17:49:37.110 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Who are running by now'
+17:49:37.110 INFO  speaker.llm | fast tier done in 0.00s (32 chars, streamed)
+17:49:37.110 INFO  speaker.tasks | task c4468bdca5a2 completed in 0.02s (32 chars)
+17:49:37.110 INFO  speaker.runtime | assistant: 'You said: Who are running by now'
+17:49:37.110 DEBUG speaker.sherpa | speaking: 'You said: Who are running by now' (queue depth=0)
+17:49:37.272 DEBUG speaker.sherpa | capture heartbeat: blocks=319 avg_rms=0.0078 partials=5 finals=2 speaking=True
+17:49:39.271 DEBUG speaker.sherpa | capture heartbeat: blocks=339 avg_rms=0.0209 partials=5 finals=2 speaking=False
+17:49:41.272 DEBUG speaker.sherpa | capture heartbeat: blocks=359 avg_rms=0.0100 partials=5 finals=2 speaking=False
+17:49:41.488 DEBUG speaker.sherpa | asr partial: 'Can you give'
+17:49:41.489 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you give'
+17:49:41.789 DEBUG speaker.sherpa | asr partial: 'Can you give me a'
+17:49:41.790 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you give me a'
+17:49:42.088 DEBUG speaker.sherpa | asr partial: 'Can you give me a story'
+17:49:42.088 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you give me a story'
+17:49:42.272 DEBUG speaker.sysinfo | system sample: cpu=29.8% ram=19168.9MB(56.4%) proc_rss=522.3MB gpu=1.0% gpu_mem=4744.0/16376.0MB
+17:49:43.090 INFO  speaker.sherpa | asr final: 'Can you give me a story' (raw 'CAN YOU GIVE ME A STORY')
+17:49:43.090 INFO  speaker.runtime | final -> brain: 'Can you give me a story' (mode=assistant)
+17:49:43.090 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Can you give me a story'
+17:49:43.091 INFO  speaker.tasks | task 4382146bf5ed started: mode=assistant capability=assistant.answer input='Can you give me a story'
+17:49:43.105 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Can you give me a story'
+17:49:43.105 INFO  speaker.llm | fast tier done in 0.00s (33 chars, streamed)
+17:49:43.105 INFO  speaker.tasks | task 4382146bf5ed completed in 0.02s (33 chars)
+17:49:43.105 INFO  speaker.runtime | assistant: 'You said: Can you give me a story'
+17:49:43.105 DEBUG speaker.sherpa | speaking: 'You said: Can you give me a story' (queue depth=0)
+17:49:43.272 DEBUG speaker.sherpa | capture heartbeat: blocks=379 avg_rms=0.0106 partials=8 finals=3 speaking=True
+17:49:45.272 DEBUG speaker.sherpa | capture heartbeat: blocks=399 avg_rms=0.0148 partials=8 finals=3 speaking=True
+17:49:47.272 DEBUG speaker.sherpa | capture heartbeat: blocks=419 avg_rms=0.0090 partials=8 finals=3 speaking=False
+17:49:48.789 DEBUG speaker.sherpa | asr partial: 'What'
+17:49:48.790 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What'
+17:49:49.089 DEBUG speaker.sherpa | asr partial: "What's up"
+17:49:49.089 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="What's up"
+17:49:49.272 DEBUG speaker.sherpa | capture heartbeat: blocks=439 avg_rms=0.0149 partials=10 finals=3 speaking=False
+17:49:49.390 DEBUG speaker.sherpa | asr partial: "What's up with"
+17:49:49.390 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="What's up with"
+17:49:49.689 DEBUG speaker.sherpa | asr partial: "What's up with this"
+17:49:49.689 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="What's up with this"
+17:49:50.689 INFO  speaker.sherpa | asr final: "What's up with this" (raw "WHAT'S UP WITH THIS")
+17:49:50.689 INFO  speaker.runtime | final -> brain: "What's up with this" (mode=assistant)
+17:49:50.689 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text="What's up with this"
+17:49:50.689 INFO  speaker.tasks | task 98e761fb8e0a started: mode=assistant capability=assistant.answer input="What's up with this"
+17:49:50.713 INFO  speaker.llm | answering on fast tier (sensitivity=public, intent=assistant): "What's up with this"
+17:49:50.713 INFO  speaker.llm | fast tier done in 0.00s (29 chars, streamed)
+17:49:50.713 INFO  speaker.tasks | task 98e761fb8e0a completed in 0.02s (29 chars)
+17:49:50.713 INFO  speaker.runtime | assistant: "You said: What's up with this"
+17:49:50.713 DEBUG speaker.sherpa | speaking: "You said: What's up with this" (queue depth=0)
+17:49:51.272 DEBUG speaker.sherpa | capture heartbeat: blocks=459 avg_rms=0.0087 partials=12 finals=4 speaking=True
+17:49:52.324 DEBUG speaker.sysinfo | system sample: cpu=26.5% ram=19179.1MB(56.5%) proc_rss=533.9MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:49:53.272 DEBUG speaker.sherpa | capture heartbeat: blocks=479 avg_rms=0.0114 partials=12 finals=4 speaking=False
+17:49:55.189 DEBUG speaker.sherpa | asr partial: "I'm"
+17:49:55.189 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm"
+17:49:55.271 DEBUG speaker.sherpa | capture heartbeat: blocks=499 avg_rms=0.0149 partials=13 finals=4 speaking=False
+17:49:55.491 DEBUG speaker.sherpa | asr partial: "I'm only to"
+17:49:55.491 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to"
+17:49:55.789 DEBUG speaker.sherpa | asr partial: "I'm only to read"
+17:49:55.789 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to read"
+17:49:56.088 DEBUG speaker.sherpa | asr partial: "I'm only to bring to acce"
+17:49:56.088 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to bring to acce"
+17:49:56.390 DEBUG speaker.sherpa | asr partial: "I'm only to bring to accession"
+17:49:56.390 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to bring to accession"
+17:49:56.788 DEBUG speaker.sherpa | asr partial: "I'm only to bring to accession for"
+17:49:56.789 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to bring to accession for"
+17:49:57.272 DEBUG speaker.sherpa | capture heartbeat: blocks=519 avg_rms=0.0168 partials=18 finals=4 speaking=False
+17:49:57.390 DEBUG speaker.sherpa | asr partial: "I'm only to bring to accession for something"
+17:49:57.391 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to bring to accession for something"
+17:49:57.690 DEBUG speaker.sherpa | asr partial: "I'm only to bring to accession for something to"
+17:49:57.690 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to bring to accession for something to"
+17:49:57.989 DEBUG speaker.sherpa | asr partial: "I'm only to bring to accession for something to do"
+17:49:57.989 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I'm only to bring to accession for something to do"
+17:49:58.990 INFO  speaker.sherpa | asr final: "I'm only to bring to accession for something to do" (raw "I'M ONLY TO BRING TO ACCESSION FOR SOMETHING TO DO")
+17:49:58.990 INFO  speaker.runtime | final -> brain: "I'm only to bring to accession for something to do" (mode=assistant)
+17:49:58.990 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text="I'm only to bring to accession for something to do"
+17:49:58.991 INFO  speaker.tasks | task c563c2f089ba started: mode=assistant capability=assistant.answer input="I'm only to bring to accession for something to do"
+17:49:59.011 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): "I'm only to bring to accession for something to do"
+17:49:59.011 INFO  speaker.llm | fast tier done in 0.00s (60 chars, streamed)
+17:49:59.011 INFO  speaker.tasks | task c563c2f089ba completed in 0.02s (60 chars)
+17:49:59.011 INFO  speaker.runtime | assistant: "You said: I'm only to bring to accession for something to do"
+17:49:59.011 DEBUG speaker.sherpa | speaking: "You said: I'm only to bring to accession for something to do" (queue depth=0)
+17:49:59.272 DEBUG speaker.sherpa | capture heartbeat: blocks=539 avg_rms=0.0033 partials=21 finals=5 speaking=True
+17:50:01.272 DEBUG speaker.sherpa | capture heartbeat: blocks=559 avg_rms=0.0232 partials=21 finals=5 speaking=True
+17:50:02.377 DEBUG speaker.sysinfo | system sample: cpu=27.3% ram=19216.8MB(56.6%) proc_rss=541.0MB gpu=1.0% gpu_mem=4744.0/16376.0MB
+17:50:02.989 DEBUG speaker.sherpa | asr partial: 'Do'
+17:50:02.989 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do'
+17:50:03.272 DEBUG speaker.sherpa | capture heartbeat: blocks=579 avg_rms=0.0090 partials=22 finals=5 speaking=False
+17:50:03.589 DEBUG speaker.sherpa | asr partial: 'Do I'
+17:50:03.589 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do I'
+17:50:04.189 DEBUG speaker.sherpa | asr partial: "Do I'm mone"
+17:50:04.189 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm mone"
+17:50:04.589 DEBUG speaker.sherpa | asr partial: "Do I'm money to"
+17:50:04.590 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to"
+17:50:04.889 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring"
+17:50:04.889 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring"
+17:50:05.190 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring a"
+17:50:05.191 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring a"
+17:50:05.272 DEBUG speaker.sherpa | capture heartbeat: blocks=599 avg_rms=0.0238 partials=27 finals=5 speaking=False
+17:50:05.489 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring access"
+17:50:05.489 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring access"
+17:50:05.790 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring accession"
+17:50:05.790 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring accession"
+17:50:06.488 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring accession for"
+17:50:06.488 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring accession for"
+17:50:06.788 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring accession for something"
+17:50:06.788 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring accession for something"
+17:50:07.089 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring accession for something to"
+17:50:07.089 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring accession for something to"
+17:50:07.272 DEBUG speaker.sherpa | capture heartbeat: blocks=619 avg_rms=0.0144 partials=32 finals=5 speaking=False
+17:50:07.389 DEBUG speaker.sherpa | asr partial: "Do I'm money to ring accession for something to do"
+17:50:07.390 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Do I'm money to ring accession for something to do"
+17:50:08.391 INFO  speaker.sherpa | asr final: "Do I'm money to ring accession for something to do" (raw "DO I'M MONEY TO RING ACCESSION FOR SOMETHING TO DO")
+17:50:08.391 INFO  speaker.runtime | final -> brain: "Do I'm money to ring accession for something to do" (mode=assistant)
+17:50:08.392 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text="Do I'm money to ring accession for something to do"
+17:50:08.392 INFO  speaker.tasks | task 22a4eaf0077e started: mode=assistant capability=assistant.answer input="Do I'm money to ring accession for something to do"
+17:50:08.414 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): "Do I'm money to ring accession for something to do"
+17:50:08.414 INFO  speaker.llm | fast tier done in 0.00s (60 chars, streamed)
+17:50:08.414 INFO  speaker.tasks | task 22a4eaf0077e completed in 0.02s (60 chars)
+17:50:08.414 INFO  speaker.runtime | assistant: "You said: Do I'm money to ring accession for something to do"
+17:50:08.414 DEBUG speaker.sherpa | speaking: "You said: Do I'm money to ring accession for something to do" (queue depth=0)
+17:50:09.292 DEBUG speaker.sherpa | capture heartbeat: blocks=639 avg_rms=0.0081 partials=33 finals=6 speaking=True
+17:50:11.292 DEBUG speaker.sherpa | capture heartbeat: blocks=659 avg_rms=0.0239 partials=33 finals=6 speaking=True
+17:50:12.307 DEBUG speaker.sherpa | asr partial: 'Do'
+17:50:12.307 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do'
+17:50:12.429 DEBUG speaker.sysinfo | system sample: cpu=28.2% ram=19179.3MB(56.5%) proc_rss=545.9MB gpu=4.0% gpu_mem=4744.0/16376.0MB
+17:50:12.910 DEBUG speaker.sherpa | asr partial: 'Do monit'
+17:50:12.910 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do monit'
+17:50:13.207 DEBUG speaker.sherpa | asr partial: 'Do monitoring'
+17:50:13.208 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do monitoring'
+17:50:13.292 DEBUG speaker.sherpa | capture heartbeat: blocks=679 avg_rms=0.0252 partials=36 finals=6 speaking=False
+17:50:14.208 DEBUG speaker.sherpa | asr partial: 'Do monitoring acces'
+17:50:14.209 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do monitoring acces'
+17:50:14.510 DEBUG speaker.sherpa | asr partial: 'Do monitoring accession'
+17:50:14.511 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Do monitoring accession'
+17:50:15.291 DEBUG speaker.sherpa | capture heartbeat: blocks=699 avg_rms=0.0099 partials=38 finals=6 speaking=False
+17:50:15.510 INFO  speaker.sherpa | asr final: 'Do monitoring accession' (raw 'DO MONITORING ACCESSION')
+17:50:15.510 INFO  speaker.runtime | final -> brain: 'Do monitoring accession' (mode=assistant)
+17:50:15.510 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Do monitoring accession'
+17:50:15.510 INFO  speaker.tasks | task 56278d33f87e started: mode=assistant capability=assistant.answer input='Do monitoring accession'
+17:50:15.537 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Do monitoring accession'
+17:50:15.537 INFO  speaker.llm | fast tier done in 0.00s (33 chars, streamed)
+17:50:15.537 INFO  speaker.tasks | task 56278d33f87e completed in 0.03s (33 chars)
+17:50:15.537 INFO  speaker.runtime | assistant: 'You said: Do monitoring accession'
+17:50:15.537 DEBUG speaker.sherpa | speaking: 'You said: Do monitoring accession' (queue depth=0)
+17:50:17.292 DEBUG speaker.sherpa | capture heartbeat: blocks=719 avg_rms=0.0174 partials=38 finals=7 speaking=True
+17:50:18.209 DEBUG speaker.sherpa | asr partial: 'Gent'
+17:50:18.209 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Gent'
+17:50:18.912 INFO  speaker.sherpa | asr final: 'Gent' (raw 'GENT')
+17:50:18.912 INFO  speaker.runtime | final -> brain: 'Gent' (mode=assistant)
+17:50:18.912 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Gent'
+17:50:18.913 INFO  speaker.tasks | task 9bcb92a88707 started: mode=assistant capability=assistant.answer input='Gent'
+17:50:18.928 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Gent'
+17:50:18.928 INFO  speaker.llm | fast tier done in 0.00s (14 chars, streamed)
+17:50:18.928 INFO  speaker.tasks | task 9bcb92a88707 completed in 0.02s (14 chars)
+17:50:18.928 INFO  speaker.runtime | assistant: 'You said: Gent'
+17:50:18.928 DEBUG speaker.sherpa | speaking: 'You said: Gent' (queue depth=0)
+17:50:19.291 DEBUG speaker.sherpa | capture heartbeat: blocks=739 avg_rms=0.0253 partials=39 finals=8 speaking=True
+17:50:20.308 DEBUG speaker.sherpa | asr partial: 'Sess'
+17:50:20.311 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Sess'
+17:50:20.610 DEBUG speaker.sherpa | asr partial: 'Session'
+17:50:20.610 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Session'
+17:50:21.210 INFO  speaker.sherpa | asr final: 'Session' (raw 'SESSION')
+17:50:21.211 INFO  speaker.runtime | final -> brain: 'Session' (mode=assistant)
+17:50:21.211 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Session'
+17:50:21.211 INFO  speaker.tasks | task f410b6e9e21b started: mode=assistant capability=assistant.answer input='Session'
+17:50:21.233 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Session'
+17:50:21.233 INFO  speaker.llm | fast tier done in 0.00s (17 chars, streamed)
+17:50:21.233 INFO  speaker.tasks | task f410b6e9e21b completed in 0.02s (17 chars)
+17:50:21.233 INFO  speaker.runtime | assistant: 'You said: Session'
+17:50:21.233 DEBUG speaker.sherpa | speaking: 'You said: Session' (queue depth=0)
+17:50:21.291 DEBUG speaker.sherpa | capture heartbeat: blocks=759 avg_rms=0.0220 partials=41 finals=9 speaking=True
+17:50:22.480 DEBUG speaker.sysinfo | system sample: cpu=27.2% ram=19206.4MB(56.6%) proc_rss=546.2MB gpu=1.0% gpu_mem=4744.0/16376.0MB
+17:50:22.708 DEBUG speaker.sherpa | asr partial: 'Ses'
+17:50:22.708 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ses'
+17:50:23.010 DEBUG speaker.sherpa | asr partial: 'Session'
+17:50:23.010 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Session'
+17:50:23.291 DEBUG speaker.sherpa | capture heartbeat: blocks=779 avg_rms=0.0163 partials=43 finals=9 speaking=False
+17:50:23.909 INFO  speaker.sherpa | asr final: 'Session' (raw 'SESSION')
+17:50:23.909 INFO  speaker.runtime | final -> brain: 'Session' (mode=assistant)
+17:50:23.909 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Session'
+17:50:23.910 INFO  speaker.tasks | task 1e4cf969f41d started: mode=assistant capability=assistant.answer input='Session'
+17:50:23.935 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Session'
+17:50:23.935 INFO  speaker.llm | fast tier done in 0.00s (17 chars, streamed)
+17:50:23.935 INFO  speaker.tasks | task 1e4cf969f41d completed in 0.03s (17 chars)
+17:50:23.935 INFO  speaker.runtime | assistant: 'You said: Session'
+17:50:23.935 DEBUG speaker.sherpa | speaking: 'You said: Session' (queue depth=0)
+17:50:25.292 DEBUG speaker.sherpa | capture heartbeat: blocks=799 avg_rms=0.0135 partials=43 finals=10 speaking=False
+17:50:27.209 DEBUG speaker.sherpa | asr partial: 'Yes'
+17:50:27.209 DEBUG speaker.supervisor | decision: kind=confirm confidence=0.98 reason=confirm_phrase mode=assistant text='Yes'
+17:50:27.292 DEBUG speaker.sherpa | capture heartbeat: blocks=819 avg_rms=0.0128 partials=44 finals=10 speaking=False
+17:50:27.508 DEBUG speaker.sherpa | asr partial: 'Yes this is'
+17:50:27.508 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Yes this is'
+17:50:27.808 DEBUG speaker.sherpa | asr partial: 'Yes this is what I'
+17:50:27.808 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Yes this is what I'
+17:50:28.111 DEBUG speaker.sherpa | asr partial: 'Yes this is what I say'
+17:50:28.112 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Yes this is what I say'
+17:50:29.109 INFO  speaker.sherpa | asr final: 'Yes this is what I say' (raw 'YES THIS IS WHAT I SAY')
+17:50:29.109 INFO  speaker.runtime | final -> brain: 'Yes this is what I say' (mode=assistant)
+17:50:29.109 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Yes this is what I say'
+17:50:29.109 INFO  speaker.tasks | task 55441db60d3d started: mode=assistant capability=assistant.answer input='Yes this is what I say'
+17:50:29.128 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Yes this is what I say'
+17:50:29.128 INFO  speaker.llm | fast tier done in 0.00s (32 chars, streamed)
+17:50:29.128 INFO  speaker.tasks | task 55441db60d3d completed in 0.02s (32 chars)
+17:50:29.128 INFO  speaker.runtime | assistant: 'You said: Yes this is what I say'
+17:50:29.128 DEBUG speaker.sherpa | speaking: 'You said: Yes this is what I say' (queue depth=0)
+17:50:29.291 DEBUG speaker.sherpa | capture heartbeat: blocks=839 avg_rms=0.0076 partials=47 finals=11 speaking=True
+17:50:31.292 DEBUG speaker.sherpa | capture heartbeat: blocks=859 avg_rms=0.0190 partials=47 finals=11 speaking=False
+17:50:32.529 DEBUG speaker.sysinfo | system sample: cpu=27.4% ram=19215.2MB(56.6%) proc_rss=546.9MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:50:33.292 DEBUG speaker.sherpa | capture heartbeat: blocks=879 avg_rms=0.0043 partials=47 finals=11 speaking=False
+17:50:35.292 DEBUG speaker.sherpa | capture heartbeat: blocks=899 avg_rms=0.0053 partials=47 finals=11 speaking=False
+17:50:35.911 DEBUG speaker.sherpa | asr partial: 'Can you'
+17:50:35.911 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you'
+17:50:36.208 DEBUG speaker.sherpa | asr partial: 'Can you tell me'
+17:50:36.208 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me'
+17:50:36.509 DEBUG speaker.sherpa | asr partial: 'Can you tell me something'
+17:50:36.510 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me something'
+17:50:36.908 DEBUG speaker.sherpa | asr partial: 'Can you tell me something ni'
+17:50:36.909 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me something ni'
+17:50:37.208 DEBUG speaker.sherpa | asr partial: 'Can you tell me something nice'
+17:50:37.208 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me something nice'
+17:50:37.292 DEBUG speaker.sherpa | capture heartbeat: blocks=919 avg_rms=0.0123 partials=52 finals=11 speaking=False
+17:50:38.109 INFO  speaker.sherpa | asr final: 'Can you tell me something nice' (raw 'CAN YOU TELL ME SOMETHING NICE')
+17:50:38.110 INFO  speaker.runtime | final -> brain: 'Can you tell me something nice' (mode=assistant)
+17:50:38.110 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Can you tell me something nice'
+17:50:38.110 INFO  speaker.tasks | task 4973b3a0833d started: mode=assistant capability=assistant.answer input='Can you tell me something nice'
+17:50:38.128 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Can you tell me something nice'
+17:50:38.128 INFO  speaker.llm | fast tier done in 0.00s (40 chars, streamed)
+17:50:38.128 INFO  speaker.tasks | task 4973b3a0833d completed in 0.02s (40 chars)
+17:50:38.128 INFO  speaker.runtime | assistant: 'You said: Can you tell me something nice'
+17:50:38.128 DEBUG speaker.sherpa | speaking: 'You said: Can you tell me something nice' (queue depth=0)
+17:50:39.302 DEBUG speaker.sherpa | capture heartbeat: blocks=939 avg_rms=0.0076 partials=52 finals=12 speaking=True
+17:50:41.301 DEBUG speaker.sherpa | capture heartbeat: blocks=959 avg_rms=0.0130 partials=52 finals=12 speaking=False
+17:50:42.577 DEBUG speaker.sysinfo | system sample: cpu=28.0% ram=19222.7MB(56.6%) proc_rss=549.2MB gpu=2.0% gpu_mem=4744.0/16376.0MB
+17:50:43.302 DEBUG speaker.sherpa | capture heartbeat: blocks=979 avg_rms=0.0037 partials=52 finals=12 speaking=False
+17:50:44.621 DEBUG speaker.sherpa | asr partial: 'What'
+17:50:44.621 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What'
+17:50:44.919 DEBUG speaker.sherpa | asr partial: 'What are'
+17:50:44.919 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What are'
+17:50:45.220 DEBUG speaker.sherpa | asr partial: 'What are your prop'
+17:50:45.220 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What are your prop'
+17:50:45.302 DEBUG speaker.sherpa | capture heartbeat: blocks=999 avg_rms=0.0231 partials=55 finals=12 speaking=False
+17:50:45.520 DEBUG speaker.sherpa | asr partial: 'What are your propabil'
+17:50:45.521 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What are your propabil'
+17:50:45.919 DEBUG speaker.sherpa | asr partial: 'What are your propabilities'
+17:50:45.920 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What are your propabilities'
+17:50:46.820 INFO  speaker.sherpa | asr final: 'What are your propabilities' (raw 'WHAT ARE YOUR PROPABILITIES')
+17:50:46.820 INFO  speaker.runtime | final -> brain: 'What are your propabilities' (mode=assistant)
+17:50:46.820 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='What are your propabilities'
+17:50:46.821 INFO  speaker.tasks | task d8b25cc2d6dd started: mode=assistant capability=assistant.answer input='What are your propabilities'
+17:50:46.831 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'What are your propabilities'
+17:50:46.831 INFO  speaker.llm | fast tier done in 0.00s (37 chars, streamed)
+17:50:46.831 INFO  speaker.tasks | task d8b25cc2d6dd completed in 0.01s (37 chars)
+17:50:46.831 INFO  speaker.runtime | assistant: 'You said: What are your propabilities'
+17:50:46.831 DEBUG speaker.sherpa | speaking: 'You said: What are your propabilities' (queue depth=0)
+17:50:47.302 DEBUG speaker.sherpa | capture heartbeat: blocks=1019 avg_rms=0.0060 partials=57 finals=13 speaking=True
+17:50:49.302 DEBUG speaker.sherpa | capture heartbeat: blocks=1039 avg_rms=0.0206 partials=57 finals=13 speaking=False
+17:50:50.518 DEBUG speaker.sherpa | asr partial: 'Cap'
+17:50:50.519 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Cap'
+17:50:50.821 DEBUG speaker.sherpa | asr partial: 'Capab'
+17:50:50.821 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Capab'
+17:50:51.119 DEBUG speaker.sherpa | asr partial: 'Capabilities'
+17:50:51.119 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Capabilities'
+17:50:51.302 DEBUG speaker.sherpa | capture heartbeat: blocks=1059 avg_rms=0.0209 partials=60 finals=13 speaking=False
+17:50:52.119 INFO  speaker.sherpa | asr final: 'Capabilities' (raw 'CAPABILITIES')
+17:50:52.119 INFO  speaker.runtime | final -> brain: 'Capabilities' (mode=assistant)
+17:50:52.120 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Capabilities'
+17:50:52.120 INFO  speaker.tasks | task 2b3cee5b5359 started: mode=assistant capability=assistant.answer input='Capabilities'
+17:50:52.137 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Capabilities'
+17:50:52.137 INFO  speaker.llm | fast tier done in 0.00s (22 chars, streamed)
+17:50:52.137 INFO  speaker.tasks | task 2b3cee5b5359 completed in 0.02s (22 chars)
+17:50:52.137 INFO  speaker.runtime | assistant: 'You said: Capabilities'
+17:50:52.137 DEBUG speaker.sherpa | speaking: 'You said: Capabilities' (queue depth=0)
+17:50:52.616 DEBUG speaker.sysinfo | system sample: cpu=28.8% ram=19187.8MB(56.5%) proc_rss=549.3MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:50:53.301 DEBUG speaker.sherpa | capture heartbeat: blocks=1079 avg_rms=0.0118 partials=60 finals=14 speaking=True
+17:50:55.301 DEBUG speaker.sherpa | capture heartbeat: blocks=1099 avg_rms=0.0226 partials=60 finals=14 speaking=False
+17:50:55.719 DEBUG speaker.sherpa | asr partial: 'Cape'
+17:50:55.719 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Cape'
+17:50:56.018 DEBUG speaker.sherpa | asr partial: 'Cape cap'
+17:50:56.018 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Cape cap'
+17:50:56.420 DEBUG speaker.sherpa | asr partial: 'Cape capabil'
+17:50:56.421 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Cape capabil'
+17:50:56.718 DEBUG speaker.sherpa | asr partial: 'Cape capabilities'
+17:50:56.718 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Cape capabilities'
+17:50:57.301 DEBUG speaker.sherpa | capture heartbeat: blocks=1119 avg_rms=0.0346 partials=64 finals=14 speaking=False
+17:50:57.620 INFO  speaker.sherpa | asr final: 'Cape capabilities' (raw 'CAPE CAPABILITIES')
+17:50:57.620 INFO  speaker.runtime | final -> brain: 'Cape capabilities' (mode=assistant)
+17:50:57.620 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Cape capabilities'
+17:50:57.620 INFO  speaker.tasks | task 7b77421bc965 started: mode=assistant capability=assistant.answer input='Cape capabilities'
+17:50:57.644 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Cape capabilities'
+17:50:57.644 INFO  speaker.llm | fast tier done in 0.00s (27 chars, streamed)
+17:50:57.644 INFO  speaker.tasks | task 7b77421bc965 completed in 0.02s (27 chars)
+17:50:57.644 INFO  speaker.runtime | assistant: 'You said: Cape capabilities'
+17:50:57.644 DEBUG speaker.sherpa | speaking: 'You said: Cape capabilities' (queue depth=0)
+17:50:59.312 DEBUG speaker.sherpa | capture heartbeat: blocks=1139 avg_rms=0.0177 partials=64 finals=15 speaking=False
+17:51:01.312 DEBUG speaker.sherpa | capture heartbeat: blocks=1159 avg_rms=0.0045 partials=64 finals=15 speaking=False
+17:51:02.663 DEBUG speaker.sysinfo | system sample: cpu=27.6% ram=19200.5MB(56.5%) proc_rss=549.3MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:51:03.128 DEBUG speaker.sherpa | asr partial: 'This'
+17:51:03.128 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This'
+17:51:03.312 DEBUG speaker.sherpa | capture heartbeat: blocks=1179 avg_rms=0.0188 partials=65 finals=15 speaking=False
+17:51:03.429 DEBUG speaker.sherpa | asr partial: 'This is'
+17:51:03.429 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is'
+17:51:03.729 DEBUG speaker.sherpa | asr partial: 'This is help'
+17:51:03.729 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is help'
+17:51:04.030 DEBUG speaker.sherpa | asr partial: 'This is helpful'
+17:51:04.030 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is helpful'
+17:51:04.430 DEBUG speaker.sherpa | asr partial: 'This is helpful so'
+17:51:04.430 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is helpful so'
+17:51:04.728 DEBUG speaker.sherpa | asr partial: 'This is helpful so improv'
+17:51:04.729 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is helpful so improv'
+17:51:05.029 DEBUG speaker.sherpa | asr partial: 'This is helpful so improving eng'
+17:51:05.030 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is helpful so improving eng'
+17:51:05.312 DEBUG speaker.sherpa | capture heartbeat: blocks=1199 avg_rms=0.0227 partials=71 finals=15 speaking=False
+17:51:05.331 DEBUG speaker.sherpa | asr partial: 'This is helpful so improving english'
+17:51:05.332 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='This is helpful so improving english'
+17:51:06.330 INFO  speaker.sherpa | asr final: 'This is helpful so improving english' (raw 'THIS IS HELPFUL SO IMPROVING ENGLISH')
+17:51:06.330 INFO  speaker.runtime | final -> brain: 'This is helpful so improving english' (mode=assistant)
+17:51:06.330 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='This is helpful so improving english'
+17:51:06.331 INFO  speaker.tasks | task 827c601f3bf8 started: mode=assistant capability=assistant.answer input='This is helpful so improving english'
+17:51:06.353 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'This is helpful so improving english'
+17:51:06.353 INFO  speaker.llm | fast tier done in 0.00s (46 chars, streamed)
+17:51:06.353 INFO  speaker.tasks | task 827c601f3bf8 completed in 0.02s (46 chars)
+17:51:06.353 INFO  speaker.runtime | assistant: 'You said: This is helpful so improving english'
+17:51:06.353 DEBUG speaker.sherpa | speaking: 'You said: This is helpful so improving english' (queue depth=0)
+17:51:07.322 DEBUG speaker.sherpa | capture heartbeat: blocks=1219 avg_rms=0.0079 partials=72 finals=16 speaking=True
+17:51:09.322 DEBUG speaker.sherpa | capture heartbeat: blocks=1239 avg_rms=0.0158 partials=72 finals=16 speaking=False
+17:51:10.738 DEBUG speaker.sherpa | asr partial: 'To'
+17:51:10.739 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To'
+17:51:11.039 DEBUG speaker.sherpa | asr partial: 'To approve'
+17:51:11.039 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve'
+17:51:11.323 DEBUG speaker.sherpa | capture heartbeat: blocks=1259 avg_rms=0.0391 partials=74 finals=16 speaking=False
+17:51:11.739 DEBUG speaker.sherpa | asr partial: 'To approve my'
+17:51:11.739 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve my'
+17:51:12.039 DEBUG speaker.sherpa | asr partial: 'To approve my engl'
+17:51:12.039 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve my engl'
+17:51:12.338 DEBUG speaker.sherpa | asr partial: 'To approve my english'
+17:51:12.338 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve my english'
+17:51:12.639 DEBUG speaker.sherpa | asr partial: 'To approve my english I'
+17:51:12.639 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve my english I'
+17:51:12.707 DEBUG speaker.sysinfo | system sample: cpu=29.5% ram=19197.9MB(56.5%) proc_rss=549.4MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:51:12.940 DEBUG speaker.sherpa | asr partial: 'To approve my english I mean'
+17:51:12.941 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve my english I mean'
+17:51:13.322 DEBUG speaker.sherpa | capture heartbeat: blocks=1279 avg_rms=0.0168 partials=79 finals=16 speaking=False
+17:51:13.339 DEBUG speaker.sherpa | asr partial: 'To approve my english I meant'
+17:51:13.340 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='To approve my english I meant'
+17:51:14.239 INFO  speaker.sherpa | asr final: 'To approve my english I meant' (raw 'TO APPROVE MY ENGLISH I MEANT')
+17:51:14.239 INFO  speaker.runtime | final -> brain: 'To approve my english I meant' (mode=assistant)
+17:51:14.239 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='To approve my english I meant'
+17:51:14.239 INFO  speaker.tasks | task 7eee3dc9e900 started: mode=assistant capability=assistant.answer input='To approve my english I meant'
+17:51:14.261 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'To approve my english I meant'
+17:51:14.261 INFO  speaker.llm | fast tier done in 0.00s (39 chars, streamed)
+17:51:14.261 INFO  speaker.tasks | task 7eee3dc9e900 completed in 0.02s (39 chars)
+17:51:14.262 INFO  speaker.runtime | assistant: 'You said: To approve my english I meant'
+17:51:14.262 DEBUG speaker.sherpa | speaking: 'You said: To approve my english I meant' (queue depth=0)
+17:51:15.323 DEBUG speaker.sherpa | capture heartbeat: blocks=1299 avg_rms=0.0094 partials=80 finals=17 speaking=True
+17:51:17.322 DEBUG speaker.sherpa | capture heartbeat: blocks=1319 avg_rms=0.0170 partials=80 finals=17 speaking=False
+17:51:19.322 DEBUG speaker.sherpa | capture heartbeat: blocks=1339 avg_rms=0.0019 partials=80 finals=17 speaking=False
+17:51:21.322 DEBUG speaker.sherpa | capture heartbeat: blocks=1359 avg_rms=0.0110 partials=80 finals=17 speaking=False
+17:51:21.341 DEBUG speaker.sherpa | asr partial: 'I'
+17:51:21.341 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I'
+17:51:21.640 DEBUG speaker.sherpa | asr partial: 'I think'
+17:51:21.640 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think'
+17:51:21.941 DEBUG speaker.sherpa | asr partial: 'I think this'
+17:51:21.941 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think this'
+17:51:22.339 DEBUG speaker.sherpa | asr partial: 'I think this ep'
+17:51:22.339 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think this ep'
+17:51:22.638 DEBUG speaker.sherpa | asr partial: 'I think this ep it'
+17:51:22.639 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think this ep it'
+17:51:22.752 DEBUG speaker.sysinfo | system sample: cpu=27.5% ram=19186.4MB(56.5%) proc_rss=549.4MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:51:22.940 DEBUG speaker.sherpa | asr partial: 'I think this ep its working'
+17:51:22.940 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think this ep its working'
+17:51:23.238 DEBUG speaker.sherpa | asr partial: 'I think this ep its working will'
+17:51:23.238 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think this ep its working will'
+17:51:23.321 DEBUG speaker.sherpa | capture heartbeat: blocks=1379 avg_rms=0.0246 partials=87 finals=17 speaking=False
+17:51:23.539 DEBUG speaker.sherpa | asr partial: 'I think this ep its working will be better'
+17:51:23.539 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think this ep its working will be better'
+17:51:24.541 INFO  speaker.sherpa | asr final: 'I think this ep its working will be better' (raw 'I THINK THIS EP ITS WORKING WILL BE BETTER')
+17:51:24.541 INFO  speaker.runtime | final -> brain: 'I think this ep its working will be better' (mode=assistant)
+17:51:24.541 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='I think this ep its working will be better'
+17:51:24.542 INFO  speaker.tasks | task c1cfbe8f69cb started: mode=assistant capability=assistant.answer input='I think this ep its working will be better'
+17:51:24.561 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'I think this ep its working will be better'
+17:51:24.561 INFO  speaker.llm | fast tier done in 0.00s (52 chars, streamed)
+17:51:24.561 INFO  speaker.tasks | task c1cfbe8f69cb completed in 0.02s (52 chars)
+17:51:24.561 INFO  speaker.runtime | assistant: 'You said: I think this ep its working will be better'
+17:51:24.561 DEBUG speaker.sherpa | speaking: 'You said: I think this ep its working will be better' (queue depth=0)
+17:51:25.332 DEBUG speaker.sherpa | capture heartbeat: blocks=1399 avg_rms=0.0073 partials=88 finals=18 speaking=True
+17:51:27.332 DEBUG speaker.sherpa | capture heartbeat: blocks=1419 avg_rms=0.0199 partials=88 finals=18 speaking=False
+17:51:29.331 DEBUG speaker.sherpa | capture heartbeat: blocks=1439 avg_rms=0.0025 partials=88 finals=18 speaking=False
+17:51:31.332 DEBUG speaker.sherpa | capture heartbeat: blocks=1459 avg_rms=0.0136 partials=88 finals=18 speaking=False
+17:51:31.451 DEBUG speaker.sherpa | asr partial: 'At'
+17:51:31.451 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At'
+17:51:31.750 DEBUG speaker.sherpa | asr partial: 'At least'
+17:51:31.750 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least'
+17:51:32.350 DEBUG speaker.sherpa | asr partial: 'At least it'
+17:51:32.350 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it'
+17:51:32.650 DEBUG speaker.sherpa | asr partial: 'At least it know'
+17:51:32.650 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it know'
+17:51:32.797 DEBUG speaker.sysinfo | system sample: cpu=28.8% ram=19181.4MB(56.5%) proc_rss=550.2MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:51:33.049 DEBUG speaker.sherpa | asr partial: 'At least it knows'
+17:51:33.049 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows'
+17:51:33.331 DEBUG speaker.sherpa | capture heartbeat: blocks=1479 avg_rms=0.0290 partials=93 finals=18 speaking=False
+17:51:33.349 DEBUG speaker.sherpa | asr partial: 'At least it knows when'
+17:51:33.349 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows when'
+17:51:33.649 DEBUG speaker.sherpa | asr partial: 'At least it knows when to'
+17:51:33.649 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows when to'
+17:51:34.248 DEBUG speaker.sherpa | asr partial: 'At least it knows when to inter'
+17:51:34.249 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows when to inter'
+17:51:34.649 DEBUG speaker.sherpa | asr partial: 'At least it knows when to interrupt'
+17:51:34.649 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows when to interrupt'
+17:51:34.949 DEBUG speaker.sherpa | asr partial: 'At least it knows when to interrupt me or'
+17:51:34.950 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows when to interrupt me or'
+17:51:35.251 DEBUG speaker.sherpa | asr partial: 'At least it knows when to interrupt me or not'
+17:51:35.252 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='At least it knows when to interrupt me or not'
+17:51:35.331 DEBUG speaker.sherpa | capture heartbeat: blocks=1499 avg_rms=0.0273 partials=99 finals=18 speaking=False
+17:51:36.251 INFO  speaker.sherpa | asr final: 'At least it knows when to interrupt me or not' (raw 'AT LEAST IT KNOWS WHEN TO INTERRUPT ME OR NOT')
+17:51:36.251 INFO  speaker.runtime | final -> brain: 'At least it knows when to interrupt me or not' (mode=assistant)
+17:51:36.251 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='At least it knows when to interrupt me or not'
+17:51:36.251 INFO  speaker.tasks | task 2b0f5c12e427 started: mode=assistant capability=assistant.answer input='At least it knows when to interrupt me or not'
+17:51:36.269 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'At least it knows when to interrupt me or not'
+17:51:36.269 INFO  speaker.llm | fast tier done in 0.00s (55 chars, streamed)
+17:51:36.269 INFO  speaker.tasks | task 2b0f5c12e427 completed in 0.02s (55 chars)
+17:51:36.269 INFO  speaker.runtime | assistant: 'You said: At least it knows when to interrupt me or not'
+17:51:36.269 DEBUG speaker.sherpa | speaking: 'You said: At least it knows when to interrupt me or not' (queue depth=0)
+17:51:37.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1519 avg_rms=0.0054 partials=99 finals=19 speaking=True
+17:51:39.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1539 avg_rms=0.0205 partials=99 finals=19 speaking=False
+17:51:40.959 DEBUG speaker.sherpa | asr partial: 'She stood'
+17:51:40.959 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood'
+17:51:41.257 DEBUG speaker.sherpa | asr partial: 'She stood me every'
+17:51:41.258 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me every'
+17:51:41.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1559 avg_rms=0.0372 partials=101 finals=19 speaking=False
+17:51:41.558 DEBUG speaker.sherpa | asr partial: 'She stood me everything'
+17:51:41.558 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything'
+17:51:41.858 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know'
+17:51:41.859 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know'
+17:51:42.257 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about'
+17:51:42.259 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about'
+17:51:42.558 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that'
+17:51:42.560 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that'
+17:51:42.848 DEBUG speaker.sysinfo | system sample: cpu=28.3% ram=19245.7MB(56.7%) proc_rss=551.4MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:51:42.858 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that histor'
+17:51:42.858 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that histor'
+17:51:43.158 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of'
+17:51:43.158 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of'
+17:51:43.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1579 avg_rms=0.0379 partials=107 finals=19 speaking=False
+17:51:43.458 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the'
+17:51:43.458 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the'
+17:51:43.859 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the dee'
+17:51:43.860 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the dee'
+17:51:44.159 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep o'
+17:51:44.159 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep o'
+17:51:44.458 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep ocean'
+17:51:44.459 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep ocean'
+17:51:44.759 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep oceans'
+17:51:44.759 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep oceans'
+17:51:45.058 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep oceans and'
+17:51:45.058 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep oceans and'
+17:51:45.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1599 avg_rms=0.0209 partials=113 finals=19 speaking=False
+17:51:45.760 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep oceans and sec'
+17:51:45.760 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep oceans and sec'
+17:51:46.060 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep oceans and secret'
+17:51:46.061 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep oceans and secret'
+17:51:46.360 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep oceans and secret cre'
+17:51:46.360 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep oceans and secret cre'
+17:51:46.660 DEBUG speaker.sherpa | asr partial: 'She stood me everything you know about that history of the deep oceans and secret creatures'
+17:51:46.661 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She stood me everything you know about that history of the deep oceans and secret creatures'
+17:51:47.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1619 avg_rms=0.0097 partials=117 finals=19 speaking=False
+17:51:47.660 INFO  speaker.sherpa | asr final: 'She stood me everything you know about that history of the deep oceans and secret creatures' (raw 'SHE STOOD ME EVERYTHING YOU KNOW ABOUT THAT HISTORY OF THE DEEP OCEANS AND SECRET CREATURES')
+17:51:47.660 INFO  speaker.runtime | final -> brain: 'She stood me everything you know about that history of the deep oceans and secret creatures' (mode=assistant)
+17:51:47.660 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='She stood me everything you know about that history of the deep oceans and secret creatures'
+17:51:47.661 INFO  speaker.tasks | task 6f54d7d8a42a started: mode=assistant capability=assistant.answer input='She stood me everything you know about that history of the deep oceans and secret creatures'
+17:51:47.676 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'She stood me everything you know about that history of the deep oceans and secret creatures'
+17:51:47.676 INFO  speaker.llm | fast tier done in 0.00s (101 chars, streamed)
+17:51:47.676 INFO  speaker.tasks | task 6f54d7d8a42a completed in 0.02s (101 chars)
+17:51:47.676 INFO  speaker.runtime | assistant: 'You said: She stood me everything you know about that history of the deep oceans and secret creatures'
+17:51:47.676 DEBUG speaker.sherpa | speaking: 'You said: She stood me everything you know about that history of the deep oceans and secret creatures' (queue depth=0)
+17:51:47.843 INFO  speaker.sherpa | barge-in detected
+17:51:47.843 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+17:51:47.843 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+17:51:49.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1639 avg_rms=0.0033 partials=117 finals=20 speaking=False
+17:51:51.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1659 avg_rms=0.0016 partials=117 finals=20 speaking=False
+17:51:52.904 DEBUG speaker.sysinfo | system sample: cpu=33.1% ram=19260.9MB(56.7%) proc_rss=593.9MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:51:53.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1679 avg_rms=0.0013 partials=117 finals=20 speaking=False
+17:51:53.545 WARNING speaker.watchdog | tts stuck: turn 19 had llm_first_token but no tts_first_audio after 5.9s
+17:51:55.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1699 avg_rms=0.0014 partials=117 finals=20 speaking=False
+17:51:57.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1719 avg_rms=0.0023 partials=117 finals=20 speaking=False
+17:51:59.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1739 avg_rms=0.0018 partials=117 finals=20 speaking=False
+17:52:01.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1759 avg_rms=0.0017 partials=117 finals=20 speaking=False
+17:52:02.951 DEBUG speaker.sysinfo | system sample: cpu=31.5% ram=19257.2MB(56.7%) proc_rss=593.9MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:52:03.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1779 avg_rms=0.0015 partials=117 finals=20 speaking=False
+17:52:05.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1799 avg_rms=0.0020 partials=117 finals=20 speaking=False
+17:52:06.759 DEBUG speaker.sherpa | asr partial: 'Yellow'
+17:52:06.759 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Yellow'
+17:52:07.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1819 avg_rms=0.0093 partials=118 finals=20 speaking=False
+17:52:07.658 INFO  speaker.sherpa | asr final: 'Yellow' (raw 'YELLOW')
+17:52:07.658 INFO  speaker.runtime | final -> brain: 'Yellow' (mode=assistant)
+17:52:07.658 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Yellow'
+17:52:07.659 INFO  speaker.tasks | task ddab5252622e started: mode=assistant capability=assistant.answer input='Yellow'
+17:52:07.681 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Yellow'
+17:52:07.681 INFO  speaker.llm | fast tier done in 0.00s (16 chars, streamed)
+17:52:07.681 INFO  speaker.tasks | task ddab5252622e completed in 0.02s (16 chars)
+17:52:07.681 INFO  speaker.runtime | assistant: 'You said: Yellow'
+17:52:07.681 DEBUG speaker.sherpa | speaking: 'You said: Yellow' (queue depth=0)
+17:52:09.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1839 avg_rms=0.0135 partials=118 finals=21 speaking=False
+17:52:09.360 DEBUG speaker.sherpa | asr partial: 'O'
+17:52:09.360 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='O'
+17:52:09.659 DEBUG speaker.sherpa | asr partial: 'Oh'
+17:52:09.659 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh'
+17:52:10.259 DEBUG speaker.sherpa | asr partial: 'Oh please'
+17:52:10.259 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please'
+17:52:10.658 DEBUG speaker.sherpa | asr partial: 'Oh please tell'
+17:52:10.658 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell'
+17:52:10.960 DEBUG speaker.sherpa | asr partial: 'Oh please tell me'
+17:52:10.960 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me'
+17:52:11.259 DEBUG speaker.sherpa | asr partial: 'Oh please tell me every'
+17:52:11.260 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me every'
+17:52:11.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1859 avg_rms=0.0489 partials=124 finals=21 speaking=False
+17:52:11.558 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything'
+17:52:11.558 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything'
+17:52:11.858 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know'
+17:52:11.858 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know'
+17:52:12.259 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about'
+17:52:12.259 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about'
+17:52:12.558 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the his'
+17:52:12.559 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the his'
+17:52:12.860 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history'
+17:52:12.860 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history'
+17:52:13.011 DEBUG speaker.sysinfo | system sample: cpu=31.0% ram=19263.6MB(56.7%) proc_rss=593.9MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:52:13.159 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the'
+17:52:13.159 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the'
+17:52:13.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1879 avg_rms=0.0272 partials=130 finals=21 speaking=False
+17:52:13.459 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep'
+17:52:13.459 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep'
+17:52:13.860 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep oce'
+17:52:13.860 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep oce'
+17:52:14.160 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep ocean'
+17:52:14.160 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep ocean'
+17:52:14.459 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep ocean and'
+17:52:14.460 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep ocean and'
+17:52:14.761 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep ocean and the'
+17:52:14.761 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep ocean and the'
+17:52:15.058 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep ocean and the sea cre'
+17:52:15.058 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep ocean and the sea cre'
+17:52:15.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1899 avg_rms=0.0154 partials=136 finals=21 speaking=False
+17:52:15.458 DEBUG speaker.sherpa | asr partial: 'Oh please tell me everything you know about the history of the deep ocean and the sea creature'
+17:52:15.458 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh please tell me everything you know about the history of the deep ocean and the sea creature'
+17:52:16.359 INFO  speaker.sherpa | asr final: 'Oh please tell me everything you know about the history of the deep ocean and the sea creature' (raw 'OH PLEASE TELL ME EVERYTHING YOU KNOW ABOUT THE HISTORY OF THE DEEP OCEAN AND THE SEA CREATURE')
+17:52:16.359 INFO  speaker.runtime | final -> brain: 'Oh please tell me everything you know about the history of the deep ocean and the sea creature' (mode=assistant)
+17:52:16.359 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Oh please tell me everything you know about the history of the deep ocean and the sea creature'
+17:52:16.359 INFO  speaker.tasks | task a2cc73e2ce6f started: mode=assistant capability=assistant.answer input='Oh please tell me everything you know about the history of the deep ocean and the sea creature'
+17:52:16.371 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Oh please tell me everything you know about the history of the deep ocean and the sea creature'
+17:52:16.371 INFO  speaker.llm | fast tier done in 0.00s (104 chars, streamed)
+17:52:16.371 INFO  speaker.tasks | task a2cc73e2ce6f completed in 0.01s (104 chars)
+17:52:16.371 INFO  speaker.runtime | assistant: 'You said: Oh please tell me everything you know about the history of the deep ocean and the sea creature'
+17:52:16.371 DEBUG speaker.sherpa | speaking: 'You said: Oh please tell me everything you know about the history of the deep ocean and the sea creature' (queue depth=0)
+17:52:16.543 INFO  speaker.sherpa | barge-in detected
+17:52:16.543 INFO  speaker.supervisor | cancel_all: epoch=3 0 active, 0 queued, 0 pending-confirm
+17:52:16.543 INFO  speaker.supervisor | cancel_all: epoch=4 0 active, 0 queued, 0 pending-confirm
+17:52:17.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1919 avg_rms=0.0030 partials=137 finals=22 speaking=False
+17:52:19.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1939 avg_rms=0.0043 partials=137 finals=22 speaking=False
+17:52:21.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1959 avg_rms=0.0066 partials=137 finals=22 speaking=False
+17:52:21.816 WARNING speaker.watchdog | tts stuck: turn 21 had llm_first_token but no tts_first_audio after 5.4s
+17:52:23.058 DEBUG speaker.sysinfo | system sample: cpu=31.9% ram=19233.6MB(56.6%) proc_rss=595.0MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:52:23.342 DEBUG speaker.sherpa | capture heartbeat: blocks=1979 avg_rms=0.0016 partials=137 finals=22 speaking=False
+17:52:25.341 DEBUG speaker.sherpa | capture heartbeat: blocks=1999 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:27.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2019 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:29.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2039 avg_rms=0.0014 partials=137 finals=22 speaking=False
+17:52:31.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2059 avg_rms=0.0024 partials=137 finals=22 speaking=False
+17:52:33.097 DEBUG speaker.sysinfo | system sample: cpu=35.7% ram=19296.3MB(56.8%) proc_rss=595.0MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:52:33.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2079 avg_rms=0.0017 partials=137 finals=22 speaking=False
+17:52:35.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2099 avg_rms=0.0015 partials=137 finals=22 speaking=False
+17:52:37.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2119 avg_rms=0.0015 partials=137 finals=22 speaking=False
+17:52:39.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2139 avg_rms=0.0015 partials=137 finals=22 speaking=False
+17:52:41.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2159 avg_rms=0.0019 partials=137 finals=22 speaking=False
+17:52:43.146 DEBUG speaker.sysinfo | system sample: cpu=33.9% ram=19126.4MB(56.3%) proc_rss=595.0MB gpu=1.0% gpu_mem=4744.0/16376.0MB
+17:52:43.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2179 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:45.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2199 avg_rms=0.0014 partials=137 finals=22 speaking=False
+17:52:47.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2219 avg_rms=0.0014 partials=137 finals=22 speaking=False
+17:52:49.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2239 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:51.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2259 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:53.197 DEBUG speaker.sysinfo | system sample: cpu=31.4% ram=19134.6MB(56.3%) proc_rss=595.0MB gpu=5.0% gpu_mem=4744.0/16376.0MB
+17:52:53.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2279 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:55.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2299 avg_rms=0.0019 partials=137 finals=22 speaking=False
+17:52:57.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2319 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:52:59.341 DEBUG speaker.sherpa | capture heartbeat: blocks=2339 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:53:01.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2359 avg_rms=0.0012 partials=137 finals=22 speaking=False
+17:53:03.241 DEBUG speaker.sysinfo | system sample: cpu=33.3% ram=19134.9MB(56.3%) proc_rss=595.0MB gpu=3.0% gpu_mem=4744.0/16376.0MB
+17:53:03.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2379 avg_rms=0.0014 partials=137 finals=22 speaking=False
+17:53:05.259 DEBUG speaker.sherpa | asr partial: 'E'
+17:53:05.259 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='E'
+17:53:05.342 DEBUG speaker.sherpa | capture heartbeat: blocks=2399 avg_rms=0.0154 partials=138 finals=22 speaking=False

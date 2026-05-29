@@ -21,9 +21,16 @@ def _auto_threads() -> int:
     cores = os.cpu_count() or 4
     return max(2, min(4, cores // 2))
 
+from ..asr_text import restore_casing
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
-from ._sherpa_models import build_keyword_spotter, build_recognizer, build_tts, build_vad
+from ._sherpa_models import (
+    build_keyword_spotter,
+    build_punctuation,
+    build_recognizer,
+    build_tts,
+    build_vad,
+)
 from .speaker_gate import SpeakerGate, sherpa_speaker_gate
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
@@ -49,6 +56,33 @@ class SherpaConfig:
     asr_encoder: str = ""
     asr_decoder: str = ""
     asr_joiner: str = ""
+    # ASR decoding method: "modified_beam_search" (more accurate, the default)
+    # or "greedy_search" (slightly faster, lower accuracy). Beam search also
+    # enables contextual biasing via ``asr_hotwords``.
+    asr_decoding_method: str = "modified_beam_search"
+    asr_max_active_paths: int = 4
+    # Contextual biasing: a newline-separated list of phrases the recognizer
+    # should be primed to hear (names, jargon, command words), so they aren't
+    # mis-transcribed. ``asr_hotwords_score`` is the boost strength. Needs
+    # ``modified_beam_search``. Empty -> no biasing.
+    asr_hotwords: str = ""
+    asr_hotwords_score: float = 1.5
+    # Endpoint rules (the turn-commit latency knobs). rule1 fires on trailing
+    # silence with no decoded text; rule2 fires on trailing silence AFTER speech
+    # (this is the one that decides how long we wait before committing a final --
+    # lower = snappier, higher = fewer mid-thought cut-offs); rule3 is a hard
+    # utterance-length ceiling. Tuned below the sherpa defaults (2.4/1.2/20s) for
+    # a more responsive feel while keeping a safe floor.
+    asr_rule1_min_trailing_silence: float = 2.4
+    asr_rule2_min_trailing_silence: float = 0.8
+    asr_rule3_min_utterance_length: float = 20.0
+    # Restore conventional casing on partials/finals (the streaming model emits
+    # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
+    asr_restore_casing: bool = True
+    # Optional sherpa-onnx punctuation model (.onnx) applied to FINALS only --
+    # adds real ".,?" so the transcript reads naturally and the LLM gets clean
+    # sentences. Empty -> skipped (casing restoration still applies).
+    punct_model: str = ""
     # Silero VAD model (.onnx). Required for endpointing / barge-in.
     vad_model: str = ""
     # Command fast-path: a streaming keyword spotter (separate small transducer)
@@ -161,6 +195,8 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts = None
         self._kws = None
         self._kws_stream = None
+        self._punct = None
+        self._hotwords: list[str] = []
         self._stream_in = None
         # Optional session recording (the 16 kHz audio fed to the recognizer,
         # written to WAV so the run can be replayed and frozen into a test).
@@ -185,6 +221,13 @@ class SherpaOnnxEngine(AudioEngine):
             queue.Queue(maxsize=64)
         )
         self._play_thread: Optional[threading.Thread] = None
+        # The live PortAudio output stream, shared with stop_speaking() so a
+        # barge-in can abort() it -- dropping audio already buffered in the
+        # device -- instead of only ceasing to feed it (which leaves the tail
+        # playing for hundreds of ms). Guarded by a lock because the playback
+        # thread owns its lifecycle while stop_speaking() runs on another thread.
+        self._out_stream = None
+        self._out_lock = threading.Lock()
         # Whether this sherpa-onnx build supports the streaming TTS callback
         # (play audio as it is synthesized). Flipped off on the first build that
         # rejects the ``callback`` kwarg, after which we chunk the finished wave.
@@ -203,6 +246,16 @@ class SherpaOnnxEngine(AudioEngine):
         self._kws = build_keyword_spotter(c)
         if self._kws is not None:
             self._kws_stream = self._kws.create_stream()
+        # Optional punctuation restorer for finals (None -> casing only).
+        self._punct = build_punctuation(c)
+        # Pre-split the hotword phrase list once (newline-separated in config).
+        self._hotwords = [
+            line.strip() for line in (c.asr_hotwords or "").splitlines() if line.strip()
+        ]
+        if self._punct is not None:
+            log.info("punctuation model loaded for ASR finals")
+        if self._hotwords:
+            log.info("ASR contextual biasing: %d hotword phrase(s)", len(self._hotwords))
         if c.speaker_embedding_model:
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
@@ -374,10 +427,63 @@ class SherpaOnnxEngine(AudioEngine):
         # a barge-in flushes pending speech instead of letting it play out.
         self._stop_speaking.set()
         self._drain_play_q()
+        # Abort the live output stream so audio already handed to the device is
+        # dropped immediately (PortAudio abort() discards the buffer; stop()
+        # would drain it). This is the difference between a ~700ms and a ~100ms
+        # barge-in stop. The playback loop re-start()s the stream for the next
+        # utterance. abort() leaves it stopped-but-open, so this is cheap.
+        aborted = False
+        with self._out_lock:
+            if self._out_stream is not None:
+                try:
+                    self._out_stream.abort()
+                    aborted = True
+                except Exception:  # noqa: BLE001 - device may be mid-teardown
+                    pass
+        # Stamp the *true* audible-stop instant (when the buffer was dropped),
+        # not when synthesis later notices the flag. Only when we actually cut
+        # playing audio, so a no-op stop (nothing speaking) records nothing.
+        if aborted:
+            self._cb.on_metric(BARGE_IN_STOP)
 
     @property
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
+
+    # --- ASR text helpers ---
+    def _new_asr_stream(self):
+        """Create a recognizer stream, with hotword biasing when available.
+
+        Contextual biasing is per-stream in sherpa-onnx and only honored by
+        ``modified_beam_search``. We try the hotword-aware factory and fall back
+        to the plain one, so an older build (or greedy decoding) still works."""
+        rec = self._recognizer
+        if self._hotwords and self.config.asr_decoding_method == "modified_beam_search":
+            try:
+                return rec.create_stream(hotwords="\n".join(self._hotwords))
+            except TypeError:
+                log.warning("this sherpa-onnx build ignores per-stream hotwords; "
+                            "biasing disabled")
+        return rec.create_stream()
+
+    def _postprocess_final(self, text: str) -> str:
+        """Turn raw recognizer text into a readable final.
+
+        Punctuation model first (when configured) so it sees the model's own
+        spacing, then casing restoration. Punctuation failure is non-fatal --
+        we degrade to casing-only rather than drop the turn."""
+        result = text
+        if self._punct is not None:
+            try:
+                result = self._punct.add_punctuation(result)
+            except Exception:  # noqa: BLE001 - never let post-proc lose a turn
+                log.exception("punctuation model failed; using raw text")
+                result = text
+        if self.config.asr_restore_casing:
+            # Force lowercasing-first when a punctuation model already added
+            # terminators (its output may stay all-caps from the source model).
+            result = restore_casing(result, force=self._punct is not None)
+        return result
 
     # --- internals ---
     def _capture_loop(self) -> None:
@@ -389,7 +495,7 @@ class SherpaOnnxEngine(AudioEngine):
             log.error("no recognizer built (ASR model paths missing in config?); "
                       "capture loop idle -- the assistant will never hear you")
             return
-        stream = recognizer.create_stream()
+        stream = self._new_asr_stream()
         voiced_run = 0.0
         block_sec = 0.1
         # Rolling buffer of the current (non-speaking) ASR segment, used to embed
@@ -469,17 +575,21 @@ class SherpaOnnxEngine(AudioEngine):
                     if text and text != last_partial:
                         last_partial = text
                         partials += 1
-                        log.debug("asr partial: %r", text)
-                        self._cb.on_partial(text)
+                        # Casing only on partials (cheap, every block); the
+                        # heavier punctuation model is reserved for the final.
+                        shown = restore_casing(text) if self.config.asr_restore_casing else text
+                        log.debug("asr partial: %r", shown)
+                        self._cb.on_partial(shown)
                     if recognizer.is_endpoint(stream):
-                        final_text = recognizer.get_result(stream)
+                        raw_final = recognizer.get_result(stream)
                         recognizer.reset(stream)
                         last_partial = ""
                         seg = np.concatenate(utterance) if utterance else samples
                         utterance, utterance_len = [], 0
-                        if final_text.strip():
+                        if raw_final.strip():
                             finals += 1
-                            log.info("asr final: %r", final_text)
+                            final_text = self._postprocess_final(raw_final)
+                            log.info("asr final: %r (raw %r)", final_text, raw_final)
                             if self._should_act_on_final(seg):
                                 self._cb.on_metric(SPEECH_END)
                                 self._cb.on_final(final_text)
@@ -503,7 +613,7 @@ class SherpaOnnxEngine(AudioEngine):
                     try:
                         recognizer.reset(stream)
                     except Exception:
-                        stream = recognizer.create_stream()
+                        stream = self._new_asr_stream()
                     if asr_errors >= 10:
                         log.error(
                             "ASR failed %d times in a row -- likely an ASR model/tokens "
@@ -599,7 +709,15 @@ class SherpaOnnxEngine(AudioEngine):
                         self._cb.on_metric(TTS_FIRST_AUDIO)
                     if self._play_sr != self._tts_sr:
                         samples = _resample_linear(samples, self._tts_sr, self._play_sr)
-                    out.write(samples)
+                    try:
+                        out.write(samples)
+                    except Exception:  # noqa: BLE001
+                        # A barge-in abort() on another thread can stop the
+                        # stream mid-write; that's expected on interruption, not
+                        # a crash. Swallow only while stopping -- a genuine write
+                        # failure (not a barge-in) still surfaces and is logged.
+                        if not self._stop_speaking.is_set():
+                            raise
 
                 try:
                     if out is None:
@@ -608,7 +726,7 @@ class SherpaOnnxEngine(AudioEngine):
                         try:
                             out = sd.OutputStream(
                                 channels=1, samplerate=self._tts_sr, dtype="float32",
-                                device=out_dev,
+                                device=out_dev, latency="low",
                             )
                             out.start()
                             self._play_sr = self._tts_sr
@@ -618,7 +736,7 @@ class SherpaOnnxEngine(AudioEngine):
                             dev_sr = int(sd.query_devices(out_dev, kind="output")["default_samplerate"])
                             out = sd.OutputStream(
                                 channels=1, samplerate=dev_sr, dtype="float32",
-                                device=out_dev,
+                                device=out_dev, latency="low",
                             )
                             out.start()
                             self._play_sr = dev_sr
@@ -626,9 +744,15 @@ class SherpaOnnxEngine(AudioEngine):
                                 "speaker rejected %d Hz; playing at %d Hz and resampling",
                                 self._tts_sr, dev_sr,
                             )
+                        with self._out_lock:
+                            self._out_stream = out
+                    elif not out.active:
+                        # A previous barge-in abort()ed the stream; bring it back
+                        # up before this utterance writes to it.
+                        out.start()
                     self._synthesize(text, write)
-                    if self._stop_speaking.is_set() and played["any"]:
-                        self._cb.on_metric(BARGE_IN_STOP)
+                    # (true barge-in-stop is stamped in stop_speaking() at the
+                    # abort() instant -- the moment audio actually goes silent.)
                 finally:
                     if on_done:
                         on_done()
@@ -641,9 +765,16 @@ class SherpaOnnxEngine(AudioEngine):
             log.exception("playback loop crashed -- the assistant has gone mute")
             self._running.clear()
         finally:
+            # Drop the shared handle before teardown so a concurrent
+            # stop_speaking() can't abort() a stream we're closing.
+            with self._out_lock:
+                self._out_stream = None
             if out is not None:
-                out.stop()
-                out.close()
+                try:
+                    out.stop()
+                    out.close()
+                except Exception:  # noqa: BLE001 - may already be aborted/closed
+                    pass
 
     def _synthesize(self, text: str, write: Callable[[object], None]) -> None:
         """Synthesize ``text``, handing each audio chunk to ``write`` as it is

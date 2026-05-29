@@ -107,3 +107,32 @@ def test_enqueue_drops_oldest_under_backpressure():
     eng.speak("c")  # full -> oldest ("a") dropped, "c" enqueued
     queued = [eng._play_q.get_nowait()[0] for _ in range(eng._play_q.qsize())]
     assert queued == ["b", "c"]
+
+
+class _FakeOutStream:
+    def __init__(self):
+        self.aborted = 0
+
+    def abort(self):
+        self.aborted += 1
+
+
+def test_stop_speaking_aborts_live_stream_and_stamps_metric():
+    # Barge-in must drop audio already buffered in the device (abort), not just
+    # stop feeding it -- and stamp the true audible-stop instant at that moment.
+    eng = _engine(_StreamingTts())
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._out_stream = _FakeOutStream()
+    eng.stop_speaking()
+    assert eng._out_stream.aborted == 1
+    assert "barge_in_stop" in metrics
+
+
+def test_stop_speaking_without_live_stream_is_silent_noop():
+    # Nothing playing -> no abort, no spurious barge_in_stop metric.
+    eng = _engine(_StreamingTts())
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng.stop_speaking()  # _out_stream is None
+    assert "barge_in_stop" not in metrics

@@ -58,6 +58,13 @@ SPEAKER_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx"
 )
+# Optional punctuation model for ASR finals (CT-Transformer). Ships as a
+# .tar.bz2 release asset containing a model.onnx; we extract that one file.
+# Override with --punct-model-url or the ASR_PUNCT_MODEL_URL env var.
+PUNCT_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12.tar.bz2"
+)
 
 
 def dest_for(base: str, key: str) -> str:
@@ -86,6 +93,56 @@ def fetch_speaker_model(dest_dir: str, url: str, *, force: bool = False) -> str:
         shutil.copyfileobj(resp, fh)
     os.replace(tmp, path)
     return path
+
+
+def extract_member(archive: str, suffix: str, dest_dir: str) -> str:
+    """Extract the first member of a ``.tar.bz2`` whose name ends with ``suffix``.
+
+    Returns the extracted file's path (flattened into ``dest_dir``). Used for the
+    punctuation release asset, which bundles ``model.onnx`` inside a directory.
+    Guards against path-traversal members (a tar entry escaping ``dest_dir``)."""
+    import tarfile
+
+    os.makedirs(dest_dir, exist_ok=True)
+    with tarfile.open(archive, "r:*") as tar:
+        member = next(
+            (m for m in tar.getmembers() if m.isfile() and m.name.endswith(suffix)), None
+        )
+        if member is None:
+            raise FileNotFoundError(f"no '*{suffix}' member in {archive}")
+        out_path = os.path.join(dest_dir, os.path.basename(member.name))
+        # Flatten: read the member and write it directly, so a malicious or
+        # nested path can't place the file outside dest_dir.
+        src = tar.extractfile(member)
+        if src is None:
+            raise FileNotFoundError(f"could not read {member.name} from {archive}")
+        with src, open(out_path, "wb") as out:
+            import shutil
+
+            shutil.copyfileobj(src, out)
+    return out_path
+
+
+def fetch_punct_model(dest_dir: str, url: str, *, force: bool = False) -> str:
+    """Download + unpack the punctuation model, returning the model.onnx path.
+
+    Downloads the .tar.bz2 release asset and extracts its ``model.onnx``. Skips
+    work when the extracted model already exists (unless ``force``)."""
+    os.makedirs(dest_dir, exist_ok=True)
+    model_path = os.path.join(dest_dir, "model.onnx")
+    if os.path.exists(model_path) and not force:
+        return model_path
+    archive_name = url.rsplit("/", 1)[-1] or "punct.tar.bz2"
+    archive = fetch_speaker_model(dest_dir, url, force=force)  # reuses the streamed download
+    extracted = extract_member(archive, "model.onnx", dest_dir)
+    if extracted != model_path:
+        os.replace(extracted, model_path)
+    try:
+        os.remove(archive)  # the .tar.bz2 is no longer needed once unpacked
+    except OSError:
+        pass
+    _ = archive_name  # (kept for clarity; download already named it)
+    return model_path
 
 
 def apply_accuracy(manifest: dict, accuracy: str) -> dict:
@@ -141,6 +198,20 @@ def main(argv: list[str] | None = None) -> int:
         dest="speaker_model",
         action="store_false",
         help="skip the optional speaker-ID model download",
+    )
+    parser.add_argument(
+        "--punct-model-url",
+        dest="punct_model_url",
+        default=os.environ.get("ASR_PUNCT_MODEL_URL", PUNCT_MODEL_URL),
+        help="URL of the optional ASR punctuation model .tar.bz2 (override or "
+        "set ASR_PUNCT_MODEL_URL)",
+    )
+    parser.add_argument(
+        "--punct-model",
+        dest="punct_model",
+        action="store_true",
+        help="also download the optional punctuation model (adds real .,? to "
+        "ASR finals; off by default since casing restoration already helps)",
     )
     args = parser.parse_args(argv)
 
@@ -202,6 +273,22 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # Punctuation model (optional, opt-in). Same non-fatal contract: a failed
+    # fetch leaves the ASR path on casing-restoration only.
+    if args.punct_model:
+        punct_dest = os.path.join(args.dest, "punct")
+        print(f"[models] fetching punctuation model: {args.punct_model_url} -> {punct_dest}")
+        try:
+            resolved["punct_model"] = fetch_punct_model(
+                punct_dest, args.punct_model_url, force=args.force
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] punctuation model not fetched ({exc}); continuing without it. "
+                "ASR finals keep casing restoration but no punctuation.",
+                file=sys.stderr,
+            )
+
     # Write the absolute model paths into the machine-local overrides file
     # (gitignored, merged over config.json at load). Start from whatever is
     # already there so other local overrides survive.
@@ -215,7 +302,9 @@ def main(argv: list[str] | None = None) -> int:
 
     sherpa = cfg["sherpa"]
     print(f"\n[models] {args.config} sherpa paths set:")
-    for key in FILE_KEYS + ["tts_data_dir", "speaker_embedding_model"]:
+    for key in FILE_KEYS + ["tts_data_dir", "speaker_embedding_model", "punct_model"]:
+        if key == "punct_model" and not sherpa.get(key):
+            continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
     if sherpa.get("speaker_embedding_model"):
         print("\nSpeaker-ID model ready. Enroll your voice:  python -m core --enroll")

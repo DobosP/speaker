@@ -53,19 +53,103 @@ _PUBLIC_MARKERS = re.compile(
 )
 
 # Signals that the query is about the user's personal data even if it
-# otherwise looks public. Always wins (drops to PRIVATE). Allows up to
-# three intervening words ("my last doctor appointment", "my old email
-# inbox") so naturally-phrased queries still match.
-_PERSONAL_NOUNS = (
-    r"notes?|memos?|calendar|schedule|appointment|family|wife|husband|"
-    r"kids?|children|email|inbox|messages?|texts?|chats?|password|"
-    r"account|bank|address|home|location|health|doctor|medical"
-)
-_PERSONAL_MARKERS = re.compile(
-    rf"\bmy(?:\s+\w+){{0,3}}\s+(?:{_PERSONAL_NOUNS})\b|"
-    rf"\b(remind me|remember to|add to my|save to|note that)\b",
+# otherwise looks public. Always wins (drops to PRIVATE).
+#
+# security-5 (docs/review_ultracode.md): the earlier gate only matched a
+# *fixed* noun list after "my", so phrasings like "my coworker John's
+# salary" or "what is my coworker John salary" slipped through to the
+# cheap PRC-hosted public chain. The §9.7 boundary requires failing safe
+# toward PRIVATE, so we now treat *any* first/second-person possessive
+# followed (within a few words) by a noun-like token as personal data,
+# regardless of which noun it is.
+
+# First/second-person possessives that mark the query as being about the
+# speaker's (or the addressed party's) own data. Third-person ("his",
+# "her", "their") is intentionally excluded -- it does not by itself imply
+# the *speaker's* PII -- but third-person PII is still caught by the
+# explicit category markers below (e.g. a name + money amount).
+_POSSESSIVE = r"my|mine|our|ours|your|yours"
+
+# A "noun-like" tail: a plain word (optionally possessive, e.g. "John's")
+# that is not one of a few function words which would make the match a
+# false positive ("my and", "your or"). We allow up to three intervening
+# words so naturally-phrased queries still match ("my last doctor
+# appointment", "my old email inbox", "my coworker John's salary").
+_NOUN_TAIL = r"(?!and\b|or\b|but\b|the\b|a\b|to\b|of\b|is\b|are\b)[a-z]+(?:'s)?"
+_POSSESSIVE_NOUN = re.compile(
+    rf"\b(?:{_POSSESSIVE})(?:\s+\w+){{0,3}}\s+{_NOUN_TAIL}\b",
     re.IGNORECASE,
 )
+
+# Imperative "save it to my world" phrasings that imply storing personal
+# data even when no explicit possessive+noun pair is present.
+_PERSONAL_ACTIONS = re.compile(
+    r"\b(remind me|remember to|add to my|save to|note that)\b",
+    re.IGNORECASE,
+)
+
+# Explicit PII categories -- fire even without a first/second-person
+# possessive, so third-party PII ("John's salary", "Jane lives at ...")
+# never reaches a public chain.
+#
+# Names + money: a Capitalized given name adjacent to a currency/amount or
+# the words salary/wage/income/pay. Matched on the ORIGINAL-case text so we
+# can use the capitalization signal for a proper name.
+_NAME = r"[A-Z][a-z]+(?:'s)?"
+_MONEY = (
+    r"\$\s?\d|\d+\s?(?:dollars?|euros?|pounds?|usd|eur|gbp)\b|"
+    r"\b(?:salary|salaries|wage|wages|income|paycheck|pay ?stub|net worth|bonus)\b"
+)
+_NAME_AND_MONEY = re.compile(
+    rf"(?:{_NAME}(?:\s+\w+){{0,4}}\s+(?:{_MONEY})|"
+    rf"(?:{_MONEY})(?:\s+\w+){{0,4}}\s+{_NAME})",
+)
+
+# Other obvious PII categories (case-insensitive). Addresses, health, and
+# credentials each independently force PRIVATE.
+_PII_CATEGORY = re.compile(
+    r"\b("
+    # credentials / secrets
+    r"password|passphrase|passcode|api ?key|secret ?key|access ?token|"
+    r"credit ?card|debit ?card|card number|cvv|pin number|ssn|"
+    r"social security|bank account|routing number|iban|account number|"
+    # addresses / location
+    r"home address|street address|mailing address|zip ?code|postal code|"
+    r"phone number|date of birth|birthday|"
+    # health
+    r"diagnosis|diagnosed|prescription|medication|medical record|"
+    r"health record|blood pressure|symptoms?|illness|disease"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Street-address shape: a number followed by a street-type word
+# ("123 Main Street", "42 Oak Ave"). Case-insensitive on the street type.
+_ADDRESS = re.compile(
+    r"\b\d{1,6}\s+\w+(?:\s+\w+)?\s+"
+    r"(?:street|st|avenue|ave|road|rd|boulevard|blvd|lane|ln|drive|dr|"
+    r"court|ct|place|pl|way|terrace)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_personal(text: str) -> bool:
+    """Return True when ``text`` references personal/PII data and must be
+    kept off any public (potentially PRC-hosted) cloud chain.
+
+    Fail-safe: any of the personal/PII signals below is sufficient.
+    """
+    if _POSSESSIVE_NOUN.search(text):
+        return True
+    if _PERSONAL_ACTIONS.search(text):
+        return True
+    if _NAME_AND_MONEY.search(text):
+        return True
+    if _PII_CATEGORY.search(text):
+        return True
+    if _ADDRESS.search(text):
+        return True
+    return False
 
 
 def classify_sensitivity(
@@ -78,18 +162,24 @@ def classify_sensitivity(
 
     Order of evaluation (first match wins):
 
-    1. Personal-data markers → ``private`` (overrides everything).
+    1. Personal-data / PII markers → ``private`` (overrides everything).
+       This includes any first/second-person possessive + noun
+       ("my <noun>", "your <noun>") and explicit PII categories
+       (name+money, addresses, health, credentials). See ``_is_personal``.
     2. Intent/mode that always implies personal data → ``private``
        (``COMMAND``, ``DICTATION``, ``MEETING_NOTE``, mode=``MEETING``).
     3. Code markers → ``code``.
     4. Public/encyclopedic openers → ``public``.
     5. Otherwise → ``private`` (safe default).
+
+    Fails safe toward ``private`` on any uncertainty so PII never reaches
+    a cheap public (potentially PRC-hosted) chain (security-5, §9.7).
     """
     text = (query or "").strip()
     if not text:
         return PRIVATE
 
-    if _PERSONAL_MARKERS.search(text):
+    if _is_personal(text):
         return PRIVATE
 
     if intent_kind in {IntentKind.COMMAND, IntentKind.DICTATION, IntentKind.MEETING_NOTE}:

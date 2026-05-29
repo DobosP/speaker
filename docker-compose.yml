@@ -44,8 +44,10 @@ x-speaker: &speaker
   user: "10001:10001"
   environment: &speaker-env
     LIVEKIT_URL: ${LIVEKIT_URL:-ws://127.0.0.1:7880}
-    LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:-devkey}
-    LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:-secret}
+    # No fallback: leave these unset and the stack fails fast at startup rather
+    # than silently running on the well-known dev credentials. Set both in .env.
+    LIVEKIT_API_KEY: ${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY in .env}
+    LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET in .env}
     # Empty -> the app defaults to localhost:11434 (host Ollama via host net).
     OLLAMA_HOST: ${OLLAMA_HOST:-}
     # Empty -> use the config.json default ("30m"). "-1" keeps models resident.
@@ -53,12 +55,20 @@ x-speaker: &speaker
     HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN:-}
 
 services:
-  # Self-hosted WebRTC SFU. --dev uses the well-known devkey/secret that match
-  # the .env defaults; replace both for anything exposed beyond your LAN.
+  # Self-hosted WebRTC SFU. This default (non-dev) path requires real keys:
+  # provide them via LIVEKIT_KEYS (key: secret pairs) so the SFU never falls
+  # back to the well-known devkey/secret. For a throwaway local loop use the
+  # dev overlay (docker-compose.dev.yml), which re-enables --dev explicitly.
   livekit:
     image: livekit/livekit-server:latest
     network_mode: host
-    command: ["--dev", "--bind", "0.0.0.0"]
+    environment:
+      # "<key>: <secret>" -- must match LIVEKIT_API_KEY / LIVEKIT_API_SECRET.
+      # No fallback literals: if unset the SFU starts with no usable key and the
+      # worker/token-server (which carry a hard :? check on the same vars) abort,
+      # so the stack fails fast instead of silently running on dev credentials.
+      LIVEKIT_KEYS: "${LIVEKIT_API_KEY}: ${LIVEKIT_API_SECRET}"
+    command: ["--bind", "0.0.0.0"]
     cap_drop:
       - ALL
     security_opt:

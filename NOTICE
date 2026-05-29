@@ -1,0 +1,80 @@
+Speaker — Real-Time Local Voice Assistant
+Copyright (c) 2026 Paul Dobos
+
+This product is licensed under the MIT License (see the LICENSE file).
+
+It is built on, and borrows designs from, the third-party open-source
+components listed below. Each component remains under its own license; the
+copyright and license of each belongs to its respective authors. This NOTICE
+is provided for attribution and does not modify the LICENSE above.
+
+================================================================================
+Software components (runtime dependencies)
+================================================================================
+
+sherpa-onnx
+  Project:  https://github.com/k2-fsa/sherpa-onnx
+  Author:   The k2-fsa / Next-gen Kaldi team
+  License:  Apache License 2.0
+  Use:      On-device VAD, streaming ASR, endpointing, TTS, and speaker
+            embeddings (the AudioEngine in core/engines/sherpa.py). The example
+            ASR / VAD / TTS / punctuation / speaker-embedding model archives
+            fetched by tools/setup_models.py are published from the sherpa-onnx
+            GitHub releases and carry their own upstream model licenses.
+
+Silero VAD
+  Project:  https://github.com/snakers4/silero-vad
+  Author:   Silero Team
+  License:  MIT License
+  Use:      Voice-activity-detection model (the "vad_model" / silero_vad.onnx
+            referenced in config.json and tools/setup_models.py), run through
+            sherpa-onnx.
+
+Piper / VITS TTS
+  Project:  https://github.com/rhasspy/piper  (VITS: https://github.com/jaywalnut310/vits)
+  Author:   Michael Hansen (Piper) / Jaehyeon Kim et al. (VITS)
+  License:  MIT License
+  Use:      Neural text-to-speech voices (the "tts_model" / "tts_tokens" in
+            config.json, with the espeak-ng-data phoneme tables), run through
+            sherpa-onnx.
+
+Gemma (model weights)
+  Project:  https://ai.google.dev/gemma
+  Author:   Google DeepMind
+  License:  Gemma Terms of Use (https://ai.google.dev/gemma/terms) — NOT an
+            OSI-approved open-source license. Distribution and use of the model
+            weights are governed by Google's Gemma Prohibited Use Policy and
+            Terms of Use, separate from this project's MIT License.
+  Use:      Local LLM tier (gemma3 via Ollama / llama.cpp on desktop, and
+            flutter_gemma / MediaPipe on the mobile app). The weights are NOT
+            bundled with this repository; they are downloaded by the user.
+
+================================================================================
+Borrowed designs (re-implemented, not vendored)
+================================================================================
+
+The following projects were not copied; their designs were re-implemented in
+this codebase. They are credited here and in the headers of the noted files.
+
+Vocalis
+  Project:  https://github.com/Lex-au/Vocalis
+  License:  Apache License 2.0
+  Use:      Proactive "always-listening" follow-up policy
+            (always_on_agent/followups.py).
+
+Leon
+  Project:  https://github.com/leon-ai/leon
+  License:  MIT License
+  Use:      Agent-mode plan -> execute -> recover -> final ReAct loop
+            (always_on_agent/react.py).
+
+RouteLLM
+  Project:  https://github.com/lm-sys/RouteLLM
+  License:  Apache License 2.0
+  Use:      The Router abstraction (query -> scalar -> tier) and the BERTRouter
+            pattern for the fast/main model split (core/routing.py).
+
+vLLM Semantic Router
+  Project:  https://github.com/vllm-project/semantic-router
+  License:  Apache License 2.0
+  Use:      Complexity-signal heuristic for query routing (core/routing.py).

@@ -5,7 +5,16 @@
 # relaxes the read-only root filesystem so editing is frictionless, and runs the
 # token server with --reload so the web/text path hot-reloads on save. Hardening
 # (non-root, dropped caps, no-new-privileges) stays on.
+#
+# This is the ONLY place --dev (well-known devkey/secret) is enabled. The base
+# compose requires real LIVEKIT_API_KEY/SECRET and fails fast without them; this
+# overlay opts back into the throwaway dev credentials for a local-only loop.
 services:
+  # --dev makes the SFU accept the well-known devkey/secret. LOCAL ONLY: never
+  # use this overlay for anything exposed beyond your machine.
+  livekit:
+    command: ["--dev", "--bind", "127.0.0.1"]
+
   worker:
     read_only: false
     volumes:
@@ -15,11 +24,15 @@ services:
     read_only: false
     volumes:
       - ./:/app
+    # Local-only dev loop: bind the token server to loopback, consistent with
+    # the 127.0.0.1 default in main() and the dev livekit service above. Expose
+    # it deliberately (and set SPEAKER_REMOTE_BIND_ALL / a token) only if you
+    # actually need off-box access.
     command:
       - uvicorn
       - remote.token_server:app
       - --host
-      - 0.0.0.0
+      - 127.0.0.1
       - --port
       - "8080"
       - --reload

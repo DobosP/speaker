@@ -45,6 +45,13 @@ def test_public_with_personal_marker_falls_to_private():
     assert classify_sensitivity("When was my last doctor appointment") == PRIVATE
 
 
+def test_public_economics_queries_stay_public():
+    """Generic economics/finance questions with no person attached stay
+    public -- the name+money PII rule must not swallow encyclopedic facts."""
+    assert classify_sensitivity("What is the GDP of France in dollars") == PUBLIC
+    assert classify_sensitivity("How many dollars is a Bitcoin worth") == PUBLIC
+
+
 # --- code branch -----------------------------------------------------------
 
 
@@ -69,6 +76,68 @@ def test_personal_markers_force_private():
     assert classify_sensitivity("Email my wife about dinner") == PRIVATE
     assert classify_sensitivity("Read me my schedule") == PRIVATE
     assert classify_sensitivity("What's in my inbox") == PRIVATE
+
+
+# --- security-5: hardened PII gate (golden cases) --------------------------
+# docs/review_ultracode.md security-5: the prior gate matched only a *fixed*
+# noun list after "my", so these PII phrasings escaped to the cheap public
+# (PRC-hosted) chain. Each must now classify PRIVATE, failing safe per §9.7.
+
+
+def test_coworker_salary_is_private():
+    """The canonical leak from the finding: a possessive + name + money
+    phrasing must never reach a public chain, in any of its phrasings."""
+    assert classify_sensitivity("my coworker John's salary") == PRIVATE
+    assert classify_sensitivity("What is my coworker John salary") == PRIVATE
+    assert classify_sensitivity("How much does my coworker John make") == PRIVATE
+    # Even with no possessive at all -- name adjacent to money is PII.
+    assert classify_sensitivity("What is John's salary") == PRIVATE
+
+
+def test_possessive_plus_arbitrary_noun_is_private():
+    """ANY first/second-person possessive + noun is private, not just the
+    historical fixed noun list -- this is the core of the security-5 fix."""
+    assert classify_sensitivity("What is my coworker working on") == PRIVATE
+    assert classify_sensitivity("Tell me about my landlord") == PRIVATE
+    assert classify_sensitivity("Who is my dentist") == PRIVATE
+    assert classify_sensitivity("Summarize my mortgage paperwork") == PRIVATE
+    # Second-person possessive too.
+    assert classify_sensitivity("What is your salary") == PRIVATE
+    assert classify_sensitivity("What is in your inbox") == PRIVATE
+
+
+def test_name_plus_money_is_private():
+    """A proper name adjacent to a monetary amount is PII even with no
+    possessive (third-party financial info)."""
+    assert classify_sensitivity("Jane earns 90000 dollars a year") == PRIVATE
+    assert classify_sensitivity("What is the bonus for Michael") == PRIVATE
+    assert classify_sensitivity("Pay Sarah $500 next week") == PRIVATE
+
+
+def test_addresses_are_private():
+    assert classify_sensitivity("My home address is 123 Main Street") == PRIVATE
+    assert classify_sensitivity("Send the package to 42 Oak Ave") == PRIVATE
+    assert classify_sensitivity("What is the zip code on file") == PRIVATE
+
+
+def test_health_data_is_private():
+    assert classify_sensitivity("What was my diagnosis last week") == PRIVATE
+    assert classify_sensitivity("List the medication I take") == PRIVATE
+    assert classify_sensitivity("Look up the symptoms I described") == PRIVATE
+
+
+def test_credentials_are_private():
+    assert classify_sensitivity("What is the password for the router") == PRIVATE
+    assert classify_sensitivity("Store this api key for me") == PRIVATE
+    assert classify_sensitivity("What is my credit card number") == PRIVATE
+    assert classify_sensitivity("Remember my social security number") == PRIVATE
+
+
+def test_compensation_terms_fail_safe_private():
+    """Bare compensation terms with no public-fact framing fail safe to
+    private (uncertainty resolves toward private per the finding)."""
+    assert classify_sensitivity("What is the average salary in Germany") == PRIVATE
+    assert classify_sensitivity("What is the minimum wage") == PRIVATE
 
 
 # --- mode + intent overrides -----------------------------------------------

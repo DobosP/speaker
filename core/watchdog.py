@@ -34,6 +34,8 @@ from typing import Callable, Optional
 
 from .metrics import (
     ASR_FINAL,
+    BARGE_IN,
+    BARGE_IN_STOP,
     LLM_FIRST_TOKEN,
     MetricsRecorder,
     TTS_FIRST_AUDIO,
@@ -146,6 +148,13 @@ class StuckWatchdog:
     def _check_turns(self, now: float) -> None:
         for i, rec in enumerate(self._recorder.records()):
             stamps = rec.stamps
+            # A turn the user barged into (or stopped via a "stop" command that
+            # aborted playback) may legitimately never reach llm_first_token or
+            # tts_first_audio -- that is an interrupt, not a stall. Skip both
+            # stuck checks for it so a real barge-in isn't mis-flagged as stuck
+            # (the live run surfaced this false positive on a cancelled turn).
+            if BARGE_IN in stamps or BARGE_IN_STOP in stamps:
+                continue
             if ASR_FINAL in stamps and LLM_FIRST_TOKEN not in stamps:
                 elapsed = now - stamps[ASR_FINAL]
                 if elapsed >= self.LLM_FIRST_TOKEN_DEADLINE_SEC:

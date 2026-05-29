@@ -64,6 +64,9 @@ Thumbs.db
 # Local config (keep config.json as template)
 config.local.json
 
+# Local Claude Code session config (machine-local, never committed)
+.claude/
+
 # Environment variables
 .env
 .env.local

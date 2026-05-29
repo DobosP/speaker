@@ -10,7 +10,14 @@ import logging
 
 import pytest
 
-from core.metrics import ASR_FINAL, LLM_FIRST_TOKEN, TTS_FIRST_AUDIO, MetricsRecorder
+from core.metrics import (
+    ASR_FINAL,
+    BARGE_IN,
+    BARGE_IN_STOP,
+    LLM_FIRST_TOKEN,
+    TTS_FIRST_AUDIO,
+    MetricsRecorder,
+)
 from core.watchdog import StuckWatchdog
 
 
@@ -79,6 +86,51 @@ def test_does_not_warn_when_tts_audio_arrives(fake_clock, caplog):
     with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
         wd.tick()
     assert "tts stuck" not in caplog.text
+
+
+def test_barged_in_turn_is_not_flagged_tts_stuck(fake_clock, caplog):
+    """A turn the user barged into (BARGE_IN stamped) may have llm_first_token
+    but never tts_first_audio -- that is an interrupt, not a stall. The live run
+    surfaced this exact false positive on a cancelled turn."""
+    t, rec, wd = _make(fake_clock)
+    wd.TTS_FIRST_AUDIO_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)
+    t[0] = 0.1
+    rec.mark(LLM_FIRST_TOKEN)
+    rec.mark(BARGE_IN)  # user talked over the reply before it produced audio
+    t[0] = 10.0  # well past the deadline
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "tts stuck" not in caplog.text
+
+
+def test_stop_command_abort_turn_is_not_flagged_stuck(fake_clock, caplog):
+    """A "stop" command that aborted playback stamps BARGE_IN_STOP; same rule --
+    neither the tts-stuck nor llm-stuck check should fire for it."""
+    t, rec, wd = _make(fake_clock)
+    wd.TTS_FIRST_AUDIO_DEADLINE_SEC = 0.5
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)
+    rec.mark(LLM_FIRST_TOKEN)
+    rec.mark(BARGE_IN_STOP)
+    t[0] = 10.0
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "tts stuck" not in caplog.text
+    assert "llm stuck" not in caplog.text
+
+
+def test_barge_in_before_first_token_is_not_flagged_llm_stuck(fake_clock, caplog):
+    """Cancelled before the LLM produced a token: BARGE_IN present, no
+    llm_first_token -- an interrupt, not an llm stall."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)
+    rec.mark(BARGE_IN)
+    t[0] = 10.0
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" not in caplog.text
 
 
 def test_warns_only_once_per_turn(fake_clock, caplog):

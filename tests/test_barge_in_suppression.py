@@ -53,6 +53,31 @@ def test_output_margin_accepts_speech_well_above_playback():
     assert passes_output_margin(0.40, 0.10, margin_db=6.0) is True
 
 
+# --- calibrated default (docs/audio_calibration.md; live on-device) --------
+
+
+def test_shipped_default_margin_is_the_calibrated_value():
+    """The shipped default was set from live on-device calibration
+    (docs/audio_calibration.md): 0 dB self-interrupted 15-21x at EVERY volume,
+    while 6 dB drove it to 0 across 30-100% volume. Pin it so the fix is not
+    silently reverted to the old fail-open (0.0) default."""
+    assert SherpaConfig().barge_in_output_margin_db == pytest.approx(6.0)
+
+
+def test_calibrated_margin_rejects_echo_accepts_real_barge_in():
+    """Codifies the live calibration at the default 6 dB margin: the assistant's
+    own echo (measured median ~-10 dB, almost always below the playback buffer
+    level) is rejected -> no self-interruption; a genuine barge-in (measured
+    clearly louder -- it fired live in ~170 ms when the user talked over a reply)
+    clears the margin and is accepted."""
+    margin = SherpaConfig().barge_in_output_margin_db
+    playback = 0.06  # ~peak playback buffer level measured live
+    echo_typical = playback * 10 ** (4.0 / 20.0)    # ~+4 dB: below the 6 dB margin
+    assert passes_output_margin(echo_typical, playback, margin_db=margin) is False
+    real_barge_in = playback * 10 ** (12.0 / 20.0)  # ~+12 dB: a user talking over
+    assert passes_output_margin(real_barge_in, playback, margin_db=margin) is True
+
+
 def test_output_margin_silent_speech_never_passes_when_playing():
     assert passes_output_margin(0.0, 0.10, margin_db=6.0) is False
 

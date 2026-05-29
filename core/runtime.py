@@ -115,7 +115,13 @@ class VoiceRuntime:
         # Live watchdog: warns when a turn stalls or the barge-in gate flaps.
         # See core.watchdog for the heuristics; WARNINGs land in the run
         # bundle so the next stuck reproduction leaves visible evidence.
-        self._watchdog = StuckWatchdog(self.metrics)
+        # Wire the storm hook so a detected barge-in / TTS-echo storm briefly
+        # debounces the engine's barge-in gate (realtime-concurrency-5). Engines
+        # without the hook (scripted/livekit) pass None and the watchdog just
+        # logs the diagnosis as before.
+        self._watchdog = StuckWatchdog(
+            self.metrics, on_storm=getattr(self.engine, "note_barge_in_storm", None)
+        )
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:
@@ -210,9 +216,17 @@ class VoiceRuntime:
         self.bus.publish(AgentEvent.final(final_text))
 
     def _on_barge_in(self) -> None:
-        # User spoke over the assistant: cut playback now, cancel in-flight work.
+        # User spoke over the assistant: cancel in-flight work, then cut playback.
+        # Cancellation MUST be set before stop_speaking() returns so the
+        # streaming emitter stops producing sentences and any TTS_REQUEST still
+        # in flight is dropped by _on_event -- otherwise a stale sentence from
+        # the interrupted turn could be spoken after the barge-in
+        # (realtime-concurrency-1). cancel_all() only sets cancel_events under a
+        # short-lived lock; it never blocks on an engine call or a thread join,
+        # so it is safe to run here on the audio thread before stop_speaking().
         self.metrics.mark(BARGE_IN)
         self._watchdog.note_barge_in()
+        self.supervisor.cancel_all()
         self.engine.stop_speaking()
         self.bus.publish(AgentEvent.stop("barge_in"))
 
@@ -230,6 +244,10 @@ class VoiceRuntime:
             self.bus.publish(AgentEvent.final(keyword))
             return
         if action == "stop":
+            # Same determinism as barge-in: set cancellation before playback is
+            # cut so no stale sentence from the interrupted turn is spoken
+            # (realtime-concurrency-1).
+            self.supervisor.cancel_all()
             self.engine.stop_speaking()
             self.bus.publish(AgentEvent.stop("command"))
         elif action == "confirm":
@@ -269,12 +287,24 @@ class VoiceRuntime:
     def _on_event(self, event: AgentEvent) -> None:
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
-            if text:
-                log.info(
-                    "assistant: %r", text,
-                    extra={"transcript": {"role": "assistant", "text": text}},
-                )
-                self.engine.speak(text)
+            if not text:
+                return
+            # Deterministic barge-in (realtime-concurrency-1): a sentence that
+            # was queued or emitted just before an interrupt belongs to a turn
+            # the user has cancelled. Drop it so no stale sentence is spoken
+            # after stop_speaking(). The supervisor's epoch/active-task check is
+            # the single source of truth -- cancellation is set there before the
+            # barge-in path returns (see _on_barge_in / _on_command).
+            task_id = str(event.payload.get("task_id", ""))
+            epoch = event.payload.get("epoch")
+            if not self.supervisor.tts_request_allowed(task_id, epoch):
+                log.debug("dropping stale TTS_REQUEST (task_id=%r): %r", task_id, text)
+                return
+            log.info(
+                "assistant: %r", text,
+                extra={"transcript": {"role": "assistant", "text": text}},
+            )
+            self.engine.speak(text)
         elif event.kind == EventKind.CONTROL_STOP:
             self.engine.stop_speaking()
             # Stop also cancels pending fast-path actions (e.g. a running timer).

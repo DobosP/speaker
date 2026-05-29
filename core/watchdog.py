@@ -64,12 +64,18 @@ class StuckWatchdog:
         *,
         interval_sec: float = 1.0,
         clock: Optional[Callable[[], float]] = None,
+        on_storm: Optional[Callable[[], None]] = None,
     ) -> None:
         self._recorder = recorder
         self._interval = interval_sec
         # Default matches MetricsRecorder's clock so per-turn deltas are
         # comparable. Pass a controlled clock from tests.
         self._clock = clock or time.perf_counter
+        # Optional reaction hook fired once per detected barge-in storm. The
+        # engine can wire its brief barge-in debounce here so a flapping VAD
+        # gate (TTS leaking into the mic, no AEC) collapses into one interrupt
+        # instead of a rattling string of them. Diagnosis still logs as before.
+        self._on_storm = on_storm
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._warned: set[tuple[int, str]] = set()
@@ -193,6 +199,23 @@ class StuckWatchdog:
             "(gate flapping; TTS likely leaking into mic, or stop_speaking too slow)",
             len(self._barge_ins), self.BARGE_IN_STORM_WINDOW_SEC,
         )
+        # Let a wired engine briefly debounce its barge-in gate. Best-effort:
+        # the watchdog's job is diagnosis, so a misbehaving hook must not take
+        # the loop down (and must not block it -- the hook is expected to be a
+        # cheap, non-blocking flag set).
+        if self._on_storm is not None:
+            try:
+                self._on_storm()
+            except Exception:  # noqa: BLE001 - hook failure must not stop the watchdog
+                log.exception("watchdog on_storm hook raised")
+
+    @property
+    def in_storm(self) -> bool:
+        """Whether a barge-in storm was warned within the last window (cheap
+        read for tests / a runtime that wants to poll rather than be called)."""
+        if self._storm_warned_at is None:
+            return False
+        return (self._clock() - self._storm_warned_at) < self.BARGE_IN_STORM_WINDOW_SEC
 
     def _warn_once(self, turn_idx: int, key: str, msg: str) -> None:
         token = (turn_idx, key)

@@ -18,6 +18,36 @@ def cosine_similarity(a: Embedding, b: Embedding) -> float:
     return dot / (na * nb)
 
 
+def rms(samples: Sequence[float]) -> float:
+    """Root-mean-square level of a mono float block (0.0 for empty)."""
+    n = len(samples)
+    if n == 0:
+        return 0.0
+    return math.sqrt(sum(float(x) * float(x) for x in samples) / n)
+
+
+def passes_output_margin(
+    speech_level: float, playback_level: float, *, margin_db: float
+) -> bool:
+    """Conservative self-interruption guard for the *unenrolled* gate.
+
+    Without speaker-ID or AEC, the assistant's own TTS bleeding into the mic
+    looks like the user talking. When playback is active we therefore require
+    the detected speech to sit ``margin_db`` dB *above* the current playback
+    level before we treat it as a genuine barge-in -- residual echo is at or
+    below the playback level, a real user speaking over the assistant is
+    louder. ``playback_level <= 0`` means nothing is playing, so there is no
+    self-interruption risk and we fail open (return True).
+    """
+    if playback_level <= 0.0:
+        return True
+    if speech_level <= 0.0:
+        return False
+    # Compare in dB: speech must exceed playback by at least margin_db.
+    ratio_db = 20.0 * math.log10(speech_level / playback_level)
+    return ratio_db >= margin_db
+
+
 class SpeakerGate:
     """Decides whether detected speech is the enrolled user (=> real barge-in).
 
@@ -52,13 +82,34 @@ class SpeakerGate:
             self._enrolled = list(embedding)
         return self.is_enrolled
 
-    def accept(self, samples: Sequence[float], sample_rate: int) -> bool:
+    def accept(
+        self,
+        samples: Sequence[float],
+        sample_rate: int,
+        *,
+        playback_level: float = 0.0,
+        output_margin_db: float = 0.0,
+    ) -> bool:
         """Return True if this audio should be treated as the user barging in.
 
-        Fail-open: if there's no enrollment or no usable embedding, don't block
-        barge-in (better to over-interrupt than to ignore the user)."""
+        When *enrolled*, only the user's own voice (cosine >= ``threshold``)
+        counts; an unusable embedding fails open.
+
+        When *unenrolled* (no speaker-ID / no enrollment), we used to blindly
+        fail open, which lets the assistant's own TTS echo self-interrupt
+        (realtime-concurrency-5). With no AEC the conservative fallback instead
+        gates on output activity: if ``playback_level`` is provided and the
+        assistant is currently outputting audio, the detected speech must sit
+        ``output_margin_db`` dB above that playback level to count. A genuine
+        user talking over the assistant clears the margin; residual TTS echo
+        does not. With nothing playing (or no margin configured) we still fail
+        open so a real interrupt is never lost."""
         if not self.is_enrolled:
-            return True
+            if output_margin_db <= 0.0:
+                return True  # no conservative guard requested -> legacy fail-open
+            return passes_output_margin(
+                rms(samples), playback_level, margin_db=output_margin_db
+            )
         embedding = self._embed(samples, sample_rate)
         if embedding is None:
             return True

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 import time
 import uuid
 
@@ -39,21 +39,48 @@ class AgentTask:
     created_at: float = field(default_factory=time.time)
     cancel_event: Event = field(default_factory=Event)
     output_text: str = ""
+    # Speech epoch captured when the task is started (see AgentSupervisor).
+    # Stamped on every streaming TTS_REQUEST this task emits so a later barge-in
+    # (which advances the supervisor epoch) drops the now-stale sentences without
+    # depending on the task still being "active" -- TASK_COMPLETED is dequeued
+    # before the trailing TTS_REQUESTs (realtime-concurrency-1).
+    speech_epoch: int = 0
 
     def cancel(self) -> None:
         self.cancel_event.set()
         self.state = TaskState.CANCELLED
 
 
+# Hard ceiling on concurrently running task threads. RESEARCH already has its
+# own per-mode cap (``ModePolicy.research_parallel_tasks``); this is the global
+# backstop across *all* modes so a burst of assistant/search turns can't spawn
+# unbounded daemon threads. Overflow is reported via ``at_capacity()`` so the
+# supervisor queues it the same way a capped RESEARCH task is queued.
+DEFAULT_MAX_ACTIVE_TASKS = 6
+
+
 class TaskRuntime:
     """Runs cancellable tasks and emits lifecycle events."""
 
-    def __init__(self, publish, capabilities: CapabilityRegistry, *, stream_tts: bool = False):
+    def __init__(
+        self,
+        publish,
+        capabilities: CapabilityRegistry,
+        *,
+        stream_tts: bool = False,
+        max_active_tasks: int = DEFAULT_MAX_ACTIVE_TASKS,
+    ):
         self._publish = publish
         self._capabilities = capabilities
         self._planner = TaskPlanner()
+        # ``_threads`` is mutated from the bus thread (``start``) and from the
+        # worker threads themselves (lifecycle reaping). Guard it with a lock
+        # that is only ever held for the dict mutation -- never across a thread
+        # join, engine I/O, or ``_publish`` -- so the supervisor can't deadlock.
         self._threads: dict[str, Thread] = {}
+        self._threads_lock = Lock()
         self._stream_tts = stream_tts
+        self._max_active_tasks = max(1, int(max_active_tasks))
 
     def _make_emitter(self, task: "AgentTask"):
         """A callback the speaking capability uses to play each sentence as it
@@ -63,7 +90,10 @@ class TaskRuntime:
             if task.cancel_event.is_set() or not sentence:
                 return
             self._publish(
-                AgentEvent(EventKind.TTS_REQUEST, {"task_id": task.task_id, "text": sentence})
+                AgentEvent(
+                    EventKind.TTS_REQUEST,
+                    {"task_id": task.task_id, "text": sentence, "epoch": task.speech_epoch},
+                )
             )
 
         return emit
@@ -92,8 +122,51 @@ class TaskRuntime:
 
     def start(self, task: AgentTask) -> None:
         thread = Thread(target=self._run_task, args=(task,), daemon=True)
-        self._threads[task.task_id] = thread
+        with self._threads_lock:
+            # Opportunistically drop any threads that have already exited but
+            # whose lifecycle event we never saw, so the dict can't creep.
+            self._reap_dead_locked()
+            self._threads[task.task_id] = thread
         thread.start()
+
+    @property
+    def active_count(self) -> int:
+        """Number of task threads currently registered as running."""
+        with self._threads_lock:
+            self._reap_dead_locked()
+            return len(self._threads)
+
+    @property
+    def max_active_tasks(self) -> int:
+        return self._max_active_tasks
+
+    def at_capacity(self) -> bool:
+        """True when starting another task would exceed the global cap.
+
+        The supervisor consults this to overflow excess turns into
+        ``queued_tasks`` -- the same path a capped RESEARCH task takes.
+        """
+        return self.active_count >= self._max_active_tasks
+
+    def _reap_dead_locked(self) -> None:
+        """Drop threads that are no longer alive. Caller must hold the lock.
+
+        Only inspects ``Thread.is_alive`` -- never joins -- so this is safe to
+        call from the bus thread without blocking on a worker.
+        """
+        dead = [tid for tid, thr in self._threads.items() if not thr.is_alive()]
+        for tid in dead:
+            self._threads.pop(tid, None)
+
+    def _reap(self, task_id: str) -> None:
+        """Remove a finished task's thread from the registry.
+
+        Called from the worker thread on COMPLETED/CANCELLED/FAILED. It must
+        not join (that would be a self-join / deadlock) -- the daemon thread is
+        already on its way out; we just stop tracking it.
+        """
+        with self._threads_lock:
+            self._threads.pop(task_id, None)
 
     def _run_task(self, task: AgentTask) -> None:
         log.info(
@@ -213,6 +286,7 @@ class TaskRuntime:
             "task %s completed in %.2fs (%d chars)",
             task.task_id, time.time() - task.created_at, len(task.output_text or ""),
         )
+        self._reap(task.task_id)
         self._publish(
             AgentEvent(
                 EventKind.TASK_COMPLETED,
@@ -232,6 +306,7 @@ class TaskRuntime:
     def _publish_cancelled(self, task: AgentTask) -> None:
         log.info("task %s cancelled after %.2fs", task.task_id, time.time() - task.created_at)
         task.state = TaskState.CANCELLED
+        self._reap(task.task_id)
         self._publish(
             AgentEvent(
                 EventKind.TASK_CANCELLED,
@@ -244,6 +319,7 @@ class TaskRuntime:
         log.error("task %s FAILED after %.2fs: %s", task.task_id,
                   time.time() - task.created_at, error)
         task.state = TaskState.FAILED
+        self._reap(task.task_id)
         self._publish(
             AgentEvent(
                 EventKind.TASK_FAILED,

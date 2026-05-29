@@ -139,6 +139,7 @@ class OllamaLLM:
         *,
         options: Optional[dict] = None,
         keep_alive: Optional[str | int] = None,
+        timeout: Optional[float] = 60.0,
         client=None,
     ):
         self.model = model
@@ -148,13 +149,26 @@ class OllamaLLM:
         # (e.g. "30m") or -1 (forever) avoids a cold reload on the next turn --
         # the single biggest win for a snappy first token on a warm box.
         self._keep_alive = keep_alive
+        # Socket/read timeout (seconds) for the underlying httpx client. Without
+        # it a hung Ollama daemon would wedge the turn forever instead of
+        # raising (which the Hedge chain treats as a dead source and advances
+        # past). ``None`` disables the timeout (the old behaviour).
+        self._timeout = timeout
         self._client = client
 
     def _ensure(self):
         if self._client is None:
             import ollama  # lazy
 
-            self._client = ollama.Client(host=self._host) if self._host else ollama
+            # Always build an explicit Client so the read timeout is applied;
+            # the bare ``ollama`` module client has no timeout (hangs forever
+            # on a stalled connection).
+            kwargs: dict = {}
+            if self._host:
+                kwargs["host"] = self._host
+            if self._timeout is not None:
+                kwargs["timeout"] = self._timeout
+            self._client = ollama.Client(**kwargs)
         return self._client
 
     def _messages(
@@ -573,6 +587,22 @@ class HedgeLLM:
     capability layer, so barge-in works unchanged.
     """
 
+    # How long the final-drain ``q.get()`` waits between tokens from a winner
+    # that has already produced its first token before giving up and ending the
+    # stream cleanly. Without a bound, a winner whose connection stalls
+    # mid-stream (TCP black-hole) would wedge the whole turn forever. Generous
+    # enough not to truncate a healthy-but-slow generation; the per-token gap on
+    # any working stream is far below this.
+    DRAIN_IDLE_TIMEOUT = 30.0
+    # Total budget the generator's cleanup spends joining worker threads once
+    # they have been told to stop. A live worker stops at its next token
+    # boundary (sub-ms once signalled) or when its socket read timeout fires;
+    # this short bound reaps the common fast-exit case without wedging the turn
+    # on a loser still blocked in an uncancellable pre-first-token read (those
+    # are daemon threads that their socket timeout reaps shortly after). It must
+    # never be unbounded.
+    WORKER_JOIN_TIMEOUT = 0.5
+
     def __init__(
         self,
         *,
@@ -614,14 +644,28 @@ class HedgeLLM:
 
     @staticmethod
     def _worker(client, tag, prompt, system, images, q, stop) -> None:
+        # Hold the underlying stream so a stop can close it at the next token
+        # boundary -- that propagates GeneratorExit into the client's stream(),
+        # running its ``finally`` (socket close, metric log) promptly instead
+        # of leaving a half-read HTTP body dangling until GC.
+        stream = client.stream(prompt, system=system, images=images)
         try:
-            for token in client.stream(prompt, system=system, images=images):
+            for token in stream:
                 if stop.is_set():
                     break
                 q.put((tag, "tok", token))
             q.put((tag, "done", None))
         except Exception as exc:  # cloud down / rate-limited -> chain advances
             q.put((tag, "err", str(exc)))
+        finally:
+            # Best-effort close: list/iterator fakes lack .close(); a generator
+            # raising on close shouldn't take the worker down.
+            closer = getattr(stream, "close", None)
+            if closer is not None:
+                try:
+                    closer()
+                except Exception:
+                    pass
 
     def stream(
         self,
@@ -646,109 +690,144 @@ class HedgeLLM:
         }
         started: set[str] = set()
         dead: set[str] = set()
+        threads: dict[str, threading.Thread] = {}
 
         def launch(tag: str) -> None:
             if tag in started:
                 return
             started.add(tag)
-            threading.Thread(
+            t = threading.Thread(
                 target=self._worker,
                 args=(clients[tag], tag, prompt, system, images, q, stops[tag]),
                 daemon=True,
-            ).start()
+            )
+            threads[tag] = t
+            t.start()
 
-        cloud_iter = iter(cloud_tags)
+        def shutdown() -> None:
+            """Signal every worker to stop and bound-join them so the
+            generator never leaks threads -- runs on normal completion AND
+            when the consumer closes the generator early (barge-in / cancel /
+            ``del`` the iterator -> GeneratorExit). Each worker stops at its
+            next token boundary or when its socket read timeout fires, then
+            closes its underlying stream in _worker's finally. The join shares
+            one bounded budget across all workers so a multi-cloud chain can't
+            multiply the wait."""
+            for ev in stops.values():
+                ev.set()
+            join_deadline = time.monotonic() + self.WORKER_JOIN_TIMEOUT
+            for t in threads.values():
+                if t.is_alive():
+                    remaining = join_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    t.join(timeout=remaining)
 
-        def next_cloud() -> Optional[str]:
-            try:
-                return next(cloud_iter)
-            except StopIteration:
-                return None
+        try:
+            cloud_iter = iter(cloud_tags)
 
-        current_cloud = next_cloud()
-        if self.strategy == "fallback":
-            # Cloud-first: launch the first cloud with a ttft_deadline; on
-            # error/timeout, advance the chain; finally fall back to local.
-            if current_cloud is not None:
-                launch(current_cloud)
-            deadline = time.monotonic() + self.ttft_deadline
-            local_pending = True
-        else:  # hedge
-            # Local-first: kick local now; after hedge_delay also launch the
-            # first cloud. On cloud error/finish-without-tokens, advance the
-            # chain and keep racing against local.
-            launch("local")
-            deadline = time.monotonic() + self.hedge_delay
-            local_pending = False
+            def next_cloud() -> Optional[str]:
+                try:
+                    return next(cloud_iter)
+                except StopIteration:
+                    return None
 
-        winner: Optional[str] = None
-        buffered: list[str] = []
-
-        def kick_chain() -> bool:
-            """Bring up whatever is next in line. Returns True if launched."""
-            nonlocal current_cloud, deadline, local_pending
-            if self.strategy == "hedge":
-                if current_cloud is not None and current_cloud not in started:
+            current_cloud = next_cloud()
+            if self.strategy == "fallback":
+                # Cloud-first: launch the first cloud with a ttft_deadline; on
+                # error/timeout, advance the chain; finally fall back to local.
+                if current_cloud is not None:
                     launch(current_cloud)
+                deadline = time.monotonic() + self.ttft_deadline
+                local_pending = True
+            else:  # hedge
+                # Local-first: kick local now; after hedge_delay also launch the
+                # first cloud. On cloud error/finish-without-tokens, advance the
+                # chain and keep racing against local.
+                launch("local")
+                deadline = time.monotonic() + self.hedge_delay
+                local_pending = False
+
+            winner: Optional[str] = None
+            buffered: list[str] = []
+
+            def kick_chain() -> bool:
+                """Bring up whatever is next in line. Returns True if launched."""
+                nonlocal current_cloud, deadline, local_pending
+                if self.strategy == "hedge":
+                    if current_cloud is not None and current_cloud not in started:
+                        launch(current_cloud)
+                        deadline = float("inf")
+                        return True
+                else:  # fallback
+                    if current_cloud is not None and current_cloud not in started:
+                        launch(current_cloud)
+                        deadline = time.monotonic() + self.ttft_deadline
+                        return True
+                if local_pending:
+                    launch("local")
+                    local_pending = False
                     deadline = float("inf")
                     return True
-            else:  # fallback
-                if current_cloud is not None and current_cloud not in started:
-                    launch(current_cloud)
-                    deadline = time.monotonic() + self.ttft_deadline
-                    return True
-            if local_pending:
-                launch("local")
-                local_pending = False
-                deadline = float("inf")
-                return True
-            return False
+                return False
 
-        while winner is None:
-            live = started - dead
-            if not live:
-                if not kick_chain():
-                    break
-                continue
-            timeout = None if deadline == float("inf") else max(0.0, deadline - time.monotonic())
-            try:
-                tag, kind, val = q.get(timeout=timeout)
-            except queue.Empty:
-                # Deadline hit. Hedge: kick the current cloud; fallback:
-                # retire the current cloud and advance the chain.
-                if self.strategy == "fallback" and current_cloud is not None:
-                    stops[current_cloud].set()
-                    dead.add(current_cloud)
-                    current_cloud = next_cloud()
-                kick_chain()
-                continue
-            if kind == "tok":
-                winner = tag
-                buffered.append(str(val))
-            else:  # this source died (error or empty stream)
-                dead.add(tag)
-                if tag == current_cloud:
-                    current_cloud = next_cloud()
+            while winner is None:
+                live = started - dead
+                if not live:
+                    if not kick_chain():
+                        break
+                    continue
+                timeout = None if deadline == float("inf") else max(0.0, deadline - time.monotonic())
+                try:
+                    tag, kind, val = q.get(timeout=timeout)
+                except queue.Empty:
+                    # Deadline hit. Hedge: kick the current cloud; fallback:
+                    # retire the current cloud and advance the chain.
+                    if self.strategy == "fallback" and current_cloud is not None:
+                        stops[current_cloud].set()
+                        dead.add(current_cloud)
+                        current_cloud = next_cloud()
                     kick_chain()
-                elif tag == "local":
-                    # Local crashed; nothing to do but ride the cloud chain.
-                    pass
+                    continue
+                if kind == "tok":
+                    winner = tag
+                    buffered.append(str(val))
+                else:  # this source died (error or empty stream)
+                    dead.add(tag)
+                    if tag == current_cloud:
+                        current_cloud = next_cloud()
+                        kick_chain()
+                    elif tag == "local":
+                        # Local crashed; nothing to do but ride the cloud chain.
+                        pass
 
-        if winner is None:
-            return  # nothing produced (every source errored or was empty)
-        for tag, ev in stops.items():
-            if tag != winner:
-                ev.set()
-        for token in buffered:
-            yield token
-        while True:
-            tag, kind, val = q.get()
-            if tag != winner:
-                continue  # drain the loser's late tokens
-            if kind == "tok":
-                yield str(val)
-            else:
-                break
+            if winner is None:
+                return  # nothing produced (every source errored or was empty)
+            # Stop the losers now so they stop billing/streaming promptly;
+            # the winner keeps streaming and is joined in shutdown().
+            for tag, ev in stops.items():
+                if tag != winner:
+                    ev.set()
+            for token in buffered:
+                yield token
+            while True:
+                try:
+                    # Bounded idle wait: a winner whose connection stalls
+                    # mid-stream must not wedge the turn forever. On timeout
+                    # we stop the winner and end the stream cleanly with what
+                    # we already delivered.
+                    tag, kind, val = q.get(timeout=self.DRAIN_IDLE_TIMEOUT)
+                except queue.Empty:
+                    stops[winner].set()
+                    break
+                if tag != winner:
+                    continue  # drain the loser's late tokens
+                if kind == "tok":
+                    yield str(val)
+                else:
+                    break
+        finally:
+            shutdown()
 
 
 class SensitivityRouterLLM:

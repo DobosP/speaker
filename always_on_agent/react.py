@@ -184,9 +184,20 @@ class ReactPlanner:
                 return CapabilityResult(
                     True, "", data={"cancelled": True, "agent": True}
                 )
-            raw = self._llm.generate(
-                self._plan_prompt(query, observations), system=PLANNER_SYSTEM
+            # Drain the plan step as a cancel-aware stream (like ``_final``) so a
+            # barge-in/STOP between chunks aborts mid-planning instead of blocking
+            # on ``generate()``. ``_drain`` strips, which is parse-neutral:
+            # ``_parse_step`` strips again before matching TOOL/FINAL.
+            raw = self._drain(
+                self._llm.stream(
+                    self._plan_prompt(query, observations), system=PLANNER_SYSTEM
+                ),
+                cancel,
             )
+            if _cancelled(cancel):
+                return CapabilityResult(
+                    True, "", data={"cancelled": True, "agent": True}
+                )
             action, arg = _parse_step(raw)
 
             if action is None or action.upper() == "FINAL":

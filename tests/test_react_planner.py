@@ -15,6 +15,7 @@ from always_on_agent.capabilities import (
     create_default_capabilities,
 )
 from always_on_agent.react import (
+    FINAL_SYSTEM,
     PlannerConfig,
     ReactPlanner,
     attach_react_capability,
@@ -25,7 +26,15 @@ from core.capabilities import attach_llm_capabilities
 
 
 class ScriptLLM:
-    """Returns queued plan decisions from generate(); a fixed final from stream()."""
+    """Scripted LLM for the planner loop.
+
+    The planner now drives BOTH plan steps and final synthesis through
+    ``stream()`` (a real LLM yields the same content from ``stream`` and
+    ``generate``). Route by the system prompt: the synthesis step
+    (``FINAL_SYSTEM``) returns the fixed final; every other call (plan steps,
+    which use ``PLANNER_SYSTEM``) pops the next queued plan reply. ``generate()``
+    mirrors the same queue for any caller still using it.
+    """
 
     def __init__(self, plan_replies: list[str], final: str = "final answer"):
         self._plan = list(plan_replies)
@@ -37,7 +46,11 @@ class ScriptLLM:
         return self._plan.pop(0) if self._plan else "FINAL: fallback"
 
     def stream(self, prompt: str, *, system=None) -> Iterator[str]:
-        yield self._final
+        if system == FINAL_SYSTEM:
+            yield self._final
+            return
+        self.plan_prompts.append(prompt)
+        yield self._plan.pop(0) if self._plan else "FINAL: fallback"
 
 
 def test_planner_calls_tool_then_finalizes():

@@ -31,7 +31,12 @@ from ._sherpa_models import (
     build_tts,
     build_vad,
 )
-from .speaker_gate import SpeakerGate, sherpa_speaker_gate
+from .speaker_gate import (
+    SpeakerGate,
+    passes_output_margin,
+    rms,
+    sherpa_speaker_gate,
+)
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
@@ -104,6 +109,21 @@ class SherpaConfig:
     tts_speed: float = 1.0
     # Barge-in: seconds of detected voice during playback before we interrupt.
     barge_in_min_speech_sec: float = 0.2
+    # Self-interruption suppression (realtime-concurrency-5). Without AEC the
+    # assistant's own TTS bleeds into the mic and can look like a barge-in.
+    # When the speaker gate is *unenrolled* (fail-open), require detected speech
+    # to sit this many dB above the current playback level before it counts as a
+    # barge-in -- a real user talking over the assistant clears the margin,
+    # residual echo does not.
+    # DEFAULT 0.0 = OFF (legacy fail-open). The comparison is mic-capture RMS vs
+    # playback-buffer RMS -- different signal scales -- so a non-zero margin can
+    # suppress a genuine barge-in until calibrated on real hardware (the safer
+    # mitigation is speaker-ID enrollment). Opt in via config once tuned.
+    barge_in_output_margin_db: float = 0.0
+    # After a barge-in fires (or a watchdog storm is reported) ignore further
+    # barge-in triggers for this long. Debounces a flapping VAD gate / TTS-echo
+    # storm into a single interrupt instead of a rapid-fire string of them.
+    barge_in_suppress_sec: float = 0.5
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -232,6 +252,16 @@ class SherpaOnnxEngine(AudioEngine):
         # (play audio as it is synthesized). Flipped off on the first build that
         # rejects the ``callback`` kwarg, after which we chunk the finished wave.
         self._tts_can_stream = True
+        # Self-interruption suppression (realtime-concurrency-5). An EWMA of the
+        # RMS level of the audio currently being played, written by the playback
+        # thread and read by the capture thread as the reference level for the
+        # unenrolled-conservative barge-in gate. A bare float -- the GIL makes
+        # the read/write atomic and a stale sample only nudges a threshold, so
+        # no lock is taken on the hot path. Decays to 0 once playback stops.
+        self._playback_level: float = 0.0
+        # monotonic deadline until which barge-in triggers are debounced (set
+        # after a barge-in fires or when a watchdog storm is reported).
+        self._barge_in_suppressed_until: float = 0.0
 
     def set_record_path(self, path: Optional[str]) -> None:
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
@@ -440,6 +470,9 @@ class SherpaOnnxEngine(AudioEngine):
                     aborted = True
                 except Exception:  # noqa: BLE001 - device may be mid-teardown
                     pass
+        # Playback is being cut: drop the echo reference so the capture loop
+        # doesn't keep gating barge-in against a level that is no longer audible.
+        self._playback_level = 0.0
         # Stamp the *true* audible-stop instant (when the buffer was dropped),
         # not when synthesis later notices the flag. Only when we actually cut
         # playing audio, so a no-op stop (nothing speaking) records nothing.
@@ -552,10 +585,19 @@ class SherpaOnnxEngine(AudioEngine):
                 # Barge-in watch while the assistant is speaking.
                 if self._speaking.is_set() and self._vad is not None:
                     self._vad.accept_waveform(samples)
+                    # Debounce: ignore triggers for a short window after a
+                    # barge-in / reported storm so a flapping VAD gate (TTS echo
+                    # with no AEC) collapses into a single interrupt.
+                    if now < self._barge_in_suppressed_until:
+                        voiced_run = 0.0
+                        continue
                     if self._vad.is_speech_detected() and self._looks_like_user(samples):
                         voiced_run += block_sec
                         if voiced_run >= self.config.barge_in_min_speech_sec:
                             voiced_run = 0.0
+                            self._barge_in_suppressed_until = (
+                                now + max(0.0, self.config.barge_in_suppress_sec)
+                            )
                             log.info("barge-in detected")
                             self._cb.on_barge_in()
                     else:
@@ -709,6 +751,10 @@ class SherpaOnnxEngine(AudioEngine):
                         self._cb.on_metric(TTS_FIRST_AUDIO)
                     if self._play_sr != self._tts_sr:
                         samples = _resample_linear(samples, self._tts_sr, self._play_sr)
+                    # Track the level of what we're actually playing so the
+                    # capture loop can require user voice to stand *above* it
+                    # before counting as barge-in (self-interruption guard).
+                    self._note_playback_level(samples)
                     try:
                         out.write(samples)
                     except Exception:  # noqa: BLE001
@@ -760,6 +806,7 @@ class SherpaOnnxEngine(AudioEngine):
                     # doesn't flap ASR/barge-in on/off between adjacent sentences.
                     if self._play_q.empty():
                         self._speaking.clear()
+                        self._playback_level = 0.0  # nothing playing -> no echo ref
                         self._cb.on_speech_end()
         except Exception:
             log.exception("playback loop crashed -- the assistant has gone mute")
@@ -808,13 +855,52 @@ class SherpaOnnxEngine(AudioEngine):
             write(samples[i : i + chunk])
 
     def _looks_like_user(self, samples) -> bool:
-        # Speaker-ID gate: when enrolled, only the user's own voice counts as
-        # barge-in, so the assistant's TTS bleeding into the mic can't
-        # self-interrupt. Fail-open when no gate/enrollment is configured.
+        # Decide whether playback-time voice is a genuine barge-in.
+        #
+        # Enrolled gate: only the enrolled user's voice counts (speaker-ID does
+        # the echo rejection). Unenrolled / no gate: we can't rely on identity,
+        # so instead of blindly failing open into self-interruption
+        # (realtime-concurrency-5) we require the detected speech to stand a
+        # configurable margin *above* the current playback level -- a real user
+        # talking over the assistant clears it, residual TTS echo does not.
+        # With nothing playing (playback_level == 0) this still fails open, so a
+        # genuine interrupt is never suppressed.
         gate = self._speaker_gate
+        margin_db = self.config.barge_in_output_margin_db
         if gate is None or not gate.is_enrolled:
-            return True
-        return gate.accept(samples, self.config.sample_rate)
+            if margin_db <= 0.0:
+                return True
+            return passes_output_margin(
+                rms(samples), self._playback_level, margin_db=margin_db
+            )
+        return gate.accept(
+            samples,
+            self.config.sample_rate,
+            playback_level=self._playback_level,
+            output_margin_db=margin_db,
+        )
+
+    def _note_playback_level(self, samples) -> None:
+        """Update the EWMA of the level we're currently playing.
+
+        Called from the playback thread per chunk; read lock-free by the
+        capture thread as the echo reference for the unenrolled barge-in
+        gate. The EWMA smooths over silent gaps between phonemes so a brief
+        trough doesn't momentarily open the gate to the assistant's own tail."""
+        level = rms(samples)
+        prev = self._playback_level
+        # Fast attack (track loud output quickly), slow-ish release.
+        alpha = 0.5 if level >= prev else 0.2
+        self._playback_level = prev + alpha * (level - prev)
+
+    def note_barge_in_storm(self) -> None:
+        """Hook for the watchdog: a barge-in storm was detected (gate flapping,
+        likely TTS leaking into the mic). Arm the debounce window so the rapid
+        repeats collapse into one interrupt instead of a rattling string of
+        them. Safe to call from the watchdog thread (single float write)."""
+        self._barge_in_suppressed_until = (
+            time.monotonic() + max(0.0, self.config.barge_in_suppress_sec)
+        )
 
     def _should_act_on_final(self, samples) -> bool:
         """Whether a completed ASR utterance should be delivered to the runtime.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from threading import Timer
+from threading import Lock, Timer
 
 log = logging.getLogger("speaker.supervisor")
 
@@ -54,6 +54,15 @@ class AgentSupervisor:
             markers=self.followups.markers, max_followups=self.followups.max_followups
         )
         self._followup_timer: Timer | None = None
+        # Barge-in determinism (realtime-concurrency-1): cancellation can be
+        # requested from the audio thread (runtime barge-in/stop) *and* the bus
+        # thread (CONTROL_STOP). This lock makes the cancel atomic and guards
+        # the monotonic speech epoch. It is held only around in-memory bookkeeping
+        # -- never across an engine call, ``stop_speaking()``, or a thread join.
+        self._cancel_lock = Lock()
+        # Bumped on every cancel_all. A TTS_REQUEST stamped with an older epoch
+        # (i.e. produced by an interrupted turn) must not reach ``engine.speak``.
+        self.speech_epoch = 0
         self.bus.subscribe(self.handle_event)
 
     def publish(self, event: AgentEvent) -> None:
@@ -103,17 +112,55 @@ class AgentSupervisor:
         self._cancel_followup()
 
     def cancel_all(self) -> None:
-        log.info(
-            "cancel_all: %d active, %d queued, %d pending-confirm",
-            len(self.state.active_tasks), len(self.state.queued_tasks),
-            len(self.state.pending_confirmations),
-        )
-        for task in list(self.state.active_tasks.values()):
-            task.cancel()
-        self.state.queued_tasks.clear()
-        self.state.pending_confirmations.clear()
+        """Preempt every active/queued/pending task. Safe to call from the audio
+        thread (runtime barge-in/stop) or the bus thread (CONTROL_STOP).
+
+        The speech epoch is bumped and every active task is cancelled *under the
+        lock* so that, the instant this returns, no in-flight task can be treated
+        as active and no prior-epoch sentence will be spoken. ``task.cancel()``
+        only sets an :class:`Event`, so the lock is never held across blocking
+        work (no engine call, no ``stop_speaking()``, no thread join)."""
+        with self._cancel_lock:
+            self.speech_epoch += 1
+            log.info(
+                "cancel_all: epoch=%d %d active, %d queued, %d pending-confirm",
+                self.speech_epoch,
+                len(self.state.active_tasks), len(self.state.queued_tasks),
+                len(self.state.pending_confirmations),
+            )
+            for task in list(self.state.active_tasks.values()):
+                task.cancel()
+            self.state.queued_tasks.clear()
+            self.state.pending_confirmations.clear()
+        # Out of the lock: timer cancel touches a Timer thread and the spoken log
+        # is independent of the cancel bookkeeping above.
         self._reset_followups()
         self.state.spoken_outputs.append("[cancelled]")
+
+    def tts_request_allowed(self, task_id: str, epoch: int | None = None) -> bool:
+        """Whether a ``TTS_REQUEST`` still belongs to the current speech turn.
+
+        Both emission paths stamp the speech ``epoch`` and a barge-in silences
+        both by advancing the epoch via ``cancel_all``:
+
+        * **Streaming** sentences carry the epoch captured when the task was
+          started (``_start_task``). They are dropped once a later barge-in
+          advances the epoch -- crucially *without* depending on the task still
+          being in ``active_tasks``, because ``TASK_COMPLETED`` (priority 60) is
+          dequeued before the trailing ``TTS_REQUEST``s (priority 100) and has
+          already removed it.
+        * **Completion** replies carry the epoch captured when the task
+          finished; same rule.
+
+        A request with no stamp (``epoch is None``: legacy/direct emits) falls
+        back to the active-and-uncancelled check."""
+        with self._cancel_lock:
+            if epoch is not None:
+                return epoch >= self.speech_epoch
+            if not task_id:
+                return True
+            task = self.state.active_tasks.get(task_id)
+            return task is not None and not task.cancel_event.is_set()
 
     # --- proactive follow-ups ------------------------------------------------
     def _schedule_followup(self) -> None:
@@ -222,10 +269,23 @@ class AgentSupervisor:
         self._start_task(task)
 
     def _start_task(self, task: AgentTask) -> None:
-        self.state.active_tasks[task.task_id] = task
+        # Capture the current speech epoch and register the task atomically with
+        # respect to cancel_all (realtime-concurrency-1): the streaming sentences
+        # this task emits are stamped with this epoch, so a barge-in that
+        # advances the epoch drops them even though TASK_COMPLETED (priority 60)
+        # is dequeued before the trailing TTS_REQUESTs (priority 100) and has
+        # already removed the task from active_tasks.
+        with self._cancel_lock:
+            task.speech_epoch = self.speech_epoch
+            self.state.active_tasks[task.task_id] = task
         self.tasks.start(task)
 
     def _should_queue(self, task: AgentTask) -> bool:
+        # Global backstop across all modes (realtime-concurrency-4): if the task
+        # runtime is at its concurrent-thread ceiling, queue the turn; the
+        # existing _start_queued_tasks drains it as threads free up.
+        if self.tasks.at_capacity():
+            return True
         if task.mode != Mode.RESEARCH:
             return False
         active_research = sum(
@@ -275,8 +335,16 @@ class AgentSupervisor:
             # When the capability streamed sentence-by-sentence, the audio has
             # already been spoken during the task; don't re-speak the whole text.
             if not streamed:
+                # Stamp the current speech epoch so the runtime drops this reply
+                # if a barge-in/stop preempts the turn before it is spoken
+                # (realtime-concurrency-1).
+                with self._cancel_lock:
+                    epoch = self.speech_epoch
                 self.publish(
-                    AgentEvent(EventKind.TTS_REQUEST, {"task_id": task_id, "text": text})
+                    AgentEvent(
+                        EventKind.TTS_REQUEST,
+                        {"task_id": task_id, "text": text, "epoch": epoch},
+                    )
                 )
         # Arm (or continue) the silence cadence once the assistant has spoken.
         if speak and text:

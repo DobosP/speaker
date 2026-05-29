@@ -22,6 +22,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..asr_text import restore_casing
+from ..audio_frontend import CLEAN_CAPTURE_RATES, AudioResampler, apply_gain_soft_limit
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._sherpa_models import (
@@ -228,6 +229,9 @@ class SherpaOnnxEngine(AudioEngine):
         # Actual mic capture rate (may differ from config.sample_rate when the
         # device won't open at 16 kHz); captured audio is resampled to 16 kHz.
         self._capture_sr = config.sample_rate
+        # Stateful anti-aliased resampler (built in start() when the mic opens at
+        # a rate other than 16 kHz); None means no resampling needed.
+        self._resampler: Optional[AudioResampler] = None
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
@@ -377,9 +381,25 @@ class SherpaOnnxEngine(AudioEngine):
         except Exception:
             dev_sr_in = preferred_sr
         attempts: list[OpenAttempt] = []
-        # 1) preferred device at preferred rate
+        # 1) preferred device at preferred rate (16 kHz; many laptop mics reject it)
         attempts.append(OpenAttempt(device=in_dev, samplerate=preferred_sr))
-        # 2) preferred device at its native rate (deduped)
+        # 2) preferred device at a CLEAN integer-ratio capture rate it actually
+        #    supports, ahead of its (often non-integer-ratio) native rate. 48000
+        #    -> 16000 is an exact /3 decimation -- a short, well-conditioned
+        #    polyphase FIR -- versus 44100's 160/441 fractional resample. Probed
+        #    via check_input_settings so we only offer rates the device accepts.
+        if preferred_sr == 16000:
+            for rate in CLEAN_CAPTURE_RATES:
+                if rate in (preferred_sr, dev_sr_in):
+                    continue
+                try:
+                    sd.check_input_settings(
+                        device=in_dev, samplerate=rate, channels=1, dtype="float32"
+                    )
+                except Exception:  # noqa: BLE001 - rate unsupported; skip it
+                    continue
+                attempts.append(OpenAttempt(device=in_dev, samplerate=rate))
+        # 3) preferred device at its native rate (deduped)
         if dev_sr_in != preferred_sr:
             attempts.append(OpenAttempt(device=in_dev, samplerate=dev_sr_in))
         # 3) system-default device at preferred rate
@@ -407,10 +427,19 @@ class SherpaOnnxEngine(AudioEngine):
         )
         self._stream_in.open()
         self._capture_sr = self._stream_in.actual_samplerate
+        # Stateful anti-aliased resampler for the capture hot path (soxr ->
+        # scipy polyphase -> linear). Replaces the old per-block np.interp, which
+        # aliased content >8 kHz into the speech band and corrupted ASR features.
+        self._resampler = (
+            AudioResampler(self._capture_sr, preferred_sr)
+            if self._capture_sr != preferred_sr
+            else None
+        )
         if self._capture_sr != preferred_sr:
+            kind = self._resampler.kind if self._resampler else "linear"
             print(
-                f"[sherpa] mic rejected {preferred_sr} Hz; "
-                f"capturing at {self._capture_sr} Hz and resampling to {preferred_sr} Hz"
+                f"[sherpa] mic rejected {preferred_sr} Hz; capturing at "
+                f"{self._capture_sr} Hz and resampling to {preferred_sr} Hz ({kind})"
             )
         if self._record_path:
             from ..recorder import WavRecorder
@@ -553,10 +582,13 @@ class SherpaOnnxEngine(AudioEngine):
             while self._running.is_set():
                 audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
                 samples = np.asarray(audio, dtype="float32").reshape(-1)
-                if self._capture_sr != self.config.sample_rate:
-                    samples = _resample_linear(samples, self._capture_sr, self.config.sample_rate)
+                # Gain BEFORE resample (soft-knee limiter, not a hard clip) so the
+                # anti-alias FIR filters any saturation harmonics above 8 kHz out
+                # before the recognizer sees them.
                 if self.config.input_gain != 1.0:
-                    samples = np.clip(samples * self.config.input_gain, -1.0, 1.0)
+                    samples = apply_gain_soft_limit(samples, self.config.input_gain)
+                if self._resampler is not None:
+                    samples = self._resampler.process(samples)
 
                 if self._recorder is not None:
                     self._recorder.write(samples)

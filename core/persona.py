@@ -49,15 +49,17 @@ _NO_COMMENT = "Don't comment on the user's name, tone, or mood."
 # the answering model reads them as an instruction ("describe exactly these") rather
 # than loose background data. They MUST NOT be folded into DEFAULT_SYSTEM, whose
 # bytes are pinned by tests/test_memory_contract.py + test_goal_alignment_fixes.py.
-_SKILLS_HEADER = "Here is everything you can actually do for the user:"
+_SKILLS_HEADER = (
+    "For reference, here is what you can do for the user (this matters ONLY if they "
+    "ask what you can do -- otherwise ignore it):"
+)
 _SKILLS_GUIDANCE = (
-    "When the user asks what you are or what you can do, describe these "
-    "capabilities accurately in your own natural words -- one or two short spoken "
-    "sentences, no lists -- and cover all of them; do not claim any ability that "
-    "is not on this list. In particular, telling a story, poem, joke, or "
-    "explanation is part of answering directly, not a separate skill, and you "
-    "cannot open files or apps, control devices, or take any action -- you only "
-    "talk."
+    "Almost always, just answer the user's actual request directly and say nothing "
+    "about this list. ONLY if they explicitly ask what you are or what you can do, "
+    "give a brief, natural one-sentence summary of the list above, and do not claim "
+    "any ability that is not on it -- telling a story, poem, joke, or explanation is "
+    "part of answering, not a separate skill. If a message is unclear or sounds like "
+    "a fragment, ask one short question -- do not recite what you can do."
 )
 
 # The legacy one-paragraph prompt, recomposed from the parts above so it stays

@@ -279,11 +279,15 @@ def test_no_smart_endpoint_flag_leaves_endpoint_untouched(monkeypatch):
     assert "endpoint_enabled" not in config.get("sherpa", {})
 
 
-def test_committed_config_default_endpoint_is_off():
-    # The global committed default MUST stay False -- the flag is an in-memory,
-    # per-run override and never writes config.json.
+def test_committed_config_endpoint_enabled_with_validated_min_silence():
+    # Smart endpoint was validated on-device (docs/live_validation_run_2026-05-30.md:
+    # ~300ms first-audio win, no tail clipping, no sentence splitting) and ENABLED.
+    # min_silence MUST stay >= 0.7s: it has to exceed BOTH the decoder lookahead and a
+    # typical intra-sentence comma pause -- at 0.5 a run-on ("Hey, what are you, and...")
+    # split at the comma. Lowering it risks regressing that, so this pins the floor.
     config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
-    assert config["sherpa"]["endpoint_enabled"] is False
+    assert config["sherpa"]["endpoint_enabled"] is True
+    assert config["sherpa"]["endpoint_min_silence_sec"] >= 0.7
 
 
 def test_smart_endpoint_flag_is_in_help(capsys):

@@ -171,6 +171,18 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 
 - `main` is the integration branch and holds the latest work. Do feature work
   on a short-lived branch and merge back to `main`.
+- **Standing session workflow (durably authorized — do not ask per action).**
+  When a session's work is complete and the logic suite is green
+  (`python -m pytest tests -q`), Claude may, without stopping to ask:
+  commit, push, **merge the short-lived branch into `main`, push `main`, and
+  delete that now-merged branch** (local; also remote if it was pushed). This
+  supersedes the older "only commit/push/merge when the user explicitly asks"
+  stance — a successful session ends by landing on `main` and cleaning up its
+  branch. **Still pause and confirm** only when: tests are red or the work is
+  not actually finished; the operation is destructive *beyond* deleting the
+  just-merged branch (e.g. force-push, history rewrite, deleting an *unmerged*
+  or shared branch); or `main` itself would regress. Surface a one-line summary
+  of what was merged/pushed/deleted so the user can see it after the fact.
 - Web sessions run in an ephemeral container; commit anything worth keeping.
 - **Secrets & tokens live in [`CREDENTIALS.md`](CREDENTIALS.md)** — the single
   source of truth for every credential (the CI `HF_TOKEN` Actions secret, the

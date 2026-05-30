@@ -25,6 +25,7 @@ class SyntheticUser:
         speaker_id: Optional[int] = None,
         speed: Optional[float] = None,
         output_device=None,
+        volume: float = 1.0,
     ) -> None:
         # Build a second TTS instance for the user voice from the same sherpa
         # config the assistant uses (so the model is already on disk). build_tts
@@ -49,10 +50,20 @@ class SyntheticUser:
         from core.engines.sherpa import _norm_device
 
         self._out = _norm_device(output_device)
+        # Playback amplitude scale in [0, 1]. 1.0 == native TTS amplitude
+        # (today's behavior). Lowering it reduces the acoustic level hitting the
+        # near-field mic -- one half of the over-the-air SNR knob. Only the PLAYED
+        # buffer is scaled; the returned/saved clip stays full-scale (a clean
+        # reference), so volume changes the loop, never the artifact.
+        try:
+            self._volume = float(volume)
+        except (TypeError, ValueError):
+            self._volume = 1.0
+        self._volume = max(0.0, min(1.0, self._volume))
 
     @property
     def voice(self) -> dict:
-        return {"speaker_id": self._sid, "speed": self._speed}
+        return {"speaker_id": self._sid, "speed": self._speed, "volume": self._volume}
 
     def synthesize(self, text: str):
         """Synthesize ``text`` to (samples, sample_rate) without playing it."""
@@ -91,6 +102,11 @@ class SyntheticUser:
         for rate in dict.fromkeys(candidates):  # dedupe, keep order
             try:
                 play = _resample(samples, sr, rate) if rate != sr else samples
+                # Scale ONLY the buffer we play over the air; the returned
+                # (samples, sr) stays full-scale so save_wav keeps a clean
+                # reference clip independent of the acoustic level used.
+                if self._volume != 1.0:
+                    play = (play * self._volume).astype("float32")
                 sd.play(play, rate, device=self._out)
                 sd.wait()
                 return samples, sr

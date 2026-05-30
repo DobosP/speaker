@@ -11,7 +11,15 @@ from pathlib import Path
 
 import tools.live_session.__main__ as live_main
 from tools.live_session.driver import _is_answer, _parse_pause
-from tools.live_session.report import write_latency_report, write_summary, write_timeline
+from tools.live_session.report import (
+    HEARD_OK_THRESHOLD,
+    stt_score,
+    summarize_capture,
+    write_grade,
+    write_latency_report,
+    write_summary,
+    write_timeline,
+)
 from tools.live_session.scenarios import SCENARIOS, Scenario, Turn, by_name
 
 
@@ -207,6 +215,43 @@ def test_flush_assistant_noop_when_nothing_spoken(tmp_path):
     assert c.events == []
 
 
+def test_poll_capture_ignores_stale_last_partial_across_turns(tmp_path):
+    # supervisor.last_partial is never cleared between turns -- it only ever gets
+    # overwritten on a NEW partial. The per-turn probe must baseline it (partial0)
+    # so a stale carry-over from an earlier turn does NOT read as a live partial.
+    import threading
+
+    eng = _FakeEngine()
+    sup = _FakeSupervisor()
+    c = _bare_convo(eng, _FakeRuntime(eng, sup, _FakeMetrics([])), tmp_path)
+    # _poll_capture_once snapshots heartbeat state; wire the minimal seam.
+    c._hb_lock = threading.Lock()
+    c._hb_last = None
+    c._hb_count = 0
+
+    # Turn 1: a fresh partial appears during the user line -> counted.
+    sup.state.last_partial = ""
+    c._probe = {"transcript0": 0, "partial0": "", "partials_during_user": 0,
+                "hb_gap_max_s": 0.0}
+    sup.state.last_partial = "what's the capital"
+    c._poll_capture_once(None)
+    assert c._probe["partials_during_user"] == 1
+
+    # Turn 2: the mic hears NOTHING, so last_partial keeps its stale turn-1 value.
+    # Baselined against that stale value, every poll must count 0.
+    c._probe = {"transcript0": len(sup.state.transcript_log),
+                "partial0": (sup.state.last_partial or "").strip(),
+                "partials_during_user": 0, "hb_gap_max_s": 0.0}
+    for _ in range(5):
+        c._poll_capture_once(None)  # last_partial unchanged from partial0
+    assert c._probe["partials_during_user"] == 0
+
+    # Turn 2, later: a genuinely new partial arrives -> counted again.
+    sup.state.last_partial = "how many days in a week"
+    c._poll_capture_once(None)
+    assert c._probe["partials_during_user"] == 1
+
+
 def test_consume_latency_pairs_turns_in_order(tmp_path):
     from core.metrics import TTS_FIRST_AUDIO
 
@@ -316,3 +361,260 @@ def test_write_summary_is_gradeable(tmp_path):
     assert "answers hi" in text  # expected_behavior surfaced for grading
     assert "answered once" in text and "dead air" in text
     assert "first_audio" in text  # latency table present
+    # New honest-grading + full-duplex sections render even without a capture verdict.
+    assert "STT accuracy (over-the-air)" in text
+    assert "Full-duplex / continuous capture" in text
+
+
+def test_write_summary_renders_full_duplex_verdict(tmp_path):
+    scenario = Scenario(
+        name="demo", capability="cap", goal="g",
+        turns=(Turn("hi"),),
+        expected_behavior="answers hi",
+    )
+    capture = summarize_capture(
+        rec_seconds=30.0, wall_seconds=31.0,
+        partials_during_user_total=4, capture_silent_warned=False,
+    )
+    path = write_summary(
+        scenario, _fake_events(), tmp_path,
+        voice={"speaker_id": 1, "speed": 1.1, "volume": 0.5}, capture=capture,
+    )
+    text = path.read_text()
+    assert "full_duplex: ok" in text
+    assert "partials produced WHILE the user spoke: 4" in text
+    assert "volume=0.5" in text  # the SNR the run used is recorded
+
+
+# --- CLI flags: --input-gain (capture-side SNR knob) ---------------------------
+#
+# Mirror the --smart-endpoint coverage: --input-gain N mutates the in-memory
+# config['sherpa']['input_gain'] only (the exact pattern --no-input-gate uses),
+# and its ABSENCE leaves the key untouched so a run with no new flags is
+# byte-identical to before.
+
+
+def test_input_gain_flag_sets_config(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, ["--input-gain", "1.0"])
+    assert config["sherpa"]["input_gain"] == 1.0
+
+
+def test_input_gain_flag_accepts_fractional(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, ["--input-gain", "2.5"])
+    assert config["sherpa"]["input_gain"] == 2.5
+
+
+def test_no_input_gain_flag_leaves_config_untouched(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, [])
+    # Default: the key is NOT introduced, so the engine keeps its configured gain.
+    assert "input_gain" not in config.get("sherpa", {})
+
+
+def test_input_gain_flag_is_in_help(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        live_main.main(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--input-gain" in help_text
+    assert "--user-volume" in help_text
+
+
+def test_user_volume_out_of_range_errors(capsys):
+    import pytest
+
+    # argparse error() exits with code 2 and writes usage to stderr.
+    with pytest.raises(SystemExit) as exc:
+        live_main.main(["--user-volume", "1.5", "--check"])
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--user-volume" in err
+
+
+def test_user_volume_in_range_parses(monkeypatch):
+    # A valid --user-volume does not raise and does not mutate sherpa config
+    # (it is a playback-side knob threaded into LiveConversation, not config).
+    config = _run_main_capturing_config(monkeypatch, ["--user-volume", "0.4"])
+    assert "input_gain" not in config.get("sherpa", {})
+
+
+# --- SyntheticUser playback volume scaling (fake sd, no audio/models) ----------
+
+
+class _FakeTTSAudio:
+    def __init__(self, samples, sample_rate):
+        self.samples = samples
+        self.sample_rate = sample_rate
+
+
+class _FakeTTS:
+    sample_rate = 22050
+
+    def generate(self, text, sid=0, speed=1.0):
+        import numpy as np
+
+        # A deterministic full-scale-ish tone so peak scaling is observable.
+        return _FakeTTSAudio(
+            (np.ones(2205, dtype="float32") * 0.8), 22050
+        )
+
+
+def _make_user(monkeypatch, volume):
+    """Build a SyntheticUser with the TTS + device-norm seams faked out."""
+    import core.engines._sherpa_models as sherpa_models
+    import core.engines.sherpa as sherpa_engine
+    from tools.live_session.synthetic_user import SyntheticUser
+
+    monkeypatch.setattr(sherpa_models, "build_tts", lambda cfg: _FakeTTS())
+    monkeypatch.setattr(sherpa_engine, "_norm_device", lambda d: None)
+
+    class _Cfg:
+        tts_speaker_id = 0
+        tts_speed = 1.0
+
+    return SyntheticUser(_Cfg(), speaker_id=0, speed=1.0, volume=volume)
+
+
+def test_user_volume_scales_played_peak_not_saved(monkeypatch):
+    import numpy as np
+
+    played = {}
+
+    class _FakeSD:
+        @staticmethod
+        def query_devices(dev, kind):
+            return {"default_samplerate": 22050}
+
+        @staticmethod
+        def play(buf, rate, device=None):
+            played["peak"] = float(np.max(np.abs(np.asarray(buf))))
+
+        @staticmethod
+        def wait():
+            pass
+
+    monkeypatch.setitem(__import__("sys").modules, "sounddevice", _FakeSD)
+
+    user_full = _make_user(monkeypatch, volume=1.0)
+    samples_full, sr = user_full.say("hello")
+    full_played_peak = played["peak"]
+    full_saved_peak = float(np.max(np.abs(samples_full)))
+
+    user_half = _make_user(monkeypatch, volume=0.5)
+    samples_half, _ = user_half.say("hello")
+    half_played_peak = played["peak"]
+    half_saved_peak = float(np.max(np.abs(samples_half)))
+
+    # The PLAYED peak scales with volume...
+    assert half_played_peak < full_played_peak
+    assert abs(half_played_peak - 0.5 * full_played_peak) < 1e-3
+    # ...but the RETURNED/saved samples stay full-scale (clean reference).
+    assert abs(half_saved_peak - full_saved_peak) < 1e-6
+
+
+def test_user_volume_clamps_to_unit_interval(monkeypatch):
+    u_hi = _make_user(monkeypatch, volume=5.0)
+    assert u_hi.voice["volume"] == 1.0
+    u_lo = _make_user(monkeypatch, volume=-2.0)
+    assert u_lo.voice["volume"] == 0.0
+    u_bad = _make_user(monkeypatch, volume=None)  # type: ignore[arg-type]
+    assert u_bad.voice["volume"] == 1.0
+
+
+# --- over-the-air STT scorer (pure) --------------------------------------------
+
+
+def test_stt_score_exact_match_is_one():
+    assert stt_score("What's the capital of France?", "what's the capital of france") == 1.0
+    # Normalization handles punctuation + case + whitespace.
+    assert stt_score("Paris.", "  PARIS  ") == 1.0
+
+
+def test_stt_score_total_garbage_is_near_zero():
+    score = stt_score("What's the capital of France?", "I did those completely")
+    assert score < 0.25
+
+
+def test_stt_score_empty_heard_is_zero():
+    assert stt_score("anything", None) == 0.0
+    assert stt_score("anything", "") == 0.0
+
+
+def test_stt_score_partial_overlap_is_monotonic():
+    truth = "what is the capital of france"
+    garbage = stt_score(truth, "completely unrelated words here")
+    partial = stt_score(truth, "what is the capital")
+    perfect = stt_score(truth, "what is the capital of france")
+    assert garbage < partial < perfect
+    assert perfect == 1.0
+
+
+def test_stt_score_heard_ok_threshold():
+    # A close-but-imperfect transcript still clears the heard-ok bar.
+    assert stt_score("the capital of france", "the capital of franc") >= HEARD_OK_THRESHOLD
+
+
+# --- continuous-capture / full-duplex verdict (pure) ---------------------------
+
+
+def test_capture_verdict_healthy_is_ok():
+    v = summarize_capture(
+        rec_seconds=30.0, wall_seconds=31.0,
+        partials_during_user_total=3, capture_silent_warned=False,
+    )
+    assert v["full_duplex"] == "ok" and v["ok"] is True
+    assert v["transcribed_during_user"] is True
+    assert v["covered_whole_session"] is True
+
+
+def test_capture_verdict_silent_gap_fails():
+    v = summarize_capture(
+        rec_seconds=30.0, wall_seconds=31.0,
+        partials_during_user_total=3, capture_silent_warned=True,
+    )
+    assert v["full_duplex"] == "FAIL" and v["ok"] is False
+
+
+def test_capture_verdict_no_partials_during_user_fails():
+    # Recording covered the session but the recognizer never produced a partial
+    # while the user audio played -> we can't claim full-duplex transcription.
+    v = summarize_capture(
+        rec_seconds=30.0, wall_seconds=31.0,
+        partials_during_user_total=0, capture_silent_warned=False,
+    )
+    assert v["ok"] is False
+    assert v["transcribed_during_user"] is False
+
+
+def test_capture_verdict_short_recording_fails():
+    # The recorder fell far short of wall-clock -> capture paused -> FAIL.
+    v = summarize_capture(
+        rec_seconds=5.0, wall_seconds=31.0,
+        partials_during_user_total=3, capture_silent_warned=False,
+    )
+    assert v["ok"] is False
+    assert v["covered_whole_session"] is False
+
+
+# --- write_grade artifact ------------------------------------------------------
+
+
+def test_write_grade_emits_per_turn_and_aggregate(tmp_path):
+    events = _fake_events()
+    capture = summarize_capture(
+        rec_seconds=10.0, wall_seconds=10.5,
+        partials_during_user_total=2, capture_silent_warned=False,
+    )
+    report = write_grade(events, tmp_path, capture=capture)
+    loaded = json.loads((tmp_path / "grade.json").read_text())
+    assert loaded == report
+    assert len(report["per_turn"]) == 2  # two user turns
+    # Both fake user turns are heard verbatim -> perfect scores.
+    assert all(r["stt_score"] == 1.0 and r["heard_ok"] for r in report["per_turn"])
+    agg = report["aggregate"]
+    assert agg["n"] == 2 and agg["n_correct"] == 2
+    assert agg["stt_score_median"] == 1.0
+    assert report["full_duplex"]["full_duplex"] == "ok"
+    # First-audio latency is paired in order onto the user turn.
+    assert report["per_turn"][0]["first_audio_ms"] == 620.0

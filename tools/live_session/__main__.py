@@ -65,6 +65,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--input-device", default=None)
     p.add_argument("--output-device", default=None)
     p.add_argument("--response-timeout", type=float, default=45.0)
+    p.add_argument("--no-input-gate", action="store_true",
+                   help="disable the ACT/INGEST addressing gate (answer every heard utterance -- "
+                        "useful when over-the-air STT is garbled enough that the gate INGESTs it)")
+    p.add_argument("--inject", action="store_true",
+                   help="feed the synthetic-user audio straight into the recognizer instead of "
+                        "playing it over the air -- clean STT->LLM->TTS with no acoustic "
+                        "degradation/feedback (the reliable path when built-in speaker+mic is noisy)")
     p.add_argument("--out-dir", default=None, help="artifact root (default logs/live/<run-id>)")
     args = p.parse_args(argv)
 
@@ -87,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
         val = getattr(args, key)
         if val is not None:
             config.setdefault("sherpa", {})[key] = val
+    if args.no_input_gate:
+        config.setdefault("input_gate", {})["enabled"] = False
 
     problems = _preflight(config)
     if args.check or problems:
@@ -133,6 +142,7 @@ def main(argv: list[str] | None = None) -> int:
                 user_speed=args.user_speed,
                 capture_assistant_audio=not args.no_assistant_audio,
                 response_timeout=args.response_timeout,
+                inject=args.inject,
             )
             convo.start()
             time.sleep(0.5)  # settle the mic

@@ -50,6 +50,10 @@ transcripts/
 # machine they ran on); curated logs/runs/ bundles are committed, these are not.
 logs/tests/
 
+# Live-validation run artifacts (tools/live_session): large per-run wavs +
+# machine-specific timelines. The analysis lives in docs/, not the raw bundles.
+logs/live/
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
@@ -87,5 +91,7 @@ test-reports/
 # Downloaded model weights -- large binaries, NEVER commit. Fetch on each
 # machine with `python -m tools.setup_models` (sherpa) or the phone GGUFs.
 pretrained_models/sherpa/
+# Downloaded sherpa-onnx model bundles (hundreds of MB; fetched on demand).
+pretrained_models/sherpa-onnx-*/
 models/
 *.gguf

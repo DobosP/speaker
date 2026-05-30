@@ -12,25 +12,56 @@ from pathlib import Path
 import tools.live_session.__main__ as live_main
 from tools.live_session.driver import _is_answer, _parse_pause
 from tools.live_session.report import (
+    BARGE_STOP_RATE_MIN,
     HEARD_OK_THRESHOLD,
+    grade_barge_turns,
     stt_score,
+    summarize_barge,
     summarize_capture,
     write_grade,
     write_latency_report,
     write_summary,
     write_timeline,
 )
-from tools.live_session.scenarios import SCENARIOS, Scenario, Turn, by_name
+from tools.live_session.scenarios import LONG_ANSWER, SCENARIOS, Scenario, Turn, by_name
 
 
 def test_scenarios_are_well_formed():
-    assert len(SCENARIOS) >= 5
+    # Bumped for the added barge-in scenarios (early-vs-late, stop-vs-new-topic,
+    # multiple-in-one-turn, no-barge control) on top of the original 7.
+    assert len(SCENARIOS) >= 11
     names = {s.name for s in SCENARIOS}
     assert len(names) == len(SCENARIOS)  # unique
     for s in SCENARIOS:
         assert s.turns and all(t.text.strip() for t in s.turns)
         for t in s.turns:
+            # No new timing token is introduced -- all stay in the allowed set.
             assert t.timing in ("wait_for_response", "immediately", "barge_in") or t.timing.startswith("pause:")
+
+
+def test_new_barge_scenarios_exist_and_use_long_answer():
+    names = {s.name for s in SCENARIOS}
+    expected = {
+        "barge_in_interrupt_stop",
+        "barge_in_early_vs_late",
+        "barge_stop_command_vs_new_topic",
+        "barge_multiple_in_one_turn",
+        "barge_no_barge_control",
+    }
+    assert expected <= names
+    # Every barge scenario uses the shared LONG_ANSWER as its barge target so
+    # there is always speech to cut (the short-response-race fix).
+    for name in expected:
+        s = by_name(name)
+        assert any(t.text == LONG_ANSWER for t in s.turns), name
+
+
+def test_no_barge_control_scenario_has_no_barge_line():
+    s = by_name("barge_no_barge_control")
+    # The control must NOT script a barge_in -- its whole point is to prove zero
+    # self-interrupts when nothing barges.
+    assert all(t.timing != "barge_in" for t in s.turns)
+    assert any(t.text == LONG_ANSWER for t in s.turns)
 
 
 def test_by_name():
@@ -176,6 +207,7 @@ def _bare_convo(engine, runtime, tmp_path):
     c._ln_metrics = c._ln_transcript = c._ln_speak = 0
     c._cur_user_event = None
     c._assistant_voice = None
+    c._last_user_timing = None
     c._out = tmp_path
     return c
 
@@ -213,6 +245,25 @@ def test_flush_assistant_noop_when_nothing_spoken(tmp_path):
     c = _bare_convo(eng, _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
     c._flush_assistant()
     assert c.events == []
+
+
+def test_flush_assistant_stamps_barge_intended_from_last_user_timing(tmp_path):
+    # The driver carries the PRECEDING user line's timing onto the assistant event
+    # so the barge-in grader can tell a real interrupt from a self-interrupt.
+    eng = _FakeEngine()
+    eng.speak("Once upon a time...", 1.0)
+    eng.stop(1.2)
+    c = _bare_convo(eng, _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
+    c._last_user_timing = "barge_in"
+    c._flush_assistant()
+    assert c.events[0]["barge_intended"] is True
+
+    eng2 = _FakeEngine()
+    eng2.speak("Paris.", 2.0)
+    c2 = _bare_convo(eng2, _FakeRuntime(eng2, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
+    c2._last_user_timing = "wait_for_response"
+    c2._flush_assistant()
+    assert c2.events[0]["barge_intended"] is False
 
 
 def test_poll_capture_ignores_stale_last_partial_across_turns(tmp_path):
@@ -618,3 +669,207 @@ def test_write_grade_emits_per_turn_and_aggregate(tmp_path):
     assert report["full_duplex"]["full_duplex"] == "ok"
     # First-audio latency is paired in order onto the user turn.
     assert report["per_turn"][0]["first_audio_ms"] == 620.0
+
+
+# --- barge-in / interrupt grade (pure, inject-mode-only logic) ------------------
+#
+# Fakes only -- the same shape the driver writes onto each assistant event:
+#   * barge_intended (the PRECEDING user line's timing == "barge_in"),
+#   * interrupted (engine.stopped_after -- the primary "stopped" signal),
+#   * latency.barge_in_latency (BARGE_IN_STOP minus BARGE_IN, in SECONDS; None when
+#     stop_speaking found no live stream to abort -- the short-answer race).
+
+
+def _user(idx, timing="wait_for_response"):
+    return {"idx": idx, "speaker": "user", "text": "x", "timing": timing}
+
+
+def _assistant(idx, *, barge_intended, interrupted, barge_in_latency=None):
+    return {
+        "idx": idx, "speaker": "assistant", "text": "...",
+        "interrupted": interrupted, "barge_intended": barge_intended,
+        "latency": {"first_audio_latency": 0.5, "barge_in_latency": barge_in_latency},
+    }
+
+
+def test_grade_barge_turns_marks_stop_and_self_interrupt():
+    events = [
+        # A real, intended barge that stopped a live stream -> stopped, NOT a
+        # self-interrupt; stop_ms is the latency * 1000.
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.12),
+        # A NON-barge turn that nonetheless carries a stray barge_in_latency (a
+        # barge fired with no intended barge) -> self-interrupt.
+        _user(2, "wait_for_response"),
+        _assistant(2, barge_intended=False, interrupted=False, barge_in_latency=0.20),
+    ]
+    rows = grade_barge_turns(events)
+    assert len(rows) == 2
+    r1, r2 = rows
+    assert r1["barge_intended"] is True and r1["stopped"] is True
+    assert r1["stop_ms"] == 120.0 and r1["self_interrupt"] is False
+    # The stray barge on a non-intended turn is the self-interruption signal.
+    assert r2["barge_intended"] is False and r2["self_interrupt"] is True
+    assert r2["stop_ms"] == 200.0
+
+
+def test_grade_barge_turns_interrupted_without_intended_is_self_interrupt():
+    # interrupted=True with no intended barge before it (and no latency stamp) is
+    # STILL a self-interrupt -- interrupted is the primary signal.
+    events = [
+        _user(1, "wait_for_response"),
+        _assistant(1, barge_intended=False, interrupted=True, barge_in_latency=None),
+    ]
+    rows = grade_barge_turns(events)
+    assert rows[0]["self_interrupt"] is True
+    assert rows[0]["stop_ms"] is None  # the short-answer race: no STOP stamp
+
+
+def test_summarize_barge_headline_ok_path():
+    events = [
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.10),
+        _user(2, "barge_in"),
+        _assistant(2, barge_intended=True, interrupted=True, barge_in_latency=0.30),
+    ]
+    s = summarize_barge(grade_barge_turns(events))
+    assert s["n_intended_barges"] == 2 and s["n_stopped"] == 2
+    assert s["stops_when_barged_rate"] == 1.0
+    assert s["stop_latency_ms_median"] == 200.0  # median of 100, 300
+    assert s["self_interrupt_count"] == 0
+    assert s["verdict"] == "ok"
+    assert s["inject_mode_only"] is True
+
+
+def test_summarize_barge_fail_on_missed_stop():
+    # An intended barge that did NOT stop the answer drops the rate below the
+    # threshold -> FAIL.
+    events = [
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.10),
+        _user(2, "barge_in"),
+        _assistant(2, barge_intended=True, interrupted=False, barge_in_latency=None),
+    ]
+    s = summarize_barge(grade_barge_turns(events))
+    assert s["n_stopped"] == 1 and s["n_intended_barges"] == 2
+    assert s["stops_when_barged_rate"] == 0.5
+    assert s["stops_when_barged_rate"] < BARGE_STOP_RATE_MIN
+    assert s["verdict"] == "FAIL"
+
+
+def test_summarize_barge_fail_on_self_interrupt():
+    # Even with a perfect stop rate, a single self-interrupt FAILs the verdict.
+    events = [
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.10),
+        _user(2, "wait_for_response"),
+        _assistant(2, barge_intended=False, interrupted=True, barge_in_latency=None),
+    ]
+    s = summarize_barge(grade_barge_turns(events))
+    assert s["stops_when_barged_rate"] == 1.0  # the one intended barge stopped
+    assert s["self_interrupt_count"] == 1
+    assert s["verdict"] == "FAIL"
+
+
+def test_summarize_barge_no_barge_control_zero_self_interrupts():
+    # The CONTROL: a long answer + a closer, NO barge anywhere. n_intended==0, the
+    # rate is None ("n/a"), and the verdict keys ONLY off zero self-interrupts.
+    events = [
+        _user(1, "wait_for_response"),
+        _assistant(1, barge_intended=False, interrupted=False, barge_in_latency=None),
+        _user(2, "wait_for_response"),
+        _assistant(2, barge_intended=False, interrupted=False, barge_in_latency=None),
+    ]
+    s = summarize_barge(grade_barge_turns(events))
+    assert s["n_intended_barges"] == 0
+    assert s["stops_when_barged_rate"] is None
+    assert s["self_interrupt_count"] == 0
+    assert s["verdict"] == "ok"
+
+
+def test_summarize_barge_control_with_self_interrupt_fails():
+    # The regression catch: the no-barge control where the assistant interrupted
+    # ITSELF must FAIL even though no barge was intended.
+    events = [
+        _user(1, "wait_for_response"),
+        _assistant(1, barge_intended=False, interrupted=True, barge_in_latency=0.15),
+    ]
+    s = summarize_barge(grade_barge_turns(events))
+    assert s["n_intended_barges"] == 0
+    assert s["self_interrupt_count"] == 1
+    assert s["verdict"] == "FAIL"
+
+
+def test_summarize_barge_multiple_barges_benign_second_not_penalized():
+    # The multiple-in-one-turn shape: the first intended barge stops a long answer;
+    # the second intended barge hits an idle assistant and produces NO new answer
+    # (a benign no-op -- no assistant event). Only the first turn exists, intended
+    # and stopped -> rate 1/1, zero self-interrupts, verdict ok.
+    events = [
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.11),
+        _user(2, "barge_in"),
+        # second barge: no assistant event produced (idle) -- nothing to grade.
+    ]
+    s = summarize_barge(grade_barge_turns(events))
+    assert s["n_intended_barges"] == 1 and s["n_stopped"] == 1
+    assert s["stops_when_barged_rate"] == 1.0
+    assert s["self_interrupt_count"] == 0
+    assert s["verdict"] == "ok"
+
+
+def test_write_grade_includes_barge_block(tmp_path):
+    events = [
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.12),
+        _user(2, "wait_for_response"),
+        _assistant(2, barge_intended=False, interrupted=False, barge_in_latency=None),
+    ]
+    report = write_grade(events, tmp_path)
+    loaded = json.loads((tmp_path / "grade.json").read_text())
+    assert loaded == report
+    assert "barge_in" in report
+    b = report["barge_in"]
+    assert b["n_intended_barges"] == 1 and b["n_stopped"] == 1
+    assert b["self_interrupt_count"] == 0
+    assert b["verdict"] == "ok"
+    assert b["inject_mode_only"] is True
+
+
+def test_write_summary_renders_barge_section(tmp_path):
+    scenario = Scenario(
+        name="barge_demo", capability="cap", goal="g",
+        turns=(Turn(LONG_ANSWER), Turn("Stop.", "barge_in")),
+        expected_behavior="stops on barge",
+    )
+    events = [
+        _user(1, "wait_for_response"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=0.13),
+    ]
+    path = write_summary(
+        scenario, events, tmp_path, voice={"speaker_id": 1, "speed": 1.0},
+    )
+    text = path.read_text()
+    assert "Barge-in / interrupt" in text
+    assert "INJECT MODE ONLY" in text  # the inject-mode caveat is loud
+    assert "stops-when-barged" in text
+    assert "self-interrupts" in text
+    # The per-turn table header is present.
+    assert "barge_intended" in text and "stop_ms" in text
+
+
+def test_write_summary_renders_no_barge_control_verdict(tmp_path):
+    scenario = Scenario(
+        name="control", capability="cap", goal="g",
+        turns=(Turn(LONG_ANSWER),), expected_behavior="no self-interrupt",
+    )
+    events = [
+        _user(1, "wait_for_response"),
+        _assistant(1, barge_intended=False, interrupted=False, barge_in_latency=None),
+    ]
+    text = write_summary(
+        scenario, events, tmp_path, voice={"speaker_id": 1, "speed": 1.0},
+    ).read_text()
+    # The control's barge verdict is "ok" with an n/a rate (no intended barge).
+    assert "Verdict: ok" in text
+    assert "control" in text  # the n/a-rate annotation names the control case

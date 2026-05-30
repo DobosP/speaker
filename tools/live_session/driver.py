@@ -26,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
 
+from .report import summarize_capture
 from .synthetic_user import SyntheticUser, save_wav
 
 log = logging.getLogger("speaker.live.driver")
@@ -184,6 +185,7 @@ class LiveConversation:
         capture_assistant_audio: bool = True,
         response_timeout: float = 45.0,
         inject: bool = False,
+        user_volume: Optional[float] = None,
     ) -> None:
         from always_on_agent.events import Mode
         from core.app import build_runtime
@@ -194,6 +196,14 @@ class LiveConversation:
         self._out.mkdir(parents=True, exist_ok=True)
         self._timeout = response_timeout
         self._inject = inject
+        # Driver-side post-speech cooldown. config.sherpa.post_speech_cooldown_sec
+        # is DEAD config in core (never read), so the harness enforces the settle
+        # itself: after the assistant goes idle we wait this long before the NEXT
+        # user line so the assistant tail + room reverb decays and two voices never
+        # mix into one capture segment. Skipped on overlapping timings.
+        self._post_speech_cooldown = float(
+            (config.get("sherpa", {}) or {}).get("post_speech_cooldown_sec", 0.6) or 0.0
+        )
         self._inject_stream: Optional[InjectingInputStream] = None
         self._orig_output_stream = None  # saved sd.OutputStream while inject patches it
         self._orig_input_stream = None   # saved sd.InputStream while inject patches it
@@ -217,6 +227,7 @@ class LiveConversation:
         self.user = SyntheticUser(
             sherpa_cfg, speaker_id=user_speaker_id, speed=user_speed,
             output_device=getattr(sherpa_cfg, "output_device", None),
+            volume=1.0 if user_volume is None else float(user_volume),
         )
         self._assistant_voice = None
         if capture_assistant_audio:
@@ -240,6 +251,46 @@ class LiveConversation:
         self._ln_transcript = 0
         self._ln_speak = 0
         self._cur_user_event: Optional[dict] = None
+        # Continuous-capture observation. We OBSERVE the engine's existing 2 s
+        # heartbeat instead of instrumenting core: the runtime feeds every beat to
+        # the watchdog's note_heartbeat, so we wrap that callable with a thin
+        # harness-owned recorder (a public read, per the plan's risk note -- no
+        # reach into watchdog internals). Each beat stamps a monotonic time and a
+        # counter; a turn's max gap and the global beat count grade always-on
+        # capture. _hb_silent_warned latches the watchdog's >5 s "capture silent".
+        self._hb_lock = threading.Lock()
+        self._hb_last: Optional[float] = None
+        self._hb_count = 0
+        self._hb_silent_warned = False
+        self._wrap_heartbeat()
+        self._wall_t0 = 0.0  # wall-clock session start (set in start())
+        self.capture_verdict: Optional[dict] = None
+
+    # --- continuous-capture observation (no core instrumentation) ---
+    def _wrap_heartbeat(self) -> None:
+        """Wrap the watchdog's note_heartbeat so every engine 2 s beat also stamps
+        a harness-owned monotonic time + counter. This is the ALWAYS-ON proof: the
+        beat fires from the engine's _capture_loop, so its freshness == the capture
+        thread is alive and recording. We never read the watchdog's private state."""
+        wd = getattr(self.runtime, "_watchdog", None)
+        if wd is None or not hasattr(wd, "note_heartbeat"):
+            return
+        inner = wd.note_heartbeat
+
+        def _wrapped() -> None:
+            with self._hb_lock:
+                self._hb_last = time.monotonic()
+                self._hb_count += 1
+            try:
+                inner()
+            except Exception:  # noqa: BLE001 - never break the engine's heartbeat
+                log.debug("inner heartbeat hook raised", exc_info=True)
+
+        wd.note_heartbeat = _wrapped
+
+    def _hb_snapshot(self) -> tuple[Optional[float], int]:
+        with self._hb_lock:
+            return self._hb_last, self._hb_count
 
     # --- lifecycle ---
     def start(self) -> None:
@@ -268,6 +319,11 @@ class LiveConversation:
             self._inject_holder = holder
         self.runtime.start(run_bus=True)
         self._t0 = time.perf_counter()
+        # Wall-clock anchor for the continuous-capture verdict: the engine's
+        # WavRecorder begins accumulating frames inside runtime.start(), so the
+        # recording duration vs (now - _wall_t0) is the ground truth that capture
+        # never paused (the recorder writes EVERY block, even during playback).
+        self._wall_t0 = time.monotonic()
         ready = getattr(self.runtime, "warm_ready", None)
         if ready is not None:
             ready.wait(timeout=20.0)
@@ -304,12 +360,22 @@ class LiveConversation:
             # Record the prior assistant turn (possibly interrupted) BEFORE we
             # speak the next line -- so a barged/partial answer isn't lost.
             self._flush_assistant()
+            # Driver-side post-speech cooldown: after the PRIOR turn settled to
+            # idle, let the assistant tail + room reverb decay before the next
+            # user audio so two voices never mix into one capture segment. Only on
+            # non-overlapping timings (barge_in/immediate are DESIGNED to overlap),
+            # and never before the very first line.
+            if (i > 0 and self._post_speech_cooldown > 0
+                    and turn.timing not in ("barge_in", "immediately")):
+                time.sleep(self._post_speech_cooldown)
             delay = _parse_pause(turn.timing)
             if delay:
                 time.sleep(delay)
             self._speak_user(turn)
             self._capture_until(self._mode_for_next(turns, i))
+            self._finalize_capture_probe()
         self._flush_assistant()
+        self.capture_verdict = self._compute_capture_verdict()
         return self.events
 
     @staticmethod
@@ -328,6 +394,21 @@ class LiveConversation:
         self._ln_metrics = len(self.runtime.metrics.records())
         self._ln_transcript = len(self.runtime.supervisor.state.transcript_log)
         self._ln_speak = self.engine.spoken_count()
+        # Continuous-capture probe baselines for THIS turn.
+        hb_last, hb_count = self._hb_snapshot()
+        # last_partial is never cleared between turns (supervisor only ever
+        # overwrites it on a new partial), so snapshot it as a per-turn baseline
+        # -- otherwise a stale value from an earlier turn reads as a live partial
+        # on every poll even when the mic heard nothing this turn.
+        st0 = self.runtime.supervisor.state
+        self._probe = {
+            "hb_count0": hb_count,
+            "hb_last0": hb_last,
+            "transcript0": self._ln_transcript,
+            "partial0": (getattr(st0, "last_partial", "") or "").strip(),
+            "partials_during_user": 0,   # partials seen WHILE the user audio plays
+            "hb_gap_max_s": 0.0,         # worst heartbeat gap observed this turn
+        }
         t_start = self._now()
         log.info("USER%s: %r", " (barge-in)" if turn.timing == "barge_in" else "", turn.text)
         if self._inject and self._inject_stream is not None:
@@ -345,9 +426,25 @@ class LiveConversation:
             # Slice the precomputed noise pool directly (no _npos mutation -> no
             # race with the capture loop's read()/_floor).
             lead = self._inject_stream._noise[: int(0.4 * sr2)]
-            self._inject_stream.push(np.concatenate([lead, _resample(samples, sr, sr2)]))
+            played = np.concatenate([lead, _resample(samples, sr, sr2)])
+            # Observe the recognizer WHILE the injected audio is being consumed:
+            # the injecting stream paces itself real-time, so a partial appearing
+            # before the buffer drains proves live transcription DURING input.
+            # Non-blocking (auto-stops after the play duration) so inject's
+            # push-and-return-immediately timing -- which the immediate/barge_in
+            # merge cases depend on -- is unchanged.
+            play_dur = len(played) / float(sr2)
+            self._inject_stream.push(played)
+            self._start_user_observer(duration_s=play_dur)
         else:
-            samples, sr = self.user.say(turn.text)
+            # The acoustic path blocks until playback finishes; observe in parallel
+            # so a partial produced while the speaker is playing the user line is
+            # proof the mic transcribed live (full-duplex), not after the fact.
+            stop = self._start_user_observer()
+            try:
+                samples, sr = self.user.say(turn.text)
+            finally:
+                stop()
         audio_path = self._out / "user" / f"{self._uidx:02d}.wav"
         save_wav(samples, sr, audio_path)
         self._cur_user_event = {
@@ -356,6 +453,92 @@ class LiveConversation:
             "t_start": round(t_start, 3), "t_end": round(self._now(), 3), "asr_final": None,
         }
         self.events.append(self._cur_user_event)
+
+    # --- continuous-capture probing during the user's audio ---
+    def _poll_capture_once(self, ref_last: Optional[float]) -> None:
+        """One observation pass: count a live partial / transcript growth and
+        track the worst heartbeat gap. ``ref_last`` is the heartbeat time at the
+        previous pass (or line start) used to measure the gap to the latest beat."""
+        st = self.runtime.supervisor.state
+        partial = (getattr(st, "last_partial", "") or "").strip()
+        # Only a partial that DIFFERS from this turn's baseline is a live partial;
+        # an unchanged value is the stale carry-over from a previous turn.
+        fresh_partial = bool(partial) and partial != self._probe["partial0"]
+        grew = len(st.transcript_log) > self._probe["transcript0"]
+        if fresh_partial or grew:
+            self._probe["partials_during_user"] += 1
+        hb_last, _ = self._hb_snapshot()
+        now = time.monotonic()
+        # Gap = time since the most recent beat. A capture loop alive on its 2 s
+        # cadence keeps this small; a stalled thread lets it grow unbounded.
+        last = hb_last if hb_last is not None else ref_last
+        if last is not None:
+            self._probe["hb_gap_max_s"] = max(self._probe["hb_gap_max_s"], now - last)
+
+    def _start_user_observer(self, duration_s: Optional[float] = None):
+        """Background observer of capture state while the user line is in flight.
+
+        A daemon thread polls partial/transcript growth + heartbeat freshness so a
+        partial appearing WHILE the user audio plays proves live (full-duplex)
+        transcription. Two modes:
+
+        * acoustic (``say()`` blocks): called with no duration; returns a stop()
+          callable the caller invokes when playback finishes.
+        * inject (push-and-return-immediately): called with ``duration_s``; the
+          thread self-terminates after that, so inject's timing is unchanged and
+          no stop() handle is needed."""
+        stop_evt = threading.Event()
+        ref0 = self._probe.get("hb_last0")
+        end = (time.monotonic() + duration_s) if duration_s is not None else None
+
+        def _run() -> None:
+            while not stop_evt.is_set():
+                self._poll_capture_once(ref0)
+                if end is not None and time.monotonic() >= end:
+                    return
+                stop_evt.wait(0.03)
+
+        th = threading.Thread(target=_run, name="live-capture-probe", daemon=True)
+        th.start()
+
+        def _stop() -> None:
+            stop_evt.set()
+            th.join(timeout=1.0)
+
+        return _stop
+
+    def _finalize_capture_probe(self) -> None:
+        """Attach the per-turn capture block to the current user event once its
+        turn has finished (assistant idle / barge / timeout)."""
+        if self._cur_user_event is None or not getattr(self, "_probe", None):
+            return
+        _, hb_count = self._hb_snapshot()
+        finals = len(self.runtime.supervisor.state.transcript_log) - self._probe["transcript0"]
+        self._cur_user_event["capture"] = {
+            "partials_during_user": int(self._probe["partials_during_user"]),
+            "finals": int(max(0, finals)),
+            "heartbeats": int(hb_count - self._probe["hb_count0"]),
+            "heartbeat_gap_max_s": round(float(self._probe["hb_gap_max_s"]), 3),
+            "capture_silent_warned": bool(self._hb_silent_warned),
+        }
+
+    def _compute_capture_verdict(self) -> dict:
+        """Session-level full-duplex / continuous-capture verdict. PASS when the
+        recorder covered ~the whole wall-clock session AND no >5 s capture-silent
+        gap was seen AND at least one partial appeared while a user line played."""
+        rec = getattr(self.engine, "_recorder", None)
+        rec_secs = float(getattr(rec, "seconds", 0.0) or 0.0)
+        wall = max(0.0, time.monotonic() - (self._wall_t0 or time.monotonic()))
+        partials_total = sum(
+            (e.get("capture") or {}).get("partials_during_user", 0)
+            for e in self.events if e.get("speaker") == "user"
+        )
+        return summarize_capture(
+            rec_seconds=rec_secs,
+            wall_seconds=wall,
+            partials_during_user_total=int(partials_total),
+            capture_silent_warned=bool(self._hb_silent_warned),
+        )
 
     def _capture_until(self, mode: str) -> None:
         if mode == "none":
@@ -373,6 +556,11 @@ class LiveConversation:
         start_deadline = time.time() + _START_TIMEOUT
         while time.time() < deadline:
             self._attach_heard_transcript()
+            # Keep observing capture through the turn (heartbeat gap + a latch for
+            # the watchdog's >5 s "capture silent" condition). The recorder + the
+            # ASR gate keep running during the assistant's OWN playback, so this
+            # also proves capture never paused while the assistant was speaking.
+            self._observe_capture_health()
             active = self._has_work()
             speaking = self._is_speaking()
             sc = self.engine.spoken_count()
@@ -411,6 +599,25 @@ class LiveConversation:
 
     def _idle(self) -> bool:
         return not self._has_work() and not self._is_speaking()
+
+    # Mirror the watchdog's silence deadline (CAPTURE_SILENT_DEADLINE_SEC=5.0)
+    # without importing it, so the harness latches the same "capture silent"
+    # condition the watchdog would log.
+    _CAPTURE_SILENT_DEADLINE_SEC = 5.0
+
+    def _observe_capture_health(self) -> None:
+        """Track the worst heartbeat gap during a turn and latch the capture-silent
+        condition. Once a beat has been seen, a gap past the deadline means the
+        capture thread stalled -- the negation of the continuous-capture proof."""
+        hb_last, _ = self._hb_snapshot()
+        if hb_last is None:
+            return
+        gap = time.monotonic() - hb_last
+        probe = getattr(self, "_probe", None)
+        if probe is not None:
+            probe["hb_gap_max_s"] = max(probe["hb_gap_max_s"], gap)
+        if gap >= self._CAPTURE_SILENT_DEADLINE_SEC:
+            self._hb_silent_warned = True
 
     def _attach_heard_transcript(self) -> None:
         log_ = self.runtime.supervisor.state.transcript_log

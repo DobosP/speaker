@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .driver import LiveConversation
-from .report import write_latency_report, write_summary, write_timeline
+from .report import write_grade, write_latency_report, write_summary, write_timeline
 from .scenarios import SCENARIOS, by_name
 
 log = logging.getLogger("speaker.live")
@@ -81,8 +81,23 @@ def main(argv: list[str] | None = None) -> int:
                    help="feed the synthetic-user audio straight into the recognizer instead of "
                         "playing it over the air -- clean STT->LLM->TTS with no acoustic "
                         "degradation/feedback (the reliable path when built-in speaker+mic is noisy)")
+    p.add_argument("--user-volume", type=float, default=None,
+                   help="ACOUSTIC ONLY: scale the synthetic-user PLAYBACK amplitude, 0..1 "
+                        "(default = native TTS amplitude, byte-identical to before). Lower it "
+                        "(e.g. --user-volume 0.4) to reduce the level hitting a near-field mic -- "
+                        "one half of the over-the-air SNR knob. The saved user/NN.wav stays "
+                        "full-scale; only the audio played over the speakers is attenuated.")
+    p.add_argument("--input-gain", type=float, default=None,
+                   help="set sherpa.input_gain for this run (default = leave config untouched, "
+                        "so the engine keeps its configured gain). The OTHER half of the SNR knob: "
+                        "dial it DOWN (e.g. --input-gain 1) to stop a loud near-field speaker from "
+                        "SATURATING the open mic and garbling STT. Mirrors the --no-input-gate / "
+                        "--smart-endpoint in-memory config override.")
     p.add_argument("--out-dir", default=None, help="artifact root (default logs/live/<run-id>)")
     args = p.parse_args(argv)
+
+    if args.user_volume is not None and not (0.0 <= args.user_volume <= 1.0):
+        p.error("--user-volume must be between 0 and 1")
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
 
@@ -107,6 +122,8 @@ def main(argv: list[str] | None = None) -> int:
         config.setdefault("input_gate", {})["enabled"] = False
     if args.smart_endpoint:
         config.setdefault("sherpa", {})["endpoint_enabled"] = True
+    if args.input_gain is not None:
+        config.setdefault("sherpa", {})["input_gain"] = float(args.input_gain)
 
     problems = _preflight(config)
     if args.check or problems:
@@ -135,7 +152,11 @@ def main(argv: list[str] | None = None) -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     root = Path(args.out_dir) if args.out_dir else Path("logs/live") / run_id
     print(f"\n=== live validation run {run_id} -> {root} ===")
-    print("Make sure your speakers and mic are on, at a sane volume, near each other.\n")
+    print("Make sure your speakers and mic are on, at a sane volume, near each other.")
+    _gain = config.get("sherpa", {}).get("input_gain")
+    _uvol = args.user_volume if args.user_volume is not None else 1.0
+    print(f"SNR knobs: input_gain={_gain} (--input-gain), "
+          f"user_volume={_uvol} (--user-volume; acoustic only)\n")
 
     rc = 0
     for scenario in chosen:
@@ -154,6 +175,7 @@ def main(argv: list[str] | None = None) -> int:
                 capture_assistant_audio=not args.no_assistant_audio,
                 response_timeout=args.response_timeout,
                 inject=args.inject,
+                user_volume=args.user_volume,
             )
             convo.start()
             time.sleep(0.5)  # settle the mic
@@ -170,10 +192,16 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if convo is not None:
                 convo.stop()
+        capture = getattr(convo, "capture_verdict", None)
         write_timeline(events, out_dir)
         write_latency_report(events, out_dir)
-        write_summary(scenario, events, out_dir, voice=convo.user.voice)
-        print(f"  -> {out_dir}/summary.md  (timeline.json, latency.json, user/, assistant/, heard_over_air.wav)")
+        grade = write_grade(events, out_dir, capture=capture)
+        write_summary(scenario, events, out_dir, voice=convo.user.voice, capture=capture)
+        fd = (capture or {}).get("full_duplex", "n/a")
+        acc = grade.get("aggregate", {}).get("stt_score_median")
+        print(f"  full_duplex: {fd}  |  over-the-air STT accuracy (median): {acc}")
+        print(f"  -> {out_dir}/summary.md  (timeline.json, latency.json, grade.json, "
+              f"user/, assistant/, heard_over_air.wav)")
 
     print(f"\nDone. Artifacts under {root}. Read each scenario's summary.md to grade it.")
     return rc

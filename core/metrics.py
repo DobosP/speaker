@@ -109,7 +109,7 @@ class MetricsRecorder:
         # an unknown signal as "no nudge" so a cold start can never bias it.
         self._ttft_ewma_ms: Optional[float] = None
 
-    def mark(self, stage: str, *, fold_local_ttft: bool = True) -> None:
+    def mark(self, stage: str, *, fold_local_ttft: bool = True, at: Optional[float] = None) -> None:
         """Stamp ``stage`` on the open turn.
 
         ``fold_local_ttft`` (default True) controls only the LOCAL TTFT EWMA
@@ -119,8 +119,16 @@ class MetricsRecorder:
         but is NOT folded into the LOCAL headroom EWMA, which would otherwise
         mislabel a fast cloud answer as a fast local tier (P4 low). The route
         is known only at the capability call site, so the fold gate is decided
-        there (see :mod:`core.capabilities`) and threaded through here."""
-        now = self._clock()
+        there (see :mod:`core.capabilities`) and threaded through here.
+
+        ``at`` (default ``None`` -> stamp ``now``) lets a caller record the
+        stage at a *known earlier* instant in this recorder's clock epoch
+        (``perf_counter``). The engine uses it to stamp ``SPEECH_END`` at the
+        true silence onset rather than when the endpointer fires ~0.8s later,
+        so ``endpoint_latency`` stops reading 0 and the fixed trailing-silence
+        cost becomes visible (lat-1). Must be a ``perf_counter`` value; a value
+        in any other clock epoch would corrupt the deltas."""
+        now = self._clock() if at is None else float(at)
         with self._lock:
             if stage in _TURN_START:
                 # A repeat of the same start stage signals the next utterance:

@@ -562,6 +562,14 @@ class SherpaOnnxEngine(AudioEngine):
         import numpy as np
 
         last_partial = ""
+        # perf_counter of the most recent block that advanced the ASR result --
+        # i.e. the recognizer's own notion of "speech is still arriving". When
+        # the endpoint later fires (after rule2's trailing silence), this is the
+        # true speech-end instant, so SPEECH_END is stamped here rather than at
+        # endpoint time -- otherwise endpoint_latency reads ~0 and the fixed
+        # ~0.8s trailing-silence wait is invisible to every metric (lat-1).
+        # ``None`` -> no speech seen this segment; SPEECH_END falls back to now.
+        last_voiced_ts: float | None = None
         recognizer = self._recognizer
         if recognizer is None:
             log.error("no recognizer built (ASR model paths missing in config?); "
@@ -662,6 +670,11 @@ class SherpaOnnxEngine(AudioEngine):
                     text = recognizer.get_result(stream)
                     if text and text != last_partial:
                         last_partial = text
+                        # The result advanced -> speech is actively arriving.
+                        # Record the instant (perf_counter, matching the metrics
+                        # clock) so a later endpoint can backdate SPEECH_END to
+                        # here, exposing the trailing-silence wait (lat-1).
+                        last_voiced_ts = time.perf_counter()
                         partials += 1
                         # Casing only on partials (cheap, every block); the
                         # heavier punctuation model is reserved for the final.
@@ -672,6 +685,13 @@ class SherpaOnnxEngine(AudioEngine):
                         raw_final = recognizer.get_result(stream)
                         recognizer.reset(stream)
                         last_partial = ""
+                        # Capture this segment's true speech-end instant (the last
+                        # block that advanced the result) and reset for the next
+                        # segment. Stamping SPEECH_END here -- not at endpoint time
+                        # -- makes endpoint_latency reflect the real trailing
+                        # silence instead of reading ~0 (lat-1). ``None`` (no
+                        # partial ever fired) falls back to now inside mark().
+                        speech_end_ts, last_voiced_ts = last_voiced_ts, None
                         seg = np.concatenate(utterance) if utterance else samples
                         utterance, utterance_len = [], 0
                         if raw_final.strip():
@@ -679,7 +699,7 @@ class SherpaOnnxEngine(AudioEngine):
                             final_text = self._postprocess_final(raw_final)
                             log.info("asr final: %r (raw %r)", final_text, raw_final)
                             if self._should_act_on_final(seg):
-                                self._cb.on_metric(SPEECH_END)
+                                self._cb.on_metric(SPEECH_END, at=speech_end_ts)
                                 self._cb.on_final(final_text)
                             else:
                                 log.info(
@@ -697,6 +717,7 @@ class SherpaOnnxEngine(AudioEngine):
                     log.warning("ASR decode error #%d (resetting stream)", asr_errors,
                                 exc_info=(asr_errors == 1))
                     last_partial = ""
+                    last_voiced_ts = None
                     utterance, utterance_len = [], 0
                     try:
                         recognizer.reset(stream)

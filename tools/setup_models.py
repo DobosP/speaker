@@ -65,6 +65,14 @@ PUNCT_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "punctuation-models/sherpa-onnx-punct-ct-transformer-zh-en-vocab272727-2024-04-12.tar.bz2"
 )
+# Optional speech denoiser for the capture front-end (sherpa-onnx GTCRN). Ships
+# as a single ~523 KB .onnx GitHub *release asset* (not a HF repo file), so it's
+# fetched by direct URL like the speaker model. Tiny, CPU-only, 16 kHz. Override
+# with --denoise-model-url or the GTCRN_MODEL_URL env var.
+GTCRN_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "speech-enhancement-models/gtcrn_simple.onnx"
+)
 
 
 def dest_for(base: str, key: str) -> str:
@@ -213,6 +221,21 @@ def main(argv: list[str] | None = None) -> int:
         help="also download the optional punctuation model (adds real .,? to "
         "ASR finals; off by default since casing restoration already helps)",
     )
+    parser.add_argument(
+        "--denoise-model-url",
+        dest="denoise_model_url",
+        default=os.environ.get("GTCRN_MODEL_URL", GTCRN_MODEL_URL),
+        help="URL of the optional GTCRN speech-denoise model .onnx (override or "
+        "set GTCRN_MODEL_URL)",
+    )
+    parser.add_argument(
+        "--denoise-model",
+        dest="denoise_model",
+        action="store_true",
+        help="also download the optional speech-denoise model (GTCRN, ~523 KB) "
+        "and wire denoise_model in config; off by default. After fetching, set "
+        "sherpa.denoise_enabled=true to activate it on the capture path.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -289,6 +312,23 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # Speech-denoise model (optional, opt-in). Same non-fatal contract: a failed
+    # fetch leaves the capture path WITHOUT denoise (the default), never blocks
+    # core ASR/TTS setup. GitHub release asset -> direct-URL streamed download.
+    if args.denoise_model:
+        denoise_dest = os.path.join(args.dest, "denoise")
+        print(f"[models] fetching speech-denoise model: {args.denoise_model_url} -> {denoise_dest}")
+        try:
+            resolved["denoise_model"] = fetch_speaker_model(
+                denoise_dest, args.denoise_model_url, force=args.force
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] speech-denoise model not fetched ({exc}); continuing without it. "
+                "Denoise stays off (sherpa.denoise_enabled) until you re-run.",
+                file=sys.stderr,
+            )
+
     # Write the absolute model paths into the machine-local overrides file
     # (gitignored, merged over config.json at load). Start from whatever is
     # already there so other local overrides survive.
@@ -302,12 +342,18 @@ def main(argv: list[str] | None = None) -> int:
 
     sherpa = cfg["sherpa"]
     print(f"\n[models] {args.config} sherpa paths set:")
-    for key in FILE_KEYS + ["tts_data_dir", "speaker_embedding_model", "punct_model"]:
-        if key == "punct_model" and not sherpa.get(key):
+    for key in FILE_KEYS + ["tts_data_dir", "speaker_embedding_model", "punct_model", "denoise_model"]:
+        if key in ("punct_model", "denoise_model") and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
     if sherpa.get("speaker_embedding_model"):
         print("\nSpeaker-ID model ready. Enroll your voice:  python -m core --enroll")
+    if sherpa.get("denoise_model"):
+        print(
+            "\nSpeech-denoise model ready. To ACTIVATE it on the capture path, set "
+            'sherpa.denoise_enabled=true in your config (it is OFF by default). '
+            "Re-enroll your voice afterwards (the embedding shifts vs un-denoised audio)."
+        )
     print("\nNow run:  python -m core --engine sherpa")
     return 0
 

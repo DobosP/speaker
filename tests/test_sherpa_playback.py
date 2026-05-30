@@ -136,3 +136,87 @@ def test_stop_speaking_without_live_stream_is_silent_noop():
     eng._cb.on_metric = metrics.append
     eng.stop_speaking()  # _out_stream is None
     assert "barge_in_stop" not in metrics
+
+
+# --- clean shutdown: stop() must abort a live stream so a wedged play thread ---
+# can exit (fix A). On a dead ALSA device the play thread blocks in the C-level
+# out.write(); the queue sentinel can't wake it, so stop() would hang waiting on
+# the join. stop() now abort()s the live output stream first, which makes the
+# blocked write() return so the daemon play thread exits.
+
+
+def test_stop_aborts_live_stream_before_join():
+    # With a live stream set, stop() abort()s it (mirrors stop_speaking()) but
+    # emits NO barge_in_stop metric -- this is teardown, not an interruption.
+    eng = _engine(_StreamingTts())
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._out_stream = _FakeOutStream()
+    eng._running.set()
+    eng.stop()  # no capture/play threads started -> joins are no-ops
+    assert eng._out_stream is not None and eng._out_stream.aborted == 1
+    assert "barge_in_stop" not in metrics  # teardown, not a barge-in
+    assert not eng._running.is_set()
+    assert eng._stop_speaking.is_set()
+
+
+def test_stop_without_live_stream_is_noop():
+    # No live stream -> stop() must not raise and must still tear down cleanly.
+    eng = _engine(_StreamingTts())
+    eng._running.set()
+    eng.stop()  # _out_stream is None
+    assert not eng._running.is_set()
+
+
+def test_stop_returns_promptly_when_write_is_blocked():
+    # Simulate the dead-device hang: a play thread blocked in out.write() until
+    # abort() is called. stop() must abort the stream (unblocking the write) and
+    # join the thread within its bounded timeout instead of hanging forever.
+    import threading
+
+    eng = _engine(_StreamingTts())
+
+    class _BlockingOut:
+        def __init__(self):
+            self.released = threading.Event()
+            self.aborted = 0
+
+        def write(self, samples):
+            # Block like a stalled ALSA device until abort() releases us.
+            self.released.wait(timeout=5.0)
+
+        def abort(self):
+            self.aborted += 1
+            self.released.set()
+
+    out = _BlockingOut()
+    eng._out_stream = out
+    eng._running.set()
+    eng._stop_speaking.clear()
+
+    def fake_play():
+        # Mimic the play thread sitting in a blocking write under the closure's
+        # except (which swallows the post-abort error because _stop_speaking is
+        # set by stop()). The loop checks _running so it exits after the write.
+        try:
+            out.write(None)
+        except Exception:  # noqa: BLE001
+            if not eng._stop_speaking.is_set():
+                raise
+
+    t = threading.Thread(target=fake_play, daemon=True)
+    eng._play_thread = t
+    t.start()
+
+    done = threading.Event()
+
+    def call_stop():
+        eng.stop()
+        done.set()
+
+    threading.Thread(target=call_stop, daemon=True).start()
+    # stop() bounds each join at 1.0s; with abort() unblocking the write it
+    # should finish well under that.
+    assert done.wait(timeout=3.0), "stop() hung instead of returning promptly"
+    assert out.aborted == 1
+    assert not t.is_alive()

@@ -25,6 +25,7 @@ from ..asr_text import restore_casing
 from ..audio_frontend import CLEAN_CAPTURE_RATES, AudioResampler, apply_gain_soft_limit
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
+from ._denoiser import build_denoiser
 from ._sherpa_models import (
     build_keyword_spotter,
     build_punctuation,
@@ -101,6 +102,19 @@ class SherpaConfig:
     # adds real ".,?" so the transcript reads naturally and the LLM gets clean
     # sentences. Empty -> skipped (casing restoration still applies).
     punct_model: str = ""
+    # Optional speech denoiser (sherpa-onnx GTCRN, .onnx) applied to the 16 kHz
+    # capture block right after resampling -- BEFORE the recognizer, the speaker
+    # embedder, and the VAD all read it. Broadband noise garbles STT *and* drops
+    # the enrolled-user speaker embedding below the gate (lockout); one denoise
+    # cleans the single block for every downstream model. OFF by default: when
+    # ``denoise_enabled`` is False OR ``denoise_model`` is empty, NOTHING is
+    # built and the capture path is byte-identical to no-denoise (the gate mirrors
+    # ``endpoint_enabled``). One tiny ONNX inference per 0.1 s block on the capture
+    # thread (GTCRN RTF<<1, but measure before enabling on weak tiers). Recording
+    # writes the DENOISED block, so a recorded run replays already-denoised --
+    # keep ``denoise_enabled`` consistent across record/replay or you double-denoise.
+    denoise_enabled: bool = False
+    denoise_model: str = ""
     # Silero VAD model (.onnx). Required for endpointing / barge-in.
     vad_model: str = ""
     # Command fast-path: a streaming keyword spotter (separate small transducer)
@@ -275,6 +289,10 @@ class SherpaOnnxEngine(AudioEngine):
         # Stateful anti-aliased resampler (built in start() when the mic opens at
         # a rate other than 16 kHz); None means no resampling needed.
         self._resampler: Optional[AudioResampler] = None
+        # Optional speech denoiser applied to the 16 kHz block after resampling,
+        # before the recognizer/embedder/VAD (built in _build when enabled). None
+        # -> the capture path is byte-identical to no-denoise.
+        self._denoiser = None
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
@@ -338,6 +356,12 @@ class SherpaOnnxEngine(AudioEngine):
         self._recognizer = build_recognizer(c)
         self._vad = build_vad(c)
         self._tts = build_tts(c)
+        # Speech denoiser (None unless denoise_enabled AND a model path is set).
+        # build_denoiser fails open (returns None) on a bad path so start() never
+        # crashes; the capture-loop branch is skipped when this is None.
+        self._denoiser = build_denoiser(c)
+        if self._denoiser is not None:
+            log.info("speech denoiser ACTIVE on the capture path (16 kHz, GTCRN)")
         self._kws = build_keyword_spotter(c)
         if self._kws is not None:
             self._kws_stream = self._kws.create_stream()
@@ -747,6 +771,13 @@ class SherpaOnnxEngine(AudioEngine):
                     samples = apply_gain_soft_limit(samples, self.config.input_gain)
                 if self._resampler is not None:
                     samples = self._resampler.process(samples)
+                # Speech denoise on the 16 kHz block, AFTER resampling and BEFORE
+                # every consumer (recorder, accept_waveform, the speaker embedder,
+                # the VAD). When no denoiser is built this is a zero-cost identity,
+                # so the path stays byte-identical to no-denoise. Passthrough-on-
+                # error inside, so it can never crash this daemon thread.
+                if self._denoiser is not None:
+                    samples = self._denoiser.process_16k(samples)
 
                 if self._recorder is not None:
                     self._recorder.write(samples)
@@ -880,6 +911,11 @@ class SherpaOnnxEngine(AudioEngine):
                     last_partial = ""
                     last_voiced_ts = None
                     utterance, utterance_len = [], 0
+                    # Clear the denoiser's streaming state too, so a recovered
+                    # stream starts the front-end fresh (best-effort; no-op when
+                    # there's no denoiser).
+                    if self._denoiser is not None:
+                        self._denoiser.reset()
                     try:
                         recognizer.reset(stream)
                     except Exception:

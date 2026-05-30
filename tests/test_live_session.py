@@ -7,7 +7,9 @@ answer filtering, and report generation -- so they don't rot.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import tools.live_session.__main__ as live_main
 from tools.live_session.driver import _is_answer, _parse_pause
 from tools.live_session.report import write_latency_report, write_summary, write_timeline
 from tools.live_session.scenarios import SCENARIOS, Scenario, Turn, by_name
@@ -228,6 +230,72 @@ def test_has_work_and_idle(tmp_path):
     sup.state.active_tasks = {"t": object()}
     assert c._has_work() is True
     assert c._idle() is False
+
+
+# --- CLI flags: --smart-endpoint (experimental semantic endpoint A/B) ----------
+#
+# These pin the in-memory config mutation only (no audio/models). main() short-
+# circuits on --check after applying the device profile + the flag mutations and
+# before constructing LiveConversation, so we capture the config in a stubbed
+# _preflight. The committed config.json default must stay OFF; the flag flips it
+# ON only for the live run, and its absence is byte-identical to before.
+
+
+def _run_main_capturing_config(monkeypatch, argv):
+    """Drive main(argv) with a minimal stub config + a captured _preflight.
+
+    Returns the config dict as it was when _preflight saw it (i.e. AFTER the
+    device-profile merge and the CLI flag mutations, BEFORE LiveConversation).
+    """
+    import core.config as core_config
+
+    captured: dict = {}
+
+    monkeypatch.setattr(core_config, "_load_config",
+                        lambda *a, **k: {"device": "desktop", "sherpa": {}})
+    monkeypatch.setattr(core_config, "_apply_device_profile",
+                        lambda config, device: config)
+
+    def _stub_preflight(config):
+        captured["config"] = config
+        return ["stop here -- captured config, do not build the live runtime"]
+
+    monkeypatch.setattr(live_main, "_preflight", _stub_preflight)
+
+    # --check makes main() return after _preflight without touching scenarios.
+    live_main.main([*argv, "--check"])
+    return captured["config"]
+
+
+def test_smart_endpoint_flag_enables_endpoint(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, ["--smart-endpoint"])
+    assert config["sherpa"]["endpoint_enabled"] is True
+
+
+def test_no_smart_endpoint_flag_leaves_endpoint_untouched(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, [])
+    # Default-OFF must be byte-identical to before: the flag's absence does not
+    # introduce the key at all (the engine then defaults endpoint_enabled False).
+    assert "endpoint_enabled" not in config.get("sherpa", {})
+
+
+def test_committed_config_default_endpoint_is_off():
+    # The global committed default MUST stay False -- the flag is an in-memory,
+    # per-run override and never writes config.json.
+    config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
+    assert config["sherpa"]["endpoint_enabled"] is False
+
+
+def test_smart_endpoint_flag_is_in_help(capsys):
+    import pytest
+
+    # --help raises SystemExit(0) after printing usage to stdout.
+    with pytest.raises(SystemExit) as exc:
+        live_main.main(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--smart-endpoint" in help_text
+    assert "EXPERIMENTAL" in help_text  # the validation warning is surfaced
 
 
 def test_write_summary_is_gradeable(tmp_path):

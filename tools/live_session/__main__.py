@@ -68,6 +68,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-input-gate", action="store_true",
                    help="disable the ACT/INGEST addressing gate (answer every heard utterance -- "
                         "useful when over-the-air STT is garbled enough that the gate INGESTs it)")
+    p.add_argument("--smart-endpoint", action="store_true",
+                   help="enable EXPERIMENTAL semantic turn-completion endpointing (core/endpointing.py) "
+                        "for a live A/B latency validation: commit a final EARLY when the partial reads "
+                        "as a complete turn (reclaims the ~1.2s trailing-silence wait, the #1 first-audio "
+                        "latency win) and HOLD past the acoustic timer when it ends mid-phrase. In-memory, "
+                        "per-run override only -- the committed config.json default stays OFF. VALIDATE: "
+                        "SHORTEN finals MUST match the full-acoustic finals, especially turns ending on a "
+                        "preposition ('...capital of France'); a truncated final means min_silence_sec is "
+                        "below the decoder lookahead and the feature must NOT be trusted.")
     p.add_argument("--inject", action="store_true",
                    help="feed the synthetic-user audio straight into the recognizer instead of "
                         "playing it over the air -- clean STT->LLM->TTS with no acoustic "
@@ -96,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
             config.setdefault("sherpa", {})[key] = val
     if args.no_input_gate:
         config.setdefault("input_gate", {})["enabled"] = False
+    if args.smart_endpoint:
+        config.setdefault("sherpa", {})["endpoint_enabled"] = True
 
     problems = _preflight(config)
     if args.check or problems:

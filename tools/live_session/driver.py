@@ -38,11 +38,98 @@ _CONTROL_PREFIXES = (
 # How long to wait for the assistant to even BEGIN responding before treating the
 # line as un-answered (so a silent line still terminates within response_timeout).
 _START_TIMEOUT = 8.0
+# Quiet period (no task/speech) after engagement before a turn counts as idle --
+# bridges the brief task-complete -> engine.speak() gap so it isn't read as done.
+_IDLE_SETTLE = 0.6
 
 
 def _is_answer(text: str) -> bool:
     text = (text or "").strip()
     return bool(text) and not text.startswith(_CONTROL_PREFIXES)
+
+
+class InjectingInputStream:
+    """A fake capture stream that feeds pre-generated audio into the recognizer
+    in place of the mic, paced at real-time (so endpoint timing + latency stay
+    realistic). Used by --inject to test STT->LLM->TTS on CLEAN audio without the
+    noisy over-the-air acoustic path (which on built-in laptop speaker+mic garbles
+    STT and feeds back). Matches the read()/start/stop/close/abort surface the
+    capture loop + recovering wrapper touch."""
+
+    def __init__(self, sample_rate: int):
+        import numpy as np
+
+        self._np = np
+        self._sr = int(sample_rate)
+        self._buf = np.zeros(0, dtype="float32")
+        self._lock = threading.Lock()
+        # Between utterances, feed a low-level noise floor -- NOT digital zeros.
+        # A real mic never delivers perfect silence; the streaming zipformer is
+        # out-of-distribution on pure zeros and hallucinates filler words ("And")
+        # on every endpoint cycle. ~3e-4 RMS sits above the "~silent" heartbeat
+        # threshold (1e-4) and well below speech, so it decodes to nothing.
+        # Precomputed + cycled (deterministic, no per-read RNG).
+        self._noise = (np.random.default_rng(20260530).standard_normal(self._sr) * 3e-4).astype("float32")
+        self._npos = 0
+
+    def push(self, samples) -> None:
+        s = self._np.asarray(samples, dtype="float32").reshape(-1)
+        with self._lock:
+            self._buf = self._np.concatenate([self._buf, s])
+
+    def _floor(self, n: int):
+        if n <= 0:
+            return self._np.zeros(0, dtype="float32")
+        reps = -(-n // len(self._noise))  # ceil
+        pool = self._np.tile(self._noise, reps) if reps > 1 else self._noise
+        start = self._npos % len(self._noise)
+        self._npos = (self._npos + n) % len(self._noise)
+        return pool[start:start + n].copy()
+
+    def read(self, frames):
+        frames = int(frames)
+        with self._lock:
+            if len(self._buf) >= frames:
+                out, self._buf = self._buf[:frames], self._buf[frames:]
+            else:
+                out = self._np.concatenate([self._buf, self._floor(frames - len(self._buf))])
+                self._buf = self._np.zeros(0, dtype="float32")
+        time.sleep(frames / float(self._sr))  # pace like a real mic block read
+        return out, False
+
+    def start(self): pass
+    def stop(self): pass
+    def close(self): pass
+    def abort(self): pass
+
+
+class _NullOutputStream:
+    """A drop-in for sd.OutputStream that discards audio, paced at real-time so
+    ``is_speaking`` still reflects a realistic speaking duration. Used by --inject
+    so the assistant's TTS metrics (TTS_FIRST_AUDIO) still fire but a blocking /
+    finicky real audio OUTPUT can't stall the harness (on this machine ALSA
+    out.write() blocks for tens of seconds on a short clip)."""
+
+    def __init__(self, *args, samplerate: int = 48000, **kwargs):
+        self._sr = int(samplerate) or 48000
+        self.active = True
+
+    def start(self):
+        self.active = True
+
+    def write(self, samples):
+        n = len(samples) if hasattr(samples, "__len__") else 0
+        if n:
+            time.sleep(n / float(self._sr))
+
+    def stop(self):
+        self.active = False
+
+    def abort(self):
+        self.active = False
+
+    def close(self):
+        self.active = False
 
 
 def make_recording_engine(config):
@@ -96,6 +183,7 @@ class LiveConversation:
         user_speed: Optional[float] = None,
         capture_assistant_audio: bool = True,
         response_timeout: float = 45.0,
+        inject: bool = False,
     ) -> None:
         from always_on_agent.events import Mode
         from core.app import build_runtime
@@ -105,6 +193,10 @@ class LiveConversation:
         self._out = Path(out_dir)
         self._out.mkdir(parents=True, exist_ok=True)
         self._timeout = response_timeout
+        self._inject = inject
+        self._inject_stream: Optional[InjectingInputStream] = None
+        self._orig_output_stream = None  # saved sd.OutputStream while inject patches it
+        self._orig_input_stream = None   # saved sd.InputStream while inject patches it
         self.engine, sherpa_cfg = make_recording_engine(config)
         if not getattr(sherpa_cfg, "asr_encoder", "") or not getattr(sherpa_cfg, "asr_tokens", ""):
             raise RuntimeError(
@@ -151,11 +243,40 @@ class LiveConversation:
 
     # --- lifecycle ---
     def start(self) -> None:
+        if self._inject:
+            # Patch the audio device seams BEFORE start() so the engine never
+            # touches the real hardware:
+            #  - sd.InputStream -> an InjectingInputStream we keep a handle to, so
+            #    the mic is never opened (its flaky open/close crashes this box and
+            #    inject doesn't need it) and user audio feeds straight to the ASR.
+            #  - sd.OutputStream -> a null sink (assistant audio isn't needed; we
+            #    re-synthesize the track + read latency from metrics) so a blocking
+            #    ALSA output can't stall the run. Patched here so warm-up uses it too.
+            import sounddevice as sd
+
+            holder: dict = {}
+
+            def _input_factory(*args, samplerate=16000, **kwargs):
+                stream = InjectingInputStream(int(samplerate) or 16000)
+                holder["stream"] = stream  # last opened wins == the one that sticks
+                return stream
+
+            self._orig_input_stream = sd.InputStream
+            self._orig_output_stream = sd.OutputStream
+            sd.InputStream = _input_factory
+            sd.OutputStream = _NullOutputStream
+            self._inject_holder = holder
         self.runtime.start(run_bus=True)
         self._t0 = time.perf_counter()
         ready = getattr(self.runtime, "warm_ready", None)
         if ready is not None:
             ready.wait(timeout=20.0)
+        if self._inject:
+            self._inject_stream = self._inject_holder.get("stream")
+            if self._inject_stream is None:
+                raise RuntimeError("inject mode: the engine never opened an input stream")
+            log.info("INJECT mode: feeding synthetic-user audio into the recognizer "
+                     "at %d Hz (real mic never opened)", self._inject_stream._sr)
         log.info("assistant ready; starting conversation")
 
     def stop(self) -> None:
@@ -163,6 +284,15 @@ class LiveConversation:
             self.runtime.stop()
         except Exception:  # noqa: BLE001
             log.exception("runtime stop failed")
+        if self._orig_output_stream is not None or self._orig_input_stream is not None:
+            import sounddevice as sd
+
+            if self._orig_output_stream is not None:
+                sd.OutputStream = self._orig_output_stream
+                self._orig_output_stream = None
+            if self._orig_input_stream is not None:
+                sd.InputStream = self._orig_input_stream
+                self._orig_input_stream = None
 
     def _now(self) -> float:
         return time.perf_counter() - self._t0
@@ -200,7 +330,24 @@ class LiveConversation:
         self._ln_speak = self.engine.spoken_count()
         t_start = self._now()
         log.info("USER%s: %r", " (barge-in)" if turn.timing == "barge_in" else "", turn.text)
-        samples, sr = self.user.say(turn.text)
+        if self._inject and self._inject_stream is not None:
+            # Feed clean audio straight into the recognizer at the capture rate,
+            # paced real-time by the injecting stream. No speakers, no mic.
+            # Prepend a short noise-floor lead-in (like a real speaker's pre-speech
+            # pause) so the streaming recognizer settles before the onset -- without
+            # it the first word is mis-decoded ("What's" -> "Once"/"Was").
+            import numpy as np
+
+            from .synthetic_user import _resample
+
+            samples, sr = self.user.synthesize(turn.text)
+            sr2 = self._inject_stream._sr
+            # Slice the precomputed noise pool directly (no _npos mutation -> no
+            # race with the capture loop's read()/_floor).
+            lead = self._inject_stream._noise[: int(0.4 * sr2)]
+            self._inject_stream.push(np.concatenate([lead, _resample(samples, sr, sr2)]))
+        else:
+            samples, sr = self.user.say(turn.text)
         audio_path = self._out / "user" / f"{self._uidx:02d}.wav"
         save_wav(samples, sr, audio_path)
         self._cur_user_event = {
@@ -213,53 +360,57 @@ class LiveConversation:
     def _capture_until(self, mode: str) -> None:
         if mode == "none":
             return
-        started = False
+        # "Engaged" must mean the assistant actually picked up the work -- a task
+        # in flight or speech -- NOT just a transcript (which also appears for an
+        # INGEST'd / not-addressed turn, and BEFORE the task is created). Honor
+        # idle only after engagement AND a short settle, so the brief task->speak
+        # gap doesn't read as idle. A turn that never engages (INGEST) falls out
+        # on the start timeout.
+        engaged = False
+        last_seen_speak = self._ln_speak
+        last_activity = time.time()
         deadline = time.time() + self._timeout
         start_deadline = time.time() + _START_TIMEOUT
         while time.time() < deadline:
             self._attach_heard_transcript()
-            if not started:
-                started = self._turn_began()
-            if mode == "speaking" and self._started_speaking():
+            active = self._has_work()
+            speaking = self._is_speaking()
+            sc = self.engine.spoken_count()
+            # NEW speech is an EDGE -- spoken_count only ever grows, so comparing
+            # to the line baseline (spoke-since-line) is a LEVEL that would never
+            # let last_activity settle once the assistant has spoken at all. Refresh
+            # activity on a fresh sentence only; keep "engaged" on the level.
+            new_speech = sc > last_seen_speak
+            last_seen_speak = sc
+            spoke_since_line = sc > self._ln_speak
+            if active or speaking or spoke_since_line:
+                engaged = True
+            if active or speaking or new_speech:
+                last_activity = time.time()
+            if mode == "speaking" and (speaking or spoke_since_line):
                 return
             if mode == "idle":
-                if started and self._idle():
+                if engaged and not active and not speaking and (time.time() - last_activity) >= _IDLE_SETTLE:
                     return
-                if not started and time.time() > start_deadline:
+                if not engaged and time.time() >= start_deadline:
                     log.warning("no response observed within %.0fs; moving on", _START_TIMEOUT)
                     return
             time.sleep(0.03)
         log.warning("response timeout (%.0fs, mode=%s)", self._timeout, mode)
 
     # --- observation helpers ---
-    def _turn_began(self) -> bool:
+    def _has_work(self) -> bool:
         st = self.runtime.supervisor.state
-        try:
-            speaking = self.engine.is_speaking
-        except Exception:  # noqa: BLE001
-            speaking = False
-        return (
-            self.engine.spoken_count() > self._ln_speak
-            or len(st.transcript_log) > self._ln_transcript
-            or len(self.runtime.metrics.records()) > self._ln_metrics
-            or bool(st.active_tasks) or bool(st.queued_tasks) or speaking
-        )
+        return bool(st.active_tasks) or bool(st.queued_tasks)
 
-    def _started_speaking(self) -> bool:
+    def _is_speaking(self) -> bool:
         try:
-            if self.engine.is_speaking:
-                return True
+            return bool(self.engine.is_speaking)
         except Exception:  # noqa: BLE001
-            pass
-        return self.engine.spoken_count() > self._ln_speak
+            return False
 
     def _idle(self) -> bool:
-        st = self.runtime.supervisor.state
-        try:
-            speaking = self.engine.is_speaking
-        except Exception:  # noqa: BLE001
-            speaking = False
-        return not st.active_tasks and not st.queued_tasks and not speaking
+        return not self._has_work() and not self._is_speaking()
 
     def _attach_heard_transcript(self) -> None:
         log_ = self.runtime.supervisor.state.transcript_log

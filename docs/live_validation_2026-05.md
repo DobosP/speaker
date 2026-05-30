@@ -26,13 +26,28 @@ python -m tools.live_session --all
 Useful flags: `--device <profile>` (config.json profile), `--llm ollama --model
 ... --fast-model ...`, `--input-device/--output-device <id>`, `--user-speaker-id
 / --user-speed` (the synthetic user's voice), `--no-assistant-audio`,
-`--response-timeout <s>`.
+`--response-timeout <s>`, `--inject`, `--no-input-gate`.
 
 **Setup:** the assistant captures the real mic, so put the speakers and mic
 **near each other** at a **sane volume** so the synthetic user is heard clearly.
 The assistant gates ASR during its own playback, so it won't transcribe itself.
 A barge-in scenario deliberately speaks over the assistant — keep the room quiet
 otherwise.
+
+### `--inject` (clean pipeline test, no acoustic loop)
+
+Over-the-air needs a **well-coupled** mic+speaker. On a laptop's built-in
+speaker→mic the STT garbles badly and the mic re-hears the assistant's own TTS
+(feedback) — so on such hardware use **`--inject`**: the synthetic-user audio is
+fed **straight into the recognizer** (the real mic is never opened) and the
+assistant's TTS goes to a **null sink**. You still exercise the **real**
+STT→LLM→TTS pipeline + the brain on **clean** audio — latency comes from metrics,
+the assistant track is re-synthesized for the artifact — but with no acoustic
+degradation, no feedback, and no flaky-device crashes. `--inject` does **not**
+test the literal mic/speaker or barge-in (interruption needs live audio during
+playback + AEC). See `docs/live_validation_run_2026-05-30.md` for the first run's
+analysis (and why each path was needed). `--no-input-gate` disables the
+ACT/INGEST addressing gate, useful when garbled over-the-air STT gets INGEST'd.
 
 ## What it produces (per scenario, under `logs/live/<run-id>/<scenario>/`)
 

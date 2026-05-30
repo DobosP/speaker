@@ -44,7 +44,11 @@ class SyntheticUser:
         # sound distinct. The user can override both.
         self._sid = speaker_id if speaker_id is not None else assistant_sid + 1
         self._speed = speed if speed is not None else round(assistant_speed * 1.12, 3)
-        self._out = output_device
+        # Normalize the device the same way the engine does: '' -> system default,
+        # a digit string -> the int index PortAudio expects (not a device name).
+        from core.engines.sherpa import _norm_device
+
+        self._out = _norm_device(output_device)
 
     @property
     def voice(self) -> dict:
@@ -67,14 +71,46 @@ class SyntheticUser:
 
     def say(self, text: str):
         """Synthesize + play ``text`` through the speakers, BLOCKING until it has
-        finished playing. Returns (samples, sample_rate) so the caller can save
-        the exact audio that was played."""
+        finished playing. Returns the ORIGINAL (samples, sample_rate) so the
+        caller can save the clean audio, even if playback was resampled."""
         samples, sr = self.synthesize(text)
         import sounddevice as sd
 
-        sd.play(samples, sr, device=self._out)
-        sd.wait()
-        return samples, sr
+        # The output device may not support the TTS native rate (e.g. 22050 Hz on
+        # a device that only opens at 48000) -- the engine resamples its own TTS
+        # for exactly this reason. Resample playback to the device's default rate
+        # and fall back across a couple of common rates on a bad-rate error.
+        play, play_sr = samples, sr
+        try:
+            info = sd.query_devices(self._out, "output")
+            dev_sr = int(info.get("default_samplerate") or 0)
+        except Exception:  # noqa: BLE001
+            dev_sr = 0
+        candidates = [r for r in (dev_sr, 48000, 44100, sr) if r]
+        last_err: Exception | None = None
+        for rate in dict.fromkeys(candidates):  # dedupe, keep order
+            try:
+                play = _resample(samples, sr, rate) if rate != sr else samples
+                sd.play(play, rate, device=self._out)
+                sd.wait()
+                return samples, sr
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                continue
+        raise RuntimeError(f"could not play synthetic-user audio: {last_err}")
+
+
+def _resample(samples, src_sr: int, dst_sr: int):
+    import numpy as np
+
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if src_sr == dst_sr or x.size == 0:
+        return x
+    n = int(round(x.shape[0] * float(dst_sr) / float(src_sr)))
+    if n <= 0:
+        return np.zeros(0, dtype="float32")
+    idx = np.linspace(0.0, x.shape[0] - 1, num=n)
+    return np.interp(idx, np.arange(x.shape[0]), x).astype("float32")
 
 
 def save_wav(samples, sample_rate: int, path: Path) -> Path:

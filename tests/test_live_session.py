@@ -215,17 +215,18 @@ def test_consume_latency_pairs_turns_in_order(tmp_path):
     assert c._consume_latency() is None      # no more
 
 
-def test_turn_began_and_idle(tmp_path):
+def test_has_work_and_idle(tmp_path):
     eng = _FakeEngine()
     sup = _FakeSupervisor()
     c = _bare_convo(eng, _FakeRuntime(eng, sup, _FakeMetrics([])), tmp_path)
-    # nothing happened yet -> not begun, and "idle" (but the driver won't honor
-    # idle until begun, which is the premature-idle fix)
-    assert c._turn_began() is False
+    # nothing in flight -> no work, idle. (The capture loop won't honor idle until
+    # the assistant has ENGAGED -- a task/speech -- which is the premature-idle fix:
+    # a bare transcript or empty state no longer counts as "responded".)
+    assert c._has_work() is False
     assert c._idle() is True
-    # a task appears -> begun, not idle
+    # a task in flight -> work, not idle
     sup.state.active_tasks = {"t": object()}
-    assert c._turn_began() is True
+    assert c._has_work() is True
     assert c._idle() is False
 
 

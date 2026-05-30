@@ -238,6 +238,138 @@ def _run_live(runtime: VoiceRuntime) -> None:
         runtime.stop()
 
 
+def build_runtime(
+    config: dict,
+    *,
+    engine: AudioEngine,
+    llm: LLMClient,
+    fast_llm: LLMClient | None,
+    router,
+    start_mode: Mode,
+    agent_on: bool = False,
+    force_planner: bool = False,
+    force_stream_tts: bool = False,
+    load_fraction=None,
+) -> VoiceRuntime:
+    """Assemble the full VoiceRuntime from config + the built clients/engine.
+
+    The single assembly point shared by the CLI (``main``) and the live
+    on-hardware validation harness (``tools/live_session``), so both drive the
+    exact same assistant (same continuation / capability-catalog / never-stuck /
+    endpoint / context-aggregation wiring)."""
+    agent_config = None
+    if agent_on:
+        from .agent import AgentBrainConfig
+
+        agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
+
+    planner_config = PlannerConfig.from_dict(
+        (config.get("agent", {}) or {}).get("planner")
+    )
+    if force_planner:
+        planner_config.enabled = True
+
+    stream_tts = bool((config.get("tts", {}) or {}).get("streaming", False)) or force_stream_tts
+    followup_config = FollowupConfig.from_dict(config.get("followups"))
+    # ADD-ON / continuation: merge a follow-up into the in-flight turn instead of
+    # racing a competing cold task. Shipped on (config.json); a missing block
+    # defaults off via from_dict so non-default configs stay unaffected.
+    continuation_config = ContinuationConfig.from_dict(config.get("continuation"))
+
+    intents_cfg = config.get("intents", {}) or {}
+    intents = None
+    if intents_cfg.get("enabled", False):
+        from .intents import LocalIntentHandler
+
+        intents = LocalIntentHandler(engine.speak, phrases=intents_cfg.get("phrases"))
+
+    # Input gate: optional ACT/INGEST classifier between ASR_FINAL and the
+    # brain (core/addressing.py). Requires a fast LLM client; if either is
+    # missing, the runtime falls back to legacy behavior (every final acts).
+    input_gate_cfg = config.get("input_gate", {}) or {}
+    addressing = None
+    if input_gate_cfg.get("enabled", False) and fast_llm is not None:
+        from .addressing import LLMAddressingClassifier
+
+        addressing = LLMAddressingClassifier(
+            fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
+        )
+    unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
+
+    # Transcript cleanup: optional LLM rewrite that drops fillers / resolves
+    # self-corrections so the brain acts on the intended sentence. Same
+    # opt-in shape as the input gate; needs llm.fast_model.
+    cleanup_cfg = config.get("cleanup", {}) or {}
+    cleaner = None
+    if cleanup_cfg.get("enabled", False) and fast_llm is not None:
+        from .cleanup import LLMTranscriptCleaner
+
+        cleaner = LLMTranscriptCleaner(
+            fast_llm, max_context=int(cleanup_cfg.get("max_context", 3))
+        )
+
+    # Assistant persona: optional name + character, so the model knows what it
+    # is (its skills are enumerated automatically from the capability manifest).
+    # Empty by default -> the anonymous "local voice assistant" identity.
+    from .persona import PersonaConfig
+
+    persona = PersonaConfig.from_dict(config.get("assistant"))
+
+    memory = _build_memory(config, fast_llm)
+    recall_config = RecallConfig.from_dict(config.get("memory"))
+    # Short-term conversation context for the answering model (the recent turns,
+    # so it can resolve "its"/"the second one"). Default ON; tuned in the memory
+    # block. Distinct from semantic recall (past sessions) above.
+    from .conversation import RecentContextConfig
+
+    recent_context_config = RecentContextConfig.from_dict(config.get("memory"))
+    # Headroom-aware live routing (smart-routing-2 + load follow-up). Flat flag
+    # (P4 deep-merge note) so a device-profile override survives the merge;
+    # default OFF so default behaviour is byte-identical. When on, the runtime
+    # feeds the router the rolling local TTFT plus a cheap SystemMonitor load
+    # snapshot (reads the last background sample -- no hot-path sampling) as an
+    # additive-only, clamped nudge toward main/cloud (core/routing.py).
+    live_routing = bool((config.get("llm", {}) or {}).get("live_routing", False))
+    # Pluggable web.search (P3). The flat ``web_search`` block is disabled by
+    # default, so the runtime ships corpus-only until a user points base_url at
+    # their self-hosted SearXNG. Every query is gated (§9.7) before any egress.
+    web_search_config = WebSearchConfig.from_dict(config.get("web_search"))
+
+    runtime = VoiceRuntime(
+        engine,
+        llm,
+        fast_llm=fast_llm,
+        memory=memory,
+        recall_config=recall_config,
+        recent_context_config=recent_context_config,
+        web_search_config=web_search_config,
+        start_mode=start_mode,
+        agent_config=agent_config,
+        router=router,
+        planner_config=planner_config,
+        stream_tts=stream_tts,
+        followup_config=followup_config,
+        continuation_config=continuation_config,
+        command_map=config.get("commands"),
+        intents=intents,
+        addressing=addressing,
+        unsure_acts=unsure_acts,
+        cleaner=cleaner,
+        live_routing=live_routing,
+        load_snapshot=load_fraction if live_routing else None,
+        # Pre-warm the LLM tiers at startup so turn 1 doesn't pay the ~3s model
+        # cold-load on the user's first utterance (lat-2). On by default; set
+        # config.warm_on_start=false to skip (e.g. to measure cold start).
+        warm_on_start=bool(config.get("warm_on_start", True)),
+        persona=persona,
+        # Per-mode wall-clock task deadlines (never-stuck backstop). Optional --
+        # the supervisor bakes in sensible defaults; config overrides per mode.
+        task_timeouts=config.get("task_timeouts"),
+    )
+
+    return runtime
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
     parser.add_argument(
@@ -408,116 +540,18 @@ def main(argv: list[str] | None = None) -> int:
     elif args.record:
         runlog.logger.warning("--record ignored: %s engine has no recorder", args.engine)
 
-    agent_config = None
-    if args.agent:
-        from .agent import AgentBrainConfig
-
-        agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
-
-    planner_config = PlannerConfig.from_dict(
-        (config.get("agent", {}) or {}).get("planner")
-    )
-    if args.planner:
-        planner_config.enabled = True
-
-    stream_tts = bool((config.get("tts", {}) or {}).get("streaming", False)) or args.stream_tts
-    followup_config = FollowupConfig.from_dict(config.get("followups"))
-    # ADD-ON / continuation: merge a follow-up into the in-flight turn instead of
-    # racing a competing cold task. Shipped on (config.json); a missing block
-    # defaults off via from_dict so non-default configs stay unaffected.
-    continuation_config = ContinuationConfig.from_dict(config.get("continuation"))
-
-    intents_cfg = config.get("intents", {}) or {}
-    intents = None
-    if intents_cfg.get("enabled", False):
-        from .intents import LocalIntentHandler
-
-        intents = LocalIntentHandler(engine.speak, phrases=intents_cfg.get("phrases"))
-
-    # Input gate: optional ACT/INGEST classifier between ASR_FINAL and the
-    # brain (core/addressing.py). Requires a fast LLM client; if either is
-    # missing, the runtime falls back to legacy behavior (every final acts).
-    input_gate_cfg = config.get("input_gate", {}) or {}
-    addressing = None
-    if input_gate_cfg.get("enabled", False) and fast_llm is not None:
-        from .addressing import LLMAddressingClassifier
-
-        addressing = LLMAddressingClassifier(
-            fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
-        )
-    unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
-
-    # Transcript cleanup: optional LLM rewrite that drops fillers / resolves
-    # self-corrections so the brain acts on the intended sentence. Same
-    # opt-in shape as the input gate; needs llm.fast_model.
-    cleanup_cfg = config.get("cleanup", {}) or {}
-    cleaner = None
-    if cleanup_cfg.get("enabled", False) and fast_llm is not None:
-        from .cleanup import LLMTranscriptCleaner
-
-        cleaner = LLMTranscriptCleaner(
-            fast_llm, max_context=int(cleanup_cfg.get("max_context", 3))
-        )
-
-    # Assistant persona: optional name + character, so the model knows what it
-    # is (its skills are enumerated automatically from the capability manifest).
-    # Empty by default -> the anonymous "local voice assistant" identity.
-    from .persona import PersonaConfig
-
-    persona = PersonaConfig.from_dict(config.get("assistant"))
-
-    memory = _build_memory(config, fast_llm)
-    recall_config = RecallConfig.from_dict(config.get("memory"))
-    # Short-term conversation context for the answering model (the recent turns,
-    # so it can resolve "its"/"the second one"). Default ON; tuned in the memory
-    # block. Distinct from semantic recall (past sessions) above.
-    from .conversation import RecentContextConfig
-
-    recent_context_config = RecentContextConfig.from_dict(config.get("memory"))
-    # Headroom-aware live routing (smart-routing-2 + load follow-up). Flat flag
-    # (P4 deep-merge note) so a device-profile override survives the merge;
-    # default OFF so default behaviour is byte-identical. When on, the runtime
-    # feeds the router the rolling local TTFT plus a cheap SystemMonitor load
-    # snapshot (reads the last background sample -- no hot-path sampling) as an
-    # additive-only, clamped nudge toward main/cloud (core/routing.py).
-    live_routing = bool((config.get("llm", {}) or {}).get("live_routing", False))
-    # Pluggable web.search (P3). The flat ``web_search`` block is disabled by
-    # default, so the runtime ships corpus-only until a user points base_url at
-    # their self-hosted SearXNG. Every query is gated (§9.7) before any egress.
-    web_search_config = WebSearchConfig.from_dict(config.get("web_search"))
-
-    runtime = VoiceRuntime(
-        engine,
-        llm,
+    runtime = build_runtime(
+        config,
+        engine=engine,
+        llm=llm,
         fast_llm=fast_llm,
-        memory=memory,
-        recall_config=recall_config,
-        recent_context_config=recent_context_config,
-        web_search_config=web_search_config,
-        start_mode=Mode(args.mode),
-        agent_config=agent_config,
         router=router,
-        planner_config=planner_config,
-        stream_tts=stream_tts,
-        followup_config=followup_config,
-        continuation_config=continuation_config,
-        command_map=config.get("commands"),
-        intents=intents,
-        addressing=addressing,
-        unsure_acts=unsure_acts,
-        cleaner=cleaner,
-        live_routing=live_routing,
-        load_snapshot=monitor.load_fraction if live_routing else None,
-        # Pre-warm the LLM tiers at startup so turn 1 doesn't pay the ~3s model
-        # cold-load on the user's first utterance (lat-2). On by default; set
-        # config.warm_on_start=false to skip (e.g. to measure cold start).
-        warm_on_start=bool(config.get("warm_on_start", True)),
-        persona=persona,
-        # Per-mode wall-clock task deadlines (never-stuck backstop). Optional --
-        # the supervisor bakes in sensible defaults; config overrides per mode.
-        task_timeouts=config.get("task_timeouts"),
+        start_mode=Mode(args.mode),
+        agent_on=bool(args.agent),
+        force_planner=bool(args.planner),
+        force_stream_tts=bool(args.stream_tts),
+        load_fraction=monitor.load_fraction,
     )
-
     try:
         if args.engine == "replay":
             if not args.replay_dir:

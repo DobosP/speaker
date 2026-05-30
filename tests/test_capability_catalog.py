@@ -113,8 +113,8 @@ def test_default_system_prompt_unchanged_byte_for_byte():
     assert DEFAULT_SYSTEM.count("\n") == 0  # still a single paragraph
     # The registry-backed skills block + its enumeration guidance must NEVER leak
     # into the legacy default prompt -- they live only in build_system_prompt.
-    assert "Here is everything you can actually do" not in DEFAULT_SYSTEM
-    assert "do not claim any ability that is not on this list" not in DEFAULT_SYSTEM
+    assert "For reference, here is what you can do" not in DEFAULT_SYSTEM
+    assert "do not claim any ability that is not on it" not in DEFAULT_SYSTEM
 
 
 def test_build_system_prompt_enumerates_user_facing_skills():
@@ -143,17 +143,19 @@ def test_build_system_prompt_enumerates_both_local_skills_when_web_off():
 
 
 def test_build_system_prompt_has_faithful_enumeration_guidance():
-    # The skills block must carry an instruction telling the model to describe
-    # exactly these capabilities and invent nothing -- present web on AND off, so
-    # the anti-confabulation directive can't silently regress.
+    # The skills block must carry guidance that (a) keeps "just answer the request"
+    # the DEFAULT -- so a small answering model doesn't recite its capabilities on
+    # every (esp. garbled) turn -- while (b) describing exactly these capabilities,
+    # and inventing nothing, ONLY when asked. Present web on AND off so neither the
+    # default-answer nor the anti-confabulation directive can silently regress.
     reg = create_default_capabilities()
     for web in (False, True):
         prompt = build_system_prompt(reg, web_enabled=web)
-        # An explicit "describe what you can do accurately" cue...
+        # (a) answering the request is the dominant default, gated on an explicit ask
+        assert "just answer the user's actual request directly" in prompt
         assert "what you can do" in prompt
-        assert "describe these capabilities accurately" in prompt
-        # ...a hard "don't invent" clause...
-        assert "do not claim any ability that is not on this list" in prompt
+        # (b) a hard "don't invent" clause...
+        assert "do not claim any ability that is not on it" in prompt
         # ...and the story/poem/joke confabulation is re-homed onto answering,
         # not advertised as a standalone skill.
         assert "not a separate skill" in prompt

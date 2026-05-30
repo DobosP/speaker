@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from threading import Event
-from typing import Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from typing import Callable, Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from .capabilities import CapabilityRegistry, CapabilityResult, CapabilitySpec
 
@@ -137,12 +137,19 @@ class ReactPlanner:
         max_steps: int = 4,
         tools: Sequence[str] = DEFAULT_TOOLS,
         persona_name: str = "",
+        first_token_hook: Optional[Callable[[], None]] = None,
     ):
         self._llm = llm
         self._registry = registry
         self._max_steps = max(1, int(max_steps))
         self._tools = tuple(tools)
         self._persona_name = (persona_name or "").strip()
+        # Fired on the first token this planner streams from the model. The
+        # runtime wires it to stamp LLM_FIRST_TOKEN, so an escalated (ReAct) turn
+        # -- whose LLM work happens here, not in the one-shot assistant path --
+        # isn't false-flagged "llm stuck" by the watchdog (B3). Idempotent on the
+        # recorder side, so firing once per drain is harmless.
+        self._first_token_hook = first_token_hook
 
     def _final_system(self) -> str:
         # Keep an escalated turn's final answer in the configured persona's voice
@@ -176,6 +183,12 @@ class ReactPlanner:
         for token in tokens:
             if _cancelled(cancel):
                 break
+            if not parts and self._first_token_hook is not None:
+                # First model token of this drain -> mark the turn alive.
+                try:
+                    self._first_token_hook()
+                except Exception:  # noqa: BLE001 - metrics stamping is best-effort
+                    pass
             parts.append(token)
         return "".join(parts).strip()
 
@@ -192,6 +205,15 @@ class ReactPlanner:
 
     def run(self, query: str, context: Mapping[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")  # type: ignore[assignment]
+        # This runs under the short ASSISTANT mode budget, but a multi-step plan
+        # (up to max_steps LLM calls + tool calls) legitimately takes longer.
+        # Push the reap deadline out so a real agent turn isn't killed mid-plan.
+        renew = context.get("renew_deadline")
+        if callable(renew):
+            try:
+                renew(max(60.0, self._max_steps * 30.0))
+            except Exception:  # noqa: BLE001 - deadline renewal is best-effort
+                pass
         observations: list[str] = []
         steps_taken: list[str] = []
 
@@ -254,6 +276,7 @@ def attach_react_capability(
     planner: ReactPlanner | None = None,
     capability_name: str = "agent.react",
     persona_name: str = "",
+    first_token_hook: Optional[Callable[[], None]] = None,
 ) -> CapabilityRegistry:
     """Register the ReAct planner as a capability provider.
 
@@ -261,11 +284,13 @@ def attach_react_capability(
     that honours ``context['cancel_event']``. ``planner`` may be injected for
     testing with a scripted LLM. ``persona_name`` (a plain string -- the brain
     takes no ``core`` import) keeps an escalated turn's final answer in voice.
+    ``first_token_hook`` lets the runtime stamp LLM_FIRST_TOKEN for an escalated
+    turn (B3 -- so the watchdog doesn't false-flag it as stuck).
     """
     config = config or PlannerConfig()
     planner = planner or ReactPlanner(
         llm, registry, max_steps=config.max_steps, tools=config.tools,
-        persona_name=persona_name,
+        persona_name=persona_name, first_token_hook=first_token_hook,
     )
 
     def provider(query: str, context: dict[str, object]) -> CapabilityResult:

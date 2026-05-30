@@ -53,6 +53,12 @@ class AgentTask:
     # in the streaming emitter; the bool write is atomic under the GIL and any
     # narrow read race is covered by the epoch gate (see _maybe_continue).
     started_speaking: bool = False
+    # Monotonic wall-clock deadline (time.monotonic) stamped when the task is
+    # started; 0.0 means "no deadline". The supervisor's periodic reap cancels +
+    # removes any active task past its deadline so a capability that blocks
+    # uninterruptibly (a hung generate / network read) can never leave the
+    # controller waiting on it forever. See AgentSupervisor.reap_overdue_tasks.
+    deadline_at: float = 0.0
 
     def cancel(self) -> None:
         self.cancel_event.set()
@@ -268,6 +274,19 @@ class TaskRuntime:
         task.state = TaskState.COMPLETED
         self._publish_completed(task)
 
+    @staticmethod
+    def _renew_deadline(task: AgentTask, secs: float) -> None:
+        """Extend a running task's reap deadline (used by long capabilities).
+
+        Only pushes an EXISTING deadline further out; if the mode disabled the
+        deadline (``deadline_at == 0``) it stays disabled. A plain float write,
+        atomic under the GIL, read by the watchdog-thread reap."""
+        if task.deadline_at:
+            try:
+                task.deadline_at = max(task.deadline_at, time.monotonic() + float(secs))
+            except (TypeError, ValueError):
+                pass
+
     def _invoke(
         self,
         task: AgentTask,
@@ -279,6 +298,12 @@ class TaskRuntime:
             "mode": task.mode.value,
             "metadata": task.metadata,
             "cancel_event": task.cancel_event,
+            # Lets a long-running capability (e.g. the multi-step ReAct planner,
+            # which runs under the short ASSISTANT budget) push its own wall-clock
+            # deadline out so the supervisor's reap doesn't kill a turn that is
+            # legitimately still working. Extends only -- never shortens, never
+            # creates a deadline where the mode disabled it.
+            "renew_deadline": lambda secs: self._renew_deadline(task, secs),
         }
         # Forward the IntentKind so downstream routers (HeuristicRouter,
         # SensitivityRouterLLM) can factor it into tier / cloud-chain

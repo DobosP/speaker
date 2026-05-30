@@ -67,6 +67,7 @@ class StuckWatchdog:
         interval_sec: float = 1.0,
         clock: Optional[Callable[[], float]] = None,
         on_storm: Optional[Callable[[], None]] = None,
+        on_tick: Optional[Callable[[], None]] = None,
     ) -> None:
         self._recorder = recorder
         self._interval = interval_sec
@@ -78,6 +79,11 @@ class StuckWatchdog:
         # gate (TTS leaking into the mic, no AEC) collapses into one interrupt
         # instead of a rattling string of them. Diagnosis still logs as before.
         self._on_storm = on_storm
+        # Periodic maintenance hook fired once per tick (the runtime wires it to
+        # the supervisor's overdue-task reap, so a hung task is killed on the same
+        # 1 s cadence the watchdog already runs -- the controller "heals" instead
+        # of only diagnosing). Guarded so a hook error never kills the loop.
+        self._on_tick = on_tick
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._warned: set[tuple[int, str]] = set()
@@ -144,6 +150,11 @@ class StuckWatchdog:
         self._check_turns(now)
         self._check_heartbeat(now)
         self._check_barge_in_storm(now)
+        if self._on_tick is not None:
+            try:
+                self._on_tick()
+            except Exception:  # noqa: BLE001 - a maintenance hook must never kill the loop
+                log.exception("watchdog on_tick hook raised")
 
     def _check_turns(self, now: float) -> None:
         for i, rec in enumerate(self._recorder.records()):

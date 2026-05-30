@@ -1,10 +1,31 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field, replace
 from threading import Lock, Timer
+from typing import Mapping
 
 log = logging.getLogger("speaker.supervisor")
+
+# Per-mode wall-clock backstops (seconds) after which an active task is reaped as
+# hung. Generous: a normal turn finishes far sooner; these only catch a
+# capability that has blocked uninterruptibly (a hung generate / a network read
+# with no timeout). RESEARCH/agent turns get the longest budget (web search +
+# multi-step). 0 disables the deadline for a mode.
+DEFAULT_TASK_TIMEOUTS: dict[str, float] = {
+    "assistant": 25.0,
+    "search": 30.0,
+    "research": 120.0,
+    "command": 30.0,
+    "dictation": 30.0,
+    "meeting": 30.0,
+}
+_FALLBACK_TASK_TIMEOUT = 60.0
+
+# Spoken when a turn is reaped for exceeding its deadline, so a timed-out turn
+# isn't just dead air.
+_TIMEOUT_APOLOGY = "Sorry, that took too long -- let's try again."
 
 from .capabilities import CapabilityRegistry, create_default_capabilities
 from .continuation import (
@@ -50,6 +71,7 @@ class AgentSupervisor:
         followup_config: FollowupConfig | None = None,
         continuation_config: ContinuationConfig | None = None,
         continuation: ContinuationClassifier | None = None,
+        task_timeouts: Mapping[str, float] | None = None,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -69,6 +91,16 @@ class AgentSupervisor:
         self._continuation = continuation
         if self._continuation is None and self._continuation_cfg.enabled:
             self._continuation = HeuristicContinuationClassifier(self._continuation_cfg)
+        # Per-mode wall-clock task deadlines (the never-stuck backstop). Defaults
+        # are merged with any config override; a hung task past its deadline is
+        # reaped by reap_overdue_tasks (driven off the watchdog tick).
+        self._task_timeouts = dict(DEFAULT_TASK_TIMEOUTS)
+        if isinstance(task_timeouts, Mapping):
+            for key, value in task_timeouts.items():
+                try:
+                    self._task_timeouts[str(key)] = float(value)
+                except (TypeError, ValueError):
+                    continue
         self._followup_state = FollowupState(
             markers=self.followups.markers, max_followups=self.followups.max_followups
         )
@@ -304,8 +336,74 @@ class AgentSupervisor:
         # already removed the task from active_tasks.
         with self._cancel_lock:
             task.speech_epoch = self.speech_epoch
+            timeout = self._timeout_for(task.mode)
+            if timeout > 0:
+                task.deadline_at = time.monotonic() + timeout
             self.state.active_tasks[task.task_id] = task
         self.tasks.start(task)
+
+    def _timeout_for(self, mode: Mode) -> float:
+        return self._task_timeouts.get(mode.value, _FALLBACK_TASK_TIMEOUT)
+
+    def reap_overdue_tasks(self) -> int:
+        """Cancel + remove any active task past its wall-clock deadline.
+
+        The controller's "never get stuck waiting for output" backstop: a
+        capability that blocks uninterruptibly inside a step (a hung generate, a
+        network read with no timeout) is cancelled and dropped from active_tasks
+        here, so the supervisor stops treating it as live -- even though the
+        daemon worker may still be blocked (it exits when its own I/O finally
+        returns, or it leaks harmlessly as a daemon).
+
+        Safe to call from the watchdog tick thread: the active_tasks mutation is
+        done under ``_cancel_lock`` exactly like ``cancel_all`` and ``cancel``
+        only sets an Event. Queue draining is handed back to the bus thread via a
+        republished TASK_CANCELLED (so ``queued_tasks`` is only ever touched
+        there) rather than draining here off-thread.
+
+        Unlike ``cancel_all`` / ``_cancel_one`` this deliberately does NOT advance
+        the global speech epoch: a reap can hit one of several concurrent tasks,
+        and bumping the shared epoch would strand a sibling's queued TTS. A hung
+        task (the usual reap target) has no queued audio anyway; the rare partial
+        from a slow-but-producing task may play its tail before the apology."""
+        now = time.monotonic()
+        reaped: list[AgentTask] = []
+        with self._cancel_lock:
+            for task in list(self.state.active_tasks.values()):
+                if task.deadline_at and now >= task.deadline_at:
+                    self.state.active_tasks.pop(task.task_id, None)
+                    task.cancel()
+                    reaped.append(task)
+            epoch = self.speech_epoch
+        for task in reaped:
+            log.warning(
+                "reaped overdue task %s (mode=%s, capability=%s) -- exceeded its "
+                "%.0fs deadline; the controller is moving on",
+                task.task_id, task.mode.value, task.capability, self._timeout_for(task.mode),
+            )
+            self.state.failures.append(f"task {task.task_id} timed out")
+            # Tell the user the turn was dropped, instead of leaving dead air --
+            # but only for a turn that would have spoken (not dictation / meeting
+            # notes / a proactive follow-up). Stamped with the current epoch so a
+            # barge-in still suppresses it.
+            if task.metadata.get("speak", True) and not task.metadata.get("followup"):
+                self.state.spoken_outputs.append(_TIMEOUT_APOLOGY)
+                self.publish(
+                    AgentEvent(
+                        EventKind.TTS_REQUEST,
+                        {"task_id": task.task_id, "text": _TIMEOUT_APOLOGY, "epoch": epoch},
+                    )
+                )
+            # Drain the queue on the bus thread (TASK_CANCELLED -> _start_queued_tasks
+            # there). priority 20 matches the normal cancellation lifecycle event.
+            self.publish(
+                AgentEvent(
+                    EventKind.TASK_CANCELLED,
+                    {"task_id": task.task_id, "mode": task.mode.value, "reaped": True},
+                    priority=20,
+                )
+            )
+        return len(reaped)
 
     def looks_like_continuation(self, text: str) -> bool:
         """Whether ``text`` would extend the single in-flight assistant turn.
@@ -374,9 +472,13 @@ class AgentSupervisor:
         # Exactly one live turn to extend. With >1 active task we don't guess a
         # victim, and it keeps the single-victim epoch bump in _cancel_one safe
         # (no sibling stream to strand); the follow-up falls back to a clean task.
-        if len(self.state.active_tasks) != 1:
+        # Snapshot once: the reap (watchdog thread) can pop a task between a
+        # len() and a next(iter()), and an emptied dict's next(iter()) raises
+        # StopIteration -- which, uncaught, would kill the bus thread.
+        active = list(self.state.active_tasks.values())
+        if len(active) != 1:
             return False
-        victim = next(iter(self.state.active_tasks.values()))
+        victim = active[0]
         if victim.mode != Mode.ASSISTANT or victim.cancel_event.is_set():
             return False
         addon = decision.text
@@ -491,8 +593,10 @@ class AgentSupervisor:
             return True
         if task.mode != Mode.RESEARCH:
             return False
+        # Snapshot: the reap (watchdog thread) can pop mid-iteration, which would
+        # raise "dictionary changed size during iteration" on the bus thread.
         active_research = sum(
-            1 for active in self.state.active_tasks.values() if active.mode == Mode.RESEARCH
+            1 for active in list(self.state.active_tasks.values()) if active.mode == Mode.RESEARCH
         )
         return active_research >= self.analyzer.policy.research_parallel_tasks
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from threading import Event, Thread
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from always_on_agent.capabilities import create_default_capabilities
 from always_on_agent.continuation import ContinuationConfig
@@ -21,7 +21,7 @@ from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
-from .metrics import ASR_FINAL, BARGE_IN, MetricsRecorder
+from .metrics import ASR_FINAL, BARGE_IN, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
 from .routing import Router
 from .watchdog import StuckWatchdog
@@ -69,6 +69,7 @@ class VoiceRuntime:
         load_snapshot: Optional[Callable[[], Optional[float]]] = None,
         warm_on_start: bool = False,
         persona: Optional[PersonaConfig] = None,
+        task_timeouts: Optional[Mapping[str, float]] = None,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -136,10 +137,13 @@ class VoiceRuntime:
         )
         if planner_on:
             # Thread the persona name (a plain string -- no core import in the
-            # brain) so an escalated ReAct turn's final answer keeps the persona.
+            # brain) so an escalated ReAct turn's final answer keeps the persona,
+            # and a first-token hook so an escalated turn stamps LLM_FIRST_TOKEN
+            # (B3 -- otherwise the watchdog false-flags it as "llm stuck").
             attach_react_capability(
                 registry, llm, config=planner_config,
                 persona_name=persona.name if persona is not None else "",
+                first_token_hook=lambda: self.metrics.mark(LLM_FIRST_TOKEN),
             )
         if agent_config is not None:
             # Opt-in: route command-mode through the Open Interpreter action brain.
@@ -157,6 +161,7 @@ class VoiceRuntime:
             stream_tts=stream_tts,
             followup_config=followup_config,
             continuation_config=continuation_config,
+            task_timeouts=task_timeouts,
         )
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)
@@ -168,8 +173,13 @@ class VoiceRuntime:
         # debounces the engine's barge-in gate (realtime-concurrency-5). Engines
         # without the hook (scripted/livekit) pass None and the watchdog just
         # logs the diagnosis as before.
+        # on_tick drives the supervisor's overdue-task reap on the watchdog's
+        # existing 1 s cadence, so a hung task is killed (the controller "heals")
+        # rather than merely diagnosed.
         self._watchdog = StuckWatchdog(
-            self.metrics, on_storm=getattr(self.engine, "note_barge_in_storm", None)
+            self.metrics,
+            on_storm=getattr(self.engine, "note_barge_in_storm", None),
+            on_tick=self._on_watchdog_tick,
         )
         # Optional startup pre-warm (lat-2): without it, turn 1 pays the model
         # cold-load (~3s for a GPU Gemma, measured ttft 3.17s vs ~0.27s warm) on
@@ -236,6 +246,14 @@ class VoiceRuntime:
                     "planner configured with unregistered tool(s) %s -- they will be "
                     "reported unavailable to the planner", ", ".join(missing),
                 )
+
+    def _on_watchdog_tick(self) -> None:
+        """Periodic maintenance on the watchdog's cadence: reap hung tasks so the
+        controller never stays blocked on a capability that won't return."""
+        try:
+            self.supervisor.reap_overdue_tasks()
+        except Exception:  # noqa: BLE001 - maintenance must never kill the watchdog
+            log.exception("overdue-task reap failed")
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:

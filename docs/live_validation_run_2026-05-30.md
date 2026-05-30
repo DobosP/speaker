@@ -153,3 +153,49 @@ The act of running the harness on real hardware surfaced 8 real defects, all fix
 
 Artifacts: `logs/live/20260530-134755/<scenario>/{summary.md,timeline.json,latency.json,user/,assistant/}`.
 Reproduce: `python -m tools.live_session --all --model gemma3:4b --fast-model gemma3:4b --inject`.
+
+---
+
+## Follow-up (same day): the two recommendations, done
+
+### 1. Smart endpoint — validated + ENABLED
+
+A/B'd it on-device via the new `--smart-endpoint` flag (inject mode), diffing the
+ON ASR finals against the acoustic (OFF) finals turn-by-turn:
+
+| | endpoint_ms (OFF) | endpoint_ms (ON) | result |
+|---|---|---|---|
+| ON @ min_silence **0.5s** | ~1.1–1.5 s | **~0.7 s** | ~500 ms win, BUT `self_awareness` split "Hey, what are you, **and**…" at the comma pause |
+| ON @ min_silence **0.7s** | ~1.1–1.5 s | **~0.9 s** | **~300 ms win, NO clipping, NO splitting across all 7 scenarios** |
+
+- **No tail-word clipping** at either setting — the decoder-lookahead risk the gate
+  warned about did not materialize ("…capital of **France**" decoded fully, never "…of").
+- The one real SHORTEN regression at 0.5 was **premature commit at an intra-sentence
+  comma pause** (a run-on multi-clause utterance split at the comma). **Raising
+  `endpoint_min_silence_sec` 0.5 → 0.7 fixed it** (the pause no longer trips SHORTEN)
+  while keeping a solid ~300 ms / ~25 % first-audio win on the dominant cost.
+- **Enabled** in `config.json` (`sherpa.endpoint_enabled: true`, `endpoint_min_silence_sec: 0.7`).
+  The 0.7 floor is pinned by a test + the config comment (must exceed both the decoder
+  lookahead and a typical comma pause). Re-validate per deployment/ASR-model.
+
+### 2. Capability self-description — fixed + validated
+
+`build_system_prompt` now frames the registry skills with a header + an explicit
+"describe these accurately, cover all of them, claim nothing else" instruction, and
+re-homes story/poem/joke onto *answering* (not a standalone skill). Live result, asked
+"what are you and what can you do":
+
+> *"I'm a voice assistant that can answer your questions and chat with you directly,
+> **or I can research a topic and give you a recommendation**."*
+
+— now enumerates **both** user-facing skills (was dropping research) and no longer
+invents "make up a story". DEFAULT_SYSTEM stays byte-identical; anti-confabulation
+(no user_facing=False skills advertised) and §9.7 web-gating preserved.
+
+### Known harness follow-up (not a product bug)
+
+In one `--all` sweep the **first 1–3 scenarios dropped their first turn** (no ASR
+final / no answer) before stabilizing — a warm-up/startup race in the harness's first
+scenario(s), independent of the smart endpoint (a repeat 0.7 A/B had those turns
+clean). Worth hardening `convo.start()`'s settle, but it does not affect the
+endpoint/persona conclusions (the split case, `self_awareness`, was clean at 0.7).

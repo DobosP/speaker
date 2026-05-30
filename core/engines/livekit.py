@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import queue
 import threading
 from typing import Callable, Optional
@@ -35,6 +36,8 @@ from typing import Callable, Optional
 from ..engine import AudioEngine, EngineCallbacks
 from ._sherpa_models import build_recognizer, build_tts, build_vad
 from .sherpa import SherpaConfig
+
+log = logging.getLogger("speaker.livekit")
 
 OUT_SR = 48000  # LiveKit-friendly output sample rate for published TTS
 STT_SR = 16000  # sherpa streaming-ASR input rate
@@ -116,6 +119,9 @@ class LiveKitEngine(AudioEngine):
         # Serialize TTS so streamed sentences publish in order on the room track
         # instead of interleaving frames. Created on the loop in _run_loop.
         self._speak_lock: Optional[asyncio.Lock] = None
+        # Sync guard so the startup warm pass and the to_thread synthesis never
+        # call ``tts.generate`` on the single model concurrently.
+        self._tts_lock = threading.Lock()
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
@@ -153,6 +159,26 @@ class LiveKitEngine(AudioEngine):
     @property
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
+
+    def _synth_locked(self, text: str):
+        """Synthesize under the TTS lock (the only thing that touches the model)."""
+        with self._tts_lock:
+            return self._tts.generate(
+                text, sid=self._cfg.tts_speaker_id, speed=self._cfg.tts_speed
+            )
+
+    def warm(self) -> None:
+        """Pay the TTS model's cold-start cost before the first reply, off the
+        hot path. Mirrors the sherpa engine: synthesize a throwaway phrase and
+        discard it, under the TTS lock so it can't race a live synthesis. The
+        recognizer/VAD self-warm via the capture path. Best-effort."""
+        if self._tts is None or self._speaking.is_set():
+            return
+        try:
+            self._synth_locked("ok")
+            log.info("livekit TTS warm-up complete")
+        except Exception:  # noqa: BLE001 - warm-up is best-effort, never fatal
+            log.debug("livekit TTS warm-up failed", exc_info=True)
 
     # --- ASR worker thread (keeps model decode off the event loop) ---
     def _asr_loop(self) -> None:
@@ -273,11 +299,7 @@ class LiveKitEngine(AudioEngine):
             self._cb.on_speech_start()
             try:
                 await self._publish_data("assistant_sentence", {"text": text})
-                audio = await asyncio.to_thread(
-                    lambda: self._tts.generate(
-                        text, sid=self._cfg.tts_speaker_id, speed=self._cfg.tts_speed
-                    )
-                )
+                audio = await asyncio.to_thread(self._synth_locked, text)
                 samples = np.asarray(audio.samples, dtype=np.float32)
                 out = float32_to_pcm_int16(
                     resample_linear(samples, audio.sample_rate, self._out_sr)

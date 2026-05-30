@@ -262,6 +262,12 @@ class SherpaOnnxEngine(AudioEngine):
         # thread owns its lifecycle while stop_speaking() runs on another thread.
         self._out_stream = None
         self._out_lock = threading.Lock()
+        # Serializes access to the single TTS model so the startup warm pass and a
+        # live synthesis can never call ``tts.generate`` concurrently (sherpa's
+        # OfflineTts is not safe for concurrent generation). Contended only at
+        # startup (warm vs the first reply); the playback thread is otherwise the
+        # sole synthesizer, so this is uncontended on the hot path.
+        self._tts_lock = threading.Lock()
         # Whether this sherpa-onnx build supports the streaming TTS callback
         # (play audio as it is synthesized). Flipped off on the first build that
         # rejects the ``callback`` kwarg, after which we chunk the finished wave.
@@ -521,6 +527,49 @@ class SherpaOnnxEngine(AudioEngine):
     @property
     def is_speaking(self) -> bool:
         return self._speaking.is_set()
+
+    def warm(self) -> None:
+        """Pay the TTS model's cold-start cost before the first reply, off the
+        hot path. Best-effort: a failure just means the first synthesis is cold,
+        as before. Called from the runtime's background warm thread once
+        ``start()`` has built the models.
+
+        The recognizer and keyword spotter are fed continuously by the capture
+        loop from the moment capture begins, so they JIT on the first blocks of
+        ambient audio; the VAD is tiny. What stays cold until the first *reply* /
+        first *final* are: the TTS (touched only by the idle playback thread),
+        the punctuation restorer, and the speaker-ID embedder (both run only on a
+        final) -- so we exercise those three here. Everything is best-effort and
+        synthesized output is discarded (never enqueued for playback), so nothing
+        is heard; it just makes turn 1 land sooner."""
+        import numpy as np
+
+        # TTS (vits) -- the biggest cold cost. Under the lock so it never races a
+        # live first-reply synthesis; skipped if something is already speaking.
+        tts = self._tts
+        if tts is not None and not self._speaking.is_set():
+            try:
+                with self._tts_lock:
+                    tts.generate("ok", sid=self.config.tts_speaker_id, speed=self.config.tts_speed)
+                log.info("sherpa TTS warm-up complete")
+            except Exception:  # noqa: BLE001 - warm-up is best-effort, never fatal
+                log.debug("sherpa TTS warm-up failed", exc_info=True)
+        # Punctuation restorer -- runs only on a final, so it's cold on turn 1.
+        if self._punct is not None:
+            try:
+                self._punct.add_punctuation("ok")
+            except Exception:  # noqa: BLE001 - best-effort
+                log.debug("punctuation warm-up failed", exc_info=True)
+        # Speaker-ID embedder -- runs only on a final (input gating). similarity()
+        # computes the embedding (the cold ONNX) before any cosine, so this JITs
+        # it even when unenrolled; the cosine may then no-op/raise harmlessly.
+        gate = self._speaker_gate
+        if gate is not None:
+            try:
+                silence = np.zeros(int(self.config.sample_rate * 0.3), dtype="float32")
+                gate.similarity(silence, self.config.sample_rate)
+            except Exception:  # noqa: BLE001 - best-effort; the JIT already ran
+                log.debug("speaker-ID warm-up failed", exc_info=True)
 
     # --- ASR text helpers ---
     def _new_asr_stream(self):
@@ -900,19 +949,22 @@ class SherpaOnnxEngine(AudioEngine):
         tts = self._tts
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
-        if self._tts_can_stream:
+        # Hold the TTS lock for the whole synthesis so a concurrent startup warm
+        # pass can't drive the same model at the same time.
+        with self._tts_lock:
+            if self._tts_can_stream:
 
-            def on_chunk(samples, *_progress) -> int:
-                write(np.asarray(samples, dtype="float32").reshape(-1))
-                return 0 if self._stop_speaking.is_set() else 1
+                def on_chunk(samples, *_progress) -> int:
+                    write(np.asarray(samples, dtype="float32").reshape(-1))
+                    return 0 if self._stop_speaking.is_set() else 1
 
-            try:
-                tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
-                return
-            except TypeError:
-                self._tts_can_stream = False  # this build has no streaming callback
+                try:
+                    tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
+                    return
+                except TypeError:
+                    self._tts_can_stream = False  # this build has no streaming callback
 
-        audio = tts.generate(text, sid=sid, speed=speed)
+            audio = tts.generate(text, sid=sid, speed=speed)
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
         chunk = max(1, int(sr * 0.1))

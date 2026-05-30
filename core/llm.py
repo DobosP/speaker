@@ -279,22 +279,29 @@ class LlamaCppLLM:
         self.chat_format = chat_format
         self._options = dict(options) if options else {}
         self._client = client
+        # A single llama.cpp context can't run two inferences at once, and the
+        # lazy build must not double-construct. This serializes both: the startup
+        # warm pass and a concurrent first live turn (or two tasks) share one
+        # context safely instead of racing into the native lib.
+        self._lock = threading.Lock()
 
     def _ensure(self):
         if self._client is None:
-            from llama_cpp import Llama  # lazy
+            with self._lock:
+                if self._client is None:  # double-checked: build exactly once
+                    from llama_cpp import Llama  # lazy
 
-            kwargs = dict(
-                model_path=self.model_path,
-                n_ctx=self.n_ctx,
-                n_gpu_layers=self.n_gpu_layers,
-                verbose=False,
-            )
-            if self.n_threads:
-                kwargs["n_threads"] = self.n_threads
-            if self.chat_format:
-                kwargs["chat_format"] = self.chat_format
-            self._client = Llama(**kwargs)
+                    kwargs = dict(
+                        model_path=self.model_path,
+                        n_ctx=self.n_ctx,
+                        n_gpu_layers=self.n_gpu_layers,
+                        verbose=False,
+                    )
+                    if self.n_threads:
+                        kwargs["n_threads"] = self.n_threads
+                    if self.chat_format:
+                        kwargs["chat_format"] = self.chat_format
+                    self._client = Llama(**kwargs)
         return self._client
 
     def _messages(
@@ -320,9 +327,11 @@ class LlamaCppLLM:
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
     ) -> str:
-        resp = self._ensure().create_chat_completion(
-            messages=self._messages(prompt, system, images), stream=False, **self._options
-        )
+        client = self._ensure()
+        with self._lock:  # one inference at a time on the shared context
+            resp = client.create_chat_completion(
+                messages=self._messages(prompt, system, images), stream=False, **self._options
+            )
         return resp["choices"][0]["message"]["content"]
 
     def stream(
@@ -332,12 +341,17 @@ class LlamaCppLLM:
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
     ) -> Iterator[str]:
-        for chunk in self._ensure().create_chat_completion(
-            messages=self._messages(prompt, system, images), stream=True, **self._options
-        ):
-            piece = chunk["choices"][0].get("delta", {}).get("content")
-            if piece:
-                yield piece
+        client = self._ensure()
+        # Held across the whole generation (released when the generator is
+        # exhausted or closed early on barge-in) so the single context isn't
+        # driven by two threads at once.
+        with self._lock:
+            for chunk in client.create_chat_completion(
+                messages=self._messages(prompt, system, images), stream=True, **self._options
+            ):
+                piece = chunk["choices"][0].get("delta", {}).get("content")
+                if piece:
+                    yield piece
 
 
 def _openai_messages(

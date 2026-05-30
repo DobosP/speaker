@@ -5,11 +5,11 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 
-def _noop() -> None:
+def _noop(*_args, **_kwargs) -> None:
     pass
 
 
-def _noop_text(_text: str) -> None:
+def _noop_text(*_args, **_kwargs) -> None:
     pass
 
 
@@ -33,7 +33,10 @@ class EngineCallbacks:
     # Latency instrumentation: the engine reports stage boundaries it alone can
     # time precisely (user speech end, first TTS audio, barge-in stop) by name;
     # the runtime forwards them to its MetricsRecorder. See ``core.metrics``.
-    on_metric: Callable[[str], None] = _noop_text
+    # Accepts an optional ``at=<perf_counter>`` kwarg so an engine can stamp a
+    # stage at a known earlier instant (e.g. SPEECH_END at the true silence
+    # onset, before the endpointer's trailing-silence wait elapses).
+    on_metric: Callable[..., None] = _noop_text
     # Liveness signal: the engine fires this from its capture loop on its
     # existing heartbeat cadence. The runtime's watchdog uses it to detect a
     # crashed/stalled capture thread. Engines without an audio loop leave the

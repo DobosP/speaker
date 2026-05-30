@@ -268,6 +268,11 @@
       "[still waiting]"
     ]
   },
+  "continuation": {
+    "_comment": "ADD-ON / continuation: when a follow-up extends the in-flight assistant turn ('and also...', 'oh wait make it shorter', 'what about Mars too'), merge it into one coherent answer instead of racing a competing cold task. Before the turn starts speaking the two prompts are merged into one fresh turn; after it's already speaking the add-on is answered as a context-carrying continuation queued behind it (no re-speak, no overlap). Deterministic + local (no LLM on this path). markers/trailing_markers/modifier_leads override the built-in EN/RO cue sets; addon_max_words bounds the short-modifier branch.",
+    "enabled": true,
+    "addon_max_words": 8
+  },
   "agent": {
     "planner": {
       "_comment": "enabled=true makes the ReAct planner reachable: ASSISTANT-mode queries that hit an _ESCALATE_MARKER (search/find/compare/'and then'/step by step -- see always_on_agent/react.py) run a bounded plan->execute loop over the tools below instead of degrading to a one-shot reply. Gated, so ordinary short turns stay one-shot. web.search returns corpus-only results until web_search.enabled=true (egress-gated, §9.7). See docs/flow_control_intelligence_2026-05.md.",

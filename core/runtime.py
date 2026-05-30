@@ -6,6 +6,7 @@ from threading import Thread
 from typing import Callable, Optional
 
 from always_on_agent.capabilities import create_default_capabilities
+from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
@@ -57,6 +58,7 @@ class VoiceRuntime:
         planner_config: Optional[PlannerConfig] = None,
         stream_tts: bool = False,
         followup_config: Optional[FollowupConfig] = None,
+        continuation_config: Optional[ContinuationConfig] = None,
         command_map: Optional[dict[str, str]] = None,
         intents: Optional[LocalIntentHandler] = None,
         addressing: Optional[AddressingClassifier] = None,
@@ -126,6 +128,7 @@ class VoiceRuntime:
             memory=memory,
             stream_tts=stream_tts,
             followup_config=followup_config,
+            continuation_config=continuation_config,
         )
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)
@@ -260,8 +263,15 @@ class VoiceRuntime:
             decision = self._addressing.classify(text, recent=recent)
             log.info("addressing decision: %s for %r", decision, text)
             if decision == INGEST or (decision == UNSURE and not self._unsure_acts):
-                self.memory.add(text, tags=("ingested",))
-                return
+                # A short add-on to a turn that's still in flight ("make it
+                # shorter", "in spanish") reads as ambient to the addressing
+                # gate, but it IS addressed -- let a genuine continuation reach
+                # the brain so it can merge/continue instead of being dropped.
+                if self.supervisor.looks_like_continuation(text):
+                    log.info("addressing override: continuation of in-flight turn")
+                else:
+                    self.memory.add(text, tags=("ingested",))
+                    return
         self.metrics.mark(ASR_FINAL)
         # Cleanup pass: rewrite disfluencies / self-corrections so the brain
         # acts on what the user meant, not on every "um" + word-repeat. The

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from threading import Lock, Timer
 
 log = logging.getLogger("speaker.supervisor")
 
 from .capabilities import CapabilityRegistry, create_default_capabilities
+from .continuation import (
+    CONTINUE,
+    ContinuationClassifier,
+    ContinuationConfig,
+    HeuristicContinuationClassifier,
+)
 from .event_bus import EventBus
 from .events import AgentEvent, EventKind, Mode
 from .followups import FollowupConfig, FollowupState
@@ -42,6 +48,8 @@ class AgentSupervisor:
         memory: Memory | None = None,
         stream_tts: bool = False,
         followup_config: FollowupConfig | None = None,
+        continuation_config: ContinuationConfig | None = None,
+        continuation: ContinuationClassifier | None = None,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -50,6 +58,17 @@ class AgentSupervisor:
         self.analyzer = analyzer or LiveSpeechAnalyzer()
         self.tasks = TaskRuntime(self.bus.publish, self.capabilities, stream_tts=stream_tts)
         self.followups = followup_config or FollowupConfig()
+        # ADD-ON / continuation: detect a follow-up that extends the in-flight
+        # turn and merge it instead of spawning a competing cold task. Default
+        # config is disabled, so a supervisor built without it behaves exactly as
+        # before (existing tests stay byte-identical); the shipped config.json
+        # opts in. The classifier is the cheap deterministic heuristic unless a
+        # caller injects one (e.g. a scripted fake in tests, or a future LLM
+        # upgrade). Built only when enabled so the disabled path allocates nothing.
+        self._continuation_cfg = continuation_config or ContinuationConfig()
+        self._continuation = continuation
+        if self._continuation is None and self._continuation_cfg.enabled:
+            self._continuation = HeuristicContinuationClassifier(self._continuation_cfg)
         self._followup_state = FollowupState(
             markers=self.followups.markers, max_followups=self.followups.max_followups
         )
@@ -257,6 +276,14 @@ class AgentSupervisor:
             return
         if not decision.starts_task:
             return
+        # ADD-ON / continuation: a follow-up that extends the in-flight turn is
+        # merged into it (or queued behind it) rather than spawning a competing
+        # cold task. Runs only here -- strictly *after* the deterministic
+        # STOP/CONFIRM/DENY/MODE_SWITCH forks above -- so a real control phrase
+        # can never be misread as a continuation. Returns True when it handled
+        # the follow-up; otherwise we fall through to the normal start path.
+        if self._maybe_continue(decision):
+            return
         task = self.tasks.create_task(decision)
         if task.metadata.get("requires_confirmation"):
             self.state.pending_confirmations[task.task_id] = task
@@ -280,7 +307,183 @@ class AgentSupervisor:
             self.state.active_tasks[task.task_id] = task
         self.tasks.start(task)
 
+    def looks_like_continuation(self, text: str) -> bool:
+        """Whether ``text`` would extend the single in-flight assistant turn.
+
+        Read-only mirror of the _maybe_continue gate, for the runtime's input
+        gate (core/runtime.py): a short add-on the addressing classifier would
+        otherwise INGEST as ambient speech is still *addressed* when a turn is in
+        flight, so the gate consults this to let a genuine continuation through
+        to the brain instead of silently dropping it.
+
+        Called from the engine/capture thread (``_on_final``), so it snapshots
+        active_tasks defensively -- a concurrent mutation from the bus thread
+        just yields a conservative ``False`` (the add-on then takes the normal
+        gate path) rather than raising."""
+        if self._continuation is None or not self._continuation_cfg.enabled:
+            return False
+        try:
+            tasks = list(self.state.active_tasks.values())
+        except RuntimeError:  # dict mutated under us on the bus thread
+            return False
+        if len(tasks) != 1:
+            return False
+        victim = tasks[0]
+        if victim.mode != Mode.ASSISTANT or victim.cancel_event.is_set():
+            return False
+        return self._continuation.classify(text, victim.input_text) == CONTINUE
+
+    @staticmethod
+    def _continuation_lineage(task: AgentTask) -> tuple[str, list[str]]:
+        """The original user question + the raw add-ons folded into ``task``.
+
+        A continuation carries its true origin and the list of raw add-on
+        utterances in metadata, so a *chain* of add-ons always rebuilds the
+        prompt from (origin + all addons) rather than nesting one synthetic
+        template inside the next. A plain (non-continuation) task is its own
+        origin with no add-ons yet."""
+        origin = task.metadata.get("continuation_origin")
+        if isinstance(origin, str):
+            addons = [str(a) for a in (task.metadata.get("continuation_addons") or [])]
+            return origin, addons
+        return task.input_text, []
+
+    @staticmethod
+    def _render_addons(addons: list[str]) -> str:
+        return " ".join(a for a in addons if a)
+
+    def _pending_continuation_behind(self, parent_id: str) -> AgentTask | None:
+        for task in self.state.queued_tasks:
+            if task.metadata.get("continue_after") == parent_id:
+                return task
+        return None
+
+    def _maybe_continue(self, decision: IntentDecision) -> bool:
+        """Fold a follow-up into the in-flight ASSISTANT turn if it's an add-on.
+
+        Returns True when the follow-up was handled as a continuation -- either
+        *merged* into one fresh turn (before any audio) or *queued behind* the
+        speaking turn (after audio). Returns False to let the caller start it as
+        an independent task (today's behaviour). Gated hard so it only fires for
+        an unambiguous add-on to a single, live, same-mode assistant turn.
+        """
+        if self._continuation is None or not self._continuation_cfg.enabled:
+            return False
+        if decision.kind != IntentKind.ASSISTANT:
+            return False
+        # Exactly one live turn to extend. With >1 active task we don't guess a
+        # victim, and it keeps the single-victim epoch bump in _cancel_one safe
+        # (no sibling stream to strand); the follow-up falls back to a clean task.
+        if len(self.state.active_tasks) != 1:
+            return False
+        victim = next(iter(self.state.active_tasks.values()))
+        if victim.mode != Mode.ASSISTANT or victim.cancel_event.is_set():
+            return False
+        addon = decision.text
+        if self._continuation.classify(addon, victim.input_text) != CONTINUE:
+            return False
+        cfg = self._continuation_cfg
+        origin, prior_addons = self._continuation_lineage(victim)
+        addons = prior_addons + [addon]
+        if not victim.started_speaking:
+            # BEFORE first audio: nothing has been spoken, so cancel the
+            # not-yet-heard turn and answer ONE merged prompt rebuilt from the
+            # original ask + every add-on so far -- a single coherent reply, one
+            # stream, never a nested template. _cancel_one bumps the epoch so any
+            # sentence the victim races out before it exits goes stale and drops.
+            merged = cfg.merge_template.format(prev=origin, addon=self._render_addons(addons))
+            self._cancel_one(victim)
+            task = self.tasks.create_task(replace(decision, text=merged))
+            task.metadata["continuation_of"] = victim.task_id
+            task.metadata["continuation_origin"] = origin
+            task.metadata["continuation_addons"] = addons
+            task.metadata["skip_user_memory"] = True
+            if not prior_addons:
+                # First add-on in this lineage: the victim may have been cancelled
+                # before its worker ingested the original ask, so record it here
+                # to guarantee the prior turn is captured. If the victim DID
+                # already ingest it, this is a duplicate user entry -- cosmetic
+                # only (recall is off by default; the smart-memory layer dedupes
+                # when enabled). Guaranteeing capture beats risking a lost turn.
+                self._record_addon(origin)
+            self._record_addon(addon)
+            log.info(
+                "continuation MERGE: victim %s superseded by merged turn %s",
+                victim.task_id, task.task_id,
+            )
+            self._start_task(task)
+            return True
+        # AFTER first audio: the victim is already talking -- don't cancel or
+        # re-speak it. If a continuation is ALREADY queued behind this victim,
+        # fold the new add-on into it (it hasn't started, so mutating its text is
+        # safe and it stays a single follow-up answer -- no second queued task
+        # that would start in parallel). Otherwise queue a fresh continuation
+        # strictly behind the victim; it starts only when the victim completes.
+        pending = self._pending_continuation_behind(victim.task_id)
+        if pending is not None:
+            p_origin, p_addons = self._continuation_lineage(pending)
+            p_addons = p_addons + [addon]
+            pending.metadata["continuation_addons"] = p_addons
+            pending.input_text = cfg.continue_template.format(
+                prev=p_origin, addon=self._render_addons(p_addons)
+            )
+            self._record_addon(addon)
+            log.info("continuation FOLD: add-on merged into queued %s", pending.task_id)
+            return True
+        cont_text = cfg.continue_template.format(prev=origin, addon=self._render_addons(addons))
+        task = self.tasks.create_task(replace(decision, text=cont_text))
+        task.metadata["continuation_of"] = victim.task_id
+        task.metadata["continue_after"] = victim.task_id
+        task.metadata["continuation_origin"] = origin
+        task.metadata["continuation_addons"] = addons
+        task.metadata["skip_user_memory"] = True
+        self._record_addon(addon)
+        self.state.queued_tasks.append(task)
+        log.info(
+            "continuation QUEUE: %s queued behind speaking turn %s",
+            task.task_id, victim.task_id,
+        )
+        # Drain now in case the victim finished between the active-task check and
+        # here: then 'continue_after' no longer matches and it starts at once;
+        # while the victim is still active the parent gate keeps it queued.
+        self._start_queued_tasks()
+        return True
+
+    def _cancel_one(self, task: AgentTask) -> None:
+        """Cancel a single active task and supersede its speech.
+
+        The single-task cousin of :meth:`cancel_all`: bump the epoch (so the
+        victim's queued / in-flight sentences go stale and drop via
+        ``tts_request_allowed``) and remove it from ``active_tasks``, under the
+        cancel lock. Bumping the *global* epoch is safe here only because the
+        caller verified the victim is the SOLE active task -- no sibling stream
+        can be stranded. Like ``cancel_all`` the lock is held only around
+        in-memory bookkeeping, never across engine I/O or a thread join."""
+        with self._cancel_lock:
+            self.speech_epoch += 1
+            self.state.active_tasks.pop(task.task_id, None)
+            task.cancel()
+
+    def _record_addon(self, addon: str) -> None:
+        """Ingest the raw add-on as a user turn (the merged prompt is synthetic).
+
+        The continuation task carries ``skip_user_memory`` so the capability
+        won't ingest its folded prompt; we record the real user utterance here
+        instead. The prior turn was already ingested by the victim, so memory
+        keeps both real utterances without the synthetic duplicate. Best-effort."""
+        try:
+            self.memory.add(addon, tags=("user",))
+        except Exception:  # noqa: BLE001 - memory is best-effort, never fatal
+            log.debug("continuation: memory.add(addon) failed", exc_info=True)
+
     def _should_queue(self, task: AgentTask) -> bool:
+        # A continuation queued behind a still-speaking turn waits until that
+        # parent leaves active_tasks (TASK_COMPLETED drains the queue), so the
+        # two never overlap. Once the parent is gone this falls through to the
+        # normal checks and the continuation starts.
+        parent = task.metadata.get("continue_after")
+        if isinstance(parent, str) and parent in self.state.active_tasks:
+            return True
         # Global backstop across all modes (realtime-concurrency-4): if the task
         # runtime is at its concurrent-thread ceiling, queue the turn; the
         # existing _start_queued_tasks drains it as threads free up.
@@ -321,6 +524,18 @@ class AgentSupervisor:
         task_id = str(event.payload.get("task_id", ""))
         self.state.active_tasks.pop(task_id, None)
         self._start_queued_tasks()
+        # Drop a superseded completion: if this task finished and enqueued its
+        # TASK_COMPLETED, but a continuation merge (or a barge-in) then advanced
+        # the speech epoch, the answer belongs to a turn the user has moved on
+        # from. Neither speak it nor remember it -- the merged/continuation turn
+        # owns the reply now. A completion stamped with the *current* epoch (the
+        # common case: nothing preempted it) is unaffected.
+        completed_epoch = event.payload.get("epoch")
+        if completed_epoch is not None:
+            with self._cancel_lock:
+                if int(completed_epoch) < self.speech_epoch:
+                    log.info("dropping superseded completion %s (stale epoch)", task_id)
+                    return
         text = str(event.payload.get("text", "")).strip()
         speak = bool(event.payload.get("speak", True))
         data = event.payload.get("data", {})
@@ -335,11 +550,16 @@ class AgentSupervisor:
             # When the capability streamed sentence-by-sentence, the audio has
             # already been spoken during the task; don't re-speak the whole text.
             if not streamed:
-                # Stamp the current speech epoch so the runtime drops this reply
-                # if a barge-in/stop preempts the turn before it is spoken
-                # (realtime-concurrency-1).
-                with self._cancel_lock:
-                    epoch = self.speech_epoch
+                # Carry the task's own epoch (captured at start) so the runtime
+                # drops this reply if a barge-in/stop/merge advanced the epoch
+                # before it is spoken (realtime-concurrency-1). A completion
+                # without a stamp (legacy/manual publish) keeps the prior
+                # behaviour of using the current epoch.
+                if completed_epoch is not None:
+                    epoch = int(completed_epoch)
+                else:
+                    with self._cancel_lock:
+                        epoch = self.speech_epoch
                 self.publish(
                     AgentEvent(
                         EventKind.TTS_REQUEST,

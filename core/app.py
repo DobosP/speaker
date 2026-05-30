@@ -6,6 +6,7 @@ import os
 import sys
 from typing import Callable, Optional
 
+from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.events import Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
@@ -421,6 +422,10 @@ def main(argv: list[str] | None = None) -> int:
 
     stream_tts = bool((config.get("tts", {}) or {}).get("streaming", False)) or args.stream_tts
     followup_config = FollowupConfig.from_dict(config.get("followups"))
+    # ADD-ON / continuation: merge a follow-up into the in-flight turn instead of
+    # racing a competing cold task. Shipped on (config.json); a missing block
+    # defaults off via from_dict so non-default configs stay unaffected.
+    continuation_config = ContinuationConfig.from_dict(config.get("continuation"))
 
     intents_cfg = config.get("intents", {}) or {}
     intents = None
@@ -481,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
         planner_config=planner_config,
         stream_tts=stream_tts,
         followup_config=followup_config,
+        continuation_config=continuation_config,
         command_map=config.get("commands"),
         intents=intents,
         addressing=addressing,

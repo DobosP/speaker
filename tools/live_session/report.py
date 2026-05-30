@@ -33,6 +33,13 @@ HEARD_OK_THRESHOLD = 0.6
 # The continuous-capture verdict treats the recording-vs-wallclock comparison as
 # a tolerance band (device clock skew / resampling drift), not exact equality.
 CAPTURE_COVERAGE_MIN = 0.85
+# Barge-in is "working" when at least this fraction of the turns the scenario
+# INTENDED to interrupt actually halted the assistant. A judgment call (a long
+# answer should always be cuttable, but the short-answer race -- the barge lands
+# after the answer already drained -- can legitimately miss a stop); grade.json
+# carries the raw counts so a human can recalibrate. Named like
+# HEARD_OK_THRESHOLD / CAPTURE_COVERAGE_MIN.
+BARGE_STOP_RATE_MIN = 0.8
 
 
 # --- over-the-air STT grading (pure) -----------------------------------------
@@ -164,6 +171,92 @@ def summarize_capture(
     }
 
 
+# --- barge-in / interrupt grade (pure, inject-mode only) ---------------------
+#
+# Graded in INJECT MODE ONLY. A real two-stream acoustic barge-in (assistant
+# audio + interrupter audio playing at once) is physically impossible on the
+# reference box (exclusive ALSA hw -- a second output stream fails with "Device
+# unavailable"), so the LOGIC is exercised by feeding the interrupter audio into
+# the capture path during the assistant's speech. Read every verdict here as
+# "barge-in LOGIC works", not "acoustic barge-in is proven".
+#
+# Inputs already produced upstream (reused, not re-derived):
+#   * each assistant event carries ``barge_intended`` (driver: the PRECEDING user
+#     line's timing == "barge_in") and ``interrupted`` (engine.stopped_after);
+#   * its ``latency`` dict already includes ``barge_in_latency`` = BARGE_IN_STOP
+#     minus BARGE_IN, stamped by runtime.metrics only when stop_speaking actually
+#     abort()ed a live output stream.
+#
+# A "self-interrupt" -- the self-interruption-storm regression signal -- is an
+# assistant turn that got interrupted (stopped_after, or a BARGE_IN_STOP latency
+# landed) WITHOUT the scenario intending a barge before it. The no-barge CONTROL
+# scenario must show ZERO of these.
+
+
+def grade_barge_turns(events: list[dict]) -> list[dict]:
+    """One row per assistant turn for the barge-in grade.
+
+    ``stopped`` is the assistant event's ``interrupted`` flag (engine.stopped_after
+    -- the primary, always-present "the answer was cut" signal). ``stop_ms`` is the
+    barge->silence latency from BARGE_IN/BARGE_IN_STOP (None on the short-answer
+    race, where BARGE_IN may have fired with no live stream to abort, so no
+    BARGE_IN_STOP was stamped). ``self_interrupt`` flags a barge that fired with no
+    intended barge before it -- keyed on ``stopped`` OR a present ``stop_ms`` so an
+    aborted-but-mis-paired turn is still caught."""
+    rows: list[dict] = []
+    for e in events:
+        if e.get("speaker") != "assistant":
+            continue
+        intended = bool(e.get("barge_intended"))
+        stopped = bool(e.get("interrupted"))
+        stop_ms = _ms((e.get("latency") or {}).get("barge_in_latency"))
+        a_barge_fired = stopped or (stop_ms is not None)
+        rows.append({
+            "turn": e.get("idx"),
+            "barge_intended": intended,
+            "stopped": stopped,
+            "stop_ms": stop_ms,
+            "self_interrupt": bool(a_barge_fired and not intended),
+        })
+    return rows
+
+
+def summarize_barge(rows: list[dict]) -> dict:
+    """Headline barge-in verdict over the per-turn rows.
+
+    ``stops_when_barged_rate`` = stopped / intended-barges (None when the scenario
+    intended no barge -- the CONTROL case). ``stop_latency_ms_median`` is the median
+    barge->silence latency over the turns that both intended a barge AND stopped.
+    ``self_interrupt_count`` sums self-interrupts over ALL turns. Verdict is "ok"
+    when there are zero self-interrupts AND (no barge was intended, OR the stop rate
+    clears BARGE_STOP_RATE_MIN); else "FAIL"."""
+    n_turns = len(rows)
+    intended = [r for r in rows if r["barge_intended"]]
+    n_intended = len(intended)
+    n_stopped = sum(1 for r in intended if r["stopped"])
+    self_interrupts = sum(1 for r in rows if r["self_interrupt"])
+    stop_lats = [
+        r["stop_ms"] for r in intended if r["stopped"] and r["stop_ms"] is not None
+    ]
+    rate = (n_stopped / n_intended) if n_intended else None
+    if n_intended == 0:
+        # Control scenario: nothing to stop, so the verdict keys ONLY off the
+        # self-interruption-storm signal (zero self-interrupts == clean).
+        verdict = "ok" if self_interrupts == 0 else "FAIL"
+    else:
+        verdict = "ok" if (rate >= BARGE_STOP_RATE_MIN and self_interrupts == 0) else "FAIL"
+    return {
+        "n_barge_turns": n_turns,
+        "n_intended_barges": n_intended,
+        "n_stopped": n_stopped,
+        "stops_when_barged_rate": round(rate, 3) if rate is not None else None,
+        "stop_latency_ms_median": round(statistics.median(stop_lats), 1) if stop_lats else None,
+        "self_interrupt_count": int(self_interrupts),
+        "verdict": verdict,
+        "inject_mode_only": True,
+    }
+
+
 # --- artifact writers --------------------------------------------------------
 
 
@@ -219,6 +312,7 @@ def write_grade(events: list[dict], out_dir: Path, *, capture: Optional[dict] = 
         "per_turn": rows,
         "aggregate": _grade_aggregate(rows),
         "full_duplex": capture or {},
+        "barge_in": summarize_barge(grade_barge_turns(events)),
     }
     path = Path(out_dir) / "grade.json"
     path.write_text(json.dumps(report, indent=2))
@@ -314,6 +408,36 @@ def write_summary(
         )
     else:
         lines.append("_no capture verdict recorded for this run._")
+
+    # Barge-in / interrupt verdict (inject-mode only).
+    barge_rows = grade_barge_turns(events)
+    barge = summarize_barge(barge_rows)
+    lines.append("\n## Barge-in / interrupt\n")
+    lines.append(
+        "_Graded in INJECT MODE ONLY: the interrupter audio is fed into the capture "
+        "path during the assistant's speech. A real two-stream acoustic barge-in is "
+        "physically impossible on the reference box (exclusive ALSA hardware), so "
+        "this proves the barge-in LOGIC, not the acoustic path._\n"
+    )
+    rate = barge["stops_when_barged_rate"]
+    rate_str = "n/a (no barge intended -- control)" if rate is None else f"{rate}"
+    lines.append(
+        f"**Verdict: {barge['verdict']}** -- stops-when-barged "
+        f"{barge['n_stopped']}/{barge['n_intended_barges']} (rate {rate_str}), "
+        f"median stop latency {barge['stop_latency_ms_median']}ms, "
+        f"self-interrupts {barge['self_interrupt_count']} "
+        f"(barge fired with NO intended barge -- the self-interruption-storm signal; "
+        f"a clean run is 0).\n"
+    )
+    lines.append("| turn | barge_intended | stopped | stop_ms | self_interrupt |")
+    lines.append("|---|---|---|---|---|")
+    for r in barge_rows:
+        bi = "yes" if r["barge_intended"] else "no"
+        st = "yes" if r["stopped"] else "NO"
+        si = "YES" if r["self_interrupt"] else "no"
+        lines.append(
+            f"| {r['turn']} | {bi} | {st} | {r['stop_ms']} | {si} |"
+        )
 
     lines.append("\n## How to grade (from the scenario design)\n")
     lines.append(f"**Expected:** {scenario.expected_behavior}\n")

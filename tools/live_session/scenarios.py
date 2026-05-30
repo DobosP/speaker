@@ -21,6 +21,18 @@ class Turn:
     note: str = ""
 
 
+# A reused LONG-answer prompt. Every barge-in target uses it so there is always
+# speech in flight to cut -- this is the fix for the short-response flakiness: a
+# short answer's task finishes and every sentence drains from the play queue
+# before the VAD accumulates its required barge_in_min_speech_sec (0.2s) of voiced
+# audio, by which point _speaking has cleared and the barge watch (gated on
+# self._speaking) is no longer armed, so nothing interrupts. The rainbow prompt
+# reliably produced a long, interruptible answer in the live run. Barge-in
+# grading is INJECT MODE ONLY (the acoustic two-stream path is impossible on the
+# reference box's exclusive ALSA hardware).
+LONG_ANSWER = "Give me a long, detailed explanation of how rainbows form, step by step."
+
+
 @dataclass(frozen=True)
 class Scenario:
     name: str
@@ -160,26 +172,122 @@ SCENARIOS: tuple[Scenario, ...] = (
         capability="Barge-in / interrupt",
         goal="The assistant halts mid-answer promptly on barge-in and never talks over the user or speaks a stale sentence after the stop.",
         turns=(
-            Turn("Tell me the full story of the three little pigs, with lots of detail.", "wait_for_response",
-                 "A long answer to interrupt. NB wait_for_response here waits until idle; the next line barges in -- see driver: a barge_in line speaks over whatever is playing."),
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "The shared LONG_ANSWER prompt -- always enough speech in flight to cut. NB wait_for_response here waits until idle; the next line barges in -- see driver: a barge_in line speaks over whatever is playing."),
             Turn("Stop.", "barge_in",
                  "Interrupt: playback should halt within a tight budget; no stale sentence after."),
             Turn("What's the capital of France?", "wait_for_response",
                  "Confirms the pipeline recovered and answers normally after the interrupt."),
-            Turn("Actually, give me a long explanation of how rainbows form.", "wait_for_response",
-                 "Another long answer to interrupt with a redirect."),
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "Another LONG_ANSWER to interrupt with a redirect (re-asked so there is speech to cut)."),
             Turn("Never mind, just tell me a joke.", "barge_in",
-                 "Redirect mid-answer: should stop the rainbow answer and tell a joke instead."),
+                 "Redirect mid-answer: should stop the long answer and tell a joke instead."),
         ),
-        validates="runtime._on_barge_in / the engine barge-in gate + epoch staleness suppression.",
-        expected_behavior="On 'Stop' the assistant stops talking quickly; on 'just tell me a joke' it abandons the rainbow explanation and tells a joke. No assistant audio continues after a barge-in.",
+        validates="runtime._on_barge_in / the engine barge-in gate + epoch staleness suppression. Graded INJECT-MODE ONLY; barge target is the shared LONG_ANSWER.",
+        expected_behavior="On 'Stop' the assistant stops talking quickly; on 'just tell me a joke' it abandons the long explanation and tells a joke. No assistant audio continues after a barge-in. Barge-in grade: both barge turns stopped=yes, zero self-interrupts.",
         pass_signals=(
             "Assistant audio stops shortly after each barge-in (measure barge_in -> stop).",
             "No stale rainbow/story sentence plays after the interrupt; the redirect is honored.",
+            "Barge-in grade: stops-when-barged 2/2, self_interrupt_count == 0.",
         ),
         failure_modes=(
             "Assistant keeps talking over the user / finishes the long answer anyway.",
             "A stale sentence plays after the stop.",
+            "A self-interrupt fires (a barge-in stamp lands on a turn the scenario did not barge).",
+        ),
+    ),
+    Scenario(
+        name="barge_in_early_vs_late",
+        capability="Barge-in / interrupt (timing depth)",
+        goal="A long answer is interrupted EARLY (short 'Stop.') and another is interrupted LATE (deeper into playback, via a longer interrupter); both must halt. Compares stop latency at two depths.",
+        turns=(
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "LONG_ANSWER #1 -- interrupted EARLY with a one-word 'Stop.' that the VAD latches almost immediately."),
+            Turn("Stop.", "barge_in",
+                 "EARLY interrupt: a single short word; the barge lands soon after the answer starts."),
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "LONG_ANSWER #2 (re-asked) -- interrupted LATE. 'Late' here means deeper into a long answer, not a precisely scheduled offset: the driver fires a barge the instant the assistant starts speaking, so depth is approximated by a LONGER interrupter line that takes longer to detect+inject."),
+            Turn("Hold on a moment, I actually want you to stop talking now please.", "barge_in",
+                 "LATE interrupt: a long interrupter line lands deeper into playback than the one-word 'Stop.'. Both should stop; compare stop_ms (the EARLY one is expected sooner, but both must be non-null and the answer must halt)."),
+        ),
+        validates="runtime._on_barge_in halts at two playback depths; the one-barge-per-run latch fires for each fresh speaking run. INJECT-MODE ONLY; both barge targets are the shared LONG_ANSWER.",
+        expected_behavior="Both long answers stop on their barge. The barge-in grade shows stops-when-barged 2/2 and zero self-interrupts; stop_ms is populated for both (the EARLY one typically smaller, but the harness 'late' is approximate -- read it as depth, not a scheduled offset).",
+        pass_signals=(
+            "Both LONG_ANSWER turns stopped=yes; barge-in grade rate 2/2.",
+            "stop_ms populated (non-null) for both barge turns; self_interrupt_count == 0.",
+        ),
+        failure_modes=(
+            "Either long answer finishes anyway (a barge missed its in-flight window).",
+            "stop_ms null on a turn that DID stop (BARGE_IN fired but no live stream to abort -- the short-answer race; should not happen with LONG_ANSWER).",
+        ),
+    ),
+    Scenario(
+        name="barge_stop_command_vs_new_topic",
+        capability="Barge-in / interrupt (stop-word vs redirect)",
+        goal="A long answer is halted by a pure STOP-class barge (no follow-on), and a second long answer is halted by a NEW-TOPIC barge that must stop the long answer AND answer the new question.",
+        turns=(
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "LONG_ANSWER #1 -- the target of a stop-class barge."),
+            Turn("Stop talking.", "barge_in",
+                 "STOP-class barge: should HALT and produce no follow-on answer (the assistant just goes quiet)."),
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "LONG_ANSWER #2 (re-asked) -- the target of a new-topic barge."),
+            Turn("Actually, what's the capital of France?", "barge_in",
+                 "NEW-TOPIC barge: should halt the long answer AND answer the fresh question (Paris)."),
+        ),
+        validates="runtime._on_barge_in stops the in-flight answer; the redirect path then answers the new turn. INJECT-MODE ONLY; both barge targets are the shared LONG_ANSWER.",
+        expected_behavior="Both long answers stop on their barge (stops-when-barged 2/2, zero self-interrupts). The stop-word barge yields no further answer; the new-topic barge yields a fresh correct answer (Paris).",
+        pass_signals=(
+            "Both LONG_ANSWER turns stopped=yes; self_interrupt_count == 0.",
+            "After 'Stop talking.' no stale long-answer sentence plays; after 'what's the capital of France?' a Paris answer is produced.",
+        ),
+        failure_modes=(
+            "The long answer continues after either barge.",
+            "The new-topic barge stops the answer but never answers the new question (or answers the wrong place).",
+        ),
+    ),
+    Scenario(
+        name="barge_multiple_in_one_turn",
+        capability="Barge-in / interrupt (latch + re-arm)",
+        goal="ONE long answer is hit by TWO consecutive barges. The first must stop it; the second hits an already-idle/short assistant and must be benign -- exercising the one-barge-per-run latch + re-arm.",
+        turns=(
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "ONE LONG_ANSWER, about to be barged twice in a row."),
+            Turn("Wait.", "barge_in",
+                 "First barge: should STOP the long answer (one barge per speaking run; latch fires here)."),
+            Turn("No, stop.", "barge_in",
+                 "Second barge in the same turn: the assistant is already idle / on a short reply, so this is expected to be a benign no-op. The grade must NOT penalize a benign second barge, and self_interrupt_count must stay 0."),
+        ),
+        validates="The engine one-barge-per-run latch (_barge_in_fired_this_run) + its re-arm on the silent->speaking edge; a second barge against an idle assistant is a no-op. INJECT-MODE ONLY; barge target is the shared LONG_ANSWER.",
+        expected_behavior="At least the FIRST barge stops the long answer. The second barge does not crash and does not register as a self-interrupt. Barge-in grade: at least 1 of the intended barges stopped, self_interrupt_count == 0.",
+        pass_signals=(
+            "The first barge stopped the long answer (stopped=yes on its turn).",
+            "No crash; self_interrupt_count == 0 (the benign second barge is not a self-interrupt).",
+        ),
+        failure_modes=(
+            "The long answer continues past the first barge.",
+            "The second barge triggers a self-interrupt or wedges the pipeline.",
+        ),
+    ),
+    Scenario(
+        name="barge_no_barge_control",
+        capability="Barge-in / interrupt (NO-BARGE control)",
+        goal="The CONTROL: a long answer runs to completion with NO barge at all. The barge-in grade must show ZERO self-interrupts -- this is the regression catch for the self-interruption storm (the assistant barging ITSELF).",
+        turns=(
+            Turn(LONG_ANSWER, "wait_for_response",
+                 "The full LONG_ANSWER, spoken to completion. NO barge is scripted -- if a barge-in stamp lands on this turn it is the assistant interrupting itself."),
+            Turn("Thanks, that's all.", "wait_for_response",
+                 "A trivial closer; confirms the assistant returned to idle cleanly with no self-interrupt anywhere in the run."),
+        ),
+        validates="No self-interruption storm: with barge_in_enabled on and the input gate active, the assistant must NOT fire a barge against its own playback. INJECT-MODE ONLY; the answer is the shared LONG_ANSWER.",
+        expected_behavior="The long answer plays to completion (not interrupted). The closer is answered. Barge-in grade: n_intended_barges == 0, self_interrupt_count == 0, verdict 'ok' (rate is n/a -- no barge was intended).",
+        pass_signals=(
+            "self_interrupt_count == 0 across the whole run (no turn is interrupted without an intended barge).",
+            "The long answer is NOT marked interrupted; the closer is answered normally.",
+        ),
+        failure_modes=(
+            "The assistant interrupts its own long answer (a self-interrupt -- the storm regression).",
+            "Any turn shows interrupted=yes with no preceding barge_in line.",
         ),
     ),
     Scenario(

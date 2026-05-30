@@ -251,6 +251,12 @@ class LiveConversation:
         self._ln_transcript = 0
         self._ln_speak = 0
         self._cur_user_event: Optional[dict] = None
+        # The timing of the most-recently-spoken user line. The barge-in grader
+        # needs to know whether the line PRECEDING an assistant turn was an
+        # intended barge (timing == "barge_in"); a barge that fires with no
+        # intended barge before it is a self-interrupt. Carried forward here so
+        # _flush_assistant can stamp it onto the assistant event.
+        self._last_user_timing: Optional[str] = None
         # Continuous-capture observation. We OBSERVE the engine's existing 2 s
         # heartbeat instead of instrumenting core: the runtime feeds every beat to
         # the watchdog's note_heartbeat, so we wrap that callable with a thin
@@ -391,6 +397,7 @@ class LiveConversation:
 
     def _speak_user(self, turn) -> None:
         self._uidx += 1
+        self._last_user_timing = turn.timing
         self._ln_metrics = len(self.runtime.metrics.records())
         self._ln_transcript = len(self.runtime.supervisor.state.transcript_log)
         self._ln_speak = self.engine.spoken_count()
@@ -659,6 +666,12 @@ class LiveConversation:
         self.events.append({
             "idx": self._aidx, "speaker": "assistant", "text": text, "audio": audio_rel,
             "t_start": t_first, "interrupted": interrupted, "latency": latency,
+            # Did the scenario INTEND to barge before this answer? The barge-in
+            # grader uses this to separate a real interrupt (intended) from a
+            # self-interrupt (a barge fired with no intended barge). barge_in_ms
+            # is derivable in report.py from latency.barge_in_latency, so no extra
+            # field is surfaced here -- keep the driver surface minimal.
+            "barge_intended": getattr(self, "_last_user_timing", None) == "barge_in",
         })
 
     def _consume_latency(self) -> Optional[dict]:

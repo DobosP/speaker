@@ -200,6 +200,17 @@ def main(argv: list[str] | None = None) -> int:
         fd = (capture or {}).get("full_duplex", "n/a")
         acc = grade.get("aggregate", {}).get("stt_score_median")
         print(f"  full_duplex: {fd}  |  over-the-air STT accuracy (median): {acc}")
+        b = grade.get("barge_in", {})
+        if b:
+            rate = b.get("stops_when_barged_rate")
+            rate_str = "n/a" if rate is None else f"{rate}"
+            print(
+                f"  barge-in (inject-mode): stops {b.get('n_stopped')}/"
+                f"{b.get('n_intended_barges')} (rate {rate_str}), "
+                f"median stop {b.get('stop_latency_ms_median')}ms, "
+                f"self-interrupts {b.get('self_interrupt_count')} "
+                f"({b.get('verdict')})"
+            )
         print(f"  -> {out_dir}/summary.md  (timeline.json, latency.json, grade.json, "
               f"user/, assistant/, heard_over_air.wav)")
 

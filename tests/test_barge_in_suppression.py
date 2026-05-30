@@ -188,6 +188,90 @@ def test_note_barge_in_storm_arms_debounce_window():
     assert eng._barge_in_suppressed_until > 0.0
 
 
+# --- one-barge-in-per-run latch (fix B) ------------------------------------
+# The 0.5s suppress window only DEBOUNCES; on open speakers with no AEC the VAD
+# re-fires ~12x per utterance on self-echo, each one re-cancelling the (already
+# cancelled) turn. The latch hard-caps a speaking run to ONE interrupt; a fresh
+# interruption after the assistant goes idle (a new speaking run) re-enables it.
+
+
+class _AlwaysSpeechVad:
+    """A VAD that always reports speech -- stands in for a flapping gate."""
+
+    def is_speech_detected(self):
+        return True
+
+
+def _barge_engine() -> SherpaOnnxEngine:
+    # margin 0 -> _looks_like_user is pure fail-open, so the eligibility test
+    # isolates the latch from the level/identity gate (covered separately).
+    eng = _engine(barge_in_output_margin_db=0.0)
+    eng._vad = _AlwaysSpeechVad()
+    return eng
+
+
+def test_fire_eligible_true_until_latch_set():
+    eng = _barge_engine()
+    assert eng._barge_in_fired_this_run is False
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is True
+
+
+def test_latch_suppresses_repeat_fires_within_one_run():
+    eng = _barge_engine()
+    # First trigger fires and arms the latch (as the capture loop does).
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is True
+    eng._barge_in_fired_this_run = True
+    # Every subsequent block in the SAME run is suppressed, no matter how many
+    # times the (flapping) VAD re-reports speech.
+    for _ in range(12):
+        assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is False
+
+
+def test_new_speaking_run_resets_latch_and_re_enables_fire():
+    eng = _barge_engine()
+    eng._barge_in_fired_this_run = True  # a prior run already fired
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is False
+    # Simulate the silent->speaking transition in _playback_loop: the latch is
+    # reset only when the run was NOT already speaking.
+    was_speaking = eng._speaking.is_set()  # False -> a genuinely new run
+    eng._speaking.set()
+    if not was_speaking:
+        eng._barge_in_fired_this_run = False
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is True
+
+
+def test_latch_not_reset_for_subsequent_sentence_in_same_run():
+    # _speaking is set per dequeued sentence but clears only on queue drain, so a
+    # mid-reply sentence (was_speaking already True) must NOT reset the latch --
+    # otherwise the self-storm reopens between sentences of one reply.
+    eng = _barge_engine()
+    eng._speaking.set()  # already speaking (mid-run)
+    eng._barge_in_fired_this_run = True
+    was_speaking = eng._speaking.is_set()  # True -> NOT a new run
+    eng._speaking.set()
+    if not was_speaking:
+        eng._barge_in_fired_this_run = False
+    assert eng._barge_in_fired_this_run is True
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is False
+
+
+def test_fire_eligible_false_without_vad_speech():
+    eng = _engine(barge_in_output_margin_db=0.0)
+
+    class _SilentVad:
+        def is_speech_detected(self):
+            return False
+
+    eng._vad = _SilentVad()
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is False
+
+
+def test_fire_eligible_false_without_vad():
+    eng = _engine(barge_in_output_margin_db=0.0)
+    eng._vad = None
+    assert eng._barge_in_fire_eligible([0.5, 0.5, 0.5]) is False
+
+
 def test_watchdog_on_storm_hook_fires_once_per_storm():
     t = [0.0]
     rec = MetricsRecorder(clock=lambda: t[0])

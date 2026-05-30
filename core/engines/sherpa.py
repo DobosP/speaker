@@ -318,6 +318,15 @@ class SherpaOnnxEngine(AudioEngine):
         # monotonic deadline until which barge-in triggers are debounced (set
         # after a barge-in fires or when a watchdog storm is reported).
         self._barge_in_suppressed_until: float = 0.0
+        # Latch: once a barge-in has fired during the CURRENT speaking run, do
+        # not emit another on_barge_in for the same run -- open speakers with no
+        # AEC make the VAD re-fire ~12x/utterance on self-echo, each one
+        # cancelling the (already-cancelled) turn. The 0.5s suppress window above
+        # only debounces; this latch hard-caps it to one interrupt per run. Reset
+        # in _playback_loop on the silent->speaking transition (a genuinely new
+        # reply), so a fresh interruption after the assistant goes idle still
+        # fires. Dormant while barge_in_enabled is False (the watch is skipped).
+        self._barge_in_fired_this_run: bool = False
 
     def set_record_path(self, path: Optional[str]) -> None:
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
@@ -504,11 +513,33 @@ class SherpaOnnxEngine(AudioEngine):
         self._running.clear()
         self._stop_speaking.set()
         self._drain_play_q()
+        # Abort the live output stream BEFORE pushing the sentinel / joining the
+        # play thread. On a dead/stalled ALSA device the play thread is blocked
+        # in the C-level out.write() and will never reach _play_q.get() to see
+        # the sentinel, so the join below would hang (the classic "second
+        # Ctrl-C needed" shutdown). abort() drops the buffered audio and makes
+        # the blocked write() return; _stop_speaking is already set (above) so
+        # the write() closure's except swallows the resulting error instead of
+        # re-raising. On a healthy/idle stream this is a cheap no-op, so the
+        # normal shutdown path is unchanged. Mirrors stop_speaking() but emits
+        # no barge_in_stop metric (this is teardown, not an interruption).
+        with self._out_lock:
+            if self._out_stream is not None:
+                try:
+                    self._out_stream.abort()
+                except Exception:  # noqa: BLE001 - device may be mid-teardown
+                    pass
         self._play_q.put((None, None))  # sentinel: wake the worker so it exits
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=1.0)
+            if self._capture_thread.is_alive():
+                # Wedged somewhere abort() can't unblock; never hang stop().
+                # The thread is a daemon and is left to interpreter teardown.
+                log.warning("capture thread did not exit within 1.0s; proceeding")
         if self._play_thread is not None:
             self._play_thread.join(timeout=1.0)
+            if self._play_thread.is_alive():
+                log.warning("playback thread did not exit within 1.0s; proceeding")
         if self._stream_in is not None:
             # The recovering wrapper handles its own internal close-best-effort;
             # we just need to release its handle so the engine can be GC'd.
@@ -757,10 +788,14 @@ class SherpaOnnxEngine(AudioEngine):
                         # echo with no AEC) collapses into a single interrupt.
                         if now < self._barge_in_suppressed_until:
                             voiced_run = 0.0
-                        elif self._vad.is_speech_detected() and self._looks_like_user(samples):
+                        elif self._barge_in_fire_eligible(samples):
                             voiced_run += block_sec
                             if voiced_run >= self.config.barge_in_min_speech_sec:
                                 voiced_run = 0.0
+                                # Latch: one barge-in per speaking run. The 0.5s
+                                # suppress window still debounces; the latch
+                                # caps the whole run so self-echo can't re-fire.
+                                self._barge_in_fired_this_run = True
                                 self._barge_in_suppressed_until = (
                                     now + max(0.0, self.config.barge_in_suppress_sec)
                                 )
@@ -931,7 +966,16 @@ class SherpaOnnxEngine(AudioEngine):
                 if text is None:  # shutdown sentinel from stop()
                     break
                 self._stop_speaking.clear()
+                # Reset the one-barge-in-per-run latch only on the silent->
+                # speaking transition (a genuinely NEW reply), NOT per dequeued
+                # sentence: _speaking is set per sentence but clears only when the
+                # queue drains (below), so an unconditional reset would reopen
+                # firing mid-reply and reintroduce the self-storm. A fresh
+                # interruption after the assistant goes idle still re-enables.
+                was_speaking = self._speaking.is_set()
                 self._speaking.set()
+                if not was_speaking:
+                    self._barge_in_fired_this_run = False
                 self._cb.on_speech_start()
                 log.debug("speaking: %r (queue depth=%d)", text, self._play_q.qsize())
                 played = {"any": False}
@@ -1088,6 +1132,23 @@ class SherpaOnnxEngine(AudioEngine):
         # Fast attack (track loud output quickly), slow-ish release.
         alpha = 0.5 if level >= prev else 0.2
         self._playback_level = prev + alpha * (level - prev)
+
+    def _barge_in_fire_eligible(self, samples) -> bool:
+        """Whether this block may *start/continue* arming a barge-in.
+
+        Combines the one-per-run latch with the VAD + identity/level gate.
+        Factored out of the capture loop so the latch behaviour is unit-
+        testable without an audio device. The latch (``_barge_in_fired_this_run``)
+        hard-caps a speaking run to a single interrupt: open speakers with no
+        AEC make the VAD re-fire many times per utterance on the assistant's own
+        echo, and without the latch each one re-cancels the (already-cancelled)
+        turn. The latch is reset on the silent->speaking transition in
+        ``_playback_loop`` so a genuinely new interruption still fires."""
+        if self._barge_in_fired_this_run:
+            return False
+        if self._vad is None or not self._vad.is_speech_detected():
+            return False
+        return self._looks_like_user(samples)
 
     def note_barge_in_storm(self) -> None:
         """Hook for the watchdog: a barge-in storm was detected (gate flapping,

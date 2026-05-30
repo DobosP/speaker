@@ -41,6 +41,13 @@ from always_on_agent.memory import (
     SessionMemory,
 )
 from core.capabilities import DEFAULT_SYSTEM, RecallConfig, attach_llm_capabilities
+from core.conversation import RecentContextConfig
+
+# These tests pin the RECALL contract specifically; the orthogonal default-on
+# recent-conversation context (core/conversation.py) would otherwise append its
+# own block, so it's disabled here. Recent-context has its own tests
+# (tests/test_conversation.py).
+_NO_RECENT = RecentContextConfig(enabled=False)
 
 
 # --- a minimal no-DB connection pool ----------------------------------------
@@ -195,6 +202,7 @@ def test_fact_stated_turn_1_recalled_at_turn_n():
         llm,
         memory=memory,
         recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=_NO_RECENT,
     )
 
     # Turn 1: establish a fact (the query itself is ingested by the closure).
@@ -230,6 +238,7 @@ def test_adapter_recall_degrades_to_empty_without_db():
         llm,
         memory=memory,
         recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=_NO_RECENT,
     )
     try:
         registry.invoke("assistant.answer", "my favorite color is teal", {})
@@ -256,7 +265,7 @@ def test_recall_default_off_is_byte_identical(mem: Memory):
     registry = CapabilityRegistry()
     llm = _RecordingLLM()
     # Default RecallConfig() is OFF.
-    attach_llm_capabilities(registry, llm, memory=mem, recall=RecallConfig())
+    attach_llm_capabilities(registry, llm, memory=mem, recall=RecallConfig(), recent_context=_NO_RECENT)
     try:
         # Pre-load a clearly-relevant fact so a leak would be visible.
         mem.add("my favorite color is teal", tags=("user",))
@@ -287,7 +296,8 @@ def test_recall_block_is_capped_by_max_chars():
     registry = CapabilityRegistry()
     llm = _RecordingLLM()
     attach_llm_capabilities(
-        registry, llm, memory=memory, recall=RecallConfig(enabled=True, max_chars=20)
+        registry, llm, memory=memory, recall=RecallConfig(enabled=True, max_chars=20),
+        recent_context=_NO_RECENT,
     )
     # A fact long enough that the recall block exceeds the cap.
     memory.add("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda", tags=("user",))

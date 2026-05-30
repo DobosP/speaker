@@ -16,6 +16,7 @@ from always_on_agent.supervisor import AgentSupervisor
 
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
 from .capabilities import RecallConfig, _answers_locally, attach_llm_capabilities
+from .conversation import RecentContextConfig
 from .cleanup import TranscriptCleaner
 from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
@@ -52,6 +53,7 @@ class VoiceRuntime:
         fast_llm: Optional[LLMClient] = None,
         memory: Optional[Memory] = None,
         recall_config: Optional[RecallConfig] = None,
+        recent_context_config: Optional[RecentContextConfig] = None,
         web_search_config: Optional[WebSearchConfig] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
@@ -133,6 +135,7 @@ class VoiceRuntime:
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, system=system_prompt, router=router,
             escalate=escalate, recorder=self.metrics, memory=memory, recall=recall_config,
+            recent_context=recent_context_config,
             live_routing=live_routing, load_snapshot=load_snapshot,
         )
         if planner_on:

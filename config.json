@@ -1,6 +1,8 @@
 {
   "llm_model": "gemma3:12b",
   "device": "desktop",
+  "_warm_on_start_comment": "Pre-warm the LLM tiers at startup (core/runtime.py) so turn 1 doesn't pay the ~3s model cold-load on the user's first utterance (measured ttft 3.17s cold vs ~0.27s warm). Set false to measure cold start.",
+  "warm_on_start": true,
   "llm": {
     "backend": "ollama",
     "main_model": "gemma3:12b",
@@ -11,8 +13,9 @@
       "num_ctx": 4096
     },
     "router": {
+      "_comment": "threshold=0.3 (was 0.5): combined with the complexity + generation/long-form markers in core/routing.py, this lets reasoning and 'tell me a story' turns escalate from the fast tier to the main model instead of every turn answering on the small model (the field default scored 125/125 turns fast-only). Per-profile overrides (device_profiles.*.llm.router.threshold) still win. See docs/flow_control_intelligence_2026-05.md.",
       "backend": "heuristic",
-      "threshold": 0.5
+      "threshold": 0.3
     },
     "live_routing": false,
     "_live_routing_comment": "smart-routing-2 + load follow-up + dynamic hedge (Task 4). OFF by default so behaviour is byte-identical. When true, the runtime feeds the router an ADDITIVE-ONLY, clamped live nudge toward main/cloud from (a) the recorder's rolling local TTFT EWMA and (b) a cheap core.sysinfo SystemMonitor load snapshot (reads the last background sample, no hot-path sampling), and -- for a cloud-racing HedgeLLM -- shortens the per-call hedge_delay_ms (clamped to a floor) so the cloud race starts sooner when local is slow/loaded. A missing/garbage signal is a no-op, so the local tier is never starved. Also honoured via SPEAKER_LIVE_ROUTING=1.",
@@ -110,21 +113,26 @@
   },
   "device_profiles": {
     "desktop": {
+      "_comment": "router.threshold=0.3 + the generation/long-form markers (core/routing.py) so reasoning + 'tell me a story' turns escalate to gemma3:12b (fast on this GPU, previously never used). num_predict=768 gives long-form answers room (a story isn't 384 tokens). asr_num_threads=2: a small streaming zipformer doesn't speed up past 2 CPU threads. input_gate ON (core/addressing.py): the fast tier has headroom here, so gate ambient/read-aloud speech instead of answering disfluency fragments. cleanup left OFF -- it adds a second fast-LLM call on the capture thread per final (see docs/perf_audit_2026-05_goal_alignment.md H8). See docs/flow_control_intelligence_2026-05.md.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:12b",
         "fast_model": "gemma3:4b",
         "keep_alive": -1,
+        "router": {
+          "threshold": 0.3
+        },
         "options": {
           "num_ctx": 4096,
-          "num_predict": 384,
+          "num_predict": 768,
           "num_gpu": 999
         }
       },
       "sherpa": {
-        "asr_num_threads": 4,
+        "asr_num_threads": 2,
         "tts_num_threads": 2
-      }
+      },
+      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4}
     },
     "desktop_gpu_4090": {
       "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; both gates ON (fast tier has plenty of headroom). Specsim quick TTFA 0.96s. Cloud chains off by default -- local 12b is fast enough; enable in config.local.json for paragraph-length research-mode answers.",
@@ -188,12 +196,16 @@
       "cleanup": {"enabled": false, "max_context": 3}
     },
     "phone": {
+      "_comment": "router.threshold=0.55 overrides the base 0.3: on phone the 'main' tier is gemma-3-4b GGUF on CPU (n_gpu_layers=0), so over-escalating idiom/borderline turns onto it is a real latency hit. Keep escalation reserved for clearly heavy turns here (the doc-prescribed phone safety valve, docs/flow_control_intelligence_2026-05.md).",
       "llm": {
         "backend": "llamacpp",
         "main_model_path": "models/gemma-3-4b-it-Q4_K_M.gguf",
         "fast_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
         "n_ctx": 2048,
         "n_gpu_layers": 0,
+        "router": {
+          "threshold": 0.55
+        },
         "options": {
           "temperature": 0.7
         }
@@ -258,7 +270,8 @@
   },
   "agent": {
     "planner": {
-      "enabled": false,
+      "_comment": "enabled=true makes the ReAct planner reachable: ASSISTANT-mode queries that hit an _ESCALATE_MARKER (search/find/compare/'and then'/step by step -- see always_on_agent/react.py) run a bounded plan->execute loop over the tools below instead of degrading to a one-shot reply. Gated, so ordinary short turns stay one-shot. web.search returns corpus-only results until web_search.enabled=true (egress-gated, §9.7). See docs/flow_control_intelligence_2026-05.md.",
+      "enabled": true,
       "max_steps": 4,
       "tools": [
         "web.search",

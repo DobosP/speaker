@@ -488,6 +488,10 @@ def main(argv: list[str] | None = None) -> int:
         cleaner=cleaner,
         live_routing=live_routing,
         load_snapshot=monitor.load_fraction if live_routing else None,
+        # Pre-warm the LLM tiers at startup so turn 1 doesn't pay the ~3s model
+        # cold-load on the user's first utterance (lat-2). On by default; set
+        # config.warm_on_start=false to skip (e.g. to measure cold start).
+        warm_on_start=bool(config.get("warm_on_start", True)),
     )
 
     try:

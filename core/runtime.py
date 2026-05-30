@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from threading import Thread
 from typing import Callable, Optional
 
 from always_on_agent.capabilities import create_default_capabilities
@@ -13,7 +14,7 @@ from always_on_agent.react import PlannerConfig, attach_react_capability, should
 from always_on_agent.supervisor import AgentSupervisor
 
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
-from .capabilities import RecallConfig, attach_llm_capabilities
+from .capabilities import RecallConfig, _answers_locally, attach_llm_capabilities
 from .cleanup import TranscriptCleaner
 from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
@@ -63,6 +64,7 @@ class VoiceRuntime:
         cleaner: Optional[TranscriptCleaner] = None,
         live_routing: bool = False,
         load_snapshot: Optional[Callable[[], Optional[float]]] = None,
+        warm_on_start: bool = False,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -138,6 +140,31 @@ class VoiceRuntime:
         self._watchdog = StuckWatchdog(
             self.metrics, on_storm=getattr(self.engine, "note_barge_in_storm", None)
         )
+        # Optional startup pre-warm (lat-2): without it, turn 1 pays the model
+        # cold-load (~3s for a GPU Gemma, measured ttft 3.17s vs ~0.27s warm) on
+        # the user's first utterance. When enabled, start() kicks a *background*
+        # warm-up of the answering models (and the engine, if it exposes
+        # ``warm()``) so the load is paid before the user speaks. Off by default
+        # so library/test construction is byte-identical; the CLI opts in via
+        # ``config.warm_on_start``. ``fast_llm`` is warmed first (it answers the
+        # common case); duplicates are collapsed by identity so a collapsed
+        # fast/main pair is only warmed once.
+        #
+        # §9.7 gate: warm ONLY purely-local tiers. ``_answers_locally`` is the
+        # canonical "this model cannot reach cloud" predicate (False for a
+        # cloud-backed HedgeLLM / SensitivityRouterLLM), so a throwaway warm-up
+        # "hi" can never fire a billed cloud completion before the user has
+        # invoked anything -- cloud egress still happens only on a real turn.
+        self._warm_on_start = warm_on_start
+        warm_models: list[LLMClient] = []
+        for model in (fast_llm, llm):
+            if (
+                model is not None
+                and _answers_locally(model)
+                and all(model is not m for m in warm_models)
+            ):
+                warm_models.append(model)
+        self._warm_models = warm_models
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:
@@ -159,6 +186,30 @@ class VoiceRuntime:
             self.bus.start()
             self._bus_threaded = True
         self._watchdog.start()
+        if self._warm_on_start:
+            # Background daemon so startup never blocks on a model load: by the
+            # time the user finishes their first utterance the model is resident.
+            Thread(target=self._warm, name="speaker-warm", daemon=True).start()
+
+    def _warm(self) -> None:
+        """Pre-load the answering models (and engine) so turn 1 isn't cold.
+
+        Best-effort: a warm-up failure (model not pulled yet, server down) must
+        never take down the live pipeline -- it just means turn 1 pays the cold
+        cost as before. Each ``generate`` is a throwaway one-token prompt whose
+        only purpose is to make the backend resident."""
+        for model in self._warm_models:
+            try:
+                model.generate("hi")
+            except Exception:  # noqa: BLE001 - warm-up is best-effort
+                log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
+        engine_warm = getattr(self.engine, "warm", None)
+        if callable(engine_warm):
+            try:
+                engine_warm()
+            except Exception:  # noqa: BLE001 - engine warm is best-effort
+                log.debug("engine warm-up failed", exc_info=True)
+        log.info("startup pre-warm complete (%d model(s))", len(self._warm_models))
 
     def stop(self) -> None:
         # Guard each step so a teardown error never prevents the engine from

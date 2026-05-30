@@ -210,6 +210,17 @@ _FAST_MODES = {"dictation"}
 _MAIN_INTENTS = {"research", "search"}
 _FAST_INTENTS = {"command", "dictation", "meeting_note"}
 
+# Long-form / generation asks -- "tell me a story", "write a poem", "walk me
+# through ..." -- want the big model: the fast tier deflects ("I can find one
+# online") or gives a shallow one-liner. A single hit escalates strongly (these
+# phrases are unambiguous generation requests). Kept DISTINCT from
+# ``_COMPLEXITY_MARKERS`` so the calibrated borderline router tests are
+# undisturbed (no overlap with "explain ... difference between").
+_GENERATION_MARKERS = (
+    "story", "poem", "write me", "write a", "tell me a", "tell me about",
+    "walk me through", "a list of", "give me a", "essay", "lyrics", "joke",
+)
+
 
 class HeuristicRouter(BaseRouter):
     """Dependency-light router: combines mode, length and complexity signals.
@@ -249,6 +260,10 @@ class HeuristicRouter(BaseRouter):
 
         hits = sum(1 for marker in _COMPLEXITY_MARKERS if marker in q)
         s += min(0.5, 0.18 * hits)
+
+        # Long-form / generation request -> the big model (one hit is enough).
+        if any(marker in q for marker in _GENERATION_MARKERS):
+            s += 0.5
 
         if q.count("?") >= 2:
             s += 0.1

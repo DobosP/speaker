@@ -44,6 +44,22 @@ _WEB = (
 )
 _NO_COMMENT = "Don't comment on the user's name, tone, or mood."
 
+# --- skills block framing (registry-backed path ONLY; never part of DEFAULT_SYSTEM) ---
+# These wrap the live, §9.7-filtered capability bullets in build_system_prompt so
+# the answering model reads them as an instruction ("describe exactly these") rather
+# than loose background data. They MUST NOT be folded into DEFAULT_SYSTEM, whose
+# bytes are pinned by tests/test_memory_contract.py + test_goal_alignment_fixes.py.
+_SKILLS_HEADER = "Here is everything you can actually do for the user:"
+_SKILLS_GUIDANCE = (
+    "When the user asks what you are or what you can do, describe these "
+    "capabilities accurately in your own natural words -- one or two short spoken "
+    "sentences, no lists -- and cover all of them; do not claim any ability that "
+    "is not on this list. In particular, telling a story, poem, joke, or "
+    "explanation is part of answering directly, not a separate skill, and you "
+    "cannot open files or apps, control devices, or take any action -- you only "
+    "talk."
+)
+
 # The legacy one-paragraph prompt, recomposed from the parts above so it stays
 # byte-identical to what shipped (pinned by tests/test_memory_contract.py and
 # tests/test_goal_alignment_fixes.py) -- now with a single source per sentence.
@@ -92,7 +108,10 @@ def render_skills(registry: object, *, web_enabled: bool = False) -> str:
     if not specs:
         return ""
     lines = "\n".join(f"- {spec.summary}" for spec in specs)
-    return "What you can do for the user:\n" + lines
+    # Header + bullets, then the faithful-enumeration instruction so the model
+    # reads this as "describe exactly these and claim nothing else" -- not as
+    # loose background it can free-associate a self-intro from.
+    return _SKILLS_HEADER + "\n" + lines + "\n\n" + _SKILLS_GUIDANCE
 
 
 def build_system_prompt(

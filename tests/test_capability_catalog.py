@@ -111,6 +111,10 @@ def test_default_system_prompt_unchanged_byte_for_byte():
     assert "generate it yourself" in DEFAULT_SYSTEM
     assert "no web access" in DEFAULT_SYSTEM
     assert DEFAULT_SYSTEM.count("\n") == 0  # still a single paragraph
+    # The registry-backed skills block + its enumeration guidance must NEVER leak
+    # into the legacy default prompt -- they live only in build_system_prompt.
+    assert "Here is everything you can actually do" not in DEFAULT_SYSTEM
+    assert "do not claim any ability that is not on this list" not in DEFAULT_SYSTEM
 
 
 def test_build_system_prompt_enumerates_user_facing_skills():
@@ -127,6 +131,32 @@ def test_build_system_prompt_enumerates_user_facing_skills():
     assert "take dictation" not in prompt
     assert "take meeting notes" not in prompt
     assert "run a system command" not in prompt
+
+
+def test_build_system_prompt_enumerates_both_local_skills_when_web_off():
+    # The reported live bug: with web off the model surfaced assistant.answer but
+    # DROPPED research.local. Both user-facing local skills must be present.
+    reg = create_default_capabilities()
+    prompt = build_system_prompt(reg, web_enabled=False)
+    assert "answer questions and chat directly from your own knowledge" in prompt
+    assert "research a topic and give a recommendation" in prompt
+
+
+def test_build_system_prompt_has_faithful_enumeration_guidance():
+    # The skills block must carry an instruction telling the model to describe
+    # exactly these capabilities and invent nothing -- present web on AND off, so
+    # the anti-confabulation directive can't silently regress.
+    reg = create_default_capabilities()
+    for web in (False, True):
+        prompt = build_system_prompt(reg, web_enabled=web)
+        # An explicit "describe what you can do accurately" cue...
+        assert "what you can do" in prompt
+        assert "describe these capabilities accurately" in prompt
+        # ...a hard "don't invent" clause...
+        assert "do not claim any ability that is not on this list" in prompt
+        # ...and the story/poem/joke confabulation is re-homed onto answering,
+        # not advertised as a standalone skill.
+        assert "not a separate skill" in prompt
 
 
 def test_side_effecting_skills_in_manifest_but_not_user_facing():

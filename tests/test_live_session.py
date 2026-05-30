@@ -247,21 +247,23 @@ def test_flush_assistant_noop_when_nothing_spoken(tmp_path):
     assert c.events == []
 
 
-def test_flush_assistant_stamps_barge_intended_from_last_user_timing(tmp_path):
-    # The driver carries the PRECEDING user line's timing onto the assistant event
-    # so the barge-in grader can tell a real interrupt from a self-interrupt.
+def test_flush_assistant_stamps_barge_intended_from_upcoming_user_timing(tmp_path):
+    # A barge_in line interrupts the PRECEDING answer, so the answer is flagged
+    # barge_intended by the UPCOMING line's timing (the barge that hits it), not
+    # the line before it. The grader uses this to tell a real interrupt from a
+    # self-interrupt.
     eng = _FakeEngine()
     eng.speak("Once upon a time...", 1.0)
     eng.stop(1.2)
     c = _bare_convo(eng, _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
-    c._last_user_timing = "barge_in"
+    c._upcoming_user_timing = "barge_in"
     c._flush_assistant()
     assert c.events[0]["barge_intended"] is True
 
     eng2 = _FakeEngine()
     eng2.speak("Paris.", 2.0)
     c2 = _bare_convo(eng2, _FakeRuntime(eng2, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
-    c2._last_user_timing = "wait_for_response"
+    c2._upcoming_user_timing = "wait_for_response"
     c2._flush_assistant()
     assert c2.events[0]["barge_intended"] is False
 

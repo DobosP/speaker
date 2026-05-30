@@ -42,6 +42,10 @@ _START_TIMEOUT = 8.0
 # Quiet period (no task/speech) after engagement before a turn counts as idle --
 # bridges the brief task-complete -> engine.speak() gap so it isn't read as done.
 _IDLE_SETTLE = 0.6
+# Max wait for a barge to actually register a stop after it's injected (the VAD
+# accumulation lags the inject by ~1-1.5s). The interrupted answer is flushed as
+# soon as the stop lands, or at this bound if it never does (a real no-stop).
+_BARGE_STOP_TIMEOUT = 4.0
 
 
 def _is_answer(text: str) -> bool:
@@ -257,6 +261,10 @@ class LiveConversation:
         # intended barge before it is a self-interrupt. Carried forward here so
         # _flush_assistant can stamp it onto the assistant event.
         self._last_user_timing: Optional[str] = None
+        # The timing of the line ABOUT to be spoken -- so a barge_in turn flags the
+        # PRECEDING assistant answer it interrupts (the answer is barged by the NEXT
+        # line, not the one before it).
+        self._upcoming_user_timing: Optional[str] = None
         # Continuous-capture observation. We OBSERVE the engine's existing 2 s
         # heartbeat instead of instrumenting core: the runtime feeds every beat to
         # the watchdog's note_heartbeat, so we wrap that callable with a thin
@@ -363,9 +371,14 @@ class LiveConversation:
     def run_scenario(self, scenario) -> list[dict]:
         turns = scenario.turns
         for i, turn in enumerate(turns):
-            # Record the prior assistant turn (possibly interrupted) BEFORE we
-            # speak the next line -- so a barged/partial answer isn't lost.
-            self._flush_assistant()
+            self._upcoming_user_timing = turn.timing
+            # For a NORMAL line, flush the prior assistant turn before speaking. For
+            # a barge_in line we DEFER the flush until AFTER the barge plays, so the
+            # interrupted answer is captured WITH its interrupted flag set (the barge
+            # calls stop_speaking only once it's injected -- flushing first would
+            # always record interrupted=False).
+            if turn.timing != "barge_in":
+                self._flush_assistant()
             # Driver-side post-speech cooldown: after the PRIOR turn settled to
             # idle, let the assistant tail + room reverb decay before the next
             # user audio so two voices never mix into one capture segment. Only on
@@ -377,9 +390,21 @@ class LiveConversation:
             delay = _parse_pause(turn.timing)
             if delay:
                 time.sleep(delay)
+            barge_t = time.perf_counter() if turn.timing == "barge_in" else None
             self._speak_user(turn)
+            if turn.timing == "barge_in":
+                # The barge LAGS its injection by the VAD accumulation (~1-1.5s),
+                # so a fixed short wait flushes the answer BEFORE the barge lands
+                # (recording interrupted=False even though it did stop). Poll for
+                # the engine to actually register a stop after the barge, up to a
+                # bound, THEN flush -- so interrupted reflects reality.
+                deadline = time.time() + _BARGE_STOP_TIMEOUT
+                while time.time() < deadline and not self.engine.stopped_after(barge_t):
+                    time.sleep(0.05)
+                self._flush_assistant()
             self._capture_until(self._mode_for_next(turns, i))
             self._finalize_capture_probe()
+        self._upcoming_user_timing = None
         self._flush_assistant()
         self.capture_verdict = self._compute_capture_verdict()
         return self.events
@@ -671,7 +696,7 @@ class LiveConversation:
             # self-interrupt (a barge fired with no intended barge). barge_in_ms
             # is derivable in report.py from latency.barge_in_latency, so no extra
             # field is surfaced here -- keep the driver surface minimal.
-            "barge_intended": getattr(self, "_last_user_timing", None) == "barge_in",
+            "barge_intended": getattr(self, "_upcoming_user_timing", None) == "barge_in",
         })
 
     def _consume_latency(self) -> Optional[dict]:

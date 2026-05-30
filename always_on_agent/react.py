@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from threading import Event
 from typing import Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
-from .capabilities import CapabilityRegistry, CapabilityResult
+from .capabilities import CapabilityRegistry, CapabilityResult, CapabilitySpec
 
 
 @runtime_checkable
@@ -33,21 +33,15 @@ class SupportsLLM(Protocol):
 # ``assistant.answer`` is excluded so the planner never recurses into itself.
 # ``web.search`` leads ``search.local``: it queries real web search (self-hosted
 # SearXNG) when permitted by the §9.7 egress gate, and falls back to the local
-# corpus otherwise -- so it's the right default gather tool.
+# corpus otherwise -- so it's the right default gather tool. This tuple matches
+# the ``planner_tool=True`` capabilities in ``create_default_capabilities``; the
+# startup reconciliation check (core/runtime.py) warns if they drift.
 DEFAULT_TOOLS: tuple[str, ...] = (
     "web.search",
     "search.local",
     "research.scope",
     "research.local",
 )
-
-_TOOL_DESCRIPTIONS = {
-    "web.search": "search the web for current information on a topic",
-    "search.local": "look up a topic in the local knowledge corpus",
-    "research.scope": "outline the scope and key questions for a topic",
-    "research.local": "synthesize gathered findings into a recommendation",
-    "meeting.note": "store a note to memory",
-}
 
 PLANNER_SYSTEM = (
     "You are the planning loop of a local voice assistant. Decide the next step "
@@ -142,18 +136,31 @@ class ReactPlanner:
         *,
         max_steps: int = 4,
         tools: Sequence[str] = DEFAULT_TOOLS,
+        persona_name: str = "",
     ):
         self._llm = llm
         self._registry = registry
         self._max_steps = max(1, int(max_steps))
         self._tools = tuple(tools)
+        self._persona_name = (persona_name or "").strip()
+
+    def _final_system(self) -> str:
+        # Keep an escalated turn's final answer in the configured persona's voice
+        # (the one-shot path already does via build_system_prompt). A plain
+        # string keeps the brain free of any ``core`` import.
+        if self._persona_name:
+            return (
+                f"You are {self._persona_name}, a local, on-device voice assistant. "
+                "Using the findings, reply in one or two short, natural spoken "
+                "sentences. No markdown or preambles."
+            )
+        return FINAL_SYSTEM
 
     def _catalog(self) -> str:
-        lines = []
-        for name in self._tools:
-            desc = _TOOL_DESCRIPTIONS.get(name, "a local capability")
-            lines.append(f"- {name}: {desc}")
-        return "\n".join(lines)
+        # Descriptions come straight from the capability manifest (planner-facing
+        # ``when_to_use``), so the planner's tool catalog can never drift from
+        # the actually-registered capabilities.
+        return self._registry.describe(self._tools, planner=True)
 
     def _plan_prompt(self, query: str, observations: list[str]) -> str:
         gathered = "\n".join(observations) if observations else "(none yet)"
@@ -181,7 +188,7 @@ class ReactPlanner:
             f"Findings:\n{gathered}\n\n"
             "Give the final spoken answer."
         )
-        return self._drain(self._llm.stream(prompt, system=FINAL_SYSTEM), cancel)
+        return self._drain(self._llm.stream(prompt, system=self._final_system()), cancel)
 
     def run(self, query: str, context: Mapping[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")  # type: ignore[assignment]
@@ -246,16 +253,19 @@ def attach_react_capability(
     config: PlannerConfig | None = None,
     planner: ReactPlanner | None = None,
     capability_name: str = "agent.react",
+    persona_name: str = "",
 ) -> CapabilityRegistry:
     """Register the ReAct planner as a capability provider.
 
     Parallels ``core.agent.attach_agent_capability``: a self-contained provider
     that honours ``context['cancel_event']``. ``planner`` may be injected for
-    testing with a scripted LLM.
+    testing with a scripted LLM. ``persona_name`` (a plain string -- the brain
+    takes no ``core`` import) keeps an escalated turn's final answer in voice.
     """
     config = config or PlannerConfig()
     planner = planner or ReactPlanner(
-        llm, registry, max_steps=config.max_steps, tools=config.tools
+        llm, registry, max_steps=config.max_steps, tools=config.tools,
+        persona_name=persona_name,
     )
 
     def provider(query: str, context: dict[str, object]) -> CapabilityResult:
@@ -264,5 +274,13 @@ def attach_react_capability(
             return CapabilityResult(False, "", error="empty instruction")
         return planner.run(instruction, context)
 
-    registry.register(capability_name, provider)
+    registry.register(
+        capability_name, provider,
+        spec=CapabilitySpec(
+            capability_name,
+            summary="work through a multi-step question using your tools",
+            when_to_use="multi-step reasoning or gathering before answering",
+            egress="local", speaks=True, planner_tool=False, user_facing=False,
+        ),
+    )
     return registry

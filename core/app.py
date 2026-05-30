@@ -459,6 +459,13 @@ def main(argv: list[str] | None = None) -> int:
             fast_llm, max_context=int(cleanup_cfg.get("max_context", 3))
         )
 
+    # Assistant persona: optional name + character, so the model knows what it
+    # is (its skills are enumerated automatically from the capability manifest).
+    # Empty by default -> the anonymous "local voice assistant" identity.
+    from .persona import PersonaConfig
+
+    persona = PersonaConfig.from_dict(config.get("assistant"))
+
     memory = _build_memory(config, fast_llm)
     recall_config = RecallConfig.from_dict(config.get("memory"))
     # Headroom-aware live routing (smart-routing-2 + load follow-up). Flat flag
@@ -498,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
         # cold-load on the user's first utterance (lat-2). On by default; set
         # config.warm_on_start=false to skip (e.g. to measure cold start).
         warm_on_start=bool(config.get("warm_on_start", True)),
+        persona=persona,
     )
 
     try:

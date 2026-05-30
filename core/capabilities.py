@@ -15,6 +15,7 @@ from always_on_agent.models import IntentKind
 from .contract import drain_complete_sentences
 from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
 from .metrics import MetricsRecorder, mark_first_token
+from .persona import DEFAULT_SYSTEM
 from .routing import (
     LIVE_CONTEXT_KEY,
     HeuristicRouter,
@@ -74,19 +75,11 @@ def _base_hedge_delay_ms(model: LLMClient) -> Optional[float]:
 # ReAct planner instead of a one-shot reply.
 EscalatePredicate = Callable[[str, Mapping[str, object]], bool]
 
-DEFAULT_SYSTEM = (
-    "You are a local, on-device voice assistant. Default to one or two short, "
-    "natural spoken sentences, no markdown or lists. BUT when the user asks for "
-    "a story, a poem, a joke, an explanation, or to go into detail, give them "
-    "the full thing directly -- generate it yourself; never summarize it or "
-    "offer to find it elsewhere. "
-    "Your input is from speech recognition and may be garbled or misheard: if a "
-    "request is unclear or sounds like a fragment, ask one short clarifying "
-    "question instead of guessing, and never invent facts you're unsure of. "
-    "You answer from your own knowledge -- you have no web access and cannot "
-    "open files or apps, so never claim you searched, found, or will look "
-    "something up online. Don't comment on the user's name, tone, or mood."
-)
+# The assistant's identity + skills now live in core/persona.py (so the prompt
+# can enumerate the live capability manifest and reflect §9.7 web state).
+# DEFAULT_SYSTEM (imported at the top) stays the byte-identical legacy prompt and
+# the default for direct callers/tests; the runtime feeds the answering model the
+# richer build_system_prompt() instead.
 
 
 @dataclass(frozen=True)

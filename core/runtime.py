@@ -22,6 +22,7 @@ from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, MetricsRecorder
+from .persona import PersonaConfig, build_system_prompt
 from .routing import Router
 from .watchdog import StuckWatchdog
 from .websearch import WebSearchConfig, attach_web_search_capability
@@ -67,6 +68,7 @@ class VoiceRuntime:
         live_routing: bool = False,
         load_snapshot: Optional[Callable[[], Optional[float]]] = None,
         warm_on_start: bool = False,
+        persona: Optional[PersonaConfig] = None,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -107,21 +109,43 @@ class VoiceRuntime:
         # routes every query through the §9.7 egress gate before any network
         # call; a missing/disabled config builds a corpus-only provider with no
         # httpx dependency. See core/websearch.py.
-        attach_web_search_capability(registry, web_search_config or WebSearchConfig())
+        web_cfg = web_search_config or WebSearchConfig()
+        attach_web_search_capability(registry, web_cfg)
         planner_on = planner_config is not None and planner_config.enabled
         escalate = should_escalate if (planner_on and planner_config.escalate) else None
+        # Capability-aware system prompt: the answering model is told who it is
+        # (the configured persona) and what skills it ACTUALLY has, enumerated
+        # from the live capability manifest, with a web-access line that reflects
+        # the real §9.7 egress state instead of a hardcoded denial. Built from the
+        # registry's user-facing specs (all registered by create_default_*), so it
+        # can never drift from the real providers.
+        # web_enabled reflects REAL backend availability (the same condition the
+        # web.search provider uses to actually go to the network), not just the
+        # enabled flag -- so the model isn't told it can search the web when the
+        # provider would silently fall back to the local corpus.
+        web_enabled = bool(getattr(web_cfg, "enabled", False) and getattr(web_cfg, "base_url", ""))
+        system_prompt = build_system_prompt(registry, persona=persona, web_enabled=web_enabled)
         attach_llm_capabilities(
-            registry, llm, fast_llm=fast_llm, router=router, escalate=escalate,
-            recorder=self.metrics, memory=memory, recall=recall_config,
+            registry, llm, fast_llm=fast_llm, system=system_prompt, router=router,
+            escalate=escalate, recorder=self.metrics, memory=memory, recall=recall_config,
             live_routing=live_routing, load_snapshot=load_snapshot,
         )
         if planner_on:
-            attach_react_capability(registry, llm, config=planner_config)
+            # Thread the persona name (a plain string -- no core import in the
+            # brain) so an escalated ReAct turn's final answer keeps the persona.
+            attach_react_capability(
+                registry, llm, config=planner_config,
+                persona_name=persona.name if persona is not None else "",
+            )
         if agent_config is not None:
             # Opt-in: route command-mode through the Open Interpreter action brain.
             from .agent import attach_agent_capability
 
             attach_agent_capability(registry, agent_config)
+        # Startup reconciliation: log the capability manifest once and warn if the
+        # planner is configured with a tool that isn't actually registered (the
+        # drift the manifest is meant to prevent).
+        self._reconcile_capabilities(registry, planner_config if planner_on else None)
         self.supervisor = AgentSupervisor(
             bus=self.bus,
             capabilities=registry,
@@ -168,6 +192,29 @@ class VoiceRuntime:
             ):
                 warm_models.append(model)
         self._warm_models = warm_models
+
+    def _reconcile_capabilities(self, registry, planner_config) -> None:
+        """Log the capability manifest once and warn on planner-tool drift.
+
+        Single source of truth: the controller and the model both reason over the
+        registry manifest, so a configured planner tool that isn't actually
+        registered (the drift the manifest exists to kill) is surfaced loudly
+        rather than failing silently mid-plan."""
+        manifest = getattr(registry, "manifest", None)
+        if callable(manifest):
+            specs = manifest()
+            log.info(
+                "capabilities (%d): %s",
+                len(specs), ", ".join(spec.name for spec in specs),
+            )
+        if planner_config is not None:
+            registered = set(registry.names())
+            missing = [t for t in getattr(planner_config, "tools", ()) if t not in registered]
+            if missing:
+                log.warning(
+                    "planner configured with unregistered tool(s) %s -- they will be "
+                    "reported unavailable to the planner", ", ".join(missing),
+                )
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:

@@ -273,6 +273,12 @@
     "enabled": true,
     "addon_max_words": 8
   },
+  "assistant": {
+    "_comment": "Optional persona so the model knows WHAT IT IS. Its SKILLS are enumerated automatically from the live capability manifest (always_on_agent/capabilities.py specs) into the system prompt, and the web-access line reflects the real web_search.enabled / §9.7 egress state. Leave name empty for the anonymous 'local voice assistant' identity; set name (and optionally a one-line persona / extra guidance) to give it a character.",
+    "name": "",
+    "persona": "",
+    "extra": ""
+  },
   "agent": {
     "planner": {
       "_comment": "enabled=true makes the ReAct planner reachable: ASSISTANT-mode queries that hit an _ESCALATE_MARKER (search/find/compare/'and then'/step by step -- see always_on_agent/react.py) run a bounded plan->execute loop over the tools below instead of degrading to a one-shot reply. Gated, so ordinary short turns stay one-shot. web.search returns corpus-only results until web_search.enabled=true (egress-gated, §9.7). See docs/flow_control_intelligence_2026-05.md.",

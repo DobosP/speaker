@@ -506,6 +506,9 @@ def main(argv: list[str] | None = None) -> int:
         # config.warm_on_start=false to skip (e.g. to measure cold start).
         warm_on_start=bool(config.get("warm_on_start", True)),
         persona=persona,
+        # Per-mode wall-clock task deadlines (never-stuck backstop). Optional --
+        # the supervisor bakes in sensible defaults; config overrides per mode.
+        task_timeouts=config.get("task_timeouts"),
     )
 
     try:

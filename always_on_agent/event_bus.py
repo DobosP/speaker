@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from queue import PriorityQueue
 from threading import Event, Thread
 from typing import Callable
 import itertools
 
 from .events import AgentEvent
+
+log = logging.getLogger("speaker.event_bus")
 
 
 EventHandler = Callable[[AgentEvent], None]
@@ -33,7 +36,10 @@ class EventBus:
         _, _, event = self._queue.get_nowait()
         try:
             for handler in list(self._handlers):
-                handler(event)
+                try:
+                    handler(event)
+                except Exception:  # noqa: BLE001 - one bad handler must not stop the drain
+                    log.exception("event handler raised on %s; dropping it", event.kind)
         finally:
             self._queue.task_done()
         return True
@@ -66,6 +72,13 @@ class EventBus:
                 continue
             try:
                 for handler in list(self._handlers):
-                    handler(event)
+                    try:
+                        handler(event)
+                    except Exception:  # noqa: BLE001
+                        # A handler bug must degrade to a dropped event, never
+                        # silently kill the single bus thread (which would make
+                        # the whole assistant go dead -- no transcripts, no TTS,
+                        # no task lifecycle -- until restart). Log and carry on.
+                        log.exception("event handler raised on %s; dropping it", event.kind)
             finally:
                 self._queue.task_done()

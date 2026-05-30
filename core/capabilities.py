@@ -254,10 +254,17 @@ def attach_llm_capabilities(
         #   2. Gated prepend: only when recall is enabled (cheap config gate,
         #      default off) AND the backend returns a non-empty (relevant)
         #      block. Wrapped so a memory error can never break a live turn.
+        # A continuation turn (ADD-ON) carries a synthetic, folded prompt and the
+        # supervisor has already ingested the raw user utterance, so skip the
+        # query ingest here -- otherwise memory would hold both the prior turn and
+        # the merged "prev + addon" prompt (the double-ingest the design flagged).
+        meta = context.get("metadata")
+        skip_user_memory = bool(meta.get("skip_user_memory")) if isinstance(meta, dict) else False
         system_for_call = system
         if memory is not None:
             try:
-                memory.add(query, tags=("user",))
+                if not skip_user_memory:
+                    memory.add(query, tags=("user",))
                 if recall_cfg.enabled:
                     recall_block = memory.context_for_llm(query)
                     if recall_block:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -9,7 +10,13 @@ _WORD_RE = re.compile(r"[a-z0-9]+")
 def normalize_text(text: str | None) -> str:
     if not text:
         return ""
-    cleaned = text.lower().strip().replace("'", "")
+    # Fold diacritics to ASCII (NFKD decompose + drop combining marks) so
+    # Romanian input matches the de-diacritic'd phrase/marker tables used across
+    # the brain -- e.g. "oprește" -> "opreste", "în schimb" -> "in schimb",
+    # "Și" -> "si". Without this, _WORD_RE (ASCII-only) would *drop* the accented
+    # letter entirely ("în" -> "n"), silently breaking those matches.
+    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    cleaned = folded.lower().strip().replace("'", "")
     return " ".join(_WORD_RE.findall(cleaned))
 
 

@@ -248,3 +248,14 @@ def test_input_gate_enabled_on_active_desktop_profile():
 
 def test_react_planner_enabled_in_shipped_config():
     assert CONFIG.get("agent", {}).get("planner", {}).get("enabled") is True
+
+
+def test_continuation_enabled_in_shipped_config():
+    # ADD-ON / continuation ships ON: a follow-up merges into the in-flight turn
+    # instead of racing a competing cold task. from_dict defaults off, so this
+    # pin guards against the block being dropped / silently disabled.
+    from always_on_agent.continuation import ContinuationConfig
+
+    block = CONFIG.get("continuation")
+    assert isinstance(block, dict) and block.get("enabled") is True
+    assert ContinuationConfig.from_dict(block).enabled is True

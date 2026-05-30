@@ -45,6 +45,14 @@ class AgentTask:
     # depending on the task still being "active" -- TASK_COMPLETED is dequeued
     # before the trailing TTS_REQUESTs (realtime-concurrency-1).
     speech_epoch: int = 0
+    # Set True the moment this task has spoken its first streamed sentence. The
+    # ADD-ON / continuation gate reads it (on the bus thread) to choose between
+    # *merging* a follow-up into a not-yet-spoken turn (cancel + restart with the
+    # combined prompt) and *continuing* after a turn that is already talking
+    # (queue a context-carrying follow-up). Written once, from the worker thread,
+    # in the streaming emitter; the bool write is atomic under the GIL and any
+    # narrow read race is covered by the epoch gate (see _maybe_continue).
+    started_speaking: bool = False
 
     def cancel(self) -> None:
         self.cancel_event.set()
@@ -89,6 +97,10 @@ class TaskRuntime:
         def emit(sentence: str) -> None:
             if task.cancel_event.is_set() or not sentence:
                 return
+            # First real spoken sentence: from here on a follow-up can no longer
+            # be merged into this turn (the audio is already out), so the
+            # continuation gate switches to "queue a continuation behind it".
+            task.started_speaking = True
             self._publish(
                 AgentEvent(
                     EventKind.TTS_REQUEST,
@@ -298,6 +310,11 @@ class TaskRuntime:
                     "followup": bool(task.metadata.get("followup")),
                     "data": task.metadata.get("result_data", {}),
                     "citations": task.metadata.get("citations", ()),
+                    # Carry the epoch stamped when this task started so the
+                    # supervisor can drop a completion whose turn was superseded
+                    # (e.g. a continuation merge bumped the epoch after the task
+                    # finished but before its TASK_COMPLETED was dequeued).
+                    "epoch": task.speech_epoch,
                 },
                 priority=60,
             )

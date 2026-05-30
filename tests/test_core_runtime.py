@@ -11,6 +11,7 @@ import threading
 import time
 from typing import Iterator, Optional, Sequence
 
+from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.events import Mode
 
 from core.engines.scripted import ScriptedEngine
@@ -230,5 +231,113 @@ def test_barge_in_drops_streaming_sentences_after_stop_on_threaded_bus():
             text for kind, text in calls[first_stop + 1 :] if kind == "speak"
         ]
         assert speak_after_stop == [], f"stale sentence spoken after stop: {speak_after_stop}"
+    finally:
+        runtime.stop()
+
+
+# --- ADD-ON / continuation end-to-end (no two competing answers) ----------------
+
+
+class _PreGatedStreamLLM:
+    """Streaming fake that blocks BEFORE emitting anything, then echoes the
+    prompt as its single sentence. Lets a test land a follow-up while the first
+    turn is mid-generation but has spoken NOTHING yet (started_speaking False) --
+    the before-audio window in which a continuation merges into one turn."""
+
+    def __init__(self):
+        self.stream_started = threading.Event()
+        self.gate = threading.Event()
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str, *, system=None, images=None) -> str:  # pragma: no cover
+        return prompt
+
+    def stream(self, prompt: str, *, system=None, images=None) -> Iterator[str]:
+        self.prompts.append(prompt)
+        self.stream_started.set()
+        # Block before the first token so the turn stays "not yet speaking".
+        self.gate.wait(timeout=2.0)
+        yield prompt  # echo so the test sees which turn produced the answer
+
+
+def test_addon_before_audio_merges_into_single_answer():
+    """The headline ADD-ON fix: a follow-up that lands before the assistant has
+    spoken merges into ONE answer instead of racing a second competing turn."""
+    llm = _PreGatedStreamLLM()
+    engine = ScriptedEngine(hold_speech=False)
+    runtime = VoiceRuntime(
+        engine,
+        llm,
+        start_mode=Mode.ASSISTANT,
+        stream_tts=True,
+        continuation_config=ContinuationConfig(enabled=True),
+    )
+    runtime.start(run_bus=True)
+    try:
+        engine.final("whats the weather")
+        # First turn is generating but blocked before any sentence is emitted.
+        assert _wait_until(lambda: llm.stream_started.is_set())
+        assert _wait_until(lambda: bool(runtime.supervisor.state.active_tasks))
+
+        # Follow-up arrives while nothing has been spoken -> it must MERGE.
+        engine.final("and also the forecast")
+        # The merged turn reaches the LLM (2nd stream call) -> release the gate.
+        assert _wait_until(lambda: len(llm.prompts) >= 2)
+        llm.gate.set()
+
+        assert runtime.wait_idle()
+        # A SINGLE merged prompt reached the model (the original folded together
+        # with the add-on) -- the essence of the fix, not two competing prompts.
+        assert any(
+            "whats the weather" in p and "and also the forecast" in p
+            for p in llm.prompts
+        ), llm.prompts
+        # Everything spoken comes from that one merged turn (the echoed merge
+        # prompt, recognizable by its "first asked" framing): both the original
+        # and the add-on are voiced together. The first turn was cancelled before
+        # it spoke, so there is no second racing answer.
+        spoken_joined = " ".join(s.strip() for s in engine.spoken)
+        assert "whats the weather" in spoken_joined
+        assert "and also the forecast" in spoken_joined
+        assert "first asked" in spoken_joined, engine.spoken
+    finally:
+        runtime.stop()
+
+
+def test_addon_passes_input_gate_while_turn_in_flight():
+    """A short add-on the addressing gate would INGEST as ambient must still reach
+    the brain (and merge) while a turn is in flight -- otherwise the default-ON
+    input gate silently swallows continuations."""
+    from core.addressing import ACT, INGEST, ScriptedAddressingClassifier
+
+    llm = _PreGatedStreamLLM()
+    engine = ScriptedEngine(hold_speech=False)
+    addressing = ScriptedAddressingClassifier(
+        {"whats the weather": ACT, "make it brief": INGEST}, default=ACT
+    )
+    runtime = VoiceRuntime(
+        engine,
+        llm,
+        start_mode=Mode.ASSISTANT,
+        stream_tts=True,
+        continuation_config=ContinuationConfig(enabled=True),
+        addressing=addressing,
+    )
+    runtime.start(run_bus=True)
+    try:
+        engine.final("whats the weather")
+        assert _wait_until(lambda: llm.stream_started.is_set())
+        assert _wait_until(lambda: bool(runtime.supervisor.state.active_tasks))
+
+        # The gate classifies this INGEST, but a turn is in flight and "make it"
+        # is a continuation cue -> the override lets it through and it merges.
+        engine.final("make it brief")
+        assert _wait_until(lambda: len(llm.prompts) >= 2), llm.prompts
+        llm.gate.set()
+
+        assert runtime.wait_idle()
+        spoken_joined = " ".join(s.strip() for s in engine.spoken)
+        assert "whats the weather" in spoken_joined
+        assert "make it brief" in spoken_joined
     finally:
         runtime.stop()

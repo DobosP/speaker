@@ -30,6 +30,24 @@ PUBLIC = "public"     # general-knowledge / encyclopedic lookups
 
 Sensitivity = str  # one of PRIVATE / CODE / PUBLIC
 
+# Most-restrictive-wins ordering for egress: PRIVATE never leaves the device, so
+# it dominates; CODE may use a coding cloud; PUBLIC is the most permissive.
+_SENSITIVITY_RANK = {PUBLIC: 0, CODE: 1, PRIVATE: 2}
+
+
+def most_sensitive(*levels: Sensitivity) -> Sensitivity:
+    """The most-private (most-restrictive) of the given levels.
+
+    Used to float a turn's sensitivity to cover everything in its prompt -- e.g.
+    a public current query whose recent-conversation context includes a private
+    prior turn must route as private, so the prior turn can't ride to a public
+    (possibly cloud) chain (§9.7)."""
+    best = PUBLIC
+    for level in levels:
+        if _SENSITIVITY_RANK.get(level, _SENSITIVITY_RANK[PRIVATE]) > _SENSITIVITY_RANK[best]:
+            best = level if level in _SENSITIVITY_RANK else PRIVATE
+    return best
+
 # Words that imply the query is about programming work. Code itself rarely
 # contains personal info; routing it to a coding-tuned cloud (Cerebras
 # qwen-3-coder-480b, Groq Kimi K2) is the cost+quality sweet spot.

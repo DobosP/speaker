@@ -13,6 +13,7 @@ import threading
 
 from always_on_agent.events import Mode
 
+from core.conversation import RecentContextConfig
 from core.engines.scripted import ScriptedEngine
 from core.llm import SensitivityRouterLLM, capability_context
 from core.routing import ChainSelector
@@ -61,7 +62,13 @@ def _build_router(private="private-reply", code="code-reply", public="public-rep
 
 def _runtime(router_llm, fast_llm=None, mode=Mode.ASSISTANT):
     engine = ScriptedEngine()
-    runtime = VoiceRuntime(engine, router_llm, fast_llm=fast_llm, start_mode=mode)
+    # Disable recent-conversation context so these tests isolate the ROUTER's
+    # per-turn behavior; recent-context deliberately floats a turn's sensitivity
+    # over prior turns (§9.7), which is exercised in tests/test_conversation.py.
+    runtime = VoiceRuntime(
+        engine, router_llm, fast_llm=fast_llm, start_mode=mode,
+        recent_context_config=RecentContextConfig(enabled=False),
+    )
     runtime.start(run_bus=False)
     return runtime, engine
 

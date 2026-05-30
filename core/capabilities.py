@@ -13,6 +13,7 @@ from always_on_agent.memory import Memory
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
+from .conversation import RecentContextConfig, collect_recent_turns, format_recent_block
 from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
 from .metrics import MetricsRecorder, mark_first_token
 from .persona import DEFAULT_SYSTEM
@@ -22,7 +23,7 @@ from .routing import (
     Router,
     dynamic_hedge_delay_ms,
 )
-from .sensitivity import classify_sensitivity
+from .sensitivity import PRIVATE, classify_sensitivity, most_sensitive
 
 log = logging.getLogger("speaker.llm")
 
@@ -158,6 +159,7 @@ def attach_llm_capabilities(
     recorder: Optional[MetricsRecorder] = None,
     memory: Optional[Memory] = None,
     recall: Optional[RecallConfig] = None,
+    recent_context: Optional[RecentContextConfig] = None,
     live_routing: bool = False,
     load_snapshot: Optional[Callable[[], Optional[float]]] = None,
 ) -> CapabilityRegistry:
@@ -192,6 +194,7 @@ def attach_llm_capabilities(
     fast = fast_llm or llm
     router = router or HeuristicRouter()
     recall_cfg = recall or RecallConfig()
+    recent_cfg = recent_context or RecentContextConfig()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
     # Headroom-aware routing (smart-routing-2): feed the recorder's rolling
     # local TTFT into the router as a live signal that NUDGES borderline turns
@@ -256,14 +259,35 @@ def attach_llm_capabilities(
         system_for_call = system
         if memory is not None:
             try:
+                # Recent-conversation context (short-term memory): the PRIOR turns
+                # (collected BEFORE ingesting the current query) so the model can
+                # resolve "its"/"the second one". Suppressed on a continuation turn
+                # -- its merge/continue prompt already embeds the prior context.
+                recent_turns = (
+                    [] if skip_user_memory else collect_recent_turns(memory, recent_cfg)
+                )
                 if not skip_user_memory:
                     memory.add(query, tags=("user",))
-                if recall_cfg.enabled:
-                    recall_block = memory.context_for_llm(query)
-                    if recall_block:
-                        system_for_call = recall_block[: recall_cfg.max_chars] + "\n\n" + system
-            except Exception:  # noqa: BLE001 - recall is best-effort, never fatal
-                log.exception("memory recall failed; answering without it")
+                recall_block = memory.context_for_llm(query) if recall_cfg.enabled else ""
+                recent_block = format_recent_block(recent_turns, recent_cfg)
+                # §9.7: a private prior turn in the recent block must not ride a
+                # public current query to a public/cloud chain. Float the prompt's
+                # sensitivity to the most-private over the current turn AND every
+                # included prior turn.
+                if recent_turns:
+                    sens = context.get("sensitivity") or PRIVATE
+                    for _role, turn_text in recent_turns:
+                        sens = most_sensitive(str(sens), classify_sensitivity(turn_text))
+                    context["sensitivity"] = sens
+                # Compose: stable system FIRST (the pre-warmed, cacheable prefix),
+                # then the volatile recent block AFTER, so the prefix cache is
+                # reused turn to turn. Recall (default-off, past sessions) keeps its
+                # historical position ahead of system so its contract is unchanged.
+                prefix = (recall_block[: recall_cfg.max_chars] + "\n\n") if recall_block else ""
+                suffix = ("\n\n" + recent_block) if recent_block else ""
+                system_for_call = prefix + system + suffix
+            except Exception:  # noqa: BLE001 - context is best-effort, never fatal
+                log.exception("conversation context / recall failed; answering without it")
         # Live headroom hint (smart-routing-2 + load follow-up): publish the
         # recorder's rolling local TTFT and an optional SystemMonitor load
         # snapshot under context['live'] so HeuristicRouter can nudge a slow or

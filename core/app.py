@@ -468,6 +468,12 @@ def main(argv: list[str] | None = None) -> int:
 
     memory = _build_memory(config, fast_llm)
     recall_config = RecallConfig.from_dict(config.get("memory"))
+    # Short-term conversation context for the answering model (the recent turns,
+    # so it can resolve "its"/"the second one"). Default ON; tuned in the memory
+    # block. Distinct from semantic recall (past sessions) above.
+    from .conversation import RecentContextConfig
+
+    recent_context_config = RecentContextConfig.from_dict(config.get("memory"))
     # Headroom-aware live routing (smart-routing-2 + load follow-up). Flat flag
     # (P4 deep-merge note) so a device-profile override survives the merge;
     # default OFF so default behaviour is byte-identical. When on, the runtime
@@ -486,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
         fast_llm=fast_llm,
         memory=memory,
         recall_config=recall_config,
+        recent_context_config=recent_context_config,
         web_search_config=web_search_config,
         start_mode=Mode(args.mode),
         agent_config=agent_config,

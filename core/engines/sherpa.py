@@ -82,6 +82,18 @@ class SherpaConfig:
     asr_rule1_min_trailing_silence: float = 2.4
     asr_rule2_min_trailing_silence: float = 0.8
     asr_rule3_min_utterance_length: float = 20.0
+    # Semantic (turn-completion) endpointing layered on the acoustic rule2 timer.
+    # When enabled, a turn-completion detector + adaptive policy (core.endpointing)
+    # commit a final EARLY when the partial reads as a complete turn (down to
+    # endpoint_min_silence_sec) and HOLD past rule2 (up to endpoint_max_silence_sec)
+    # when it ends mid-phrase. Disabled (default) -> pure acoustic, unchanged.
+    endpoint_enabled: bool = False
+    # MUST exceed the decoder's lookahead or an early commit clips the last word
+    # (see core.endpointing). 0.5s is a safe default; validate on device.
+    endpoint_min_silence_sec: float = 0.5
+    endpoint_max_silence_sec: float = 1.6
+    endpoint_complete_threshold: float = 0.6
+    endpoint_incomplete_threshold: float = 0.3
     # Restore conventional casing on partials/finals (the streaming model emits
     # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
     asr_restore_casing: bool = True
@@ -218,9 +230,33 @@ class SherpaOnnxEngine(AudioEngine):
     plays it while watching for barge-in.
     """
 
-    def __init__(self, config: SherpaConfig):
+    def __init__(self, config: SherpaConfig, *, turn_detector=None):
         self.config = config
         self._cb = EngineCallbacks()
+        # Semantic endpointing (smart-endpoint): a turn-completion detector +
+        # adaptive policy that the capture loop consults alongside the acoustic
+        # endpoint. Built only when enabled, so the disabled default allocates
+        # nothing and the decision is byte-identical to the pure acoustic path.
+        # ``turn_detector`` may be injected (tests / a future Smart Turn audio
+        # model); otherwise the cheap lexical detector is used.
+        self._turn_detector = turn_detector
+        self._endpoint_policy = None
+        if config.endpoint_enabled:
+            from ..endpointing import (
+                AdaptiveEndpointPolicy,
+                EndpointConfig,
+                LexicalTurnCompletionDetector,
+            )
+
+            self._endpoint_policy = AdaptiveEndpointPolicy(EndpointConfig.from_sherpa(config))
+            if self._turn_detector is None:
+                self._turn_detector = LexicalTurnCompletionDetector()
+        # Only assemble the utterance audio buffer for the endpoint check when a
+        # detector actually consumes it (a prosodic model); the lexical default
+        # is text-only, so the capture loop pays nothing.
+        self._endpoint_wants_audio = bool(
+            self._turn_detector is not None and getattr(self._turn_detector, "needs_audio", False)
+        )
         self._recognizer = None
         self._vad = None
         self._tts = None
@@ -606,6 +642,33 @@ class SherpaOnnxEngine(AudioEngine):
             result = restore_casing(result, force=self._punct is not None)
         return result
 
+    def _decide_endpoint(
+        self, *, acoustic_endpoint: bool, partial: str, silence_sec: float, samples=None
+    ) -> bool:
+        """Combine the acoustic endpoint with a semantic turn-completion decision.
+
+        When semantic endpointing is disabled (the default) or there's no partial
+        to judge, this is exactly ``acoustic_endpoint`` -- byte-identical to the
+        pure acoustic path. Otherwise the policy may commit a final EARLY on a
+        confident-complete partial, or HOLD (bounded) past the acoustic timer on a
+        mid-phrase one. Pure + side-effect-free, so it is unit-testable without
+        models or audio."""
+        if self._endpoint_policy is None or self._turn_detector is None:
+            return acoustic_endpoint
+        text = (partial or "").strip()
+        if not text:
+            return acoustic_endpoint
+        try:
+            score = self._turn_detector.completion_score(
+                text, samples=samples, sample_rate=self.config.sample_rate
+            )
+        except Exception:  # noqa: BLE001 - a detector error must never break capture
+            log.debug("turn-completion detector failed; using acoustic endpoint", exc_info=True)
+            return acoustic_endpoint
+        return self._endpoint_policy.decide(
+            acoustic_endpoint=acoustic_endpoint, completion_score=score, silence_sec=silence_sec
+        )
+
     # --- internals ---
     def _capture_loop(self) -> None:
         import numpy as np
@@ -730,7 +793,21 @@ class SherpaOnnxEngine(AudioEngine):
                         shown = restore_casing(text) if self.config.asr_restore_casing else text
                         log.debug("asr partial: %r", shown)
                         self._cb.on_partial(shown)
-                    if recognizer.is_endpoint(stream):
+                    acoustic_endpoint = recognizer.is_endpoint(stream)
+                    endpoint_silence = (
+                        time.perf_counter() - last_voiced_ts
+                        if last_voiced_ts is not None else 0.0
+                    )
+                    endpoint_samples = (
+                        np.concatenate(utterance)
+                        if (self._endpoint_wants_audio and utterance) else None
+                    )
+                    if self._decide_endpoint(
+                        acoustic_endpoint=acoustic_endpoint,
+                        partial=last_partial,
+                        silence_sec=endpoint_silence,
+                        samples=endpoint_samples,
+                    ):
                         raw_final = recognizer.get_result(stream)
                         recognizer.reset(stream)
                         last_partial = ""

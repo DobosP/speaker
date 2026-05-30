@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from threading import Thread
+from threading import Event, Thread
 from typing import Callable, Optional
 
 from always_on_agent.capabilities import create_default_capabilities
@@ -125,6 +125,10 @@ class VoiceRuntime:
         # provider would silently fall back to the local corpus.
         web_enabled = bool(getattr(web_cfg, "enabled", False) and getattr(web_cfg, "base_url", ""))
         system_prompt = build_system_prompt(registry, persona=persona, web_enabled=web_enabled)
+        # Kept so the startup pre-warm prefills the model's cacheable system
+        # prefix with the REAL prompt (not a throwaway "hi" with no system), so
+        # turn 1's first token isn't paying to fill a cold KV-cache prefix.
+        self._system_prompt = system_prompt
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, system=system_prompt, router=router,
             escalate=escalate, recorder=self.metrics, memory=memory, recall=recall_config,
@@ -183,14 +187,31 @@ class VoiceRuntime:
         # "hi" can never fire a billed cloud completion before the user has
         # invoked anything -- cloud egress still happens only on a real turn.
         self._warm_on_start = warm_on_start
+        # Readiness signal: set once the background warm-up has paid the model +
+        # engine cold-start costs (or immediately when warm-up is off). A
+        # programmatic handle a caller/test can block on until "ready to fire".
+        self.warm_ready = Event()
         warm_models: list[LLMClient] = []
+
+        def _add_warm(candidate: Optional[LLMClient]) -> None:
+            if candidate is None:
+                return
+            if _answers_locally(candidate):
+                if all(candidate is not m for m in warm_models):
+                    warm_models.append(candidate)
+            else:
+                # A cloud-backed model (HedgeLLM / SensitivityRouterLLM): warming
+                # the whole thing could fire a billed cloud completion before any
+                # real turn, so we don't. But its purely-LOCAL leg can be warmed
+                # safely (§9.7: no egress), so the local tier of a cloud-hybrid
+                # isn't left cold. Best-effort: only if it exposes a `.local`.
+                local = getattr(candidate, "local", None)
+                if local is not None and _answers_locally(local):
+                    if all(local is not m for m in warm_models):
+                        warm_models.append(local)
+
         for model in (fast_llm, llm):
-            if (
-                model is not None
-                and _answers_locally(model)
-                and all(model is not m for m in warm_models)
-            ):
-                warm_models.append(model)
+            _add_warm(model)
         self._warm_models = warm_models
 
     def _reconcile_capabilities(self, registry, planner_config) -> None:
@@ -240,26 +261,55 @@ class VoiceRuntime:
             # Background daemon so startup never blocks on a model load: by the
             # time the user finishes their first utterance the model is resident.
             Thread(target=self._warm, name="speaker-warm", daemon=True).start()
+        else:
+            # Nothing to warm -> ready immediately, so a waiter never blocks.
+            self.warm_ready.set()
 
     def _warm(self) -> None:
-        """Pre-load the answering models (and engine) so turn 1 isn't cold.
+        """Pre-load the answering models, the gate/cleaner, and the engine so
+        turn 1 isn't cold; then raise ``warm_ready``.
 
         Best-effort: a warm-up failure (model not pulled yet, server down) must
         never take down the live pipeline -- it just means turn 1 pays the cold
-        cost as before. Each ``generate`` is a throwaway one-token prompt whose
-        only purpose is to make the backend resident."""
-        for model in self._warm_models:
-            try:
-                model.generate("hi")
-            except Exception:  # noqa: BLE001 - warm-up is best-effort
-                log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
-        engine_warm = getattr(self.engine, "warm", None)
-        if callable(engine_warm):
-            try:
-                engine_warm()
-            except Exception:  # noqa: BLE001 - engine warm is best-effort
-                log.debug("engine warm-up failed", exc_info=True)
-        log.info("startup pre-warm complete (%d model(s))", len(self._warm_models))
+        cost as before. The model warm uses the REAL system prompt so the
+        cacheable system prefix is prefilled (not a bare ``hi`` that leaves the
+        prefix cold), and the input gate / cleaner are exercised once so their
+        first live classify/clean isn't cold either."""
+        try:
+            for model in self._warm_models:
+                try:
+                    model.generate("hi", system=self._system_prompt)
+                except TypeError:
+                    # A minimal LLM stub may not accept system=; fall back.
+                    try:
+                        model.generate("hi")
+                    except Exception:  # noqa: BLE001 - warm-up is best-effort
+                        log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
+                except Exception:  # noqa: BLE001 - warm-up is best-effort
+                    log.debug("warm-up failed for %s", type(model).__name__, exc_info=True)
+            # Warm the pre-brain gate + cleaner (they use the fast tier with a
+            # different system prefix, so they have their own cold cost).
+            if self._addressing is not None:
+                try:
+                    self._addressing.classify("hi", recent=())
+                except Exception:  # noqa: BLE001 - best-effort
+                    log.debug("addressing warm-up failed", exc_info=True)
+            if self._cleaner is not None:
+                try:
+                    self._cleaner.clean("hi", recent=())
+                except Exception:  # noqa: BLE001 - best-effort
+                    log.debug("cleaner warm-up failed", exc_info=True)
+            engine_warm = getattr(self.engine, "warm", None)
+            if callable(engine_warm):
+                try:
+                    engine_warm()
+                except Exception:  # noqa: BLE001 - engine warm is best-effort
+                    log.debug("engine warm-up failed", exc_info=True)
+            log.info("startup pre-warm complete (%d model(s))", len(self._warm_models))
+        finally:
+            # Always signal readiness, even if a warm step failed -- "warm-up
+            # finished" is the signal, not "warm-up perfect".
+            self.warm_ready.set()
 
     def stop(self) -> None:
         # Guard each step so a teardown error never prevents the engine from

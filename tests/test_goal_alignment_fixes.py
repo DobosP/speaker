@@ -212,22 +212,24 @@ def test_warm_failure_is_swallowed():
         rt.stop()
 
 
-def test_warm_skips_cloud_wrapped_model():
-    """§9.7: a cloud-backed main must NOT be warm-called (no egress until invoked)."""
+def test_warm_skips_cloud_leg_but_warms_local_leg():
+    """§9.7: a cloud-backed main must NOT be warm-called as a whole (no egress
+    until invoked) -- but its purely-LOCAL leg IS warmed, so a cloud-hybrid's
+    local tier isn't left cold on turn 1."""
     local_fast = RecordingLLM()
     cloud = RecordingLLM()
-    hedged_main = HedgeLLM(local=RecordingLLM(), cloud=cloud)
+    hedge_local = RecordingLLM()
+    hedged_main = HedgeLLM(local=hedge_local, cloud=cloud)
     assert not _answers_locally(hedged_main)  # predicate sanity
     rt = VoiceRuntime(ScriptedEngine(), hedged_main, fast_llm=local_fast, warm_on_start=True)
     rt.start(run_bus=False)
     try:
-        assert _wait_until(lambda: local_fast.call_count >= 1)
-        time.sleep(0.15)
-        assert local_fast.calls == ["hi"]      # local tier warmed
-        assert cloud.call_count == 0           # cloud never touched at warm
-        assert hedged_main.local.call_count == 0  # nor the hedge's local leg
-        assert hedged_main not in rt._warm_models
-        assert local_fast in rt._warm_models
+        assert _wait_until(lambda: local_fast.call_count >= 1 and hedge_local.call_count >= 1)
+        time.sleep(0.05)
+        assert cloud.call_count == 0              # cloud never touched at warm (no egress)
+        assert hedged_main not in rt._warm_models  # the wrapper itself isn't warmed...
+        assert local_fast in rt._warm_models       # ...but the local fast tier is...
+        assert hedge_local in rt._warm_models      # ...and so is the hedge's local leg
     finally:
         rt.stop()
 

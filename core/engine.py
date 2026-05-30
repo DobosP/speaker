@@ -81,3 +81,10 @@ class AudioEngine(ABC):
     @property
     def is_speaking(self) -> bool:
         return False
+
+    def warm(self) -> None:
+        """Exercise the engine's models once so the first turn isn't cold.
+
+        Optional (default no-op; the production engine overrides it). Called off
+        the hot path -- the runtime's background warm thread, after ``start()``
+        has built the models -- so a slow JIT pass never blocks bring-up."""

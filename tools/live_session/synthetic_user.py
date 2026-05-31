@@ -10,6 +10,7 @@ harness *controls* the user audio, so it always knows which side is which.
 from __future__ import annotations
 
 import logging
+import time
 import wave
 from pathlib import Path
 from typing import Optional
@@ -107,9 +108,21 @@ class SyntheticUser:
                 # reference clip independent of the acoustic level used.
                 if self._volume != 1.0:
                     play = (play * self._volume).astype("float32")
-                sd.play(play, rate, device=self._out)
-                sd.wait()
-                return samples, sr
+                # The assistant's engine may still be releasing the shared output
+                # device (acoustic mode hands it back and forth). A transient
+                # "Device unavailable" is not a bad rate -- retry the SAME rate a
+                # few times before moving on, so we don't misread a race as a
+                # rate-unsupported error and resample needlessly.
+                for attempt in range(5):
+                    try:
+                        sd.play(play, rate, device=self._out)
+                        sd.wait()
+                        return samples, sr
+                    except Exception as exc:  # noqa: BLE001
+                        last_err = exc
+                        if "unavailable" not in str(exc).lower() and "-9985" not in str(exc):
+                            raise
+                        time.sleep(0.15)  # device busy: let the engine finish closing
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
                 continue

@@ -124,6 +124,12 @@ def main(argv: list[str] | None = None) -> int:
         config.setdefault("sherpa", {})["endpoint_enabled"] = True
     if args.input_gain is not None:
         config.setdefault("sherpa", {})["input_gain"] = float(args.input_gain)
+    if not args.inject:
+        # ACOUSTIC mode: the synthetic user AND the assistant both drive the one
+        # output device, but exclusive-ALSA hardware allows only ONE open output
+        # stream. Have the engine release its TTS stream when idle so the device is
+        # free for the synthetic user's next line (turn-taking hands it back).
+        config.setdefault("sherpa", {})["release_output_when_idle"] = True
 
     problems = _preflight(config)
     if args.check or problems:

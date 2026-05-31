@@ -55,6 +55,57 @@ from .speaker_gate import (
 # barge-in; the gate hook is left as `_looks_like_user`. Tune on hardware.
 
 
+def _capture_attempts(
+    in_dev,
+    *,
+    preferred_sr: int,
+    dev_sr_in: int,
+    pinned_sr: int = 0,
+    clean_rates=(48000, 32000, 96000),
+    supports=lambda device, rate: True,
+):
+    """Ordered list of mic-open attempts for the recovering input stream.
+
+    ``supports(device, rate) -> bool`` probes whether a rate is accepted (wraps
+    ``sd.check_input_settings``; injectable for tests).
+
+    When ``pinned_sr > 0`` the mic is opened at EXACTLY that rate on the preferred
+    device and no other rate is probed first -- every extra open/negotiate is a
+    chance to reconfigure (and, on some USB mics like the AT2020USB-X, re-mute) the
+    device. Otherwise the auto ladder is: preferred (16 kHz) -> a clean
+    integer-ratio rate the device supports (48000 -> 16000 is an exact /3
+    decimation) -> the device native rate. Both modes end with system-default
+    backstops so a mid-session reopen can still recover.
+    """
+    from ._recovering_input import OpenAttempt
+
+    attempts: list = []
+    if pinned_sr > 0:
+        attempts.append(OpenAttempt(device=in_dev, samplerate=pinned_sr))
+        if dev_sr_in and dev_sr_in != pinned_sr:
+            attempts.append(OpenAttempt(device=in_dev, samplerate=dev_sr_in))
+    else:
+        # preferred device at preferred rate (16 kHz; many laptop mics reject it)
+        attempts.append(OpenAttempt(device=in_dev, samplerate=preferred_sr))
+        # a CLEAN integer-ratio capture rate it actually supports, ahead of its
+        # (often non-integer-ratio) native rate.
+        if preferred_sr == 16000:
+            for rate in clean_rates:
+                if rate in (preferred_sr, dev_sr_in):
+                    continue
+                if supports(in_dev, rate):
+                    attempts.append(OpenAttempt(device=in_dev, samplerate=rate))
+        # preferred device at its native rate (deduped)
+        if dev_sr_in != preferred_sr:
+            attempts.append(OpenAttempt(device=in_dev, samplerate=dev_sr_in))
+    # system-default backstops (both modes)
+    if in_dev is not None:
+        attempts.append(OpenAttempt(device=None, samplerate=preferred_sr))
+    if preferred_sr != 16000:
+        attempts.append(OpenAttempt(device=None, samplerate=16000))
+    return attempts
+
+
 @dataclass
 class SherpaConfig:
     sample_rate: int = 16000
@@ -179,9 +230,24 @@ class SherpaConfig:
     # the default output is e.g. an HDMI monitor with no speakers.
     input_device: object = None
     output_device: object = None
+    # Close the TTS output stream when the play queue drains (default: keep it
+    # open for low-latency next-utterance start). Enable this when ANOTHER process
+    # must share the one output device -- e.g. the live_session ACOUSTIC test,
+    # where the synthetic user plays its voice over the same speaker and the
+    # exclusive-ALSA backend allows only one open output stream at a time. Costs a
+    # stream (re)open per assistant utterance; off in the real always-on app.
+    release_output_when_idle: bool = False
     # Software gain applied to captured audio before ASR -- a quick boost for a
     # quiet mic (1.0 = off). Prefer raising the OS mic level; this is a stopgap.
     input_gain: float = 1.0
+    # PIN the mic capture sample rate (0 = auto: probe 16k, then a clean
+    # integer-ratio rate, then the device native rate). Set this to the device's
+    # NATIVE rate for a USB mic that self-mutes when ALSA reconfigures it to a
+    # non-native rate (e.g. the AT2020USB-X touch-mute self-engages on the USB
+    # altsetting change a 48 kHz open triggers). When pinned, the engine opens at
+    # exactly this rate and never probes others; the anti-aliased soxr resampler
+    # converts to ``sample_rate`` (16 kHz) regardless of ratio.
+    capture_samplerate: int = 0
     # ONNX execution provider for STT/TTS/speaker-ID. Keep "cpu" so the GPU
     # stays free for the LLM; sherpa-onnx also supports "cuda"/"coreml".
     provider: str = "cpu"
@@ -453,7 +519,7 @@ class SherpaOnnxEngine(AudioEngine):
         # -> (system_default, 16000). The recovering wrapper walks this
         # list on every (re)open, so the same logic that covers initial
         # bring-up also covers reopen after a mid-session PortAudio error.
-        from ._recovering_input import _RecoveringInputStream, OpenAttempt
+        from ._recovering_input import _RecoveringInputStream
 
         preferred_sr = self.config.sample_rate
         try:
@@ -462,34 +528,24 @@ class SherpaOnnxEngine(AudioEngine):
             )
         except Exception:
             dev_sr_in = preferred_sr
-        attempts: list[OpenAttempt] = []
-        # 1) preferred device at preferred rate (16 kHz; many laptop mics reject it)
-        attempts.append(OpenAttempt(device=in_dev, samplerate=preferred_sr))
-        # 2) preferred device at a CLEAN integer-ratio capture rate it actually
-        #    supports, ahead of its (often non-integer-ratio) native rate. 48000
-        #    -> 16000 is an exact /3 decimation -- a short, well-conditioned
-        #    polyphase FIR -- versus 44100's 160/441 fractional resample. Probed
-        #    via check_input_settings so we only offer rates the device accepts.
-        if preferred_sr == 16000:
-            for rate in CLEAN_CAPTURE_RATES:
-                if rate in (preferred_sr, dev_sr_in):
-                    continue
-                try:
-                    sd.check_input_settings(
-                        device=in_dev, samplerate=rate, channels=1, dtype="float32"
-                    )
-                except Exception:  # noqa: BLE001 - rate unsupported; skip it
-                    continue
-                attempts.append(OpenAttempt(device=in_dev, samplerate=rate))
-        # 3) preferred device at its native rate (deduped)
-        if dev_sr_in != preferred_sr:
-            attempts.append(OpenAttempt(device=in_dev, samplerate=dev_sr_in))
-        # 3) system-default device at preferred rate
-        if in_dev is not None:
-            attempts.append(OpenAttempt(device=None, samplerate=preferred_sr))
-        # 4) system-default device at 16k (lowest common denominator)
-        if preferred_sr != 16000:
-            attempts.append(OpenAttempt(device=None, samplerate=16000))
+
+        def _supports(device, rate):
+            try:
+                sd.check_input_settings(
+                    device=device, samplerate=rate, channels=1, dtype="float32"
+                )
+                return True
+            except Exception:  # noqa: BLE001 - rate unsupported; skip it
+                return False
+
+        attempts = _capture_attempts(
+            in_dev,
+            preferred_sr=preferred_sr,
+            dev_sr_in=dev_sr_in,
+            pinned_sr=int(self.config.capture_samplerate or 0),
+            clean_rates=CLEAN_CAPTURE_RATES,
+            supports=_supports,
+        )
 
         def _open(device, samplerate):
             return sd.InputStream(
@@ -1080,6 +1136,20 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._play_q.empty():
                         self._speaking.clear()
                         self._playback_level = 0.0  # nothing playing -> no echo ref
+                        # Hand the output device back when asked (so a co-located
+                        # process -- e.g. the acoustic test's synthetic user -- can
+                        # open it for its turn). Drop the shared handle under the
+                        # lock FIRST so a concurrent stop_speaking() can't abort a
+                        # stream we're closing; reopened lazily on the next utterance.
+                        if self.config.release_output_when_idle and out is not None:
+                            with self._out_lock:
+                                self._out_stream = None
+                            try:
+                                out.stop()
+                                out.close()
+                            except Exception:  # noqa: BLE001 - already aborted/closed
+                                pass
+                            out = None
                         self._cb.on_speech_end()
         except Exception:
             log.exception("playback loop crashed -- the assistant has gone mute")

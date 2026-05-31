@@ -93,6 +93,14 @@ def main(argv: list[str] | None = None) -> int:
                         "dial it DOWN (e.g. --input-gain 1) to stop a loud near-field speaker from "
                         "SATURATING the open mic and garbling STT. Mirrors the --no-input-gate / "
                         "--smart-endpoint in-memory config override.")
+    p.add_argument("--barge-in", action="store_true",
+                   help="ACOUSTIC ONLY: force sherpa.barge_in_enabled=True for this run to MEASURE "
+                        "over-the-air talk-over behavior on the real mic. Default config keeps it OFF "
+                        "(no AEC -> the assistant's own TTS leaking into an open-speaker mic can "
+                        "self-interrupt). Use this to check whether the level-margin gate "
+                        "(barge_in_output_margin_db) holds on a clean near-field mic: 0 self-interrupts "
+                        "on a long answer means a real, LOUDER interrupter could barge without the "
+                        "assistant storming on its own voice.")
     p.add_argument("--out-dir", default=None, help="artifact root (default logs/live/<run-id>)")
     args = p.parse_args(argv)
 
@@ -130,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
         # stream. Have the engine release its TTS stream when idle so the device is
         # free for the synthetic user's next line (turn-taking hands it back).
         config.setdefault("sherpa", {})["release_output_when_idle"] = True
+    if args.barge_in:
+        config.setdefault("sherpa", {})["barge_in_enabled"] = True
 
     problems = _preflight(config)
     if args.check or problems:

@@ -18,8 +18,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .driver import LiveConversation
-from .report import write_grade, write_latency_report, write_summary, write_timeline
-from .scenarios import SCENARIOS, by_name
+from .report import (
+    write_grade,
+    write_latency_report,
+    write_suite_report,
+    write_summary,
+    write_timeline,
+)
+from .scenarios import SCENARIOS, by_name, resolve_suite, suite_names
 
 log = logging.getLogger("speaker.live")
 
@@ -52,7 +58,15 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="tools.live_session", description=__doc__)
     p.add_argument("--scenario", action="append", help="scenario name(s) to run (repeatable)")
     p.add_argument("--all", action="store_true", help="run every scenario")
+    p.add_argument("--suite", default=None,
+                   help="run a named suite of scenarios: " + ", ".join(suite_names())
+                        + " (e.g. --suite acoustic for the over-the-air set; "
+                          "--suite latency for the latency profile; --suite realistic)")
+    p.add_argument("--repeat", type=int, default=1,
+                   help="run each chosen scenario N times -- builds a bigger latency "
+                        "sample (the pooled SUITE distribution gets N x the turns)")
     p.add_argument("--list", action="store_true", help="list scenarios and exit")
+    p.add_argument("--list-suites", action="store_true", help="list suites and exit")
     p.add_argument("--check", action="store_true", help="preflight (models/audio) and exit")
     p.add_argument("--list-devices", action="store_true", help="print audio devices and exit")
     p.add_argument("--device", default=None, help="device profile from config.json (e.g. desktop)")
@@ -111,11 +125,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         for s in SCENARIOS:
-            print(f"  {s.name:42}  {s.capability}")
+            n_graded = sum(1 for t in s.turns if t.expect or t.forbid)
+            tag = f"[{n_graded} graded]" if n_graded else ""
+            print(f"  {s.name:42}  {s.capability}  {tag}")
+        return 0
+    if args.list_suites:
+        for name in suite_names():
+            members = [s.name for s in resolve_suite(name)]
+            print(f"  {name:10} ({len(members):2})  {', '.join(members)}")
         return 0
     if args.list_devices:
         _list_audio_devices()
         return 0
+
+    # Validate a --suite name up front (before touching config/models) so an
+    # unknown suite errors fast and identically everywhere.
+    if args.suite and args.suite not in suite_names():
+        print(f"unknown suite: {args.suite!r}. Use --list-suites. "
+              f"Known: {', '.join(suite_names())}")
+        return 2
 
     from core.config import _apply_device_profile, _load_config
 
@@ -153,7 +181,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     # Resolve which scenarios to run.
-    if args.all:
+    if args.suite:
+        try:
+            chosen = resolve_suite(args.suite)
+        except KeyError:
+            print(f"unknown suite: {args.suite!r}. Use --list-suites. "
+                  f"Known: {', '.join(suite_names())}")
+            return 2
+        if not chosen:
+            print(f"suite {args.suite!r} resolved to no scenarios.")
+            return 2
+    elif args.all:
         chosen = list(SCENARIOS)
     elif args.scenario:
         try:
@@ -162,8 +200,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"unknown scenario: {exc}. Use --list.")
             return 2
     else:
-        print("nothing to run: pass --scenario <name>, --all, --list, or --check.")
+        print("nothing to run: pass --scenario <name>, --suite <name>, --all, --list, or --check.")
         return 2
+
+    repeat = max(1, args.repeat)
 
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     root = Path(args.out_dir) if args.out_dir else Path("logs/live") / run_id
@@ -175,9 +215,12 @@ def main(argv: list[str] | None = None) -> int:
           f"user_volume={_uvol} (--user-volume; acoustic only)\n")
 
     rc = 0
-    for scenario in chosen:
-        out_dir = root / scenario.name
-        print(f"\n--- scenario: {scenario.name} ---")
+    runs: list[dict] = []  # collected for the consolidated suite report
+    plan = [(s, r) for s in chosen for r in range(repeat)]
+    for scenario, rep in plan:
+        out_dir = root / scenario.name if repeat == 1 else root / scenario.name / f"rep{rep + 1:02d}"
+        label = scenario.name if repeat == 1 else f"{scenario.name} (rep {rep + 1}/{repeat})"
+        print(f"\n--- scenario: {label} ---")
         convo = None
         try:
             convo = LiveConversation(
@@ -199,23 +242,35 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             print("interrupted.")
             rc = 130
+            if convo is not None:
+                convo.stop()
             break
         except Exception as exc:  # noqa: BLE001
             log.exception("scenario %s failed", scenario.name)
             print(f"  FAILED: {exc}")
             rc = 1
+            if convo is not None:
+                convo.stop()
             continue
-        finally:
+        else:
             if convo is not None:
                 convo.stop()
         capture = getattr(convo, "capture_verdict", None)
         write_timeline(events, out_dir)
         write_latency_report(events, out_dir)
-        grade = write_grade(events, out_dir, capture=capture)
+        grade = write_grade(events, out_dir, capture=capture, scenario=scenario)
         write_summary(scenario, events, out_dir, voice=convo.user.voice, capture=capture)
+        runs.append({"scenario": scenario, "events": events, "capture": capture})
         fd = (capture or {}).get("full_duplex", "n/a")
         acc = grade.get("aggregate", {}).get("stt_score_median")
         print(f"  full_duplex: {fd}  |  over-the-air STT accuracy (median): {acc}")
+        r = grade.get("response", {}).get("aggregate", {})
+        if r.get("n"):
+            print(
+                f"  response quality: verdict {r.get('verdict')}, median "
+                f"{r.get('response_score_median')}, ok {r.get('n_ok')}/{r.get('n')}, "
+                f"forbidden hits {r.get('n_forbidden_hits')}"
+            )
         b = grade.get("barge_in", {})
         if b:
             rate = b.get("stops_when_barged_rate")
@@ -229,6 +284,23 @@ def main(argv: list[str] | None = None) -> int:
             )
         print(f"  -> {out_dir}/summary.md  (timeline.json, latency.json, grade.json, "
               f"user/, assistant/, heard_over_air.wav)")
+
+    # Consolidated suite report whenever more than one run was produced (a suite,
+    # --all, repeated scenarios, or several --scenario flags): one pooled latency
+    # distribution + STT + response dashboard across everything that ran.
+    if len(runs) > 1:
+        suite = write_suite_report(runs, root)
+        fa = suite.get("latency", {}).get("first_audio_ms", {})
+        resp = suite.get("response", {})
+        print(f"\n=== SUITE ({suite.get('n_scenarios')} scenarios) ===")
+        if fa:
+            print(f"  first_audio: p50 {fa.get('p50')} | p90 {fa.get('p90')} | "
+                  f"p99 {fa.get('p99')} ms  (n={fa.get('n')} turns)")
+        if resp.get("n"):
+            print(f"  response quality: verdict {resp.get('verdict')}, median "
+                  f"{resp.get('response_score_median')}, ok {resp.get('n_ok')}/{resp.get('n')}, "
+                  f"forbidden hits {resp.get('n_forbidden_hits')}")
+        print(f"  -> {root}/SUITE.md  (SUITE.json)")
 
     print(f"\nDone. Artifacts under {root}. Read each scenario's summary.md to grade it.")
     return rc

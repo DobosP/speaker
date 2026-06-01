@@ -85,6 +85,29 @@ def test_policy_shortens_on_confident_complete():
     assert p.decide(acoustic_endpoint=False, completion_score=0.9, silence_sec=0.3) is False
 
 
+def test_policy_high_confidence_floor_lets_complete_turn_commit_earlier():
+    # Adaptive confidence-tiered floor: a HIGH-confidence completion (>= 0.75, the
+    # lexical "normal ending word" bin) commits at the LOWER 0.55 floor; a medium-
+    # confidence complete (0.6 <= score < 0.75) keeps the full 0.7 floor.
+    p = _policy(min_silence_sec=0.7, complete_threshold=0.6,
+                high_confidence_floor=0.55, high_confidence_score=0.75)
+    # 0.75 commits at the lower 0.55 floor...
+    assert p.decide(acoustic_endpoint=False, completion_score=0.75, silence_sec=0.55) is True
+    # ...but not below it (still guards the decoder lookahead).
+    assert p.decide(acoustic_endpoint=False, completion_score=0.75, silence_sec=0.54) is False
+    # A medium-confidence complete keeps the 0.7 floor (no early commit at 0.55).
+    assert p.decide(acoustic_endpoint=False, completion_score=0.65, silence_sec=0.55) is False
+    assert p.decide(acoustic_endpoint=False, completion_score=0.65, silence_sec=0.7) is True
+
+
+def test_policy_high_confidence_floor_zero_is_uniform_min_silence():
+    # Disabled (0.0, the default): even a 0.75 turn must wait the full min_silence
+    # floor -- byte-identical to the pre-feature behaviour.
+    p = _policy(min_silence_sec=0.7, high_confidence_floor=0.0)
+    assert p.decide(acoustic_endpoint=False, completion_score=0.75, silence_sec=0.55) is False
+    assert p.decide(acoustic_endpoint=False, completion_score=0.75, silence_sec=0.7) is True
+
+
 def test_policy_extends_bounded_on_mid_phrase():
     p = _policy(max_silence_sec=1.6)
     # acoustic wants to end, but the partial is mid-phrase + we haven't waited long

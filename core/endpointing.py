@@ -147,6 +147,19 @@ class EndpointConfig:
     max_silence_sec: float = 1.6
     complete_threshold: float = 0.6
     incomplete_threshold: float = 0.3
+    # Adaptive confidence-tiered SHORTEN floor. When > 0 (and below
+    # ``min_silence_sec``), a HIGH-confidence completion -- ``completion_score >=
+    # high_confidence_score``, i.e. the lexical detector's 0.75 bin: a normal
+    # ending word, never a conjunction/article/filler -- commits at this LOWER
+    # trailing silence instead of ``min_silence_sec``, reclaiming latency on the
+    # common, well-formed-turn case. A medium-confidence complete (the short-
+    # utterance 0.4 bin, or a custom score in [complete_threshold, high)) keeps the
+    # full ``min_silence_sec`` floor. 0.0 (default) -> uniform ``min_silence_sec``,
+    # byte-identical to before. The floor MUST still exceed the decoder lookahead
+    # (or the early commit clips the last word) AND a typical intra-sentence comma
+    # pause (or a run-on splits); validate on device before lowering.
+    high_confidence_floor: float = 0.0
+    high_confidence_score: float = 0.75
 
     @classmethod
     def from_sherpa(cls, c: object) -> "EndpointConfig":
@@ -156,6 +169,8 @@ class EndpointConfig:
             max_silence_sec=float(getattr(c, "endpoint_max_silence_sec", 1.6)),
             complete_threshold=float(getattr(c, "endpoint_complete_threshold", 0.6)),
             incomplete_threshold=float(getattr(c, "endpoint_incomplete_threshold", 0.3)),
+            high_confidence_floor=float(getattr(c, "endpoint_high_confidence_floor", 0.0)),
+            high_confidence_score=float(getattr(c, "endpoint_high_confidence_score", 0.75)),
         )
 
 
@@ -169,8 +184,14 @@ class AdaptiveEndpointPolicy:
     def decide(self, *, acoustic_endpoint: bool, completion_score: float, silence_sec: float) -> bool:
         c = self._c
         # SHORTEN: the turn clearly reads as complete and we've had at least the
-        # minimum settle -> commit now, ahead of the acoustic timer.
-        if completion_score >= c.complete_threshold and silence_sec >= c.min_silence_sec:
+        # minimum settle -> commit now, ahead of the acoustic timer. A HIGH-
+        # confidence completion may use a LOWER floor when configured (still above
+        # the decoder lookahead + comma pause) -- the adaptive latency win on the
+        # common case; 0.0 disables it (uniform min_silence_sec).
+        floor = c.min_silence_sec
+        if c.high_confidence_floor > 0.0 and completion_score >= c.high_confidence_score:
+            floor = c.high_confidence_floor
+        if completion_score >= c.complete_threshold and silence_sec >= floor:
             return True
         # EXTEND (bounded): the acoustic timer wants to commit, but the partial
         # ends mid-phrase and we haven't waited too long -> hold for more speech.

@@ -83,6 +83,15 @@ SMART_TURN_MODEL_URL = (
     "smart-turn-v3.2-cpu.onnx"
 )
 
+# Optional OFFLINE second-pass ASR for the FINAL transcript (SenseVoice). A
+# tar.bz2 GitHub release asset; we extract model.int8.onnx + tokens.txt. Robust on
+# run-on/casual speech with punctuation+casing+ITN; ~150ms/utterance. Override with
+# --sense-voice-url or the SENSE_VOICE_MODEL_URL env var.
+SENSE_VOICE_MODEL_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+    "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
+)
+
 
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
@@ -260,6 +269,21 @@ def main(argv: list[str] | None = None) -> int:
         "v3, ~8.7 MB) and wire endpoint_prosody_model in config; off by default. "
         "After fetching, set sherpa.endpoint_detector=prosody to activate it.",
     )
+    parser.add_argument(
+        "--sense-voice-url",
+        dest="sense_voice_url",
+        default=os.environ.get("SENSE_VOICE_MODEL_URL", SENSE_VOICE_MODEL_URL),
+        help="URL of the optional SenseVoice second-pass ASR tar.bz2 (override or "
+        "set SENSE_VOICE_MODEL_URL)",
+    )
+    parser.add_argument(
+        "--sense-voice",
+        dest="sense_voice",
+        action="store_true",
+        help="also download the optional SenseVoice offline second-pass ASR (~230 MB) "
+        "and wire asr_final_backend=sense_voice in config; off by default. Robust on "
+        "run-on/casual speech (the streaming zipformer garbles it).",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -370,6 +394,26 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # SenseVoice offline second-pass ASR (optional, opt-in). tar.bz2 archive ->
+    # extract model.int8.onnx + tokens.txt. Same non-fatal contract: a failed
+    # fetch leaves the final on the streaming model. Sets the backend after wiring
+    # (it's a mode string, not a path).
+    want_sense_voice = False
+    if args.sense_voice:
+        sv_dest = os.path.join(args.dest, "sense_voice")
+        print(f"[models] fetching SenseVoice second-pass ASR: {args.sense_voice_url} -> {sv_dest}")
+        try:
+            archive = fetch_speaker_model(sv_dest, args.sense_voice_url, force=args.force)
+            resolved["asr_final_model"] = extract_member(archive, "model.int8.onnx", sv_dest)
+            resolved["asr_final_tokens"] = extract_member(archive, "tokens.txt", sv_dest)
+            want_sense_voice = True
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] SenseVoice not fetched ({exc}); continuing without it. "
+                "The final transcript stays on the streaming model until you re-run.",
+                file=sys.stderr,
+            )
+
     # Write the absolute model paths into the machine-local overrides file
     # (gitignored, merged over config.json at load). Start from whatever is
     # already there so other local overrides survive.
@@ -378,6 +422,10 @@ def main(argv: list[str] | None = None) -> int:
         with open(args.config, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
     wire_sherpa_paths(cfg, resolved)
+    if want_sense_voice:
+        # backend is a mode string, not a path -> set it directly (wire_sherpa_paths
+        # only handles paths). The model/tokens paths were wired above.
+        cfg.setdefault("sherpa", {})["asr_final_backend"] = "sense_voice"
     with open(args.config, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
 

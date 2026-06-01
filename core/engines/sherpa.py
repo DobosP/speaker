@@ -28,6 +28,7 @@ from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._denoiser import build_denoiser
 from ._sherpa_models import (
     build_keyword_spotter,
+    build_final_recognizer,
     build_punctuation,
     build_recognizer,
     build_tts,
@@ -114,6 +115,21 @@ class SherpaConfig:
     asr_encoder: str = ""
     asr_decoder: str = ""
     asr_joiner: str = ""
+    # OPTIONAL second-pass (offline) recognizer for the FINAL transcript -- the
+    # text that reaches the LLM. The streaming transducer above stays for the
+    # low-latency partials + endpoint; when this is set, the endpointed utterance
+    # is RE-transcribed by a stronger offline model (sees the whole utterance ->
+    # robust on run-on/casual speech; punctuation+casing+ITN built in). Empty
+    # backend (default) = streaming final only (byte-identical). ~150ms/utterance.
+    asr_final_backend: str = ""          # "" | "sense_voice" | "whisper"
+    asr_final_model: str = ""            # SenseVoice model.onnx, or Whisper encoder
+    asr_final_tokens: str = ""
+    asr_final_decoder: str = ""          # Whisper only
+    asr_final_use_itn: bool = True       # SenseVoice inverse-text-normalization
+    asr_final_language: str = ""         # SenseVoice language hint ("en", "" = auto)
+    # Skip the second pass on utterances shorter than this (a tiny "yes"/"stop"
+    # the streaming model already nails) to save the offline-decode latency.
+    asr_final_min_sec: float = 0.0
     # ASR decoding method: "modified_beam_search" (more accurate, the default)
     # or "greedy_search" (slightly faster, lower accuracy). Beam search also
     # enables contextual biasing via ``asr_hotwords``.
@@ -363,6 +379,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._turn_detector is not None and getattr(self._turn_detector, "needs_audio", False)
         )
         self._recognizer = None
+        self._final_recognizer = None
         self._vad = None
         self._tts = None
         self._kws = None
@@ -445,6 +462,10 @@ class SherpaOnnxEngine(AudioEngine):
     def _build(self) -> None:
         c = self.config
         self._recognizer = build_recognizer(c)
+        # Optional offline second-pass recognizer for the final transcript.
+        self._final_recognizer = build_final_recognizer(c)
+        if self._final_recognizer is not None:
+            log.info("second-pass final ASR: %s (%s)", c.asr_final_backend, c.asr_final_model)
         self._vad = build_vad(c)
         self._tts = build_tts(c)
         # Speech denoiser (None unless denoise_enabled AND a model path is set).
@@ -778,6 +799,29 @@ class SherpaOnnxEngine(AudioEngine):
             result = restore_casing(result, force=self._punct is not None)
         return result
 
+    def _final_transcribe(self, seg, raw_final: str) -> str:
+        """The FINAL transcript for ``seg``. When a second-pass offline recognizer
+        is configured, RE-transcribe the endpointed utterance with it (robust on
+        run-on speech; punctuation+casing+ITN already applied -> no _postprocess).
+        Otherwise (or on any failure / too-short utterance / empty result) fall
+        back to the streaming final + the usual post-processing."""
+        rec = self._final_recognizer
+        if rec is not None and seg is not None:
+            import numpy as np
+
+            n = int(np.asarray(seg).size)
+            if n >= int(self.config.asr_final_min_sec * self.config.sample_rate):
+                try:
+                    st = rec.create_stream()
+                    st.accept_waveform(self.config.sample_rate, np.asarray(seg, dtype="float32"))
+                    rec.decode_stream(st)
+                    text = (st.result.text or "").strip()
+                    if text:
+                        return text
+                except Exception:  # noqa: BLE001 - fall back to the streaming final
+                    log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
+        return self._postprocess_final(raw_final)
+
     @staticmethod
     def _build_turn_detector(config):
         """Build the configured turn-completion detector. ``prosody`` loads the
@@ -1003,7 +1047,10 @@ class SherpaOnnxEngine(AudioEngine):
                         utterance, utterance_len = [], 0
                         if raw_final.strip():
                             finals += 1
-                            final_text = self._postprocess_final(raw_final)
+                            # Second-pass offline re-transcription (when configured)
+                            # turns the streaming final into a robust, punctuated one;
+                            # else this is the streaming final + post-processing.
+                            final_text = self._final_transcribe(seg, raw_final)
                             log.info("asr final: %r (raw %r)", final_text, raw_final)
                             if self._should_act_on_final(seg):
                                 self._cb.on_metric(SPEECH_END, at=speech_end_ts)

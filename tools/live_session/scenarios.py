@@ -542,6 +542,50 @@ SCENARIOS: tuple[Scenario, ...] = (
             'The spelling turn does not spell out M-A-R-S letter by letter.',
         ),
     ),
+    Scenario(
+        name="capability_latency_profile",
+        capability="Per-capability / per-tier latency (fast vs main vs research)",
+        goal="Measure first-audio latency across the routing tiers on the REAL two-model setup (fast=gemma3:4b, main=gemma3:12b): short factual -> FAST; reasoning/compare/long-form -> MAIN; research -> MAIN + ReAct planner. Shows where each capability's latency lands and which tier dominates the tail.",
+        turns=(
+            Turn("What's the capital of Japan?", "wait_for_response",
+                 "FAST tier: 5-word literal factual, no complexity/generation markers -> router score 0 < 0.3 -> fast (gemma3:4b). Latency floor.",
+                 expect=("tokyo",)),
+            Turn("What is seven times eight?", "pause:1",
+                 "FAST tier: trivial arithmetic, no markers -> fast. Warm floor.",
+                 expect=("56|fifty-six|fifty six",)),
+            Turn("Name the largest ocean on Earth.", "pause:1",
+                 "FAST tier: short factual, no markers -> fast.",
+                 expect=("pacific",)),
+            Turn("Why do leaves change color in the autumn? Explain the role of chlorophyll.", "wait_for_response",
+                 "MAIN tier: 'why' + 'explain' (2 complexity markers, +0.36) + length -> score > 0.3 -> main (gemma3:12b). Reasoning latency.",
+                 expect=("chlorophyll",)),
+            Turn("Compare the planets Mars and Earth in detail.", "pause:1",
+                 "MAIN tier: 'compare' + 'in detail' (2 markers, +0.36) -> main. Comparison/reasoning latency.",
+                 expect=("mars", "earth")),
+            Turn("Tell me a short story about a lighthouse keeper.", "pause:1",
+                 "MAIN tier + LONG-FORM: 'tell me a' + 'story' generation markers (+0.5) -> main, long TTS. The big-answer latency (first-audio + how long it speaks).",
+                 expect=("lighthouse|keeper",)),
+            Turn("Research the three main causes of the First World War.", "wait_for_response",
+                 "RESEARCH tier: 'research' intent -> ReAct planner + main-model synthesis (corpus fallback, no SearXNG running). The research-path latency cost (planner + 12b).",
+                 expect=()),
+            Turn("Summarize the key benefits of regular exercise in detail.", "pause:1",
+                 "MAIN/RESEARCH tier: 'summarize' + 'in detail' markers -> main-model synthesis. Synthesis latency.",
+                 expect=("exercise|health|heart|muscle|fitness",)),
+        ),
+        validates="core/routing.py HeuristicRouter tier selection (threshold 0.3) + the two-model split (fast=4b, main=12b) + the research/ReAct path. Run with --model gemma3:12b --fast-model gemma3:4b to exercise BOTH tiers (forcing both to 4b collapses the comparison).",
+        expected_behavior="Fast turns answer in ~1.2-1.4s first-audio (4b); main/reasoning turns are slower (12b TTFT + load); the research turn is the slowest (planner + 12b synthesis). Every turn answers correctly or reasonably; per-tier latency is separable in latency.json + the logged tier ('answering on fast/main tier').",
+        pass_signals=(
+            "Fast turns (1-3) route to the fast tier and answer correctly (Tokyo / 56 / Pacific).",
+            "Reasoning turns (4-6) route to the main tier; the story turn produces a multi-sentence long answer.",
+            "The research turn (7) routes to main + the planner and answers without a wedge or timeout.",
+            "Per-turn first_audio_latency populated for every turn; the tiers are separable.",
+        ),
+        failure_modes=(
+            "A reasoning/long-form turn answers on the FAST tier (router under-escalated) -> the latency comparison is meaningless.",
+            "The research turn wedges or hits the timeout apology instead of synthesizing.",
+            "main-model (12b) turns error because the model is not loaded / OOM.",
+        ),
+    ),
 )
 
 
@@ -582,7 +626,11 @@ _NAMED_SUITES: dict[str, tuple[str, ...]] = {
     ),
     "latency": (
         "latency_profile_mixed",
+        "capability_latency_profile",
         "baseline_latency_single_turn_qa",
+    ),
+    "capability": (
+        "capability_latency_profile",
     ),
     "realistic": (
         "realistic_morning_planning",

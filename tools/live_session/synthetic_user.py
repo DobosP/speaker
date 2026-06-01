@@ -27,6 +27,7 @@ class SyntheticUser:
         speed: Optional[float] = None,
         output_device=None,
         volume: float = 1.0,
+        noise_snr_db: Optional[float] = None,
     ) -> None:
         # Build a second TTS instance for the user voice from the same sherpa
         # config the assistant uses (so the model is already on disk). build_tts
@@ -61,10 +62,36 @@ class SyntheticUser:
         except (TypeError, ValueError):
             self._volume = 1.0
         self._volume = max(0.0, min(1.0, self._volume))
+        # Optional broadband noise overlaid on the PLAYED buffer at this SNR (dB)
+        # relative to the spoken line -- the controlled-noise half of the denoise
+        # A/B (run denoise off vs on at the same SNR). None == clean (no noise).
+        # Only the played buffer is corrupted; the saved/returned clip stays clean.
+        try:
+            self._noise_snr = float(noise_snr_db) if noise_snr_db is not None else None
+        except (TypeError, ValueError):
+            self._noise_snr = None
 
     @property
     def voice(self) -> dict:
-        return {"speaker_id": self._sid, "speed": self._speed, "volume": self._volume}
+        return {
+            "speaker_id": self._sid, "speed": self._speed, "volume": self._volume,
+            "noise_snr_db": self._noise_snr,
+        }
+
+    def _add_noise(self, play):
+        """Overlay deterministic white noise on the play buffer at ``_noise_snr`` dB
+        SNR relative to the line's own RMS. Deterministic (fixed seed) so an A/B's
+        off/on runs see the SAME noise. Returns the buffer unchanged when no SNR set."""
+        import numpy as np
+
+        if self._noise_snr is None or play.size == 0:
+            return play
+        sig_rms = float(np.sqrt(np.mean(play.astype("float64") ** 2))) or 1e-6
+        target_noise_rms = sig_rms / (10.0 ** (self._noise_snr / 20.0))
+        rng = np.random.default_rng(20260601)
+        noise = rng.standard_normal(play.shape[0]).astype("float32")
+        noise *= target_noise_rms / (float(np.sqrt(np.mean(noise ** 2))) or 1e-6)
+        return np.clip(play + noise, -1.0, 1.0).astype("float32")
 
     def synthesize(self, text: str):
         """Synthesize ``text`` to (samples, sample_rate) without playing it."""
@@ -108,6 +135,8 @@ class SyntheticUser:
                 # reference clip independent of the acoustic level used.
                 if self._volume != 1.0:
                     play = (play * self._volume).astype("float32")
+                # Overlay controlled noise (denoise A/B) on the played buffer only.
+                play = self._add_noise(play)
                 # The assistant's engine may still be releasing the shared output
                 # device (acoustic mode hands it back and forth). A transient
                 # "Device unavailable" is not a bad rate -- retry the SAME rate a

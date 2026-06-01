@@ -334,13 +334,34 @@ def test_watchdog_no_storm_no_hook():
 # gating off / unenrolled -> level/margin gate (headset / high-margin escape).
 
 
-def test_enrolled_gating_on_rejects_loud_nonuser_echo():
+def test_enrolled_gating_loud_above_playback_fires_via_loudness_fallback():
+    # The voice embedder can be UNRELIABLE on some mics/voices, so identity is a
+    # POSITIVE only: when it doesn't confirm, a barge LOUDER than playback (by the
+    # margin) still fires -- the user talking OVER the assistant. An echo AT the
+    # playback level does not clear the margin.
     eng = _engine(barge_in_output_margin_db=6.0)  # speaker_gate_input default True
-    gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)
+    gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)  # identity: "not user"
     gate.enroll_embedding(USER)
     eng._speaker_gate = gate
     eng._playback_level = 0.1
-    assert eng._looks_like_user([0.5, 0.5, 0.5]) is False  # loud, but not the user
+    assert eng._looks_like_user([0.5, 0.5, 0.5]) is True   # 14 dB over playback -> fires
+    eng._playback_level = 0.5
+    assert eng._looks_like_user([0.5, 0.5]) is False        # echo AT playback level -> no
+
+
+def test_enrolled_gating_no_level_margin_is_identity_only():
+    # With NO level margin (0), identity is the only signal: a non-user is dropped,
+    # the enrolled user still fires (the original strict behaviour, preserved).
+    eng = _engine(barge_in_output_margin_db=0.0)
+    eng._playback_level = 0.1
+    other = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)
+    other.enroll_embedding(USER)
+    eng._speaker_gate = other
+    assert eng._looks_like_user([0.5, 0.5, 0.5]) is False
+    me = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: USER)
+    me.enroll_embedding(USER)
+    eng._speaker_gate = me
+    assert eng._looks_like_user([0.5, 0.5, 0.5]) is True
 
 
 def test_gating_off_falls_back_to_margin_gate():

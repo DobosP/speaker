@@ -1351,15 +1351,27 @@ class SherpaOnnxEngine(AudioEngine):
         # - Unenrolled OR gating off: best-effort output-margin level gate. A real
         #   user stands a margin above playback; residual echo does not. With
         #   nothing playing it fails open; margin_db <= 0 disables it.
+        # IDENTITY OR LOUDNESS. Identity is a strong POSITIVE (the user's enrolled
+        # voice matches; the TTS does not), but the embedder can be UNRELIABLE on
+        # some mics/voices (measured 2026-06-01: it scored the user's own voice
+        # ~0.15 across a run). So when identity does not confirm, fall back to the
+        # LOUDNESS signal: a barge LOUDER than the assistant's own playback by
+        # ``barge_in_output_margin_db`` is the user talking OVER it (the TTS leaking
+        # into the mic sits AT the playback level, not above). Raise the margin if
+        # an open speaker's TTS leak self-interrupts; the one-per-run latch caps it.
         gate = self._speaker_gate
-        if gate is not None and gate.is_enrolled and self.config.speaker_gate_input:
-            return gate.accept(samples, self.config.sample_rate)
-        margin_db = self.config.barge_in_output_margin_db
-        if margin_db <= 0.0:
-            return True
-        return passes_output_margin(
-            rms(samples), self._playback_level, margin_db=margin_db
+        identity_on = (
+            gate is not None and gate.is_enrolled and self.config.speaker_gate_input
         )
+        if identity_on and gate.accept(samples, self.config.sample_rate):
+            return True
+        margin_db = self.config.barge_in_output_margin_db
+        if margin_db > 0.0:
+            return passes_output_margin(
+                rms(samples), self._playback_level, margin_db=margin_db
+            )
+        # No level margin configured: identity-only when on; else fail open.
+        return not identity_on
 
     def _note_playback_level(self, samples) -> None:
         """Update the EWMA of the level we're currently playing.

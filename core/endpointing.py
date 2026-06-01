@@ -128,6 +128,88 @@ class ScriptedTurnCompletionDetector:
         return self._mapping.get(text, self._default)
 
 
+def match_onnx_input_shape(feats, expected_shape):
+    """Adapt a ``(1, n_mels, frames)`` feature tensor to the ONNX graph's declared
+    input layout. The Whisper extractor emits mels-then-frames; some Smart Turn
+    exports declare ``(1, frames, n_mels)`` instead, so transpose the last two
+    axes when the model pins a concrete final dim that matches our mel axis.
+    Pure + numpy-free in signature (works on any object with ``.ndim``/``.shape``/
+    ``.transpose``) so it is unit-testable without a model. Dynamic axes (non-int,
+    e.g. a symbolic batch like ``'s6'``) are left untouched."""
+    if getattr(feats, "ndim", None) != 3 or len(expected_shape) != 3:
+        return feats
+    last = expected_shape[-1]
+    if isinstance(last, int) and feats.shape[-1] != last and feats.shape[1] == last:
+        return feats.transpose(0, 2, 1)
+    return feats
+
+
+class SmartTurnCompletionDetector:
+    """Prosodic turn-completion via the Smart Turn v3 ONNX model (pipecat-ai).
+
+    Audio-only (~8M params, ~8.7 MB ONNX, ~12 ms CPU): 16 kHz mono, up to 8 s of
+    the most-recent utterance audio, a Whisper-tiny log-mel front-end + a sigmoid
+    head returning P(the turn is complete). Heavier deps (``onnxruntime`` + the
+    Whisper feature extractor) are imported LAZILY in ``__init__`` so merely
+    importing this module costs the default/phone build nothing -- the detector is
+    only constructed when ``sherpa.smart_turn_enabled`` + a model path are set
+    (see ``core/engines/sherpa.py``). A load failure raises here (the engine
+    catches it and falls back to the lexical detector); a per-call inference error
+    is caught by the engine's ``_decide_endpoint`` try/except -> the acoustic
+    endpoint, so a bad block can never break capture.
+
+    Preprocessing follows pipecat-ai/smart-turn-v3 ``inference.py`` exactly
+    (the canonical extractor, not a hand-rolled mel): ``WhisperFeatureExtractor(
+    chunk_length=8)``, pad to ``8*16000`` samples, ``do_normalize=True``; ONNX
+    input ``input_features``; ``output[0][0]`` is the sigmoid probability. The
+    extractor's native ``(1, n_mels, frames)`` tensor is adapted to whatever the
+    loaded ONNX graph declares (some exports want ``(1, frames, n_mels)``)."""
+
+    needs_audio = True
+    SAMPLE_RATE = 16000
+    MAX_SAMPLES = 8 * 16000  # Smart Turn judges <=8s of the turn's tail
+
+    def __init__(self, model_path: str, *, providers: Optional[Sequence[str]] = None) -> None:
+        import numpy as np  # local: keep the module import numpy-free for phone
+        import onnxruntime as ort
+        from transformers import WhisperFeatureExtractor
+
+        self._np = np
+        self._extractor = WhisperFeatureExtractor(chunk_length=8)
+        self._session = ort.InferenceSession(
+            model_path, providers=list(providers) if providers else ["CPUExecutionProvider"]
+        )
+        self._input_name = self._session.get_inputs()[0].name
+        # Declared dims (symbolic strings/None for dynamic axes) so we can adapt
+        # the extractor output to a (1, frames, n_mels) export if one needs it.
+        self._input_shape = tuple(self._session.get_inputs()[0].shape)
+
+    def completion_score(
+        self, text: str, *, samples: Optional[Sequence[float]] = None, sample_rate: int = 16000
+    ) -> float:
+        np = self._np
+        if samples is None:
+            return 0.5  # no audio assembled -> neutral; policy uses the acoustic decision
+        audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if audio.shape[0] == 0:
+            return 0.5
+        if audio.shape[0] > self.MAX_SAMPLES:
+            audio = audio[-self.MAX_SAMPLES :]
+        feats = self._extractor(
+            audio,
+            sampling_rate=self.SAMPLE_RATE,
+            return_tensors="np",
+            padding="max_length",
+            max_length=self.MAX_SAMPLES,
+            truncation=True,
+            do_normalize=True,
+        )["input_features"]
+        feats = np.asarray(feats, dtype=np.float32)
+        feats = match_onnx_input_shape(feats, self._input_shape)
+        out = self._session.run(None, {self._input_name: feats})
+        return float(np.asarray(out[0]).reshape(-1)[0])
+
+
 @dataclass(frozen=True)
 class EndpointConfig:
     """Adaptive-endpoint thresholds (the ``sherpa`` endpoint_* config fields).

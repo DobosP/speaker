@@ -103,6 +103,35 @@ def test_decision_is_invariant_to_uniform_volume_scaling():
     assert max(fracs) - min(fracs) < 1e-3, f"not scale-invariant: {fracs}"
 
 
+def test_self_calibrates_margin_to_a_noisy_reverberant_room():
+    """In a noisy/reverberant room the echo's own incoherence fluctuates MORE
+    (variable per frame), so a fixed margin would false-fire on the high frames.
+    The detector learns that spread (an EWMA control chart) and widens its trigger
+    to absorb it -- echo-only is suppressed in steady state, the effective margin
+    grows well above the floor, the mean/spread are NOT per-room hand-tuned -- yet
+    a genuine user still clears it. This is the 'parameters dynamic at runtime'
+    requirement, made reliable."""
+    rng = np.random.default_rng(11)
+    ref = _make_reference(0.8, seed=10)
+    floor = 0.08
+    det = _fresh(margin_delta=floor)
+    _push(det, ref)
+    fired = []
+    for _ in range(50):
+        # Variable reverb/noise level each frame: the model can't fully explain it,
+        # so the incoherent fraction fluctuates -- exactly what the chart must learn.
+        amp = 0.05 + 0.25 * rng.random()
+        noisy = _echo_block(ref, gain=0.6) + amp * rng.standard_normal(BLOCK).astype("float32")
+        fired.append(det.decide(noisy))
+    # Steady state: once the spread is learned, echo-only no longer self-interrupts.
+    assert not any(fired[-20:]), "noisy echo still self-interrupting after adaptation"
+    # It auto-widened the trigger well beyond the configured floor...
+    assert det.last_effective_margin > floor * 1.5
+    # ...yet a genuine user (a large uncorrelated burst) still clears the wider bar.
+    user_mix = _echo_block(ref, gain=0.6) + 0.6 * _user(seed=42)
+    assert det.decide(user_mix) is True
+
+
 def test_estimates_the_echo_delay():
     ref = _make_reference(0.8, seed=4)
     det = _fresh()

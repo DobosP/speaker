@@ -61,11 +61,18 @@ echo baseline `B`.
 - **Zero setup.** The reference is the assistant's *own output*, which the engine
   already produces — no enrollment, no voiceprint, no per-user data. The only
   user input is the language tag (which ASR/TTS already require).
-- **Runtime-dynamic.** The echo **delay** is estimated continuously by
-  cross-correlation (median-tracked over recent echo-only frames); the echo
-  **baseline** `B` is learned online by an asymmetric EWMA on echo-only frames
-  (it tracks the room's reverb/noise floor). Nothing is hand-tuned per
-  environment except the one sensitivity knob below.
+- **Runtime-dynamic — including the trigger margin.** The echo **delay** is
+  estimated continuously by cross-correlation (median-tracked over recent
+  echo-only frames). The detector runs an **EWMA control chart** on the
+  echo-only incoherent fraction: it learns the room's **mean** `μ` *and* the
+  **spread** `σ` of its echo incoherence, and fires only when a frame clears
+  `μ + max(floor, k·σ)` (k = 3). So the margin **self-calibrates to the room** —
+  it auto-widens in a reverberant/noisy room and tightens in a clean one, with
+  **no per-environment tuning**. The configured `coherence_margin_delta` is only
+  a floor. Variance is accumulated on *upward* excursions only, so neither the
+  initial settling transient nor a sustained barge can inflate it. This is
+  literally the brief's "rest of the parameters set up dynamically at runtime
+  based on the environment, but reliable."
 - **Reliable / never worse than today.** Coherence is the *primary* gate but is
   layered on the existing VAD + 0.2 s min-speech + one-barge-per-run latch +
   suppress window. When it **abstains** (no reference yet at session start, or a
@@ -89,23 +96,25 @@ echo baseline `B`.
 
 ## Calibrating on real hardware
 
-The one sensitivity knob is **`coherence_margin_delta`** (how far above the
-learned echo floor counts as user voice). Lower = more sensitive (fires on a
-quieter barge, risks reverb false-fire); higher = stricter.
+The margin **self-calibrates** — in most rooms you change nothing.
+`coherence_margin_delta` is only a *floor*; the detector learns the actual margin
+from the room.
 
-1. **Measure the echo floor** (assistant talks, you stay silent):
+1. **Watch it calibrate** (assistant talks, you stay silent):
    ```
    python -m tools.echo_probe --sentences 4
    ```
-   In the `coherence` block: `coherence_fired_on_own_tts` should be **0** and
-   `headroom_p95` comfortably **positive**. If it fired / headroom is negative,
-   raise `coherence_margin_delta`.
+   In the `coherence` block: `coherence_fired_on_own_tts` should be **0**,
+   `headroom_p95` **positive**, and `self_calibrated_margin` shows what the room
+   actually got (`margin_widened_by_room: true` in a reverberant/noisy room). No
+   action needed if it fired 0 times.
 2. **Test a real barge** — talk over a long answer:
    ```
    python -m core --engine sherpa     # ask "tell me a long story", then talk over it
    ```
-   Doesn't stop → lower `coherence_margin_delta`. Cuts itself off while you're
-   silent → raise it.
+   Only if needed: a real barge missed in a *clean* room → lower the floor
+   `coherence_margin_delta`; the assistant self-interrupts faster than `σ` adapts
+   → raise the floor.
 
 ## Honest limits (what this is and is not)
 

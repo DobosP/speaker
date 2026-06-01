@@ -77,3 +77,12 @@ def test_embed_returns_raw_vector_without_enrolling():
     gate = SpeakerGate(threshold=0.5, embed_fn=lambda samples, sr: USER)
     assert list(gate.embed([0.1, 0.2], 16000)) == USER
     assert not gate.is_enrolled
+
+
+def test_loudness_admits_logic():
+    from core.engines.speaker_gate import loudness_admits
+    assert loudness_admits(0.1, 0.01, margin_db=0) is True       # disabled -> abstain True
+    assert loudness_admits(0.1, 0.0, margin_db=10) is True        # no floor yet -> abstain True
+    assert loudness_admits(0.1, 0.01, margin_db=10) is True       # 20 dB over >= 10 -> admit
+    assert loudness_admits(0.012, 0.01, margin_db=10) is False    # ~1.5 dB over < 10 -> reject
+    assert loudness_admits(0.0, 0.01, margin_db=10) is False      # silent -> reject

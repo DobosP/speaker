@@ -222,7 +222,32 @@ def record_once(seconds: float, sample_rate: int = 16000, *, device=None,
         samples = apply_gain_soft_limit(samples, input_gain)
     if capture_sr != sample_rate:
         samples = AudioResampler(capture_sr, sample_rate).process(samples, last=True)
-    return samples
+    return _vad_trim(samples, sample_rate)
+
+
+def _vad_trim(samples, sample_rate: int, *, win: float = 0.02,
+              thresh_ratio: float = 0.15, pad: float = 0.1):
+    """Trim leading/trailing near-silence to the voiced region (+ a little pad), so
+    the enrolled embedding is of SPEECH, not the quiet head/tail of the fixed
+    record window -- silence content shifts the speaker embedding. Pure numpy;
+    returns the clip unchanged when it can't find a voiced region."""
+    import numpy as np
+
+    a = np.asarray(samples, dtype="float32").reshape(-1)
+    w = max(1, int(sample_rate * win))
+    if a.size < 2 * w:
+        return a
+    n = (a.size // w) * w
+    e = np.sqrt((a[:n].reshape(-1, w) ** 2).mean(axis=1))
+    peak = float(e.max()) if e.size else 0.0
+    if peak <= 0.0:
+        return a
+    voiced = np.where(e >= peak * thresh_ratio)[0]
+    if voiced.size == 0:
+        return a
+    start = max(0, int(voiced[0]) * w - int(pad * sample_rate))
+    end = min(a.size, (int(voiced[-1]) + 1) * w + int(pad * sample_rate))
+    return a[start:end]
 
 
 # --- config persistence (machine-local overrides) ----------------------------

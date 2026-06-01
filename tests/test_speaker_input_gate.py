@@ -77,3 +77,37 @@ def test_enroll_speaker_gate_ignores_mismatched_model(tmp_path):
     eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
     eng._enroll_speaker_gate()
     assert not eng._speaker_gate.is_enrolled
+
+
+# --- loudness gate: rescue a loud near-field user when identity dips -----------
+
+
+def test_loudness_rescue_admits_loud_user_when_identity_dips():
+    import numpy as np
+
+    eng = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True, input_loudness_margin_db=10.0))
+    eng._speaker_gate = _gate(OTHER)   # identity REJECTS (embedding dipped / mismatch)
+    eng._ambient_rms = 0.01
+    loud = np.full(160, 0.5, dtype="float32")    # ~34 dB above the ambient floor
+    assert eng._should_act_on_final(loud) is True   # rescued by loudness
+    quiet = np.full(160, 0.012, dtype="float32")  # ~1.6 dB above floor < 10 dB margin
+    assert eng._should_act_on_final(quiet) is False  # not loud enough -> dropped
+
+
+def test_loudness_off_is_identity_only():
+    import numpy as np
+
+    eng = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True, input_loudness_margin_db=0.0))
+    eng._speaker_gate = _gate(OTHER)
+    eng._ambient_rms = 0.01
+    loud = np.full(160, 0.5, dtype="float32")
+    assert eng._should_act_on_final(loud) is False  # margin off -> identity-only -> dropped
+
+
+def test_loudness_never_overrides_an_accepting_identity():
+    import numpy as np
+
+    eng = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True, input_loudness_margin_db=10.0))
+    eng._speaker_gate = _gate(USER)  # identity ACCEPTS
+    eng._ambient_rms = 0.01
+    assert eng._should_act_on_final(np.zeros(160, dtype="float32")) is True  # accepted regardless of loudness

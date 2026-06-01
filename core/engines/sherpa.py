@@ -26,6 +26,7 @@ from ..audio_frontend import CLEAN_CAPTURE_RATES, AudioResampler, apply_gain_sof
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._denoiser import build_denoiser
+from ._aec import FarEndRing, build_aec
 from ._sherpa_models import (
     build_keyword_spotter,
     build_punctuation,
@@ -48,11 +49,14 @@ from .speaker_gate import (
 # sounddevice) lazily so the rest of the runtime and the test suite work in
 # environments without the native deps or a sound card.
 #
-# NOTE on echo / self-barge-in: sherpa-onnx does not do acoustic echo
-# cancellation. For robust full-duplex barge-in either (a) use a headset, or
-# (b) gate barge-in on speaker identity (sherpa-onnx ships speaker-ID models)
-# so the assistant's own TTS isn't mistaken for the user. v1 ships VAD-gated
-# barge-in; the gate hook is left as `_looks_like_user`. Tune on hardware.
+# NOTE on echo / self-barge-in: sherpa-onnx itself does not do acoustic echo
+# cancellation, so this engine adds its own optional AEC front-end (core/engines/
+# _aec.py, OFF by default via sherpa.aec_enabled) -- a NumPy adaptive filter that
+# subtracts the played TTS (far-end, teed from the playback thread into a ring and
+# read at sherpa.aec_ref_delay_ms) from the mic block before any consumer. Three
+# layers defend full-duplex barge-in, strongest first: speaker-ID identity gate
+# (when enrolled), AEC + a relaxed output margin, then the bare output-margin
+# guard. Use a headset to sidestep echo entirely. The gate hook is `_looks_like_user`.
 
 
 def _capture_attempts(
@@ -180,6 +184,27 @@ class SherpaConfig:
     # keep ``denoise_enabled`` consistent across record/replay or you double-denoise.
     denoise_enabled: bool = False
     denoise_model: str = ""
+    # On-device Acoustic Echo Cancellation (AEC). Subtracts the assistant's own
+    # played TTS (the far-end reference) from the mic block so the loop does not
+    # self-interrupt on open speakers (the no-AEC failure today; only the 6 dB
+    # output-margin guard + speaker-ID gate hold it back). Inserted after resample,
+    # BEFORE denoise / VAD / recognizer / speaker-gate. OFF by default
+    # (aec_enabled=False -> build_aec returns None, capture path byte-identical).
+    # Backends: "nlms" (dependency-free NumPy adaptive filter, ships now) or "dtln"
+    # (deep ONNX tier, deferred -> currently no-op). aec_ref_delay_ms is the
+    # speaker->mic delay used to time-align the far-end reference (CALIBRATE per
+    # device with tools/echo_probe.py). aec_filter_taps is the modeled echo tail
+    # (rounded to a power of two; also the added capture latency in samples).
+    # aec_doubletalk_freeze stops the filter diverging onto the user's voice during
+    # talk-over. aec_relaxed_margin_db is the smaller barge-in output-margin used
+    # WHEN AEC is active (echo already cancelled -> soft interrupts audible again).
+    aec_enabled: bool = False
+    aec_backend: str = "nlms"
+    aec_model: str = ""
+    aec_ref_delay_ms: int = 80
+    aec_filter_taps: int = 512
+    aec_doubletalk_freeze: bool = True
+    aec_relaxed_margin_db: float = 3.0
     # Silero VAD model (.onnx). Required for endpointing / barge-in.
     vad_model: str = ""
     # Command fast-path: a streaming keyword spotter (separate small transducer)
@@ -398,6 +423,9 @@ class SherpaOnnxEngine(AudioEngine):
         # before the recognizer/embedder/VAD (built in _build when enabled). None
         # -> the capture path is byte-identical to no-denoise.
         self._denoiser = None
+        self._aec = None
+        self._far_ref = None
+        self._aec_ref_delay = 0
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
@@ -467,6 +495,17 @@ class SherpaOnnxEngine(AudioEngine):
         self._denoiser = build_denoiser(c)
         if self._denoiser is not None:
             log.info("speech denoiser ACTIVE on the capture path (16 kHz, GTCRN)")
+        # AEC (None unless aec_enabled). Built like the denoiser, fails open. The
+        # far-end ring is fed by the playback thread and read at the configured
+        # speaker->mic delay; only allocated when AEC is on.
+        self._aec = build_aec(c)
+        self._far_ref = FarEndRing() if self._aec is not None else None
+        if self._aec is not None:
+            self._aec_ref_delay = int(c.sample_rate * c.aec_ref_delay_ms / 1000)
+            log.info(
+                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms)",
+                c.aec_backend, c.aec_ref_delay_ms,
+            )
         self._kws = build_keyword_spotter(c)
         if self._kws is not None:
             self._kws_stream = self._kws.create_stream()
@@ -866,6 +905,16 @@ class SherpaOnnxEngine(AudioEngine):
                     samples = apply_gain_soft_limit(samples, self.config.input_gain)
                 if self._resampler is not None:
                     samples = self._resampler.process(samples)
+                # AEC on the 16 kHz block, AFTER resampling and BEFORE the denoiser
+                # and every consumer: subtract the assistant's own played TTS (the
+                # far-end, read from the ring at the speaker->mic delay) so the loop
+                # doesn't self-interrupt. No-op when AEC is off; passthrough-on-error
+                # inside, so it can never crash this daemon thread. Output length may
+                # differ (the adaptive filter frames internally) -- consumers accept
+                # any length, like the resampler/denoiser.
+                if self._aec is not None:
+                    far = self._far_ref.read(samples.shape[0], self._aec_ref_delay)
+                    samples = self._aec.process_16k(samples, far)
                 # Speech denoise on the 16 kHz block, AFTER resampling and BEFORE
                 # every consumer (recorder, accept_waveform, the speaker embedder,
                 # the VAD). When no denoiser is built this is a zero-cost identity,
@@ -1011,6 +1060,12 @@ class SherpaOnnxEngine(AudioEngine):
                     # there's no denoiser).
                     if self._denoiser is not None:
                         self._denoiser.reset()
+                    # Same for the AEC adaptive state + its far-end ring, so a
+                    # recovered stream starts the canceller fresh (no stale echo
+                    # tail subtracted from the first recovered block).
+                    if self._aec is not None:
+                        self._aec.reset()
+                        self._far_ref.clear()
                     try:
                         recognizer.reset(stream)
                     except Exception:
@@ -1123,6 +1178,17 @@ class SherpaOnnxEngine(AudioEngine):
                     # capture loop can require user voice to stand *above* it
                     # before counting as barge-in (self-interruption guard).
                     self._note_playback_level(samples)
+                    if self._far_ref is not None:
+                        # Tee the far-end (what we're about to play) into the AEC
+                        # ring at 16 kHz so the capture loop can subtract the echo.
+                        # Resampling happens here on the PLAYBACK thread, off the
+                        # capture hot path; capture only does a cheap ring read.
+                        ref16 = (
+                            _resample_linear(samples, self._play_sr, self.config.sample_rate)
+                            if self._play_sr != self.config.sample_rate
+                            else samples
+                        )
+                        self._far_ref.push(ref16)
                     try:
                         out.write(samples)
                     except Exception:  # noqa: BLE001
@@ -1175,6 +1241,13 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._play_q.empty():
                         self._speaking.clear()
                         self._playback_level = 0.0  # nothing playing -> no echo ref
+                        # Drop the far-end reference + reset the canceller so a
+                        # cut-off sentence's stale tail isn't subtracted from the
+                        # next near-end block once playback resumes.
+                        if self._far_ref is not None:
+                            self._far_ref.clear()
+                        if self._aec is not None:
+                            self._aec.reset()
                         # Hand the output device back when asked (so a co-located
                         # process -- e.g. the acoustic test's synthetic user -- can
                         # open it for its turn). Drop the shared handle under the
@@ -1258,7 +1331,14 @@ class SherpaOnnxEngine(AudioEngine):
         gate = self._speaker_gate
         if gate is not None and gate.is_enrolled and self.config.speaker_gate_input:
             return gate.accept(samples, self.config.sample_rate)
-        margin_db = self.config.barge_in_output_margin_db
+        # With AEC active the echo is already subtracted from `samples`, so the
+        # level gate can run at a SMALLER margin (recovers soft-interrupt
+        # sensitivity vs the 6 dB no-AEC guard). Explicit knob, not silent magic.
+        margin_db = (
+            self.config.aec_relaxed_margin_db
+            if self._aec is not None
+            else self.config.barge_in_output_margin_db
+        )
         if margin_db <= 0.0:
             return True
         return passes_output_margin(

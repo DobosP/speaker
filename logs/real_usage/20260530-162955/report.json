@@ -1,0 +1,40 @@
+{
+  "run_id": "20260530-162955",
+  "grades": [
+    {
+      "fixture": "run-20260530-185756.wav",
+      "verdict": "PASS",
+      "passed": true,
+      "checks": {
+        "transcript_sane": true,
+        "response_present": true,
+        "playback_clean": true,
+        "shutdown_clean": true,
+        "barge_in_storm": false
+      },
+      "reasons": [],
+      "asr_finals": [
+        "Are listening to me"
+      ],
+      "spoken_answer": "Yes, I am.",
+      "spoken_all": [
+        "Yes, I am."
+      ],
+      "barge_in_count": 0,
+      "playback_errors": [],
+      "playback_loop_dead": false,
+      "shutdown_ok": true,
+      "shutdown_seconds": 0.128,
+      "shutdown_timeout": 8.0,
+      "first_audio_latencies": [
+        1.3452
+      ],
+      "first_audio_latency_max": 1.3452,
+      "latency_over_budget": false
+    }
+  ],
+  "n_total": 1,
+  "n_pass": 1,
+  "n_fail": 0,
+  "all_pass": true
+}

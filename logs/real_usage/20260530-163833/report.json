@@ -1,0 +1,159 @@
+{
+  "run_id": "20260530-163833",
+  "grades": [
+    {
+      "fixture": "run-20260530-181513.wav",
+      "verdict": "FAIL",
+      "passed": false,
+      "checks": {
+        "transcript_sane": true,
+        "response_present": false,
+        "playback_clean": true,
+        "shutdown_clean": true,
+        "barge_in_storm": false
+      },
+      "reasons": [
+        "WENT SILENT: no non-control spoken response"
+      ],
+      "asr_finals": [
+        "Poop",
+        "I'm conjuring saundering"
+      ],
+      "spoken_answer": "",
+      "spoken_all": [],
+      "barge_in_count": 0,
+      "playback_errors": [],
+      "playback_loop_dead": false,
+      "shutdown_ok": true,
+      "shutdown_seconds": 0.028,
+      "shutdown_timeout": 8.0,
+      "first_audio_latencies": [],
+      "first_audio_latency_max": null,
+      "latency_over_budget": false
+    },
+    {
+      "fixture": "run-20260530-181600.wav",
+      "verdict": "PASS",
+      "passed": true,
+      "checks": {
+        "transcript_sane": true,
+        "response_present": true,
+        "playback_clean": true,
+        "shutdown_clean": true,
+        "barge_in_storm": false
+      },
+      "reasons": [],
+      "asr_finals": [
+        "Came hired into me",
+        "To hear me"
+      ],
+      "spoken_answer": "Okay.",
+      "spoken_all": [
+        "Okay."
+      ],
+      "barge_in_count": 0,
+      "playback_errors": [],
+      "playback_loop_dead": false,
+      "shutdown_ok": true,
+      "shutdown_seconds": 0.081,
+      "shutdown_timeout": 8.0,
+      "first_audio_latencies": [
+        1.2582
+      ],
+      "first_audio_latency_max": 1.2582,
+      "latency_over_budget": false
+    },
+    {
+      "fixture": "run-20260530-182911.wav",
+      "verdict": "FAIL",
+      "passed": false,
+      "checks": {
+        "transcript_sane": false,
+        "response_present": false,
+        "playback_clean": true,
+        "shutdown_clean": true,
+        "barge_in_storm": false
+      },
+      "reasons": [
+        "WENT DEAF: no ASR finals (recognizer produced nothing)",
+        "WENT SILENT: no non-control spoken response"
+      ],
+      "asr_finals": [],
+      "spoken_answer": "",
+      "spoken_all": [],
+      "barge_in_count": 0,
+      "playback_errors": [],
+      "playback_loop_dead": false,
+      "shutdown_ok": true,
+      "shutdown_seconds": 0.178,
+      "shutdown_timeout": 8.0,
+      "first_audio_latencies": [],
+      "first_audio_latency_max": null,
+      "latency_over_budget": false
+    },
+    {
+      "fixture": "run-20260530-183432.wav",
+      "verdict": "FAIL",
+      "passed": false,
+      "checks": {
+        "transcript_sane": true,
+        "response_present": false,
+        "playback_clean": true,
+        "shutdown_clean": true,
+        "barge_in_storm": false
+      },
+      "reasons": [
+        "WENT SILENT: no non-control spoken response"
+      ],
+      "asr_finals": [
+        "He",
+        "He",
+        "How are you"
+      ],
+      "spoken_answer": "",
+      "spoken_all": [],
+      "barge_in_count": 0,
+      "playback_errors": [],
+      "playback_loop_dead": false,
+      "shutdown_ok": true,
+      "shutdown_seconds": 0.238,
+      "shutdown_timeout": 8.0,
+      "first_audio_latencies": [],
+      "first_audio_latency_max": null,
+      "latency_over_budget": false
+    },
+    {
+      "fixture": "run-20260530-185756.wav",
+      "verdict": "FAIL",
+      "passed": false,
+      "checks": {
+        "transcript_sane": true,
+        "response_present": false,
+        "playback_clean": true,
+        "shutdown_clean": true,
+        "barge_in_storm": false
+      },
+      "reasons": [
+        "WENT SILENT: no non-control spoken response"
+      ],
+      "asr_finals": [
+        "I listening to me"
+      ],
+      "spoken_answer": "",
+      "spoken_all": [],
+      "barge_in_count": 0,
+      "playback_errors": [],
+      "playback_loop_dead": false,
+      "shutdown_ok": true,
+      "shutdown_seconds": 0.153,
+      "shutdown_timeout": 8.0,
+      "first_audio_latencies": [],
+      "first_audio_latency_max": null,
+      "latency_over_budget": false
+    }
+  ],
+  "n_total": 5,
+  "n_pass": 1,
+  "n_fail": 4,
+  "all_pass": false
+}

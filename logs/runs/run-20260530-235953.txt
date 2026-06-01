@@ -1,0 +1,25 @@
+23:59:53.969 INFO  speaker | run 20260530-235953 started (debug=False) -> logs/runs/run-20260530-235953.txt
+23:59:53.990 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=14964.9MB(49.1%) proc_rss=19.7MB gpu=0.0% gpu_mem=4017.0/16376.0MB
+23:59:54.006 INFO  speaker.sysinfo | system mark after_build: cpu=5.5% ram=14972.9MB(49.1%) proc_rss=19.7MB gpu=0.0% gpu_mem=4017.0/16376.0MB
+23:59:54.006 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+23:59:54.007 INFO  speaker.runtime | startup pre-warm complete (1 model(s))
+23:59:54.007 INFO  speaker.runtime | final -> brain: 'assistant please help me' (mode=assistant)
+23:59:54.007 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='assistant please help me'
+23:59:54.007 INFO  speaker.tasks | task ca8f92c2d278 started: mode=assistant capability=assistant.answer input='assistant please help me'
+23:59:54.018 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'assistant please help me'
+23:59:54.018 INFO  speaker.llm | fast tier done in 0.00s (34 chars, streamed)
+23:59:54.018 INFO  speaker.tasks | task ca8f92c2d278 completed in 0.01s (34 chars)
+23:59:54.023 INFO  speaker.runtime | assistant: 'You said: assistant please help me'
+23:59:54.023 INFO  speaker.runtime | final -> brain: 'research mode' (mode=assistant)
+23:59:54.023 DEBUG speaker.supervisor | decision: kind=mode_switch confidence=0.98 reason=mode_phrase mode=assistant text='research mode'
+23:59:54.023 INFO  speaker.runtime | final -> brain: 'the history of rome' (mode=research)
+23:59:54.023 DEBUG speaker.supervisor | decision: kind=research confidence=0.82 reason=research_mode mode=research text='the history of rome'
+23:59:54.023 INFO  speaker.tasks | task d1686efe1b47 started: mode=research capability=research.local input='the history of rome'
+23:59:54.053 INFO  speaker.tasks | task d1686efe1b47 completed in 0.03s (193 chars)
+23:59:54.054 INFO  speaker.runtime | assistant: 'You said: Question: the history of rome'
+23:59:54.054 INFO  speaker.runtime | assistant: 'Local findings: Research scope: history, rome No local result for: the history of rome'
+23:59:54.054 INFO  speaker.runtime | assistant: 'Give a brief spoken-style summary and one concrete recommendation.'
+23:59:54.054 INFO  speaker.runtime | final -> brain: 'stop' (mode=research)
+23:59:54.054 DEBUG speaker.supervisor | decision: kind=stop confidence=1.00 reason=stop_phrase mode=research text='stop'
+23:59:54.054 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+23:59:54.075 INFO  speaker.sysinfo | system final: cpu=5.4% ram=14974.5MB(49.1%) proc_rss=19.7MB gpu=0.0% gpu_mem=4017.0/16376.0MB | deltas: {'ram_used_mb_delta': 9.6, 'proc_rss_mb_delta': 0.0, 'gpu_mem_used_mb_delta': 0.0}

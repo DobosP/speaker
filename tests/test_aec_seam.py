@@ -4,12 +4,17 @@ alignment math, and the adaptive filter's single-talk cancellation + double-talk
 freeze + reset."""
 from __future__ import annotations
 
+import os
+
 import numpy as np
+import pytest
 
 from core.engines._aec import (
     EchoCanceller,
     FarEndRing,
+    _DTLNEchoCanceller,
     _FDAFAdaptiveFilter,
+    _resolve_dtln_paths,
     build_aec,
 )
 from core.engines.sherpa import SherpaConfig
@@ -154,3 +159,127 @@ def test_fdaf_reset_clears_state():
     assert filt.count > 0 and np.any(filt.W != 0)
     filt.reset()
     assert filt.count == 0 and np.all(filt.W == 0)
+
+
+# --- DTLN ONNX backend (fake sessions: no model, no onnxruntime) -------------
+
+
+class _FakeIn:
+    def __init__(self, name, shape):
+        self.name = name
+        self.shape = shape
+
+
+class _FakeStage:
+    """Mimics a DTLN-aec ONNX stage: inputs [primary, state(4-D), reference];
+    outputs [main, state(4-D)]. Returns a passthrough main (ones mask for stage 1,
+    the primary block for stage 2) and increments the LSTM state by 1 so a test can
+    confirm the state is carried block-to-block."""
+
+    def __init__(self, feat_dim: int, *, passthrough_primary: bool):
+        self._feat = feat_dim
+        self._pass = passthrough_primary
+        self._ins = [
+            _FakeIn("primary", [1, 1, feat_dim]),
+            _FakeIn("state", [1, 2, 512, 2]),
+            _FakeIn("reference", [1, 1, feat_dim]),
+        ]
+        self._outs = [_FakeIn("main", [1, 1, feat_dim]), _FakeIn("state_out", [1, 2, 512, 2])]
+        self.calls = 0
+
+    def get_inputs(self):
+        return self._ins
+
+    def get_outputs(self):
+        return self._outs
+
+    def run(self, out_names, feed):
+        self.calls += 1
+        state = np.asarray(feed["state"], dtype=np.float32)
+        main = (
+            np.asarray(feed["primary"], dtype=np.float32)
+            if self._pass
+            else np.ones((1, 1, self._feat), dtype=np.float32)
+        )
+        return [main, state + 1.0]
+
+
+def _fake_dtln():
+    return _DTLNEchoCanceller(
+        sessions=(_FakeStage(257, passthrough_primary=False), _FakeStage(512, passthrough_primary=True))
+    )
+
+
+def test_dtln_io_mapping_by_shape():
+    aec = _fake_dtln()
+    assert aec._m1["primary"] == "primary" and aec._m1["reference"] == "reference"
+    assert aec._m1["state_in"] == "state" and aec._m1["state_shape"] == (1, 2, 512, 2)
+    assert aec._m1["main_out"] == "main" and aec._m1["state_out"] == "state_out"
+    assert aec._m2["primary"] == "primary" and aec._m2["state_shape"] == (1, 2, 512, 2)
+
+
+def test_dtln_streams_in_128_hops_and_carries_state():
+    aec = _fake_dtln()
+    out = aec.process(np.zeros(1600, dtype=np.float32), np.zeros(1600, dtype=np.float32))
+    # 1600 / 128 = 12 full hops -> 12 block-steps -> 12*128 output samples.
+    assert aec._s1.calls == 12 and aec._s2.calls == 12
+    assert out.shape[0] == 12 * 128
+    # State carried: the fake adds 1 each step, so after 12 steps it reads 12.
+    assert np.allclose(aec.st1, 12.0) and np.allclose(aec.st2, 12.0)
+
+
+def test_dtln_reset_clears_state_and_buffers():
+    aec = _fake_dtln()
+    aec.process(np.zeros(1600, dtype=np.float32), np.zeros(1600, dtype=np.float32))
+    assert np.any(aec.st1 != 0)
+    aec.reset()
+    assert np.all(aec.st1 == 0) and np.all(aec.st2 == 0)
+    assert aec._nq.shape[0] == 0 and aec._fq.shape[0] == 0
+
+
+# --- DTLN model-path resolver ------------------------------------------------
+
+
+def test_resolve_dtln_paths_directory(tmp_path):
+    (tmp_path / "dtln_aec_stage1.onnx").write_bytes(b"x")
+    (tmp_path / "dtln_aec_stage2.onnx").write_bytes(b"x")
+    s1, s2 = _resolve_dtln_paths(str(tmp_path))
+    assert s1.endswith("dtln_aec_stage1.onnx") and s2.endswith("dtln_aec_stage2.onnx")
+
+
+def test_resolve_dtln_paths_missing_returns_none(tmp_path):
+    assert _resolve_dtln_paths("") is None
+    assert _resolve_dtln_paths(str(tmp_path)) is None  # empty dir
+
+
+def test_resolve_dtln_paths_stage1_file_derives_stage2(tmp_path):
+    (tmp_path / "dtln_aec_stage1.onnx").write_bytes(b"x")
+    (tmp_path / "dtln_aec_stage2.onnx").write_bytes(b"x")
+    s1, s2 = _resolve_dtln_paths(str(tmp_path / "dtln_aec_stage1.onnx"))
+    assert s1.endswith("stage1.onnx") and s2.endswith("stage2.onnx")
+
+
+# --- DTLN real inference (skips unless the converted model + onnxruntime exist)
+
+
+_DTLN1 = os.path.join("pretrained_models", "sherpa", "aec", "dtln_aec_stage1.onnx")
+
+
+@pytest.mark.skipif(
+    not os.path.exists(_DTLN1),
+    reason="DTLN-aec ONNX not present (run tools.setup_models --aec-model)",
+)
+def test_dtln_real_inference_reduces_echo():
+    pytest.importorskip("onnxruntime")
+    aec = _DTLNEchoCanceller(_DTLN1, _DTLN1.replace("stage1", "stage2"))
+    rng = np.random.default_rng(0)
+    raw = rng.standard_normal(16000 * 2).astype(np.float32)
+    far = (np.convolve(raw, np.ones(8) / 8)[: len(raw)] * 0.3).astype(np.float32)
+    fir = np.zeros(150, dtype=np.float64)
+    fir[10], fir[60] = 0.5, 0.25
+    mic = np.convolve(far, fir)[: len(far)].astype(np.float32)
+    out = np.concatenate([aec.process(mic[i : i + 1600], far[i : i + 1600]) for i in range(0, len(mic) - 1600, 1600)])
+    assert np.all(np.isfinite(out))
+    tail = len(out) // 2
+    erle = 10 * np.log10(np.sum(mic[tail:len(out)] ** 2) / (np.sum(out[tail:] ** 2) + 1e-12))
+    assert erle > 15.0  # deep canceller -> strong reduction on single-talk echo

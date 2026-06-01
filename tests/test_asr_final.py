@@ -94,6 +94,19 @@ def test_final_transcribe_recovers_from_second_pass_error():
     assert eng._final_transcribe(np.ones(16000, dtype="float32"), "hello world") == "Hello world"
 
 
+def test_committed_config_defaults_to_sense_voice_at_standard_path():
+    # The shipped default is the two-pass at the standard setup_models location:
+    # present -> active; absent -> build_final_recognizer returns None (streaming,
+    # byte-identical). Don't regress this default.
+    import json
+    from pathlib import Path
+
+    c = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())["sherpa"]
+    assert c["asr_final_backend"] == "sense_voice"
+    assert c["asr_final_model"].endswith("sense_voice/model.int8.onnx")
+    assert c["asr_final_tokens"].endswith("sense_voice/tokens.txt")
+
+
 def test_config_parses_final_fields():
     c = SherpaConfig.from_dict({
         "asr_final_backend": "sense_voice", "asr_final_model": "/m.onnx",

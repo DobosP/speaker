@@ -85,6 +85,12 @@ def main() -> int:
 
     barge_ins: list[float] = []
     gate_samples: list[tuple[float, float, bool]] = []
+    # Coherence diagnostics: (incoherent_fraction, baseline, delay_ms, decided)
+    # for every frame the detector evaluated during the assistant's own speech.
+    # The probe never talks back, so EVERY frame here is echo-only -- their
+    # incoherent fractions are the floor the margin must clear to avoid a
+    # self-interrupt, i.e. the live calibration for coherence_margin_delta.
+    coh_samples: list[tuple[float, float, float, object]] = []
     peak_playback = 0.0
 
     # Instrument the unenrolled echo gate to record exactly what it compares.
@@ -94,6 +100,14 @@ def main() -> int:
         passed = _orig_llu(samples)
         try:
             gate_samples.append((round(_rms(samples), 5), round(float(engine._playback_level), 5), bool(passed)))
+            det = getattr(engine, "_echo_coherence", None)
+            if det is not None and det.last_decided is not None:
+                coh_samples.append((
+                    round(float(det.last_incoherent_fraction), 4),
+                    round(float(det.last_baseline), 4),
+                    round(float(det.last_delay_ms), 1),
+                    det.last_decided,
+                ))
         except Exception:
             pass
         return passed
@@ -149,6 +163,43 @@ def main() -> int:
         if pb > 1e-6 and mic > 1e-6
     ]
     ratios_sorted = sorted(ratios)
+
+    # Coherence calibration block. All frames are echo-only (the probe never
+    # talks over itself), so a HEALTHY result is: detector active, a settled
+    # baseline, and headroom = (baseline + margin_delta) - p95(echo-only frac)
+    # comfortably POSITIVE. Negative headroom means coherence_margin_delta is too
+    # low for this room/speaker and the assistant could self-interrupt -> raise it.
+    coh = None
+    det = getattr(engine, "_echo_coherence", None)
+    if coh_samples:
+        fr = sorted(s[0] for s in coh_samples)
+        echo_only = sorted(s[0] for s in coh_samples if s[3] is False)
+        coh_fired = sum(1 for s in coh_samples if s[3] is True)
+        delays = sorted(s[2] for s in coh_samples)
+        p95 = echo_only[max(0, int(0.95 * (len(echo_only) - 1)))] if echo_only else None
+        settled_baseline = coh_samples[-1][1]
+        delta = float(getattr(sherpa_cfg, "coherence_margin_delta", 0.12))
+        coh = {
+            "active": det is not None,
+            "frames": len(coh_samples),
+            "coherence_fired_on_own_tts": coh_fired,  # >0 = self-interrupt risk
+            "margin_delta": delta,
+            "settled_baseline": settled_baseline,
+            "echo_only_incoherent_p50": (echo_only[len(echo_only) // 2] if echo_only else None),
+            "echo_only_incoherent_p95": p95,
+            "headroom_p95": (round(settled_baseline + delta - p95, 3) if p95 is not None else None),
+            "median_delay_ms": (delays[len(delays) // 2] if delays else None),
+            "incoherent_fraction_samples": fr[:40],
+            "hint": (
+                "headroom_p95 > 0 and coherence_fired_on_own_tts == 0 -> margin is safe; "
+                "raise coherence_margin_delta if it ever fires on the assistant, lower it "
+                "if a real barge is missed. Then test a real barge with `python -m core "
+                "--engine sherpa` (talk over a long answer)."
+            ),
+        }
+    elif det is not None:
+        coh = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
+
     out = {
         "margin_db": args.margin_db,
         "gain": args.gain,
@@ -161,6 +212,7 @@ def main() -> int:
         "median_mic_over_playback_dB": (ratios_sorted[len(ratios_sorted) // 2] if ratios_sorted else None),
         "max_mic_over_playback_dB": (ratios_sorted[-1] if ratios_sorted else None),
         "mic_over_playback_dB_samples": ratios[:40],
+        "coherence": coh,
         "note": (
             "self_interruptions>0 means the assistant's own TTS tripped barge-in. "
             "peak_playback_level~0 or vad_flagged_during_play==0 means little/no echo "

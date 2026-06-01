@@ -41,6 +41,7 @@ from .speaker_gate import (
     rms,
     sherpa_speaker_gate,
 )
+from .echo_coherence import EchoCoherenceDetector
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
@@ -244,6 +245,29 @@ class SherpaConfig:
     # prefer speaker-ID enrollment (level-independent) where possible. Set 0.0 to
     # restore the legacy fail-open behaviour (no self-interruption suppression).
     barge_in_output_margin_db: float = 6.0
+    # PRIMARY barge-in discriminator (preferred over the level margin above): a
+    # scale-invariant reference-coherence detector. The assistant knows exactly
+    # what it is playing, so it asks "does the mic contain sound the playback does
+    # NOT explain?" -- measured by magnitude-squared coherence between the
+    # time-aligned TTS reference and the mic over the voiced band. This is volume-
+    # INDEPENDENT by construction (the playback/capture gains cancel in the ratio),
+    # needs NO enrollment, and rejects the assistant's own TTS structurally (it is
+    # fully reference-explained -> incoherent fraction ~0). When it can decide it
+    # OVERRIDES the identity/level gates; when it abstains (no reference yet, or
+    # silence) the legacy level gate below still runs, so behaviour is never worse
+    # than today. See core/engines/echo_coherence.py and
+    # docs/barge_in_coherence_2026-06-02.md.
+    coherence_barge_in_enabled: bool = True
+    # Voiced band (Hz) the coherence is measured over (speech energy lives here).
+    coherence_voiced_band_hz: tuple = (300.0, 3400.0)
+    # How far the per-frame incoherent fraction must sit ABOVE the runtime-learned
+    # echo baseline to count as user voice. Lower = more sensitive (fires on a
+    # quieter barge, risks reverb false-fire); raise if the assistant's own echo
+    # ever self-interrupts on a reverberant/clipping speaker. Live-calibratable.
+    coherence_margin_delta: float = 0.12
+    # Echo reference ring length / max mic<->playback delay searched (ms).
+    coherence_ring_ms: float = 600.0
+    coherence_max_delay_ms: float = 400.0
     # After a barge-in fires (or a watchdog storm is reported) ignore further
     # barge-in triggers for this long. Debounces a flapping VAD gate / TTS-echo
     # storm into a single interrupt instead of a rapid-fire string of them.
@@ -457,6 +481,11 @@ class SherpaOnnxEngine(AudioEngine):
         # the read/write atomic and a stale sample only nudges a threshold, so
         # no lock is taken on the hot path. Decays to 0 once playback stops.
         self._playback_level: float = 0.0
+        # Scale-invariant reference-coherence barge-in detector (the PRIMARY
+        # discriminator; the level margin above is only a fallback). Built in
+        # _build() when coherence_barge_in_enabled and scipy is present; fed the
+        # played TTS from the playback thread and queried from the capture thread.
+        self._echo_coherence: Optional[EchoCoherenceDetector] = None
         # monotonic deadline until which barge-in triggers are debounced (set
         # after a barge-in fires or when a watchdog storm is reported).
         self._barge_in_suppressed_until: float = 0.0
@@ -483,6 +512,29 @@ class SherpaOnnxEngine(AudioEngine):
         if self._final_recognizer is not None:
             log.info("second-pass final ASR: %s (%s)", c.asr_final_backend, c.asr_final_model)
         self._vad = build_vad(c)
+        # Scale-invariant reference-coherence barge-in detector (volume-
+        # independent, zero-enrollment). Fails open to the level gate if scipy
+        # is somehow unavailable, so start() never crashes on a partial install.
+        if c.coherence_barge_in_enabled:
+            det = EchoCoherenceDetector(
+                c.sample_rate,
+                voiced_band=tuple(c.coherence_voiced_band_hz),
+                ring_ms=c.coherence_ring_ms,
+                max_delay_ms=c.coherence_max_delay_ms,
+                margin_delta=c.coherence_margin_delta,
+            )
+            if det.available:
+                self._echo_coherence = det
+                log.info(
+                    "coherence barge-in ACTIVE (scale-invariant, no enrollment; "
+                    "band %s Hz, margin delta %.2f)",
+                    c.coherence_voiced_band_hz, c.coherence_margin_delta,
+                )
+            else:
+                log.warning(
+                    "coherence barge-in requested but scipy unavailable; "
+                    "falling back to the level-margin gate"
+                )
         self._tts = build_tts(c)
         # Speech denoiser (None unless denoise_enabled AND a model path is set).
         # build_denoiser fails open (returns None) on a bad path so start() never
@@ -1219,6 +1271,11 @@ class SherpaOnnxEngine(AudioEngine):
                     # capture loop can require user voice to stand *above* it
                     # before counting as barge-in (self-interruption guard).
                     self._note_playback_level(samples)
+                    # Feed the played TTS to the coherence detector as the echo
+                    # reference (the signal it cancels against). Cheap: a deque
+                    # push + linear resample, off the real-time capture path.
+                    if self._echo_coherence is not None and self._play_sr:
+                        self._echo_coherence.note_playback(samples, self._play_sr)
                     try:
                         out.write(samples)
                     except Exception:  # noqa: BLE001
@@ -1271,6 +1328,8 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._play_q.empty():
                         self._speaking.clear()
                         self._playback_level = 0.0  # nothing playing -> no echo ref
+                        if self._echo_coherence is not None:
+                            self._echo_coherence.reset()  # drop the stale reference
                         # Hand the output device back when asked (so a co-located
                         # process -- e.g. the acoustic test's synthetic user -- can
                         # open it for its turn). Drop the shared handle under the
@@ -1359,6 +1418,23 @@ class SherpaOnnxEngine(AudioEngine):
         # ``barge_in_output_margin_db`` is the user talking OVER it (the TTS leaking
         # into the mic sits AT the playback level, not above). Raise the margin if
         # an open speaker's TTS leak self-interrupts; the one-per-run latch caps it.
+        #
+        # PRIMARY: scale-invariant reference coherence. The assistant knows what
+        # it is playing, so it asks "is there mic energy the playback doesn't
+        # explain?" -- volume-independent, no enrollment, and the TTS echo is
+        # rejected structurally. When it can decide, it OVERRIDES identity/level
+        # below; it abstains (returns None) only with no reference yet (session
+        # start) or during a TTS silence, where the legacy gate still runs.
+        det = self._echo_coherence
+        if det is not None:
+            verdict = det.decide(samples)
+            if verdict is not None:
+                if verdict:
+                    log.debug(
+                        "coherence barge: incoherent=%.2f baseline=%.2f delay=%.0fms",
+                        det.last_incoherent_fraction, det.last_baseline, det.last_delay_ms,
+                    )
+                return verdict
         gate = self._speaker_gate
         identity_on = (
             gate is not None and gate.is_enrolled and self.config.speaker_gate_input

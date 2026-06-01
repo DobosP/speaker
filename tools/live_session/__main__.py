@@ -107,6 +107,22 @@ def main(argv: list[str] | None = None) -> int:
                         "dial it DOWN (e.g. --input-gain 1) to stop a loud near-field speaker from "
                         "SATURATING the open mic and garbling STT. Mirrors the --no-input-gate / "
                         "--smart-endpoint in-memory config override.")
+    p.add_argument("--endpoint-min-silence", type=float, default=None,
+                   help="override sherpa.endpoint_min_silence_sec for this run -- the EARLIEST "
+                        "trailing-silence (since the partial last grew) at which a confident-complete "
+                        "turn commits. The dominant latency lever: lowering it cuts the ~900ms endpoint "
+                        "wait but risks splitting at a comma pause (a too-early commit is merged back by "
+                        "the continuation layer). A/B it (diff the ON finals vs a higher-floor run for "
+                        "truncation/splitting). In-memory per-run override only.")
+    p.add_argument("--endpoint-max-silence", type=float, default=None,
+                   help="override sherpa.endpoint_max_silence_sec for this run (the bounded hold cap "
+                        "for a mid-phrase partial). In-memory per-run override only.")
+    p.add_argument("--endpoint-high-confidence-floor", type=float, default=None,
+                   help="override sherpa.endpoint_high_confidence_floor for this run -- the LOWER "
+                        "trailing-silence floor a HIGH-confidence completion (lexical 0.75 bin, a "
+                        "normal ending word) commits at, instead of the full --endpoint-min-silence. "
+                        "0 disables (uniform floor). The adaptive latency win: A/B 0.55 vs 0 and diff "
+                        "the finals for splits/truncation. In-memory per-run override only.")
     p.add_argument("--denoise", action="store_true",
                    help="force sherpa.denoise_enabled=True for this run (the GTCRN speech-denoise "
                         "front-end, default OFF). A/B it against a no-flag run to measure its effect "
@@ -171,6 +187,13 @@ def main(argv: list[str] | None = None) -> int:
         config.setdefault("input_gate", {})["enabled"] = False
     if args.smart_endpoint:
         config.setdefault("sherpa", {})["endpoint_enabled"] = True
+    if args.endpoint_min_silence is not None:
+        config.setdefault("sherpa", {})["endpoint_min_silence_sec"] = float(args.endpoint_min_silence)
+    if args.endpoint_max_silence is not None:
+        config.setdefault("sherpa", {})["endpoint_max_silence_sec"] = float(args.endpoint_max_silence)
+    if args.endpoint_high_confidence_floor is not None:
+        config.setdefault("sherpa", {})["endpoint_high_confidence_floor"] = float(
+            args.endpoint_high_confidence_floor)
     if args.input_gain is not None:
         config.setdefault("sherpa", {})["input_gain"] = float(args.input_gain)
     if not args.inject:

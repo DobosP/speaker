@@ -146,6 +146,14 @@ class SherpaConfig:
     endpoint_max_silence_sec: float = 1.6
     endpoint_complete_threshold: float = 0.6
     endpoint_incomplete_threshold: float = 0.3
+    # Adaptive confidence-tiered SHORTEN floor (default 0.0 = OFF = uniform
+    # endpoint_min_silence_sec). When > 0, a high-confidence completion (the
+    # lexical 0.75 bin -- a normal ending word, never a conjunction/article) may
+    # commit at this LOWER trailing silence, reclaiming ~150ms on the common case.
+    # MUST exceed the decoder lookahead (~0.3-0.6s) AND a typical comma pause
+    # (~0.2-0.3s); validate on device. See core.endpointing.EndpointConfig.
+    endpoint_high_confidence_floor: float = 0.0
+    endpoint_high_confidence_score: float = 0.75
     # Restore conventional casing on partials/finals (the streaming model emits
     # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
     asr_restore_casing: bool = True

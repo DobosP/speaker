@@ -402,6 +402,13 @@ def test_committed_config_endpoint_enabled_with_validated_min_silence():
     config = json.loads((Path(__file__).resolve().parents[1] / "config.json").read_text())
     assert config["sherpa"]["endpoint_enabled"] is True
     assert config["sherpa"]["endpoint_min_silence_sec"] >= 0.7
+    # Adaptive confidence-tiered floor (validated 2026-06-01): a high-confidence
+    # completion commits at 0.6 instead of 0.7 (~110ms endpoint win). The floor MUST
+    # stay below min_silence (so it's an actual shortening) but not so low it splits
+    # a comma run-on -- 0.55 truncated "In one sentence, ...", 0.6 did not.
+    floor = config["sherpa"].get("endpoint_high_confidence_floor", 0.0)
+    if floor > 0.0:
+        assert 0.6 <= floor < config["sherpa"]["endpoint_min_silence_sec"]
 
 
 def test_smart_endpoint_flag_is_in_help(capsys):
@@ -1312,6 +1319,32 @@ def test_unknown_suite_errors(capsys):
 
 
 # --- --denoise / --noise-snr flags + noise overlay -----------------------------
+
+
+def test_endpoint_min_silence_flag_overrides(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, ["--endpoint-min-silence", "0.5"])
+    assert config["sherpa"]["endpoint_min_silence_sec"] == 0.5
+
+
+def test_endpoint_max_silence_flag_overrides(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, ["--endpoint-max-silence", "1.2"])
+    assert config["sherpa"]["endpoint_max_silence_sec"] == 1.2
+
+
+def test_no_endpoint_flags_leave_config_untouched(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, [])
+    assert "endpoint_min_silence_sec" not in config.get("sherpa", {})
+    assert "endpoint_max_silence_sec" not in config.get("sherpa", {})
+
+
+def test_endpoint_flags_in_help(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        live_main.main(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--endpoint-min-silence" in help_text
 
 
 def test_denoise_flag_enables_denoise(monkeypatch):

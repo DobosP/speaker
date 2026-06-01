@@ -26,6 +26,24 @@ def rms(samples: Sequence[float]) -> float:
     return math.sqrt(sum(float(x) * float(x) for x in samples) / n)
 
 
+def loudness_admits(
+    speech_level: float, ambient_level: float, *, margin_db: float
+) -> bool:
+    """Near-field 'is this the user' check by LOUDNESS (a secondary signal to the
+    voice-identity gate). The user is CLOSE to the mic -> loud; a TV / another
+    person across the room sits near the ambient noise floor. Admit when the
+    speech sits at least ``margin_db`` dB above the running ambient floor.
+
+    ``margin_db <= 0`` DISABLES it (returns True -> the loudness signal abstains,
+    leaving the decision to identity). No ambient floor yet (``ambient_level <=
+    0``) also abstains (True) so a cold start never wrongly rejects."""
+    if margin_db <= 0.0 or ambient_level <= 0.0:
+        return True
+    if speech_level <= 0.0:
+        return False
+    return 20.0 * math.log10(speech_level / ambient_level) >= margin_db
+
+
 def passes_output_margin(
     speech_level: float, playback_level: float, *, margin_db: float
 ) -> bool:

@@ -224,3 +224,20 @@ def test_record_once_legacy_probe_when_unpinned(monkeypatch):
 
     record_once(1.0, sample_rate=16000, capture_samplerate=0)
     assert opened == [16000, 44100]  # probed 16000 (rejected) then fell back
+
+
+def test_vad_trim_cuts_silent_head_and_tail():
+    import numpy as np
+
+    from core.enroll import _vad_trim
+    sr = 16000
+    clip = np.concatenate([
+        np.zeros(sr, dtype="float32"),
+        (np.random.default_rng(0).standard_normal(sr) * 0.3).astype("float32"),
+        np.zeros(sr, dtype="float32"),
+    ])
+    trimmed = _vad_trim(clip, sr)
+    assert clip.size == 3 * sr
+    assert sr * 0.9 < trimmed.size < sr * 1.6   # ~the 1s voiced middle + small pad
+    # all-silence stays unchanged (no voiced region to trim to)
+    assert _vad_trim(np.zeros(sr, dtype="float32"), sr).size == sr

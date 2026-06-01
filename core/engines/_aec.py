@@ -216,6 +216,151 @@ class _FDAFAdaptiveFilter:
         return e
 
 
+class _DTLNEchoCanceller:
+    """Two-stage DTLN-aec deep echo canceller under onnxruntime (the quality tier).
+
+    Reproduces ``breizhn/DTLN-aec`` ``run_aec.py`` streaming inference exactly:
+    block_len 512, block_shift 128 (75 % overlap). Stage 1 predicts a spectral mask
+    from the mic + loopback (far-end) MAGNITUDE spectra and applies it to the mic
+    complex spectrum; stage 2 refines the masked TIME-domain block using the
+    loopback time signal. Both stages carry their LSTM state block-to-block (the
+    state tensors are explicit model I/O). Output is overlap-added at the 128 hop.
+
+    I/O is mapped by SHAPE so it survives the tflite->ONNX converter's naming: in
+    each stage the 4-D ``[1,2,512,2]`` tensor is the LSTM state, and the two equal
+    feature tensors are, in graph-input order, ``[primary, reference]`` (mic-mag &
+    lpb-mag for stage 1; masked-block & lpb-block for stage 2) -- matching the
+    upstream ``input_details[0]=primary, [1]=states, [2]=reference`` order.
+
+    ``onnxruntime`` is imported lazily in ``__init__`` (so the module imports with
+    no native dep); a load error raises and ``build_aec`` fails open to no-AEC. The
+    NumPy FDAF (``aec_backend='nlms'``) is the dependency-free default; this is the
+    heavier, higher-quality tier for louder / more reverberant rooms."""
+
+    BLOCK = 512
+    SHIFT = 128
+
+    def __init__(self, stage1_path: str = "", stage2_path: str = "", *, providers=None,
+                 sessions=None):
+        # ``sessions`` (a (stage1, stage2) pair of objects with get_inputs/
+        # get_outputs/run) is injected in tests so the streaming + state-carry
+        # logic runs with no ONNX model and no onnxruntime. Production loads from
+        # the paths via a lazily-imported onnxruntime.
+        if sessions is not None:
+            self._s1, self._s2 = sessions
+        else:
+            import onnxruntime as ort
+
+            prov = list(providers) if providers else ["CPUExecutionProvider"]
+            self._s1 = ort.InferenceSession(stage1_path, providers=prov)
+            self._s2 = ort.InferenceSession(stage2_path, providers=prov)
+        self._m1 = self._io_map(self._s1)
+        self._m2 = self._io_map(self._s2)
+        self._reset_state()
+
+    @staticmethod
+    def _io_map(sess) -> dict:
+        """Classify a stage's I/O: the 4-D tensor is the LSTM state, the two equal
+        feature tensors are [primary, reference] in graph order."""
+        ins = sess.get_inputs()
+        state_in = next(i for i in ins if len(i.shape) == 4)
+        feats = [i for i in ins if len(i.shape) != 4]
+        outs = sess.get_outputs()
+        state_out = next(o for o in outs if len(o.shape) == 4)
+        main_out = next(o for o in outs if len(o.shape) != 4)
+        return {
+            "primary": feats[0].name,
+            "reference": feats[1].name,
+            "state_in": state_in.name,
+            "state_shape": tuple(state_in.shape),
+            "main_out": main_out.name,
+            "state_out": state_out.name,
+        }
+
+    def _reset_state(self) -> None:
+        self.in_buf = np.zeros(self.BLOCK, dtype=np.float32)
+        self.lpb_buf = np.zeros(self.BLOCK, dtype=np.float32)
+        self.out_buf = np.zeros(self.BLOCK, dtype=np.float32)
+        self.st1 = np.zeros(self._m1["state_shape"], dtype=np.float32)
+        self.st2 = np.zeros(self._m2["state_shape"], dtype=np.float32)
+        self._nq = np.zeros(0, dtype=np.float32)
+        self._fq = np.zeros(0, dtype=np.float32)
+
+    def reset(self) -> None:
+        self._reset_state()
+
+    def process(self, near, far) -> np.ndarray:
+        near = np.asarray(near, dtype=np.float32).reshape(-1)
+        far = np.asarray(far, dtype=np.float32).reshape(-1)
+        if far.shape[0] < near.shape[0]:
+            far = np.concatenate([far, np.zeros(near.shape[0] - far.shape[0], dtype=np.float32)])
+        elif far.shape[0] > near.shape[0]:
+            far = far[: near.shape[0]]
+        self._nq = np.concatenate([self._nq, near])
+        self._fq = np.concatenate([self._fq, far])
+        S = self.SHIFT
+        chunks = []
+        while self._nq.shape[0] >= S and self._fq.shape[0] >= S:
+            mic_shift, self._nq = self._nq[:S], self._nq[S:]
+            lpb_shift, self._fq = self._fq[:S], self._fq[S:]
+            chunks.append(self._block_step(mic_shift, lpb_shift))
+        if chunks:
+            return np.concatenate(chunks).astype(np.float32)
+        return np.zeros(0, dtype=np.float32)
+
+    def _block_step(self, mic_shift, lpb_shift) -> np.ndarray:
+        S, B = self.SHIFT, self.BLOCK
+        # Shift the newest 128 samples into the 512 analysis buffers.
+        self.in_buf = np.concatenate([self.in_buf[S:], mic_shift])
+        self.lpb_buf = np.concatenate([self.lpb_buf[S:], lpb_shift])
+
+        in_fft = np.fft.rfft(self.in_buf)
+        in_mag = np.abs(in_fft).astype(np.float32).reshape(1, 1, -1)
+        lpb_mag = np.abs(np.fft.rfft(self.lpb_buf)).astype(np.float32).reshape(1, 1, -1)
+
+        m1 = self._m1
+        mask, self.st1 = self._s1.run(
+            [m1["main_out"], m1["state_out"]],
+            {m1["primary"]: in_mag, m1["reference"]: lpb_mag, m1["state_in"]: self.st1},
+        )
+        estimated = np.fft.irfft(in_fft * mask.reshape(-1)).astype(np.float32)
+
+        m2 = self._m2
+        out_block, self.st2 = self._s2.run(
+            [m2["main_out"], m2["state_out"]],
+            {
+                m2["primary"]: estimated.reshape(1, 1, B),
+                m2["reference"]: self.lpb_buf.reshape(1, 1, B),
+                m2["state_in"]: self.st2,
+            },
+        )
+        # Overlap-add (hop = 128) and emit the oldest 128 samples.
+        self.out_buf = np.concatenate([self.out_buf[S:], np.zeros(S, dtype=np.float32)])
+        self.out_buf = self.out_buf + np.asarray(out_block, dtype=np.float32).reshape(-1)
+        return self.out_buf[:S].copy()
+
+
+def _resolve_dtln_paths(model: str):
+    """From the ``aec_model`` setting, return ``(stage1, stage2)`` ONNX paths or
+    ``None``. ``model`` is a directory holding ``dtln_aec_stage1.onnx`` +
+    ``dtln_aec_stage2.onnx`` (what ``tools.setup_models --aec-model`` writes), or a
+    direct path to the stage-1 file (stage 2 derived by swapping 1->2)."""
+    import os
+    import re
+
+    if not model:
+        return None
+    if os.path.isdir(model):
+        s1 = os.path.join(model, "dtln_aec_stage1.onnx")
+        s2 = os.path.join(model, "dtln_aec_stage2.onnx")
+    else:
+        s1 = model
+        s2 = re.sub(r"(?<!\d)1(\.onnx)$", r"2\1", model)
+    if os.path.exists(s1) and os.path.exists(s2):
+        return s1, s2
+    return None
+
+
 class EchoCanceller:
     """The seam the engine holds. ``impl`` is duck-typed (the NumPy FDAF now, an
     ONNX DTLN session later): anything with ``process(near, far) -> samples`` and
@@ -265,10 +410,23 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
         log.info("AEC active: NumPy FDAF adaptive filter (frame=%d, doubletalk_freeze=%s)", frame, freeze)
         return EchoCanceller(_FDAFAdaptiveFilter(frame, doubletalk_freeze=freeze), sample_rate=sr)
     if backend == "dtln":
-        log.warning(
-            "aec_backend='dtln' (deep ONNX tier) is not implemented yet -- continuing "
-            "WITHOUT AEC. Set aec_backend='nlms' for the dependency-free adaptive filter."
-        )
-        return None
+        paths = _resolve_dtln_paths(str(getattr(c, "aec_model", "") or ""))
+        if paths is None:
+            log.warning(
+                "aec_backend='dtln' but the converted ONNX stages weren't found at "
+                "aec_model=%r -- continuing WITHOUT AEC. Run "
+                "`python -m tools.setup_models --aec-model` to fetch + convert them, "
+                "or set aec_backend='nlms' for the dependency-free filter.",
+                getattr(c, "aec_model", ""),
+            )
+            return None
+        try:
+            ep = "CUDAExecutionProvider" if str(getattr(c, "provider", "cpu")).lower() == "cuda" else "CPUExecutionProvider"
+            impl = _DTLNEchoCanceller(paths[0], paths[1], providers=[ep])
+        except Exception as exc:  # noqa: BLE001 - bad model / missing onnxruntime -> fail open
+            log.warning("could not load DTLN-aec ONNX (%s); continuing WITHOUT AEC", exc)
+            return None
+        log.info("AEC active: DTLN-aec deep ONNX tier (%s)", paths[0])
+        return EchoCanceller(impl, sample_rate=sr)
     log.warning("unknown aec_backend=%r; continuing WITHOUT AEC", backend)
     return None

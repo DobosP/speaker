@@ -80,6 +80,14 @@ GTCRN_MODEL_URL = (
 # with --smart-turn-model-repo/-file or SMART_TURN_MODEL_REPO / _FILE env vars.
 SMART_TURN_REPO = os.environ.get("SMART_TURN_MODEL_REPO", "pipecat-ai/smart-turn-v3")
 SMART_TURN_FILE = os.environ.get("SMART_TURN_MODEL_FILE", "smart-turn-v3.1-cpu.onnx")
+# Optional DTLN-aec deep echo-canceller (the AEC quality tier, core/engines/_aec.py
+# aec_backend="dtln"). Upstream ships TFLite only, so we fetch the two stage tflite
+# files (breizhn/DTLN-aec GitHub raw assets) and CONVERT them to ONNX with tf2onnx
+# (a dev-time dep: pip install tf2onnx tensorflow-cpu; not needed at runtime, only
+# onnxruntime is). Size 512 = highest quality (~10.4M params); 256/128 are lighter.
+DTLN_AEC_BASE = os.environ.get(
+    "DTLN_AEC_BASE_URL", "https://github.com/breizhn/DTLN-aec/raw/main/pretrained_models"
+)
 
 
 def dest_for(base: str, key: str) -> str:
@@ -264,6 +272,23 @@ def main(argv: list[str] | None = None) -> int:
         default=SMART_TURN_FILE,
         help=f"file within the Smart Turn repo (default: {SMART_TURN_FILE})",
     )
+    parser.add_argument(
+        "--aec-model",
+        dest="aec_model",
+        action="store_true",
+        help="also download the DTLN-aec echo-canceller tflite models and CONVERT "
+        "them to ONNX (the AEC 'dtln' quality tier) + wire aec_model in config; off "
+        "by default. Needs tf2onnx + tensorflow-cpu (dev-time only). After fetching, "
+        "set sherpa.aec_enabled=true + aec_backend='dtln' (and calibrate "
+        "aec_ref_delay_ms) to activate it.",
+    )
+    parser.add_argument(
+        "--aec-model-size",
+        dest="aec_model_size",
+        choices=["128", "256", "512"],
+        default="512",
+        help="DTLN-aec model size: 512 = best quality (~10.4M), 256/128 lighter (phone)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -382,6 +407,42 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # DTLN-aec echo canceller (optional, opt-in). Upstream ships TFLite only, so we
+    # fetch the two stage tflite files and convert each to ONNX with tf2onnx. Same
+    # non-fatal contract: a failed fetch/convert leaves AEC on the NumPy 'nlms'
+    # backend (or off). tf2onnx + tensorflow are dev-time only (runtime uses
+    # onnxruntime); a missing converter is reported, not fatal.
+    if args.aec_model:
+        import subprocess
+
+        aec_dest = os.path.join(args.dest, "aec")
+        os.makedirs(aec_dest, exist_ok=True)
+        size = args.aec_model_size
+        try:
+            for stage, out_name in ((1, "dtln_aec_stage1.onnx"), (2, "dtln_aec_stage2.onnx")):
+                url = f"{DTLN_AEC_BASE}/dtln_aec_{size}_{stage}.tflite"
+                print(f"[models] fetching DTLN-aec stage {stage}: {url}")
+                tflite = fetch_speaker_model(aec_dest, url, force=args.force)
+                out_onnx = os.path.join(aec_dest, out_name)
+                print(f"[models] converting {os.path.basename(tflite)} -> {out_name} (tf2onnx)")
+                subprocess.run(
+                    [sys.executable, "-m", "tf2onnx.convert", "--tflite", tflite,
+                     "--output", out_onnx, "--opset", "13"],
+                    check=True,
+                )
+                try:
+                    os.remove(tflite)  # the tflite is only needed for the conversion
+                except OSError:
+                    pass
+            resolved["aec_model"] = aec_dest
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] DTLN-aec model not prepared ({exc}); continuing without it. "
+                "The 'dtln' AEC tier needs tf2onnx + tensorflow-cpu "
+                "(pip install tf2onnx tensorflow-cpu); the 'nlms' backend needs nothing.",
+                file=sys.stderr,
+            )
+
     # Write the absolute model paths into the machine-local overrides file
     # (gitignored, merged over config.json at load). Start from whatever is
     # already there so other local overrides survive.
@@ -397,9 +458,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\n[models] {args.config} sherpa paths set:")
     for key in FILE_KEYS + [
         "tts_data_dir", "speaker_embedding_model", "punct_model", "denoise_model",
-        "smart_turn_model",
+        "smart_turn_model", "aec_model",
     ]:
-        if key in ("punct_model", "denoise_model", "smart_turn_model") and not sherpa.get(key):
+        if key in ("punct_model", "denoise_model", "smart_turn_model", "aec_model") and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
     if sherpa.get("speaker_embedding_model"):
@@ -416,6 +477,13 @@ def main(argv: list[str] | None = None) -> int:
             "sherpa.smart_turn_enabled=true (it is OFF by default; needs onnxruntime + "
             "transformers). VALIDATE on device first:  "
             "python -m tools.live_session --all --inject --smart-endpoint"
+        )
+    if sherpa.get("aec_model"):
+        print(
+            "\nDTLN-aec model ready. To ACTIVATE the deep echo-canceller tier, set "
+            "sherpa.aec_enabled=true + sherpa.aec_backend='dtln' (OFF by default) and "
+            "CALIBRATE sherpa.aec_ref_delay_ms with tools/echo_probe.py. The "
+            "dependency-free aec_backend='nlms' filter needs no model."
         )
     print("\nNow run:  python -m core --engine sherpa")
     return 0

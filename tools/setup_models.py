@@ -73,6 +73,13 @@ GTCRN_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
     "speech-enhancement-models/gtcrn_simple.onnx"
 )
+# Optional PROSODIC turn-completion model (Smart Turn v3, pipecat-ai) for the
+# semantic endpoint. A HuggingFace REPO file (not a release asset), so fetched
+# with hf_hub_download like the ASR/VAD models. ~8.7 MB, audio-only, CPU. The
+# v3.1-cpu export is the latest/most-accurate CPU build. Override the repo/file
+# with --smart-turn-model-repo/-file or SMART_TURN_MODEL_REPO / _FILE env vars.
+SMART_TURN_REPO = os.environ.get("SMART_TURN_MODEL_REPO", "pipecat-ai/smart-turn-v3")
+SMART_TURN_FILE = os.environ.get("SMART_TURN_MODEL_FILE", "smart-turn-v3.1-cpu.onnx")
 
 
 def dest_for(base: str, key: str) -> str:
@@ -236,6 +243,27 @@ def main(argv: list[str] | None = None) -> int:
         "and wire denoise_model in config; off by default. After fetching, set "
         "sherpa.denoise_enabled=true to activate it on the capture path.",
     )
+    parser.add_argument(
+        "--smart-turn-model",
+        dest="smart_turn_model",
+        action="store_true",
+        help="also download the optional Smart Turn v3 prosodic end-of-turn model "
+        "(~8.7 MB ONNX) and wire smart_turn_model in config; off by default. Needs "
+        "onnxruntime + transformers. After fetching, set sherpa.smart_turn_enabled=true "
+        "to activate it (and VALIDATE on device first -- see the sherpa config comment).",
+    )
+    parser.add_argument(
+        "--smart-turn-model-repo",
+        dest="smart_turn_repo",
+        default=SMART_TURN_REPO,
+        help=f"HF repo of the Smart Turn model (default: {SMART_TURN_REPO})",
+    )
+    parser.add_argument(
+        "--smart-turn-model-file",
+        dest="smart_turn_file",
+        default=SMART_TURN_FILE,
+        help=f"file within the Smart Turn repo (default: {SMART_TURN_FILE})",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -329,6 +357,31 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
+    # Smart Turn v3 prosodic end-of-turn model (optional, opt-in). HF repo file,
+    # so fetched with hf_hub_download. Same non-fatal contract: a failed fetch
+    # leaves the endpoint on the cheap lexical detector (the default).
+    if args.smart_turn_model:
+        smart_turn_dest = os.path.join(args.dest, "smart_turn")
+        os.makedirs(smart_turn_dest, exist_ok=True)
+        print(
+            f"[models] fetching Smart Turn model: {args.smart_turn_repo}/"
+            f"{args.smart_turn_file} -> {smart_turn_dest}"
+        )
+        try:
+            resolved["smart_turn_model"] = hf_hub_download(
+                repo_id=args.smart_turn_repo,
+                filename=args.smart_turn_file,
+                local_dir=smart_turn_dest,
+                token=token,
+                force_download=args.force,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] Smart Turn model not fetched ({exc}); continuing without it. "
+                "The endpoint keeps the lexical turn detector until you re-run.",
+                file=sys.stderr,
+            )
+
     # Write the absolute model paths into the machine-local overrides file
     # (gitignored, merged over config.json at load). Start from whatever is
     # already there so other local overrides survive.
@@ -342,8 +395,11 @@ def main(argv: list[str] | None = None) -> int:
 
     sherpa = cfg["sherpa"]
     print(f"\n[models] {args.config} sherpa paths set:")
-    for key in FILE_KEYS + ["tts_data_dir", "speaker_embedding_model", "punct_model", "denoise_model"]:
-        if key in ("punct_model", "denoise_model") and not sherpa.get(key):
+    for key in FILE_KEYS + [
+        "tts_data_dir", "speaker_embedding_model", "punct_model", "denoise_model",
+        "smart_turn_model",
+    ]:
+        if key in ("punct_model", "denoise_model", "smart_turn_model") and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
     if sherpa.get("speaker_embedding_model"):
@@ -353,6 +409,13 @@ def main(argv: list[str] | None = None) -> int:
             "\nSpeech-denoise model ready. To ACTIVATE it on the capture path, set "
             'sherpa.denoise_enabled=true in your config (it is OFF by default). '
             "Re-enroll your voice afterwards (the embedding shifts vs un-denoised audio)."
+        )
+    if sherpa.get("smart_turn_model"):
+        print(
+            "\nSmart Turn model ready. To ACTIVATE the prosodic end-of-turn detector, set "
+            "sherpa.smart_turn_enabled=true (it is OFF by default; needs onnxruntime + "
+            "transformers). VALIDATE on device first:  "
+            "python -m tools.live_session --all --inject --smart-endpoint"
         )
     print("\nNow run:  python -m core --engine sherpa")
     return 0

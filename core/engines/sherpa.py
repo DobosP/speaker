@@ -146,6 +146,20 @@ class SherpaConfig:
     endpoint_max_silence_sec: float = 1.6
     endpoint_complete_threshold: float = 0.6
     endpoint_incomplete_threshold: float = 0.3
+    # Optional PROSODIC turn-completion model (Smart Turn v3, pipecat-ai) used in
+    # place of the cheap lexical detector when semantic endpointing is on. Audio-
+    # only (~8 MB ONNX, ~12 ms CPU): it judges end-of-turn from how the speech
+    # SOUNDS, not just the last word. Dual-gated like the denoiser: BOTH
+    # ``smart_turn_enabled`` AND a ``smart_turn_model`` path are required, AND
+    # ``endpoint_enabled`` must be on; otherwise the lexical detector is used and
+    # nothing heavy is imported. A load error falls back to lexical; a per-call
+    # inference error falls back to the acoustic endpoint. Needs onnxruntime +
+    # transformers (lazy, desktop-only). Fetch with
+    # ``python -m tools.setup_models --smart-turn-model``; VALIDATE on device via
+    # ``python -m tools.live_session --all --inject --smart-endpoint`` before
+    # trusting it (same as endpoint_enabled was validated).
+    smart_turn_enabled: bool = False
+    smart_turn_model: str = ""
     # Restore conventional casing on partials/finals (the streaming model emits
     # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
     asr_restore_casing: bool = True
@@ -330,7 +344,32 @@ class SherpaOnnxEngine(AudioEngine):
 
             self._endpoint_policy = AdaptiveEndpointPolicy(EndpointConfig.from_sherpa(config))
             if self._turn_detector is None:
-                self._turn_detector = LexicalTurnCompletionDetector()
+                # Prosodic Smart Turn v3 when explicitly enabled + a model path is
+                # set (dual gate, like the denoiser); a load failure (missing
+                # onnxruntime/transformers/model) degrades to the cheap lexical
+                # detector so capture never depends on the heavy optional deps.
+                if config.smart_turn_enabled and config.smart_turn_model:
+                    from ..endpointing import SmartTurnCompletionDetector
+
+                    ep = (
+                        "CUDAExecutionProvider"
+                        if str(config.provider).lower() == "cuda"
+                        else "CPUExecutionProvider"
+                    )
+                    try:
+                        self._turn_detector = SmartTurnCompletionDetector(
+                            config.smart_turn_model, providers=[ep]
+                        )
+                    except Exception:  # noqa: BLE001 - fall back to lexical, never crash
+                        log.warning(
+                            "Smart Turn model failed to load (%r); using the lexical "
+                            "turn detector. Install onnxruntime + transformers and run "
+                            "`python -m tools.setup_models --smart-turn-model`.",
+                            config.smart_turn_model, exc_info=True,
+                        )
+                        self._turn_detector = LexicalTurnCompletionDetector()
+                else:
+                    self._turn_detector = LexicalTurnCompletionDetector()
         # Only assemble the utterance audio buffer for the endpoint check when a
         # detector actually consumes it (a prosodic model); the lexical default
         # is text-only, so the capture loop pays nothing.

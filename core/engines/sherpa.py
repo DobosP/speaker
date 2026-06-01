@@ -36,6 +36,7 @@ from ._sherpa_models import (
 )
 from .speaker_gate import (
     SpeakerGate,
+    loudness_admits,
     passes_output_margin,
     rms,
     sherpa_speaker_gate,
@@ -256,6 +257,14 @@ class SherpaConfig:
     # startup and it can average several passes. Empty -> fall back to the WAV.
     speaker_enroll_embedding: str = ""
     speaker_threshold: float = 0.5
+    # Optional LOUDNESS gate (a near-field 'is this the user' signal layered on the
+    # voice-identity gate). The user is CLOSE to the mic -> loud; a TV / far speaker
+    # sits near the ambient floor. When > 0, a final whose voice-identity DIPPED can
+    # still be admitted if its level is >= this many dB above the running ambient
+    # floor (so the user is never wrongly dropped when the embedding wavers). 0
+    # (default) = identity-only, unchanged. Only narrows toward MORE admits (a
+    # rescue), never rejects what identity already accepted.
+    input_loudness_margin_db: float = 0.0
     # When enrolled, also gate the *normal* ASR finals on speaker identity (not
     # just barge-in), so ambient voices / a TV / a read-aloud quotation aren't
     # answered as if addressed to the assistant. Fail-open when unenrolled.
@@ -372,6 +381,13 @@ class SherpaOnnxEngine(AudioEngine):
         self._endpoint_prosody_min_silence = float(
             getattr(config, "endpoint_prosody_min_silence", 0.15) or 0.0
         )
+        # Optional loudness gate: a running ambient-noise floor (asymmetric EWMA --
+        # falls fast to the floor, rises slowly so speech barely lifts it). Only
+        # tracked + consulted when input_loudness_margin_db > 0.
+        self._input_loudness_margin_db = float(
+            getattr(config, "input_loudness_margin_db", 0.0) or 0.0
+        )
+        self._ambient_rms: float = 0.0
         # Only assemble the utterance audio buffer for the endpoint check when a
         # detector actually consumes it (a prosodic model); the lexical default
         # is text-only, so the capture loop pays nothing.
@@ -965,6 +981,19 @@ class SherpaOnnxEngine(AudioEngine):
                 # possible latency and never wait on ASR endpointing or the LLM.
                 self._poll_keywords(samples)
 
+                # Track the ambient noise floor for the optional loudness gate
+                # (asymmetric EWMA: fall fast to the floor, rise slowly so speech
+                # barely lifts it). Cheap; only when the loudness gate is enabled.
+                if self._input_loudness_margin_db > 0.0:
+                    _r = rms(samples)
+                    _a = self._ambient_rms
+                    if _a <= 0.0:
+                        self._ambient_rms = _r
+                    elif _r < _a:
+                        self._ambient_rms = 0.9 * _a + 0.1 * _r
+                    else:
+                        self._ambient_rms = 0.995 * _a + 0.005 * _r
+
                 # Barge-in watch while the assistant is speaking.
                 # While the assistant is speaking we NEVER feed ASR (so it can't
                 # transcribe its own TTS). Barge-in watch is gated by
@@ -1384,4 +1413,14 @@ class SherpaOnnxEngine(AudioEngine):
         gate = self._speaker_gate
         if gate is None or not gate.is_enrolled:
             return True
-        return gate.accept(samples, self.config.sample_rate)
+        if gate.accept(samples, self.config.sample_rate):
+            return True
+        # Identity DIPPED. The optional loudness gate can still admit a LOUD
+        # near-field speaker (the user close to the mic) -- so a wavering embedding
+        # never wrongly drops the user. Only when configured (margin > 0); otherwise
+        # identity-only (unchanged).
+        if self._input_loudness_margin_db > 0.0:
+            return loudness_admits(
+                rms(samples), self._ambient_rms, margin_db=self._input_loudness_margin_db
+            )
+        return False

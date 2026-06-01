@@ -164,3 +164,63 @@ def test_run_enrollment_reports_failure_when_no_embedding(tmp_path):
     )
     assert code == 3
     assert "Enrollment failed" in "\n".join(msgs)
+
+
+# --- record_once: pin capture_samplerate (the AT2020 self-mute fix) -----------
+
+
+def test_record_once_pins_capture_samplerate_and_never_probes(monkeypatch):
+    """With capture_samplerate set, record_once opens ONLY at that rate (never the
+    16000 probe that self-mutes the AT2020). Regression for the enrollment bug
+    where probing 16000 captured near-silence -> a garbage reference."""
+    import sys
+    import types
+
+    import numpy as np
+
+    opened_rates = []
+
+    fake_sd = types.SimpleNamespace()
+    fake_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+
+    def rec(frames, samplerate=None, channels=1, dtype="float32", device=None):
+        opened_rates.append(int(samplerate))
+        return np.zeros((frames, 1), dtype="float32")
+
+    fake_sd.rec = rec
+    fake_sd.wait = lambda: None
+    fake_sd.query_devices = lambda *a, **k: {"default_samplerate": 48000}
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    from core.enroll import record_once
+
+    record_once(1.0, sample_rate=16000, capture_samplerate=44100)
+    assert opened_rates == [44100]  # pinned, no 16000 probe, no 48000 fallback
+
+
+def test_record_once_legacy_probe_when_unpinned(monkeypatch):
+    # capture_samplerate=0 keeps the old probe-then-fallback behaviour.
+    import sys
+    import types
+
+    import numpy as np
+
+    opened = []
+    fake_sd = types.SimpleNamespace()
+    fake_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+
+    def rec(frames, samplerate=None, channels=1, dtype="float32", device=None):
+        opened.append(int(samplerate))
+        if int(samplerate) == 16000:
+            raise fake_sd.PortAudioError("reject")  # the AT2020 rejects 16000
+        return np.zeros((frames, 1), dtype="float32")
+
+    fake_sd.rec = rec
+    fake_sd.wait = lambda: None
+    fake_sd.query_devices = lambda *a, **k: {"default_samplerate": 44100}
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    from core.enroll import record_once
+
+    record_once(1.0, sample_rate=16000, capture_samplerate=0)
+    assert opened == [16000, 44100]  # probed 16000 (rejected) then fell back

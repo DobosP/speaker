@@ -190,6 +190,7 @@ class LiveConversation:
         response_timeout: float = 45.0,
         inject: bool = False,
         user_volume: Optional[float] = None,
+        noise_snr_db: Optional[float] = None,
     ) -> None:
         from always_on_agent.events import Mode
         from core.app import build_runtime
@@ -232,6 +233,7 @@ class LiveConversation:
             sherpa_cfg, speaker_id=user_speaker_id, speed=user_speed,
             output_device=getattr(sherpa_cfg, "output_device", None),
             volume=1.0 if user_volume is None else float(user_volume),
+            noise_snr_db=noise_snr_db,
         )
         self._assistant_voice = None
         if capture_assistant_audio:

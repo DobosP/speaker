@@ -1309,3 +1309,142 @@ def test_unknown_suite_errors(capsys):
     assert rc == 2
     out = capsys.readouterr().out
     assert "unknown suite" in out
+
+
+# --- --denoise / --noise-snr flags + noise overlay -----------------------------
+
+
+def test_denoise_flag_enables_denoise(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, ["--denoise"])
+    assert config["sherpa"]["denoise_enabled"] is True
+
+
+def test_no_denoise_flag_leaves_config_untouched(monkeypatch):
+    config = _run_main_capturing_config(monkeypatch, [])
+    assert "denoise_enabled" not in config.get("sherpa", {})
+
+
+def test_denoise_and_noise_snr_in_help(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        live_main.main(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--denoise" in help_text
+    assert "--noise-snr" in help_text
+
+
+def test_noise_overlay_corrupts_played_not_saved(monkeypatch):
+    # --noise-snr overlays noise on the PLAYED buffer only; the returned/saved
+    # clip stays clean (the same contract as --user-volume).
+    import numpy as np
+
+    played = {}
+
+    class _FakeSD:
+        @staticmethod
+        def query_devices(dev, kind):
+            return {"default_samplerate": 22050}
+
+        @staticmethod
+        def play(buf, rate, device=None):
+            played["buf"] = np.asarray(buf, dtype="float32").copy()
+
+        @staticmethod
+        def wait():
+            pass
+
+    monkeypatch.setitem(__import__("sys").modules, "sounddevice", _FakeSD)
+
+    # Reuse the volume-test TTS/device fakes.
+    import core.engines._sherpa_models as sherpa_models
+    import core.engines.sherpa as sherpa_engine
+    from tools.live_session.synthetic_user import SyntheticUser
+
+    monkeypatch.setattr(sherpa_models, "build_tts", lambda cfg: _FakeTTS())
+    monkeypatch.setattr(sherpa_engine, "_norm_device", lambda d: None)
+
+    class _Cfg:
+        tts_speaker_id = 0
+        tts_speed = 1.0
+
+    noisy = SyntheticUser(_Cfg(), speaker_id=0, speed=1.0, noise_snr_db=6.0)
+    saved, sr = noisy.say("hello")
+    played_buf = played["buf"]
+    # The saved clip is the clean full-scale tone (0.8 from _FakeTTS), unchanged.
+    assert abs(float(np.max(np.abs(saved))) - 0.8) < 1e-6
+    # The played buffer has added noise -> higher variance / not equal to the clean.
+    assert played_buf.shape[0] == saved.shape[0]
+    assert float(np.std(played_buf - 0.8)) > 0.0  # noise present around the tone
+    # The SNR is finite/positive: noise std is well below the signal level.
+    assert float(np.std(played_buf)) < 0.8
+
+
+def test_noise_overlay_deterministic_same_seed(monkeypatch):
+    # Two runs at the same SNR produce the SAME noise (fixed seed) -> a fair A/B.
+    import numpy as np
+
+    bufs = []
+
+    class _FakeSD:
+        @staticmethod
+        def query_devices(dev, kind):
+            return {"default_samplerate": 22050}
+
+        @staticmethod
+        def play(buf, rate, device=None):
+            bufs.append(np.asarray(buf, dtype="float32").copy())
+
+        @staticmethod
+        def wait():
+            pass
+
+    monkeypatch.setitem(__import__("sys").modules, "sounddevice", _FakeSD)
+    import core.engines._sherpa_models as sherpa_models
+    import core.engines.sherpa as sherpa_engine
+    from tools.live_session.synthetic_user import SyntheticUser
+
+    monkeypatch.setattr(sherpa_models, "build_tts", lambda cfg: _FakeTTS())
+    monkeypatch.setattr(sherpa_engine, "_norm_device", lambda d: None)
+
+    class _Cfg:
+        tts_speaker_id = 0
+        tts_speed = 1.0
+
+    for _ in range(2):
+        SyntheticUser(_Cfg(), speaker_id=0, speed=1.0, noise_snr_db=10.0).say("hello")
+    assert np.allclose(bufs[0], bufs[1])  # identical noise across runs
+
+
+# --- capability_latency_profile scenario routes to the intended tiers ----------
+
+
+def test_capability_latency_scenario_exists_and_shaped():
+    s = by_name("capability_latency_profile")
+    assert len(s.turns) >= 6
+    # In the latency + capability suites.
+    assert "capability_latency_profile" in {x.name for x in resolve_suite("capability")}
+    assert "capability_latency_profile" in {x.name for x in resolve_suite("latency")}
+
+
+def test_capability_latency_turns_route_to_intended_tiers():
+    # Verify the scenario actually exercises BOTH tiers (the whole point: forcing
+    # everything to one tier makes the latency comparison meaningless). The notes
+    # mark FAST vs MAIN; check the router agrees at the desktop threshold (0.3).
+    from core.routing import HeuristicRouter
+
+    r = HeuristicRouter(threshold=0.3)
+    s = by_name("capability_latency_profile")
+    fast = [t for t in s.turns if t.note.startswith("FAST")]
+    main = [t for t in s.turns if t.note.startswith("MAIN")]
+    assert fast and main  # the scenario spans both tiers
+    for t in fast:
+        assert r.score(t.text, {}) < 0.3, f"expected FAST: {t.text!r}"
+    for t in main:
+        assert r.score(t.text, {}) >= 0.3, f"expected MAIN: {t.text!r}"
+    # The research turn relies on the intent classifier (intent_kind=research),
+    # which escalates regardless of the lexical markers.
+    research = [t for t in s.turns if t.note.startswith("RESEARCH")]
+    for t in research:
+        assert r.score(t.text, {"intent_kind": "research"}) >= 0.3, f"research: {t.text!r}"

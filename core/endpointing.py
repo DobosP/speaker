@@ -111,6 +111,123 @@ class LexicalTurnCompletionDetector:
         return self._complete
 
 
+def _slaney_mel_filters(n_freqs: int = 201, n_mels: int = 80,
+                        fmin: float = 0.0, fmax: float = 8000.0, sr: int = 16000):
+    """The Slaney mel filterbank Whisper uses, in pure numpy. Verified bit-exact
+    (<1e-15) against transformers WhisperFeatureExtractor.mel_filters, so the
+    prosody features match the model's training preprocessing without pulling in
+    transformers/torch. Returns (n_freqs, n_mels)."""
+    import numpy as np
+
+    fft_freqs = np.linspace(0, sr / 2, n_freqs)
+    f_sp = 200.0 / 3
+    min_log_hz = 1000.0
+    min_log_mel = min_log_hz / f_sp
+    logstep = np.log(6.4) / 27.0
+
+    def h2m(f):
+        f = np.asarray(f, float)
+        return np.where(f >= min_log_hz, min_log_mel + np.log(f / min_log_hz) / logstep, f / f_sp)
+
+    def m2h(m):
+        m = np.asarray(m, float)
+        return np.where(m >= min_log_mel, min_log_hz * np.exp(logstep * (m - min_log_mel)), f_sp * m)
+
+    mel_pts = np.linspace(h2m(fmin), h2m(fmax), n_mels + 2)
+    freq_pts = m2h(mel_pts)
+    fdiff = np.diff(freq_pts)
+    ramps = freq_pts[:, None] - fft_freqs[None, :]
+    weights = np.zeros((n_mels, n_freqs))
+    for i in range(n_mels):
+        weights[i] = np.maximum(0.0, np.minimum(-ramps[i] / fdiff[i], ramps[i + 2] / fdiff[i + 1]))
+    enorm = 2.0 / (freq_pts[2:n_mels + 2] - freq_pts[:n_mels])
+    weights *= enorm[:, None]
+    return weights.T.astype("float64")  # (n_freqs, n_mels)
+
+
+class ProsodyTurnCompletionDetector:
+    """Audio turn-completion from PROSODY via the Smart Turn v3 ONNX
+    (pipecat-ai/smart-turn-v3, BSD-2, ~8MB, ~9ms CPU). Returns P(turn complete)
+    from the recent audio waveform -- catching the rising/sustained intonation of
+    a mid-thought trailing-off that the lexical detector (text-only) cannot, so
+    the endpoint floor can drop further without splitting.
+
+    The feature extraction is the Whisper log-mel (80 mels x 800 frames over the
+    last 8s @ 16 kHz), reimplemented in pure numpy and verified bit-exact against
+    transformers' WhisperFeatureExtractor -- no transformers/torch dependency. The
+    ONNX output is read directly as the completion probability (the upstream
+    contract). Validated on the user's REAL voice 2026-06-01: complete turns
+    0.74-0.98, incomplete 0.01-0.56 (margin 0.18). NB the model is human-audio
+    only -- it returns a flat ~0.97 on TTS, so it cannot be validated with the
+    synthetic-user harness; validate on real speech.
+    """
+
+    needs_audio = True  # the engine assembles the utterance audio for this detector
+
+    def __init__(self, model_path: str, *, num_threads: int = 1, min_audio_sec: float = 0.3) -> None:
+        self._model_path = model_path
+        self._num_threads = max(1, int(num_threads))
+        self._min_audio_sec = float(min_audio_sec)
+        self._session = None
+        self._mel = None  # (201, 80), lazy
+
+    def _ensure(self):
+        if self._session is None:
+            import onnxruntime as ort
+
+            opts = ort.SessionOptions()
+            opts.intra_op_num_threads = self._num_threads
+            opts.inter_op_num_threads = 1
+            self._session = ort.InferenceSession(
+                self._model_path, sess_options=opts, providers=["CPUExecutionProvider"]
+            )
+            self._mel = _slaney_mel_filters()
+
+    def _logmel(self, samples, sample_rate: int):
+        """Whisper log-mel (1, 80, 800) for the last 8s of ``samples``. Pure numpy,
+        bit-exact to transformers WhisperFeatureExtractor(chunk_length=8,
+        do_normalize=True)."""
+        import numpy as np
+
+        a = np.asarray(samples, dtype="float64").reshape(-1)
+        if sample_rate != 16000 and a.size:
+            idx = np.linspace(0, a.size - 1, int(round(a.size * 16000 / sample_rate)))
+            a = np.interp(idx, np.arange(a.size), a)
+        n = 8 * 16000
+        a = a[-n:]
+        a = (a - a.mean()) / np.sqrt(a.var() + 1e-7)  # do_normalize (zero-mean unit-var)
+        a = np.pad(a, (0, n - a.size)) if a.size < n else a[:n]
+        a = np.pad(a, (200, 200), mode="reflect")     # center pad n_fft//2
+        win = np.hanning(401)[:-1]                     # periodic hann
+        # Vectorized framing (stride tricks) -- a Python per-frame loop here is
+        # ~40ms; this keeps the detector ONNX-bound (~10ms).
+        from numpy.lib.stride_tricks import sliding_window_view
+
+        frames = sliding_window_view(a, 400)[::160] * win  # (nfr, 400)
+        spec = np.abs(np.fft.rfft(frames, n=400, axis=1)) ** 2  # power (nfr, 201)
+        mel = spec @ self._mel                                   # (nfr, 80)
+        lm = np.log10(np.clip(mel, 1e-10, None)).T              # (80, nfr)
+        lm = lm[:, :-1]                                          # transformers drops the last frame
+        lm = np.maximum(lm, lm.max() - 8.0)
+        lm = (lm + 4.0) / 4.0
+        return lm[None].astype("float32")
+
+    def completion_score(self, text: str, *, samples=None, sample_rate: int = 16000) -> float:
+        """P(turn complete) from the audio. Returns 0.5 (no opinion -> the policy
+        falls back to the acoustic decision) when there is too little audio to
+        judge; raises on a real error (the engine catches it and uses acoustic)."""
+        import numpy as np
+
+        if samples is None:
+            return 0.5
+        a = np.asarray(samples, dtype="float32").reshape(-1)
+        if a.size < int(self._min_audio_sec * sample_rate):
+            return 0.5
+        self._ensure()
+        out = self._session.run(None, {"input_features": self._logmel(a, sample_rate)})[0]
+        return float(np.asarray(out).reshape(-1)[0])
+
+
 class ScriptedTurnCompletionDetector:
     """Test fake: maps partial text -> score (default 0.5). Records ``.calls``."""
 

@@ -175,12 +175,19 @@ def enroll_from_recordings(
 # --- microphone capture ------------------------------------------------------
 
 
-def record_once(seconds: float, sample_rate: int = 16000, *, device=None, input_gain: float = 1.0):
+def record_once(seconds: float, sample_rate: int = 16000, *, device=None,
+                input_gain: float = 1.0, capture_samplerate: int = 0):
     """Block for ``seconds`` and return mono float32 samples at ``sample_rate``.
 
-    Opens the mic at ``sample_rate`` and, if the device rejects it, records at
-    the device's native rate and resamples -- mirroring the engine's capture
-    fallback so enrollment audio matches what the recognizer hears."""
+    ``capture_samplerate`` PINS the mic open rate exactly like the live engine
+    (sherpa.capture_samplerate). This matters: some USB mics (AT2020) SELF-MUTE
+    when ALSA reconfigures them to a non-native rate, so probing 16000 first (the
+    old fallback below) made enrollment capture near-SILENCE -- a self-consistent
+    garbage embedding that rejected the real user live (MEASURED 2026-06-01: disk
+    enrollment 0.05-0.26 vs the user's own live voice, while a live-audio enrollment
+    self-scored 0.76-0.94). When pinned we open ONLY at that rate (never probe), so
+    the mic stays live and the enrolled embedding matches what the gate hears live.
+    When 0, the legacy probe-then-fallback path is kept."""
     import numpy as np
     import sounddevice as sd
 
@@ -188,16 +195,23 @@ def record_once(seconds: float, sample_rate: int = 16000, *, device=None, input_
     from .engines.sherpa import _norm_device
 
     dev = _norm_device(device)
-    try:
-        frames = int(seconds * sample_rate)
-        audio = sd.rec(frames, samplerate=sample_rate, channels=1, dtype="float32", device=dev)
-        sd.wait()
-        capture_sr = sample_rate
-    except sd.PortAudioError:
-        capture_sr = int(sd.query_devices(dev, kind="input")["default_samplerate"])
+    pinned = int(capture_samplerate or 0)
+    if pinned > 0:
+        capture_sr = pinned
         frames = int(seconds * capture_sr)
         audio = sd.rec(frames, samplerate=capture_sr, channels=1, dtype="float32", device=dev)
         sd.wait()
+    else:
+        try:
+            frames = int(seconds * sample_rate)
+            audio = sd.rec(frames, samplerate=sample_rate, channels=1, dtype="float32", device=dev)
+            sd.wait()
+            capture_sr = sample_rate
+        except sd.PortAudioError:
+            capture_sr = int(sd.query_devices(dev, kind="input")["default_samplerate"])
+            frames = int(seconds * capture_sr)
+            audio = sd.rec(frames, samplerate=capture_sr, channels=1, dtype="float32", device=dev)
+            sd.wait()
     samples = np.asarray(audio, dtype="float32").reshape(-1)
     # Identical processing to the live capture path so the enrolled embedding
     # matches what the recognizer / speaker-gate hear live: gain (soft-knee
@@ -276,6 +290,7 @@ def run_enrollment(
                 sample_rate,
                 device=sherpa.get("input_device"),
                 input_gain=float(sherpa.get("input_gain", 1.0) or 1.0),
+                capture_samplerate=int(sherpa.get("capture_samplerate", 0) or 0),
             )
 
     out(f"Enrolling your voice: {passes} clip(s) of ~{seconds:.0f}s each.")

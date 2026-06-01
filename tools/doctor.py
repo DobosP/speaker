@@ -21,7 +21,11 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 
-REQUIRED_IMPORTS = ("numpy", "sounddevice", "sherpa_onnx", "ollama")
+# scipy backs the coherence barge-in detector (the default barge path). Without
+# it the engine still runs but silently falls back to the legacy level gate, so
+# treat it as required -- a missing scipy is exactly the stale-venv gap that made
+# barge-in degrade on a real machine (2026-06-02).
+REQUIRED_IMPORTS = ("numpy", "scipy", "sounddevice", "sherpa_onnx", "ollama")
 # The ASR + TTS artifacts the engine must have to hear and speak (VAD is
 # optional -- it only gates barge-in).
 SHERPA_REQUIRED = (

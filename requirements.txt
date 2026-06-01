@@ -56,4 +56,8 @@ python-dotenv>=1.0.0
 # Anti-aliased capture-path resampling (44.1/48k mic -> 16k ASR). Falls back to
 # scipy.signal.resample_poly, then naive linear, if absent. See core/audio_frontend.py.
 soxr>=0.3
-scipy>=1.10  # polyphase resample fallback + signal utils
+# REQUIRED for the coherence barge-in detector (core/engines/echo_coherence.py):
+# scipy.signal coherence/correlate/welch. Also the polyphase resample fallback.
+# Needs >=1.13 to support numpy 2.x; without scipy barge-in silently degrades to
+# the legacy level gate (caught by `python -m tools.doctor`).
+scipy>=1.13  # signal utils for coherence barge-in + resample fallback

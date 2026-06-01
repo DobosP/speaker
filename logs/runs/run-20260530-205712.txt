@@ -1,0 +1,25 @@
+20:57:12.249 INFO  speaker | run 20260530-205712 started (debug=False) -> logs/runs/run-20260530-205712.txt
+20:57:12.271 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=12593.6MB(41.9%) proc_rss=19.7MB gpu=0.0% gpu_mem=23.0/16376.0MB
+20:57:12.289 INFO  speaker.sysinfo | system mark after_build: cpu=1.8% ram=12584.0MB(41.9%) proc_rss=19.7MB gpu=0.0% gpu_mem=23.0/16376.0MB
+20:57:12.289 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+20:57:12.290 INFO  speaker.runtime | startup pre-warm complete (1 model(s))
+20:57:12.290 INFO  speaker.runtime | final -> brain: 'assistant please help me' (mode=assistant)
+20:57:12.290 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='assistant please help me'
+20:57:12.291 INFO  speaker.tasks | task bf9f6089874d started: mode=assistant capability=assistant.answer input='assistant please help me'
+20:57:12.301 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'assistant please help me'
+20:57:12.301 INFO  speaker.llm | fast tier done in 0.00s (34 chars, streamed)
+20:57:12.301 INFO  speaker.tasks | task bf9f6089874d completed in 0.01s (34 chars)
+20:57:12.301 INFO  speaker.runtime | assistant: 'You said: assistant please help me'
+20:57:12.302 INFO  speaker.runtime | final -> brain: 'research mode' (mode=assistant)
+20:57:12.302 DEBUG speaker.supervisor | decision: kind=mode_switch confidence=0.98 reason=mode_phrase mode=assistant text='research mode'
+20:57:12.302 INFO  speaker.runtime | final -> brain: 'the history of rome' (mode=research)
+20:57:12.302 DEBUG speaker.supervisor | decision: kind=research confidence=0.82 reason=research_mode mode=research text='the history of rome'
+20:57:12.302 INFO  speaker.tasks | task dbb82e04c28c started: mode=research capability=research.local input='the history of rome'
+20:57:12.333 INFO  speaker.tasks | task dbb82e04c28c completed in 0.03s (193 chars)
+20:57:12.334 INFO  speaker.runtime | assistant: 'You said: Question: the history of rome'
+20:57:12.334 INFO  speaker.runtime | assistant: 'Local findings: Research scope: history, rome No local result for: the history of rome'
+20:57:12.334 INFO  speaker.runtime | assistant: 'Give a brief spoken-style summary and one concrete recommendation.'
+20:57:12.334 INFO  speaker.runtime | final -> brain: 'stop' (mode=research)
+20:57:12.334 DEBUG speaker.supervisor | decision: kind=stop confidence=1.00 reason=stop_phrase mode=research text='stop'
+20:57:12.334 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+20:57:12.365 INFO  speaker.sysinfo | system final: cpu=5.4% ram=12594.5MB(41.9%) proc_rss=19.9MB gpu=0.0% gpu_mem=23.0/16376.0MB | deltas: {'ram_used_mb_delta': 0.9, 'proc_rss_mb_delta': 0.2, 'gpu_mem_used_mb_delta': 0.0}

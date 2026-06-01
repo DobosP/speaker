@@ -154,6 +154,17 @@ class SherpaConfig:
     # (~0.2-0.3s); validate on device. See core.endpointing.EndpointConfig.
     endpoint_high_confidence_floor: float = 0.0
     endpoint_high_confidence_score: float = 0.75
+    # Turn-completion detector for the semantic endpoint: "lexical" (text-only,
+    # cheap, default) or "prosody" (the Smart Turn v3 audio model -- reads the
+    # rising/sustained intonation of a mid-thought trailing-off that lexical can't,
+    # so the floor can drop further). Prosody needs endpoint_prosody_model set.
+    endpoint_detector: str = "lexical"
+    endpoint_prosody_model: str = ""        # path to the Smart Turn ONNX
+    # The prosody model (~10-25ms/call) is consulted ONLY once trailing silence has
+    # reached this floor (the decision window) -- during active speech the acoustic
+    # endpoint is False anyway, so this bounds the cost to a few calls per turn.
+    endpoint_prosody_min_silence: float = 0.15
+    endpoint_prosody_threads: int = 1       # onnxruntime intra-op threads (capture thread)
     # Restore conventional casing on partials/finals (the streaming model emits
     # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
     asr_restore_casing: bool = True
@@ -338,7 +349,13 @@ class SherpaOnnxEngine(AudioEngine):
 
             self._endpoint_policy = AdaptiveEndpointPolicy(EndpointConfig.from_sherpa(config))
             if self._turn_detector is None:
-                self._turn_detector = LexicalTurnCompletionDetector()
+                self._turn_detector = self._build_turn_detector(config)
+        # Only consult an audio (prosody) detector once trailing silence reaches
+        # this floor -- the decision window -- so the per-block capture loop never
+        # pays for it during active speech.
+        self._endpoint_prosody_min_silence = float(
+            getattr(config, "endpoint_prosody_min_silence", 0.15) or 0.0
+        )
         # Only assemble the utterance audio buffer for the endpoint check when a
         # detector actually consumes it (a prosodic model); the lexical default
         # is text-only, so the capture loop pays nothing.
@@ -761,6 +778,35 @@ class SherpaOnnxEngine(AudioEngine):
             result = restore_casing(result, force=self._punct is not None)
         return result
 
+    @staticmethod
+    def _build_turn_detector(config):
+        """Build the configured turn-completion detector. ``prosody`` loads the
+        Smart Turn ONNX (when the model path exists + onnxruntime imports);
+        anything else, or any failure, falls back to the cheap lexical detector so
+        a misconfiguration never breaks capture."""
+        import os
+
+        from ..endpointing import LexicalTurnCompletionDetector
+
+        which = str(getattr(config, "endpoint_detector", "lexical") or "lexical").lower()
+        if which == "prosody":
+            model = getattr(config, "endpoint_prosody_model", "") or ""
+            if model and os.path.exists(model):
+                try:
+                    from ..endpointing import ProsodyTurnCompletionDetector
+
+                    log.info("endpoint detector: prosody (Smart Turn) %s", model)
+                    return ProsodyTurnCompletionDetector(
+                        model, num_threads=int(getattr(config, "endpoint_prosody_threads", 1) or 1)
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning("prosody turn-detector failed to load (%s); using lexical",
+                                model, exc_info=True)
+            else:
+                log.warning("endpoint_detector=prosody but endpoint_prosody_model missing/"
+                            "not found (%r); using lexical", model)
+        return LexicalTurnCompletionDetector()
+
     def _decide_endpoint(
         self, *, acoustic_endpoint: bool, partial: str, silence_sec: float, samples=None
     ) -> bool:
@@ -776,6 +822,11 @@ class SherpaOnnxEngine(AudioEngine):
             return acoustic_endpoint
         text = (partial or "").strip()
         if not text:
+            return acoustic_endpoint
+        # An audio (prosody) detector is expensive (~10-25ms); consult it only once
+        # trailing silence has reached the decision window. During active speech the
+        # acoustic endpoint is False, so skipping it is behaviour-identical but free.
+        if self._endpoint_wants_audio and silence_sec < self._endpoint_prosody_min_silence:
             return acoustic_endpoint
         try:
             score = self._turn_detector.completion_score(

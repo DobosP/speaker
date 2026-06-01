@@ -6,14 +6,129 @@ on the acoustic timer, integrated into the sherpa engine via a pure
 real-model latency win is validated on device.
 """
 from __future__ import annotations
+import statistics
+
+from pathlib import Path
 
 from core.endpointing import (
     AdaptiveEndpointPolicy,
     EndpointConfig,
     LexicalTurnCompletionDetector,
+    ProsodyTurnCompletionDetector,
     ScriptedTurnCompletionDetector,
     TurnCompletionDetector,
+    _slaney_mel_filters,
 )
+
+_SMART_TURN_MODEL = Path("pretrained_models/sherpa/turn/smart-turn-v3.2-cpu.onnx")
+
+
+# --- prosody detector (Smart Turn) -- pure feature-extraction + edges ---------
+
+
+def test_slaney_mel_filters_shape_and_nonneg():
+    import numpy as np
+
+    mel = _slaney_mel_filters()
+    assert mel.shape == (201, 80)
+    assert float(np.min(mel)) >= 0.0
+    assert float(np.max(mel)) > 0.0  # not all-zero
+    # deterministic
+    assert np.array_equal(mel, _slaney_mel_filters())
+
+
+def test_prosody_detector_needs_audio_and_neutral_on_thin_audio():
+    import numpy as np
+
+    d = ProsodyTurnCompletionDetector("/no/model.onnx")  # not loaded until first run
+    assert d.needs_audio is True
+    # No / too-little audio -> 0.5 (no opinion -> the policy uses the acoustic
+    # decision). The model is never loaded, so a bad path doesn't matter here.
+    assert d.completion_score("hi", samples=None) == 0.5
+    assert d.completion_score("hi", samples=np.zeros(1600, dtype="float32")) == 0.5  # 0.1s < 0.3
+
+
+def test_prosody_logmel_shape_is_whisper_input():
+    import numpy as np
+
+    d = ProsodyTurnCompletionDetector("/no/model.onnx")
+    d._mel = _slaney_mel_filters()  # _logmel uses it without loading the ONNX
+    feats = d._logmel(np.random.default_rng(0).standard_normal(2 * 16000).astype("float32"), 16000)
+    assert feats.shape == (1, 80, 800)  # the model's input_features shape
+    assert feats.dtype == np.dtype("float32")
+
+
+# --- prosody detector -- real model (skipped if the ONNX isn't downloaded) ----
+
+
+def test_prosody_score_in_unit_range_on_real_model():
+    import pytest
+
+    if not _SMART_TURN_MODEL.exists():
+        pytest.skip("Smart Turn ONNX not downloaded (python -m tools.setup_models --turn-model)")
+    import numpy as np
+
+    d = ProsodyTurnCompletionDetector(str(_SMART_TURN_MODEL))
+    # noise is enough audio to run; the score must be a valid probability.
+    s = d.completion_score("", samples=(np.random.default_rng(0).standard_normal(2 * 16000) * 0.1).astype("float32"))
+    assert 0.0 <= s <= 1.0
+
+
+def test_prosody_separates_recorded_complete_vs_incomplete_if_present():
+    import glob
+    import os
+
+    import pytest
+
+    if not _SMART_TURN_MODEL.exists():
+        pytest.skip("Smart Turn ONNX not downloaded")
+    comp = sorted(glob.glob("logs/turn_detect/*/complete_*.npy"))
+    inc = sorted(glob.glob("logs/turn_detect/*/incomplete_*.npy"))
+    if not comp or not inc:
+        pytest.skip("no recorded turn_detect clips (python -m tools.turn_detect_check record ...)")
+    import numpy as np
+
+    d = ProsodyTurnCompletionDetector(str(_SMART_TURN_MODEL))
+    cs = [d.completion_score("", samples=np.load(p).astype("float32")) for p in comp]
+    is_ = [d.completion_score("", samples=np.load(p).astype("float32")) for p in inc]
+    # On real human voice the model separates complete (high) from incomplete (low).
+    assert statistics.fmean(cs) > statistics.fmean(is_) + 0.1
+
+
+# --- engine factory: lexical default, prosody fallback ------------------------
+
+
+def test_engine_builds_lexical_by_default():
+    from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+
+    d = SherpaOnnxEngine._build_turn_detector(SherpaConfig.from_dict({"endpoint_enabled": True}))
+    assert isinstance(d, LexicalTurnCompletionDetector)
+
+
+def test_engine_prosody_missing_model_falls_back_to_lexical():
+    from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+
+    cfg = SherpaConfig.from_dict({
+        "endpoint_enabled": True, "endpoint_detector": "prosody",
+        "endpoint_prosody_model": "/does/not/exist.onnx",
+    })
+    d = SherpaOnnxEngine._build_turn_detector(cfg)
+    assert isinstance(d, LexicalTurnCompletionDetector)  # graceful fallback, no crash
+
+
+def test_engine_prosody_builds_detector_when_model_present():
+    import pytest
+
+    if not _SMART_TURN_MODEL.exists():
+        pytest.skip("Smart Turn ONNX not downloaded")
+    from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+
+    cfg = SherpaConfig.from_dict({
+        "endpoint_enabled": True, "endpoint_detector": "prosody",
+        "endpoint_prosody_model": str(_SMART_TURN_MODEL),
+    })
+    d = SherpaOnnxEngine._build_turn_detector(cfg)
+    assert isinstance(d, ProsodyTurnCompletionDetector) and d.needs_audio is True
 
 
 # --- lexical detector --------------------------------------------------------

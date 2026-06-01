@@ -74,6 +74,15 @@ GTCRN_MODEL_URL = (
     "speech-enhancement-models/gtcrn_simple.onnx"
 )
 
+# Optional PROSODY turn-completion model for the semantic endpoint (Smart Turn v3,
+# pipecat-ai/smart-turn-v3, BSD-2). A single ~8.7 MB .onnx HF repo file -- read the
+# audio waveform, predict P(turn complete), so the endpoint floor can drop without
+# splitting. Override with --turn-model-url or the SMART_TURN_MODEL_URL env var.
+SMART_TURN_MODEL_URL = (
+    "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/"
+    "smart-turn-v3.2-cpu.onnx"
+)
+
 
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
@@ -236,6 +245,21 @@ def main(argv: list[str] | None = None) -> int:
         "and wire denoise_model in config; off by default. After fetching, set "
         "sherpa.denoise_enabled=true to activate it on the capture path.",
     )
+    parser.add_argument(
+        "--turn-model-url",
+        dest="turn_model_url",
+        default=os.environ.get("SMART_TURN_MODEL_URL", SMART_TURN_MODEL_URL),
+        help="URL of the optional Smart Turn prosody endpoint model .onnx (override "
+        "or set SMART_TURN_MODEL_URL)",
+    )
+    parser.add_argument(
+        "--turn-model",
+        dest="turn_model",
+        action="store_true",
+        help="also download the optional prosody turn-completion model (Smart Turn "
+        "v3, ~8.7 MB) and wire endpoint_prosody_model in config; off by default. "
+        "After fetching, set sherpa.endpoint_detector=prosody to activate it.",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -326,6 +350,23 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"[models] speech-denoise model not fetched ({exc}); continuing without it. "
                 "Denoise stays off (sherpa.denoise_enabled) until you re-run.",
+                file=sys.stderr,
+            )
+
+    # Prosody turn-completion model (optional, opt-in). Same non-fatal contract: a
+    # failed fetch leaves the endpoint on the lexical detector (the default), never
+    # blocks core ASR/TTS setup. HF repo file -> direct-URL streamed download.
+    if args.turn_model:
+        turn_dest = os.path.join(args.dest, "turn")
+        print(f"[models] fetching prosody turn model: {args.turn_model_url} -> {turn_dest}")
+        try:
+            resolved["endpoint_prosody_model"] = fetch_speaker_model(
+                turn_dest, args.turn_model_url, force=args.force
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] prosody turn model not fetched ({exc}); continuing without it. "
+                "The endpoint stays on the lexical detector until you re-run.",
                 file=sys.stderr,
             )
 

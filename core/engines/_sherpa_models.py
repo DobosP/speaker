@@ -51,6 +51,54 @@ def build_recognizer(c: "SherpaConfig"):
     ))
 
 
+def build_final_recognizer(c: "SherpaConfig"):
+    """Optional OFFLINE second-pass recognizer for the FINAL transcript (the text
+    that reaches the LLM). The streaming transducer gives low-latency partials +
+    the endpoint; this re-transcribes the endpointed UTTERANCE with a stronger
+    offline model that sees the WHOLE utterance at once -- far more robust on
+    run-on / casual speech, with punctuation + casing + ITN built in. Measured
+    2026-06-01: SenseVoice fixed the streaming garble ("HEY IRIC LISTENING TO ME"
+    -> "Hey, are you listening to me.") at ~150ms/utterance.
+
+    None unless ``asr_final_backend`` ('sense_voice' | 'whisper') is set and the
+    model exists. Fail-OPEN: any build error returns None so the engine simply
+    keeps the streaming final -- a bad second-pass config never breaks capture."""
+    backend = (getattr(c, "asr_final_backend", "") or "").strip().lower()
+    if not backend:
+        return None
+    import os
+
+    model = getattr(c, "asr_final_model", "") or ""
+    tokens = getattr(c, "asr_final_tokens", "") or ""
+    if not model or not os.path.exists(model):
+        return None
+    try:
+        import sherpa_onnx
+
+        if backend == "sense_voice":
+            kwargs = dict(
+                model=model, tokens=tokens, num_threads=c.resolved_asr_threads,
+                provider=c.provider, use_itn=bool(getattr(c, "asr_final_use_itn", True)),
+                language=getattr(c, "asr_final_language", "") or "",
+            )
+            return sherpa_onnx.OfflineRecognizer.from_sense_voice(**_supported(
+                sherpa_onnx.OfflineRecognizer.from_sense_voice, kwargs))
+        if backend == "whisper":
+            kwargs = dict(
+                encoder=model, decoder=getattr(c, "asr_final_decoder", "") or "",
+                tokens=tokens, num_threads=c.resolved_asr_threads, provider=c.provider,
+            )
+            return sherpa_onnx.OfflineRecognizer.from_whisper(**_supported(
+                sherpa_onnx.OfflineRecognizer.from_whisper, kwargs))
+    except Exception:  # noqa: BLE001 - fail open to the streaming final
+        import logging
+
+        logging.getLogger("speaker.sherpa").warning(
+            "second-pass recognizer (%s) failed to build; using the streaming final",
+            backend, exc_info=True)
+    return None
+
+
 def _supported(fn, kwargs: dict) -> dict:
     """Drop kwargs the target callable doesn't accept.
 

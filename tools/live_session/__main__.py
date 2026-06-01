@@ -107,6 +107,19 @@ def main(argv: list[str] | None = None) -> int:
                         "dial it DOWN (e.g. --input-gain 1) to stop a loud near-field speaker from "
                         "SATURATING the open mic and garbling STT. Mirrors the --no-input-gate / "
                         "--smart-endpoint in-memory config override.")
+    p.add_argument("--denoise", action="store_true",
+                   help="force sherpa.denoise_enabled=True for this run (the GTCRN speech-denoise "
+                        "front-end, default OFF). A/B it against a no-flag run to measure its effect "
+                        "on STT -- pair with --noise-snr to inject controlled noise into the played "
+                        "audio. NB the denoiser can OVER-suppress clean over-the-air speech, so a "
+                        "clean A/B may show it HURTS; its win is under genuine broadband noise. "
+                        "In-memory per-run override only (committed config default stays OFF).")
+    p.add_argument("--noise-snr", type=float, default=None,
+                   help="ACOUSTIC ONLY: overlay deterministic broadband noise on the synthetic-user "
+                        "PLAYBACK at this SNR in dB (e.g. --noise-snr 8 = noisy, 20 = mild). The "
+                        "controlled-noise half of the denoise A/B: run --noise-snr N with and without "
+                        "--denoise and compare STT. Only the played buffer is corrupted; the saved "
+                        "user/NN.wav reference clip stays clean.")
     p.add_argument("--barge-in", action="store_true",
                    help="ACOUSTIC ONLY: force sherpa.barge_in_enabled=True for this run to MEASURE "
                         "over-the-air talk-over behavior on the real mic. Default config keeps it OFF "
@@ -168,6 +181,23 @@ def main(argv: list[str] | None = None) -> int:
         config.setdefault("sherpa", {})["release_output_when_idle"] = True
     if args.barge_in:
         config.setdefault("sherpa", {})["barge_in_enabled"] = True
+        if not args.inject:
+            # MEASURED 2026-06-01: acoustic (non-inject) --barge-in on a SINGLE
+            # exclusive-ALSA output device can hard-CRASH (PortAudio SIGFPE / core
+            # dump) -- the synthetic user opening its playback stream while the
+            # assistant's just-barged output stream still holds the same device
+            # races inside PortAudio's stream-open. It also self-interrupts on the
+            # assistant's own TTS leaking into the open mic (no AEC). The self-barge
+            # SIGNAL still appears in the log before any crash. For reliable barge
+            # grading use --inject; for a REAL acoustic barge use a SEPARATE
+            # --output-device for the interrupter, or AEC.
+            print("WARNING: acoustic --barge-in on a single output device is FRAGILE "
+                  "-- it can self-interrupt on the assistant's own TTS and can crash "
+                  "PortAudio (SIGFPE) on the shared exclusive-ALSA device. Prefer "
+                  "--inject for barge LOGIC, or a 2nd output device / AEC for real "
+                  "acoustic barge-in. Proceeding (best-effort).\n")
+    if args.denoise:
+        config.setdefault("sherpa", {})["denoise_enabled"] = True
 
     problems = _preflight(config)
     if args.check or problems:
@@ -211,8 +241,10 @@ def main(argv: list[str] | None = None) -> int:
     print("Make sure your speakers and mic are on, at a sane volume, near each other.")
     _gain = config.get("sherpa", {}).get("input_gain")
     _uvol = args.user_volume if args.user_volume is not None else 1.0
+    _denoise = bool(config.get("sherpa", {}).get("denoise_enabled"))
     print(f"SNR knobs: input_gain={_gain} (--input-gain), "
-          f"user_volume={_uvol} (--user-volume; acoustic only)\n")
+          f"user_volume={_uvol} (--user-volume; acoustic only), "
+          f"noise_snr={args.noise_snr} dB (--noise-snr), denoise={_denoise} (--denoise)\n")
 
     rc = 0
     runs: list[dict] = []  # collected for the consolidated suite report
@@ -235,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                 response_timeout=args.response_timeout,
                 inject=args.inject,
                 user_volume=args.user_volume,
+                noise_snr_db=args.noise_snr,
             )
             convo.start()
             time.sleep(0.5)  # settle the mic

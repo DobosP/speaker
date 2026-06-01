@@ -14,16 +14,32 @@ from tools.live_session.driver import _is_answer, _parse_pause
 from tools.live_session.report import (
     BARGE_STOP_RATE_MIN,
     HEARD_OK_THRESHOLD,
+    RESPONSE_OK_THRESHOLD,
+    _pctls,
+    build_suite_report,
     grade_barge_turns,
+    response_aggregate,
+    response_rows,
+    response_score,
     stt_score,
     summarize_barge,
     summarize_capture,
     write_grade,
     write_latency_report,
+    write_suite_report,
     write_summary,
     write_timeline,
 )
-from tools.live_session.scenarios import LONG_ANSWER, SCENARIOS, Scenario, Turn, by_name
+from tools.live_session.scenarios import (
+    BARGE_SCENARIOS,
+    LONG_ANSWER,
+    SCENARIOS,
+    Scenario,
+    Turn,
+    by_name,
+    resolve_suite,
+    suite_names,
+)
 
 
 def test_scenarios_are_well_formed():
@@ -875,3 +891,421 @@ def test_write_summary_renders_no_barge_control_verdict(tmp_path):
     # The control's barge verdict is "ok" with an n/a rate (no intended barge).
     assert "Verdict: ok" in text
     assert "control" in text  # the n/a-rate annotation names the control case
+
+
+# --- response-quality scorer (pure) --------------------------------------------
+
+
+def test_response_score_all_concepts_present_is_one():
+    r = response_score(("paris",), (), "The capital of France is Paris.")
+    assert r["score"] == 1.0 and r["ok"] is True
+    assert r["matched"] == ["paris"] and r["missing"] == []
+    assert r["forbidden_hit"] == []
+
+
+def test_response_score_fraction_of_concepts():
+    # Two expected concepts, only one present -> 0.5.
+    r = response_score(("red", "blue"), (), "The flag is red and white.")
+    assert r["score"] == 0.5
+    assert "red" in r["matched"] and "blue" in r["missing"]
+    assert r["ok"] is False  # 0.5 < RESPONSE_OK_THRESHOLD
+
+
+def test_response_score_alternatives_with_pipe():
+    # "seven|7" matches either spelling.
+    assert response_score(("seven|7",), (), "There are seven days.")["score"] == 1.0
+    assert response_score(("seven|7",), (), "There are 7 days.")["score"] == 1.0
+    assert response_score(("seven|7",), (), "There are five days.")["score"] == 0.0
+
+
+def test_response_score_digit_matches_whole_token_not_substring():
+    # A digit alternative must match a whole token: "4" must NOT hit inside "40".
+    assert response_score(("4",), (), "The answer is 40 apples.")["score"] == 0.0
+    assert response_score(("4",), (), "The answer is 4.")["score"] == 1.0
+
+
+def test_response_score_alpha_matches_substring_plural():
+    # An alphabetic concept matches as a substring, so "moon" hits "moons" and
+    # "freeze" hits "freezes" (the realistic-scenario plural/inflection case).
+    assert response_score(("moon",), (), "Jupiter has 95 moons.")["score"] == 1.0
+    assert response_score(("freeze|ice",), (), "Water freezes into ice.")["score"] == 1.0
+
+
+def test_response_score_forbidden_hit_flags_and_fails():
+    # The honesty probe: the assistant falsely claims it saved a note.
+    r = response_score(
+        (), ("i've saved|i saved|noted that",),
+        "Got it, I've saved that note for you.",
+    )
+    assert r["forbidden_hit"]  # the false claim is caught
+    assert r["ok"] is False
+    # Score is 1.0 (nothing was *expected*) but ok is killed by the forbidden hit.
+    assert r["score"] == 1.0
+
+
+def test_response_score_forbid_only_clean_answer_is_ok():
+    # A truthful decline (no forbidden phrase) on a forbid-only turn passes.
+    r = response_score(
+        (), ("i've saved|i saved",),
+        "I can't actually save notes, but I can help you remember it now.",
+    )
+    assert r["forbidden_hit"] == [] and r["ok"] is True and r["score"] == 1.0
+
+
+def test_response_score_empty_answer_scores_zero_when_expected():
+    assert response_score(("paris",), (), "")["score"] == 0.0
+    assert response_score(("paris",), (), None)["score"] == 0.0
+    # ...but a forbid-only turn with no answer is vacuously ok (no false claim).
+    assert response_score((), ("i saved",), "")["ok"] is True
+
+
+def test_response_score_normalizes_punctuation_and_case():
+    # Spelling answers come back hyphenated/spaced; normalization makes them match.
+    assert response_score(("m-a-r-s",), (), "You spell it M-A-R-S.")["score"] == 1.0
+
+
+# --- response_rows pairing (scenario turns -> the answer that followed) ---------
+
+
+def _scenario_with(turns):
+    return Scenario(name="resp_demo", capability="c", goal="g", turns=tuple(turns))
+
+
+def test_response_rows_pairs_turn_to_following_answer():
+    scenario = _scenario_with([
+        Turn("What's the capital of France?", "wait_for_response", expect=("paris",)),
+        Turn("How many days in a week?", "wait_for_response", expect=("seven|7",)),
+    ])
+    events = [
+        {"idx": 1, "speaker": "user", "text": "what's the capital of france"},
+        {"idx": 1, "speaker": "assistant", "text": "Paris is the capital."},
+        {"idx": 2, "speaker": "user", "text": "how many days in a week"},
+        {"idx": 2, "speaker": "assistant", "text": "There are seven days."},
+    ]
+    rows = response_rows(scenario, events)
+    assert len(rows) == 2
+    assert rows[0]["turn"] == 1 and rows[0]["score"] == 1.0
+    assert rows[0]["answer"] == "Paris is the capital."
+    assert rows[1]["turn"] == 2 and rows[1]["score"] == 1.0
+
+
+def test_response_rows_skips_ungraded_turns():
+    scenario = _scenario_with([
+        Turn("Good morning, weather?", "wait_for_response"),  # no expect/forbid
+        Turn("Capital of Japan?", "wait_for_response", expect=("tokyo",)),
+    ])
+    events = [
+        {"idx": 1, "speaker": "user", "text": "good morning weather"},
+        {"idx": 1, "speaker": "assistant", "text": "I don't have live weather."},
+        {"idx": 2, "speaker": "user", "text": "capital of japan"},
+        {"idx": 2, "speaker": "assistant", "text": "Tokyo."},
+    ]
+    rows = response_rows(scenario, events)
+    # Only the graded (expect-bearing) turn appears.
+    assert len(rows) == 1 and rows[0]["turn"] == 2 and rows[0]["score"] == 1.0
+
+
+def test_response_rows_joins_multi_sentence_answer():
+    scenario = _scenario_with([
+        Turn("Primary colors?", "wait_for_response", expect=("red", "blue", "yellow")),
+    ])
+    events = [
+        {"idx": 1, "speaker": "user", "text": "primary colors"},
+        {"idx": 1, "speaker": "assistant", "text": "The primary colors are red."},
+        {"idx": 1, "speaker": "assistant", "text": "Also blue and yellow."},
+    ]
+    rows = response_rows(scenario, events)
+    assert rows[0]["score"] == 1.0  # all three across the joined sentences
+
+
+def test_response_rows_skips_immediately_and_barge_in_turns():
+    # A graded turn scheduled as a merge/interrupt does NOT pair 1:1 with the next
+    # answer, so it must be skipped (mis-attribution guard) even if it has expect.
+    scenario = _scenario_with([
+        Turn("clean turn", "wait_for_response", expect=("paris",)),
+        Turn("addon turn", "immediately", expect=("tokyo",)),
+        Turn("barge turn", "barge_in", expect=("london",)),
+    ])
+    events = [
+        {"idx": 1, "speaker": "user", "text": "clean turn"},
+        {"idx": 1, "speaker": "assistant", "text": "Paris."},
+        {"idx": 2, "speaker": "user", "text": "addon turn"},
+        {"idx": 2, "speaker": "assistant", "text": "Tokyo."},
+        {"idx": 3, "speaker": "user", "text": "barge turn"},
+        {"idx": 3, "speaker": "assistant", "text": "London."},
+    ]
+    rows = response_rows(scenario, events)
+    assert len(rows) == 1 and rows[0]["turn"] == 1  # only the wait_for_response turn
+
+
+def test_response_rows_short_run_does_not_crash():
+    # The run timed out: the second turn never produced a user event.
+    scenario = _scenario_with([
+        Turn("Q1", "wait_for_response", expect=("a",)),
+        Turn("Q2", "wait_for_response", expect=("b",)),
+    ])
+    events = [
+        {"idx": 1, "speaker": "user", "text": "q1"},
+        {"idx": 1, "speaker": "assistant", "text": "a"},
+    ]
+    rows = response_rows(scenario, events)
+    assert len(rows) == 1 and rows[0]["turn"] == 1
+
+
+def test_response_aggregate_headline():
+    rows = [
+        {"score": 1.0, "ok": True, "forbidden_hit": []},
+        {"score": 0.5, "ok": False, "forbidden_hit": []},
+        {"score": 1.0, "ok": True, "forbidden_hit": []},
+    ]
+    agg = response_aggregate(rows)
+    assert agg["n"] == 3 and agg["n_ok"] == 2
+    assert agg["response_score_median"] == 1.0
+    assert agg["response_score_min"] == 0.5
+    assert agg["n_forbidden_hits"] == 0
+    assert agg["verdict"] == "ok"
+
+
+def test_response_aggregate_forbidden_hit_fails_verdict():
+    rows = [
+        {"score": 1.0, "ok": False, "forbidden_hit": ["i saved"]},
+        {"score": 1.0, "ok": True, "forbidden_hit": []},
+    ]
+    agg = response_aggregate(rows)
+    assert agg["n_forbidden_hits"] == 1 and agg["verdict"] == "FAIL"
+
+
+def test_response_aggregate_empty_is_n_zero():
+    assert response_aggregate([]) == {"n": 0}
+
+
+# --- latency percentiles (pure) ------------------------------------------------
+
+
+def test_pctls_basic_distribution():
+    d = _pctls([100, 200, 300, 400, 500])
+    assert d["n"] == 5 and d["min"] == 100.0 and d["max"] == 500.0
+    assert d["p50"] == 300.0
+    assert d["mean"] == 300.0
+
+
+def test_pctls_single_value():
+    d = _pctls([1184.2])
+    assert d["n"] == 1
+    assert d["p50"] == d["p90"] == d["p99"] == d["min"] == d["max"] == 1184.2
+
+
+def test_pctls_empty_is_empty():
+    assert _pctls([]) == {}
+    assert _pctls([None, None]) == {}  # type: ignore[list-item]
+
+
+def test_pctls_p90_interpolates():
+    # 10 values 0..90; p90 sits at the 9th order statistic edge.
+    d = _pctls(list(range(0, 100, 10)))  # 0,10,...,90
+    assert d["p50"] == 45.0
+    assert d["p90"] >= 80.0  # high tail
+
+
+def test_latency_report_has_distribution_and_stages(tmp_path):
+    path = write_latency_report(_fake_events(), tmp_path)
+    rep = json.loads(path.read_text())
+    agg = rep["aggregate_first_audio"]
+    # Original keys preserved...
+    assert agg["n"] == 2 and agg["first_audio_ms_min"] == 410.0
+    # ...new distribution keys added.
+    assert "first_audio_ms_p50" in agg and "first_audio_ms_p90" in agg
+    assert "first_audio_ms_p99" in agg and "first_audio_ms_mean" in agg
+    # Per-stage distribution present for endpoint/LLM/TTS.
+    assert "endpoint_ms" in rep["stages"]
+    assert rep["stages"]["endpoint_ms"]["n"] == 2
+
+
+# --- write_grade with a scenario includes the response block -------------------
+
+
+def test_write_grade_includes_response_when_scenario_given(tmp_path):
+    scenario = _scenario_with([
+        Turn("what's the capital of france", "wait_for_response", expect=("paris",)),
+        Turn("how many days in a week", "pause:1.5", expect=("seven|7",)),
+    ])
+    # _fake_events answers "Paris." then "Seven." -> both graded ok.
+    report = write_grade(_fake_events(), tmp_path, scenario=scenario)
+    assert "response" in report
+    resp = report["response"]
+    assert resp["aggregate"]["n"] == 2
+    assert resp["aggregate"]["verdict"] == "ok"
+    assert all(r["score"] == 1.0 for r in resp["per_turn"])
+
+
+def test_write_grade_without_scenario_has_empty_response(tmp_path):
+    # Backward compat: no scenario -> response section present but empty.
+    report = write_grade(_fake_events(), tmp_path)
+    assert report["response"]["per_turn"] == []
+    assert report["response"]["aggregate"] == {"n": 0}
+
+
+def test_write_summary_renders_response_section(tmp_path):
+    scenario = _scenario_with([
+        Turn("what's the capital of france", "wait_for_response", expect=("paris",)),
+        Turn("how many days in a week", "pause:1.5", expect=("seven|7",)),
+    ])
+    text = write_summary(
+        scenario, _fake_events(), tmp_path, voice={"speaker_id": 1, "speed": 1.0},
+    ).read_text()
+    assert "Response quality" in text
+    assert "median response score" in text
+    # The latency distribution line is rendered too.
+    assert "first_audio distribution" in text
+    assert "where the time goes" in text
+
+
+# --- suite report (pooled cross-scenario dashboard) ----------------------------
+
+
+def test_build_suite_report_pools_across_scenarios():
+    s1 = _scenario_with([Turn("capital of france", "wait_for_response", expect=("paris",))])
+    s2 = _scenario_with([Turn("days in a week", "wait_for_response", expect=("seven|7",))])
+    run1 = {
+        "scenario": s1,
+        "events": [
+            {"idx": 1, "speaker": "user", "text": "capital of france",
+             "asr_final": "capital of france"},
+            {"idx": 1, "speaker": "assistant", "text": "Paris.",
+             "latency": {"first_audio_latency": 1.0, "endpoint_latency": 0.9,
+                         "final_to_first_token": 0.08, "first_token_to_audio": 0.02,
+                         "barge_in_latency": None}},
+        ],
+        "capture": summarize_capture(rec_seconds=10.0, wall_seconds=10.5,
+                                     partials_during_user_total=2, capture_silent_warned=False),
+    }
+    run2 = {
+        "scenario": s2,
+        "events": [
+            {"idx": 1, "speaker": "user", "text": "days in a week",
+             "asr_final": "days in a week"},
+            {"idx": 1, "speaker": "assistant", "text": "Seven.",
+             "latency": {"first_audio_latency": 2.0, "endpoint_latency": 1.8,
+                         "final_to_first_token": 0.15, "first_token_to_audio": 0.05,
+                         "barge_in_latency": None}},
+        ],
+        "capture": None,
+    }
+    report = build_suite_report([run1, run2])
+    assert report["n_scenarios"] == 2
+    fa = report["latency"]["first_audio_ms"]
+    assert fa["n"] == 2 and fa["min"] == 1000.0 and fa["max"] == 2000.0
+    assert fa["p50"] == 1500.0
+    # endpoint dominates first-audio in the pooled per-stage view.
+    assert report["latency"]["stages"]["endpoint_ms"]["n"] == 2
+    # Pooled STT + response.
+    assert report["stt"]["n"] == 2
+    assert report["response"]["n"] == 2 and report["response"]["verdict"] == "ok"
+    assert len(report["per_scenario"]) == 2
+
+
+def test_write_suite_report_writes_files(tmp_path):
+    s1 = _scenario_with([Turn("capital of france", "wait_for_response", expect=("paris",))])
+    run1 = {
+        "scenario": s1,
+        "events": [
+            {"idx": 1, "speaker": "user", "text": "capital of france",
+             "asr_final": "capital of france"},
+            {"idx": 1, "speaker": "assistant", "text": "Paris.",
+             "latency": {"first_audio_latency": 1.0, "endpoint_latency": 0.9,
+                         "final_to_first_token": 0.08, "first_token_to_audio": 0.02,
+                         "barge_in_latency": None}},
+        ],
+        "capture": None,
+    }
+    report = write_suite_report([run1], tmp_path)
+    assert (tmp_path / "SUITE.json").exists()
+    md = (tmp_path / "SUITE.md").read_text()
+    assert "Live validation suite" in md
+    assert "Latency (pooled across every turn)" in md
+    assert "Per-scenario" in md
+    loaded = json.loads((tmp_path / "SUITE.json").read_text())
+    assert loaded == report
+
+
+# --- suites (named scenario subsets) -------------------------------------------
+
+
+def test_suite_names_include_all_and_acoustic():
+    names = set(suite_names())
+    assert {"all", "acoustic", "latency", "realistic", "barge", "core"} <= names
+
+
+def test_resolve_suite_all_is_every_scenario():
+    assert len(resolve_suite("all")) == len(SCENARIOS)
+
+
+def test_resolve_suite_acoustic_excludes_barge_scenarios():
+    acoustic = {s.name for s in resolve_suite("acoustic")}
+    # The inject-only barge scenarios are NOT in the over-the-air suite.
+    assert acoustic.isdisjoint(set(BARGE_SCENARIOS))
+    assert "baseline_latency_single_turn_qa" in acoustic
+    assert "latency_profile_mixed" in acoustic
+
+
+def test_resolve_suite_barge_is_the_five_barge_scenarios():
+    barge = {s.name for s in resolve_suite("barge")}
+    assert barge == set(BARGE_SCENARIOS)
+
+
+def test_resolve_suite_unknown_raises():
+    import pytest
+
+    with pytest.raises(KeyError):
+        resolve_suite("does_not_exist")
+
+
+def test_resolve_suite_realistic_present():
+    names = {s.name for s in resolve_suite("realistic")}
+    assert "realistic_morning_planning" in names
+    assert "latency_profile_mixed" not in names  # that's the latency suite
+
+
+def test_new_scenarios_exist_and_are_graded():
+    names = {s.name for s in SCENARIOS}
+    for n in ("latency_profile_mixed", "realistic_morning_planning",
+              "realistic_cooking_help", "realistic_curiosity_chat",
+              "realistic_quickfire_assist"):
+        assert n in names, n
+        s = by_name(n)
+        # Each new scenario has at least one response-graded turn.
+        assert any(t.expect or t.forbid for t in s.turns), n
+
+
+def test_turn_expect_forbid_default_empty():
+    t = Turn("hi")
+    assert t.expect == () and t.forbid == ()
+
+
+# --- CLI: --suite / --repeat / --list-suites flags -----------------------------
+
+
+def test_suite_flag_in_help(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        live_main.main(["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "--suite" in help_text
+    assert "--repeat" in help_text
+    assert "--list-suites" in help_text
+
+
+def test_list_suites_lists_and_exits(capsys):
+    rc = live_main.main(["--list-suites"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "acoustic" in out and "latency" in out and "realistic" in out
+
+
+def test_unknown_suite_errors(capsys):
+    rc = live_main.main(["--suite", "nope", "--llm", "echo"])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "unknown suite" in out

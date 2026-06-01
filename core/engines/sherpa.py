@@ -260,11 +260,14 @@ class SherpaConfig:
     coherence_barge_in_enabled: bool = True
     # Voiced band (Hz) the coherence is measured over (speech energy lives here).
     coherence_voiced_band_hz: tuple = (300.0, 3400.0)
-    # How far the per-frame incoherent fraction must sit ABOVE the runtime-learned
-    # echo baseline to count as user voice. Lower = more sensitive (fires on a
-    # quieter barge, risks reverb false-fire); raise if the assistant's own echo
-    # ever self-interrupts on a reverberant/clipping speaker. Live-calibratable.
-    coherence_margin_delta: float = 0.12
+    # FLOOR for how far the per-frame incoherent fraction must sit ABOVE the
+    # runtime-learned echo baseline to count as user voice. The detector ALSO
+    # learns the room's own echo-incoherence spread (sigma) and triggers on the
+    # larger of this floor and k*sigma, so the live margin self-calibrates to the
+    # room -- you rarely need to touch this. Lower it only if a real barge is
+    # missed in a clean room; raise it if the assistant self-interrupts faster
+    # than sigma adapts.
+    coherence_margin_delta: float = 0.08
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0

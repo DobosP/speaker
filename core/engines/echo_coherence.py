@@ -23,8 +23,12 @@ and the *incoherent fraction* rises -- that is the barge-in signal.
 
 Zero setup: the reference is the assistant's own output, which the engine
 already produces; no enrollment, no voiceprint, no per-user data. Every other
-parameter (the echo delay, the room's coherence baseline) is estimated at
-runtime from the signal itself.
+parameter is estimated at runtime from the signal itself -- the echo *delay*
+(cross-correlation, median-tracked), the room's coherence *baseline*, AND the
+trigger *margin*: a barge must clear the baseline by max(floor, k * sigma) where
+sigma is the learned spread of the echo's own incoherence in this room, so the
+detector auto-widens in a reverberant/noisy room and tightens in a clean one
+without any per-environment tuning. The configured margin is only a floor.
 
 This is a coherence DETECTOR, not a full AEC (no real AEC library builds in this
 environment). It decides *whether* user voice is present during playback -- all
@@ -94,24 +98,36 @@ class EchoCoherenceDetector:
         voiced_band: Tuple[float, float] = (300.0, 3400.0),
         ring_ms: float = 600.0,
         max_delay_ms: float = 400.0,
-        margin_delta: float = 0.12,
+        margin_delta: float = 0.08,
+        sigma_k: float = 3.0,
         nperseg: int = 256,
-        baseline_alpha_down: float = 0.25,
-        baseline_alpha_up: float = 0.02,
+        baseline_alpha: float = 0.2,
+        var_alpha: float = 0.15,
         provisional_baseline: float = 0.5,
         min_ref_rms: float = 1e-4,
         delay_history: int = 15,
     ) -> None:
         self.sample_rate = int(sample_rate)
         self.voiced_band = (float(voiced_band[0]), float(voiced_band[1]))
-        self.margin_delta = float(margin_delta)
+        self.margin_delta = float(margin_delta)  # FLOOR; the live margin can only widen
+        self.sigma_k = float(sigma_k)
         self.nperseg = int(nperseg)
         self.min_ref_rms = float(min_ref_rms)
         self.max_delay = max(1, int(self.sample_rate * max_delay_ms / 1000.0))
         self._ring_max = max(self.max_delay * 2, int(self.sample_rate * ring_ms / 1000.0))
-        self._alpha_down = float(baseline_alpha_down)
-        self._alpha_up = float(baseline_alpha_up)
+        self._alpha = float(baseline_alpha)
+        self._var_alpha = float(var_alpha)
+        # Running MEAN of the echo-only incoherent fraction in THIS room (an EWMA
+        # control chart). Starts high so the first ~1 s is conservative, then
+        # settles to the room's true echo floor.
         self._baseline = float(provisional_baseline)
+        # Variance of the echo-only fraction's UPWARD excursions above that mean
+        # (how much it fluctuates in THIS room). The live trigger margin is
+        # max(margin_delta, sigma_k * sqrt(var)) -> it auto-widens in a reverberant
+        # / noisy room and tightens in a clean one, with no per-environment tuning.
+        # Upward-only so the initial settling transient (all downward) and a
+        # sustained barge can never inflate it.
+        self._resid_var = 0.0
 
         self._ref: "deque[np.ndarray]" = deque()
         self._ref_len = 0
@@ -123,6 +139,7 @@ class EchoCoherenceDetector:
         self.last_incoherent_fraction = 0.0
         self.last_delay_ms = 0.0
         self.last_baseline = self._baseline
+        self.last_effective_margin = self.margin_delta
         self.last_decided: Optional[bool] = None
 
     # --- reference ingestion (playback thread) ------------------------------
@@ -183,20 +200,31 @@ class EchoCoherenceDetector:
             return None  # nothing actually playing -> no echo reference to test
 
         frac = self._incoherent_fraction(x, seg)
-        bar = self._baseline + self.margin_delta
-        is_user = bool(frac > bar)
+        # Self-calibrating EWMA control chart: a barge must clear the room's mean
+        # echo incoherence by the LARGER of the configured floor and k standard
+        # deviations of that room's own echo fluctuation. No fixed per-room
+        # threshold -- the room sets it. A real barge is a large outlier far above
+        # mean + k*sigma; echo-only fluctuation stays within it.
+        eff_margin = max(self.margin_delta, self.sigma_k * math.sqrt(self._resid_var))
+        is_user = bool(frac > self._baseline + eff_margin)
         if not is_user:
-            # Echo-only frame: trust its delay and let the baseline track the
-            # room's residual incoherence (reverb/noise floor). Asymmetric EWMA:
-            # fall fast to the floor, rise slowly, so a brief dip never resets it
-            # and a sustained barge (not updated here) can't inflate the bar.
+            # Echo-only frame: trust its delay and update the mean + upward
+            # variance. We DON'T update on a fire, so a sustained barge can't drag
+            # the chart up to itself. Variance accumulates only on UPWARD excursions
+            # (the ones that could cause a false barge), which also keeps the
+            # initial mean-settling transient (all downward) out of the estimate.
             self._delays.append(raw_delay)
-            alpha = self._alpha_down if frac < self._baseline else self._alpha_up
-            self._baseline = (1.0 - alpha) * self._baseline + alpha * frac
+            resid = frac - self._baseline
+            if resid > 0.0:
+                self._resid_var = (
+                    (1.0 - self._var_alpha) * self._resid_var + self._var_alpha * resid * resid
+                )
+            self._baseline = (1.0 - self._alpha) * self._baseline + self._alpha * frac
 
         self.last_incoherent_fraction = frac
         self.last_delay_ms = 1000.0 * use_delay / self.sample_rate
         self.last_baseline = self._baseline
+        self.last_effective_margin = eff_margin
         self.last_decided = is_user
         return is_user
 

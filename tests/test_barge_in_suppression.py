@@ -170,6 +170,34 @@ def test_looks_like_user_enrolled_gate_takes_precedence():
     assert eng._looks_like_user([0.0]) is True  # identity match wins
 
 
+# --- post-AEC barge: residual-vs-ambient-floor (NOT vs playback level) ------
+# With AEC active the echo is cancelled, so the residual during echo-only sits at
+# the ambient floor; a real barge stands above it. The gate then compares the
+# residual to _ambient_rms (loudness_admits), not to playback_level -- which fixes
+# the missed-real-barge case where the user is NOT louder than the speaker buffer.
+
+
+def test_looks_like_user_post_aec_fires_on_barge_above_ambient_not_playback():
+    eng = _engine(input_loudness_margin_db=12.0)
+    eng._aec = object()        # AEC active -> residual path
+    eng._ambient_rms = 0.02    # cancelled-echo floor
+    eng._playback_level = 0.3  # loud playback buffer (the old gate would block 0.4)
+    # A real barge: ~26 dB above the cancelled-echo floor, but BELOW playback+6dB.
+    assert eng._looks_like_user([0.4] * 1600) is True
+    # Echo-only residual sitting at the floor must NOT fire.
+    assert eng._looks_like_user([0.02] * 1600) is False
+
+
+def test_looks_like_user_post_aec_needs_ambient_floor_configured():
+    # Without the loudness floor (input_loudness_margin_db == 0) the post-AEC path
+    # is skipped and it falls back to the playback-relative level gate (unchanged).
+    eng = _engine(input_loudness_margin_db=0.0, aec_relaxed_margin_db=3.0)
+    eng._aec = object()
+    eng._ambient_rms = 0.02
+    eng._playback_level = 0.5
+    assert eng._looks_like_user([0.2] * 16) is False  # quiet vs loud playback -> level gate blocks
+
+
 # --- playback-level EWMA ----------------------------------------------------
 
 

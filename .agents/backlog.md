@@ -26,6 +26,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       vs lexical/acoustic. (Default-off; on in the desktop profile.)
 - [ ] **DTLN follow-ups:** smaller 256/128 size for phone profiles; clock-drift over
       long utterances; consider LiveKit AEC3 if the runtime ever moves to ≥3.11.
+- [ ] **Move coherence ingest off the audio callback (real-time hardening).** The
+      callback-`OutputStream` rewrite tees the played block into the AEC far ring,
+      the level EWMA, AND `EchoCoherenceDetector.note_playback` from `_audio_cb`
+      (the PortAudio thread). `note_playback` takes the detector lock that the
+      capture thread also holds while `decide()` concatenates the reference ring —
+      the only contended lock on the audio thread. Bounded + harmless at the
+      default `coherence_ring_ms` (~38 KB / sub-100µs concat), but it MUST move
+      off the audio thread (feed coherence from a lock-free SPSC stage drained on
+      the capture/worker thread, like `FarEndRing`) before `coherence_ring_ms` is
+      raised materially. Documented inline in `_audio_cb`'s docstring.
 
 ## P1 — desktop / 4090 fit
 - [ ] Adopt `desktop_gpu_4090` profile on this machine (currently `device=desktop`;

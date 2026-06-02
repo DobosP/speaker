@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.metrics import TTS_FIRST_AUDIO
 
 
 class _GenAudio:
@@ -109,52 +111,83 @@ def test_enqueue_drops_oldest_under_backpressure():
     assert queued == ["b", "c"]
 
 
+# --- barge-in + shutdown now go through the playback FIFO ---
+# The callback-OutputStream rewrite means barge-in no longer abort()s the stream;
+# it FLUSHES the playback FIFO (the next PortAudio callback emits silence) while
+# the stream stays open. Shutdown stop()/close()s the stream (clean device
+# handback; PortAudio joins the callback) after flushing the FIFO. So the fakes
+# below model stop()/close() (not abort), and stop_speaking's cut now also
+# requires a FIFO + a speaking stream.
+
+
 class _FakeOutStream:
     def __init__(self):
-        self.aborted = 0
+        self.stopped = 0
+        self.closed = 0
 
-    def abort(self):
-        self.aborted += 1
+    def stop(self):
+        self.stopped += 1
+
+    def close(self):
+        self.closed += 1
 
 
-def test_stop_speaking_aborts_live_stream_and_stamps_metric():
-    # Barge-in must drop audio already buffered in the device (abort), not just
-    # stop feeding it -- and stamp the true audible-stop instant at that moment.
+class _FakeFIFO:
+    def __init__(self):
+        self.flushed = 0
+
+    def flush(self):
+        self.flushed += 1
+
+    def count(self):
+        return 0
+
+
+def test_stop_speaking_flushes_live_fifo_and_stamps_metric():
+    # Barge-in must drop queued audio (flush the FIFO so the next callback emits
+    # silence), not just stop feeding it -- and stamp the true audible-stop
+    # instant at that moment. Requires a live stream + FIFO + a speaking run.
     eng = _engine(_StreamingTts())
     metrics: list = []
     eng._cb.on_metric = metrics.append
     eng._out_stream = _FakeOutStream()
+    eng._fifo = _FakeFIFO()
+    eng._speaking.set()
     eng.stop_speaking()
-    assert eng._out_stream.aborted == 1
+    assert eng._fifo.flushed == 1
     assert "barge_in_stop" in metrics
 
 
 def test_stop_speaking_without_live_stream_is_silent_noop():
-    # Nothing playing -> no abort, no spurious barge_in_stop metric.
+    # Nothing playing -> no flush, no spurious barge_in_stop metric.
     eng = _engine(_StreamingTts())
     metrics: list = []
     eng._cb.on_metric = metrics.append
-    eng.stop_speaking()  # _out_stream is None
+    eng.stop_speaking()  # _out_stream/_fifo are None, not speaking
     assert "barge_in_stop" not in metrics
 
 
-# --- clean shutdown: stop() must abort a live stream so a wedged play thread ---
-# can exit (fix A). On a dead ALSA device the play thread blocks in the C-level
-# out.write(); the queue sentinel can't wake it, so stop() would hang waiting on
-# the join. stop() now abort()s the live output stream first, which makes the
-# blocked write() return so the daemon play thread exits.
+# --- clean shutdown: stop() must tear the live stream down so a wedged play ---
+# thread can exit. On a dead device the play thread can block in FIFO.write();
+# the queue sentinel can't wake it, so stop() would hang on the join. stop() now
+# flushes the FIFO (releasing a blocked producer) and stop()/close()s the live
+# stream first (a clean handback; PortAudio joins the callback) so the daemon
+# play thread exits.
 
 
-def test_stop_aborts_live_stream_before_join():
-    # With a live stream set, stop() abort()s it (mirrors stop_speaking()) but
-    # emits NO barge_in_stop metric -- this is teardown, not an interruption.
+def test_stop_flushes_and_closes_live_stream_before_join():
+    # With a live stream + FIFO set, stop() flushes the FIFO and stop()/close()s
+    # the stream (NOT abort) but emits NO barge_in_stop metric -- this is
+    # teardown, not an interruption.
     eng = _engine(_StreamingTts())
     metrics: list = []
     eng._cb.on_metric = metrics.append
     eng._out_stream = _FakeOutStream()
+    eng._fifo = _FakeFIFO()
     eng._running.set()
     eng.stop()  # no capture/play threads started -> joins are no-ops
-    assert eng._out_stream is not None and eng._out_stream.aborted == 1
+    assert eng._out_stream.stopped == 1 and eng._out_stream.closed == 1
+    assert eng._fifo.flushed == 1
     assert "barge_in_stop" not in metrics  # teardown, not a barge-in
     assert not eng._running.is_set()
     assert eng._stop_speaking.is_set()
@@ -168,41 +201,28 @@ def test_stop_without_live_stream_is_noop():
     assert not eng._running.is_set()
 
 
-def test_stop_returns_promptly_when_write_is_blocked():
-    # Simulate the dead-device hang: a play thread blocked in out.write() until
-    # abort() is called. stop() must abort the stream (unblocking the write) and
-    # join the thread within its bounded timeout instead of hanging forever.
+def test_stop_returns_promptly_when_producer_is_blocked():
+    # Simulate the dead-device hang: a play thread blocked in FIFO.write() until
+    # the abort predicate flips. stop() sets _stop_speaking + clears _running
+    # (the should_abort predicate) and flushes the FIFO (notify_all), both of
+    # which release the blocked producer, then joins within its bounded timeout
+    # instead of hanging forever.
     import threading
 
     eng = _engine(_StreamingTts())
-
-    class _BlockingOut:
-        def __init__(self):
-            self.released = threading.Event()
-            self.aborted = 0
-
-        def write(self, samples):
-            # Block like a stalled ALSA device until abort() releases us.
-            self.released.wait(timeout=5.0)
-
-        def abort(self):
-            self.aborted += 1
-            self.released.set()
-
-    out = _BlockingOut()
-    eng._out_stream = out
+    fifo = PlaybackFIFO(4)  # tiny so the producer blocks immediately when full
+    eng._fifo = fifo
+    eng._out_stream = _FakeOutStream()
     eng._running.set()
     eng._stop_speaking.clear()
 
     def fake_play():
-        # Mimic the play thread sitting in a blocking write under the closure's
-        # except (which swallows the post-abort error because _stop_speaking is
-        # set by stop()). The loop checks _running so it exits after the write.
-        try:
-            out.write(None)
-        except Exception:  # noqa: BLE001
-            if not eng._stop_speaking.is_set():
-                raise
+        # Block in FIFO.write() like the real producer; the should_abort
+        # predicate (set by stop()) releases it and it returns cleanly.
+        fifo.write(
+            np.ones(100, dtype="float32"),  # >> capacity -> blocks until aborted
+            should_abort=lambda: eng._stop_speaking.is_set() or not eng._running.is_set(),
+        )
 
     t = threading.Thread(target=fake_play, daemon=True)
     eng._play_thread = t
@@ -215,8 +235,87 @@ def test_stop_returns_promptly_when_write_is_blocked():
         done.set()
 
     threading.Thread(target=call_stop, daemon=True).start()
-    # stop() bounds each join at 1.0s; with abort() unblocking the write it
-    # should finish well under that.
+    # stop() bounds each join at 1.0s; with the abort predicate unblocking the
+    # producer it should finish well under that.
     assert done.wait(timeout=3.0), "stop() hung instead of returning promptly"
-    assert out.aborted == 1
     assert not t.is_alive()
+    # stop() flushes the FIFO but never nulls it (the worker loop owns that, on
+    # idle-release/teardown), so the same instance survives and was emptied.
+    assert eng._fifo is fifo
+    assert eng._fifo.count() == 0
+
+
+# --- _audio_cb: the core of the callback rewrite (drain + tee + first-audio) ---
+# _audio_cb is the SINGLE place the far-end AEC ref / coherence ref / level EWMA
+# are teed and TTS_FIRST_AUDIO is stamped -- all off TRUE playback, which is the
+# whole point of the rewrite. It is pure Python (no device, no models), so we
+# drive it directly. Setting _play_sr == config.sample_rate keeps the far-ring
+# tee resample-free so we can assert exact samples; _echo_coherence stays None
+# (the callback guards on it) to keep the test scipy-free.
+
+
+def _outbuf(frames):
+    # -1.0 sentinel so any cell the callback fails to write is caught.
+    return np.full((frames, 1), -1.0, dtype="float32")
+
+
+def test_audio_cb_drains_fifo_zero_fills_underrun_and_tees_only_real_samples():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = eng.config.sample_rate  # no resample -> far ring gets exact samples
+    eng._far_ref = FarEndRing()
+    eng._echo_coherence = None
+    eng._fifo = PlaybackFIFO(8)
+    eng._fifo.write(np.array([0.5, 0.25], dtype="float32"), lambda: False)  # float32-exact
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._first_audio_pending = True
+
+    out = _outbuf(5)
+    eng._audio_cb(out, 5, None, None)
+
+    # The 2 queued samples play; the 3-sample underrun tail is silent zero-fill.
+    np.testing.assert_array_equal(out[:, 0], [0.5, 0.25, 0.0, 0.0, 0.0])
+    # ONLY the 2 real samples are teed into the far ring -- NOT the zero tail.
+    # (A regression to teeing `view`/`view[:frames]` would push silence into the
+    # AEC far-end and stay green without this assertion.)
+    assert eng._far_ref._written == 2
+    np.testing.assert_array_equal(eng._far_ref.read(2, 0), [0.5, 0.25])
+    # TTS_FIRST_AUDIO stamped exactly once, at the first real-audio block.
+    assert metrics == [TTS_FIRST_AUDIO]
+    assert eng._first_audio_pending is False
+
+
+def test_audio_cb_does_not_stamp_first_audio_on_an_underrun_only_block():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = eng.config.sample_rate
+    eng._far_ref = FarEndRing()
+    eng._fifo = PlaybackFIFO(8)  # empty -> pure underrun, n == 0
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._first_audio_pending = True  # armed...
+
+    out = _outbuf(4)
+    eng._audio_cb(out, 4, None, None)
+
+    np.testing.assert_array_equal(out[:, 0], [0.0, 0.0, 0.0, 0.0])  # all silence
+    assert eng._far_ref._written == 0  # nothing teed
+    assert metrics == []  # ...no real audio played -> no stamp
+    assert eng._first_audio_pending is True  # stays armed for the first real block
+
+
+def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = eng.config.sample_rate
+    eng._far_ref = FarEndRing()
+    eng._fifo = None  # before the first utterance / after teardown
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._first_audio_pending = True
+
+    out = _outbuf(3)
+    eng._audio_cb(out, 3, None, None)
+
+    np.testing.assert_array_equal(out[:, 0], [0.0, 0.0, 0.0])
+    assert eng._far_ref._written == 0
+    assert metrics == []
+    assert eng._first_audio_pending is True

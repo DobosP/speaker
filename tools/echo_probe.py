@@ -66,6 +66,7 @@ def main() -> int:
     ap.add_argument("--relaxed-margin-db", type=float, default=None, help="aec_relaxed_margin_db override (level gate margin when AEC is on)")
     ap.add_argument("--speaker-gate", choices=["on", "off"], default=None, help="force speaker_gate_input (identity/user-detection gate in the barge path)")
     ap.add_argument("--min-speech-sec", type=float, default=None, help="barge_in_min_speech_sec override (sustained-speech needed to fire -- slower/higher confidence)")
+    ap.add_argument("--loudness-margin-db", type=float, default=None, help="input_loudness_margin_db override (post-AEC barge: residual dB above the ambient floor)")
     ap.add_argument("--label", default=None, help="opaque label echoed back in the JSON (for the suite)")
     args = ap.parse_args()
 
@@ -106,6 +107,8 @@ def main() -> int:
         overrides["speaker_gate_input"] = (args.speaker_gate == "on")
     if args.min_speech_sec is not None:
         overrides["barge_in_min_speech_sec"] = float(args.min_speech_sec)
+    if args.loudness_margin_db is not None:
+        overrides["input_loudness_margin_db"] = float(args.loudness_margin_db)
     for k, v in overrides.items():
         try:
             setattr(sherpa_cfg, k, v)

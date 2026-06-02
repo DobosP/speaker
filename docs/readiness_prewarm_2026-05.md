@@ -1,5 +1,7 @@
 # Ready-to-fire: startup pre-warm (2026-05)
 
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+
 Goal (user): *code + models already loaded and ready to fire, for the best
 possible latency when the interaction begins.* The pieces existed in spirit
 (`warm_on_start`) but had real holes: **`engine.warm()` was dead code** — the

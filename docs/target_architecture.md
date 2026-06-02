@@ -1,5 +1,10 @@
 # Target Architecture: Fully On-Device, Cross-Platform Voice Assistant
 
+> For the consolidated **current-truth** architecture (how it's wired today, with
+> this doc's §9/§9.7/§10 decisions woven in), see
+> [`unified_architecture.md`](unified_architecture.md). This doc remains the
+> authority for the north-star structural decisions.
+
 Status: decision record — the structural choices in §9 are now **resolved**
 (2026-05). Supersedes the implicit architecture in `main.py`. Written to answer
 the refactor question: *"rebuild lighter, run on Android/iOS/Linux/Windows/Mac,

@@ -1,5 +1,7 @@
 # Speaker — Lead Architect Synthesis & Roadmap
 
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+
 _Target: a secure, OSS-ready, real-time voice assistant with layered memory and smart routing that runs well across machine types and uses external LLM providers for the hard/thinking tier._
 
 _Date: 2026-05-29. Built on `docs/target_architecture.md` (§9, §9.7, §10) and `docs/code_review_2026-05.md`. This report gates the implementation phase._

@@ -1,5 +1,7 @@
 # Improvement Plan — Local-First Voice Assistant
 
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+
 Driven by the live session **`logs/runs/run-20260529-212103`** (user's own voice, this machine). Three reported failures, all root-caused against the artifacts: **barge-in didn't function**, **STT was wrong most of the time**, **answers were low-quality**. Every fix below is file-mapped and validated by replaying `/home/dobo/work/speaker/logs/runs/run-20260529-212103.wav` via `python -m core --engine replay --replay-dir logs/runs` plus targeted tests.
 
 > **One claim was REFUTED and dropped from the plan:** "swap the 20M ASR model for zipformer-en-2023-06-26" is a no-op — the box is **already** running the full-size 2023-06-26 model (verified via param count and `tools/bench/models.py:22`). Look to the input chain (clipping, endpointing, hotwords, confidence) for STT, not a same-model swap. A genuinely different architecture (NeMo/Parakeet/Moonshine offline-chunked engine) is a roadmap item, not a same-day fix.

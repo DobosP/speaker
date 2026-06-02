@@ -3,7 +3,9 @@
 A snapshot of how the runtime is wired **today**. For the cross-platform
 strategy, roadmap, and resolved decisions see
 [`target_architecture.md`](target_architecture.md); for product intent see
-[`PROJECT_KICKOFF.md`](PROJECT_KICKOFF.md).
+[`PROJECT_KICKOFF.md`](PROJECT_KICKOFF.md). For the **consolidated current-truth
+overview** that ties all subsystems together (and absorbs the dated subsystem
+docs), see [`unified_architecture.md`](unified_architecture.md).
 
 > This **supersedes the pre-refactor pipeline** (`main.py` + `utils/audio.py`'s
 > hand-rolled AEC/VAD/barge-in, `utils/stt.py`, `utils/dialogue_controller.py`,

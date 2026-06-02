@@ -88,6 +88,17 @@ test-reports/
 # version verdict snapshot, but the append-only history is local noise.
 .agents/history.jsonl
 
+# Accidental cross-machine cruft / stray redirect output. `UsersPaul` was a
+# stray GitHub-API 404 body written to a file; `social_media_activities_app/`
+# is a SEPARATE project (its own .git) that was once nested here by mistake and
+# now lives as a sibling repo -- guard so neither can ever be staged again.
+UsersPaul
+social_media_activities_app/
+
+# Session-bootstrap briefings (tools/session_bootstrap.py) are machine-local and
+# regenerated each session from the committed run-logs/handoff docs.
+logs/session_*_bootstrap.md
+
 # Downloaded model weights -- large binaries, NEVER commit. Fetch on each
 # machine with `python -m tools.setup_models` (sherpa) or the phone GGUFs.
 pretrained_models/sherpa/

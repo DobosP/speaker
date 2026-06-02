@@ -98,3 +98,33 @@ clean `stop()`+`close()` on teardown) instead of `abort()`ing the stream.
 3. **Latent real-time item (backlog):** before raising `coherence_ring_ms`, move
    `EchoCoherenceDetector.note_playback` off the audio callback (feed it from a
    lock-free SPSC stage drained on the capture/worker thread, like `FarEndRing`).
+
+## Addendum — interrupt made "a bit slower, higher confidence" (`main` → `088e055`)
+
+Follow-on in the same session, per the user's request to *"make the interrupt a
+bit slower but with higher confidence"* and to *"continue with the interrupt
+without user detection — user detection is a separate feature."*
+
+- The interrupt is the **enrollment-free, identity-free** `EchoCoherenceDetector`
+  ("is there mic energy the playback can't explain?") — not speaker-ID. I left
+  speaker-ID entirely untouched; it remains a separate, abstain-time fallback.
+- **Change:** `decide()` now requires a barge to clear the coherence threshold
+  for `coherence_confirm_frames` **consecutive** capture blocks (~0.1 s each)
+  before firing. Shipped default **2** (`SherpaConfig`); the detector class still
+  defaults to **1** (fire-on-first-frame) so all existing detector behavior is
+  unchanged. A single over-threshold spike — a cheap speaker's nonlinear
+  distortion or a transient — no longer self-interrupts; a sustained talk-over
+  still does. While the run builds, `decide()` returns `False` (not `None`), so
+  an unconfirmed moment can't fall through to the identity/level gate; the EWMA
+  chart updates only on below-threshold frames so a candidate can't drag it.
+- With `confirm_frames=1` the code path is **provably identical** to before — the
+  baseline-update suppression was re-keyed onto *over-threshold* rather than the
+  final verdict, which is equivalent when N=1.
+- **Tests:** 6 new (consecutive fire, single-spike rejection, echo-frame reset,
+  `reset()` clears the run, legacy N=1 fire, shipped default == 2); existing
+  detector tests pass unchanged. Full suite **1279 passed**. Docs: §3 + §7 +
+  decision-log #30 in `unified_architecture.md`.
+- **On hardware (next):** live-tune `coherence_confirm_frames` (2 vs 3) on a real
+  talk-over — 2 ≈ +0.1 s latency, 3 ≈ +0.2 s, both far more robust to single-frame
+  echo spikes. This is independent of the AEC work above and applies to any input
+  path (headset, external speaker, or post-DTLN signal).

@@ -150,3 +150,71 @@ def test_abstains_when_reference_is_silent():
     det = _fresh()
     _push(det, np.zeros(SR, dtype="float32"))  # playing, but silence
     assert det.decide(_user(seed=6)) is None
+
+
+# --- consecutive-confirmation: "a bit slower, higher confidence" --------------
+# The interrupt (this enrollment-free, identity-free detector) must clear the
+# threshold for confirm_frames CONSECUTIVE frames before firing. That rejects a
+# one-off over-threshold spike (cheap-speaker nonlinearity / transient noise)
+# while a sustained talk-over still fires. While a run is building, decide()
+# returns False (echo-only), never None -- so a not-yet-confirmed moment can
+# never fall through to the legacy level gate.
+
+
+def test_confirm_frames_param_is_stored_and_defaults_to_legacy_one():
+    assert _fresh()._confirm_frames == 1  # detector default = original behaviour
+    assert _fresh(confirm_frames=4)._confirm_frames == 4
+
+
+def test_confirm_frames_one_is_the_legacy_single_frame_fire():
+    ref = _make_reference(0.8, seed=23)
+    echo_gain = 0.5
+    det = _fresh(confirm_frames=1)
+    _push(det, ref)
+    _prime_echo_baseline(det, ref, gain=echo_gain)
+    mix = _echo_block(ref, gain=echo_gain) + echo_gain * _user(seed=66)
+    assert det.decide(mix) is True  # fires on the first over-threshold frame
+
+
+def test_confirm_frames_requires_consecutive_over_threshold_to_fire():
+    ref = _make_reference(0.8, seed=21)
+    echo_gain = 0.5
+    det = _fresh(confirm_frames=3)
+    _push(det, ref)
+    _prime_echo_baseline(det, ref, gain=echo_gain)
+    mix = _echo_block(ref, gain=echo_gain) + echo_gain * _user(seed=77)
+    # Each call is over threshold (last_consec climbs), but only the 3rd
+    # consecutive one fires -- and the unconfirmed frames return False, not None.
+    v1 = det.decide(mix)
+    assert v1 is False and det.last_consec == 1
+    v2 = det.decide(mix)
+    assert v2 is False and det.last_consec == 2
+    v3 = det.decide(mix)
+    assert v3 is True and det.last_consec == 3
+
+
+def test_confirm_frames_run_resets_on_an_intervening_echo_frame():
+    ref = _make_reference(0.8, seed=22)
+    echo_gain = 0.5
+    det = _fresh(confirm_frames=2)
+    _push(det, ref)
+    _prime_echo_baseline(det, ref, gain=echo_gain)
+    mix = _echo_block(ref, gain=echo_gain) + echo_gain * _user(seed=88)
+    assert det.decide(mix) is False and det.last_consec == 1  # 1st over-threshold
+    # An echo-only frame breaks the run before it can confirm.
+    assert det.decide(_echo_block(ref, gain=echo_gain)) is False and det.last_consec == 0
+    # A fresh pair of consecutive over-threshold frames is now needed to fire.
+    assert det.decide(mix) is False and det.last_consec == 1
+    assert det.decide(mix) is True and det.last_consec == 2
+
+
+def test_reset_clears_the_confirmation_run():
+    ref = _make_reference(0.8, seed=24)
+    echo_gain = 0.5
+    det = _fresh(confirm_frames=2)
+    _push(det, ref)
+    _prime_echo_baseline(det, ref, gain=echo_gain)
+    mix = _echo_block(ref, gain=echo_gain) + echo_gain * _user(seed=55)
+    assert det.decide(mix) is False and det.last_consec == 1  # mid-run
+    det.reset()  # playback stopped -> new turn starts fresh
+    assert det._consec == 0

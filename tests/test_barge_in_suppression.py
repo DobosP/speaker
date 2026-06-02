@@ -64,6 +64,14 @@ def test_shipped_default_margin_is_the_calibrated_value():
     assert SherpaConfig().barge_in_output_margin_db == pytest.approx(6.0)
 
 
+def test_shipped_coherence_confirm_frames_is_conservative():
+    """The interrupt ships "a bit slower, higher confidence": a barge must clear
+    the coherence threshold for 2 consecutive ~0.1 s blocks before firing, so a
+    one-off over-threshold spike can't self-interrupt. Pin the default so it is
+    not silently reverted to the fire-on-first-frame (1) behaviour."""
+    assert SherpaConfig().coherence_confirm_frames == 2
+
+
 def test_calibrated_margin_rejects_echo_accepts_real_barge_in():
     """Codifies the live calibration at the default 6 dB margin: the assistant's
     own echo (measured median ~-10 dB, almost always below the playback buffer

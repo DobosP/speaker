@@ -100,6 +100,7 @@ class EchoCoherenceDetector:
         max_delay_ms: float = 400.0,
         margin_delta: float = 0.08,
         sigma_k: float = 3.0,
+        confirm_frames: int = 1,
         nperseg: int = 256,
         baseline_alpha: float = 0.2,
         var_alpha: float = 0.15,
@@ -111,6 +112,16 @@ class EchoCoherenceDetector:
         self.voiced_band = (float(voiced_band[0]), float(voiced_band[1]))
         self.margin_delta = float(margin_delta)  # FLOOR; the live margin can only widen
         self.sigma_k = float(sigma_k)
+        # A barge must clear the threshold for this many CONSECUTIVE frames before
+        # decide() returns True -- "slower but higher confidence". A single
+        # over-threshold frame (e.g. a one-off nonlinear-echo spike from a cheap
+        # speaker, or a transient) can no longer fire; only a SUSTAINED outlier,
+        # which is what continuous talk-over produces, does. 1 = fire on the first
+        # over-threshold frame (the original behaviour). While a run is still
+        # building, decide() returns False (echo-only), NOT None, so a not-yet-
+        # confirmed moment can never fall through to the legacy level gate.
+        self._confirm_frames = max(1, int(confirm_frames))
+        self._consec = 0  # consecutive over-threshold frames so far (capture thread)
         self.nperseg = int(nperseg)
         self.min_ref_rms = float(min_ref_rms)
         self.max_delay = max(1, int(self.sample_rate * max_delay_ms / 1000.0))
@@ -141,6 +152,7 @@ class EchoCoherenceDetector:
         self.last_baseline = self._baseline
         self.last_effective_margin = self.margin_delta
         self.last_decided: Optional[bool] = None
+        self.last_consec = 0  # confirmation-run length at the last decision
 
     # --- reference ingestion (playback thread) ------------------------------
     def note_playback(self, samples: Sequence[float], src_sr: int) -> None:
@@ -165,6 +177,7 @@ class EchoCoherenceDetector:
             self._ref.clear()
             self._ref_len = 0
         self._delays.clear()
+        self._consec = 0  # new turn starts with a fresh confirmation run
 
     def _snapshot_ref(self) -> np.ndarray:
         with self._lock:
@@ -206,13 +219,21 @@ class EchoCoherenceDetector:
         # threshold -- the room sets it. A real barge is a large outlier far above
         # mean + k*sigma; echo-only fluctuation stays within it.
         eff_margin = max(self.margin_delta, self.sigma_k * math.sqrt(self._resid_var))
-        is_user = bool(frac > self._baseline + eff_margin)
-        if not is_user:
-            # Echo-only frame: trust its delay and update the mean + upward
-            # variance. We DON'T update on a fire, so a sustained barge can't drag
-            # the chart up to itself. Variance accumulates only on UPWARD excursions
-            # (the ones that could cause a false barge), which also keeps the
-            # initial mean-settling transient (all downward) out of the estimate.
+        over = bool(frac > self._baseline + eff_margin)
+        if over:
+            # Candidate barge frame: extend the confirmation run and DON'T update
+            # the chart -- a barge (even an as-yet-unconfirmed one) must never drag
+            # the baseline up toward itself. Fire only once the run reaches
+            # ``confirm_frames`` consecutive over-threshold frames; a single spike
+            # stays below that and is rejected.
+            self._consec = min(self._consec + 1, self._confirm_frames)
+        else:
+            # Echo-only frame: the confirmation run is broken, and we trust this
+            # frame's delay and update the mean + upward variance. Variance
+            # accumulates only on UPWARD excursions (the ones that could cause a
+            # false barge), which also keeps the initial mean-settling transient
+            # (all downward) out of the estimate.
+            self._consec = 0
             self._delays.append(raw_delay)
             resid = frac - self._baseline
             if resid > 0.0:
@@ -221,10 +242,15 @@ class EchoCoherenceDetector:
                 )
             self._baseline = (1.0 - self._alpha) * self._baseline + self._alpha * frac
 
+        # Confirmed barge only after a sustained over-threshold run. With
+        # confirm_frames=1 this is exactly the old single-frame decision.
+        is_user = self._consec >= self._confirm_frames
+
         self.last_incoherent_fraction = frac
         self.last_delay_ms = 1000.0 * use_delay / self.sample_rate
         self.last_baseline = self._baseline
         self.last_effective_margin = eff_margin
+        self.last_consec = self._consec
         self.last_decided = is_user
         return is_user
 

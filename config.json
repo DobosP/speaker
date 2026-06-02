@@ -132,7 +132,8 @@
         "asr_num_threads": 2,
         "tts_num_threads": 2
       },
-      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4}
+      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
+      "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "desktop_gpu_4090": {
       "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; both gates ON (fast tier has plenty of headroom). Specsim quick TTFA 0.96s. Cloud chains off by default -- local 12b is fast enough; enable in config.local.json for paragraph-length research-mode answers.",
@@ -258,6 +259,13 @@
     "enabled": false,
     "max_context": 3
   },
+  "capability_router": {
+    "_comment": "Unified capability router (core/capability_router.py) -- the 'middle layer' that decides, ONCE per turn, whether the turn is CONTROL (stop/mode switch), SIMPLE (one-shot reply), RESEARCH (gather/multi-step via the ReAct planner), or ACT (perform an action) + the fast/main tier. Disabled by default so behaviour is byte-identical (the existing per-gate routing stands). When enabled it BACKS both the tier Router (core/routing.py) and the planner escalate decision (always_on_agent/react.py) from one coherent module, reusing should_escalate + the tier heuristic so it never diverges from what the brain would have done. llm_assist=true uses the fast tier to disambiguate ONLY low-confidence turns (needs llm.fast_model; memoized so it costs at most one fast-LLM call per turn); confidence_threshold is the heuristic confidence below which the LLM is consulted. Device-adaptive: a weak profile sets llm_assist=false (or omits the fast model) and pays nothing. act_confirm is reserved -- it gates STATE-CHANGING action tools behind a spoken confirmation once such tools are registered (v1 routes ACT to the planner's read-only tools, so it is a no-op today).",
+    "enabled": false,
+    "llm_assist": false,
+    "confidence_threshold": 0.65,
+    "act_confirm": true
+  },
   "followups": {
     "enabled": false,
     "delay_sec": 3.0,
@@ -346,6 +354,14 @@
     "_denoise_comment": "Optional speech denoiser (sherpa-onnx GTCRN) on the 16 kHz capture block, applied right after resampling and BEFORE the recognizer, the speaker embedder, and the VAD all read it. Broadband noise both garbles STT and drags the enrolled-user speaker embedding below the gate (0.30-0.46 vs the 0.5 threshold -> lockout); one denoise cleans the single block for every downstream model. OFF by default: denoise_enabled=false OR denoise_model='' builds NOTHING and the capture path is byte-identical to no-denoise (gate mirrors endpoint_enabled). Fetch the 523KB model with `python -m tools.setup_models --denoise-model` (wires denoise_model into config.local.json), then set denoise_enabled=true. Costs one tiny ONNX inference per 0.1s block on the capture thread (GTCRN RTF<<1; measure with tools.noise_stress before enabling on weak tiers). NOTE: the recorder writes the DENOISED block, so a recording made with denoise ON replays already-denoised -- keep this flag consistent across record/replay or you double-denoise. Re-enroll your voice after enabling (the embedding shifts vs an un-denoised enrollment).",
     "denoise_enabled": false,
     "denoise_model": "",
+    "_aec_comment": "On-device Acoustic Echo Cancellation (core/engines/_aec.py) -- subtracts the assistant's own played TTS (far-end) from the mic block so the loop does NOT self-interrupt on open speakers (the no-AEC failure). Runs after resample, BEFORE denoise/VAD/recognizer/speaker-gate. OFF by default (aec_enabled=false -> byte-identical capture path). When ON, the barge-in gate uses aec_relaxed_margin_db (echo already cancelled -> soft interrupts audible again) instead of barge_in_output_margin_db. backend: 'nlms' = dependency-free NumPy adaptive filter (ships now, ~10-20 dB real-world ERLE, no extra deps); 'dtln' = deep ONNX tier (deferred, currently no-op). aec_ref_delay_ms: speaker->mic delay for the far-end reference -- CALIBRATE per device with tools/echo_probe.py (a wrong value degrades cancellation). aec_filter_taps: modeled echo tail (rounded to a power of two; also the added capture latency in samples -- 512 ~= 32 ms). aec_doubletalk_freeze: stop the filter diverging onto the user's voice during talk-over. VALIDATE on device (echo_probe ERLE + a live barge-in run) BEFORE setting aec_enabled=true.",
+    "aec_enabled": false,
+    "aec_backend": "nlms",
+    "aec_model": "",
+    "aec_ref_delay_ms": 80,
+    "aec_filter_taps": 512,
+    "aec_doubletalk_freeze": true,
+    "aec_relaxed_margin_db": 3.0,
     "vad_model": "",
     "tts_model": "",
     "tts_tokens": "",

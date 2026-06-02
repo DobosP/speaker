@@ -24,6 +24,7 @@ from .llm_factory import (
     build_llms,
 )
 from .routing import build_router
+from .capability_router import build_capability_router
 from .runlog import setup_logging
 from .runtime import VoiceRuntime
 from .sysinfo import SystemMonitor
@@ -335,6 +336,18 @@ def build_runtime(
     # their self-hosted SearXNG. Every query is gated (§9.7) before any egress.
     web_search_config = WebSearchConfig.from_dict(config.get("web_search"))
 
+    # Unified capability router (the "middle layer", core/capability_router.py).
+    # Disabled by default; when enabled it backs the runtime's tier + escalate
+    # decisions with one coherent module. Reuses the tier router built above and
+    # the fast tier for optional LLM disambiguation of ambiguous turns, and the
+    # configured command phrases so it recognizes the same control words.
+    capability_router = build_capability_router(
+        config,
+        tier_router=router,
+        fast_llm=fast_llm,
+        command_phrases=(config.get("commands") or {}).keys(),
+    )
+
     runtime = VoiceRuntime(
         engine,
         llm,
@@ -346,6 +359,7 @@ def build_runtime(
         start_mode=start_mode,
         agent_config=agent_config,
         router=router,
+        capability_router=capability_router,
         planner_config=planner_config,
         stream_tts=stream_tts,
         followup_config=followup_config,

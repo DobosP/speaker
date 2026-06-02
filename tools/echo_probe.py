@@ -62,6 +62,10 @@ def main() -> int:
     ap.add_argument("--coherence", choices=["on", "off"], default=None, help="force coherence_barge_in_enabled")
     ap.add_argument("--confirm-frames", type=int, default=None, help="coherence_confirm_frames override")
     ap.add_argument("--aec", choices=["on", "off"], default=None, help="force aec_enabled")
+    ap.add_argument("--ref-delay-ms", type=int, default=None, help="aec_ref_delay_ms override (sweep this to maximize ERLE)")
+    ap.add_argument("--relaxed-margin-db", type=float, default=None, help="aec_relaxed_margin_db override (level gate margin when AEC is on)")
+    ap.add_argument("--speaker-gate", choices=["on", "off"], default=None, help="force speaker_gate_input (identity/user-detection gate in the barge path)")
+    ap.add_argument("--min-speech-sec", type=float, default=None, help="barge_in_min_speech_sec override (sustained-speech needed to fire -- slower/higher confidence)")
     ap.add_argument("--label", default=None, help="opaque label echoed back in the JSON (for the suite)")
     args = ap.parse_args()
 
@@ -94,6 +98,14 @@ def main() -> int:
         overrides["coherence_confirm_frames"] = int(args.confirm_frames)
     if args.aec is not None:
         overrides["aec_enabled"] = (args.aec == "on")
+    if args.ref_delay_ms is not None:
+        overrides["aec_ref_delay_ms"] = int(args.ref_delay_ms)
+    if args.relaxed_margin_db is not None:
+        overrides["aec_relaxed_margin_db"] = float(args.relaxed_margin_db)
+    if args.speaker_gate is not None:
+        overrides["speaker_gate_input"] = (args.speaker_gate == "on")
+    if args.min_speech_sec is not None:
+        overrides["barge_in_min_speech_sec"] = float(args.min_speech_sec)
     for k, v in overrides.items():
         try:
             setattr(sherpa_cfg, k, v)
@@ -157,6 +169,34 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(json.dumps({"error": f"engine.start failed: {type(exc).__name__}: {exc}"}))
         return 1
+
+    # Post-AEC ERLE: with the probe never talking, the near-end during playback
+    # is echo-only, so the energy drop across the canceller IS the echo return
+    # loss enhancement. Accumulated only over frames where the far-end (echo ref)
+    # is active. Positive dB = cancellation; ~0 = no-op; negative = misaligned
+    # (the AEC is adding energy -> wrong aec_ref_delay_ms). The engine builds
+    # ``_aec`` inside start(), so this wrap must come AFTER start().
+    erle_acc = {"near2": 0.0, "post2": 0.0, "far_frames": 0}
+    if getattr(engine, "_aec", None) is not None:
+        import numpy as _np
+
+        _orig_proc = engine._aec.process_16k
+
+        def _erle_proc(near, far):
+            post = _orig_proc(near, far)
+            try:
+                n = _np.asarray(near, dtype="float32").reshape(-1)
+                f = _np.asarray(far, dtype="float32").reshape(-1)
+                p = _np.asarray(post, dtype="float32").reshape(-1)
+                if f.size and float(_np.sqrt(_np.mean(f * f))) > 1e-4:
+                    erle_acc["far_frames"] += 1
+                    erle_acc["near2"] += float(_np.sum(n * n))
+                    erle_acc["post2"] += float(_np.sum(p * p))
+            except Exception:
+                pass
+            return post
+
+        engine._aec.process_16k = _erle_proc  # type: ignore[assignment]
 
     time.sleep(1.0)  # let the capture loop spin up
     spoken = 0
@@ -228,6 +268,10 @@ def main() -> int:
     elif det is not None:
         coh = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
 
+    erle_db = None
+    if erle_acc["post2"] > 0 and erle_acc["near2"] > 0:
+        erle_db = round(10.0 * math.log10(erle_acc["near2"] / erle_acc["post2"]), 1)
+
     out = {
         "label": args.label,
         "input_device": getattr(sherpa_cfg, "input_device", None),
@@ -235,8 +279,11 @@ def main() -> int:
             "coherence": getattr(sherpa_cfg, "coherence_barge_in_enabled", None),
             "confirm_frames": getattr(sherpa_cfg, "coherence_confirm_frames", None),
             "aec": getattr(sherpa_cfg, "aec_enabled", None),
+            "aec_ref_delay_ms": getattr(sherpa_cfg, "aec_ref_delay_ms", None),
             "margin_db": args.margin_db,
         },
+        "erle_db": erle_db,
+        "aec_far_active_frames": erle_acc["far_frames"],
         "gain": args.gain,
         "device": device,
         "sentences_spoken": spoken,

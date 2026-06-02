@@ -1,6 +1,6 @@
 # Flow-control intelligence — the decision & escalation layer
 
-> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](../unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
 
 This documents the "smart decision layer" of the voice assistant: how a turn is
 classified, which model tier answers it, and when it escalates to multi-step

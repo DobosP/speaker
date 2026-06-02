@@ -1,6 +1,6 @@
 # Engineering Audit — Local-First Real-Time Voice Assistant (`/home/dobo/work/speaker`)
 
-> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](../unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
 
 **Audience:** project lead. **Goal anchor:** production-safe and fast, with the best possible *reliable live voice-to-text*. Every finding below is verified against the source on this machine (file:line cited), with severities re-graded after adversarial verification.
 

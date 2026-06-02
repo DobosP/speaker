@@ -1,6 +1,6 @@
 # Ultracode Working Scope — Secure Real-Time Assistant Overhaul
 
-> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](../unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
 
 > **Single source of truth for the multi-agent overhaul.** Every agent and every
 > session working on this effort reads this FIRST and stays within the current

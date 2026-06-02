@@ -1,6 +1,6 @@
 # Never-stuck controller (2026-05)
 
-> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](../unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
 
 Goal (user): *the controller must be really smart about which processes to kill
 and must not get stuck waiting for some answer/output.* The control plane could

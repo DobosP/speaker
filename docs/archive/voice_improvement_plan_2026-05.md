@@ -1,6 +1,6 @@
 # Improvement Plan — Local-First Voice Assistant
 
-> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](../unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
 
 Driven by the live session **`logs/runs/run-20260529-212103`** (user's own voice, this machine). Three reported failures, all root-caused against the artifacts: **barge-in didn't function**, **STT was wrong most of the time**, **answers were low-quality**. Every fix below is file-mapped and validated by replaying `/home/dobo/work/speaker/logs/runs/run-20260529-212103.wav` via `python -m core --engine replay --replay-dir logs/runs` plus targeted tests.
 

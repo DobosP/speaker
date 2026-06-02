@@ -1,6 +1,6 @@
 # P2 — Layered Memory: Design (gated by adversarial review)
 
-> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](../unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
 
 _Branch `claude/ultracode-overhaul`. Authority: `docs/archive/review_ultracode.md` (§P2, layered-memory-1/2/3), `docs/archive/ultracode_scope.md` (Locked Decisions 4 & 5). Evolve, do not rewrite._
 

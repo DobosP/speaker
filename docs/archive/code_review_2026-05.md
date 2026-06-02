@@ -1,6 +1,6 @@
 # Code review — 2026-05
 
-> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](../unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
 
 Scope: an honest read on (a) whether the architecture makes sense, (b) what can
 be simplified for performance, (c) the state of tests/CI, and (d) overall

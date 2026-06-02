@@ -1,6 +1,6 @@
 # Session 2026-06-01 — unified capability router + Smart Turn v3 + on-device AEC
 
-> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](../unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
 
 Cross-machine handoff (this session ran on a **Windows 11** box; continuation may be
 on a different machine). Written in-repo because per-user Claude memory does NOT travel

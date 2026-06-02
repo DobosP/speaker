@@ -1,5 +1,7 @@
 # Redesigned on-device STT pipeline — "really good STT quality"
 
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+
 **Goal (user):** conversational-English **word accuracy** is PRIMARY; enroll-user reliability is secondary. Local-first, STT on CPU, GPU reserved for the LLM. Fixture for before/after: `/home/dobo/work/speaker/logs/runs/run-20260529-212103.wav` (real user speech, mono 16 kHz, ~340 s, some TTS echo).
 
 **Headline finding:** the biggest WER leaks are in the **input chain**, not the model. I verified the three dominant ones empirically on this machine (see "Evidence" inline). The model is also old (zipformer1), but a model swap fed aliased, clipped audio still underperforms — so the input chain is fixed first.

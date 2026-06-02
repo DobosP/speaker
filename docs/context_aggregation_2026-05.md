@@ -1,5 +1,7 @@
 # Context aggregation: the model's short-term memory (2026-05)
 
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+
 Goal (user): get the correct input the model needs, aggregated from the previous
 conversation. `assistant()` built the prompt from the **current utterance alone**,
 so the answering model had no idea what was just said — "what's its population?"

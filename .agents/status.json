@@ -10,9 +10,9 @@
     "target_profile": "desktop_gpu_4090"
   },
   "last_verdict": {
-    "tests": "613 passed, 7 skipped, 0 failed",
+    "tests": "1205 passed, 10 skipped, 0 failed",
     "green": true,
-    "note": "hermetic with config.local.json present"
+    "note": "venv python (.venv) — git-bash 'python' is system 3.10 and lacks onnxruntime/sherpa; use .venv\\Scripts\\python.exe for the full suite"
   },
-  "next": "Architect audit + 4090 perf baseline -> fill P1 backlog -> promote to /loop"
+  "next": "Land the 2026-06-02 refactor (merge feat/aec-dtln -> main, push, delete merged branches), then resume P1 voice/audio: AEC on real hardware + Smart Turn validation (see .agents/backlog.md)"
 }

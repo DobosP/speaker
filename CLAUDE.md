@@ -15,6 +15,13 @@ on-device (raw audio never leaves), with an optional cloud *thinking tier*
 (main planner / research / multimodal summarize / web search) for work that
 exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 
+> **Architecture reference:** `docs/unified_architecture.md` is the single
+> **current-truth** overview (how every subsystem is wired today, §0–§13). It
+> sits between `docs/architecture.md` (as-built) and `docs/target_architecture.md`
+> (north-star) and absorbs the dated `docs/*_2026-05.md` subsystem docs (now
+> banner-marked "superseded"). Start there; the two poles remain the authorities
+> for as-built detail and structural decisions respectively.
+
 > **Cross-platform shape (decided):** one portable **core** + thin **per-platform
 > shells** — *not* a monolith, *not* independent apps. Platforms share the
 > `always_on_agent` **`AgentEvent`/`Mode` contract** (plus its tests); the small
@@ -33,6 +40,34 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 > `AudioEngine` (sherpa-onnx production, scripted for tests, LiveKit for remote)
 > wired to the brain with real LLM-backed, cancellable capabilities. Try it
 > without audio: `python -m core --engine console --llm echo`.
+
+## Session bootstrap (run first every session)
+
+This project is worked on from **multiple machines**, and per-user Claude memory
+does **not** travel between them — prior-session state lives in the repo. At the
+start of a session, reconstruct where things left off **before touching code**:
+
+```
+python -m tools.session_bootstrap   # pure-local, stdlib-only, <1s, no deps
+```
+
+It prints a one-page briefing assembled in this read order, then a
+**Recommended working strategy** block:
+1. `.agents/status.json` — machine profile + last test verdict (green/red + counts)
+2. `docs/session_*.md` (newest by filename) — headline, branch, first 3 next-steps
+3. `logs/runs/*.summary.json` (3 newest) — per-run `stuck_hints`, errors, slow turns
+4. `.agents/backlog.md` — OPEN P0 items only
+
+The briefing is **advisory** — it sets direction, it does not change config or git
+state. If the tool is unavailable, walk the read order above by hand. A copy is
+written to `logs/session_<ts>_bootstrap.md` (gitignored).
+
+At session **END**, if meaningful work landed, refresh `.agents/status.json`
+(machine + `last_verdict` + `next`) and write a
+`docs/session_<YYYY-MM-DD>_<slug>.md` handoff (header / branch-commit map /
+what-landed / environment-on-`<machine>` / **Next steps (pick up here)**) so the
+next session's bootstrap reads fresh state. See `tools/session_bootstrap.py` for
+the exact fields it parses.
 
 ## Layout
 
@@ -198,6 +233,13 @@ exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
   not a code problem (and `GIT_HUB_TOKEN` does not change it).
+- **On the Windows box**, a local guard hook (`.claude/hooks/guard.ps1`) blocks
+  direct `main` pushes + the work identity by design; the personal SSH key and
+  feature-branch pushes work. Land via a PR — full procedure (SSH identity, the
+  `gh`/`$GIT_HUB_TOKEN` PR-merge commands, branch cleanup, local-main reconcile)
+  is in [`docs/windows_landing_workflow.md`](docs/windows_landing_workflow.md).
+  Note: the guard matches literal command text, so don't even name the work key /
+  SSH-config / global gitconfig paths in a shell command.
 - Self-monitoring / autofix loop: put work in a PR, then a Claude session can
   `subscribe` to that PR's activity to receive its CI results (from
   `tests.yml`) and review comments as events, and push fixes until checks pass.

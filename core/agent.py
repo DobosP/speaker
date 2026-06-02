@@ -3,7 +3,7 @@
 This module is the SINGLE place the Open Interpreter (`interpreter`) API is
 touched. A version bump, an API change, or a switch to subprocess isolation
 only changes this file -- the rest of the assistant talks to the brain through
-the small ``AgentEvent`` stream below and never imports ``interpreter`` directly.
+the small ``AgentBrainEvent`` stream below and never imports ``interpreter`` directly.
 
 Open Interpreter is an OPTIONAL dependency: it is imported lazily inside
 ``_ensure_interpreter`` so the base voice assistant runs (and its test suite
@@ -62,8 +62,14 @@ class AgentBrainConfig:
 
 
 @dataclass
-class AgentEvent:
-    """Normalized event emitted while the brain works a task."""
+class AgentBrainEvent:
+    """Normalized event emitted while the brain works a task.
+
+    NOTE: named ``AgentBrainEvent`` to avoid colliding with the PUBLIC
+    cross-platform contract ``always_on_agent.events.AgentBrainEvent`` (the
+    shell<->core seam shared with the Dart/mobile port). This type is
+    module-private to the Open Interpreter integration.
+    """
 
     kind: str            # speak | code | confirm | result | error
     text: str = ""
@@ -204,19 +210,19 @@ class AgentBrain:
         instruction: str,
         should_cancel: Optional[Callable[[], bool]] = None,
         on_confirm: Optional[Callable[[str, str], bool]] = None,
-    ) -> Iterator[AgentEvent]:
-        """Run ``instruction`` through Open Interpreter, yielding AgentEvents."""
+    ) -> Iterator[AgentBrainEvent]:
+        """Run ``instruction`` through Open Interpreter, yielding AgentBrainEvents."""
         should_cancel = should_cancel or (lambda: False)
         oi = self._ensure_interpreter()
 
         buffer: list[str] = []
         last_code = {"code": "", "language": ""}
 
-        def flush() -> Iterator[AgentEvent]:
+        def flush() -> Iterator[AgentBrainEvent]:
             text = "".join(buffer).strip()
             buffer.clear()
             if text:
-                yield AgentEvent("speak", text=text)
+                yield AgentBrainEvent("speak", text=text)
 
         with self._auto_answer(last_code, on_confirm):
             try:
@@ -253,9 +259,9 @@ class AgentBrain:
                         code = content.get("code", "") if isinstance(content, dict) else ""
                         language = content.get("language", "") if isinstance(content, dict) else ""
                         verdict = self.classify(code)
-                        yield AgentEvent("confirm", code=code, language=language, text=verdict)
+                        yield AgentBrainEvent("confirm", code=code, language=language, text=verdict)
                         if not self.decide(verdict, code, language, on_confirm):
-                            yield AgentEvent("speak", text="I won't run that.")
+                            yield AgentBrainEvent("speak", text="I won't run that.")
                             self._reset()
                             return
                         last_code["code"] = ""
@@ -265,14 +271,14 @@ class AgentBrain:
                         if chunk.get("format") == "output":
                             out = chunk.get("content")
                             if isinstance(out, str) and out.strip():
-                                yield AgentEvent(
+                                yield AgentBrainEvent(
                                     "result",
                                     text=_truncate(out.strip(), self.config.max_output_chars),
                                 )
                         continue
                 yield from flush()
             except Exception as exc:  # defensive boundary around OI
-                yield AgentEvent("error", text=str(exc))
+                yield AgentBrainEvent("error", text=str(exc))
 
     @contextlib.contextmanager
     def _auto_answer(self, last_code: dict, on_confirm):

@@ -1,5 +1,7 @@
 # ADD-ON / continuation (2026-05)
 
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+
 When the user **adds on** to a request that is still being answered — "...and also
 tomorrow", "oh wait, make it shorter", "what about Mars too" — the always-on loop
 used to spawn a **second, competing task** that raced the first: two LLM

@@ -6,6 +6,13 @@ github.com/lm-sys/RouteLLM): a router maps a query to a scalar in ``[0, 1]``
 into a binary tier choice. We re-implement it here rather than depend on the
 library so the default path stays dependency-light and phone-safe; the heavy,
 learned variant is opt-in and lazily imports torch/transformers.
+
+This is the TIER router (fast vs main model). It is NOT a duplicate of
+``core/capability_router.py``: that module is the unified *action* router
+(CONTROL/SIMPLE/RESEARCH/ACT) which *composes* this tier ``Router`` (it passes
+one in and adapts it back via ``CapabilityTierRouter``). One decision there
+drives both the tier choice here and the ReAct ``escalate`` predicate. See that
+module's docstring for the full relationship.
 """
 
 from __future__ import annotations

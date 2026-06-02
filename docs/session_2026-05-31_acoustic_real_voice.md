@@ -1,5 +1,7 @@
 # Session 2026-05-31 — acoustic loop fixed + real-voice speaker-ID
 
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+
 Handoff doc for the over-the-air / acoustic work landed on `main`. Written as a
 durable in-repo record (the prior account lived only in Claude's per-user
 memory) so the next machine — including a **Windows** continuation — can pick up

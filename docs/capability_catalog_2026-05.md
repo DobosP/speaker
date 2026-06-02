@@ -1,5 +1,7 @@
 # Capability catalog + self-aware model (2026-05)
 
+> ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
+
 Two of the assistant's goals — *the controller is aware of all its capabilities
 and takes the best action*, and *the model knows what it is and what skills it
 has* — shared one missing piece: there was no **capability manifest**. The

@@ -1,5 +1,7 @@
 # Always-On Agent Layer
 
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+
 > **Status — design rationale (historical).** This doc captured *why* the brain
 > exists and is kept for that reasoning. Two things have since changed: the
 > "current code" it points at (`utils/audio.py`, `utils/stt.py`,

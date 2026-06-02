@@ -1656,9 +1656,22 @@ class SherpaOnnxEngine(AudioEngine):
         )
         if identity_on and gate.accept(samples, self.config.sample_rate):
             return True
-        # With AEC active the echo is already subtracted from `samples`, so the
-        # level gate can run at a SMALLER margin (recovers soft-interrupt
-        # sensitivity vs the no-AEC guard). Explicit knob, not silent magic.
+        # POST-AEC barge discriminator. With the echo cancelled the residual
+        # during echo-only sits at the ambient/echo-residual FLOOR, while a real
+        # barge stands well ABOVE it -- so compare the residual to that floor
+        # (loudness_admits vs _ambient_rms), NOT to the playback buffer level. The
+        # playback-relative gate below requires the user to be LOUDER than the
+        # speaker output, which post-AEC MISSES real barges (measured on this box:
+        # echo-only residual ~0.02, a real barge ~0.4, but playback_level ~0.2 so
+        # a +margin gate vs playback never clears). The capture loop maintains
+        # _ambient_rms on the post-AEC residual when input_loudness_margin_db > 0.
+        if self._aec is not None and self._input_loudness_margin_db > 0.0:
+            return loudness_admits(
+                rms(samples), self._ambient_rms, margin_db=self._input_loudness_margin_db
+            )
+        # No AEC (or no ambient floor configured): the echo is still in `samples`,
+        # so fall back to the playback-relative level gate. With AEC the margin
+        # would be the smaller aec_relaxed_margin_db; without it, the full guard.
         margin_db = (
             self.config.aec_relaxed_margin_db
             if self._aec is not None

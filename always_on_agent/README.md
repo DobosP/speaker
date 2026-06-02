@@ -65,11 +65,15 @@ Next integration step: publish `AgentEvent.partial(...)` and
 - `tasks.py`: cancellable task runtime
 - `planner.py`: explicit task plans and step capability mapping
 - `supervisor.py`: mode and task orchestration
-- `runtime.py`: public facade for live STT integration
+- `runtime.py`: public facade (`AlwaysOnAgentRuntime`) for live STT integration
 - `bridge.py`: callback adapter for existing partial/final transcript hooks
-- `adapters.py`: integration boundaries for open-source voice projects
+- `react.py`: bounded ReAct planner (complementary to `planner.py`, not a duplicate)
+- `continuation.py` / `followups.py`: gated proactive-turn helpers
+- `memory.py`: the `Memory` protocol the brain talks to
+- `event_bus.py`: priority event bus
 - `replay.py`: deterministic transcript replay harness
 - `diagnostics.py`: summaries for test output and debugging
+- `app.py`: CLI/demo harness (`python -m always_on_agent.app --jsonl ... --summary-json`)
 
 ## Integration Shape
 

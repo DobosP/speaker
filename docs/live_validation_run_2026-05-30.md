@@ -1,5 +1,7 @@
 # Live validation run — 2026-05-30
 
+> ⚠️ **Historical record (point-in-time).** Superseded by [`docs/unified_architecture.md`](unified_architecture.md) and the current [`.agents/backlog.md`](../.agents/backlog.md). Kept for history. (2026-06-02 consolidation.)
+
 First real on-hardware run of the live-validation harness (`tools/live_session`),
 executed by Claude on the dev machine against the **real** models
 (`gemma3:4b` on Ollama for both tiers; sherpa streaming-zipformer ASR + LibriTTS

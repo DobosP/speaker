@@ -12,6 +12,7 @@ import pytest
 from core.engines._aec import (
     EchoCanceller,
     FarEndRing,
+    PlaybackFIFO,
     _DTLNEchoCanceller,
     _FDAFAdaptiveFilter,
     _resolve_dtln_paths,
@@ -89,6 +90,169 @@ def test_ring_clear():
     ring.push(np.arange(50, dtype=np.float32))
     ring.clear()
     assert np.all(ring.read(10, 0) == 0.0)
+
+
+# --- playback FIFO (producer/audio-callback seam) ----------------------------
+# The callback-OutputStream rewrite routes TTS through this bounded FIFO so the
+# audio callback can tee the EXACT just-played block into the far ring (aligning
+# the AEC reference to real acoustic playback). These exercise the threading +
+# wrap-around + backpressure contracts with no audio device.
+
+_never_abort = lambda: False  # noqa: E731 - test predicate
+
+
+def _disable_self_wake(fifo):
+    """Pin the consumer->producer notify path for wake tests.
+
+    write() parks a full-ring producer in ``self._cond.wait(timeout=0.1)``, so it
+    SELF-wakes every 100 ms regardless of any notify. That backstop would let the
+    wake tests below pass even if read_into()/flush() never notified -- a dropped
+    or mis-targeted ``notify_all`` (a real defect: every backpressure release would
+    then incur a ~100 ms stall) would stay green. We replace the FIFO Condition's
+    timeout-bounded wait with a block-until-notified wait, so the ONLY way a blocked
+    producer can unblock is a real ``notify_all``; if that notify regresses, the
+    test's ``done.wait()`` times out and the test fails."""
+    real_wait = fifo._cond.wait
+    fifo._cond.wait = lambda timeout=None: real_wait()  # ignore the self-wake timeout
+
+
+def test_fifo_write_then_read_round_trips():
+    fifo = PlaybackFIFO(8)
+    fifo.write(np.array([1, 2, 3, 4], dtype="float32"), _never_abort)
+    out = np.empty(4, dtype="float32")
+    n = fifo.read_into(out)
+    assert n == 4
+    np.testing.assert_array_equal(out, [1, 2, 3, 4])
+    assert fifo.count() == 0
+
+
+def test_fifo_wraps_around_correctly():
+    # Capacity 4; write 3, read 2 (heads advance), then write 3 more -> the new
+    # write wraps the ring. Read all 4 and check ordering survives the wrap.
+    fifo = PlaybackFIFO(4)
+    fifo.write(np.array([1, 2, 3], dtype="float32"), _never_abort)
+    out2 = np.empty(2, dtype="float32")
+    fifo.read_into(out2)  # consumes 1,2 -> read head at 2
+    np.testing.assert_array_equal(out2, [1, 2])
+    fifo.write(np.array([4, 5, 6], dtype="float32"), _never_abort)  # writes 4,5 wrap to 6
+    out4 = np.empty(4, dtype="float32")
+    n = fifo.read_into(out4)
+    assert n == 4
+    np.testing.assert_array_equal(out4, [3, 4, 5, 6])
+
+
+def test_fifo_read_into_underrun_zero_fills_and_returns_real_count():
+    fifo = PlaybackFIFO(8)
+    fifo.write(np.array([7, 8], dtype="float32"), _never_abort)
+    out = np.full(5, -1.0, dtype="float32")
+    n = fifo.read_into(out)
+    assert n == 2  # only 2 REAL samples
+    np.testing.assert_array_equal(out[:2], [7, 8])
+    np.testing.assert_array_equal(out[2:], [0, 0, 0])  # tail zero-filled, never a stall
+
+
+def test_fifo_write_backpressure_blocks_until_drained():
+    # Producer blocks when the ring is full; a read frees space and wakes it.
+    import threading
+
+    fifo = PlaybackFIFO(4)
+    _disable_self_wake(fifo)  # so only a real notify_all can unblock the producer
+    fifo.write(np.array([1, 2, 3, 4], dtype="float32"), _never_abort)  # now full
+    done = threading.Event()
+
+    def producer():
+        fifo.write(np.array([5, 6], dtype="float32"), _never_abort)  # must block: no space
+        done.set()
+
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    assert not done.wait(timeout=0.2), "write() should block while the FIFO is full"
+    # Drain 2 samples -> producer wakes, writes its 2, completes.
+    out = np.empty(2, dtype="float32")
+    fifo.read_into(out)
+    np.testing.assert_array_equal(out, [1, 2])
+    assert done.wait(timeout=1.0), "read_into should have woken the blocked producer"
+    t.join(timeout=1.0)
+    assert fifo.count() == 4  # 3,4 still queued + the new 5,6
+
+
+def test_fifo_flush_empties_and_wakes_blocked_producer():
+    import threading
+
+    fifo = PlaybackFIFO(4)
+    _disable_self_wake(fifo)  # so only flush()'s notify_all can unblock the producer
+    fifo.write(np.array([1, 2, 3, 4], dtype="float32"), _never_abort)  # full
+    done = threading.Event()
+
+    def producer():
+        fifo.write(np.array([9], dtype="float32"), _never_abort)
+        done.set()
+
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    assert not done.wait(timeout=0.2)
+    fifo.flush()  # drops everything + notifies -> producer wakes and writes its 1
+    assert done.wait(timeout=1.0), "flush() must wake a producer blocked in write()"
+    t.join(timeout=1.0)
+    # The 4 queued were dropped by flush; only the producer's single sample remains.
+    assert fifo.count() == 1
+
+
+def test_fifo_write_returns_promptly_when_should_abort_flips_while_full():
+    # Deadlock guard: a producer blocked on a full FIFO must return when the
+    # abort predicate goes True (barge-in/shutdown), even with no reader.
+    import threading
+
+    fifo = PlaybackFIFO(4)
+    fifo.write(np.array([1, 2, 3, 4], dtype="float32"), _never_abort)  # full
+    abort = threading.Event()
+    done = threading.Event()
+
+    def producer():
+        fifo.write(np.array([5, 6], dtype="float32"), should_abort=abort.is_set)
+        done.set()
+
+    t = threading.Thread(target=producer, daemon=True)
+    t.start()
+    assert not done.wait(timeout=0.2), "should still be blocked (FIFO full, not aborted)"
+    abort.set()  # barge-in/shutdown
+    assert done.wait(timeout=1.0), "write() must return promptly once should_abort is True"
+    t.join(timeout=1.0)
+    assert fifo.count() == 4  # nothing from the aborted write was enqueued
+
+
+def test_fifo_write_does_not_enqueue_after_abort():
+    # An already-aborted producer drops its whole payload (the barged chunk).
+    fifo = PlaybackFIFO(8)
+    fifo.write(np.array([1, 2], dtype="float32"), should_abort=lambda: True)
+    assert fifo.count() == 0
+
+
+def test_fifo_mid_chunk_abort_halts_enqueue_and_flush_clears_the_partial():
+    # A long chunk is copied over SEVERAL lock passes (it can fill the ring and
+    # backpressure mid-chunk). An abort that arrives mid-chunk STOPS further
+    # enqueue but does NOT retroactively clear what an earlier pass already
+    # queued -- a true rollback is impossible once the audio callback has played
+    # part of it. Dropping the still-queued partial is flush()'s job, which the
+    # barge-in/shutdown paths always call alongside the abort. This pins that
+    # real contract (and guards against a naive "rollback" that, under a
+    # concurrent flush/drain, would corrupt the shared count).
+    fifo = PlaybackFIFO(4)
+    calls = {"n": 0}
+
+    def abort_after_first_pass():
+        # False on the first probe (lets pass 1 fill the ring with 1..4), True
+        # thereafter -> pass 2 sees the full ring and aborts before adding more.
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    fifo.write(np.array([1, 2, 3, 4, 5, 6, 7, 8], dtype="float32"), abort_after_first_pass)
+    # Pass 1 queued 1..4 (ring full); pass 2 aborted. should_abort ALONE leaves
+    # that partial queued -- it only halts further synthesis.
+    assert fifo.count() == 4
+    # The production pattern pairs the abort with flush(), which drops it.
+    fifo.flush()
+    assert fifo.count() == 0
 
 
 # --- adaptive filter: single-talk cancellation -------------------------------

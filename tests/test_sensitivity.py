@@ -85,7 +85,7 @@ def test_personal_markers_force_private():
 
 
 # --- security-5: hardened PII gate (golden cases) --------------------------
-# docs/review_ultracode.md security-5: the prior gate matched only a *fixed*
+# docs/archive/review_ultracode.md security-5: the prior gate matched only a *fixed*
 # noun list after "my", so these PII phrasings escaped to the cheap public
 # (PRC-hosted) chain. Each must now classify PRIVATE, failing safe per §9.7.
 

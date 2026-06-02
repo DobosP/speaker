@@ -1,6 +1,6 @@
 """Pluggable ``web.search`` capability backed by self-hosted SearXNG.
 
-This is the P3 "real web research" surface (`docs/p3_design.md` §1, Locked
+This is the P3 "real web research" surface (`docs/archive/p3_design.md` §1, Locked
 Decision 3). It lives in ``core/`` -- not ``always_on_agent/`` (which stays
 ``core``-free per ``always_on_agent/react.py:9-12``) -- so it can call
 ``core.sensitivity.may_leave_device`` directly and enforce the §9.7 data

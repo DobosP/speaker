@@ -4,7 +4,7 @@
 
 _Target: a secure, OSS-ready, real-time voice assistant with layered memory and smart routing that runs well across machine types and uses external LLM providers for the hard/thinking tier._
 
-_Date: 2026-05-29. Built on `docs/target_architecture.md` (§9, §9.7, §10) and `docs/code_review_2026-05.md`. This report gates the implementation phase._
+_Date: 2026-05-29. Built on `docs/target_architecture.md` (§9, §9.7, §10) and `docs/archive/code_review_2026-05.md`. This report gates the implementation phase._
 
 ## 1. Overall Assessment
 

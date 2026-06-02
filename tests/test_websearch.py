@@ -4,7 +4,7 @@ These pin the §9.7 egress boundary and the never-raise corpus fallback. They
 need no network and no real SearXNG -- the backend is faked (or absent) so the
 suite stays dependency-free (no httpx import on the corpus-only paths).
 
-Coverage map (docs/p3_design.md §7, BR2/BR7):
+Coverage map (docs/archive/p3_design.md §7, BR2/BR7):
 - PRIVATE/PII tripwire: the gate runs FIRST, the backend is NEVER called, and
   the corpus answers with egress=False.
 - PUBLIC query: hits a fake backend; citations == source urls; corpus-compatible

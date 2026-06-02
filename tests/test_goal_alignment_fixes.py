@@ -1,6 +1,6 @@
 """Regression tests locking the 2026-05 goal-alignment fixes.
 
-Each fix closes a finding from docs/perf_audit_2026-05_goal_alignment.md. These
+Each fix closes a finding from docs/archive/perf_audit_2026-05_goal_alignment.md. These
 tests pin the *committed* behavior so a silent revert (the exact class of bug
 that caused several findings -- e.g. the router threshold living only in an
 uncommitted working tree) is caught by CI.

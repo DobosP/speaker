@@ -1,0 +1,565 @@
+{
+  "run_id": "20260602-235431",
+  "log_path": "logs/runs/run-20260602-235431.txt",
+  "duration_sec": 84.8,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260602-235431.wav"
+  },
+  "counts": {
+    "llm_requests": 12,
+    "turns": 7,
+    "transcript_entries": 52,
+    "errors": 0,
+    "warnings": 0,
+    "log_lines_by_level": {
+      "INFO": 110,
+      "DEBUG": 97
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "I then.",
+      "mode": "assistant",
+      "at_sec": 24.42
+    },
+    {
+      "role": "user",
+      "text": "What.",
+      "mode": "assistant",
+      "at_sec": 28.98
+    },
+    {
+      "role": "user",
+      "text": "I think me.",
+      "mode": "assistant",
+      "at_sec": 35.75
+    },
+    {
+      "role": "user",
+      "text": "Oh didn't think.",
+      "mode": "assistant",
+      "at_sec": 39.75
+    },
+    {
+      "role": "assistant",
+      "text": "Could you please clarify what you were trying to say?",
+      "at_sec": 40.56
+    },
+    {
+      "role": "user",
+      "text": "Tell me a long story.",
+      "mode": "assistant",
+      "at_sec": 47.15
+    },
+    {
+      "role": "assistant",
+      "text": "The little clockmaker, Elias, lived in a town where time seemed to move differently for everyone.",
+      "at_sec": 48.26
+    },
+    {
+      "role": "assistant",
+      "text": "Some rushed, some lingered, and some simply forgot.",
+      "at_sec": 48.46
+    },
+    {
+      "role": "assistant",
+      "text": "Elias, however, kept it all in order with his meticulous clocks, each one a tiny universe of gears and springs.",
+      "at_sec": 48.9
+    },
+    {
+      "role": "assistant",
+      "text": "He wasn't a young man, his fingers gnarled and stained with oil, but his eyes held the bright curiosity of a child when he was working.",
+      "at_sec": 49.55
+    },
+    {
+      "role": "assistant",
+      "text": "One day, a woman arrived in town, cloaked and hooded, her face hidden in shadow.",
+      "at_sec": 49.92
+    },
+    {
+      "role": "assistant",
+      "text": "She carried a single, tarnished pocket watch, its hands frozen at a peculiar time: 3:17.",
+      "at_sec": 50.36
+    },
+    {
+      "role": "assistant",
+      "text": "\"Can you fix it?\" she asked, her voice low and melodic.",
+      "at_sec": 50.64
+    },
+    {
+      "role": "assistant",
+      "text": "Elias peered at the watch, noting the intricate carvings of silver vines that spiraled across its surface.",
+      "at_sec": 51.02
+    },
+    {
+      "role": "assistant",
+      "text": "He\u2019d never seen anything quite like it.",
+      "at_sec": 51.22
+    },
+    {
+      "role": "assistant",
+      "text": "\"I can try,\" he replied, \"But this is no ordinary timepiece.\"",
+      "at_sec": 51.56
+    },
+    {
+      "role": "assistant",
+      "text": "The woman simply nodded and left the watch with him.",
+      "at_sec": 51.79
+    },
+    {
+      "role": "assistant",
+      "text": "Elias worked for days, meticulously cleaning, oiling, and repairing the delicate mechanism.",
+      "at_sec": 52.1
+    },
+    {
+      "role": "assistant",
+      "text": "He discovered that the watch wasn't just keeping time; it was somehow *connected* to it.",
+      "at_sec": 52.5
+    },
+    {
+      "role": "assistant",
+      "text": "When he adjusted a gear, he felt a subtle shift in the town\u2019s atmosphere, a fleeting sense of either hastened or slowed moments.",
+      "at_sec": 53.05
+    },
+    {
+      "role": "assistant",
+      "text": "As he worked, Elias began to dream.",
+      "at_sec": 53.25
+    },
+    {
+      "role": "assistant",
+      "text": "Dreams of a place beyond the town, a shimmering realm where time flowed like a river, twisting and turning through valleys of forgotten moments.",
+      "at_sec": 53.78
+    },
+    {
+      "role": "assistant",
+      "text": "In his dreams, he saw the woman from the watch, but her face remained obscured.",
+      "at_sec": 54.14
+    },
+    {
+      "role": "assistant",
+      "text": "He felt a strange longing, a sense that he was missing something vital.",
+      "at_sec": 54.4
+    },
+    {
+      "role": "assistant",
+      "text": "Finally, the watch was ready.",
+      "at_sec": 54.55
+    },
+    {
+      "role": "assistant",
+      "text": "He summoned the woman, who appeared as silently as she had left.",
+      "at_sec": 54.81
+    },
+    {
+      "role": "assistant",
+      "text": "\u201cIt is repaired,\u201d he announced.",
+      "at_sec": 54.96
+    },
+    {
+      "role": "assistant",
+      "text": "As she took it, a single ray of sunlight broke through the clouds, illuminating her face for the first time.",
+      "at_sec": 55.38
+    },
+    {
+      "role": "assistant",
+      "text": "It was a face etched with both sorrow and a profound, ancient wisdom.",
+      "at_sec": 55.67
+    },
+    {
+      "role": "assistant",
+      "text": "\"You have done well, Elias,\" she said, her voice now tinged with a sadness that resonated deep within him.",
+      "at_sec": 56.19
+    },
+    {
+      "role": "assistant",
+      "text": "\"This watch\u2026 it is a key.",
+      "at_sec": 56.36
+    },
+    {
+      "role": "assistant",
+      "text": "A key to a place where time is not a constant, but a malleable thing.\"",
+      "at_sec": 56.67
+    },
+    {
+      "role": "assistant",
+      "text": "She explained that the realm he\u2019d seen in his dreams was called Chronia, and it was slowly fading because the town's collective perception of time was becoming fractured.",
+      "at_sec": 57.34
+    },
+    {
+      "role": "assistant",
+      "text": "The watch was a conduit, drawing energy from the town's temporal harmony.",
+      "at_sec": 57.64
+    },
+    {
+      "role": "assistant",
+      "text": "When it stopped, it disrupted that harmony, threatening to unravel Chronia completely.",
+      "at_sec": 57.95
+    },
+    {
+      "role": "assistant",
+      "text": "\"I need you to help me,\" she said.",
+      "at_sec": 58.22
+    },
+    {
+      "role": "assistant",
+      "text": "\"Not to repair watches, but to help the town remember the value of *their* time.",
+      "at_sec": 58.6
+    },
+    {
+      "role": "assistant",
+      "text": "To appreciate the moments they have, big and small.\"",
+      "at_sec": 58.8
+    },
+    {
+      "role": "assistant",
+      "text": "Elias, initially hesitant, felt a pull he couldn\u2019t ignore.",
+      "at_sec": 59.12
+    },
+    {
+      "role": "assistant",
+      "text": "He began to speak to the townspeople, not about clocks, but about life.",
+      "at_sec": 59.44
+    },
+    {
+      "role": "assistant",
+      "text": "He encouraged them to savor their meals, to appreciate the changing seasons, to simply *be* in the present.",
+      "at_sec": 59.89
+    },
+    {
+      "role": "assistant",
+      "text": "He told stories of Chronia, the realm of moments, and how their actions directly impacted its existence.",
+      "at_sec": 60.3
+    },
+    {
+      "role": "assistant",
+      "text": "Slowly, things began to change.",
+      "at_sec": 60.5
+    },
+    {
+      "role": "assistant",
+      "text": "The rushed began to pause, the lingerers began to engage, and even the forgetful began to remember.",
+      "at_sec": 60.92
+    },
+    {
+      "role": "assistant",
+      "text": "The town\u2019s temporal harmony strengthened, and Elias felt it in the subtle hum of his workshop.",
+      "at_sec": 61.31
+    },
+    {
+      "role": "assistant",
+      "text": "The pocket watch glowed faintly in the woman\u2019s possession.",
+      "at_sec": 61.55
+    },
+    {
+      "role": "assistant",
+      "text": "One evening, the woman reappeared at his shop.",
+      "at_sec": 61.79
+    },
+    {
+      "role": "assistant",
+      "text": "\"You have done more than you know, Elias,\" she said, a smile finally gracing her lips.",
+      "at_sec": 62.23
+    },
+    {
+      "role": "assistant",
+      "text": "\u201cChronia is safe, for now.\u201d",
+      "at_sec": 62.41
+    },
+    {
+      "role": "assistant",
+      "text": "She reached out",
+      "at_sec": 62.47
+    },
+    {
+      "role": "user",
+      "text": "So paid.",
+      "mode": "assistant",
+      "at_sec": 73.92
+    },
+    {
+      "role": "user",
+      "text": "I.",
+      "mode": "assistant",
+      "at_sec": 76.86
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1780433671.173,
+      "cpu_percent": 0.0,
+      "ram_used_mb": 24319.4,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 73.1,
+      "proc_rss_mb": 19.9,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 18.0,
+          "mem_used_mb": 13075.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 63.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1780433755.938,
+      "cpu_percent": 96.2,
+      "ram_used_mb": 26382.1,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 79.3,
+      "proc_rss_mb": 1155.3,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 2.0,
+          "mem_used_mb": 13077.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 71.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 100.0,
+      "ram_used_mb": 30648.2,
+      "ram_percent": 92.2,
+      "proc_rss_mb": 1155.3,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 91.0,
+      "gpu_mem_used_mb": 13077.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1780433672.279,
+        "cpu_percent": 49.6,
+        "ram_used_mb": 24729.6,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 74.4,
+        "proc_rss_mb": 103.4,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 18.0,
+            "mem_used_mb": 13075.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 63.0
+          }
+        ]
+      }
+    },
+    "samples": 8,
+    "deltas": {
+      "ram_used_mb_delta": 2062.7,
+      "proc_rss_mb_delta": 1135.4,
+      "gpu_mem_used_mb_delta": 2.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 20.66,
+    "avg_time_sec": 1.72,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 1.456,
+        "ttft_sec": null,
+        "out_chars": 38,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:12b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 0.76,
+        "ttft_sec": null,
+        "out_chars": 32,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 22,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"hi\"",
+        "duration_sec": 0.405,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 27,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"I then.\"",
+        "duration_sec": 0.373,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 76,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - I then. Latest utterance: \"What.\"",
+        "duration_sec": 0.309,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 92,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - I then. - What. Latest utterance: \"I think me.\"",
+        "duration_sec": 0.292,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 113,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - I then. - What. - I think me. Latest utterance: \"Oh didn't think.\"",
+        "duration_sec": 0.325,
+        "ttft_sec": null,
+        "out_chars": 4,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 16,
+        "system_chars": 1447,
+        "prompt_preview": "Oh didn't think.",
+        "duration_sec": 0.476,
+        "ttft_sec": 0.376,
+        "out_chars": 53,
+        "tokens": 11,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 185,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - What. - I think me. - Oh didn't think. - Could you please clarify what you were trying to say? Latest utterance: \"Tell me a long story.\"",
+        "duration_sec": 0.342,
+        "ttft_sec": null,
+        "out_chars": 4,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:12b",
+        "prompt_chars": 21,
+        "system_chars": 1577,
+        "prompt_preview": "Tell me a long story.",
+        "duration_sec": 14.959,
+        "ttft_sec": 0.395,
+        "out_chars": 3365,
+        "tokens": 768,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 3542,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - Oh didn't think. - Could you please clarify what you were trying to say? - Tell me a long story. - The little clockmaker, Elias, lived in a town where time seem",
+        "duration_sec": 0.525,
+        "ttft_sec": null,
+        "out_chars": 6,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 3528,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - Could you please clarify what you were trying to say? - Tell me a long story. - The little clockmaker, Elias, lived in a town where time seemed to move differen",
+        "duration_sec": 0.44,
+        "ttft_sec": null,
+        "out_chars": 6,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 2.3808,
+      "endpoint_latency": 1.3224,
+      "final_to_first_token": 0.3869,
+      "first_token_to_audio": 0.6715,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 4.847,
+      "endpoint_latency": 1.5902,
+      "final_to_first_token": 0.4065,
+      "first_token_to_audio": 2.8502,
+      "barge_in_latency": 0.0002
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    }
+  ],
+  "stuck_hints": [],
+  "errors": []
+}

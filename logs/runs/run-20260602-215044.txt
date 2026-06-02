@@ -1,0 +1,142 @@
+21:50:44.595 INFO  speaker | run 20260602-215044 started (debug=True) -> logs/runs/run-20260602-215044.txt
+21:50:44.634 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=25882.0MB(77.8%) proc_rss=18.6MB gpu=12.0% gpu_mem=74.0/16376.0MB
+21:50:45.383 INFO  speaker.sysinfo | system mark after_build: cpu=40.9% ram=26101.6MB(78.5%) proc_rss=102.0MB gpu=35.0% gpu_mem=74.0/16376.0MB
+21:50:45.383 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+21:50:47.447 INFO  speaker.sherpa | second-pass final ASR: sense_voice (/home/dobo/work/speaker/pretrained_models/sherpa/sense_voice/model.int8.onnx)
+21:50:48.365 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (/home/dobo/work/speaker/pretrained_models/sherpa/aec/dtln_aec_stage1.onnx)
+21:50:48.365 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=94ms)
+21:50:48.371 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.50, input gating=True)
+21:50:48.371 INFO  speaker.sherpa | input device: AT2020USB-X: USB Audio (hw:2,0)
+21:50:48.371 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+21:50:48.371 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+21:50:48.391 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+21:50:48.400 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260602-215044.wav
+21:50:48.403 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+21:50:50.413 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0000 partials=0 finals=0 speaking=False
+21:50:50.413 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+21:50:50.862 DEBUG speaker.sherpa | asr partial: 'And'
+21:50:50.862 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+21:50:52.849 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+21:50:53.187 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+21:50:53.390 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+21:50:53.390 INFO  speaker.llm.ollama | ollama gemma3:4b: 4.98s ttft=- out=38ch tokens=- | 'hi'
+21:50:53.445 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "I."
+21:50:53.445 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.26s ttft=- out=7ch tokens=- | 'Latest utterance: "I."'
+21:50:53.445 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+21:50:53.555 DEBUG speaker.sherpa | capture heartbeat: blocks=38 avg_rms=0.0000 partials=1 finals=1 speaking=False
+21:50:53.555 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+21:50:54.676 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=27200.3MB(81.8%) proc_rss=1031.2MB gpu=2.0% gpu_mem=4345.0/16376.0MB
+21:50:54.678 DEBUG speaker.sherpa | asr partial: 'And'
+21:50:54.679 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+21:50:55.665 DEBUG speaker.sherpa | capture heartbeat: blocks=57 avg_rms=0.0000 partials=2 finals=1 speaking=False
+21:50:55.665 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+21:50:56.597 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+21:50:56.671 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+21:50:57.075 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+
+Latest utterance: "I."
+21:50:57.075 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.40s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. Latest utterance: "I."'
+21:50:57.075 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+21:50:57.690 DEBUG speaker.sherpa | capture heartbeat: blocks=69 avg_rms=0.0000 partials=2 finals=2 speaking=False
+21:50:57.690 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+21:50:57.944 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: hi
+21:50:57.944 INFO  speaker.llm.ollama | ollama gemma3:12b: 4.55s ttft=- out=35ch tokens=- | 'hi'
+21:50:58.354 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "hi"
+21:50:58.354 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.41s ttft=- out=7ch tokens=- | 'Latest utterance: "hi"'
+21:50:58.531 INFO  speaker.sherpa | sherpa TTS warm-up complete
+21:50:58.554 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+21:50:58.642 DEBUG speaker.sherpa | asr partial: 'And'
+21:50:58.642 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+21:50:59.787 DEBUG speaker.sherpa | capture heartbeat: blocks=90 avg_rms=0.0000 partials=3 finals=2 speaking=False
+21:50:59.787 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+21:51:00.570 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+21:51:00.679 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+21:51:00.973 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+
+Latest utterance: "I."
+21:51:00.973 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.29s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. Latest utterance: "I."'
+21:51:00.973 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+21:51:01.885 DEBUG speaker.sherpa | capture heartbeat: blocks=104 avg_rms=0.0681 partials=3 finals=3 speaking=False
+21:51:03.272 DEBUG speaker.sherpa | asr partial: 'Hu'
+21:51:03.272 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hu'
+21:51:03.565 DEBUG speaker.sherpa | asr partial: 'Hullo'
+21:51:03.566 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hullo'
+21:51:03.889 DEBUG speaker.sherpa | capture heartbeat: blocks=124 avg_rms=0.3009 partials=5 finals=3 speaking=False
+21:51:04.459 DEBUG speaker.sherpa | asr partial: 'Hullo how are'
+21:51:04.459 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hullo how are'
+21:51:04.718 DEBUG speaker.sysinfo | system sample: cpu=96.8% ram=27940.2MB(84.0%) proc_rss=1044.3MB gpu=5.0% gpu_mem=13075.0/16376.0MB
+21:51:04.893 DEBUG speaker.sherpa | asr partial: 'Hullo how are you'
+21:51:04.895 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hullo how are you'
+21:51:05.951 INFO  speaker.sherpa | asr final: 'Hello, Oro.' (raw 'HULLO HOW ARE YOU')
+21:51:06.016 INFO  speaker.runtime | final -> brain: 'Hello, Oro.' (mode=assistant)
+21:51:06.248 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - I.
+
+Latest utterance: "Hello, Oro."
+21:51:06.248 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.23s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - I. - I. - I. Latest utterance: "Hello, Oro."'
+21:51:06.248 INFO  speaker.runtime | addressing decision: ACT for 'Hello, Oro.'
+21:51:06.248 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Hello, Oro.'
+21:51:06.248 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Hello, Oro.'
+21:51:06.249 INFO  speaker.tasks | task 1cbb9b41ec13 started: mode=assistant capability=assistant.answer input='Hello, Oro.'
+21:51:06.259 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Hello, Oro.'
+21:51:06.353 DEBUG speaker.sherpa | capture heartbeat: blocks=140 avg_rms=0.0466 partials=7 finals=4 speaking=False
+21:51:06.565 INFO  speaker.runtime | assistant: 'Hello there.'
+21:51:06.565 DEBUG speaker.sherpa | speaking: 'Hello there.' (queue depth=0)
+21:51:06.627 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Hello, Oro.
+21:51:06.627 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.37s ttft=0.28s out=38ch tokens=10 | 'Hello, Oro.'
+21:51:06.627 INFO  speaker.llm | fast tier done in 0.37s (38 chars, streamed)
+21:51:06.630 INFO  speaker.tasks | task 1cbb9b41ec13 completed in 0.38s (38 chars)
+21:51:06.630 INFO  speaker.runtime | assistant: 'How can I help you today?'
+21:51:06.716 WARNING speaker.sherpa | speaker rejected 22050 Hz; playing at 44100 Hz and resampling
+21:51:06.801 DEBUG speaker.sherpa | speaking: 'How can I help you today?' (queue depth=0)
+21:51:07.405 INFO  speaker.sherpa | barge-in detected
+21:51:07.405 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+21:51:07.405 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+21:51:08.369 DEBUG speaker.sherpa | capture heartbeat: blocks=160 avg_rms=0.0509 partials=7 finals=4 speaking=False
+21:51:10.312 DEBUG speaker.sherpa | asr partial: 'Can you'
+21:51:10.312 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you'
+21:51:10.464 DEBUG speaker.sherpa | capture heartbeat: blocks=181 avg_rms=0.1096 partials=8 finals=4 speaking=False
+21:51:10.612 DEBUG speaker.sherpa | asr partial: 'Can you tell'
+21:51:10.613 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell'
+21:51:11.015 DEBUG speaker.sherpa | asr partial: 'Can you tell me'
+21:51:11.016 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me'
+21:51:11.675 DEBUG speaker.sherpa | asr partial: 'Can you tell me a'
+21:51:11.675 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me a'
+21:51:11.973 DEBUG speaker.sherpa | asr partial: 'Can you tell me a story'
+21:51:11.973 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can you tell me a story'
+21:51:12.593 DEBUG speaker.sherpa | capture heartbeat: blocks=202 avg_rms=0.0875 partials=12 finals=4 speaking=False
+21:51:13.078 INFO  speaker.sherpa | asr final: 'Can tell me a story.' (raw 'CAN YOU TELL ME A STORY')
+21:51:13.109 INFO  speaker.runtime | final -> brain: 'Can tell me a story.' (mode=assistant)
+21:51:13.330 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - Hello, Oro.
+  - Hello there. How can I help you today?
+
+Latest utterance: "Can tell me a story."
+21:51:13.330 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.22s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - I. - I. - Hello, Oro. - Hello there. How can I help you today? Latest utterance: "Can tell me a story."'
+21:51:13.330 INFO  speaker.runtime | addressing decision: ACT for 'Can tell me a story.'
+21:51:13.330 INFO  speaker.runtime | route: action=simple tier=main conf=0.70 source=heuristic (no gather/action markers) for 'Can tell me a story.'
+21:51:13.331 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Can tell me a story.'
+21:51:13.331 INFO  speaker.tasks | task ce8b59941320 started: mode=assistant capability=assistant.answer input='Can tell me a story.'
+21:51:13.342 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Can tell me a story.'
+21:51:13.676 INFO  speaker.runtime | assistant: 'Okay!'
+21:51:13.676 DEBUG speaker.sherpa | speaking: 'Okay!' (queue depth=0)
+21:51:14.075 INFO  speaker.runtime | assistant: 'Once upon a time, in a small village nestled beside a whispering forest, lived a baker named Elara.'
+21:51:14.267 INFO  speaker.sherpa | barge-in detected
+21:51:14.267 INFO  speaker.supervisor | cancel_all: epoch=3 1 active, 0 queued, 0 pending-confirm
+21:51:14.267 INFO  speaker.supervisor | cancel_all: epoch=4 1 active, 0 queued, 0 pending-confirm
+21:51:14.277 INFO  speaker.llm | main tier cancelled in 0.93s (160 chars, streamed)
+21:51:14.277 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: Can tell me a story.
+21:51:14.277 INFO  speaker.llm.ollama | ollama gemma3:12b: 0.94s ttft=0.30s out=164ch tokens=36 CANCELLED | 'Can tell me a story.'
+21:51:14.277 INFO  speaker.tasks | task ce8b59941320 cancelled after 0.95s
+21:51:14.685 DEBUG speaker.sherpa | capture heartbeat: blocks=215 avg_rms=0.0714 partials=12 finals=5 speaking=False
+21:51:14.744 DEBUG speaker.sysinfo | system sample: cpu=94.6% ram=27888.5MB(83.9%) proc_rss=1067.9MB gpu=5.0% gpu_mem=13075.0/16376.0MB
+21:51:16.743 DEBUG speaker.sherpa | capture heartbeat: blocks=234 avg_rms=0.0218 partials=12 finals=5 speaking=False
+21:51:18.324 INFO  speaker.sherpa | recorded 24.9s of session audio -> logs/runs/run-20260602-215044.wav
+21:51:18.384 INFO  speaker.sysinfo | system final: cpu=88.5% ram=27886.3MB(83.9%) proc_rss=1068.4MB gpu=5.0% gpu_mem=13075.0/16376.0MB | deltas: {'ram_used_mb_delta': 2004.3, 'proc_rss_mb_delta': 1049.8, 'gpu_mem_used_mb_delta': 13001.0}

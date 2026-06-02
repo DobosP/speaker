@@ -18,9 +18,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       real interrupt still cuts through; then optionally try `aec_backend="dtln"`.
 - [ ] **Extend `tools/echo_probe.py`** to print post-AEC **ERLE (dB)** and auto-suggest
       `aec_ref_delay_ms` via cross-correlation (no mic needed to write it).
-- [ ] **Validate the Smart Turn v3 endpoint** before enabling:
+- [ ] **Validate the Smart Turn v3 endpoint on hardware** (the prosody detector +
+      `tools/turn_detect_check` real-voice validation tool + an adaptive
+      confidence-tiered endpoint floor all LANDED on main from the voice batch below;
+      what remains is the on-hardware A/B). Run
       `python -m tools.live_session --all --inject --smart-endpoint`; diff ON finals
-      vs lexical/acoustic. (Default-off; on in the desktop profile — not yet A/B'd on hardware.)
+      vs lexical/acoustic. (Default-off; on in the desktop profile.)
 - [ ] **DTLN follow-ups:** smaller 256/128 size for phone profiles; clock-drift over
       long utterances; consider LiveKit AEC3 if the runtime ever moves to ≥3.11.
 
@@ -43,6 +46,10 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.
 
 ## Shipped this session (2026-06-02)
+- [x] **Landed the unification refactor on `main`** (merge `d215a31`): merged
+      `feat/aec-dtln` (`unified_architecture.md` + `session_bootstrap` + Windows landing
+      doc) onto the diverged `origin/main`. Clean merge, full suite green
+      (1283 passed, 13 skipped). Branch deleted.
 - [x] Architecture/doc unification: `docs/unified_architecture.md` absorbs ~14 dated
       docs; merged docs banner-linked; stale session logs archived.
 - [x] Removed dead `always_on_agent/snapshots.py`; renamed `core/agent.py` private
@@ -50,3 +57,18 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [x] Added `tools/session_bootstrap.py` + CLAUDE.md "Session bootstrap" section.
 - [x] Relocated the accidentally-nested `social_media_activities_app/` out of the repo;
       removed the `UsersPaul` junk file; added `.gitignore` guards.
+
+## Landed on `main` from the other machine (origin/main voice batch, 2026-06-02)
+> Merged into `main` here; recorded so the next session knows this is already on `main`.
+> `docs/unified_architecture.md` predates this batch and needs a refresh pass to cover it.
+- [x] **SenseVoice two-pass final ASR**, shipped as the DEFAULT (run-on speech fix);
+      pinned to English (was mis-detecting Chinese).
+- [x] **Smart Turn v3 prosody turn-completion detector** + `tools/turn_detect_check`
+      real-voice validation tool + adaptive confidence-tiered endpoint floor (~-110ms).
+- [x] **Multi-signal barge-in stack:** loudness fallback (embedder-unreliable setups),
+      scale-invariant reference-coherence detector (volume-independent, zero-setup),
+      self-calibrating trigger margin (EWMA control chart, no per-room tuning).
+- [x] **Enrollment hardening:** pin `capture_samplerate` (AT2020 self-mute fix),
+      loudness rescue + VAD-trimmed enrollment; speaker-gated barge-in calibration doc.
+- [x] `tools/echo_probe.py` added; `live_session` per-capability latency + denoise A/B
+      + barge-in crash guard + response-quality grading.

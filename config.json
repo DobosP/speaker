@@ -327,7 +327,7 @@
     "asr_final_use_itn": true,
     "_asr_final_language_comment": "PIN the SenseVoice language. 'en' forces English (REQUIRED: SenseVoice is multilingual and its auto-detect mis-fired to Chinese on short English utterances -- 'HEY HEY'->'嘿嘺', 'HOW ARE YOU'->'呦'). Change to 'zh'/'ja'/'ko'/'yue', or '' for auto-detect, to test other languages.",
     "asr_final_language": "en",
-    "asr_final_min_sec": 0.0,
+    "asr_final_min_sec": 0.5,
     "asr_decoding_method": "modified_beam_search",
     "asr_max_active_paths": 4,
     "asr_hotwords": "",

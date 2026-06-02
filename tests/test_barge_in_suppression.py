@@ -161,13 +161,17 @@ def test_looks_like_user_margin_zero_is_pure_fail_open():
     assert eng._looks_like_user([0.5, 0.5]) is True  # guard disabled
 
 
-def test_looks_like_user_enrolled_gate_takes_precedence():
+def test_looks_like_user_is_identity_free_ignores_enrolled_gate():
+    # Barge-in NO LONGER consults the speaker gate -- identity/user detection is a
+    # separate feature that gates FINALS only (_should_act_on_final). An enrolled
+    # identity match must NOT force a barge; the level gate alone decides. Quiet
+    # input over loud playback -> no barge (even though identity would match).
     eng = _engine(barge_in_output_margin_db=6.0)
     gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: USER)
     gate.enroll_embedding(USER)
     eng._speaker_gate = gate
-    eng._playback_level = 0.9  # would suppress under the unenrolled path
-    assert eng._looks_like_user([0.0]) is True  # identity match wins
+    eng._playback_level = 0.9
+    assert eng._looks_like_user([0.0]) is False  # identity is not consulted for barge-in
 
 
 # --- post-AEC barge: residual-vs-ambient-floor (NOT vs playback level) ------
@@ -370,13 +374,13 @@ def test_watchdog_no_storm_no_hook():
 # gating off / unenrolled -> level/margin gate (headset / high-margin escape).
 
 
-def test_enrolled_gating_loud_above_playback_fires_via_loudness_fallback():
-    # The voice embedder can be UNRELIABLE on some mics/voices, so identity is a
-    # POSITIVE only: when it doesn't confirm, a barge LOUDER than playback (by the
-    # margin) still fires -- the user talking OVER the assistant. An echo AT the
-    # playback level does not clear the margin.
-    eng = _engine(barge_in_output_margin_db=6.0)  # speaker_gate_input default True
-    gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)  # identity: "not user"
+def test_enrolled_gate_present_but_ignored_barge_uses_level_gate():
+    # Barge-in ignores the speaker gate entirely (identity gates FINALS only), so
+    # an enrolled gate present here has NO effect -- the level gate decides: a
+    # barge LOUDER than playback (by the margin) fires; echo AT the playback level
+    # does not clear it.
+    eng = _engine(barge_in_output_margin_db=6.0)
+    gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)  # present but ignored for barge
     gate.enroll_embedding(USER)
     eng._speaker_gate = gate
     eng._playback_level = 0.1
@@ -385,19 +389,17 @@ def test_enrolled_gating_loud_above_playback_fires_via_loudness_fallback():
     assert eng._looks_like_user([0.5, 0.5]) is False        # echo AT playback level -> no
 
 
-def test_enrolled_gating_no_level_margin_is_identity_only():
-    # With NO level margin (0), identity is the only signal: a non-user is dropped,
-    # the enrolled user still fires (the original strict behaviour, preserved).
+def test_enrolled_gate_does_not_affect_barge_in_identity_free():
+    # Barge-in is IDENTITY-FREE: an enrolled gate -- even one whose identity says
+    # "not the user" -- does NOT change the barge decision (identity gates FINALS
+    # only, via _should_act_on_final). With no level margin and no coherence/AEC,
+    # the barge fails open (any playback-time voice), regardless of identity.
     eng = _engine(barge_in_output_margin_db=0.0)
     eng._playback_level = 0.1
-    other = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)
+    other = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: OTHER)  # identity: "not user"
     other.enroll_embedding(USER)
     eng._speaker_gate = other
-    assert eng._looks_like_user([0.5, 0.5, 0.5]) is False
-    me = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: USER)
-    me.enroll_embedding(USER)
-    eng._speaker_gate = me
-    assert eng._looks_like_user([0.5, 0.5, 0.5]) is True
+    assert eng._looks_like_user([0.5, 0.5, 0.5]) is True  # identity NOT consulted -> fail open
 
 
 def test_gating_off_falls_back_to_margin_gate():

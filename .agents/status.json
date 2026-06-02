@@ -10,9 +10,9 @@
     "target_profile": "desktop_gpu_4090"
   },
   "last_verdict": {
-    "tests": "1205 passed, 10 skipped, 0 failed",
+    "tests": "1283 passed, 13 skipped, 0 failed",
     "green": true,
-    "note": "venv python (.venv) — git-bash 'python' is system 3.10 and lacks onnxruntime/sherpa; use .venv\\Scripts\\python.exe for the full suite"
+    "note": "merged main (origin/main voice batch + feat/aec-dtln unification). venv python (.venv) -- git-bash 'python' is system 3.10 and lacks onnxruntime/sherpa; use .venv\\Scripts\\python.exe for the full suite. 2 pre-existing numpy divide-by-zero RuntimeWarnings in core/endpointing.py (mel filter), not failures."
   },
-  "next": "Land the 2026-06-02 refactor (merge feat/aec-dtln -> main, push, delete merged branches), then resume P1 voice/audio: AEC on real hardware + Smart Turn validation (see .agents/backlog.md)"
+  "next": "Unification refactor LANDED on main (merge d215a31): docs/unified_architecture.md + session_bootstrap + Windows landing doc, on top of the large origin/main voice batch (Smart Turn v3 prosody + turn_detect_check, SenseVoice two-pass ASR default, multi-signal barge-in [loudness fallback + scale-invariant coherence + self-calibrating margin], AT2020 enroll fix, adaptive endpoint floor). NEXT: (1) refresh docs/unified_architecture.md -- it predates that voice batch (no SenseVoice two-pass; Smart Turn shown 'unvalidated'; missing the new barge-in stack). (2) Resume P1 voice/audio hardware validation: AEC ERLE + Smart Turn v3 on-hardware A/B (see .agents/backlog.md)."
 }

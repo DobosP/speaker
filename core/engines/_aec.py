@@ -2,7 +2,7 @@
 
 On open speakers with no AEC the assistant's own TTS leaks into the mic and looks
 exactly like a user barging in -- it self-interrupts (see
-``docs/session_2026-05-31_acoustic_real_voice.md``; today only a 6 dB output-margin
+``docs/archive/session_2026-05-31_acoustic_real_voice.md``; today only a 6 dB output-margin
 guard + the speaker-ID gate hold it back). AEC is the production-standard fix: it
 takes the mic (near-end) block AND the audio we are PLAYING (far-end reference),
 models the loudspeaker->mic echo path, and subtracts the echo BEFORE the recognizer,

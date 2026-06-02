@@ -73,7 +73,7 @@ _PUBLIC_MARKERS = re.compile(
 # Signals that the query is about the user's personal data even if it
 # otherwise looks public. Always wins (drops to PRIVATE).
 #
-# security-5 (docs/review_ultracode.md): the earlier gate only matched a
+# security-5 (docs/archive/review_ultracode.md): the earlier gate only matched a
 # *fixed* noun list after "my", so phrasings like "my coworker John's
 # salary" or "what is my coworker John salary" slipped through to the
 # cheap PRC-hosted public chain. The §9.7 boundary requires failing safe

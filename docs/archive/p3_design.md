@@ -2,7 +2,7 @@
 
 > ⚠️ **Superseded — durable content merged into [`docs/unified_architecture.md`](unified_architecture.md).** Kept for revision history; do not treat as current. (2026-06-02 consolidation.)
 
-_Branch `claude/ultracode-overhaul`. Gates the P3 implementation. Authority: `docs/review_ultracode.md` §P3 (smart-routing-1/3/4, security-5), `docs/ultracode_scope.md` Locked Decisions 2 & 3, `docs/target_architecture.md` §9.7. Evolve existing modules; do not rewrite._
+_Branch `claude/ultracode-overhaul`. Gates the P3 implementation. Authority: `docs/archive/review_ultracode.md` §P3 (smart-routing-1/3/4, security-5), `docs/archive/ultracode_scope.md` Locked Decisions 2 & 3, `docs/target_architecture.md` §9.7. Evolve existing modules; do not rewrite._
 
 > **Status: design APPROVED with binding corrections.** Two adversarial critics
 > returned `approve=false` on the first design (two HIGH). The corrections below

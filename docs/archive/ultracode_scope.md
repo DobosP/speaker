@@ -6,7 +6,7 @@
 > session working on this effort reads this FIRST and stays within the current
 > phase's scope. This is a *coordination layer* over the existing authority docs —
 > it does **not** override them: `docs/target_architecture.md` (§9, §9.7, §10),
-> `docs/PROJECT_KICKOFF.md`, `docs/code_review_2026-05.md`, and `CLAUDE.md`.
+> `docs/PROJECT_KICKOFF.md`, `docs/archive/code_review_2026-05.md`, and `CLAUDE.md`.
 >
 > Branch: `claude/ultracode-overhaul`. Status of each item lives in the session
 > task list (Task tool) and is mirrored in the **Phase pipeline** below.
@@ -56,14 +56,14 @@ machine types and uses **external LLM providers for research / hard tasks**.
 - **Git** — all work on `claude/ultracode-overhaul`; commits local; push **feature
   branches only, never `main`** (enforced by `.claude/hooks/guard.ps1`).
 
-## Roadmap (authoritative detail in `docs/review_ultracode.md`)
+## Roadmap (authoritative detail in `docs/archive/review_ultracode.md`)
 
 Review phase is **done** — 33 findings, **0 refuted** under adversarial verification.
 Implementation phases, each its own verified workflow with human sign-off between:
 
 | Phase | Objective | Status |
 |------|-----------|--------|
-| Review | Read-only map + dimensional audit + adversarial verify → `docs/review_ultracode.md` | ✅ done |
+| Review | Read-only map + dimensional audit + adversarial verify → `docs/archive/review_ultracode.md` | ✅ done |
 | **P0** | Security & OSS-readiness hardening (auth `/token`, kill secret leaks/dev-key defaults, `LICENSE`+`NOTICE`, harden PII gate) | **this cycle** |
 | **P1** | Real-time correctness — deterministic barge-in + cancellation | **this cycle** |
 | P2 | Layered-memory seam: wire the tested Postgres engine behind a Memory Protocol; plumb recall into the prompt | pending |

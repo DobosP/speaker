@@ -1,6 +1,6 @@
 """Word Error Rate — dependency-free, for STT regression measurement.
 
-The STT redesign (docs/stt_redesign_2026-05.md) is gated on being able to MEASURE
+The STT redesign (docs/archive/stt_redesign_2026-05.md) is gated on being able to MEASURE
 accuracy instead of judging by a single sentence. This computes a normalized WER
 (Levenshtein over lowercased, punctuation-stripped word tokens) plus a
 substitution/insertion/deletion breakdown, so a model/resampler/decoder change

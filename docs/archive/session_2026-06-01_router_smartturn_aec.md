@@ -82,7 +82,7 @@ Full suite at session end: **1202 passed, 10 skipped.**
    over long utterances; consider LiveKit's bundled AEC3 if the runtime ever moves to
    ≥3.11 (the classic-DSP route the research flagged as gated behind 3.11).
 
-Prior context: `docs/session_2026-05-31_acoustic_real_voice.md`,
-`docs/voice_improvement_plan_2026-05.md`. The capability-router/AEC research reports
+Prior context: `docs/archive/session_2026-05-31_acoustic_real_voice.md`,
+`docs/archive/voice_improvement_plan_2026-05.md`. The capability-router/AEC research reports
 (with the production-systems survey + verified library findings) were produced via
 workflows this session; their conclusions are reflected in the code + this doc.

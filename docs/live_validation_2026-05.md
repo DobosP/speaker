@@ -67,7 +67,7 @@ STT→LLM→TTS pipeline + the brain on **clean** audio — latency comes from m
 the assistant track is re-synthesized for the artifact — but with no acoustic
 degradation, no feedback, and no flaky-device crashes. `--inject` does **not**
 test the literal mic/speaker or barge-in (interruption needs live audio during
-playback + AEC). See `docs/live_validation_run_2026-05-30.md` for the first run's
+playback + AEC). See `docs/archive/live_validation_run_2026-05-30.md` for the first run's
 analysis (and why each path was needed). `--no-input-gate` disables the
 ACT/INGEST addressing gate, useful when garbled over-the-air STT gets INGEST'd.
 

@@ -76,7 +76,10 @@ hardening (AT2020 capture-rate pin, loudness rescue, VAD-trimmed); `tools/echo_p
 2. **Resume P1 voice/audio hardware validation** (`.agents/backlog.md`): AEC ERLE on
    the real mic; Smart Turn v3 on-hardware A/B (detector + `turn_detect_check` tool
    are now on `main` — what's left is the recording-based A/B).
-3. **Optional:** fix the `core/runlog.py` test-isolation pruning; consider physically
-   moving the banner'd `docs/*_2026-05.md` into `docs/archive/`.
+3. **Optional:** fix the `core/runlog.py` test-isolation pruning. (✅ DONE this session:
+   the 21 banner'd superseded docs were moved into `docs/archive/` and all ~18
+   code/test/config/doc pointers rewritten to the new paths; `docs/` root is now 20
+   current files. `tools.session_bootstrap` only globs `docs/session_*.md` so the old
+   session docs no longer clutter it.)
 4. **Cross-platform P1:** mobile convergence onto the `AgentEvent` contract; SQLite
    memory backend for mobile (unified doc §6/§10/§12).

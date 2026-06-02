@@ -88,7 +88,7 @@ the exact fields it parses.
   `python -m core --engine console --llm echo`.
 - `always_on_agent/` — the **control-plane "brain"** (modes, priority event bus,
   supervisor, cancellable threaded tasks, intent analyzer). The keeper. See its
-  `README.md` and `docs/always_on_agent_layer.md`. Its `events.py`
+  `README.md` and `docs/archive/always_on_agent_layer.md`. Its `events.py`
   (`AgentEvent`/`Mode`) is **the shell↔core contract** every platform shares.
 - `mobile/` — **on-device Android app** (Flutter): ASR/LLM/TTS fully local via
   `sherpa_onnx` + `flutter_gemma` (Gemma 3 1B, MediaPipe/LiteRT). Today it is a

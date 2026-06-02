@@ -233,6 +233,13 @@ the exact fields it parses.
 - NOTE: pushes may be blocked if the session was provisioned read-only
   (`403 Permission denied`). If so, surface it — it's an environment permission,
   not a code problem (and `GIT_HUB_TOKEN` does not change it).
+- **On the Windows box**, a local guard hook (`.claude/hooks/guard.ps1`) blocks
+  direct `main` pushes + the work identity by design; the personal SSH key and
+  feature-branch pushes work. Land via a PR — full procedure (SSH identity, the
+  `gh`/`$GIT_HUB_TOKEN` PR-merge commands, branch cleanup, local-main reconcile)
+  is in [`docs/windows_landing_workflow.md`](docs/windows_landing_workflow.md).
+  Note: the guard matches literal command text, so don't even name the work key /
+  SSH-config / global gitconfig paths in a shell command.
 - Self-monitoring / autofix loop: put work in a PR, then a Claude session can
   `subscribe` to that PR's activity to receive its CI results (from
   `tests.yml`) and review comments as events, and push fixes until checks pass.

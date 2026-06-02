@@ -93,5 +93,8 @@ test-reports/
 pretrained_models/sherpa/
 # Downloaded sherpa-onnx model bundles (hundreds of MB; fetched on demand).
 pretrained_models/sherpa-onnx-*/
+# ...including nested staging dirs (e.g. asr_candidates/sherpa-onnx-*/).
+pretrained_models/asr_candidates/
+pretrained_models/**/sherpa-onnx-*/
 models/
 *.gguf

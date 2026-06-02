@@ -1091,7 +1091,17 @@ class SherpaOnnxEngine(AudioEngine):
                 # any length, like the resampler/denoiser.
                 if self._aec is not None:
                     far = self._far_ref.read(samples.shape[0], self._aec_ref_delay)
-                    samples = self._aec.process_16k(samples, far)
+                    # ONLY cancel when the assistant is actually playing (the
+                    # far-end reference has energy). With no recent playback the
+                    # far ring is ~zeros and the deep DTLN canceller would just
+                    # process CLEAN near-end speech -- a neural net can distort it,
+                    # which garbles ASR on the user's own (echo-free) voice. So
+                    # skip it then: nothing to cancel, and the input reaches ASR
+                    # untouched. (Also saves the DTLN cost on every idle block.)
+                    if far is not None and float(np.sqrt(np.mean(
+                        np.asarray(far, dtype="float64") ** 2
+                    ))) > 1e-4:
+                        samples = self._aec.process_16k(samples, far)
                 # Speech denoise on the 16 kHz block, AFTER resampling and BEFORE
                 # every consumer (recorder, accept_waveform, the speaker embedder,
                 # the VAD). When no denoiser is built this is a zero-cost identity,
@@ -1637,36 +1647,25 @@ class SherpaOnnxEngine(AudioEngine):
             write(samples[i : i + chunk])
 
     def _looks_like_user(self, samples) -> bool:
-        # Decide whether playback-time voice is a genuine barge-in vs the
-        # assistant's own TTS echo. Without AEC the discriminator depends on the
-        # setup:
+        # Is playback-time mic voice a genuine barge-in (vs the assistant's own TTS
+        # echo)? This decision is IDENTITY-FREE: speaker/user detection is a
+        # SEPARATE feature used only to gate FINALS (``_should_act_on_final``); the
+        # interrupt must never depend on it. (The enrolled embedder is unreliable --
+        # measured 2026-06-01 it scored the user's OWN voice ~0.15 -- and the
+        # product brief is "no user detection in the interrupt".) Discriminators,
+        # strongest first:
         #
-        # - Enrolled AND input gating on: gate on speaker IDENTITY. On OPEN
-        #   SPEAKERS the assistant's TTS is loud enough to clear any level margin
-        #   (a level-only gate self-interrupted 134x in one live session), so
-        #   identity is the only reliable rejector -- a genuine user matches the
-        #   enrolled voice, the TTS does not. If your OWN voice is rejected,
-        #   re-enroll (the soft-limiter+soxr capture fixes corrupted enrollments);
-        #   the escape hatch is speaker_gate_input=false (level gate below) which
-        #   is only safe on a headset or with a high margin.
-        # - Unenrolled OR gating off: best-effort output-margin level gate. A real
-        #   user stands a margin above playback; residual echo does not. With
-        #   nothing playing it fails open; margin_db <= 0 disables it.
-        # IDENTITY OR LOUDNESS. Identity is a strong POSITIVE (the user's enrolled
-        # voice matches; the TTS does not), but the embedder can be UNRELIABLE on
-        # some mics/voices (measured 2026-06-01: it scored the user's own voice
-        # ~0.15 across a run). So when identity does not confirm, fall back to the
-        # LOUDNESS signal: a barge LOUDER than the assistant's own playback by
-        # ``barge_in_output_margin_db`` is the user talking OVER it (the TTS leaking
-        # into the mic sits AT the playback level, not above). Raise the margin if
-        # an open speaker's TTS leak self-interrupts; the one-per-run latch caps it.
-        #
-        # PRIMARY: scale-invariant reference coherence. The assistant knows what
-        # it is playing, so it asks "is there mic energy the playback doesn't
-        # explain?" -- volume-independent, no enrollment, and the TTS echo is
-        # rejected structurally. When it can decide, it OVERRIDES identity/level
-        # below; it abstains (returns None) only with no reference yet (session
-        # start) or during a TTS silence, where the legacy gate still runs.
+        # 1) PRIMARY -- scale-invariant reference COHERENCE: "is there mic energy
+        #    the playback can't explain?" Volume-independent, no enrollment,
+        #    structurally rejects the echo. Wins when it can decide; abstains
+        #    (None) only with no reference yet (session start) or during TTS silence.
+        # 2) POST-AEC -- with the echo cancelled, compare the residual to the
+        #    ambient/echo-residual FLOOR (loudness_admits): a real barge stands
+        #    above it (the playback-relative gate would wrongly need the user LOUDER
+        #    than the speaker buffer).
+        # 3) NO-AEC -- best-effort output-margin level gate: the user stands a
+        #    margin above the playback buffer; residual echo does not.
+        # 4) Nothing configured -> fail open (treat playback-time voice as a barge).
         det = self._echo_coherence
         if det is not None:
             verdict = det.decide(samples)
@@ -1677,12 +1676,6 @@ class SherpaOnnxEngine(AudioEngine):
                         det.last_incoherent_fraction, det.last_baseline, det.last_delay_ms,
                     )
                 return verdict
-        gate = self._speaker_gate
-        identity_on = (
-            gate is not None and gate.is_enrolled and self.config.speaker_gate_input
-        )
-        if identity_on and gate.accept(samples, self.config.sample_rate):
-            return True
         # POST-AEC barge discriminator. With the echo cancelled the residual
         # during echo-only sits at the ambient/echo-residual FLOOR, while a real
         # barge stands well ABOVE it -- so compare the residual to that floor
@@ -1708,8 +1701,9 @@ class SherpaOnnxEngine(AudioEngine):
             return passes_output_margin(
                 rms(samples), self._playback_level, margin_db=margin_db
             )
-        # No level margin configured: identity-only when on; else fail open.
-        return not identity_on
+        # No discriminator configured -> fail open (any playback-time voice is a
+        # barge). Identity is intentionally NOT consulted here: it gates FINALS.
+        return True
 
     def _note_playback_level(self, samples) -> None:
         """Update the EWMA of the level we're currently playing.

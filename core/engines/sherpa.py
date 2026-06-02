@@ -1136,9 +1136,16 @@ class SherpaOnnxEngine(AudioEngine):
                     if _a <= 0.0:
                         self._ambient_rms = _r
                     elif _r < _a:
-                        self._ambient_rms = 0.9 * _a + 0.1 * _r
-                    else:
-                        self._ambient_rms = 0.995 * _a + 0.005 * _r
+                        self._ambient_rms = 0.9 * _a + 0.1 * _r       # fall fast to a new floor
+                    elif _r < _a * 2.0:
+                        self._ambient_rms = 0.995 * _a + 0.005 * _r   # genuine drift (<+6 dB): track slowly
+                    # else: _r >> floor -- a barge / echo burst, NOT the ambient
+                    # floor. FREEZE the rise (don't update) so a SUSTAINED talk-over
+                    # can't drag the floor up to itself and thereby raise the barge
+                    # bar above the user -- the observed missed-barge during a long
+                    # answer. Mirrors the coherence chart's "ignore upward excursions"
+                    # rule, so the floor self-calibrates to the true quiet level on
+                    # any device/room with no manual tuning.
 
                 # Barge-in watch while the assistant is speaking.
                 # While the assistant is speaking we NEVER feed ASR (so it can't
@@ -1464,26 +1471,46 @@ class SherpaOnnxEngine(AudioEngine):
                         # the true playback position), instead of us pushing via a
                         # blocking out.write(). latency="low" keeps the callback
                         # period << the FIFO depth so barge-in residual stays small.
+                        # Choose a rate the device ACTUALLY supports BEFORE opening.
+                        # `check_output_settings` reliably RAISES on an unsupported
+                        # rate; `OutputStream(...).start()` does NOT on some ALSA
+                        # backends -- it prints "paInvalidSampleRate" to stderr but
+                        # opens anyway, then the hardware runs at its own rate while
+                        # we feed tts_sr-rate frames => wrong speed / pitch (the
+                        # ALC285 rejects 22050 but only sometimes raised). Prefer the
+                        # TTS rate (no resample), else the device default, else a
+                        # common rate -- portable across devices, deterministic.
                         try:
-                            out = sd.OutputStream(
-                                channels=1, samplerate=self._tts_sr, dtype="float32",
-                                device=out_dev, latency="low", callback=self._audio_cb,
+                            default_sr = int(
+                                sd.query_devices(out_dev, kind="output")["default_samplerate"]
                             )
-                            out.start()
-                            self._play_sr = self._tts_sr
+                        except Exception:  # noqa: BLE001 - fall back to a safe common rate
+                            default_sr = 44100
+                        play_sr = default_sr
+                        for cand in (self._tts_sr, default_sr, 48000, 44100):
+                            try:
+                                sd.check_output_settings(
+                                    device=out_dev, samplerate=cand, channels=1, dtype="float32"
+                                )
+                                play_sr = cand
+                                break
+                            except Exception:  # noqa: BLE001 - try the next candidate
+                                continue
+                        out = sd.OutputStream(
+                            channels=1, samplerate=play_sr, dtype="float32",
+                            device=out_dev, latency="low", callback=self._audio_cb,
+                        )
+                        out.start()
+                        self._play_sr = play_sr
+                        if play_sr == self._tts_sr:
                             log.info("playback opened at %d Hz on device %s (callback)",
-                                     self._play_sr, out_dev if out_dev is not None else "default")
-                        except sd.PortAudioError:
-                            dev_sr = int(sd.query_devices(out_dev, kind="output")["default_samplerate"])
-                            out = sd.OutputStream(
-                                channels=1, samplerate=dev_sr, dtype="float32",
-                                device=out_dev, latency="low", callback=self._audio_cb,
-                            )
-                            out.start()
-                            self._play_sr = dev_sr
-                            log.warning(
-                                "speaker rejected %d Hz; playing at %d Hz and resampling",
-                                self._tts_sr, dev_sr,
+                                     play_sr, out_dev if out_dev is not None else "default")
+                        else:
+                            log.info(
+                                "playback opened at %d Hz on device %s (callback; "
+                                "resampling from %d Hz TTS -- device rejects %d Hz)",
+                                play_sr, out_dev if out_dev is not None else "default",
+                                self._tts_sr, self._tts_sr,
                             )
                         # Allocate the FIFO once the FINAL play_sr is known (so it
                         # survives the 22050->44100 reopen). The producer write()

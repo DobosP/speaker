@@ -1,0 +1,80 @@
+18:25:01.192 INFO  speaker | run 20260602-182501 started (debug=True) -> logs/runs/run-20260602-182501.txt
+18:25:01.216 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=8386.0MB(25.2%) proc_rss=19.7MB gpu=0.0% gpu_mem=13075.0/16376.0MB
+18:25:01.679 INFO  speaker.sysinfo | system mark after_build: cpu=46.1% ram=8446.6MB(25.4%) proc_rss=105.8MB gpu=29.0% gpu_mem=13075.0/16376.0MB
+18:25:01.680 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+18:25:03.256 INFO  speaker.sherpa | second-pass final ASR: sense_voice (/home/dobo/work/speaker/pretrained_models/sherpa/sense_voice/model.int8.onnx)
+18:25:03.269 INFO  speaker.sherpa | coherence barge-in ACTIVE (scale-invariant, no enrollment; band (300.0, 3400.0) Hz, margin delta 0.08)
+18:25:03.908 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.60, input gating=True)
+18:25:03.908 INFO  speaker.sherpa | input device: AT2020USB-X: USB Audio (hw:2,0)
+18:25:03.908 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+18:25:03.908 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+18:25:03.922 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+18:25:03.923 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260602-182501.wav
+18:25:03.924 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+18:25:04.301 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+18:25:04.301 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.38s ttft=- out=38ch tokens=- | 'hi'
+18:25:04.633 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: hi
+18:25:04.633 INFO  speaker.llm.ollama | ollama gemma3:12b: 0.33s ttft=- out=32ch tokens=- | 'hi'
+18:25:04.822 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "hi"
+18:25:04.822 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.19s ttft=- out=7ch tokens=- | 'Latest utterance: "hi"'
+18:25:04.856 INFO  speaker.sherpa | sherpa TTS warm-up complete
+18:25:05.042 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+18:25:05.926 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0177 partials=0 finals=0 speaking=False
+18:25:08.026 DEBUG speaker.sherpa | capture heartbeat: blocks=41 avg_rms=0.0155 partials=0 finals=0 speaking=False
+18:25:10.126 DEBUG speaker.sherpa | capture heartbeat: blocks=62 avg_rms=0.0341 partials=0 finals=0 speaking=False
+18:25:11.235 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=9516.4MB(28.6%) proc_rss=999.8MB gpu=1.0% gpu_mem=13075.0/16376.0MB
+18:25:11.443 DEBUG speaker.sherpa | asr partial: 'Hey'
+18:25:11.443 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hey'
+18:25:12.126 DEBUG speaker.sherpa | capture heartbeat: blocks=82 avg_rms=0.0710 partials=1 finals=0 speaking=False
+18:25:12.498 INFO  speaker.sherpa | asr final: 'He.' (raw 'HEY')
+18:25:12.523 INFO  speaker.runtime | final -> brain: 'He.' (mode=assistant)
+18:25:12.693 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "He."
+18:25:12.694 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.17s ttft=- out=7ch tokens=- | 'Latest utterance: "He."'
+18:25:12.694 INFO  speaker.runtime | addressing decision: INGEST for 'He.'
+18:25:14.188 DEBUG speaker.sherpa | capture heartbeat: blocks=100 avg_rms=0.0187 partials=1 finals=1 speaking=False
+18:25:16.188 DEBUG speaker.sherpa | capture heartbeat: blocks=120 avg_rms=0.0180 partials=1 finals=1 speaking=False
+18:25:18.188 DEBUG speaker.sherpa | capture heartbeat: blocks=140 avg_rms=0.0115 partials=1 finals=1 speaking=False
+18:25:18.703 DEBUG speaker.sherpa | asr partial: 'I'
+18:25:18.703 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I'
+18:25:19.103 DEBUG speaker.sherpa | asr partial: "I can't"
+18:25:19.103 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I can't"
+18:25:19.404 DEBUG speaker.sherpa | asr partial: "I can't say something"
+18:25:19.405 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I can't say something"
+18:25:20.135 INFO  speaker.sherpa | asr final: 'Can you say something.' (raw "I CAN'T SAY SOMETHING")
+18:25:20.154 INFO  speaker.runtime | final -> brain: 'Can you say something.' (mode=assistant)
+18:25:20.325 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - He.
+
+Latest utterance: "Can you say something."
+18:25:20.325 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.17s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - He. Latest utterance: "Can you say something."'
+18:25:20.325 INFO  speaker.runtime | addressing decision: ACT for 'Can you say something.'
+18:25:20.325 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Can you say something.'
+18:25:20.326 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Can you say something.'
+18:25:20.326 INFO  speaker.tasks | task 533135265565 started: mode=assistant capability=assistant.answer input='Can you say something.'
+18:25:20.337 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Can you say something.'
+18:25:20.421 DEBUG speaker.sherpa | capture heartbeat: blocks=160 avg_rms=0.0953 partials=4 finals=2 speaking=False
+18:25:20.580 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Can you say something.
+18:25:20.580 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.24s ttft=0.19s out=31ch tokens=8 | 'Can you say something.'
+18:25:20.580 INFO  speaker.llm | fast tier done in 0.24s (31 chars, streamed)
+18:25:20.580 INFO  speaker.tasks | task 533135265565 completed in 0.25s (31 chars)
+18:25:20.580 INFO  speaker.runtime | assistant: 'Of course, I can say something.'
+18:25:20.581 DEBUG speaker.sherpa | speaking: 'Of course, I can say something.' (queue depth=0)
+18:25:20.703 WARNING speaker.sherpa | speaker rejected 22050 Hz; playing at 44100 Hz and resampling
+18:25:21.253 DEBUG speaker.sysinfo | system sample: cpu=10.7% ram=9560.9MB(28.8%) proc_rss=1030.5MB gpu=2.0% gpu_mem=13075.0/16376.0MB
+18:25:21.423 DEBUG speaker.sherpa | coherence barge: incoherent=0.61 baseline=0.50 delay=174ms
+18:25:21.425 DEBUG speaker.sherpa | coherence barge: incoherent=0.84 baseline=0.50 delay=118ms
+18:25:21.425 INFO  speaker.sherpa | barge-in detected
+18:25:21.425 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+18:25:21.426 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+18:25:22.520 DEBUG speaker.sherpa | capture heartbeat: blocks=181 avg_rms=0.0628 partials=4 finals=2 speaking=True
+18:25:24.620 DEBUG speaker.sherpa | capture heartbeat: blocks=202 avg_rms=0.1249 partials=4 finals=2 speaking=True
+18:25:26.620 DEBUG speaker.sherpa | capture heartbeat: blocks=222 avg_rms=0.1272 partials=4 finals=2 speaking=True
+18:25:28.620 DEBUG speaker.sherpa | capture heartbeat: blocks=242 avg_rms=0.0335 partials=4 finals=2 speaking=True
+18:25:30.720 DEBUG speaker.sherpa | capture heartbeat: blocks=262 avg_rms=0.0534 partials=4 finals=2 speaking=True
+18:25:31.272 DEBUG speaker.sysinfo | system sample: cpu=6.7% ram=9532.9MB(28.7%) proc_rss=1031.0MB gpu=0.0% gpu_mem=13075.0/16376.0MB
+18:25:32.720 DEBUG speaker.sherpa | capture heartbeat: blocks=283 avg_rms=0.1246 partials=4 finals=2 speaking=True
+18:25:34.820 DEBUG speaker.sherpa | capture heartbeat: blocks=304 avg_rms=0.0392 partials=4 finals=2 speaking=True
+18:25:36.920 DEBUG speaker.sherpa | capture heartbeat: blocks=324 avg_rms=0.1055 partials=4 finals=2 speaking=True
+18:25:39.021 WARNING speaker.sherpa | playback thread did not exit within 1.0s; proceeding
+18:25:39.023 INFO  speaker.sherpa | recorded 33.6s of session audio -> logs/runs/run-20260602-182501.wav
+18:25:39.143 INFO  speaker.sysinfo | system final: cpu=8.4% ram=9555.9MB(28.7%) proc_rss=1031.0MB gpu=1.0% gpu_mem=13075.0/16376.0MB | deltas: {'ram_used_mb_delta': 1169.9, 'proc_rss_mb_delta': 1011.3, 'gpu_mem_used_mb_delta': 0.0}

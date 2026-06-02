@@ -1,2 +1,0 @@
-00:46:28.881 INFO  speaker | run 20260528-004628 started (debug=True) -> logs/runs/run-20260528-004628.txt
-00:46:28.914 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=9742.3MB(34.6%) proc_rss=20.4MB gpu=35.0% gpu_mem=4068.0/16376.0MB

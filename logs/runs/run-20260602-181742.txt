@@ -1,0 +1,146 @@
+18:17:42.768 INFO  speaker | run 20260602-181742 started (debug=True) -> logs/runs/run-20260602-181742.txt
+18:17:42.803 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=6001.4MB(18.1%) proc_rss=19.7MB gpu=0.0% gpu_mem=74.0/16376.0MB
+18:17:43.291 INFO  speaker.sysinfo | system mark after_build: cpu=47.6% ram=6042.3MB(18.2%) proc_rss=105.3MB gpu=35.0% gpu_mem=74.0/16376.0MB
+18:17:43.291 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+18:17:44.938 INFO  speaker.sherpa | second-pass final ASR: sense_voice (/home/dobo/work/speaker/pretrained_models/sherpa/sense_voice/model.int8.onnx)
+18:17:44.951 INFO  speaker.sherpa | coherence barge-in ACTIVE (scale-invariant, no enrollment; band (300.0, 3400.0) Hz, margin delta 0.08)
+18:17:45.590 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.60, input gating=True)
+18:17:45.590 INFO  speaker.sherpa | input device: AT2020USB-X: USB Audio (hw:2,0)
+18:17:45.590 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+18:17:45.591 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+18:17:45.604 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+18:17:45.605 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260602-181742.wav
+18:17:45.606 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+18:17:47.608 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0000 partials=0 finals=0 speaking=False
+18:17:47.608 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:17:48.025 DEBUG speaker.sherpa | asr partial: 'And'
+18:17:48.026 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:17:48.368 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+18:17:48.368 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.76s ttft=- out=38ch tokens=- | 'hi'
+18:17:49.608 DEBUG speaker.sherpa | capture heartbeat: blocks=40 avg_rms=0.0000 partials=1 finals=0 speaking=False
+18:17:49.609 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:17:49.755 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:17:50.038 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:17:50.294 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "I."
+18:17:50.294 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.26s ttft=- out=7ch tokens=- | 'Latest utterance: "I."'
+18:17:50.295 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:17:51.375 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: hi
+18:17:51.375 INFO  speaker.llm.ollama | ollama gemma3:12b: 3.01s ttft=- out=32ch tokens=- | 'hi'
+18:17:51.591 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "hi"
+18:17:51.591 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.22s ttft=- out=7ch tokens=- | 'Latest utterance: "hi"'
+18:17:51.615 DEBUG speaker.sherpa | asr partial: 'And'
+18:17:51.615 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:17:51.625 INFO  speaker.sherpa | sherpa TTS warm-up complete
+18:17:51.631 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+18:17:51.689 DEBUG speaker.sherpa | capture heartbeat: blocks=54 avg_rms=0.0000 partials=2 finals=1 speaking=False
+18:17:51.689 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:17:52.821 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=9709.3MB(29.2%) proc_rss=1008.0MB gpu=0.0% gpu_mem=13075.0/16376.0MB
+18:17:53.349 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:17:53.376 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:17:53.560 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+
+Latest utterance: "I."
+18:17:53.560 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.18s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. Latest utterance: "I."'
+18:17:53.560 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:17:53.754 DEBUG speaker.sherpa | capture heartbeat: blocks=72 avg_rms=0.0000 partials=2 finals=2 speaking=False
+18:17:53.755 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:17:55.071 DEBUG speaker.sherpa | asr partial: 'And'
+18:17:55.071 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:17:55.755 DEBUG speaker.sherpa | capture heartbeat: blocks=92 avg_rms=0.0000 partials=3 finals=2 speaking=False
+18:17:55.755 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:17:56.731 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:17:56.758 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:17:56.937 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+
+Latest utterance: "I."
+18:17:56.937 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.18s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. Latest utterance: "I."'
+18:17:56.937 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:17:57.833 DEBUG speaker.sherpa | capture heartbeat: blocks=110 avg_rms=0.0000 partials=3 finals=3 speaking=False
+18:17:57.833 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:17:58.849 DEBUG speaker.sherpa | asr partial: 'And'
+18:17:58.849 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:17:59.933 DEBUG speaker.sherpa | capture heartbeat: blocks=131 avg_rms=0.0000 partials=4 finals=3 speaking=False
+18:17:59.933 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:00.522 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:18:00.558 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:18:00.757 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - I.
+
+Latest utterance: "I."
+18:18:00.757 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.20s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. - I. Latest utterance: "I."'
+18:18:00.757 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:18:01.952 DEBUG speaker.sherpa | capture heartbeat: blocks=148 avg_rms=0.0000 partials=4 finals=4 speaking=False
+18:18:01.952 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:02.668 DEBUG speaker.sherpa | asr partial: 'And'
+18:18:02.668 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:18:02.839 DEBUG speaker.sysinfo | system sample: cpu=10.8% ram=9722.2MB(29.2%) proc_rss=1008.5MB gpu=0.0% gpu_mem=13075.0/16376.0MB
+18:18:03.952 DEBUG speaker.sherpa | capture heartbeat: blocks=168 avg_rms=0.0000 partials=5 finals=4 speaking=False
+18:18:03.952 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:04.329 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:18:04.366 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:18:04.546 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - I.
+  - I.
+
+Latest utterance: "I."
+18:18:04.546 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.18s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. - I. - I. Latest utterance: "I."'
+18:18:04.546 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:18:06.041 DEBUG speaker.sherpa | capture heartbeat: blocks=186 avg_rms=0.0000 partials=5 finals=5 speaking=False
+18:18:06.041 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:06.457 DEBUG speaker.sherpa | asr partial: 'And'
+18:18:06.458 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:18:08.041 DEBUG speaker.sherpa | capture heartbeat: blocks=206 avg_rms=0.0000 partials=6 finals=5 speaking=False
+18:18:08.041 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:08.119 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:18:08.150 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:18:08.322 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - I.
+  - I.
+
+Latest utterance: "I."
+18:18:08.322 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.17s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. - I. - I. Latest utterance: "I."'
+18:18:08.322 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:18:10.117 DEBUG speaker.sherpa | capture heartbeat: blocks=224 avg_rms=0.0000 partials=6 finals=6 speaking=False
+18:18:10.117 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:10.335 DEBUG speaker.sherpa | asr partial: 'And'
+18:18:10.335 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:18:12.080 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:18:12.114 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:18:12.296 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - I.
+  - I.
+
+Latest utterance: "I."
+18:18:12.297 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.18s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. - I. - I. Latest utterance: "I."'
+18:18:12.297 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:18:12.392 DEBUG speaker.sherpa | capture heartbeat: blocks=244 avg_rms=0.0000 partials=7 finals=7 speaking=False
+18:18:12.392 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:12.858 DEBUG speaker.sysinfo | system sample: cpu=10.6% ram=9610.6MB(28.9%) proc_rss=1016.6MB gpu=4.0% gpu_mem=13075.0/16376.0MB
+18:18:14.108 DEBUG speaker.sherpa | asr partial: 'And'
+18:18:14.108 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:18:14.591 DEBUG speaker.sherpa | capture heartbeat: blocks=265 avg_rms=0.0000 partials=8 finals=7 speaking=False
+18:18:14.592 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+18:18:15.854 INFO  speaker.sherpa | asr final: 'I.' (raw 'AND')
+18:18:15.882 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:18:16.056 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - I.
+  - I.
+  - I.
+
+Latest utterance: "I."
+18:18:16.056 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.17s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I. - I. - I. - I. Latest utterance: "I."'
+18:18:16.056 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:18:16.354 INFO  speaker.sherpa | recorded 28.1s of session audio -> logs/runs/run-20260602-181742.wav
+18:18:16.469 INFO  speaker.sysinfo | system final: cpu=11.5% ram=9558.9MB(28.8%) proc_rss=1016.9MB gpu=0.0% gpu_mem=13075.0/16376.0MB | deltas: {'ram_used_mb_delta': 3557.5, 'proc_rss_mb_delta': 997.2, 'gpu_mem_used_mb_delta': 13001.0}

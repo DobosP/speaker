@@ -1,0 +1,285 @@
+23:54:31.173 INFO  speaker | run 20260602-235431 started (debug=True) -> logs/runs/run-20260602-235431.txt
+23:54:31.206 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=24319.4MB(73.1%) proc_rss=19.9MB gpu=18.0% gpu_mem=13075.0/16376.0MB
+23:54:32.306 INFO  speaker.sysinfo | system mark after_build: cpu=49.6% ram=24729.6MB(74.4%) proc_rss=103.4MB gpu=18.0% gpu_mem=13075.0/16376.0MB
+23:54:32.306 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+23:54:35.283 INFO  speaker.sherpa | second-pass final ASR: sense_voice (/home/dobo/work/speaker/pretrained_models/sherpa/sense_voice/model.int8.onnx)
+23:54:36.581 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (/home/dobo/work/speaker/pretrained_models/sherpa/aec/dtln_aec_stage1.onnx)
+23:54:36.581 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=0ms)
+23:54:36.582 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.50, input gating=False)
+23:54:36.582 INFO  speaker.sherpa | input device: AT2020USB-X: USB Audio (hw:2,0)
+23:54:36.582 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+23:54:36.582 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+23:54:36.600 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+23:54:36.610 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260602-235431.wav
+23:54:36.615 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+23:54:38.067 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+23:54:38.067 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.46s ttft=- out=38ch tokens=- | 'hi'
+23:54:38.621 DEBUG speaker.sherpa | capture heartbeat: blocks=12 avg_rms=0.0286 partials=0 finals=0 speaking=False
+23:54:38.828 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: hi
+23:54:38.828 INFO  speaker.llm.ollama | ollama gemma3:12b: 0.76s ttft=- out=32ch tokens=- | 'hi'
+23:54:39.233 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "hi"
+23:54:39.233 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.41s ttft=- out=7ch tokens=- | 'Latest utterance: "hi"'
+23:54:39.468 INFO  speaker.sherpa | sherpa TTS warm-up complete
+23:54:40.115 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+23:54:40.861 DEBUG speaker.sherpa | capture heartbeat: blocks=30 avg_rms=0.0181 partials=0 finals=0 speaking=False
+23:54:41.248 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=27851.1MB(83.8%) proc_rss=1034.4MB gpu=5.0% gpu_mem=13077.0/16376.0MB
+23:54:42.866 DEBUG speaker.sherpa | capture heartbeat: blocks=48 avg_rms=0.0171 partials=0 finals=0 speaking=False
+23:54:44.935 DEBUG speaker.sherpa | capture heartbeat: blocks=67 avg_rms=0.0096 partials=0 finals=0 speaking=False
+23:54:46.972 DEBUG speaker.sherpa | capture heartbeat: blocks=85 avg_rms=0.0171 partials=0 finals=0 speaking=False
+23:54:49.073 DEBUG speaker.sherpa | capture heartbeat: blocks=106 avg_rms=0.0121 partials=0 finals=0 speaking=False
+23:54:51.092 DEBUG speaker.sherpa | capture heartbeat: blocks=125 avg_rms=0.0119 partials=0 finals=0 speaking=False
+23:54:51.311 DEBUG speaker.sysinfo | system sample: cpu=100.0% ram=29688.8MB(89.3%) proc_rss=1034.9MB gpu=3.0% gpu_mem=13077.0/16376.0MB
+23:54:53.103 DEBUG speaker.sherpa | capture heartbeat: blocks=142 avg_rms=0.0101 partials=0 finals=0 speaking=False
+23:54:54.519 DEBUG speaker.sherpa | asr partial: 'So'
+23:54:54.519 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='So'
+23:54:55.593 INFO  speaker.sherpa | asr final: 'I then.' (raw 'SO')
+23:54:55.594 INFO  speaker.runtime | final -> brain: 'I then.' (mode=assistant)
+23:54:55.967 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "I then."
+23:54:55.967 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.37s ttft=- out=7ch tokens=- | 'Latest utterance: "I then."'
+23:54:55.967 INFO  speaker.runtime | addressing decision: INGEST for 'I then.'
+23:54:56.090 DEBUG speaker.sherpa | capture heartbeat: blocks=162 avg_rms=0.0215 partials=1 finals=1 speaking=False
+23:54:57.632 DEBUG speaker.sherpa | asr partial: 'For my'
+23:54:57.632 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='For my'
+23:54:58.204 DEBUG speaker.sherpa | capture heartbeat: blocks=178 avg_rms=0.1007 partials=2 finals=1 speaking=False
+23:54:58.546 DEBUG speaker.sherpa | asr partial: 'For my twenty'
+23:54:58.547 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='For my twenty'
+23:54:58.904 DEBUG speaker.sherpa | asr partial: 'For my twice'
+23:54:58.908 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='For my twice'
+23:55:00.149 INFO  speaker.sherpa | asr final: 'What.' (raw 'FOR MY TWICE')
+23:55:00.149 INFO  speaker.runtime | final -> brain: 'What.' (mode=assistant)
+23:55:00.458 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I then.
+
+Latest utterance: "What."
+23:55:00.458 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.31s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I then. Latest utterance: "What."'
+23:55:00.458 INFO  speaker.runtime | addressing decision: INGEST for 'What.'
+23:55:00.568 DEBUG speaker.sherpa | capture heartbeat: blocks=189 avg_rms=0.0816 partials=4 finals=2 speaking=False
+23:55:01.369 DEBUG speaker.sysinfo | system sample: cpu=98.2% ram=30648.2MB(92.2%) proc_rss=1042.5MB gpu=2.0% gpu_mem=13077.0/16376.0MB
+23:55:01.416 DEBUG speaker.sherpa | asr partial: 'Wonderful'
+23:55:01.416 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Wonderful'
+23:55:02.636 DEBUG speaker.sherpa | capture heartbeat: blocks=205 avg_rms=0.0440 partials=5 finals=2 speaking=False
+23:55:04.650 DEBUG speaker.sherpa | capture heartbeat: blocks=225 avg_rms=0.0341 partials=5 finals=2 speaking=False
+23:55:04.719 DEBUG speaker.sherpa | asr partial: 'I think'
+23:55:04.719 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think'
+23:55:05.234 DEBUG speaker.sherpa | asr partial: 'I think I'
+23:55:05.236 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I think I'
+23:55:05.910 DEBUG speaker.sherpa | asr partial: "I think I'll"
+23:55:05.910 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="I think I'll"
+23:55:06.922 INFO  speaker.sherpa | asr final: 'I think me.' (raw "I THINK I'LL")
+23:55:06.922 INFO  speaker.runtime | final -> brain: 'I think me.' (mode=assistant)
+23:55:07.215 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I then.
+  - What.
+
+Latest utterance: "I think me."
+23:55:07.215 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.29s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - I then. - What. Latest utterance: "I think me."'
+23:55:07.215 INFO  speaker.runtime | addressing decision: INGEST for 'I think me.'
+23:55:07.318 DEBUG speaker.sherpa | capture heartbeat: blocks=242 avg_rms=0.0484 partials=8 finals=3 speaking=False
+23:55:09.270 DEBUG speaker.sherpa | asr partial: "Didn't"
+23:55:09.274 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Didn't"
+23:55:09.362 DEBUG speaker.sherpa | capture heartbeat: blocks=259 avg_rms=0.1437 partials=9 finals=3 speaking=False
+23:55:09.925 DEBUG speaker.sherpa | asr partial: "Didn't think"
+23:55:09.925 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="Didn't think"
+23:55:10.921 INFO  speaker.sherpa | asr final: "Oh didn't think." (raw "DIDN'T THINK")
+23:55:10.922 INFO  speaker.runtime | final -> brain: "Oh didn't think." (mode=assistant)
+23:55:11.247 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I then.
+  - What.
+  - I think me.
+
+Latest utterance: "Oh didn't think."
+23:55:11.247 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.33s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - I then. - What. - I think me. Latest utterance: "Oh didn\'t think."'
+23:55:11.247 INFO  speaker.runtime | addressing decision: ACT for "Oh didn't think."
+23:55:11.247 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for "Oh didn't think."
+23:55:11.247 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text="Oh didn't think."
+23:55:11.248 INFO  speaker.tasks | task 0cd71a8f538b started: mode=assistant capability=assistant.answer input="Oh didn't think."
+23:55:11.258 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): "Oh didn't think."
+23:55:11.403 DEBUG speaker.sysinfo | system sample: cpu=98.5% ram=29087.6MB(87.5%) proc_rss=1043.0MB gpu=4.0% gpu_mem=13077.0/16376.0MB
+23:55:11.470 DEBUG speaker.sherpa | capture heartbeat: blocks=272 avg_rms=0.0216 partials=10 finals=4 speaking=False
+23:55:11.734 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Oh didn't think.
+23:55:11.735 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.48s ttft=0.38s out=53ch tokens=11 | "Oh didn't think."
+23:55:11.735 INFO  speaker.llm | fast tier done in 0.48s (53 chars, streamed)
+23:55:11.735 INFO  speaker.tasks | task 0cd71a8f538b completed in 0.49s (53 chars)
+23:55:11.735 INFO  speaker.runtime | assistant: 'Could you please clarify what you were trying to say?'
+23:55:11.735 DEBUG speaker.sherpa | speaking: 'Could you please clarify what you were trying to say?' (queue depth=0)
+23:55:11.916 INFO  speaker.sherpa | playback opened at 44100 Hz on device ALC285 Analog (callback; resampling from 22050 Hz TTS -- device rejects 22050 Hz)
+23:55:13.471 DEBUG speaker.sherpa | capture heartbeat: blocks=292 avg_rms=0.0204 partials=10 finals=4 speaking=True
+23:55:15.524 DEBUG speaker.sherpa | capture heartbeat: blocks=312 avg_rms=0.0768 partials=10 finals=4 speaking=False
+23:55:16.007 DEBUG speaker.sherpa | asr partial: 'Tell me'
+23:55:16.007 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me'
+23:55:16.684 DEBUG speaker.sherpa | asr partial: 'Tell me a long'
+23:55:16.684 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me a long'
+23:55:17.073 DEBUG speaker.sherpa | asr partial: 'Tell me a long story'
+23:55:17.074 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me a long story'
+23:55:17.715 DEBUG speaker.sherpa | capture heartbeat: blocks=330 avg_rms=0.1553 partials=13 finals=4 speaking=False
+23:55:18.321 INFO  speaker.sherpa | asr final: 'Tell me a long story.' (raw 'TELL ME A LONG STORY')
+23:55:18.321 INFO  speaker.runtime | final -> brain: 'Tell me a long story.' (mode=assistant)
+23:55:18.663 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - What.
+  - I think me.
+  - Oh didn't think.
+  - Could you please clarify what you were trying to say?
+
+Latest utterance: "Tell me a long story."
+23:55:18.664 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.34s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - What. - I think me. - Oh didn\'t think. - Could you please clarify what you were trying to say? Latest utterance: "Tell me a long story."'
+23:55:18.664 INFO  speaker.runtime | addressing decision: ACT for 'Tell me a long story.'
+23:55:18.664 INFO  speaker.runtime | route: action=simple tier=main conf=0.70 source=heuristic (no gather/action markers) for 'Tell me a long story.'
+23:55:18.664 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Tell me a long story.'
+23:55:18.664 INFO  speaker.tasks | task 4abbf73a8a18 started: mode=assistant capability=assistant.answer input='Tell me a long story.'
+23:55:18.675 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Tell me a long story.'
+23:55:19.434 INFO  speaker.runtime | assistant: 'The little clockmaker, Elias, lived in a town where time seemed to move differently for everyone.'
+23:55:19.434 DEBUG speaker.sherpa | speaking: 'The little clockmaker, Elias, lived in a town where time seemed to move differently for everyone.' (queue depth=0)
+23:55:19.633 INFO  speaker.runtime | assistant: 'Some rushed, some lingered, and some simply forgot.'
+23:55:19.800 DEBUG speaker.sherpa | capture heartbeat: blocks=341 avg_rms=0.0287 partials=13 finals=5 speaking=True
+23:55:20.077 INFO  speaker.runtime | assistant: 'Elias, however, kept it all in order with his meticulous clocks, each one a tiny universe of gears and springs.'
+23:55:20.718 INFO  speaker.runtime | assistant: "He wasn't a young man, his fingers gnarled and stained with oil, but his eyes held the bright curiosity of a child when he was working."
+23:55:21.092 INFO  speaker.runtime | assistant: 'One day, a woman arrived in town, cloaked and hooded, her face hidden in shadow.'
+23:55:21.462 DEBUG speaker.sysinfo | system sample: cpu=98.9% ram=30421.4MB(91.5%) proc_rss=1104.2MB gpu=89.0% gpu_mem=13077.0/16376.0MB
+23:55:21.529 INFO  speaker.runtime | assistant: 'She carried a single, tarnished pocket watch, its hands frozen at a peculiar time: 3:17.'
+23:55:21.812 INFO  speaker.runtime | assistant: '"Can you fix it?" she asked, her voice low and melodic.'
+23:55:21.904 DEBUG speaker.sherpa | capture heartbeat: blocks=362 avg_rms=0.0240 partials=13 finals=5 speaking=True
+23:55:22.195 INFO  speaker.runtime | assistant: 'Elias peered at the watch, noting the intricate carvings of silver vines that spiraled across its surface.'
+23:55:22.390 INFO  speaker.runtime | assistant: 'He’d never seen anything quite like it.'
+23:55:22.736 INFO  speaker.runtime | assistant: '"I can try," he replied, "But this is no ordinary timepiece."'
+23:55:22.965 INFO  speaker.runtime | assistant: 'The woman simply nodded and left the watch with him.'
+23:55:23.277 INFO  speaker.runtime | assistant: 'Elias worked for days, meticulously cleaning, oiling, and repairing the delicate mechanism.'
+23:55:23.671 INFO  speaker.runtime | assistant: "He discovered that the watch wasn't just keeping time; it was somehow *connected* to it."
+23:55:23.911 DEBUG speaker.sherpa | capture heartbeat: blocks=382 avg_rms=0.0858 partials=13 finals=5 speaking=True
+23:55:24.227 INFO  speaker.runtime | assistant: 'When he adjusted a gear, he felt a subtle shift in the town’s atmosphere, a fleeting sense of either hastened or slowed moments.'
+23:55:24.425 INFO  speaker.runtime | assistant: 'As he worked, Elias began to dream.'
+23:55:24.949 INFO  speaker.runtime | assistant: 'Dreams of a place beyond the town, a shimmering realm where time flowed like a river, twisting and turning through valleys of forgotten moments.'
+23:55:25.311 INFO  speaker.runtime | assistant: 'In his dreams, he saw the woman from the watch, but her face remained obscured.'
+23:55:25.572 INFO  speaker.runtime | assistant: 'He felt a strange longing, a sense that he was missing something vital.'
+23:55:25.719 INFO  speaker.runtime | assistant: 'Finally, the watch was ready.'
+23:55:25.945 DEBUG speaker.sherpa | capture heartbeat: blocks=402 avg_rms=0.3475 partials=13 finals=5 speaking=True
+23:55:25.987 INFO  speaker.runtime | assistant: 'He summoned the woman, who appeared as silently as she had left.'
+23:55:26.135 INFO  speaker.runtime | assistant: '“It is repaired,” he announced.'
+23:55:26.376 DEBUG speaker.sherpa | speaking: 'Some rushed, some lingered, and some simply forgot.' (queue depth=19)
+23:55:26.554 INFO  speaker.runtime | assistant: 'As she took it, a single ray of sunlight broke through the clouds, illuminating her face for the first time.'
+23:55:26.840 INFO  speaker.runtime | assistant: 'It was a face etched with both sorrow and a profound, ancient wisdom.'
+23:55:27.360 INFO  speaker.runtime | assistant: '"You have done well, Elias," she said, her voice now tinged with a sadness that resonated deep within him.'
+23:55:27.529 INFO  speaker.runtime | assistant: '"This watch… it is a key.'
+23:55:27.845 INFO  speaker.runtime | assistant: 'A key to a place where time is not a constant, but a malleable thing."'
+23:55:28.014 DEBUG speaker.sherpa | capture heartbeat: blocks=422 avg_rms=0.2367 partials=13 finals=5 speaking=True
+23:55:28.514 INFO  speaker.runtime | assistant: "She explained that the realm he’d seen in his dreams was called Chronia, and it was slowly fading because the town's collective perception of time was becoming fractured."
+23:55:28.815 INFO  speaker.runtime | assistant: "The watch was a conduit, drawing energy from the town's temporal harmony."
+23:55:29.119 INFO  speaker.runtime | assistant: 'When it stopped, it disrupted that harmony, threatening to unravel Chronia completely.'
+23:55:29.345 DEBUG speaker.sherpa | speaking: 'Elias, however, kept it all in order with his meticulous clocks, each one a tiny universe of gears and springs.' (queue depth=26)
+23:55:29.388 INFO  speaker.runtime | assistant: '"I need you to help me," she said.'
+23:55:29.768 INFO  speaker.runtime | assistant: '"Not to repair watches, but to help the town remember the value of *their* time.'
+23:55:29.974 INFO  speaker.runtime | assistant: 'To appreciate the moments they have, big and small."'
+23:55:30.101 DEBUG speaker.sherpa | capture heartbeat: blocks=444 avg_rms=0.2420 partials=13 finals=5 speaking=True
+23:55:30.290 INFO  speaker.runtime | assistant: 'Elias, initially hesitant, felt a pull he couldn’t ignore.'
+23:55:30.612 INFO  speaker.runtime | assistant: 'He began to speak to the townspeople, not about clocks, but about life.'
+23:55:31.062 INFO  speaker.runtime | assistant: 'He encouraged them to savor their meals, to appreciate the changing seasons, to simply *be* in the present.'
+23:55:31.474 INFO  speaker.runtime | assistant: 'He told stories of Chronia, the realm of moments, and how their actions directly impacted its existence.'
+23:55:31.522 DEBUG speaker.sysinfo | system sample: cpu=100.0% ram=24537.6MB(73.8%) proc_rss=1139.3MB gpu=91.0% gpu_mem=13077.0/16376.0MB
+23:55:31.670 INFO  speaker.runtime | assistant: 'Slowly, things began to change.'
+23:55:32.089 INFO  speaker.runtime | assistant: 'The rushed began to pause, the lingerers began to engage, and even the forgetful began to remember.'
+23:55:32.104 DEBUG speaker.sherpa | capture heartbeat: blocks=461 avg_rms=0.0523 partials=13 finals=5 speaking=True
+23:55:32.479 INFO  speaker.runtime | assistant: 'The town’s temporal harmony strengthened, and Elias felt it in the subtle hum of his workshop.'
+23:55:32.726 INFO  speaker.runtime | assistant: 'The pocket watch glowed faintly in the woman’s possession.'
+23:55:32.958 INFO  speaker.runtime | assistant: 'One evening, the woman reappeared at his shop.'
+23:55:33.397 INFO  speaker.runtime | assistant: '"You have done more than you know, Elias," she said, a smile finally gracing her lips.'
+23:55:33.577 INFO  speaker.runtime | assistant: '“Chronia is safe, for now.”'
+23:55:33.634 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: Tell me a long story.
+23:55:33.634 INFO  speaker.llm.ollama | ollama gemma3:12b: 14.96s ttft=0.40s out=3365ch tokens=768 | 'Tell me a long story.'
+23:55:33.635 INFO  speaker.llm | main tier done in 14.96s (3365 chars, streamed)
+23:55:33.635 INFO  speaker.tasks | task 4abbf73a8a18 completed in 14.97s (3365 chars)
+23:55:33.638 INFO  speaker.runtime | assistant: 'She reached out'
+23:55:34.167 DEBUG speaker.sherpa | capture heartbeat: blocks=482 avg_rms=0.1760 partials=13 finals=5 speaking=True
+23:55:34.174 INFO  speaker.sherpa | barge-in detected
+23:55:34.175 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+23:55:34.176 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+23:55:36.171 DEBUG speaker.sherpa | capture heartbeat: blocks=500 avg_rms=0.0323 partials=13 finals=5 speaking=False
+23:55:38.388 DEBUG speaker.sherpa | capture heartbeat: blocks=518 avg_rms=0.0070 partials=13 finals=5 speaking=False
+23:55:40.512 DEBUG speaker.sherpa | capture heartbeat: blocks=537 avg_rms=0.0056 partials=13 finals=5 speaking=False
+23:55:41.559 DEBUG speaker.sysinfo | system sample: cpu=100.0% ram=22906.5MB(68.9%) proc_rss=1155.3MB gpu=1.0% gpu_mem=13077.0/16376.0MB
+23:55:42.572 DEBUG speaker.sherpa | capture heartbeat: blocks=558 avg_rms=0.0873 partials=13 finals=5 speaking=False
+23:55:43.084 DEBUG speaker.sherpa | asr partial: 'So'
+23:55:43.088 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='So'
+23:55:43.586 DEBUG speaker.sherpa | asr partial: 'So pe'
+23:55:43.586 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='So pe'
+23:55:43.890 DEBUG speaker.sherpa | asr partial: 'So pete'
+23:55:43.894 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='So pete'
+23:55:44.600 DEBUG speaker.sherpa | capture heartbeat: blocks=576 avg_rms=0.0570 partials=16 finals=5 speaking=False
+23:55:45.086 INFO  speaker.sherpa | asr final: 'So paid.' (raw 'SO PETE')
+23:55:45.090 INFO  speaker.runtime | final -> brain: 'So paid.' (mode=assistant)
+23:55:45.614 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Oh didn't think.
+  - Could you please clarify what you were trying to say?
+  - Tell me a long story.
+  - The little clockmaker, Elias, lived in a town where time seemed to move differently for everyone. Some rushed, some lingered, and some simply forgot. Elias, however, kept it all in order with his meticulous clocks, each one a tiny universe of gears and springs. He wasn't a young man, his fingers gnarled and stained with oil, but his eyes held the bright curiosity of a child when he was working.
+
+One day, a woman arrived in town, cloaked and hooded, her face hidden in shadow. She carried a single, tarnished pocket watch, its hands frozen at a peculiar time: 3:17. "Can you fix it?" she asked, her voice low and melodic. Elias peered at the watch, noting the intricate carvings of silver vines that spiraled across its surface. He’d never seen anything quite like it. 
+
+"I can try," he replied, "But this is no ordinary timepiece." 
+
+The woman simply nodded and left the watch with him. Elias worked for days, meticulously cleaning, oiling, and repairing the delicate mechanism. He discovered that the watch wasn't just keeping time; it was somehow *connected* to it. When he adjusted a gear, he felt a subtle shift in the town’s atmosphere, a fleeting sense of either hastened or slowed moments. 
+
+As he worked, Elias began to dream. Dreams of a place beyond the town, a shimmering realm where time flowed like a river, twisting and turning through valleys of forgotten moments. In his dreams, he saw the woman from the watch, but her face remained obscured. He felt a strange longing, a sense that he was missing something vital.
+
+Finally, the watch was ready. He summoned the woman, who appeared as silently as she had left. “It is repaired,” he announced. As she took it, a single ray of sunlight broke through the clouds, illuminating her face for the first time. It was a face etched with both sorrow and a profound, ancient wisdom. 
+
+"You have done well, Elias," she said, her voice now tinged with a sadness that resonated deep within him. "This watch… it is a key. A key to a place where time is not a constant, but a malleable thing."
+
+She explained that the realm he’d seen in his dreams was called Chronia, and it was slowly fading because the town's collective perception of time was becoming fractured. The watch was a conduit, drawing energy from the town's temporal harmony. When it stopped, it disrupted that harmony, threatening to unravel Chronia completely. 
+
+"I need you to help me," she said. "Not to repair watches, but to help the town remember the value of *their* time. To appreciate the moments they have, big and small."
+
+Elias, initially hesitant, felt a pull he couldn’t ignore. He began to speak to the townspeople, not about clocks, but about life. He encouraged them to savor their meals, to appreciate the changing seasons, to simply *be* in the present. He told stories of Chronia, the realm of moments, and how their actions directly impacted its existence. 
+
+Slowly, things began to change. The rushed began to pause, the lingerers began to engage, and even the forgetful began to remember. The town’s temporal harmony strengthened, and Elias felt it in the subtle hum of his workshop. The pocket watch glowed faintly in the woman’s possession.
+
+One evening, the woman reappeared at his shop. "You have done more than you know, Elias," she said, a smile finally gracing her lips. “Chronia is safe, for now.”
+
+She reached out
+
+Latest utterance: "So paid."
+23:55:45.615 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.52s ttft=- out=6ch tokens=- | "Recent utterances (most recent last): - Oh didn't think. - Could you please clarify what you were trying to say? - Tell me a long story. - The little clockmaker, Elias, lived in a town where time seem"
+23:55:45.615 INFO  speaker.runtime | addressing decision: INGEST for 'So paid.'
+23:55:46.623 DEBUG speaker.sherpa | capture heartbeat: blocks=585 avg_rms=0.0196 partials=16 finals=6 speaking=False
+23:55:46.985 DEBUG speaker.sherpa | asr partial: 'What'
+23:55:46.986 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What'
+23:55:48.029 INFO  speaker.sherpa | asr final: 'I.' (raw 'WHAT')
+23:55:48.029 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+23:55:48.469 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Could you please clarify what you were trying to say?
+  - Tell me a long story.
+  - The little clockmaker, Elias, lived in a town where time seemed to move differently for everyone. Some rushed, some lingered, and some simply forgot. Elias, however, kept it all in order with his meticulous clocks, each one a tiny universe of gears and springs. He wasn't a young man, his fingers gnarled and stained with oil, but his eyes held the bright curiosity of a child when he was working.
+
+One day, a woman arrived in town, cloaked and hooded, her face hidden in shadow. She carried a single, tarnished pocket watch, its hands frozen at a peculiar time: 3:17. "Can you fix it?" she asked, her voice low and melodic. Elias peered at the watch, noting the intricate carvings of silver vines that spiraled across its surface. He’d never seen anything quite like it. 
+
+"I can try," he replied, "But this is no ordinary timepiece." 
+
+The woman simply nodded and left the watch with him. Elias worked for days, meticulously cleaning, oiling, and repairing the delicate mechanism. He discovered that the watch wasn't just keeping time; it was somehow *connected* to it. When he adjusted a gear, he felt a subtle shift in the town’s atmosphere, a fleeting sense of either hastened or slowed moments. 
+
+As he worked, Elias began to dream. Dreams of a place beyond the town, a shimmering realm where time flowed like a river, twisting and turning through valleys of forgotten moments. In his dreams, he saw the woman from the watch, but her face remained obscured. He felt a strange longing, a sense that he was missing something vital.
+
+Finally, the watch was ready. He summoned the woman, who appeared as silently as she had left. “It is repaired,” he announced. As she took it, a single ray of sunlight broke through the clouds, illuminating her face for the first time. It was a face etched with both sorrow and a profound, ancient wisdom. 
+
+"You have done well, Elias," she said, her voice now tinged with a sadness that resonated deep within him. "This watch… it is a key. A key to a place where time is not a constant, but a malleable thing."
+
+She explained that the realm he’d seen in his dreams was called Chronia, and it was slowly fading because the town's collective perception of time was becoming fractured. The watch was a conduit, drawing energy from the town's temporal harmony. When it stopped, it disrupted that harmony, threatening to unravel Chronia completely. 
+
+"I need you to help me," she said. "Not to repair watches, but to help the town remember the value of *their* time. To appreciate the moments they have, big and small."
+
+Elias, initially hesitant, felt a pull he couldn’t ignore. He began to speak to the townspeople, not about clocks, but about life. He encouraged them to savor their meals, to appreciate the changing seasons, to simply *be* in the present. He told stories of Chronia, the realm of moments, and how their actions directly impacted its existence. 
+
+Slowly, things began to change. The rushed began to pause, the lingerers began to engage, and even the forgetful began to remember. The town’s temporal harmony strengthened, and Elias felt it in the subtle hum of his workshop. The pocket watch glowed faintly in the woman’s possession.
+
+One evening, the woman reappeared at his shop. "You have done more than you know, Elias," she said, a smile finally gracing her lips. “Chronia is safe, for now.”
+
+She reached out
+  - So paid.
+
+Latest utterance: "I."
+23:55:48.469 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.44s ttft=- out=6ch tokens=- | 'Recent utterances (most recent last): - Could you please clarify what you were trying to say? - Tell me a long story. - The little clockmaker, Elias, lived in a town where time seemed to move differen'
+23:55:48.469 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+23:55:48.693 DEBUG speaker.sherpa | capture heartbeat: blocks=595 avg_rms=0.0099 partials=17 finals=7 speaking=False
+23:55:50.769 DEBUG speaker.sherpa | capture heartbeat: blocks=610 avg_rms=0.0086 partials=17 finals=7 speaking=False
+23:55:51.598 DEBUG speaker.sysinfo | system sample: cpu=96.9% ram=25875.4MB(77.8%) proc_rss=1155.3MB gpu=2.0% gpu_mem=13077.0/16376.0MB
+23:55:52.802 DEBUG speaker.sherpa | capture heartbeat: blocks=625 avg_rms=0.0090 partials=17 finals=7 speaking=False
+23:55:54.925 DEBUG speaker.sherpa | capture heartbeat: blocks=639 avg_rms=0.0078 partials=17 finals=7 speaking=False
+23:55:55.841 INFO  speaker.sherpa | recorded 64.6s of session audio -> logs/runs/run-20260602-235431.wav
+23:55:55.976 INFO  speaker.sysinfo | system final: cpu=96.2% ram=26382.1MB(79.3%) proc_rss=1155.3MB gpu=2.0% gpu_mem=13077.0/16376.0MB | deltas: {'ram_used_mb_delta': 2062.7, 'proc_rss_mb_delta': 1135.4, 'gpu_mem_used_mb_delta': 2.0}

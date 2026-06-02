@@ -1,0 +1,184 @@
+23:19:13.902 INFO  speaker | run 20260602-231913 started (debug=True) -> logs/runs/run-20260602-231913.txt
+23:19:13.934 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=24757.1MB(74.5%) proc_rss=19.4MB gpu=12.0% gpu_mem=74.0/16376.0MB
+23:19:14.661 INFO  speaker.sysinfo | system mark after_build: cpu=34.2% ram=24827.0MB(74.7%) proc_rss=102.0MB gpu=12.0% gpu_mem=74.0/16376.0MB
+23:19:14.661 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+23:19:16.440 INFO  speaker.sherpa | second-pass final ASR: sense_voice (/home/dobo/work/speaker/pretrained_models/sherpa/sense_voice/model.int8.onnx)
+23:19:17.188 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (/home/dobo/work/speaker/pretrained_models/sherpa/aec/dtln_aec_stage1.onnx)
+23:19:17.188 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=0ms)
+23:19:17.189 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.50, input gating=False)
+23:19:17.189 INFO  speaker.sherpa | input device: AT2020USB-X: USB Audio (hw:2,0)
+23:19:17.190 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+23:19:17.190 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+23:19:17.205 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+23:19:17.206 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260602-231913.wav
+23:19:17.207 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+23:19:19.222 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0096 partials=0 finals=0 speaking=False
+23:19:20.561 DEBUG speaker.sherpa | asr partial: 'For'
+23:19:20.561 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='For'
+23:19:20.693 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+23:19:20.693 INFO  speaker.llm.ollama | ollama gemma3:4b: 3.48s ttft=- out=38ch tokens=- | 'hi'
+23:19:20.981 DEBUG speaker.sherpa | asr partial: 'For disinf'
+23:19:20.981 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='For disinf'
+23:19:21.225 DEBUG speaker.sherpa | capture heartbeat: blocks=40 avg_rms=0.1939 partials=2 finals=0 speaking=False
+23:19:21.291 DEBUG speaker.sherpa | asr partial: 'For disinfact'
+23:19:21.291 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='For disinfact'
+23:19:21.570 DEBUG speaker.sherpa | asr partial: "For disinfactor's com"
+23:19:21.571 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="For disinfactor's com"
+23:19:21.885 DEBUG speaker.sherpa | asr partial: "For disinfactor's comic"
+23:19:21.885 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text="For disinfactor's comic"
+23:19:22.834 INFO  speaker.sherpa | asr final: 'The.' (raw "FOR DISINFACTOR'S COMIC")
+23:19:22.834 INFO  speaker.runtime | final -> brain: 'The.' (mode=assistant)
+23:19:23.306 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "The."
+23:19:23.306 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.47s ttft=- out=7ch tokens=- | 'Latest utterance: "The."'
+23:19:23.306 INFO  speaker.runtime | addressing decision: INGEST for 'The.'
+23:19:23.419 DEBUG speaker.sherpa | capture heartbeat: blocks=54 avg_rms=0.1617 partials=5 finals=1 speaking=False
+23:19:23.777 DEBUG speaker.sherpa | asr partial: 'Joy said'
+23:19:23.785 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Joy said'
+23:19:23.976 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=27157.1MB(81.7%) proc_rss=983.3MB gpu=51.0% gpu_mem=13063.0/16376.0MB
+23:19:24.634 INFO  speaker.sherpa | asr final: 'Yeah.' (raw 'JOY SAID')
+23:19:24.634 INFO  speaker.runtime | final -> brain: 'Yeah.' (mode=assistant)
+23:19:24.965 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - The.
+
+Latest utterance: "Yeah."
+23:19:24.969 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.33s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - The. Latest utterance: "Yeah."'
+23:19:24.969 INFO  speaker.runtime | addressing decision: ACT for 'Yeah.'
+23:19:24.969 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Yeah.'
+23:19:24.969 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Yeah.'
+23:19:24.973 INFO  speaker.tasks | task 8b43dc19eac6 started: mode=assistant capability=assistant.answer input='Yeah.'
+23:19:24.983 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Yeah.'
+23:19:25.005 DEBUG speaker.llm.ollama | ollama gemma3:12b full prompt: hi
+23:19:25.005 INFO  speaker.llm.ollama | ollama gemma3:12b: 4.31s ttft=- out=35ch tokens=- | 'hi'
+23:19:25.424 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Yeah.
+23:19:25.424 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.44s ttft=0.33s out=55ch tokens=14 | 'Yeah.'
+23:19:25.424 INFO  speaker.llm | fast tier done in 0.44s (55 chars, streamed)
+23:19:25.424 INFO  speaker.tasks | task 8b43dc19eac6 completed in 0.46s (55 chars)
+23:19:25.424 INFO  speaker.runtime | assistant: 'Could you please tell me what you’d like to talk about?'
+23:19:25.424 DEBUG speaker.sherpa | speaking: 'Could you please tell me what you’d like to talk about?' (queue depth=0)
+23:19:25.472 DEBUG speaker.sherpa | capture heartbeat: blocks=69 avg_rms=0.0202 partials=6 finals=2 speaking=True
+23:19:25.484 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "hi"
+23:19:25.484 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.48s ttft=- out=7ch tokens=- | 'Latest utterance: "hi"'
+23:19:25.566 WARNING speaker.sherpa | speaker rejected 22050 Hz; playing at 44100 Hz and resampling
+23:19:25.814 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+23:19:27.475 DEBUG speaker.sherpa | capture heartbeat: blocks=90 avg_rms=0.2118 partials=6 finals=2 speaking=True
+23:19:29.479 DEBUG speaker.sherpa | capture heartbeat: blocks=110 avg_rms=0.0374 partials=6 finals=2 speaking=False
+23:19:29.965 DEBUG speaker.sherpa | asr partial: 'I'
+23:19:29.965 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I'
+23:19:30.240 DEBUG speaker.sherpa | asr partial: 'I want'
+23:19:30.240 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I want'
+23:19:30.509 DEBUG speaker.sherpa | asr partial: 'I want to'
+23:19:30.509 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I want to'
+23:19:30.843 DEBUG speaker.sherpa | asr partial: 'I want to talk'
+23:19:30.844 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I want to talk'
+23:19:31.134 DEBUG speaker.sherpa | asr partial: 'I want to talk about'
+23:19:31.134 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I want to talk about'
+23:19:31.581 DEBUG speaker.sherpa | capture heartbeat: blocks=131 avg_rms=0.1726 partials=11 finals=2 speaking=False
+23:19:32.254 INFO  speaker.sherpa | asr final: 'I want to talk about.' (raw 'I WANT TO TALK ABOUT')
+23:19:32.254 INFO  speaker.runtime | final -> brain: 'I want to talk about.' (mode=assistant)
+23:19:32.450 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - The.
+  - Yeah.
+  - Could you please tell me what you’d like to talk about?
+
+Latest utterance: "I want to talk about."
+23:19:32.450 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.20s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - The. - Yeah. - Could you please tell me what you’d like to talk about? Latest utterance: "I want to talk about."'
+23:19:32.450 INFO  speaker.runtime | addressing decision: ACT for 'I want to talk about.'
+23:19:32.450 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'I want to talk about.'
+23:19:32.450 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='I want to talk about.'
+23:19:32.451 INFO  speaker.tasks | task 0e3833b3ab00 started: mode=assistant capability=assistant.answer input='I want to talk about.'
+23:19:32.461 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'I want to talk about.'
+23:19:32.752 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: I want to talk about.
+23:19:32.752 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.29s ttft=0.23s out=44ch tokens=8 | 'I want to talk about.'
+23:19:32.752 INFO  speaker.llm | fast tier done in 0.29s (44 chars, streamed)
+23:19:32.752 INFO  speaker.tasks | task 0e3833b3ab00 completed in 0.30s (44 chars)
+23:19:32.752 INFO  speaker.runtime | assistant: 'What are you interested in discussing today?'
+23:19:32.752 DEBUG speaker.sherpa | speaking: 'What are you interested in discussing today?' (queue depth=0)
+23:19:33.663 DEBUG speaker.sherpa | capture heartbeat: blocks=145 avg_rms=0.0376 partials=11 finals=3 speaking=True
+23:19:33.996 DEBUG speaker.sysinfo | system sample: cpu=96.6% ram=27895.4MB(83.9%) proc_rss=1092.6MB gpu=2.0% gpu_mem=13075.0/16376.0MB
+23:19:35.663 DEBUG speaker.sherpa | capture heartbeat: blocks=165 avg_rms=0.0128 partials=11 finals=3 speaking=False
+23:19:36.021 DEBUG speaker.sherpa | asr partial: 'Two'
+23:19:36.021 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Two'
+23:19:36.730 INFO  speaker.sherpa | asr final: '.' (raw 'TWO')
+23:19:36.730 INFO  speaker.runtime | final -> brain: '.' (mode=assistant)
+23:19:37.026 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Yeah.
+  - Could you please tell me what you’d like to talk about?
+  - I want to talk about.
+  - What are you interested in discussing today?
+
+Latest utterance: "."
+23:19:37.026 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.30s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - Yeah. - Could you please tell me what you’d like to talk about? - I want to talk about. - What are you interested in discussing today? Latest utterance: "."'
+23:19:37.026 INFO  speaker.runtime | addressing decision: INGEST for '.'
+23:19:37.836 DEBUG speaker.sherpa | capture heartbeat: blocks=181 avg_rms=0.1659 partials=12 finals=4 speaking=False
+23:19:38.074 DEBUG speaker.sherpa | asr partial: 'A long story'
+23:19:38.075 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='A long story'
+23:19:38.812 INFO  speaker.sherpa | asr final: 'Yeah long story.' (raw 'A LONG STORY')
+23:19:38.812 INFO  speaker.runtime | final -> brain: 'Yeah long story.' (mode=assistant)
+23:19:39.112 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Could you please tell me what you’d like to talk about?
+  - I want to talk about.
+  - What are you interested in discussing today?
+  - .
+
+Latest utterance: "Yeah long story."
+23:19:39.112 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.30s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - Could you please tell me what you’d like to talk about? - I want to talk about. - What are you interested in discussing today? - . Latest utterance: "Yeah long '
+23:19:39.112 INFO  speaker.runtime | addressing decision: INGEST for 'Yeah long story.'
+23:19:39.920 DEBUG speaker.sherpa | capture heartbeat: blocks=198 avg_rms=0.0084 partials=13 finals=5 speaking=False
+23:19:41.921 DEBUG speaker.sherpa | capture heartbeat: blocks=218 avg_rms=0.0011 partials=13 finals=5 speaking=False
+23:19:43.926 DEBUG speaker.sherpa | capture heartbeat: blocks=238 avg_rms=0.0190 partials=13 finals=5 speaking=False
+23:19:44.030 DEBUG speaker.sysinfo | system sample: cpu=98.3% ram=27876.5MB(83.8%) proc_rss=1092.9MB gpu=2.0% gpu_mem=13075.0/16376.0MB
+23:19:46.022 DEBUG speaker.sherpa | capture heartbeat: blocks=259 avg_rms=0.0404 partials=13 finals=5 speaking=False
+23:19:47.792 DEBUG speaker.sherpa | asr partial: 'Tell'
+23:19:47.794 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell'
+23:19:48.215 DEBUG speaker.sherpa | capture heartbeat: blocks=280 avg_rms=0.1974 partials=14 finals=5 speaking=False
+23:19:48.253 DEBUG speaker.sherpa | asr partial: 'Tell me'
+23:19:48.253 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me'
+23:19:48.456 DEBUG speaker.sherpa | asr partial: 'Tell me a'
+23:19:48.460 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me a'
+23:19:48.767 DEBUG speaker.sherpa | asr partial: 'Tell me a long sto'
+23:19:48.771 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me a long sto'
+23:19:49.055 DEBUG speaker.sherpa | asr partial: 'Tell me a long story'
+23:19:49.056 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me a long story'
+23:19:49.884 INFO  speaker.sherpa | asr final: 'Tell me a long story.' (raw 'TELL ME A LONG STORY')
+23:19:49.884 INFO  speaker.runtime | final -> brain: 'Tell me a long story.' (mode=assistant)
+23:19:50.135 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I want to talk about.
+  - What are you interested in discussing today?
+  - .
+  - Yeah long story.
+
+Latest utterance: "Tell me a long story."
+23:19:50.135 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.25s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - I want to talk about. - What are you interested in discussing today? - . - Yeah long story. Latest utterance: "Tell me a long story."'
+23:19:50.135 INFO  speaker.runtime | addressing decision: ACT for 'Tell me a long story.'
+23:19:50.135 INFO  speaker.runtime | route: action=simple tier=main conf=0.70 source=heuristic (no gather/action markers) for 'Tell me a long story.'
+23:19:50.135 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Tell me a long story.'
+23:19:50.140 INFO  speaker.tasks | task 85d1ab8b9891 started: mode=assistant capability=assistant.answer input='Tell me a long story.'
+23:19:50.150 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Tell me a long story.'
+23:19:50.236 DEBUG speaker.sherpa | capture heartbeat: blocks=297 avg_rms=0.0960 partials=18 finals=6 speaking=False
+23:19:50.832 INFO  speaker.runtime | assistant: 'Once upon a time, nestled deep within a valley perpetually draped in mist, lay the village of Everglen.'
+23:19:50.832 DEBUG speaker.sherpa | speaking: 'Once upon a time, nestled deep within a valley perpetually draped in mist, lay the village of Everglen.' (queue depth=0)
+23:19:51.400 INFO  speaker.runtime | assistant: 'It was known throughout the land for its skilled clockmakers, artisans who crafted intricate timepieces that were not just beautiful but seemed to hum with a gentle magic.'
+23:19:51.745 INFO  speaker.runtime | assistant: 'Among them lived a young woman named Elara, whose talent surpassed even the most seasoned masters.'
+23:19:51.882 INFO  speaker.runtime | assistant: 'But Elara held a secret sorrow.'
+23:19:52.243 DEBUG speaker.sherpa | capture heartbeat: blocks=317 avg_rms=0.0100 partials=18 finals=6 speaking=True
+23:19:52.395 INFO  speaker.runtime | assistant: 'She longed to create a clock that could capture not just time, but memories - the fleeting moments of joy, sorrow, and everything in between.'
+23:19:53.243 INFO  speaker.runtime | assistant: 'The village elder, a wizened man named Silas, had often told Elara the legend of the "Chronarium Bloom," a mythical flower said to bloom only once a century, its petals imbued with the essence of captured moments.'
+23:19:53.591 INFO  speaker.runtime | assistant: 'He warned her, however, that seeking it was perilous, guarded by ancient spirits and treacherous landscapes.'
+23:19:53.841 INFO  speaker.runtime | assistant: "Yet, Elara's desire burned too fiercely to be deterred."
+23:19:54.078 DEBUG speaker.sysinfo | system sample: cpu=99.6% ram=28034.3MB(84.3%) proc_rss=1157.3MB gpu=93.0% gpu_mem=13075.0/16376.0MB
+23:19:54.247 DEBUG speaker.sherpa | capture heartbeat: blocks=337 avg_rms=0.2265 partials=18 finals=6 speaking=True
+23:19:54.366 INFO  speaker.runtime | assistant: 'One misty morning, she left Everglen, armed with her tools, a map Silas had drawn, and a heart full of hope.'
+23:19:54.958 INFO  speaker.runtime | assistant: 'Her journey took her through whispering forests where trees seemed to lean in and share secrets, across shimmering rivers guarded by playful sprites, and over mountains that scraped the sky.'
+23:19:55.693 INFO  speaker.runtime | assistant: 'She faced trials – outsmarting mischievous goblins who tried to steal her tools, soothing a grieving willow spirit who blocked her path, and navigating a labyrinth of illusions created by a lonely faerie queen.'
+23:19:56.009 DEBUG speaker.sherpa | speaking: 'It was known throughout the land for its skilled clockmakers, artisans who crafted intricate timepieces that were not just beautiful but seemed to hum with a gentle magic.' (queue depth=9)
+23:19:56.151 INFO  speaker.runtime | assistant: 'Finally, after many weeks, she reached the Valley of Echoes, where the Chronarium Bloom was said to grow.'
+23:19:56.248 DEBUG speaker.sherpa | capture heartbeat: blocks=357 avg_rms=0.2554 partials=18 finals=6 speaking=True
+23:19:56.496 INFO  speaker.runtime | assistant: 'The air here thrummed with a strange energy, and ghostly whispers carried on the wind.'
+23:19:56.997 INFO  speaker.runtime | assistant: 'In the center of the valley, bathed in a soft, ethereal light, stood a single, luminous flower—the Chronarium Bloom.'
+23:19:57.499 INFO  speaker.runtime | assistant: 'But it was guarded by a formidable spirit, a being of swirling mist and starlight, who identified itself as the Keeper of Memories.'
+23:19:57.912 INFO  speaker.runtime | assistant: '“You seek the Bloom’s essence,” the Keeper said, its voice like the chime of distant bells.'
+23:19:58.157 INFO  speaker.runtime | assistant: '“But memories are fragile, and their power can be dangerous.'
+23:19:58.305 INFO  speaker.runtime | assistant: 'Why do you desire to capture them?”'
+23:19:58.336 DEBUG speaker.sherpa | capture heartbeat: blocks=378 avg_rms=0.2104 partials=18 finals=6 speaking=True
+23:19:58.969 INFO  speaker.sherpa | recorded 38.4s of session audio -> logs/runs/run-20260602-231913.wav
+23:19:59.111 INFO  speaker.sysinfo | system final: cpu=93.2% ram=28108.2MB(84.5%) proc_rss=1231.0MB gpu=94.0% gpu_mem=13075.0/16376.0MB | deltas: {'ram_used_mb_delta': 3351.1, 'proc_rss_mb_delta': 1211.6, 'gpu_mem_used_mb_delta': 13001.0}

@@ -1,0 +1,424 @@
+{
+  "run_id": "20260602-231913",
+  "log_path": "logs/runs/run-20260602-231913.txt",
+  "duration_sec": 45.21,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260602-231913.wav"
+  },
+  "counts": {
+    "llm_requests": 11,
+    "turns": 6,
+    "transcript_entries": 26,
+    "errors": 0,
+    "warnings": 1,
+    "log_lines_by_level": {
+      "INFO": 79,
+      "DEBUG": 78,
+      "WARNING": 1
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "The.",
+      "mode": "assistant",
+      "at_sec": 8.93
+    },
+    {
+      "role": "user",
+      "text": "Yeah.",
+      "mode": "assistant",
+      "at_sec": 10.73
+    },
+    {
+      "role": "assistant",
+      "text": "Could you please tell me what you\u2019d like to talk about?",
+      "at_sec": 11.52
+    },
+    {
+      "role": "user",
+      "text": "I want to talk about.",
+      "mode": "assistant",
+      "at_sec": 18.35
+    },
+    {
+      "role": "assistant",
+      "text": "What are you interested in discussing today?",
+      "at_sec": 18.85
+    },
+    {
+      "role": "user",
+      "text": ".",
+      "mode": "assistant",
+      "at_sec": 22.83
+    },
+    {
+      "role": "user",
+      "text": "Yeah long story.",
+      "mode": "assistant",
+      "at_sec": 24.91
+    },
+    {
+      "role": "user",
+      "text": "Tell me a long story.",
+      "mode": "assistant",
+      "at_sec": 35.98
+    },
+    {
+      "role": "assistant",
+      "text": "Once upon a time, nestled deep within a valley perpetually draped in mist, lay the village of Everglen.",
+      "at_sec": 36.93
+    },
+    {
+      "role": "assistant",
+      "text": "It was known throughout the land for its skilled clockmakers, artisans who crafted intricate timepieces that were not just beautiful but seemed to hum with a gentle magic.",
+      "at_sec": 37.5
+    },
+    {
+      "role": "assistant",
+      "text": "Among them lived a young woman named Elara, whose talent surpassed even the most seasoned masters.",
+      "at_sec": 37.84
+    },
+    {
+      "role": "assistant",
+      "text": "But Elara held a secret sorrow.",
+      "at_sec": 37.98
+    },
+    {
+      "role": "assistant",
+      "text": "She longed to create a clock that could capture not just time, but memories - the fleeting moments of joy, sorrow, and everything in between.",
+      "at_sec": 38.49
+    },
+    {
+      "role": "assistant",
+      "text": "The village elder, a wizened man named Silas, had often told Elara the legend of the \"Chronarium Bloom,\" a mythical flower said to bloom only once a century, its petals imbued with the essence of captured moments.",
+      "at_sec": 39.34
+    },
+    {
+      "role": "assistant",
+      "text": "He warned her, however, that seeking it was perilous, guarded by ancient spirits and treacherous landscapes.",
+      "at_sec": 39.69
+    },
+    {
+      "role": "assistant",
+      "text": "Yet, Elara's desire burned too fiercely to be deterred.",
+      "at_sec": 39.94
+    },
+    {
+      "role": "assistant",
+      "text": "One misty morning, she left Everglen, armed with her tools, a map Silas had drawn, and a heart full of hope.",
+      "at_sec": 40.46
+    },
+    {
+      "role": "assistant",
+      "text": "Her journey took her through whispering forests where trees seemed to lean in and share secrets, across shimmering rivers guarded by playful sprites, and over mountains that scraped the sky.",
+      "at_sec": 41.06
+    },
+    {
+      "role": "assistant",
+      "text": "She faced trials \u2013 outsmarting mischievous goblins who tried to steal her tools, soothing a grieving willow spirit who blocked her path, and navigating a labyrinth of illusions created by a lonely faerie queen.",
+      "at_sec": 41.79
+    },
+    {
+      "role": "assistant",
+      "text": "Finally, after many weeks, she reached the Valley of Echoes, where the Chronarium Bloom was said to grow.",
+      "at_sec": 42.25
+    },
+    {
+      "role": "assistant",
+      "text": "The air here thrummed with a strange energy, and ghostly whispers carried on the wind.",
+      "at_sec": 42.59
+    },
+    {
+      "role": "assistant",
+      "text": "In the center of the valley, bathed in a soft, ethereal light, stood a single, luminous flower\u2014the Chronarium Bloom.",
+      "at_sec": 43.1
+    },
+    {
+      "role": "assistant",
+      "text": "But it was guarded by a formidable spirit, a being of swirling mist and starlight, who identified itself as the Keeper of Memories.",
+      "at_sec": 43.6
+    },
+    {
+      "role": "assistant",
+      "text": "\u201cYou seek the Bloom\u2019s essence,\u201d the Keeper said, its voice like the chime of distant bells.",
+      "at_sec": 44.01
+    },
+    {
+      "role": "assistant",
+      "text": "\u201cBut memories are fragile, and their power can be dangerous.",
+      "at_sec": 44.26
+    },
+    {
+      "role": "assistant",
+      "text": "Why do you desire to capture them?\u201d",
+      "at_sec": 44.4
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1780431553.902,
+      "cpu_percent": 0.0,
+      "ram_used_mb": 24757.1,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 74.5,
+      "proc_rss_mb": 19.4,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 12.0,
+          "mem_used_mb": 74.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 57.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1780431599.069,
+      "cpu_percent": 93.2,
+      "ram_used_mb": 28108.2,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 84.5,
+      "proc_rss_mb": 1231.0,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 94.0,
+          "mem_used_mb": 13075.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 75.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 99.6,
+      "ram_used_mb": 28108.2,
+      "ram_percent": 84.5,
+      "proc_rss_mb": 1231.0,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 94.0,
+      "gpu_mem_used_mb": 13075.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1780431554.643,
+        "cpu_percent": 34.2,
+        "ram_used_mb": 24827.0,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 74.7,
+        "proc_rss_mb": 102.0,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 12.0,
+            "mem_used_mb": 74.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 57.0
+          }
+        ]
+      }
+    },
+    "samples": 4,
+    "deltas": {
+      "ram_used_mb_delta": 3351.1,
+      "proc_rss_mb_delta": 1211.6,
+      "gpu_mem_used_mb_delta": 13001.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 10.85,
+    "avg_time_sec": 0.99,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 3.483,
+        "ttft_sec": null,
+        "out_chars": 38,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 24,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"The.\"",
+        "duration_sec": 0.472,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 73,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - The. Latest utterance: \"Yeah.\"",
+        "duration_sec": 0.331,
+        "ttft_sec": null,
+        "out_chars": 4,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:12b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 4.312,
+        "ttft_sec": null,
+        "out_chars": 35,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 5,
+        "system_chars": 1447,
+        "prompt_preview": "Yeah.",
+        "duration_sec": 0.441,
+        "ttft_sec": 0.33,
+        "out_chars": 55,
+        "tokens": 14,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 22,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"hi\"",
+        "duration_sec": 0.478,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 159,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - The. - Yeah. - Could you please tell me what you\u2019d like to talk about? Latest utterance: \"I want to talk about.\"",
+        "duration_sec": 0.196,
+        "ttft_sec": null,
+        "out_chars": 4,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 21,
+        "system_chars": 1568,
+        "prompt_preview": "I want to talk about.",
+        "duration_sec": 0.29,
+        "ttft_sec": 0.233,
+        "out_chars": 44,
+        "tokens": 8,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 205,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - Yeah. - Could you please tell me what you\u2019d like to talk about? - I want to talk about. - What are you interested in discussing today? Latest utterance: \".\"",
+        "duration_sec": 0.296,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 216,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - Could you please tell me what you\u2019d like to talk about? - I want to talk about. - What are you interested in discussing today? - . Latest utterance: \"Yeah long ",
+        "duration_sec": 0.3,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 182,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - I want to talk about. - What are you interested in discussing today? - . - Yeah long story. Latest utterance: \"Tell me a long story.\"",
+        "duration_sec": 0.251,
+        "ttft_sec": null,
+        "out_chars": 4,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 2.2155,
+      "endpoint_latency": 1.1911,
+      "final_to_first_token": 0.3446,
+      "first_token_to_audio": 0.6797,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 1.8368,
+      "endpoint_latency": 1.3163,
+      "final_to_first_token": 0.2444,
+      "first_token_to_audio": 0.276,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 2.498,
+      "endpoint_latency": 1.0792,
+      "final_to_first_token": 0.2806,
+      "first_token_to_audio": 1.1382,
+      "barge_in_latency": null
+    }
+  ],
+  "stuck_hints": [],
+  "errors": [
+    {
+      "t": "23:19:25",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "speaker rejected 22050 Hz; playing at 44100 Hz and resampling",
+      "exc": null
+    }
+  ]
+}

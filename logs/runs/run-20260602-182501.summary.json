@@ -1,0 +1,224 @@
+{
+  "run_id": "20260602-182501",
+  "log_path": "logs/runs/run-20260602-182501.txt",
+  "duration_sec": 37.95,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260602-182501.wav"
+  },
+  "counts": {
+    "llm_requests": 6,
+    "turns": 2,
+    "transcript_entries": 3,
+    "errors": 0,
+    "warnings": 2,
+    "log_lines_by_level": {
+      "INFO": 38,
+      "DEBUG": 37,
+      "WARNING": 2
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "He.",
+      "mode": "assistant",
+      "at_sec": 11.33
+    },
+    {
+      "role": "user",
+      "text": "Can you say something.",
+      "mode": "assistant",
+      "at_sec": 18.96
+    },
+    {
+      "role": "assistant",
+      "text": "Of course, I can say something.",
+      "at_sec": 19.39
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1780413901.193,
+      "cpu_percent": 0.0,
+      "ram_used_mb": 8386.0,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 25.2,
+      "proc_rss_mb": 19.7,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 0.0,
+          "mem_used_mb": 13075.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 50.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1780413939.123,
+      "cpu_percent": 8.4,
+      "ram_used_mb": 9555.9,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 28.7,
+      "proc_rss_mb": 1031.0,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 1.0,
+          "mem_used_mb": 13075.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 55.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 46.1,
+      "ram_used_mb": 9560.9,
+      "ram_percent": 28.8,
+      "proc_rss_mb": 1031.0,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 29.0,
+      "gpu_mem_used_mb": 13075.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1780413901.662,
+        "cpu_percent": 46.1,
+        "ram_used_mb": 8446.6,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 25.4,
+        "proc_rss_mb": 105.8,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 29.0,
+            "mem_used_mb": 13075.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 49.0
+          }
+        ]
+      }
+    },
+    "samples": 3,
+    "deltas": {
+      "ram_used_mb_delta": 1169.9,
+      "proc_rss_mb_delta": 1011.3,
+      "gpu_mem_used_mb_delta": 0.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 1.48,
+    "avg_time_sec": 0.25,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 0.377,
+        "ttft_sec": null,
+        "out_chars": 38,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:12b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 0.332,
+        "ttft_sec": null,
+        "out_chars": 32,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 22,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"hi\"",
+        "duration_sec": 0.189,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 23,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"He.\"",
+        "duration_sec": 0.171,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 89,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - He. Latest utterance: \"Can you say something.\"",
+        "duration_sec": 0.171,
+        "ttft_sec": null,
+        "out_chars": 4,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 22,
+        "system_chars": 1447,
+        "prompt_preview": "Can you say something.",
+        "duration_sec": 0.244,
+        "ttft_sec": 0.186,
+        "out_chars": 31,
+        "tokens": 8,
+        "streamed": true,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 1.3554,
+      "endpoint_latency": 0.9209,
+      "final_to_first_token": 0.1969,
+      "first_token_to_audio": 0.2377,
+      "barge_in_latency": 0.0001
+    }
+  ],
+  "stuck_hints": [],
+  "errors": [
+    {
+      "t": "18:25:20",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "speaker rejected 22050 Hz; playing at 44100 Hz and resampling",
+      "exc": null
+    },
+    {
+      "t": "18:25:39",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "playback thread did not exit within 1.0s; proceeding",
+      "exc": null
+    }
+  ]
+}

@@ -114,6 +114,135 @@ class FarEndRing:
             self._written = 0
 
 
+class PlaybackFIFO:
+    """Thread-safe bounded float32 sample FIFO between the synthesizer and the
+    PortAudio output callback.
+
+    Why this exists: the AEC far-end reference must be time-aligned to ACTUAL
+    acoustic playback. With a single blocking ``out.write()`` the producer pushed
+    a whole multi-second TTS chunk into :class:`FarEndRing` the instant it handed
+    it to ``write()`` -- but the device buffers and plays it out over the next
+    seconds, so the ring write head raced ahead of real playback by a varying
+    output-buffer amount (per-block far->near lag swung 54..1179 ms; DTLN tolerates
+    only +/-60 ms). The fix routes audio through this FIFO: the producer
+    (``write()`` on the playback thread) ``write``s into it (BLOCKING when full --
+    that backpressure paces synthesis to real time), and the PortAudio callback
+    DRAINS it frame-for-frame via :meth:`read_into`. The callback -- and only the
+    callback -- then tees the exact block it is about to play into the far-end
+    ring, so the ring write head == the true playback position and the far->near
+    lag becomes small + stable (inside DTLN's tolerance).
+
+    Single-producer (the playback worker's ``write()``) / single-consumer (the
+    audio callback's :meth:`read_into`). A short lock guards each numpy copy; the
+    consumer's hold is a couple of microsecond slice copies + one non-blocking
+    ``notify_all`` (never blocks the high-priority audio thread). The producer may
+    block on a ``Condition`` when the ring is full; it is woken by the consumer's
+    ``notify_all`` (a drain freed space) OR returns promptly when ``should_abort``
+    flips True (barge-in / shutdown), with a finite wait timeout as a backstop
+    against a missed notify so it can never deadlock."""
+
+    def __init__(self, capacity: int):
+        self._cap = max(1, int(capacity))
+        self._buf = np.zeros(self._cap, dtype=np.float32)
+        self._r = 0           # read head (mod cap)
+        self._w = 0           # write head (mod cap)
+        self._count = 0       # queued samples
+        self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+
+    def write(self, samples, should_abort) -> None:
+        """Producer (playback thread). Append ``samples``, BLOCKING with
+        backpressure while the ring is full so synthesis is paced to real
+        playback. NEVER called from the audio callback.
+
+        ``should_abort`` is a 0-arg predicate (True on barge-in/shutdown). It
+        STOPS this write enqueueing anything further and returns promptly so a
+        producer parked on a full ring can never deadlock once the consumer stops
+        draining. A long chunk is copied over several lock passes (it can fill the
+        ring and backpressure mid-chunk), so an abort that arrives mid-chunk may
+        leave an earlier pass's samples already queued -- and a true rollback is
+        not possible anyway once the audio callback has already PLAYED part of
+        them. The drop of those still-queued samples is therefore the job of
+        :meth:`flush`, which the barge-in / shutdown paths always call alongside
+        setting the abort predicate (see ``SherpaOnnxEngine.stop_speaking`` /
+        ``stop``). CONTRACT: a caller that wants the queue emptied on abort MUST
+        pair ``should_abort`` with a :meth:`flush`; ``should_abort`` alone only
+        halts further synthesis, it does not retroactively clear the ring."""
+        x = np.asarray(samples, dtype=np.float32).reshape(-1)
+        i = 0
+        n = x.shape[0]
+        while i < n:
+            with self._cond:
+                # Wait for space, but bail out (finite timeout backstop) the
+                # moment a barge-in/shutdown is requested so we never deadlock a
+                # producer that the consumer can no longer drain. flush() (paired
+                # with the abort by the caller) clears whatever earlier passes
+                # already queued; here we only stop adding more.
+                while self._count >= self._cap and not should_abort():
+                    self._cond.wait(timeout=0.1)
+                if should_abort():
+                    return
+                free = self._cap - self._count
+                take = min(free, n - i)
+                start = self._w
+                end = start + take
+                if end <= self._cap:
+                    self._buf[start:end] = x[i : i + take]
+                else:
+                    k = self._cap - start
+                    self._buf[start:] = x[i : i + k]
+                    self._buf[: end - self._cap] = x[i + k : i + take]
+                self._w = end % self._cap
+                self._count += take
+                i += take
+                # Wake the consumer if it was (in principle) waiting; harmless
+                # otherwise. The consumer never blocks, so this is purely to keep
+                # the symmetry tidy -- the real wake direction is consumer->producer.
+
+    def read_into(self, out_view) -> int:
+        """Consumer (audio callback ONLY). Fill ``out_view`` (the PortAudio mono
+        ``outdata[:, 0]`` slice) in place with the next queued samples, zero-fill
+        any underrun tail, and return the count of REAL (non-zero-fill) samples
+        emitted so the callback tees only those to the echo refs. Hard real-time:
+        a single microsecond copy lock + one non-blocking ``notify_all`` to wake a
+        blocked producer; never blocks, never allocates a new array."""
+        n = int(out_view.shape[0])
+        if n <= 0:
+            return 0
+        with self._lock:
+            m = min(n, self._count)
+            if m:
+                start = self._r
+                end = start + m
+                if end <= self._cap:
+                    out_view[:m] = self._buf[start:end]
+                else:
+                    k = self._cap - start
+                    out_view[:k] = self._buf[start:]
+                    out_view[k:m] = self._buf[: end - self._cap]
+                self._r = end % self._cap
+                self._count -= m
+            if m < n:
+                out_view[m:] = 0.0          # underrun -> silent zero-fill, never a stall
+            self._cond.notify_all()         # a drain freed space: wake a blocked producer
+        return m
+
+    def flush(self) -> None:
+        """Barge-in cut: drop every queued sample in one short lock (the next
+        callback emits silence -- equivalent to discarding the device buffer) and
+        wake any producer blocked in :meth:`write`."""
+        with self._cond:
+            self._r = self._w
+            self._count = 0
+            self._cond.notify_all()
+
+    def count(self) -> int:
+        """Queued-sample count (used by the idle drain-wait to know when the last
+        frames have actually played out before tearing down the echo refs)."""
+        with self._lock:
+            return self._count
+
+
 class _FDAFAdaptiveFilter:
     """Frequency-domain block adaptive echo canceller (constrained, normalized).
 

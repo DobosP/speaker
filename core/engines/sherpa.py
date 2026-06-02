@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import numpy as np
+
 log = logging.getLogger("speaker.sherpa")
 
 
@@ -26,7 +28,7 @@ from ..audio_frontend import CLEAN_CAPTURE_RATES, AudioResampler, apply_gain_sof
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._denoiser import build_denoiser
-from ._aec import FarEndRing, build_aec
+from ._aec import FarEndRing, PlaybackFIFO, build_aec
 from ._sherpa_models import (
     build_keyword_spotter,
     build_final_recognizer,
@@ -333,6 +335,15 @@ class SherpaConfig:
     # exclusive-ALSA backend allows only one open output stream at a time. Costs a
     # stream (re)open per assistant utterance; off in the real always-on app.
     release_output_when_idle: bool = False
+    # Depth (seconds of audio) of the playback FIFO between the synthesizer and
+    # the PortAudio output callback. The producer (synthesis) BLOCKS on this FIFO
+    # when it fills, which is the backpressure that paces synthesis to real-time
+    # playback -- the precondition for the far-end AEC reference being aligned to
+    # actual acoustic output (the callback tees the exact frames it plays into the
+    # far ring). Too small -> audible mid-sentence underruns on a slow synth; too
+    # large -> the producer can run ahead and the ring write head drifts past real
+    # playback again. 1.0 s is a safe default with latency="low".
+    playback_fifo_sec: float = 1.0
     # Software gain applied to captured audio before ASR -- a quick boost for a
     # quiet mic (1.0 = off). Prefer raising the OS mic level; this is a stopgap.
     input_gain: float = 1.0
@@ -495,6 +506,18 @@ class SherpaOnnxEngine(AudioEngine):
         # thread owns its lifecycle while stop_speaking() runs on another thread.
         self._out_stream = None
         self._out_lock = threading.Lock()
+        # Playback FIFO between the synthesizer (producer) and the PortAudio
+        # output callback (consumer). Allocated at stream open (sized in
+        # play_sr samples); None for the scripted/console engines and before the
+        # first utterance. The callback DRAINS it and tees the exact played block
+        # into the far-end ring -> the ring write head tracks TRUE acoustic
+        # playback, which is what brings the far->near lag inside DTLN tolerance.
+        self._fifo: Optional[PlaybackFIFO] = None
+        # Per-utterance flag: the worker sets it True when it dequeues a reply;
+        # the audio callback checks-and-clears it on the first block with real
+        # audio to stamp TTS_FIRST_AUDIO at the TRUE first-played instant (a
+        # flushed/stopped utterance that never plays audio thus never stamps it).
+        self._first_audio_pending: bool = False
         # Serializes access to the single TTS model so the startup warm pass and a
         # live synthesis can never call ``tts.generate`` concurrently (sherpa's
         # OfflineTts is not safe for concurrent generation). Contended only at
@@ -749,20 +772,23 @@ class SherpaOnnxEngine(AudioEngine):
         self._running.clear()
         self._stop_speaking.set()
         self._drain_play_q()
-        # Abort the live output stream BEFORE pushing the sentinel / joining the
-        # play thread. On a dead/stalled ALSA device the play thread is blocked
-        # in the C-level out.write() and will never reach _play_q.get() to see
-        # the sentinel, so the join below would hang (the classic "second
-        # Ctrl-C needed" shutdown). abort() drops the buffered audio and makes
-        # the blocked write() return; _stop_speaking is already set (above) so
-        # the write() closure's except swallows the resulting error instead of
-        # re-raising. On a healthy/idle stream this is a cheap no-op, so the
-        # normal shutdown path is unchanged. Mirrors stop_speaking() but emits
-        # no barge_in_stop metric (this is teardown, not an interruption).
+        # Tear the live output stream down BEFORE pushing the sentinel / joining
+        # the play thread. On a dead/stalled device the play thread can be blocked
+        # in FIFO.write() and would never reach _play_q.get() to see the sentinel,
+        # so the join below would hang (the classic "second Ctrl-C needed"
+        # shutdown). _stop_speaking is already set (above), which is the
+        # should_abort predicate that releases a blocked producer; flush()'s
+        # notify_all also wakes it. We use stop()/close() (NOT abort) for a clean
+        # device handback -- PortAudio stop() JOINS the callback so none fires
+        # post-close. On a healthy/idle stream this is cheap. Emits no
+        # barge_in_stop metric (teardown, not an interruption).
         with self._out_lock:
+            if self._fifo is not None:
+                self._fifo.flush()
             if self._out_stream is not None:
                 try:
-                    self._out_stream.abort()
+                    self._out_stream.stop()
+                    self._out_stream.close()
                 except Exception:  # noqa: BLE001 - device may be mid-teardown
                     pass
         self._play_q.put((None, None))  # sentinel: wake the worker so it exits
@@ -805,26 +831,31 @@ class SherpaOnnxEngine(AudioEngine):
         # a barge-in flushes pending speech instead of letting it play out.
         self._stop_speaking.set()
         self._drain_play_q()
-        # Abort the live output stream so audio already handed to the device is
-        # dropped immediately (PortAudio abort() discards the buffer; stop()
-        # would drain it). This is the difference between a ~700ms and a ~100ms
-        # barge-in stop. The playback loop re-start()s the stream for the next
-        # utterance. abort() leaves it stopped-but-open, so this is cheap.
-        aborted = False
+        # Cut the live audio by FLUSHING the playback FIFO rather than aborting
+        # the stream. flush() drops every queued sample in one short lock, so the
+        # very next PortAudio callback emits a silent zero-fill -- equivalent to
+        # abort() discarding the device buffer, but the stream STAYS OPEN playing
+        # silence (cheaper; avoids the abort->restart race). _stop_speaking (set
+        # above) also early-returns the producer write() and releases a producer
+        # blocked in FIFO.write via its should_abort predicate. Residual latency
+        # is now one-two low-latency callback periods, comparable to abort()'s.
+        cut = False
         with self._out_lock:
-            if self._out_stream is not None:
-                try:
-                    self._out_stream.abort()
-                    aborted = True
-                except Exception:  # noqa: BLE001 - device may be mid-teardown
-                    pass
+            if (
+                self._out_stream is not None
+                and self._fifo is not None
+                and self._speaking.is_set()
+            ):
+                self._fifo.flush()
+                cut = True
         # Playback is being cut: drop the echo reference so the capture loop
         # doesn't keep gating barge-in against a level that is no longer audible.
         self._playback_level = 0.0
-        # Stamp the *true* audible-stop instant (when the buffer was dropped),
-        # not when synthesis later notices the flag. Only when we actually cut
-        # playing audio, so a no-op stop (nothing speaking) records nothing.
-        if aborted:
+        # Stamp the *true* audible-stop instant (when the FIFO was flushed), not
+        # when synthesis later notices the flag. Only when we actually flushed a
+        # speaking stream, so a no-op stop (nothing playing) records nothing --
+        # preserving the old aborted-guarded behavior.
+        if cut:
             self._cb.on_metric(BARGE_IN_STOP)
 
     @property
@@ -1290,6 +1321,75 @@ class SherpaOnnxEngine(AudioEngine):
         except queue.Empty:
             pass
 
+    def _audio_cb(self, outdata, frames, time_info, status) -> None:
+        """PortAudio output callback -- runs on a HIGH-PRIORITY audio thread.
+
+        This is the single place the far-end AEC reference is pushed, and that is
+        the whole point of the callback rewrite: the block we tee here is the EXACT
+        block PortAudio is about to play, so :class:`FarEndRing`'s write head tracks
+        TRUE acoustic playback (not the producer's run-ahead into a blocking
+        ``out.write()``). That collapses the far->near lag from a 50..1200 ms
+        output-buffer race down to the small, STABLE physical speaker->mic +
+        fixed-output latency -- inside DTLN's +/-60 ms tolerance -- so the deep
+        canceller works live.
+
+        HARD REAL-TIME RULES (kept as tight as the design allows): no Python
+        logging, no f-strings, no exception may escape into PortAudio (bare
+        try/except around the whole body), no ``_out_lock``/``_tts_lock``, no
+        ``_play_q``, no ``FIFO.write``, no blocking wait. ``status`` (underflow) is
+        ignored -- an underrun is a silent zero-fill from ``read_into``, never a
+        stall.
+
+        Locks taken here are all short copy locks: the FIFO's own (+ a
+        non-blocking notify) and ``FarEndRing``'s (a microsecond slice copy,
+        shared with the capture thread's cheap ring read). The ONE real-time
+        caveat is ``EchoCoherenceDetector``'s lock, taken via
+        :meth:`note_playback`: the capture thread also briefly holds it while
+        ``decide`` concatenates the reference ring. That concat is bounded by
+        ``coherence_ring_ms`` (~38 KB / sub-100us at the default), so the
+        worst-case audio-thread stall is well inside one low-latency callback
+        period today -- but it is the only contended lock on this thread, and it
+        would need to move OFF it (feed coherence from a lock-free SPSC stage,
+        like the far ring) before ``coherence_ring_ms`` is raised materially.
+        Allocation-light but not alloc-free: two small play_sr->16k resamples per
+        block (one inside ``note_playback``, one for the far ring), sub-100us."""
+        view = outdata[:, 0]
+        try:
+            fifo = self._fifo
+            if fifo is None:
+                view[:] = 0.0
+                return
+            # Drain the FIFO into the device buffer (zero-fills any underrun tail)
+            # and learn how many of those samples are REAL audio (vs zero-fill) so
+            # we tee only the played audio into the echo refs.
+            n = fifo.read_into(view)
+            if n > 0:
+                played = view[:n]
+                # Mirror the producer's old per-chunk bookkeeping, but now driven
+                # by ACTUAL playback: the level EWMA (barge-in reference), the
+                # coherence echo reference, and the AEC far-end ring.
+                self._note_playback_level(played)
+                if self._echo_coherence is not None and self._play_sr:
+                    self._echo_coherence.note_playback(played, self._play_sr)
+                if self._far_ref is not None:
+                    # Tee the just-played block into the AEC far ring at 16 kHz.
+                    # The ring write head now == the true playback position, which
+                    # is what makes the far-end reference align for DTLN.
+                    ref16 = (
+                        _resample_linear(played, self._play_sr, self.config.sample_rate)
+                        if self._play_sr != self.config.sample_rate
+                        else played
+                    )
+                    self._far_ref.push(ref16)
+                # Stamp TTS_FIRST_AUDIO at the TRUE first-played instant (moved
+                # here from the producer so the metric means "first audible", and
+                # a flushed/stopped utterance that never plays never stamps it).
+                if self._first_audio_pending:
+                    self._first_audio_pending = False
+                    self._cb.on_metric(TTS_FIRST_AUDIO)
+        except Exception:  # noqa: BLE001 - a transient must never kill the audio thread
+            pass
+
     def _playback_loop(self) -> None:
         import sounddevice as sd
 
@@ -1313,66 +1413,60 @@ class SherpaOnnxEngine(AudioEngine):
                 self._speaking.set()
                 if not was_speaking:
                     self._barge_in_fired_this_run = False
+                # Arm the per-utterance first-audio stamp; the audio callback
+                # clears it and stamps TTS_FIRST_AUDIO when real audio first plays.
+                self._first_audio_pending = True
                 self._cb.on_speech_start()
                 log.debug("speaking: %r (queue depth=%d)", text, self._play_q.qsize())
-                played = {"any": False}
 
                 def write(samples) -> None:
+                    # Producer side of the playback FIFO (runs on this worker
+                    # thread, NOT the audio callback). All the echo-reference tees
+                    # (level EWMA, coherence ref, far-end ring) and the
+                    # TTS_FIRST_AUDIO stamp have MOVED into _audio_cb so they fire
+                    # off ACTUAL playback, not synthesis -- that alignment is the
+                    # whole point of the rewrite. Here we just resample to play_sr
+                    # and hand the samples to the FIFO, which BLOCKS when full
+                    # (backpressure that paces synthesis to real-time playback).
                     if self._stop_speaking.is_set():
-                        return
-                    if not played["any"]:
-                        played["any"] = True
-                        self._cb.on_metric(TTS_FIRST_AUDIO)
+                        return  # barged chunk: never enqueue it
                     if self._play_sr != self._tts_sr:
                         samples = _resample_linear(samples, self._tts_sr, self._play_sr)
-                    # Track the level of what we're actually playing so the
-                    # capture loop can require user voice to stand *above* it
-                    # before counting as barge-in (self-interruption guard).
-                    self._note_playback_level(samples)
-                    # Feed the played TTS to the coherence detector as the echo
-                    # reference (the signal it cancels against). Cheap: a deque
-                    # push + linear resample, off the real-time capture path.
-                    if self._echo_coherence is not None and self._play_sr:
-                        self._echo_coherence.note_playback(samples, self._play_sr)
-                    if self._far_ref is not None:
-                        # Tee the far-end (what we're about to play) into the AEC
-                        # ring at 16 kHz so the capture loop can subtract the echo.
-                        # Resampling happens here on the PLAYBACK thread, off the
-                        # capture hot path; capture only does a cheap ring read.
-                        ref16 = (
-                            _resample_linear(samples, self._play_sr, self.config.sample_rate)
-                            if self._play_sr != self.config.sample_rate
-                            else samples
+                    fifo = self._fifo
+                    if fifo is not None:
+                        # should_abort releases a producer blocked on a full FIFO
+                        # the instant a barge-in (_stop_speaking) or shutdown
+                        # (not _running) is requested -- no deadlock on teardown.
+                        fifo.write(
+                            samples,
+                            should_abort=lambda: (
+                                self._stop_speaking.is_set() or not self._running.is_set()
+                            ),
                         )
-                        self._far_ref.push(ref16)
-                    try:
-                        out.write(samples)
-                    except Exception:  # noqa: BLE001
-                        # A barge-in abort() on another thread can stop the
-                        # stream mid-write; that's expected on interruption, not
-                        # a crash. Swallow only while stopping -- a genuine write
-                        # failure (not a barge-in) still surfaces and is logged.
-                        if not self._stop_speaking.is_set():
-                            raise
 
                 try:
                     if out is None:
                         out_dev = _norm_device(self.config.output_device)
                         self._tts_sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
+                        # Callback-driven stream: PortAudio pulls audio from
+                        # _audio_cb (which drains the FIFO + tees the far ring from
+                        # the true playback position), instead of us pushing via a
+                        # blocking out.write(). latency="low" keeps the callback
+                        # period << the FIFO depth so barge-in residual stays small.
                         try:
                             out = sd.OutputStream(
                                 channels=1, samplerate=self._tts_sr, dtype="float32",
-                                device=out_dev, latency="low",
+                                device=out_dev, latency="low", callback=self._audio_cb,
                             )
                             out.start()
                             self._play_sr = self._tts_sr
-                            log.info("playback opened at %d Hz on device %s",
+                            log.info("playback opened at %d Hz on device %s (callback)",
                                      self._play_sr, out_dev if out_dev is not None else "default")
                         except sd.PortAudioError:
                             dev_sr = int(sd.query_devices(out_dev, kind="output")["default_samplerate"])
                             out = sd.OutputStream(
                                 channels=1, samplerate=dev_sr, dtype="float32",
-                                device=out_dev, latency="low",
+                                device=out_dev, latency="low", callback=self._audio_cb,
                             )
                             out.start()
                             self._play_sr = dev_sr
@@ -1380,11 +1474,20 @@ class SherpaOnnxEngine(AudioEngine):
                                 "speaker rejected %d Hz; playing at %d Hz and resampling",
                                 self._tts_sr, dev_sr,
                             )
+                        # Allocate the FIFO once the FINAL play_sr is known (so it
+                        # survives the 22050->44100 reopen). The producer write()
+                        # resamples tts_sr->play_sr before pushing, so the FIFO and
+                        # outdata are both play_sr. The audio callback may already
+                        # be firing (zero-filling) before this assignment -- that's
+                        # fine: it checks `self._fifo is None` and emits silence.
+                        self._fifo = PlaybackFIFO(int(self._play_sr * self.config.playback_fifo_sec))
                         with self._out_lock:
                             self._out_stream = out
                     elif not out.active:
-                        # A previous barge-in abort()ed the stream; bring it back
-                        # up before this utterance writes to it.
+                        # Rare safety net: with the callback path a barge-in only
+                        # flushes the FIFO (the stream stays open playing silence),
+                        # so the stream is normally already active here. Restart it
+                        # only if something stopped it.
                         out.start()
                     self._synthesize(text, write)
                     # (true barge-in-stop is stamped in stop_speaking() at the
@@ -1395,6 +1498,23 @@ class SherpaOnnxEngine(AudioEngine):
                     # Only fall idle once the queue drains, so the capture loop
                     # doesn't flap ASR/barge-in on/off between adjacent sentences.
                     if self._play_q.empty():
+                        # Wait for the FIFO to actually PLAY OUT before tearing
+                        # down the echo refs: with the callback path the producer
+                        # has handed the last samples to the FIFO but the audio
+                        # thread is still draining them. Bounded by a deadline +
+                        # broken by not-_running / _stop_speaking so a wedged or
+                        # unplugged device can never hang the worker (mirrors the
+                        # 1.0s join guards in stop()). A barge-in flush makes
+                        # count()==0 immediately, so this returns at once then.
+                        deadline = time.monotonic() + self.config.playback_fifo_sec + 0.5
+                        while (
+                            self._fifo is not None
+                            and self._fifo.count() > 0
+                            and self._running.is_set()
+                            and not self._stop_speaking.is_set()
+                            and time.monotonic() < deadline
+                        ):
+                            time.sleep(0.01)
                         self._speaking.clear()
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         if self._echo_coherence is not None:
@@ -1408,10 +1528,14 @@ class SherpaOnnxEngine(AudioEngine):
                             self._aec.reset()
                         # Hand the output device back when asked (so a co-located
                         # process -- e.g. the acoustic test's synthetic user -- can
-                        # open it for its turn). Drop the shared handle under the
-                        # lock FIRST so a concurrent stop_speaking() can't abort a
-                        # stream we're closing; reopened lazily on the next utterance.
+                        # open it for its turn). Flush the FIFO + drop the shared
+                        # handle under the lock FIRST so a concurrent stop_speaking()
+                        # can't flush a stream we're closing; stop()/close() (NOT
+                        # abort) joins the callback so none fires post-close. Clear
+                        # _fifo so the next utterance re-allocates a clean one.
                         if self.config.release_output_when_idle and out is not None:
+                            if self._fifo is not None:
+                                self._fifo.flush()
                             with self._out_lock:
                                 self._out_stream = None
                             try:
@@ -1420,15 +1544,19 @@ class SherpaOnnxEngine(AudioEngine):
                             except Exception:  # noqa: BLE001 - already aborted/closed
                                 pass
                             out = None
+                            self._fifo = None
                         self._cb.on_speech_end()
         except Exception:
             log.exception("playback loop crashed -- the assistant has gone mute")
             self._running.clear()
         finally:
             # Drop the shared handle before teardown so a concurrent
-            # stop_speaking() can't abort() a stream we're closing.
+            # stop_speaking() can't flush a stream we're closing. Clear the FIFO
+            # too so a never-restarted loop holds no playback buffer. stop()/
+            # close() (NOT abort) joins the callback before close.
             with self._out_lock:
                 self._out_stream = None
+            self._fifo = None
             if out is not None:
                 try:
                     out.stop()

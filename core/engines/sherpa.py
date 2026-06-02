@@ -295,6 +295,15 @@ class SherpaConfig:
     # missed in a clean room; raise it if the assistant self-interrupts faster
     # than sigma adapts.
     coherence_margin_delta: float = 0.08
+    # A barge must clear the coherence threshold for this many CONSECUTIVE capture
+    # blocks (~0.1 s each) before it fires -- "a bit slower, higher confidence".
+    # Trades a small amount of interrupt latency for robustness against one-off
+    # over-threshold spikes (cheap-speaker nonlinearity, transient noise): a real
+    # talk-over is sustained and clears it; a single bad frame does not. This is
+    # the enrollment-free, identity-free interrupt -- it does NOT use speaker-ID
+    # (that is a separate feature). 1 = the original fire-on-first-frame behaviour;
+    # 2 is a conservative default. Raise it for more confidence at more latency.
+    coherence_confirm_frames: int = 2
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0
@@ -576,13 +585,15 @@ class SherpaOnnxEngine(AudioEngine):
                 ring_ms=c.coherence_ring_ms,
                 max_delay_ms=c.coherence_max_delay_ms,
                 margin_delta=c.coherence_margin_delta,
+                confirm_frames=c.coherence_confirm_frames,
             )
             if det.available:
                 self._echo_coherence = det
                 log.info(
                     "coherence barge-in ACTIVE (scale-invariant, no enrollment; "
-                    "band %s Hz, margin delta %.2f)",
+                    "band %s Hz, margin delta %.2f, confirm %d frames)",
                     c.coherence_voiced_band_hz, c.coherence_margin_delta,
+                    c.coherence_confirm_frames,
                 )
             else:
                 log.warning(

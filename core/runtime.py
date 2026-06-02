@@ -16,6 +16,7 @@ from always_on_agent.supervisor import AgentSupervisor
 
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
 from .capabilities import RecallConfig, _answers_locally, attach_llm_capabilities
+from .capability_router import CapabilityRouter, CapabilityTierRouter, escalate_predicate
 from .conversation import RecentContextConfig
 from .cleanup import TranscriptCleaner
 from .contract import is_stop_command, normalize_command
@@ -58,6 +59,7 @@ class VoiceRuntime:
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         router: Optional[Router] = None,
+        capability_router: Optional[CapabilityRouter] = None,
         planner_config: Optional[PlannerConfig] = None,
         stream_tts: bool = False,
         followup_config: Optional[FollowupConfig] = None,
@@ -116,6 +118,15 @@ class VoiceRuntime:
         attach_web_search_capability(registry, web_cfg)
         planner_on = planner_config is not None and planner_config.enabled
         escalate = should_escalate if (planner_on and planner_config.escalate) else None
+        # Unified capability router (the "middle layer"): when configured it BACKS
+        # both the tier choice and the escalate decision, so one coherent module
+        # decides simple/research/act + fast/main. Absent -> the existing per-gate
+        # routing (the ``router`` arg + ``should_escalate``) stands, byte-identical.
+        self._capability_router = capability_router
+        if capability_router is not None:
+            router = CapabilityTierRouter(capability_router)
+            if planner_on and planner_config.escalate:
+                escalate = escalate_predicate(capability_router)
         # Capability-aware system prompt: the answering model is told who it is
         # (the configured persona) and what skills it ACTUALLY has, enumerated
         # from the live capability manifest, with a web-access line that reflects
@@ -413,6 +424,29 @@ class VoiceRuntime:
                     }},
                 )
                 final_text = cleaned
+        # Unified capability-router decision (the "middle layer"). It DRIVES
+        # behaviour via the tier router + escalate predicate wired in __init__;
+        # this call records the decision for the run summary AND primes the
+        # fast-LLM action cache, so the in-capability escalate/tier consults this
+        # turn don't re-call the model. Best-effort: routing never breaks a turn.
+        if self._capability_router is not None:
+            try:
+                decision = self._capability_router.route(
+                    final_text, {"mode": self.mode.value}
+                )
+                log.info(
+                    "route: action=%s tier=%s conf=%.2f source=%s (%s) for %r",
+                    decision.action, decision.tier, decision.confidence,
+                    decision.source, decision.reason, final_text,
+                    extra={"route": {
+                        "action": decision.action, "tier": decision.tier,
+                        "confidence": decision.confidence,
+                        "source": decision.source, "reason": decision.reason,
+                    }},
+                )
+                self.metrics.mark(f"route_{decision.action}")
+            except Exception:  # noqa: BLE001 - routing observability is best-effort
+                log.exception("capability router failed; default routing stands")
         # Try the no-LLM fast-path next; only fall through to the brain on a miss.
         if self._intents is not None and self._intents.handle(final_text):
             log.debug("handled by intent fast-path: %r", final_text)

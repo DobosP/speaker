@@ -26,7 +26,11 @@ webrtcvad                    # Legacy GMM VAD (optional fallback)
 openwakeword>=0.6.0          # Wakeword detector for noisy environments
 speechbrain>=1.0.0           # Optional speaker verification gate
 
-# Echo Cancellation (NLMS in NumPy – no native deps needed)
+# Echo Cancellation: implemented in core/engines/_aec.py as a NumPy frequency-
+# domain adaptive filter (FDAF) — no native deps (numpy only). OFF by default
+# (sherpa.aec_enabled). The optional deep DTLN-aec tier (aec_backend="dtln") and
+# the Smart Turn endpoint use onnxruntime (>=1.20,<1.24 for the cp310 wheel);
+# install it only for those optional tiers.
 # speexdsp-ns is optional for post-AEC noise suppression
 speexdsp-ns>=0.1.0
 

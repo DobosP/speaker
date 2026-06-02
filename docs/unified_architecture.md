@@ -838,7 +838,7 @@ The live-voice path: `remote/worker.py` is a thin CLI harness that mints a token
 
 **Design decision (from code review §6):** "share the contract + tests, not a binary core." The Python core and Dart mobile shell each re-derive the brain in their own language (`core/capabilities.py` vs `mobile/lib/assistant.dart`'s hot loops for sentence boundaries and the command fast-path). The golden suite (~95% of "one source of truth") is cheaper than FFI/IPC and keeps both shells independent. Drift surfaces immediately in CI.
 
-Mobile is a parallel Dart loop today; the planned convergence onto the `AgentEvent` contract (from `always_on_agent/events.py`, see [§1](#1--system-shape--topology)) is roadmap Phase 2 — it would align the Dart supervisor with the Python one and make the contract duplication disappear (see [§12](#12--known-gaps--roadmap)).
+Mobile is a parallel Dart loop today; the planned convergence onto the `AgentEvent` contract (from `always_on_agent/events.py`, see [§1](#1--system-shape--topology)) is an **open cross-platform roadmap item** (not part of the voice-latency Phase 2) — it would align the Dart supervisor with the Python one and make the contract duplication disappear (tracked in [§12](#12--known-gaps--roadmap) "Open high-value work").
 
 ---
 
@@ -1061,6 +1061,7 @@ Ranked by field impact:
 5. **Multi-participant `remote/` test** — barge-in calls a global `supervisor.cancel_all()` with no session scoping; two participants would cancel each other's work. No test exists. **(M effort, coverage gap)**
 6. **LLM egress gate for injected PII** — recall + profile blocks must not carry personal data off-device via cloud LLM chains. A gate exists for web.search; the LLM path is still unvetted. **(M effort, latent behind disabled-by-default cloud; see [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97))**
 7. **Run-bundle PII/retention policy** — transcripts + WAVs commit verbatim with no redaction/TTL. **(S effort, hygiene)**
+8. **Mobile Dart → `AgentEvent` convergence** — `mobile/lib/assistant.dart` is still a parallel Dart loop (command map + streaming TTS) that re-derives core behavior; aligning the Dart supervisor with the Python brain on the shared `always_on_agent/events.py` contract would erase the duplication. **(L effort, cross-platform; see [§10](#10--cross-platform-contract--mobile))**
 
 ### Known latent risks (not blockers yet)
 

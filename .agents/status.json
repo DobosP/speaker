@@ -10,9 +10,9 @@
     "target_profile": "desktop_gpu_4090"
   },
   "last_verdict": {
-    "tests": "1283 passed, 13 skipped, 0 failed",
+    "tests": "1273 passed, 13 skipped, 0 failed",
     "green": true,
-    "note": "merged main (origin/main voice batch + feat/aec-dtln unification). venv python (.venv) -- git-bash 'python' is system 3.10 and lacks onnxruntime/sherpa; use .venv\\Scripts\\python.exe for the full suite. 2 pre-existing numpy divide-by-zero RuntimeWarnings in core/endpointing.py (mel filter), not failures."
+    "note": "Logic suite green on the desktop (i9-13980HX). +4 vs prior count from new FIFO/_audio_cb tests landed this session. 2 pre-existing numpy divide-by-zero RuntimeWarnings in core/endpointing.py (mel filter), not failures. Whole-tree import smoke also PASS (120 modules)."
   },
-  "next": "DONE: unification landed on main + docs/unified_architecture.md (+ architecture.md) REFRESHED to current truth for the voice batch (SenseVoice two-pass ASR default, Smart Turn v3 ProsodyTurnCompletionDetector real-voice-scored, scale-invariant coherence barge-in primary + self-calibrating margin, enrollment hardening, adaptive endpoint floor; corrected stale smart_turn_enabled keys + class name). NEXT (P1, needs the mic): on-hardware validation -- Smart Turn v3 live floor-lowering A/B (detector + turn_detect_check are on main; can't use the synthetic harness, needs real-speech recordings); AEC ERLE calibration via tools/echo_probe.py. See .agents/backlog.md."
+  "next": "DONE: recovered + landed the PC-interrupted playback rewrite on main (554b300) -- TTS now flows through a callback-driven OutputStream + bounded PlaybackFIFO so the AEC far-end reference is teed from the audio callback at the TRUE playback position (far->near lag now inside DTLN's +/-60ms tolerance); barge-in/shutdown flush the FIFO instead of abort(). Ran an adversarial review before landing (6 minor findings, 0 blockers) and hardened: honest abort/flush contract (a true rollback is unsound under concurrent flush/drain -- abort MUST be paired with flush()), direct device-free _audio_cb tests, pinned the notify wake-path, fixed a vacuous assertion. NEXT (P1, needs the mic): AEC on-hardware -- enable aec in config.local.json, calibrate aec_ref_delay_ms + measure post-AEC ERLE with tools/echo_probe.py now that the far-end ref is properly aligned; then Smart Turn v3 live floor A/B. One latent real-time item filed in backlog: move coherence note_playback off the audio callback (lock-free SPSC) before raising coherence_ring_ms. See .agents/backlog.md."
 }

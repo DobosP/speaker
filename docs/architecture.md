@@ -35,9 +35,12 @@ contract. Two deployment topologies, both built: **on-device** and
   stop_speaking()`; `EngineCallbacks` = `on_partial`, `on_final`,
   `on_barge_in`, `on_speech_start/end`, `on_command` (keyword fast-path).
 - **`engines/sherpa.py`** — production, on-device: sherpa-onnx VAD + streaming
-  STT + endpointing + keyword spotting + TTS. `engines/_sherpa_models.py` holds
-  the shared model builders; `engines/speaker_gate.py` is the speaker-ID barge-in
-  gate (no AEC needed).
+  STT (+ optional offline SenseVoice two-pass final) + adaptive endpointing
+  (lexical or Smart Turn v3 prosody) + keyword spotting + TTS.
+  `engines/_sherpa_models.py` holds the shared model builders (incl.
+  `build_final_recognizer`); `engines/echo_coherence.py` is the scale-invariant
+  coherence barge-in detector (primary); `engines/speaker_gate.py` is the
+  speaker-ID gate; `engines/_aec.py` is the optional NumPy/DTLN echo canceller.
 - **`engines/scripted.py`** — pure-Python engine for tests/console (zero deps).
 - **`engines/file_replay.py`** — replays recorded `.npy`/`.wav` fixtures through
   the real pipeline, headless (latency benchmarks / CI).

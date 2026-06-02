@@ -64,11 +64,15 @@ hardening (AT2020 capture-rate pin, loudness rescue, VAD-trimmed); `tools/echo_p
 - Guard now allows `git push origin main` (personal SSH key `git@github-personal`).
 
 ## Next steps (pick up here)
-1. **Refresh `docs/unified_architecture.md`** — it predates the voice batch: no
-   SenseVoice two-pass ASR; Smart Turn v3 still described as "unvalidated/gated";
-   the new barge-in stack (coherence/loudness/self-calibrating) is absent. A
-   per-subsystem fan-out (the way the doc was first authored) would re-sync it to
-   current truth. **This is the cleanest immediate follow-up.**
+1. ✅ **DONE — `docs/unified_architecture.md` + `docs/architecture.md` refreshed**
+   to current truth for the voice batch: SenseVoice two-pass ASR (default-on),
+   Smart Turn v3 `ProsodyTurnCompletionDetector` real-voice scoring (corrected the
+   stale `smart_turn_enabled`/`smart_turn_model` keys + class name + the removed
+   `test_smart_turn_endpoint.py` reference), scale-invariant coherence barge-in
+   (primary) + self-calibrating EWMA margin, enrollment hardening (capture-rate pin,
+   VAD-trim, loudness rescue), adaptive confidence-tiered endpoint floor. Authored via
+   a per-subsystem research fan-out (6 Explore agents), every claim verified against
+   code/config, suite green 1283. (This session.)
 2. **Resume P1 voice/audio hardware validation** (`.agents/backlog.md`): AEC ERLE on
    the real mic; Smart Turn v3 on-hardware A/B (detector + `turn_detect_check` tool
    are now on `main` — what's left is the recording-based A/B).

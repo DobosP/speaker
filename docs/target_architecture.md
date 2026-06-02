@@ -312,10 +312,13 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    using speakers and produces barge-in storms (see
    `logs/runs/run-20260528-004726.txt` lines 68–75). The speaker-ID gate
    in `core/engines/speaker_gate.py` is therefore not optional in v1.
-10. **v1 scope — desktop-Linux-only with four modes** (resolved
-    2026-05-28). v1 ships: desktop Linux; English; four modes
-    (quiet/assistant/research/command); four background-task families
-    (research / summarize / reminders / watch) with per-task delivery
+10. **v1 scope — desktop-Linux-only** (resolved 2026-05-28; mode set
+    since expanded). v1 ships: desktop Linux; English; the originally-scoped
+    four modes (quiet/assistant/research/command) have **grown to seven as
+    implemented** (`passive`, `assistant`, `command`, `search`, `research`,
+    `dictation`, `meeting` — `always_on_agent/events.py`); four background-task
+    families (research / summarize / reminders / watch), of which **only
+    `research` ships so far**, with per-task delivery
     preference; 2–3 concurrent tasks; spoken confirmation on destructive
     actions only; sherpa-onnx + existing brain + the cloud thinking tier
     from §9.7. **Out of v1:** mobile shell, multilingual, cross-device

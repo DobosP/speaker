@@ -67,6 +67,7 @@ Thumbs.db
 
 # Local config (keep config.json as template)
 config.local.json
+config.local.json.bak*
 
 # Local Claude Code session config (machine-local, never committed)
 .claude/

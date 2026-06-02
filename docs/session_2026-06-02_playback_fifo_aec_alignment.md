@@ -128,3 +128,38 @@ without user detection — user detection is a separate feature."*
   talk-over — 2 ≈ +0.1 s latency, 3 ≈ +0.2 s, both far more robust to single-frame
   echo spikes. This is independent of the AEC work above and applies to any input
   path (headset, external speaker, or post-DTLN signal).
+
+## Addendum — open-speaker barge-in now WORKS via DTLN-AEC (the FIFO arch paid off)
+
+The user ran `--engine sherpa` and it self-interrupted; they asked me to test, on
+real hardware, what interrupt works across the laptop mic and the external mic,
+then chose to "make the open speaker work (DTLN)."
+
+- **New tools (committed):** `tools/interrupt_suite.py` sweeps {ALC285 laptop mic,
+  AT2020 USB mic} × {coherence confirm 1/2/3, level, dtln} and tabulates
+  self-interrupts; `tools/echo_probe.py` gained post-AEC **ERLE (dB)** measurement
+  + overrides (`--input-device/--coherence/--confirm-frames/--aec/--ref-delay-ms/
+  --relaxed-margin-db/--speaker-gate/--min-speech-sec`).
+- **Matrix finding:** with the open ALC285 speaker, *every* strategy self-interrupts
+  on *both* mics — it's the **speaker's ~90 % nonlinear echo**, not the mic or the
+  strategy; `confirm_frames` can't help (the nonlinear echo is sustained, not spiky).
+- **The win — AEC alignment was the real fix the FIFO rewrite unblocked.** ERLE
+  sweep (AT2020): cancellation **peaks at `aec_ref_delay_ms=0` (~10–16 dB live)** and
+  falls off monotonically; the old **94 ms gave 0.8 dB** (it was tuned for the dead
+  push-count timing). So the callback tee aligned the far-ref — the AEC delay just
+  needed 94 → 0 ms.
+- **Working open-speaker config (self-interruptions = 0 over repeated 4-sentence
+  runs, written to `config.local.json`):** `aec` DTLN @ `ref_delay=0`,
+  **identity/user-detection gate OFF** in the barge path (`speaker_gate_input=false`
+  — the interrupt is identity-free, per the product decision; note this also turns
+  off identity-gating of *finals*, a separate feature), **coherence OFF** (it
+  conflicts with AEC — cancellation removes the correlation coherence relies on),
+  `aec_relaxed_margin_db=6.0`, `barge_in_min_speech_sec=0.6` (a residual echo-tail
+  spike can't sustain 0.6 s; a real talk-over can — the same "slower, higher
+  confidence" principle, applied to the level gate).
+- **STILL TO VERIFY (needs a human):** that a *real* barge fires. Run
+  `python -m core --engine sherpa` and talk over a long answer. If a real barge is
+  *missed*, lower `barge_in_min_speech_sec` toward 0.4 or `aec_relaxed_margin_db`
+  toward 3; if it self-interrupts again, raise them. Headphones remain the
+  zero-echo fallback (AEC can be off there). Re-run the measurement any time with
+  `python -m tools.interrupt_suite` (stay quiet).

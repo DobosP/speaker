@@ -55,6 +55,14 @@ def main() -> int:
     ap.add_argument("--sentences", type=int, default=4)
     ap.add_argument("--device", default=None, help="device_profile (default: config.device)")
     ap.add_argument("--config", default="config.json")
+    # --- per-run strategy/device overrides (used by tools.interrupt_suite to sweep
+    # the interrupt matrix without editing config.local.json) ---
+    ap.add_argument("--input-device", default=None, help="mic device name/index override (e.g. 'AT2020USB-X', 'ALC285 Analog')")
+    ap.add_argument("--output-device", default=None, help="speaker device name/index override")
+    ap.add_argument("--coherence", choices=["on", "off"], default=None, help="force coherence_barge_in_enabled")
+    ap.add_argument("--confirm-frames", type=int, default=None, help="coherence_confirm_frames override")
+    ap.add_argument("--aec", choices=["on", "off"], default=None, help="force aec_enabled")
+    ap.add_argument("--label", default=None, help="opaque label echoed back in the JSON (for the suite)")
     args = ap.parse_args()
 
     # utf-8 stdout so any non-ASCII never crashes the cp1252 console.
@@ -72,10 +80,25 @@ def main() -> int:
     device = args.device or cfg.get("device") or "desktop"
     cfg = apply_device_profile(cfg, device)
     sherpa_cfg = SherpaConfig.from_dict(cfg.get("sherpa", {}))
-    try:
-        sherpa_cfg.barge_in_output_margin_db = args.margin_db
-    except dataclasses.FrozenInstanceError:
-        sherpa_cfg = dataclasses.replace(sherpa_cfg, barge_in_output_margin_db=args.margin_db)
+
+    # Collect all overrides and apply them in one pass (works whether SherpaConfig
+    # is frozen or not). barge_in_output_margin_db is always set from --margin-db.
+    overrides = {"barge_in_output_margin_db": args.margin_db}
+    if args.input_device is not None:
+        overrides["input_device"] = args.input_device
+    if args.output_device is not None:
+        overrides["output_device"] = args.output_device
+    if args.coherence is not None:
+        overrides["coherence_barge_in_enabled"] = (args.coherence == "on")
+    if args.confirm_frames is not None:
+        overrides["coherence_confirm_frames"] = int(args.confirm_frames)
+    if args.aec is not None:
+        overrides["aec_enabled"] = (args.aec == "on")
+    for k, v in overrides.items():
+        try:
+            setattr(sherpa_cfg, k, v)
+        except dataclasses.FrozenInstanceError:
+            sherpa_cfg = dataclasses.replace(sherpa_cfg, **{k: v})
 
     if not getattr(sherpa_cfg, "tts_model", ""):
         print(json.dumps({"error": "no sherpa.tts_model configured; run `python -m tools.setup_models`"}))
@@ -206,7 +229,14 @@ def main() -> int:
         coh = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
 
     out = {
-        "margin_db": args.margin_db,
+        "label": args.label,
+        "input_device": getattr(sherpa_cfg, "input_device", None),
+        "strategy": {
+            "coherence": getattr(sherpa_cfg, "coherence_barge_in_enabled", None),
+            "confirm_frames": getattr(sherpa_cfg, "coherence_confirm_frames", None),
+            "aec": getattr(sherpa_cfg, "aec_enabled", None),
+            "margin_db": args.margin_db,
+        },
         "gain": args.gain,
         "device": device,
         "sentences_spoken": spoken,

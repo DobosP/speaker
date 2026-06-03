@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import queue
 import threading
@@ -229,7 +230,24 @@ class SherpaConfig:
     aec_ref_delay_ms: int = 80
     aec_filter_taps: int = 512
     aec_doubletalk_freeze: bool = True
+    # FDAF adaptive-filter stability knobs (tunable live for open-speaker rooms):
+    # aec_mu = NLMS step size (lower = slower but more stable; 0.5 diverged on an
+    # open laptop speaker); aec_leak = coefficient leakage (< 1.0 bounds divergence
+    # via exponential forgetting -- the leaky-LMS safeguard; 1.0 = no bound).
+    aec_mu: float = 0.3
+    aec_leak: float = 0.9999
     aec_relaxed_margin_db: float = 3.0
+    # Post-AEC barge-in: a real barge must stand this many dB above the AUTO-
+    # CALIBRATED residual echo+noise floor (``_playback_floor_rms``, learned online
+    # during playback with a freeze-on-burst EWMA). Because the floor tracks the
+    # actual post-cancellation echo at the CURRENT speaker volume + room noise, the
+    # assistant's own echo sits AT the floor and cannot self-interrupt regardless
+    # of how loud it plays, while a genuine talk-over (well above the floor) still
+    # fires. This is the PRIMARY barge gate whenever AEC is on -- it makes the
+    # coherence detector veto-only, so nonlinear open-speaker echo (which over-fires
+    # the linear coherence model) can no longer self-interrupt. 0 disables it (fall
+    # back to the coherence-primary / level-margin path).
+    barge_in_residual_margin_db: float = 10.0
     # Silero VAD model (.onnx). Required for endpointing / barge-in.
     vad_model: str = ""
     # Command fast-path: a streaming keyword spotter (separate small transducer)
@@ -544,6 +562,17 @@ class SherpaOnnxEngine(AudioEngine):
         # the read/write atomic and a stale sample only nudges a threshold, so
         # no lock is taken on the hot path. Decays to 0 once playback stops.
         self._playback_level: float = 0.0
+        # Auto-calibrated post-AEC residual echo+noise floor (capture thread only),
+        # learned online DURING playback by _update_playback_floor. The barge gate
+        # (when AEC is on) requires a real interrupt to stand
+        # barge_in_residual_margin_db ABOVE this, so the assistant's own cancelled
+        # echo -- which sits at the floor -- cannot self-interrupt at any speaker
+        # volume. Persists across turns (the echo level tracks the ~constant speaker
+        # volume) so it is ready immediately, with no per-turn re-climb that early
+        # echo could exploit. Unlike _ambient_rms (the QUIET floor, which freezes
+        # the instant playback echo arrives and so stays at the quiet level), this
+        # one deliberately tracks the echo level present during playback.
+        self._playback_floor_rms: float = 0.0
         # Scale-invariant reference-coherence barge-in detector (the PRIMARY
         # discriminator; the level margin above is only a fallback). Built in
         # _build() when coherence_barge_in_enabled and scipy is present; fed the
@@ -1188,6 +1217,13 @@ class SherpaOnnxEngine(AudioEngine):
                 # ``barge_in_enabled`` -- off until AEC, so the loud TTS leaking
                 # into an open-speaker mic can't self-interrupt.
                 if self._speaking.is_set():
+                    # Auto-calibrate the post-AEC residual echo+noise floor on EVERY
+                    # playback block (the assistant's own cancelled echo). The barge
+                    # gate keys off this floor, so the interrupt threshold tracks the
+                    # current speaker volume + room noise online -- no manual
+                    # calibration, and the steady echo can't self-interrupt.
+                    if self._aec is not None:
+                        self._update_playback_floor(rms(samples))
                     if self.config.barge_in_enabled and self._vad is not None:
                         self._vad.accept_waveform(samples)
                         # Debounce: ignore triggers for a short window after a
@@ -1721,6 +1757,43 @@ class SherpaOnnxEngine(AudioEngine):
         # 3) NO-AEC -- best-effort output-margin level gate: the user stands a
         #    margin above the playback buffer; residual echo does not.
         # 4) Nothing configured -> fail open (treat playback-time voice as a barge).
+        #
+        # AEC ON: the AUTO-CALIBRATED residual-floor gate is PRIMARY. The post-AEC
+        # residual echo sits at _playback_floor_rms (learned online during playback;
+        # adapts to speaker volume + room noise), and a real barge stands
+        # barge_in_residual_margin_db ABOVE it. The coherence detector still runs --
+        # its cross-correlation delay auto-calibrates the AEC far-end reference, and
+        # a CONFIDENT echo-only verdict can veto -- but it can NO LONGER fire on its
+        # own. That is the fix for nonlinear open speakers, where the linear
+        # coherence model over-fires on the assistant's own distorted echo and
+        # self-interrupts (observed incoherent~0.93 on pure echo).
+        if self._aec is not None and self.config.barge_in_residual_margin_db > 0.0:
+            det = self._echo_coherence
+            # Run the detector for its echo-only VETO (a confident "echo-only" can
+            # reject a floor pass) -- but do NOT re-align the AEC reference from its
+            # delay estimate: on a nonlinear speaker the cross-correlation peak is
+            # noisy (measured jumping 19 -> 229 ms), and re-aligning the far-end
+            # reference every block DESTABILISES the canceller -> it diverges ->
+            # passthrough echo bursts that trip this very gate. The AEC reference
+            # delay stays pinned at the configured aec_ref_delay_ms.
+            verdict = det.decide(samples) if det is not None else None
+            if self._playback_floor_rms <= 0.0:
+                return False  # floor not learned yet -> fail closed (no warmup self-interrupt)
+            if not loudness_admits(
+                rms(samples), self._playback_floor_rms,
+                margin_db=self.config.barge_in_residual_margin_db,
+            ):
+                return False  # at/near the residual echo+noise floor -> echo, not a barge
+            if verdict is False:
+                return False  # floor cleared but coherence is confident it is echo-only
+            if verdict:
+                log.debug(
+                    "barge confirmed: residual=%.4f floor=%.4f (+%.0fdB margin) coherence_incoh=%.2f delay=%.0fms",
+                    rms(samples), self._playback_floor_rms,
+                    self.config.barge_in_residual_margin_db,
+                    det.last_incoherent_fraction, det.last_delay_ms,
+                )
+            return True
         det = self._echo_coherence
         if det is not None:
             verdict = det.decide(samples)
@@ -1772,6 +1845,31 @@ class SherpaOnnxEngine(AudioEngine):
         # Fast attack (track loud output quickly), slow-ish release.
         alpha = 0.5 if level >= prev else 0.2
         self._playback_level = prev + alpha * (level - prev)
+
+    # Online residual-floor tracking. The floor EWMA-tracks the post-AEC echo+noise
+    # level within +6 dB (BURST_RATIO) and FREEZES above it -- a real barge is a
+    # large outlier that must NOT raise its own bar (mirrors the coherence chart and
+    # _ambient_rms "ignore upward excursions" rule).
+    _PLAYBACK_FLOOR_BURST_RATIO = 2.0   # +6 dB
+    _PLAYBACK_FLOOR_ALPHA = 0.05
+
+    def _update_playback_floor(self, level: float) -> None:
+        """Online estimate of the post-AEC residual echo+noise floor during
+        playback (capture thread only). Bootstrap on the first block; then EWMA-
+        track the floor within +6 dB so it follows the current speaker volume + room
+        noise up and down; FREEZE on a larger burst so a genuine talk-over (the
+        thing the barge gate fires on) can never drag the floor up to itself. Pure
+        and side-effect-free apart from the single float write -> unit-testable."""
+        if level < 0.0 or not math.isfinite(level):
+            return
+        f = self._playback_floor_rms
+        if f <= 0.0:
+            self._playback_floor_rms = level          # bootstrap to the first echo level
+            return
+        if level <= f * self._PLAYBACK_FLOOR_BURST_RATIO:
+            a = self._PLAYBACK_FLOOR_ALPHA
+            self._playback_floor_rms = (1.0 - a) * f + a * level
+        # else: a >+6 dB burst -- likely a real barge -> freeze the floor.
 
     def _barge_in_fire_eligible(self, samples) -> bool:
         """Whether this block may *start/continue* arming a barge-in.

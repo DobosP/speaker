@@ -263,14 +263,22 @@ class _FDAFAdaptiveFilter:
         self,
         frame: int = 512,
         *,
-        mu: float = 0.5,
-        leak: float = 1.0,
+        mu: float = 0.3,
+        leak: float = 0.9999,
         power_smooth: float = 0.9,
         eps: float = 1e-6,
         doubletalk_freeze: bool = True,
         dt_factor: float = 2.5,
         warmup_frames: int = 8,
+        diverge_factor: float = 2.0,
+        diverge_shrink: float = 0.5,
     ) -> None:
+        # mu is the NLMS step (lower = slower but more STABLE); leak < 1.0 adds
+        # exponential coefficient forgetting that BOUNDS divergence (the classic
+        # leaky-LMS safeguard -- with leak=1.0 the taps can grow without limit on a
+        # nonlinear / mis-aligned echo and the output explodes). diverge_* is the
+        # hard cap: when the filter AMPLIFIES (predicted echo or output louder than
+        # the near-end) it has diverged, so shrink the taps and emit the raw input.
         self.F = int(frame)
         self.N = 2 * self.F
         self.mu = float(mu)
@@ -280,6 +288,8 @@ class _FDAFAdaptiveFilter:
         self.dt_freeze = bool(doubletalk_freeze)
         self.dt_factor = float(dt_factor)
         self.warmup = int(warmup_frames)
+        self.diverge_factor = float(diverge_factor)
+        self.diverge_shrink = float(diverge_shrink)
         self._reset_state()
 
     def _reset_state(self) -> None:
@@ -325,14 +335,32 @@ class _FDAFAdaptiveFilter:
         yhat = y[F:]                                  # overlap-save valid output
         e = d - yhat                                  # cancelled near-end
 
+        d_rms = float(np.sqrt(np.mean(d * d) + self.eps))
+        yhat_rms = float(np.sqrt(np.mean(yhat * yhat) + self.eps))
+        e_rms = float(np.sqrt(np.mean(e * e) + self.eps))
+
+        # DIVERGENCE RECOVERY (active from frame 0). A stable canceller never
+        # AMPLIFIES: the predicted echo and the output both sit at or below the
+        # near-end. If either has blown past it the (linear) filter has diverged on
+        # a nonlinear / mis-aligned echo -- shrink the taps hard, skip adaptation,
+        # and emit the RAW near-end so the output can never explode (and thus can
+        # never self-interrupt the barge gate downstream).
+        if (
+            not np.isfinite(yhat_rms)
+            or not np.isfinite(e_rms)
+            or yhat_rms > self.diverge_factor * d_rms
+            or e_rms > self.diverge_factor * d_rms
+        ):
+            self.W *= self.diverge_shrink
+            self.x_prev = x.copy()
+            self.count += 1
+            return d.astype(np.float32)
+
         adapt = True
         if float(np.dot(x, x)) < self.eps:
             adapt = False                             # nothing playing -> no echo
-        elif self.dt_freeze and self.count >= self.warmup:
-            d_rms = float(np.sqrt(np.mean(d * d) + self.eps))
-            yhat_rms = float(np.sqrt(np.mean(yhat * yhat) + self.eps))
-            if d_rms > self.dt_factor * yhat_rms:
-                adapt = False                         # near-end speech -> freeze
+        elif self.dt_freeze and self.count >= self.warmup and d_rms > self.dt_factor * yhat_rms:
+            adapt = False                             # near-end speech (double-talk) -> freeze
         if adapt:
             E = np.fft.fft(np.concatenate([np.zeros(F), e]))
             dW = (self.mu / (self.P + self.eps)) * np.conj(X) * E
@@ -496,6 +524,13 @@ class EchoCanceller:
     an optional ``reset()``. ``process_16k`` is **passthrough-on-error** so a
     transient failure can never crash the capture daemon thread."""
 
+    # An echo canceller must REDUCE echo. If the adaptive filter diverges and the
+    # output is LOUDER than the input by this ratio, the result is unusable -- it
+    # explodes the downstream level/barge gate and self-interrupts (observed on an
+    # open laptop speaker: post-AEC RMS ~7.4 the instant playback began). Above it,
+    # discard the AEC output, reset the filter, and pass the raw near-end through.
+    _DIVERGENCE_RATIO = 2.0  # +6 dB
+
     def __init__(self, impl, *, sample_rate: int = 16000):
         self._impl = impl
         self.sample_rate = int(sample_rate)
@@ -503,12 +538,34 @@ class EchoCanceller:
     def process_16k(self, near, far):
         """Echo-cancel one mono float32 16 kHz near-end block against the aligned
         far-end block. Returns the cancelled near-end (length may differ -- the
-        adaptive filter frames internally). On ANY error returns ``near`` unchanged."""
+        adaptive filter frames internally). On ANY error returns ``near`` unchanged.
+
+        DIVERGENCE GUARD: a linear adaptive filter fed a mis-aligned / under-powered
+        reference can diverge and AMPLIFY. A canceller must never make the signal
+        louder, so if the output exceeds the input by ``_DIVERGENCE_RATIO`` (or goes
+        non-finite) we discard it, reset the adaptive state, and pass the raw
+        near-end through -- bounded and safe, never an explosion that self-interrupts."""
         try:
-            return self._impl.process(near, far)
+            out = self._impl.process(near, far)
         except Exception:  # noqa: BLE001 - never let AEC kill the capture loop
             log.debug("AEC block failed; passing the raw near-end through", exc_info=True)
             return near
+        try:
+            if out is None or len(out) == 0:
+                return out
+            near_arr = np.asarray(near, dtype=np.float64).reshape(-1)
+            near_rms = float(np.sqrt(np.mean(near_arr ** 2))) if near_arr.size else 0.0
+            out_rms = float(np.sqrt(np.mean(np.asarray(out, dtype=np.float64) ** 2)))
+            if not np.isfinite(out_rms) or out_rms > max(near_rms, 1e-6) * self._DIVERGENCE_RATIO:
+                log.debug(
+                    "AEC diverged (out_rms=%.3f >> near_rms=%.3f); reset + passthrough",
+                    out_rms, near_rms,
+                )
+                self.reset()
+                return near_arr.astype(np.float32)
+        except Exception:  # noqa: BLE001 - the guard must never crash the capture loop
+            return out
+        return out
 
     def reset(self) -> None:
         """Clear adaptive/LSTM state (call on barge-in/idle + ASR decode-recovery)."""
@@ -536,8 +593,15 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
     if backend in ("nlms", "fdaf", "numpy"):
         frame = _next_pow2(int(getattr(c, "aec_filter_taps", 512) or 512))
         freeze = bool(getattr(c, "aec_doubletalk_freeze", True))
-        log.info("AEC active: NumPy FDAF adaptive filter (frame=%d, doubletalk_freeze=%s)", frame, freeze)
-        return EchoCanceller(_FDAFAdaptiveFilter(frame, doubletalk_freeze=freeze), sample_rate=sr)
+        mu = float(getattr(c, "aec_mu", 0.3) or 0.3)
+        leak = float(getattr(c, "aec_leak", 0.9999) or 0.9999)
+        log.info(
+            "AEC active: NumPy FDAF adaptive filter (frame=%d, mu=%.3f, leak=%.4f, doubletalk_freeze=%s)",
+            frame, mu, leak, freeze,
+        )
+        return EchoCanceller(
+            _FDAFAdaptiveFilter(frame, mu=mu, leak=leak, doubletalk_freeze=freeze), sample_rate=sr
+        )
     if backend == "dtln":
         paths = _resolve_dtln_paths(str(getattr(c, "aec_model", "") or ""))
         if paths is None:

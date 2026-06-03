@@ -54,6 +54,10 @@ logs/tests/
 # machine-specific timelines. The analysis lives in docs/, not the raw bundles.
 logs/live/
 
+# Real-usage harness per-run reports (tools/real_usage): transient PASS/FAIL
+# bundles for one on-machine run. The curated overview is logs/runs/OVERVIEW.md.
+logs/real_usage/
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

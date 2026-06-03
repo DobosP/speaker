@@ -50,6 +50,13 @@ _CONTROL_PREFIXES = (
 # Soft budget for first-audio latency (report-only nudge, never a hard fail).
 DEFAULT_FIRST_AUDIO_BUDGET_SEC = 3.0
 
+# Inputs whose RMS *and* peak are both below these are DIGITALLY SILENT -- an empty
+# capture (dead/muted mic), not a pipeline failure. They are graded EMPTY and
+# EXCLUDED from pass/fail so a silent-mic recording can't masquerade as a "went
+# deaf" app bug. Mirrors the engine's own ~silent threshold (avg_rms < 1e-4).
+SILENT_INPUT_RMS = 1e-4
+SILENT_INPUT_PEAK = 1e-3
+
 
 def _is_answer(text: str) -> bool:
     text = (text or "").strip()
@@ -58,6 +65,45 @@ def _is_answer(text: str) -> bool:
 
 def _ms(v: Any) -> Optional[float]:
     return round(v * 1000.0, 1) if isinstance(v, (int, float)) else None
+
+
+def _fmt_level(v: Any) -> str:
+    return f"{float(v):.5f}" if isinstance(v, (int, float)) else "?"
+
+
+def is_silent_input(input_rms: Any, input_peak: Any) -> bool:
+    """True iff the injected waveform is digitally silent (both RMS and peak below
+    the silent thresholds). Pure -- decided from two floats so it is unit-testable
+    without numpy/audio. Unknown (None) level == NOT silent: we can't claim a
+    recording is empty without having measured it."""
+    if input_rms is None or input_peak is None:
+        return False
+    try:
+        return float(input_rms) < SILENT_INPUT_RMS and float(input_peak) < SILENT_INPUT_PEAK
+    except (TypeError, ValueError):
+        return False
+
+
+def empty_result(fixture: str, *, input_rms: float = 0.0, input_peak: float = 0.0) -> dict:
+    """A result dict for a recording short-circuited as digitally silent BEFORE the
+    pipeline ran (the CLI skips building the runtime for empties -- no model load,
+    nothing spoken aloud). grade_fixture maps it to the EMPTY verdict."""
+    return {
+        "fixture": fixture,
+        "asr_finals": [],
+        "spoken": [],
+        "first_audio_latencies": [],
+        "barge_in_count": 0,
+        "playback_errors": [],
+        "playback_loop_dead": False,
+        "shutdown_ok": True,
+        "shutdown_seconds": 0.0,
+        "shutdown_timeout": 0.0,
+        "error": None,
+        "input_rms": input_rms,
+        "input_peak": input_peak,
+        "skipped_silent": True,
+    }
 
 
 def grade_fixture(
@@ -84,6 +130,12 @@ def grade_fixture(
     shutdown_seconds = result.get("shutdown_seconds")
     shutdown_timeout = float(result.get("shutdown_timeout") or 0.0)
     harness_error = result.get("error")
+    input_rms = result.get("input_rms")
+    input_peak = result.get("input_peak")
+    # A digitally-silent capture (dead/muted mic) is EMPTY, not a failure: the
+    # pipeline never had input to work with, so the went-deaf/went-silent checks
+    # below are vacuous. We still compute them, then override the verdict.
+    empty = bool(result.get("skipped_silent")) or is_silent_input(input_rms, input_peak)
 
     reasons: list[str] = []
     checks: dict[str, bool] = {}
@@ -152,10 +204,27 @@ def grade_fixture(
         and not harness_error
     )
 
+    if empty:
+        # Neither PASS nor FAIL -- replace the vacuous went-deaf/silent reasons
+        # with the empty note so a silent-mic capture can't read as an app bug.
+        verdict = "EMPTY"
+        verdict_pass = False
+        reasons = [
+            f"EMPTY RECORDING: input is digitally silent "
+            f"(rms={_fmt_level(input_rms)}, peak={_fmt_level(input_peak)}); the "
+            f"capture itself is empty (dead/muted mic), NOT a pipeline failure -- "
+            f"excluded from pass/fail"
+        ]
+    else:
+        verdict = "PASS" if verdict_pass else "FAIL"
+
     return {
         "fixture": result.get("fixture"),
-        "verdict": "PASS" if verdict_pass else "FAIL",
+        "verdict": verdict,
         "passed": verdict_pass,
+        "empty": empty,
+        "input_rms": input_rms,
+        "input_peak": input_peak,
         "checks": checks,
         "reasons": reasons,
         "asr_finals": asr_finals,
@@ -178,39 +247,56 @@ def grade_run(
     **kwargs,
 ) -> dict:
     """Grade every recording's result. Returns the run-level summary
-    (per-fixture grades + counts + overall pass)."""
+    (per-fixture grades + counts + overall pass).
+
+    EMPTY (digitally-silent) recordings are counted separately and EXCLUDED from
+    pass/fail -- ``all_pass`` is over the non-empty set, so a dead-mic capture
+    neither fails the run nor counts as a pass."""
     grades = [grade_fixture(r, **kwargs) for r in results]
-    n_pass = sum(1 for g in grades if g["passed"])
+    graded = [g for g in grades if not g.get("empty")]
+    n_pass = sum(1 for g in graded if g["passed"])
+    n_empty = len(grades) - len(graded)
     return {
         "grades": grades,
         "n_total": len(grades),
         "n_pass": n_pass,
-        "n_fail": len(grades) - n_pass,
-        "all_pass": bool(grades) and n_pass == len(grades),
+        "n_fail": len(graded) - n_pass,
+        "n_empty": n_empty,
+        # Over the NON-empty set: a run with no real failures passes -- even if
+        # every recording was an excluded empty (vacuously true, n_pass==0==len).
+        # So an all-silent batch exits 0 (no failures), not 1.
+        "all_pass": n_pass == len(graded),
     }
 
 
 def _truncate(text: str, n: int) -> str:
     text = (text or "").replace("|", "/").replace("\n", " ").strip()
-    return text if len(text) <= n else text[: n - 1] + "…"
+    return text if len(text) <= n else text[: n - 3] + "..."
 
 
 def render_markdown(run: dict, *, run_id: str) -> str:
     """Render the grade summary as Markdown. One row per recording with the ASR
     finals (so STT garble is visible), the spoken response, latency, barge-ins,
     playback + shutdown status, and the verdict."""
+    n_empty = run.get("n_empty", 0)
+    empty_note = f", {n_empty} EMPTY (silent capture, excluded)" if n_empty else ""
     lines: list[str] = []
     lines.append(f"# Real-usage validation: {run_id}\n")
     lines.append(
         f"**{run['n_pass']}/{run['n_total']} PASS** "
-        f"({'ALL PASS' if run['all_pass'] else 'FAILURES PRESENT'})\n"
+        f"({run.get('n_fail', 0)} FAIL{empty_note}; "
+        f"{'ALL PASS' if run['all_pass'] else 'FAILURES PRESENT'})\n"
     )
     lines.append("\n## Results\n")
     lines.append("| fixture | asr_finals (heard) | spoken_response | first_audio | barge_ins | playback | shutdown | VERDICT |")
     lines.append("|---|---|---|---|---|---|---|---|")
     for g in run["grades"]:
-        heard = _truncate(" | ".join(g["asr_finals"]) or "(none)", 70)
-        spoken = _truncate(g["spoken_answer"] or "(silent)", 60)
+        if g.get("empty"):
+            heard = f"(silent capture, rms={_fmt_level(g.get('input_rms'))})"
+            spoken = "(skipped -- empty)"
+        else:
+            heard = _truncate(" | ".join(g["asr_finals"]) or "(none)", 70)
+            spoken = _truncate(g["spoken_answer"] or "(silent)", 60)
         fa = g["first_audio_latency_max"]
         fa_s = f"{fa:.2f}s" if isinstance(fa, (int, float)) else "-"
         if g["latency_over_budget"]:
@@ -231,6 +317,15 @@ def render_markdown(run: dict, *, run_id: str) -> str:
     lines.append("\n## Detail\n")
     for g in run["grades"]:
         lines.append(f"### {g['fixture']} -- {g['verdict']}\n")
+        if g.get("empty"):
+            lines.append(
+                f"- **EMPTY:** digitally-silent capture "
+                f"(rms={_fmt_level(g.get('input_rms'))}, "
+                f"peak={_fmt_level(g.get('input_peak'))}) -- the recording is empty "
+                f"(dead/muted mic), so it is excluded from pass/fail (not a pipeline failure)."
+            )
+            lines.append("")
+            continue
         lines.append(f"- **heard (ASR finals):** {g['asr_finals'] or '(none -- went deaf)'}")
         lines.append(f"- **spoken response:** {g['spoken_answer'] or '(silent)'}")
         if g["spoken_all"] and g["spoken_all"] != [g["spoken_answer"]]:
@@ -256,17 +351,20 @@ def write_reports(run: dict, out_dir: Path, *, run_id: str) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     md_path = out_dir / "report.md"
     json_path = out_dir / "report.json"
-    md_path.write_text(render_markdown(run, run_id=run_id))
-    json_path.write_text(json.dumps({"run_id": run_id, **run}, indent=2))
+    md_path.write_text(render_markdown(run, run_id=run_id), encoding="utf-8")
+    json_path.write_text(json.dumps({"run_id": run_id, **run}, indent=2), encoding="utf-8")
     return {"markdown": md_path, "json": json_path}
 
 
 def print_summary(run: dict) -> None:
-    """Print a compact PASS/FAIL table to stdout (mirrors live_session grading)."""
-    print(f"\n=== real-usage: {run['n_pass']}/{run['n_total']} PASS ===")
+    """Print a compact PASS/FAIL/EMPTY table to stdout (mirrors live_session grading)."""
+    n_empty = run.get("n_empty", 0)
+    extra = f", {n_empty} EMPTY" if n_empty else ""
+    print(f"\n=== real-usage: {run['n_pass']}/{run['n_total']} PASS "
+          f"({run.get('n_fail', 0)} FAIL{extra}) ===")
     for g in run["grades"]:
-        mark = "PASS" if g["passed"] else "FAIL"
+        mark = "EMPTY" if g.get("empty") else ("PASS" if g["passed"] else "FAIL")
         print(f"  [{mark}] {g['fixture']}")
-        if not g["passed"]:
+        if g.get("empty") or not g["passed"]:
             for r in g["reasons"]:
                 print(f"           - {r}")

@@ -270,7 +270,11 @@ class AgentSupervisor:
         else:
             self.state.last_partial = text
 
-        decision = self.analyzer.decide(observation, self.state.mode)
+        decision = self.analyzer.decide(
+            observation,
+            self.state.mode,
+            has_pending_confirmation=bool(self.state.pending_confirmations),
+        )
         self.state.decisions.append(decision)
         log.debug(
             "decision: kind=%s confidence=%.2f reason=%s mode=%s text=%r",

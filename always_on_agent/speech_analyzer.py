@@ -77,17 +77,31 @@ class LiveSpeechAnalyzer:
             self._last_partial_at = time.time()
         return observation
 
-    def decide(self, observation: SpeechObservation, current_mode: Mode) -> IntentDecision:
+    def decide(
+        self,
+        observation: SpeechObservation,
+        current_mode: Mode,
+        *,
+        has_pending_confirmation: bool = False,
+    ) -> IntentDecision:
         text = observation.normalized
         if not text:
             return IntentDecision(IntentKind.IGNORE, 1.0, "", "empty")
 
         if text in _STOP_PHRASES:
             return IntentDecision(IntentKind.STOP, 1.0, observation.text, "stop_phrase")
-        if text in _CONFIRM_PHRASES:
-            return IntentDecision(IntentKind.CONFIRM, 0.98, observation.text, "confirm_phrase")
-        if text in _DENY_PHRASES:
-            return IntentDecision(IntentKind.DENY, 0.98, observation.text, "deny_phrase")
+        # CONFIRM/DENY are control-plane replies to a STAGED command confirmation,
+        # so only treat a bare "yes"/"no" as one when a confirmation is ACTUALLY
+        # pending. Otherwise a "yes" answering the assistant's own yes/no question
+        # was fired at an empty queue ("Nothing to confirm." -- never even spoken)
+        # and the turn was silently dropped. With nothing pending it falls through
+        # to the normal conversational path below and is answered (with recent
+        # context resolving the antecedent).
+        if has_pending_confirmation:
+            if text in _CONFIRM_PHRASES:
+                return IntentDecision(IntentKind.CONFIRM, 0.98, observation.text, "confirm_phrase")
+            if text in _DENY_PHRASES:
+                return IntentDecision(IntentKind.DENY, 0.98, observation.text, "deny_phrase")
 
         mode = self._mode_from_text(text)
         if mode is not None:

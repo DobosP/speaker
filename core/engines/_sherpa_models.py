@@ -71,6 +71,20 @@ def build_final_recognizer(c: "SherpaConfig"):
     model = getattr(c, "asr_final_model", "") or ""
     tokens = getattr(c, "asr_final_tokens", "") or ""
     if not model or not os.path.exists(model):
+        # The backend IS configured (we passed the `if not backend` guard) but its
+        # model artifact is absent -> we silently fall back to the STREAMING-only
+        # final, which is much lower accuracy (the garbled-transcript symptom). Make
+        # that LOUD so a missing/relative-path download isn't invisible in the run
+        # bundle, instead of returning None with no trace.
+        import logging
+
+        logging.getLogger("speaker.sherpa").warning(
+            "asr_final_backend=%r is set but its model is missing (asr_final_model=%r) "
+            "-- using STREAMING-ONLY finals (lower accuracy). Fetch it with "
+            "`python -m tools.setup_models --sense-voice`, or set sherpa.asr_final_model "
+            "to an existing path.",
+            backend, model or "(unset)",
+        )
         return None
     try:
         import sherpa_onnx

@@ -28,26 +28,31 @@ from always_on_agent.speech_analyzer import LiveSpeechAnalyzer
 GOLDEN = Path(__file__).parent / "golden" / "speech_analyzer_contract.json"
 
 # Single-utterance decision cases covering every branch of decide():
-# (name, text, is_final, current_mode).
+# (name, text, is_final, current_mode, has_pending_confirmation).
+# CONFIRM/DENY only fire when a confirmation is actually pending; the
+# *_no_pending cases pin the fall-through (a bare "yes"/"no" answering the
+# assistant is a normal turn, not a dropped control reply).
 CASES = [
-    ("stop_phrase", "stop", True, Mode.ASSISTANT),
-    ("confirm_phrase", "yes", True, Mode.COMMAND),
-    ("deny_phrase", "no", True, Mode.COMMAND),
-    ("mode_alias_research", "research mode", True, Mode.PASSIVE),
-    ("research_prefix", "research local TTS options", True, Mode.ASSISTANT),
-    ("search_prefix", "search for pipecat", True, Mode.ASSISTANT),
-    ("dictate_prefix", "dictate hello world", True, Mode.ASSISTANT),
-    ("command_prefix", "run the backup script", True, Mode.ASSISTANT),
-    ("partial_non_control", "what is the weather", False, Mode.ASSISTANT),
-    ("passive_no_activation", "the sky is blue", True, Mode.PASSIVE),
-    ("passive_wake_activation", "assistant please help me", True, Mode.PASSIVE),
-    ("search_mode_default", "find the report", True, Mode.SEARCH),
-    ("research_mode_default", "the history of rome", True, Mode.RESEARCH),
-    ("dictation_mode_default", "dear team comma", True, Mode.DICTATION),
-    ("meeting_mode_default", "we agreed on friday", True, Mode.MEETING),
-    ("command_mode_default", "lights on", True, Mode.COMMAND),
-    ("assistant_mode_default", "what time is it", True, Mode.ASSISTANT),
-    ("empty", "", True, Mode.ASSISTANT),
+    ("stop_phrase", "stop", True, Mode.ASSISTANT, False),
+    ("confirm_phrase", "yes", True, Mode.COMMAND, True),
+    ("deny_phrase", "no", True, Mode.COMMAND, True),
+    ("confirm_no_pending", "yes", True, Mode.ASSISTANT, False),
+    ("deny_no_pending", "no", True, Mode.ASSISTANT, False),
+    ("mode_alias_research", "research mode", True, Mode.PASSIVE, False),
+    ("research_prefix", "research local TTS options", True, Mode.ASSISTANT, False),
+    ("search_prefix", "search for pipecat", True, Mode.ASSISTANT, False),
+    ("dictate_prefix", "dictate hello world", True, Mode.ASSISTANT, False),
+    ("command_prefix", "run the backup script", True, Mode.ASSISTANT, False),
+    ("partial_non_control", "what is the weather", False, Mode.ASSISTANT, False),
+    ("passive_no_activation", "the sky is blue", True, Mode.PASSIVE, False),
+    ("passive_wake_activation", "assistant please help me", True, Mode.PASSIVE, False),
+    ("search_mode_default", "find the report", True, Mode.SEARCH, False),
+    ("research_mode_default", "the history of rome", True, Mode.RESEARCH, False),
+    ("dictation_mode_default", "dear team comma", True, Mode.DICTATION, False),
+    ("meeting_mode_default", "we agreed on friday", True, Mode.MEETING, False),
+    ("command_mode_default", "lights on", True, Mode.COMMAND, False),
+    ("assistant_mode_default", "what time is it", True, Mode.ASSISTANT, False),
+    ("empty", "", True, Mode.ASSISTANT, False),
 ]
 
 # Mode state machine: a sequence of finals from PASSIVE. A MODE_SWITCH decision
@@ -90,13 +95,16 @@ def _ser_observation(o) -> dict:
 
 
 def run_case(case) -> dict:
-    name, text, is_final, mode = case
+    name, text, is_final, mode, has_pending = case
     analyzer = LiveSpeechAnalyzer()  # fresh -> stateless/deterministic
     obs = analyzer.observe(text, is_final=is_final)
-    dec = analyzer.decide(obs, mode)
+    dec = analyzer.decide(obs, mode, has_pending_confirmation=has_pending)
     return {
         "name": name,
-        "input": {"text": text, "is_final": is_final, "mode": mode.value},
+        "input": {
+            "text": text, "is_final": is_final, "mode": mode.value,
+            "has_pending_confirmation": has_pending,
+        },
         "observation": _ser_observation(obs),
         "decision": _ser_decision(dec),
     }
@@ -124,6 +132,21 @@ def build_golden() -> dict:
             "steps": run_sequence(SEQUENCE),
         },
     }
+
+
+def test_confirm_deny_only_fire_with_pending_confirmation():
+    """The missed-confirm-trigger fix: a bare 'yes'/'no' is a control-plane
+    CONFIRM/DENY ONLY when a confirmation is actually pending. With nothing
+    pending it must fall through to a normal answerable turn (ASSISTANT), not be
+    dropped against an empty queue."""
+    a = LiveSpeechAnalyzer()
+    for word in ("yes", "no"):
+        d = a.decide(a.observe(word, is_final=True), Mode.ASSISTANT, has_pending_confirmation=False)
+        assert d.kind == IntentKind.ASSISTANT, (word, d.kind)
+    assert a.decide(a.observe("yes", is_final=True), Mode.COMMAND,
+                    has_pending_confirmation=True).kind == IntentKind.CONFIRM
+    assert a.decide(a.observe("no", is_final=True), Mode.COMMAND,
+                    has_pending_confirmation=True).kind == IntentKind.DENY
 
 
 def test_speech_analyzer_matches_golden_contract():

@@ -55,12 +55,19 @@ Put in `config.local.json` under `"sherpa"` (it is machine-local / gitignored):
   `python -m core --engine sherpa --record --stream-tts --input-device 1 --output-device 3`
   (`--list-devices` to find the indices).
 
-## Known-remaining (follow-ups, not yet fixed)
+## Known-remaining (follow-ups)
 
-- **Latency / sound glitch:** DTLN runs per-block on CPU; under load it can cause
-  an audible glitch. Profile the per-block cost; consider a lighter DTLN size
-  (256/128) or GPU onnxruntime.
-- **Missed / unanswered questions + occasional hallucination:** an LLM-tier /
-  addressing-decision issue (fast `gemma3:4b`), independent of barge-in.
+- **DTLN CPU saturation (FIXED):** onnxruntime's default thread pool sizes to all
+  cores and SPIN-WAITS, so DTLN pegged the CPU at 90-100% even when idle, starving
+  the realtime capture thread (mic went deaf: `avg_rms`->0 for ~25s) and the
+  LLM/Python threads (turns stalled >10s, `llm stuck` watchdog fired). Fixed by
+  bounding the DTLN ONNX sessions to a small, non-spinning, sequential pool
+  (`aec_num_threads=1`, `allow_spinning=0`); at 1 thread DTLN runs ~0.16x realtime
+  (16 ms / 100 ms block). Raise `aec_num_threads` only if AEC can't keep real-time.
+- **Missed / unanswered questions (FIXED):** the input-gate prompt made `gemma3:4b`
+  drop clear questions as ambient; reframed to question/request/command (see
+  `core/addressing.py`).
+- **Occasional hallucination:** fast-tier (`gemma3:4b`) quality, independent of
+  barge-in; route more to the main tier or tune the prompt.
 - Barge-in is good but **not 100%**; a `"stop"` keyword (KWS) fast-path would be a
   belt-and-suspenders interrupt that sidesteps the echo entirely.

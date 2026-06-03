@@ -236,6 +236,12 @@ class SherpaConfig:
     # via exponential forgetting -- the leaky-LMS safeguard; 1.0 = no bound).
     aec_mu: float = 0.3
     aec_leak: float = 0.9999
+    # Intra-op threads for the DTLN ONNX canceller. DTLN is tiny and runs on the
+    # realtime capture path; onnxruntime's default (all-core, spin-waiting) pool
+    # pegs the CPU and starves the capture + LLM threads (deaf mic / stalled turns).
+    # 1 keeps it to a slice of one core. Raise only on a fast many-core box if AEC
+    # can't keep real-time.
+    aec_num_threads: int = 1
     aec_relaxed_margin_db: float = 3.0
     # Post-AEC barge-in: a real barge must stand this many dB above the AUTO-
     # CALIBRATED residual echo+noise floor (``_playback_floor_rms``, learned online

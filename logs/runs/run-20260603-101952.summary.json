@@ -1,0 +1,325 @@
+{
+  "run_id": "20260603-101952",
+  "log_path": "logs/runs/run-20260603-101952.txt",
+  "duration_sec": 74.03,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260603-101952.wav"
+  },
+  "counts": {
+    "llm_requests": 5,
+    "turns": 5,
+    "transcript_entries": 5,
+    "errors": 0,
+    "warnings": 13,
+    "log_lines_by_level": {
+      "INFO": 34,
+      "DEBUG": 32,
+      "WARNING": 13
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "And",
+      "mode": "assistant",
+      "at_sec": 8.47
+    },
+    {
+      "role": "user",
+      "text": "And",
+      "mode": "assistant",
+      "at_sec": 12.4
+    },
+    {
+      "role": "user",
+      "text": "And",
+      "mode": "assistant",
+      "at_sec": 16.28
+    },
+    {
+      "role": "user",
+      "text": "And",
+      "mode": "assistant",
+      "at_sec": 33.12
+    },
+    {
+      "role": "user",
+      "text": "And",
+      "mode": "assistant",
+      "at_sec": 64.23
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1780471192.015,
+      "cpu_percent": 0.0,
+      "ram_used_mb": 14893.9,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 44.8,
+      "proc_rss_mb": 19.9,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 0.0,
+          "mem_used_mb": 23.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 54.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1780471266.019,
+      "cpu_percent": 30.8,
+      "ram_used_mb": 11137.3,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 33.5,
+      "proc_rss_mb": 700.0,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 100.0,
+          "mem_used_mb": 13014.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 54.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 100.0,
+      "ram_used_mb": 26407.1,
+      "ram_percent": 79.4,
+      "proc_rss_mb": 700.0,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 100.0,
+      "gpu_mem_used_mb": 13014.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1780471193.125,
+        "cpu_percent": 34.6,
+        "ram_used_mb": 9236.8,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 27.8,
+        "proc_rss_mb": 102.7,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 0.0,
+            "mem_used_mb": 23.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 54.0
+          }
+        ]
+      }
+    },
+    "samples": 7,
+    "deltas": {
+      "ram_used_mb_delta": -3756.6,
+      "proc_rss_mb_delta": 680.1,
+      "gpu_mem_used_mb_delta": 12991.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 49.0,
+    "avg_time_sec": 9.8,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 23,
+        "system_chars": 655,
+        "prompt_preview": "Latest utterance: \"And\"",
+        "duration_sec": 1.096,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 1447,
+        "prompt_preview": "hi",
+        "duration_sec": 6.408,
+        "ttft_sec": null,
+        "out_chars": 38,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 70,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - And Latest utterance: \"And\"",
+        "duration_sec": 0.578,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 78,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - And - And Latest utterance: \"And\"",
+        "duration_sec": 13.243,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 86,
+        "system_chars": 655,
+        "prompt_preview": "Recent utterances (most recent last): - And - And - And Latest utterance: \"And\"",
+        "duration_sec": 27.67,
+        "ttft_sec": null,
+        "out_chars": 7,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": null,
+      "endpoint_latency": null,
+      "final_to_first_token": null,
+      "first_token_to_audio": null,
+      "barge_in_latency": null
+    }
+  ],
+  "stuck_hints": [
+    "capture thread went silent (audio loop crashed or stalled; see watchdog warnings)"
+  ],
+  "errors": [
+    {
+      "t": "10:19:58",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:00",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:02",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:05",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:07",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:12",
+      "level": "WARNING",
+      "logger": "speaker.watchdog",
+      "message": "capture silent: no heartbeat for 5.2s (audio thread crashed or stalled?)",
+      "exc": null
+    },
+    {
+      "t": "10:20:21",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:23",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:29",
+      "level": "WARNING",
+      "logger": "speaker.watchdog",
+      "message": "capture silent: no heartbeat for 5.8s (audio thread crashed or stalled?)",
+      "exc": null
+    },
+    {
+      "t": "10:20:52",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:20:55",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "10:21:00",
+      "level": "WARNING",
+      "logger": "speaker.watchdog",
+      "message": "capture silent: no heartbeat for 5.4s (audio thread crashed or stalled?)",
+      "exc": null
+    },
+    {
+      "t": "10:21:05",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "capture thread did not exit within 1.0s; proceeding",
+      "exc": null
+    }
+  ]
+}

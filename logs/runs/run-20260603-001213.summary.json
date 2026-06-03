@@ -1,7 +1,7 @@
 {
-  "run_id": "20260602-164752",
-  "log_path": "logs\\runs\\run-20260602-164752.txt",
-  "duration_sec": 0.22,
+  "run_id": "20260603-001213",
+  "log_path": "logs/runs/run-20260603-001213.txt",
+  "duration_sec": 0.12,
   "meta": {
     "engine": "console",
     "llm": "echo",
@@ -24,114 +24,114 @@
       "role": "user",
       "text": "assistant please help me",
       "mode": "assistant",
-      "at_sec": 0.08
+      "at_sec": 0.05
     },
     {
       "role": "assistant",
       "text": "You said: assistant please help me",
-      "at_sec": 0.13
+      "at_sec": 0.07
     },
     {
       "role": "user",
       "text": "research mode",
       "mode": "assistant",
-      "at_sec": 0.13
+      "at_sec": 0.07
     },
     {
       "role": "user",
       "text": "the history of rome",
       "mode": "research",
-      "at_sec": 0.13
+      "at_sec": 0.07
     },
     {
       "role": "assistant",
       "text": "You said: Question: the history of rome",
-      "at_sec": 0.19
+      "at_sec": 0.1
     },
     {
       "role": "assistant",
       "text": "Local findings: Research scope: history, rome No local result for: the history of rome",
-      "at_sec": 0.19
+      "at_sec": 0.1
     },
     {
       "role": "assistant",
       "text": "Give a brief spoken-style summary and one concrete recommendation.",
-      "at_sec": 0.19
+      "at_sec": 0.1
     },
     {
       "role": "user",
       "text": "stop",
       "mode": "research",
-      "at_sec": 0.19
+      "at_sec": 0.1
     }
   ],
   "system": {
     "baseline": {
-      "t": 1780408072.489,
-      "cpu_percent": 100.0,
-      "ram_used_mb": 17170.0,
-      "ram_total_mb": 33959.8,
-      "ram_percent": 50.6,
-      "proc_rss_mb": 22.7,
+      "t": 1780434733.775,
+      "cpu_percent": 50.0,
+      "ram_used_mb": 19687.7,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 62.9,
+      "proc_rss_mb": 19.9,
       "proc_cpu_percent": 0.0,
       "gpu": [
         {
           "util_percent": 0.0,
-          "mem_used_mb": 483.0,
+          "mem_used_mb": 23.0,
           "mem_total_mb": 16376.0,
-          "temp_c": 46.0
+          "temp_c": 63.0
         }
       ]
     },
     "final": {
-      "t": 1780408072.679,
-      "cpu_percent": 2.4,
-      "ram_used_mb": 17185.3,
-      "ram_total_mb": 33959.8,
-      "ram_percent": 50.6,
-      "proc_rss_mb": 23.4,
+      "t": 1780434733.873,
+      "cpu_percent": 25.5,
+      "ram_used_mb": 19700.3,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 62.9,
+      "proc_rss_mb": 20.2,
       "proc_cpu_percent": 0.0,
       "gpu": [
         {
           "util_percent": 0.0,
-          "mem_used_mb": 483.0,
+          "mem_used_mb": 23.0,
           "mem_total_mb": 16376.0,
-          "temp_c": 46.0
+          "temp_c": 63.0
         }
       ]
     },
     "peak": {
-      "cpu_percent": 100.0,
-      "ram_used_mb": 17185.3,
-      "ram_percent": 50.6,
-      "proc_rss_mb": 23.4,
+      "cpu_percent": 50.0,
+      "ram_used_mb": 19700.3,
+      "ram_percent": 62.9,
+      "proc_rss_mb": 20.2,
       "proc_cpu_percent": 0.0,
       "gpu_util_percent": 0.0,
-      "gpu_mem_used_mb": 483.0
+      "gpu_mem_used_mb": 23.0
     },
     "marks": {
       "after_build": {
-        "t": 1780408072.537,
-        "cpu_percent": 1.1,
-        "ram_used_mb": 17185.2,
-        "ram_total_mb": 33959.8,
-        "ram_percent": 50.6,
-        "proc_rss_mb": 23.2,
+        "t": 1780434733.809,
+        "cpu_percent": 25.0,
+        "ram_used_mb": 19700.3,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 62.9,
+        "proc_rss_mb": 19.9,
         "proc_cpu_percent": 0.0,
         "gpu": [
           {
             "util_percent": 0.0,
-            "mem_used_mb": 483.0,
+            "mem_used_mb": 23.0,
             "mem_total_mb": 16376.0,
-            "temp_c": 46.0
+            "temp_c": 63.0
           }
         ]
       }
     },
     "samples": 0,
     "deltas": {
-      "ram_used_mb_delta": 15.3,
-      "proc_rss_mb_delta": 0.7,
+      "ram_used_mb_delta": 12.6,
+      "proc_rss_mb_delta": 0.3,
       "gpu_mem_used_mb_delta": 0.0
     }
   },
@@ -142,10 +142,10 @@
   },
   "turns": [
     {
-      "first_audio_latency": 0.0415,
+      "first_audio_latency": 0.0113,
       "endpoint_latency": null,
-      "final_to_first_token": 0.0271,
-      "first_token_to_audio": 0.0145,
+      "final_to_first_token": 0.011,
+      "first_token_to_audio": 0.0003,
       "barge_in_latency": null
     },
     {
@@ -156,10 +156,10 @@
       "barge_in_latency": null
     },
     {
-      "first_audio_latency": 0.0633,
+      "first_audio_latency": 0.0314,
       "endpoint_latency": null,
-      "final_to_first_token": 0.0476,
-      "first_token_to_audio": 0.0156,
+      "final_to_first_token": 0.031,
+      "first_token_to_audio": 0.0004,
       "barge_in_latency": null
     },
     {

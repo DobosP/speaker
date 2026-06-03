@@ -398,7 +398,7 @@ class _DTLNEchoCanceller:
     SHIFT = 128
 
     def __init__(self, stage1_path: str = "", stage2_path: str = "", *, providers=None,
-                 sessions=None):
+                 sessions=None, num_threads: int = 1):
         # ``sessions`` (a (stage1, stage2) pair of objects with get_inputs/
         # get_outputs/run) is injected in tests so the streaming + state-carry
         # logic runs with no ONNX model and no onnxruntime. Production loads from
@@ -409,8 +409,24 @@ class _DTLNEchoCanceller:
             import onnxruntime as ort
 
             prov = list(providers) if providers else ["CPUExecutionProvider"]
-            self._s1 = ort.InferenceSession(stage1_path, providers=prov)
-            self._s2 = ort.InferenceSession(stage2_path, providers=prov)
+            # BOUND the thread pool. DTLN is tiny, but onnxruntime's DEFAULT
+            # intra-op pool sizes to ALL cores AND spin-waits (busy-loops) between
+            # inferences -- so on the realtime capture path it pegs the CPU at
+            # ~90-100% even when idle. That starves the audio capture thread (the
+            # mic goes deaf: captured avg_rms collapses to 0) and the LLM/Python
+            # threads (turns stall >10s, the 'llm stuck' watchdog fires) -- both
+            # observed live. A small, NON-spinning, sequential pool keeps AEC to a
+            # slice of one core and leaves headroom for capture + the LLM.
+            so = ort.SessionOptions()
+            so.intra_op_num_threads = max(1, int(num_threads))
+            so.inter_op_num_threads = 1
+            so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+            try:  # the spin-wait knob; ignore on an older onnxruntime without it
+                so.add_session_config_entry("session.intra_op.allow_spinning", "0")
+            except Exception:  # noqa: BLE001
+                pass
+            self._s1 = ort.InferenceSession(stage1_path, sess_options=so, providers=prov)
+            self._s2 = ort.InferenceSession(stage2_path, sess_options=so, providers=prov)
         self._m1 = self._io_map(self._s1)
         self._m2 = self._io_map(self._s2)
         self._reset_state()
@@ -615,7 +631,10 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
             return None
         try:
             ep = "CUDAExecutionProvider" if str(getattr(c, "provider", "cpu")).lower() == "cuda" else "CPUExecutionProvider"
-            impl = _DTLNEchoCanceller(paths[0], paths[1], providers=[ep])
+            impl = _DTLNEchoCanceller(
+                paths[0], paths[1], providers=[ep],
+                num_threads=int(getattr(c, "aec_num_threads", 1) or 1),
+            )
         except Exception as exc:  # noqa: BLE001 - bad model / missing onnxruntime -> fail open
             log.warning("could not load DTLN-aec ONNX (%s); continuing WITHOUT AEC", exc)
             return None

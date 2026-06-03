@@ -218,3 +218,12 @@ def test_reset_clears_the_confirmation_run():
     assert det.decide(mix) is False and det.last_consec == 1  # mid-run
     det.reset()  # playback stopped -> new turn starts fresh
     assert det._consec == 0
+
+
+def test_measured_delay_samples_median_and_none():
+    """The engine feeds this to the AEC far-end read for online delay calibration:
+    None until any echo-only delay is measured, then the median of recent ones."""
+    det = EchoCoherenceDetector(SR)
+    assert det.measured_delay_samples() is None
+    det._delays.extend([100, 120, 110])
+    assert det.measured_delay_samples() == 110

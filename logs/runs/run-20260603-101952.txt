@@ -1,0 +1,163 @@
+10:19:52.015 INFO  speaker | run 20260603-101952 started (debug=True) -> logs/runs/run-20260603-101952.txt
+10:19:52.049 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=14893.9MB(44.8%) proc_rss=19.9MB gpu=0.0% gpu_mem=23.0/16376.0MB
+10:19:53.145 INFO  speaker.sysinfo | system mark after_build: cpu=34.6% ram=9236.8MB(27.8%) proc_rss=102.7MB gpu=0.0% gpu_mem=23.0/16376.0MB
+10:19:53.146 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+10:19:56.351 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (/home/dobo/work/speaker/pretrained_models/sherpa/aec/dtln_aec_stage1.onnx)
+10:19:56.351 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=0ms)
+10:19:56.354 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.50, input gating=False)
+10:19:56.354 INFO  speaker.sherpa | input device: AT2020USB-X: USB Audio (hw:2,0)
+10:19:56.354 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+10:19:56.354 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+10:19:56.375 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+10:19:56.380 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260603-101952.wav
+10:19:56.382 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+10:19:58.479 DEBUG speaker.sherpa | capture heartbeat: blocks=21 avg_rms=0.0000 partials=0 finals=0 speaking=False
+10:19:58.480 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:19:58.808 DEBUG speaker.sherpa | asr partial: 'And'
+10:19:58.808 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+10:20:00.480 DEBUG speaker.sherpa | capture heartbeat: blocks=41 avg_rms=0.0000 partials=1 finals=0 speaking=False
+10:20:00.480 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:00.480 INFO  speaker.sherpa | asr final: 'And' (raw 'AND')
+10:20:00.480 INFO  speaker.runtime | final -> brain: 'And' (mode=assistant)
+10:20:01.577 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "And"
+10:20:01.577 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.10s ttft=- out=7ch tokens=- | 'Latest utterance: "And"'
+10:20:01.577 INFO  speaker.runtime | addressing decision: INGEST for 'And'
+10:20:02.077 DEBUG speaker.sysinfo | system sample: cpu=100.0% ram=12614.6MB(37.9%) proc_rss=698.0MB gpu=96.0% gpu_mem=4017.0/16376.0MB
+10:20:02.574 DEBUG speaker.sherpa | capture heartbeat: blocks=51 avg_rms=0.0000 partials=1 finals=1 speaking=False
+10:20:02.574 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:02.798 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+10:20:02.798 INFO  speaker.llm.ollama | ollama gemma3:4b: 6.41s ttft=- out=38ch tokens=- | 'hi'
+10:20:02.813 DEBUG speaker.sherpa | asr partial: 'And'
+10:20:02.813 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+10:20:04.415 INFO  speaker.sherpa | asr final: 'And' (raw 'AND')
+10:20:04.416 INFO  speaker.runtime | final -> brain: 'And' (mode=assistant)
+10:20:04.994 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - And
+
+Latest utterance: "And"
+10:20:04.994 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.58s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - And Latest utterance: "And"'
+10:20:04.994 INFO  speaker.runtime | addressing decision: INGEST for 'And'
+10:20:05.091 DEBUG speaker.sherpa | capture heartbeat: blocks=70 avg_rms=0.0000 partials=2 finals=2 speaking=False
+10:20:05.091 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:06.647 DEBUG speaker.sherpa | asr partial: 'And'
+10:20:06.647 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+10:20:07.190 DEBUG speaker.sherpa | capture heartbeat: blocks=91 avg_rms=0.0000 partials=3 finals=2 speaking=False
+10:20:07.190 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:08.292 INFO  speaker.sherpa | asr final: 'And' (raw 'AND')
+10:20:08.292 INFO  speaker.runtime | final -> brain: 'And' (mode=assistant)
+10:20:12.111 DEBUG speaker.sysinfo | system sample: cpu=36.6% ram=16170.2MB(48.6%) proc_rss=699.3MB gpu=100.0% gpu_mem=13014.0/16376.0MB
+10:20:12.389 WARNING speaker.watchdog | capture silent: no heartbeat for 5.2s (audio thread crashed or stalled?)
+10:20:21.536 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - And
+  - And
+
+Latest utterance: "And"
+10:20:21.536 INFO  speaker.llm.ollama | ollama gemma3:4b: 13.24s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - And - And Latest utterance: "And"'
+10:20:21.536 INFO  speaker.runtime | addressing decision: INGEST for 'And'
+10:20:21.633 DEBUG speaker.sherpa | capture heartbeat: blocks=103 avg_rms=0.0000 partials=3 finals=3 speaking=False
+10:20:21.633 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:22.151 DEBUG speaker.sysinfo | system sample: cpu=29.4% ram=18353.0MB(55.2%) proc_rss=699.3MB gpu=100.0% gpu_mem=13014.0/16376.0MB
+10:20:23.477 DEBUG speaker.sherpa | asr partial: 'And'
+10:20:23.477 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+10:20:23.633 DEBUG speaker.sherpa | capture heartbeat: blocks=123 avg_rms=0.0000 partials=4 finals=3 speaking=False
+10:20:23.633 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:25.133 INFO  speaker.sherpa | asr final: 'And' (raw 'AND')
+10:20:25.133 INFO  speaker.runtime | final -> brain: 'And' (mode=assistant)
+10:20:29.393 WARNING speaker.watchdog | capture silent: no heartbeat for 5.8s (audio thread crashed or stalled?)
+10:20:32.186 DEBUG speaker.sysinfo | system sample: cpu=32.7% ram=20451.1MB(61.5%) proc_rss=699.3MB gpu=100.0% gpu_mem=13014.0/16376.0MB
+10:20:42.220 DEBUG speaker.sysinfo | system sample: cpu=28.2% ram=22991.4MB(69.2%) proc_rss=699.3MB gpu=100.0% gpu_mem=13014.0/16376.0MB
+10:20:52.258 DEBUG speaker.sysinfo | system sample: cpu=28.4% ram=25294.4MB(76.1%) proc_rss=699.3MB gpu=100.0% gpu_mem=13014.0/16376.0MB
+10:20:52.803 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - And
+  - And
+  - And
+
+Latest utterance: "And"
+10:20:52.803 INFO  speaker.llm.ollama | ollama gemma3:4b: 27.67s ttft=- out=7ch tokens=- | 'Recent utterances (most recent last): - And - And - And Latest utterance: "And"'
+10:20:52.803 INFO  speaker.runtime | addressing decision: INGEST for 'And'
+10:20:52.900 DEBUG speaker.sherpa | capture heartbeat: blocks=138 avg_rms=0.0000 partials=4 finals=4 speaking=False
+10:20:52.901 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:54.634 DEBUG speaker.sherpa | asr partial: 'And'
+10:20:54.635 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+10:20:55.000 DEBUG speaker.sherpa | capture heartbeat: blocks=158 avg_rms=0.0000 partials=5 finals=4 speaking=False
+10:20:55.000 WARNING speaker.sherpa | input is ~silent (avg_rms=0.000000) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices
+10:20:56.241 INFO  speaker.sherpa | asr final: 'And' (raw 'AND')
+10:20:56.241 INFO  speaker.runtime | final -> brain: 'And' (mode=assistant)
+10:21:00.398 WARNING speaker.watchdog | capture silent: no heartbeat for 5.4s (audio thread crashed or stalled?)
+10:21:02.293 DEBUG speaker.sysinfo | system sample: cpu=29.4% ram=26407.1MB(79.4%) proc_rss=699.3MB gpu=100.0% gpu_mem=13014.0/16376.0MB
+10:21:02.866 DEBUG speaker.runtime | warm-up failed for OllamaLLM
+Traceback (most recent call last):
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/dobo/anaconda3/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/dobo/work/speaker/core/runtime.py", line 313, in _warm
+    model.generate("hi", system=self._system_prompt)
+  File "/home/dobo/work/speaker/core/llm.py", line 206, in generate
+    resp = self._ensure().chat(**self._chat_kwargs(prompt, system, images, stream=False))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/ollama/_client.py", line 387, in chat
+    return self._request(
+           ^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/ollama/_client.py", line 199, in _request
+    return cls(**self._request_raw(*args, **kwargs).json())
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/ollama/_client.py", line 139, in _request_raw
+    r = self._client.request(*args, **kwargs)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_client.py", line 825, in request
+    return self.send(request, auth=auth, follow_redirects=follow_redirects)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/dobo/anaconda3/lib/python3.12/contextlib.py", line 158, in __exit__
+    self.gen.throw(value)
+  File "/home/dobo/work/speaker/.venv/lib/python3.12/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: timed out
+10:21:05.953 WARNING speaker.sherpa | capture thread did not exit within 1.0s; proceeding
+10:21:05.955 INFO  speaker.sherpa | recorded 17.1s of session audio -> logs/runs/run-20260603-101952.wav
+10:21:06.047 INFO  speaker.sysinfo | system final: cpu=30.8% ram=11137.3MB(33.5%) proc_rss=700.0MB gpu=100.0% gpu_mem=13014.0/16376.0MB | deltas: {'ram_used_mb_delta': -3756.6, 'proc_rss_mb_delta': 680.1, 'gpu_mem_used_mb_delta': 12991.0}

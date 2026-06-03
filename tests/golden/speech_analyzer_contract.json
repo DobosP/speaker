@@ -5,7 +5,8 @@
       "input": {
         "text": "stop",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "stop",
@@ -33,7 +34,8 @@
       "input": {
         "text": "yes",
         "is_final": true,
-        "mode": "command"
+        "mode": "command",
+        "has_pending_confirmation": true
       },
       "observation": {
         "normalized": "yes",
@@ -61,7 +63,8 @@
       "input": {
         "text": "no",
         "is_final": true,
-        "mode": "command"
+        "mode": "command",
+        "has_pending_confirmation": true
       },
       "observation": {
         "normalized": "no",
@@ -85,11 +88,70 @@
       }
     },
     {
+      "name": "confirm_no_pending",
+      "input": {
+        "text": "yes",
+        "is_final": true,
+        "mode": "assistant",
+        "has_pending_confirmation": false
+      },
+      "observation": {
+        "normalized": "yes",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "yes"
+        ]
+      },
+      "decision": {
+        "kind": "assistant",
+        "confidence": 0.75,
+        "text": "yes",
+        "reason": "assistant_mode",
+        "mode": "assistant",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "deny_no_pending",
+      "input": {
+        "text": "no",
+        "is_final": true,
+        "mode": "assistant",
+        "has_pending_confirmation": false
+      },
+      "observation": {
+        "normalized": "no",
+        "is_final": true,
+        "language": "unknown",
+        "activation_score": 0.0,
+        "keywords": [
+          "no"
+        ]
+      },
+      "decision": {
+        "kind": "assistant",
+        "confidence": 0.75,
+        "text": "no",
+        "reason": "assistant_mode",
+        "mode": "assistant",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
       "name": "mode_alias_research",
       "input": {
         "text": "research mode",
         "is_final": true,
-        "mode": "passive"
+        "mode": "passive",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "research mode",
@@ -118,7 +180,8 @@
       "input": {
         "text": "research local TTS options",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "research local tts options",
@@ -149,7 +212,8 @@
       "input": {
         "text": "search for pipecat",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "search for pipecat",
@@ -178,7 +242,8 @@
       "input": {
         "text": "dictate hello world",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "dictate hello world",
@@ -208,7 +273,8 @@
       "input": {
         "text": "run the backup script",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "run the backup script",
@@ -238,7 +304,8 @@
       "input": {
         "text": "what is the weather",
         "is_final": false,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "what is the weather",
@@ -266,7 +333,8 @@
       "input": {
         "text": "the sky is blue",
         "is_final": true,
-        "mode": "passive"
+        "mode": "passive",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "the sky is blue",
@@ -295,7 +363,8 @@
       "input": {
         "text": "assistant please help me",
         "is_final": true,
-        "mode": "passive"
+        "mode": "passive",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "assistant please help me",
@@ -324,7 +393,8 @@
       "input": {
         "text": "find the report",
         "is_final": true,
-        "mode": "search"
+        "mode": "search",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "find the report",
@@ -353,7 +423,8 @@
       "input": {
         "text": "the history of rome",
         "is_final": true,
-        "mode": "research"
+        "mode": "research",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "the history of rome",
@@ -382,7 +453,8 @@
       "input": {
         "text": "dear team comma",
         "is_final": true,
-        "mode": "dictation"
+        "mode": "dictation",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "dear team comma",
@@ -412,7 +484,8 @@
       "input": {
         "text": "we agreed on friday",
         "is_final": true,
-        "mode": "meeting"
+        "mode": "meeting",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "we agreed on friday",
@@ -442,7 +515,8 @@
       "input": {
         "text": "lights on",
         "is_final": true,
-        "mode": "command"
+        "mode": "command",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "lights on",
@@ -470,7 +544,8 @@
       "input": {
         "text": "what time is it",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "what time is it",
@@ -499,7 +574,8 @@
       "input": {
         "text": "",
         "is_final": true,
-        "mode": "assistant"
+        "mode": "assistant",
+        "has_pending_confirmation": false
       },
       "observation": {
         "normalized": "",

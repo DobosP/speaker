@@ -174,32 +174,121 @@ def test_looks_like_user_is_identity_free_ignores_enrolled_gate():
     assert eng._looks_like_user([0.0]) is False  # identity is not consulted for barge-in
 
 
-# --- post-AEC barge: residual-vs-ambient-floor (NOT vs playback level) ------
-# With AEC active the echo is cancelled, so the residual during echo-only sits at
-# the ambient floor; a real barge stands above it. The gate then compares the
-# residual to _ambient_rms (loudness_admits), not to playback_level -- which fixes
-# the missed-real-barge case where the user is NOT louder than the speaker buffer.
+# --- AEC-on barge: auto-calibrated residual-FLOOR gate (primary over coherence) -
+# With AEC active the echo is cancelled, so the post-AEC residual during echo-only
+# sits at the learned _playback_floor_rms (online, freeze-on-burst -> adapts to
+# speaker volume + room noise); a real barge stands barge_in_residual_margin_db
+# ABOVE it. This is the PRIMARY gate when AEC is on, so the coherence detector --
+# which over-fires on nonlinear open speakers -- can no longer self-interrupt.
 
 
-def test_looks_like_user_post_aec_fires_on_barge_above_ambient_not_playback():
-    eng = _engine(input_loudness_margin_db=12.0)
-    eng._aec = object()        # AEC active -> residual path
-    eng._ambient_rms = 0.02    # cancelled-echo floor
-    eng._playback_level = 0.3  # loud playback buffer (the old gate would block 0.4)
-    # A real barge: ~26 dB above the cancelled-echo floor, but BELOW playback+6dB.
-    assert eng._looks_like_user([0.4] * 1600) is True
-    # Echo-only residual sitting at the floor must NOT fire.
-    assert eng._looks_like_user([0.02] * 1600) is False
+class _FakeCoherence:
+    """Stand-in for EchoCoherenceDetector so the engine wiring is testable without
+    scipy/audio: a fixed decide() verdict + a fixed measured speaker->mic delay."""
+
+    def __init__(self, verdict=None, delay=None):
+        self._verdict = verdict
+        self._delay = delay
+        self.last_incoherent_fraction = 0.5
+        self.last_delay_ms = 0.0
+
+    def decide(self, samples):
+        return self._verdict
+
+    def measured_delay_samples(self):
+        return self._delay
 
 
-def test_looks_like_user_post_aec_needs_ambient_floor_configured():
-    # Without the loudness floor (input_loudness_margin_db == 0) the post-AEC path
-    # is skipped and it falls back to the playback-relative level gate (unchanged).
-    eng = _engine(input_loudness_margin_db=0.0, aec_relaxed_margin_db=3.0)
+def test_residual_floor_gate_fails_closed_until_learned():
+    # Before the floor is learned (the first playback blocks) the gate is
+    # fail-CLOSED so warmup echo can never self-interrupt.
+    eng = _engine(barge_in_residual_margin_db=10.0)
     eng._aec = object()
-    eng._ambient_rms = 0.02
+    assert eng._playback_floor_rms == 0.0
+    assert eng._looks_like_user([0.5] * 1600) is False
+
+
+def test_residual_floor_gate_rejects_echo_accepts_barge():
+    eng = _engine(barge_in_residual_margin_db=12.0)
+    eng._aec = object()                  # AEC active -> residual-floor path
+    eng._playback_floor_rms = 0.02       # learned residual echo+noise floor
+    assert eng._looks_like_user([0.4] * 1600) is True    # ~26 dB above the floor -> barge
+    assert eng._looks_like_user([0.02] * 1600) is False  # at the floor -> echo, not a barge
+    assert eng._looks_like_user([0.04] * 1600) is False  # +6 dB: below the margin
+
+
+def test_coherence_cannot_self_interrupt_alone_when_aec_on():
+    # Even if the (nonlinear-echo-fooled) coherence detector says "user", a residual
+    # sitting at the floor must NOT fire -- the floor gate vetoes the false positive.
+    eng = _engine(barge_in_residual_margin_db=10.0)
+    eng._aec = object()
+    eng._playback_floor_rms = 0.03
+    eng._echo_coherence = _FakeCoherence(verdict=True)   # coherence WOULD fire
+    assert eng._looks_like_user([0.03] * 1600) is False  # floor gate rejects the echo
+
+
+def test_coherence_echo_only_verdict_vetoes_a_floor_pass():
+    eng = _engine(barge_in_residual_margin_db=10.0)
+    eng._aec = object()
+    eng._playback_floor_rms = 0.03
+    eng._echo_coherence = _FakeCoherence(verdict=False)  # confident echo-only
+    assert eng._looks_like_user([0.3] * 1600) is False   # vetoed despite clearing the floor
+
+
+def test_barge_gate_does_not_re_align_the_aec_reference():
+    # The barge gate must NOT re-align the AEC reference from the (noisy) coherence
+    # delay -- on a nonlinear speaker that jumps and diverges the canceller. The
+    # configured reference delay is left pinned.
+    eng = _engine(barge_in_residual_margin_db=10.0)
+    eng._aec = object()
+    eng._playback_floor_rms = 0.03
+    eng._aec_ref_delay = 5
+    eng._echo_coherence = _FakeCoherence(verdict=None, delay=128)
+    eng._looks_like_user([0.03] * 1600)
+    assert eng._aec_ref_delay == 5  # unchanged -- no destabilising re-alignment
+
+
+def test_looks_like_user_post_aec_disabled_residual_gate_falls_back_to_level():
+    # With the residual-floor gate disabled (margin 0) the AEC path falls back to
+    # the playback-relative level gate (aec_relaxed_margin_db), unchanged.
+    eng = _engine(barge_in_residual_margin_db=0.0, aec_relaxed_margin_db=3.0)
+    eng._aec = object()
     eng._playback_level = 0.5
     assert eng._looks_like_user([0.2] * 16) is False  # quiet vs loud playback -> level gate blocks
+
+
+def test_residual_margin_default_is_pinned():
+    # Pin the shipped default so the residual-floor gate is not silently disabled.
+    assert SherpaConfig().barge_in_residual_margin_db == pytest.approx(10.0)
+
+
+# --- the online residual-floor estimator (_update_playback_floor) -----------
+
+
+def test_update_playback_floor_bootstraps_then_tracks():
+    eng = _engine()
+    assert eng._playback_floor_rms == 0.0
+    eng._update_playback_floor(0.02)            # bootstrap to the first echo level
+    assert eng._playback_floor_rms == pytest.approx(0.02)
+    for _ in range(300):                        # track a slightly higher steady echo
+        eng._update_playback_floor(0.03)
+    assert eng._playback_floor_rms == pytest.approx(0.03, abs=1e-3)
+
+
+def test_update_playback_floor_freezes_on_burst():
+    eng = _engine()
+    eng._update_playback_floor(0.02)
+    floor = eng._playback_floor_rms
+    eng._update_playback_floor(0.5)             # a >+6 dB burst (a real barge) -> freeze
+    assert eng._playback_floor_rms == pytest.approx(floor)  # the bar is not raised to the barge
+
+
+def test_update_playback_floor_tracks_down_to_a_quieter_floor():
+    eng = _engine()
+    eng._update_playback_floor(0.04)
+    for _ in range(300):                        # speaker turned down / quieter room
+        eng._update_playback_floor(0.02)
+    assert eng._playback_floor_rms == pytest.approx(0.02, abs=1e-3)
 
 
 # --- playback-level EWMA ----------------------------------------------------

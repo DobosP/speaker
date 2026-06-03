@@ -312,7 +312,7 @@ def test_subprocess_timeout_synthesizes_shutdown_hang(tmp_path, monkeypatch):
     args = type("A", (), {
         "llm": "ollama", "model": None, "fast_model": None, "device": None,
         "output_device": None, "open_mic": False, "response_timeout": 1.0,
-        "shutdown_timeout": 8.0,
+        "start_timeout": 20.0, "shutdown_timeout": 8.0,
     })()
 
     def _raise_timeout(cmd, timeout=None, check=False):
@@ -327,6 +327,153 @@ def test_subprocess_timeout_synthesizes_shutdown_hang(tmp_path, monkeypatch):
     g = R.grade_fixture(res)
     assert g["verdict"] == "FAIL"
     assert g["checks"]["shutdown_clean"] is False
+
+
+# --- EMPTY: a digitally-silent capture is EXCLUDED, not failed ---
+
+def test_is_silent_input_thresholds():
+    assert R.is_silent_input(0.0, 0.0) is True
+    assert R.is_silent_input(1e-6, 1e-5) is True
+    assert R.is_silent_input(0.2, 1.0) is False
+    # rms below but peak above (a single click) -> NOT silent
+    assert R.is_silent_input(1e-6, 0.5) is False
+    # unknown level can't be claimed empty
+    assert R.is_silent_input(None, None) is False
+    assert R.is_silent_input(0.0, None) is False
+
+
+def test_empty_result_grades_empty_not_fail():
+    g = R.grade_fixture(R.empty_result("run-silent.wav", input_rms=0.0, input_peak=0.0))
+    assert g["verdict"] == "EMPTY"
+    assert g["empty"] is True
+    assert g["passed"] is False
+    assert any("EMPTY RECORDING" in r for r in g["reasons"])
+    # the vacuous went-deaf / went-silent reasons are replaced by the empty note
+    assert not any("WENT DEAF" in r or "WENT SILENT" in r for r in g["reasons"])
+
+
+def test_silent_input_on_a_full_result_is_empty():
+    # Even a result that otherwise looks like a failure is EMPTY when the input was
+    # digitally silent -- the pipeline never had audio to work with.
+    g = R.grade_fixture(_clean_result(spoken=[], asr_finals=[], input_rms=0.0, input_peak=0.0))
+    assert g["verdict"] == "EMPTY"
+    assert g["empty"] is True
+
+
+def test_loud_input_is_graded_normally():
+    g = R.grade_fixture(_clean_result(input_rms=0.15, input_peak=1.0))
+    assert g["empty"] is False
+    assert g["verdict"] == "PASS"
+
+
+def test_grade_run_excludes_empties_from_pass_fail():
+    results = [
+        _clean_result(fixture="ok.wav"),
+        _clean_result(fixture="fail.wav", spoken=[]),                 # a real FAIL
+        R.empty_result("silent.wav", input_rms=0.0, input_peak=0.0),  # EMPTY
+    ]
+    run = R.grade_run(results)
+    assert run["n_total"] == 3
+    assert run["n_empty"] == 1
+    assert run["n_pass"] == 1
+    assert run["n_fail"] == 1          # the empty is NOT counted as a fail
+    assert run["all_pass"] is False
+
+
+def test_all_pass_true_with_empties_present():
+    results = [_clean_result(fixture="ok.wav"), R.empty_result("silent.wav")]
+    run = R.grade_run(results)
+    assert run["n_empty"] == 1
+    assert run["n_pass"] == 1
+    assert run["n_fail"] == 0
+    assert run["all_pass"] is True     # one pass + one excluded empty == all (non-empty) pass
+
+
+def test_all_empty_run_passes_vacuously():
+    # A batch where EVERY recording is an excluded empty has NO failures, so the
+    # run passes vacuously (exit 0) -- it must not report failure just because
+    # nothing was validated.
+    run = R.grade_run([R.empty_result("a.wav"), R.empty_result("b.wav")])
+    assert run["n_empty"] == 2
+    assert run["n_pass"] == 0
+    assert run["n_fail"] == 0
+    assert run["all_pass"] is True
+
+
+def test_render_markdown_marks_empty_and_separates_counts():
+    results = [
+        _clean_result(fixture="ok.wav"),
+        R.empty_result("silent.wav", input_rms=0.0, input_peak=0.0),
+    ]
+    run = R.grade_run(results)
+    md = R.render_markdown(run, run_id="20260603-000000")
+    assert "EMPTY" in md
+    assert "silent.wav" in md
+    assert "1 EMPTY" in md             # the header breakdown
+    assert "1/2 PASS" in md
+
+
+def test_print_summary_marks_empty(capsys):
+    run = R.grade_run([_clean_result(fixture="ok.wav"),
+                       R.empty_result("silent.wav", input_rms=0.0, input_peak=0.0)])
+    R.print_summary(run)
+    out = capsys.readouterr().out
+    assert "[EMPTY] silent.wav" in out
+    assert "1 EMPTY" in out
+
+
+# --- inventory / run-history overview (pure render) ---
+
+def test_inventory_render_flags_empty_and_counts():
+    from tools.real_usage import inventory as INV
+
+    rows = [
+        {"run_id": "run-20260602-231913", "when": "2026-06-02 23:19:13", "duration_sec": 45.2,
+         "turns": 6, "llm_requests": 11, "errors": 0, "stuck_hints": 0, "has_wav": True,
+         "wav_rms": 0.19, "wav_peak": 1.0, "silent": False, "snippet": "the / yeah"},
+        {"run_id": "run-20260603-101952", "when": "2026-06-03 10:19:52", "duration_sec": 17.1,
+         "turns": 5, "llm_requests": 4, "errors": 0, "stuck_hints": 1, "has_wav": True,
+         "wav_rms": 0.0, "wav_peak": 0.0, "silent": True, "snippet": ""},
+        {"run_id": "run-20260602-203131", "when": "2026-06-02 20:31:31", "duration_sec": 3.0,
+         "turns": 0, "llm_requests": 0, "errors": 0, "stuck_hints": 0, "has_wav": False,
+         "snippet": ""},
+    ]
+    md = INV.render_inventory_markdown(rows)
+    assert "3 runs" in md
+    assert "run-20260603-101952" in md
+    assert "EMPTY" in md
+    assert "no-wav" in md
+    assert "prune" in md.lower()
+
+
+def test_inventory_render_sanitizes_parse_error():
+    from tools.real_usage import inventory as INV
+
+    rows = [{"run_id": "run-bad", "parse_error": "Expecting value | line 1\ncolumn 2"}]
+    md = INV.render_inventory_markdown(rows)
+    data_rows = [ln for ln in md.splitlines() if ln.startswith("| run-bad")]
+    assert len(data_rows) == 1
+    # 10 columns -> exactly 11 pipe delimiters; an unsanitised '|' would add one.
+    assert data_rows[0].count("|") == 11
+    assert "PARSE ERR" in md
+
+
+def test_inventory_empty_wavs_helper():
+    from tools.real_usage import inventory as INV
+
+    rows = [
+        {"run_id": "a", "has_wav": True, "silent": True},
+        {"run_id": "b", "has_wav": True, "silent": False},
+        {"run_id": "c", "has_wav": False, "silent": False},
+    ]
+    assert INV.empty_wavs(rows) == ["a"]
+
+
+def test_inventory_fmt_when():
+    from tools.real_usage import inventory as INV
+
+    assert INV._fmt_when("run-20260602-231913") == "2026-06-02 23:19:13"
+    assert INV._fmt_when("weird") == "weird"
 
 
 if __name__ == "__main__":

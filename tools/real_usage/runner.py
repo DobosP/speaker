@@ -181,8 +181,10 @@ class RealUsageRun:
     # Quiet period (no task/speech) after the assistant engages before the turn
     # counts as idle. Bridges the brief task-complete -> engine.speak() gap.
     _IDLE_SETTLE = 0.8
-    # How long to wait for the assistant to even BEGIN responding.
-    _START_TIMEOUT = 12.0
+    # Default wait for the assistant to even BEGIN responding. The recordings are
+    # 25-65s of open-mic capture, so the first clean user utterance can land well
+    # after the old 12s -- widened to 20s and overridable via --start-timeout.
+    _START_TIMEOUT = 20.0
 
     def __init__(
         self,
@@ -195,6 +197,7 @@ class RealUsageRun:
         shutdown_timeout: float = 8.0,
         open_mic: bool = False,
         warm_timeout: float = 20.0,
+        start_timeout: Optional[float] = None,
     ) -> None:
         from always_on_agent.events import Mode
         from core.app import build_runtime
@@ -202,6 +205,7 @@ class RealUsageRun:
         from core.routing import build_router
 
         self._response_timeout = response_timeout
+        self._start_timeout = start_timeout if start_timeout is not None else self._START_TIMEOUT
         self._shutdown_timeout = shutdown_timeout
         self._open_mic = open_mic
         self._warm_timeout = warm_timeout
@@ -310,7 +314,7 @@ class RealUsageRun:
         engaged = False
         last_activity = time.time()
         deadline = time.time() + self._response_timeout
-        start_deadline = time.time() + self._START_TIMEOUT
+        start_deadline = time.time() + self._start_timeout
         last_speak = self._spoken_count()
         while time.time() < deadline:
             active = self._has_work()
@@ -326,7 +330,7 @@ class RealUsageRun:
                 self._snapshot_playback_liveness()
                 return
             if not engaged and time.time() >= start_deadline:
-                log.warning("no response observed within %.0fs; moving on", self._START_TIMEOUT)
+                log.warning("no response observed within %.0fs; moving on", self._start_timeout)
                 self._snapshot_playback_liveness()
                 return
             time.sleep(0.03)
@@ -422,6 +426,35 @@ class RealUsageRun:
             return 0
 
 
+def load_and_measure(wav_path) -> dict:
+    """Load a recording and measure its level WITHOUT building a runtime or
+    touching audio devices. Used by the CLI to short-circuit digitally-silent
+    captures (dead/muted mic) before paying for a model load / speaking aloud.
+
+    Returns ``{"rms", "peak", "duration_sec", "sample_rate", "n_samples"}``. numpy
+    + the file-replay loader are imported lazily so importing this module stays
+    dependency-free for the pure-logic unit tests."""
+    import numpy as np
+
+    from core.engines.file_replay import load_waveform
+
+    samples, sr = load_waveform(str(wav_path))
+    arr = np.asarray(samples, dtype="float32").reshape(-1)
+    n = int(arr.size)
+    if n == 0:
+        return {"rms": 0.0, "peak": 0.0, "duration_sec": 0.0,
+                "sample_rate": int(sr or 0), "n_samples": 0}
+    rms = float(np.sqrt(np.mean(arr * arr)))
+    peak = float(np.max(np.abs(arr)))
+    return {
+        "rms": rms,
+        "peak": peak,
+        "duration_sec": round(n / float(sr or 1), 2),
+        "sample_rate": int(sr or 0),
+        "n_samples": n,
+    }
+
+
 def run_fixture(
     config: dict,
     wav_path: Path,
@@ -432,6 +465,7 @@ def run_fixture(
     response_timeout: float = 60.0,
     shutdown_timeout: float = 8.0,
     open_mic: bool = False,
+    start_timeout: Optional[float] = None,
 ) -> dict:
     """Run ONE recording end-to-end in this process and return its result dict.
 
@@ -439,6 +473,9 @@ def run_fixture(
     spoken response -> shutdown under timeout -> collect signals. A fresh runtime
     per fixture isolates the shutdown test. The caller (CLI) typically runs this
     in a SUBPROCESS so a single hung fixture can't wedge the batch.
+
+    The result also carries the injected waveform's ``input_rms`` / ``input_peak``
+    so the grader can tell an empty (silent-mic) capture from a real failure.
     """
     from core.engines.file_replay import load_waveform
 
@@ -451,6 +488,7 @@ def run_fixture(
         response_timeout=response_timeout,
         shutdown_timeout=shutdown_timeout,
         open_mic=open_mic,
+        start_timeout=start_timeout,
     )
     shutdown_ok, shutdown_seconds = True, 0.0
     try:

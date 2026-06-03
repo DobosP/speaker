@@ -405,6 +405,16 @@ def main(argv: list[str] | None = None) -> int:
         help="small Ollama model for quick spoken replies",
     )
     parser.add_argument(
+        "--asr-final",
+        dest="asr_final",
+        choices=["streaming", "sense_voice", "whisper"],
+        default=None,
+        help="final-transcript backend override (A/B the second pass): "
+        "'streaming' = streaming-only finals, NO offline re-transcribe (best for "
+        "short/casual speech where the offline pass over-confidently hallucinates); "
+        "'sense_voice'/'whisper' = offline second pass. Default: config asr_final_backend.",
+    )
+    parser.add_argument(
         "--device",
         default=None,
         help="device profile from config 'device_profiles' (e.g. desktop, phone)",
@@ -519,6 +529,13 @@ def main(argv: list[str] | None = None) -> int:
         "input_device": args.input_device,
         "output_device": args.output_device,
         "input_gain": args.input_gain,
+        # --asr-final A/B: 'streaming' disables the offline second pass (empty
+        # backend -> streaming-only finals). 'sense_voice'/'whisper' force it on.
+        # None -> no override (use the config's asr_final_backend).
+        "asr_final_backend": (
+            "" if args.asr_final == "streaming"
+            else args.asr_final
+        ),
     }
     for key, val in sherpa_overrides.items():
         if val is not None:

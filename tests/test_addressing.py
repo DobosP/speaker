@@ -87,7 +87,7 @@ def test_classifier_uses_system_prompt_and_includes_context():
     decision = cls.classify("what time is it", recent=["hello there", "any updates?"])
     assert decision == ACT
     prompt, system = llm.calls[0]
-    assert system is not None and "addressing classifier" in system.lower()
+    assert system is not None and "addressing gate" in system.lower()
     assert "what time is it" in prompt
     # Recent context is included so the LLM can disambiguate.
     assert "hello there" in prompt
@@ -207,3 +207,19 @@ def test_classifier_sees_recent_memory_as_context():
     assert len(gate.calls) == 2
     _, recent_for_second = gate.calls[1]
     assert "BACKGROUND ONE" in recent_for_second
+
+
+def test_system_prompt_frames_questions_as_act():
+    """Pin the addressing-prompt intent: the fast model decides ACT by asking
+    'is this a QUESTION/REQUEST/COMMAND for the assistant?', not the vaguer 'is
+    this addressed to me?' that made gemma3:4b drop clear questions as ambient
+    (the missed-question bug). Validated live: 10/10 novel questions -> ACT while
+    plain statements / talk-to-another / reading-aloud still INGEST. This guards
+    against a silent revert to the over-INGEST framing."""
+    from core.addressing import _SYSTEM_PROMPT
+
+    up = _SYSTEM_PROMPT.upper()
+    assert "QUESTION" in up and "REQUEST" in up and "COMMAND" in up
+    assert "ACT" in up and "INGEST" in up
+    # Worked examples for BOTH directions keep the small model calibrated.
+    assert "-> ACT" in _SYSTEM_PROMPT and "-> INGEST" in _SYSTEM_PROMPT

@@ -862,6 +862,26 @@ class SherpaOnnxEngine(AudioEngine):
         # Playback is being cut: drop the echo reference so the capture loop
         # doesn't keep gating barge-in against a level that is no longer audible.
         self._playback_level = 0.0
+        # AUTHORITATIVELY end the speaking state HERE (RC-2). A barge-in/stop is
+        # "stop now"; ownership of the _speaking transition must NOT be left to the
+        # playback worker's epilogue (sherpa.py finally, ~_speaking.clear()), which
+        # only runs after _synthesize()/tts.generate() returns. If that native TTS
+        # call wedges, the worker never clears _speaking, the capture loop keeps
+        # `continue`-ing past ASR, and the assistant goes DEAF for the rest of the
+        # session (observed: speaking=True for ~15 s after a 2 s reply, ending in
+        # "playback thread did not exit within 1.0s"). So clear it here so ASR
+        # resumes at once, re-arm the one-per-run barge latch (otherwise it stays
+        # latched True and disarms further barge-ins), and reset the echo refs the
+        # worker would otherwise reset. All idempotent -- the worker clearing them
+        # again on its way out is harmless.
+        self._speaking.clear()
+        self._barge_in_fired_this_run = False
+        if self._echo_coherence is not None:
+            self._echo_coherence.reset()
+        if self._far_ref is not None:
+            self._far_ref.clear()
+        if self._aec is not None:
+            self._aec.reset()
         # Stamp the *true* audible-stop instant (when the FIFO was flushed), not
         # when synthesis later notices the flag. Only when we actually flushed a
         # speaking stream, so a no-op stop (nothing playing) records nothing --
@@ -1055,6 +1075,11 @@ class SherpaOnnxEngine(AudioEngine):
             return
         stream = self._new_asr_stream()
         voiced_run = 0.0
+        # RC-5 observability: track voiced speech DURING playback that the barge
+        # gate rejected, so a "user kept talking but nothing fired" failure is
+        # visible in the run bundle instead of being silently dropped.
+        rejected_run = 0.0
+        rejected_flagged = False
         block_sec = 0.1
         # Rolling buffer of the current (non-speaking) ASR segment, used to embed
         # the speaker when an endpoint fires so input can be gated on identity.
@@ -1170,8 +1195,10 @@ class SherpaOnnxEngine(AudioEngine):
                         # echo with no AEC) collapses into a single interrupt.
                         if now < self._barge_in_suppressed_until:
                             voiced_run = 0.0
+                            rejected_run = 0.0
                         elif self._barge_in_fire_eligible(samples):
                             voiced_run += block_sec
+                            rejected_run = 0.0
                             if voiced_run >= self.config.barge_in_min_speech_sec:
                                 voiced_run = 0.0
                                 # Latch: one barge-in per speaking run. The 0.5s
@@ -1185,7 +1212,35 @@ class SherpaOnnxEngine(AudioEngine):
                                 self._cb.on_barge_in()
                         else:
                             voiced_run = 0.0
+                            # RC-5: the gate rejected this block. If the VAD still
+                            # hears SUSTAINED speech during playback and no barge
+                            # has fired this run, the user is likely talking over
+                            # the assistant but the echo/level gate is rejecting
+                            # them -- surface it (once per episode) instead of
+                            # dropping it silently, so the failure shows up in the
+                            # run bundle (metric) + watchdog rather than a clean log.
+                            if (
+                                not self._barge_in_fired_this_run
+                                and self._vad.is_speech_detected()
+                            ):
+                                rejected_run += block_sec
+                                if (
+                                    rejected_run >= self.config.barge_in_min_speech_sec
+                                    and not rejected_flagged
+                                ):
+                                    rejected_flagged = True
+                                    log.info(
+                                        "barge-in REJECTED: %.1fs of voiced speech during "
+                                        "playback did not trip the gate (talk-over ignored?)",
+                                        rejected_run,
+                                    )
+                                    self._cb.on_metric("barge_in_rejected")
+                            else:
+                                rejected_run = 0.0
                     continue
+                # Not speaking -> reset the rejected-talk-over episode tracking.
+                rejected_run = 0.0
+                rejected_flagged = False
 
                 try:
                     utterance.append(samples)

@@ -59,6 +59,47 @@ def test_reset_is_safe_on_impl_without_reset():
     EchoCanceller(_RaisingImpl()).reset()  # no reset() on impl -> no-op, no raise
 
 
+# --- divergence guard (a canceller must never AMPLIFY) ----------------------
+
+
+class _DivergingImpl:
+    """Stands in for an adaptive filter that has diverged and blown up -- it
+    returns an output far louder than the input (observed live: post-AEC RMS ~7.4
+    on an open laptop speaker, which instantly self-interrupts)."""
+
+    def __init__(self):
+        self.reset_calls = 0
+
+    def process(self, near, far):
+        return np.asarray(near, dtype=np.float32) * 100.0  # amplified -> diverged
+
+    def reset(self):
+        self.reset_calls += 1
+
+
+def test_process_16k_drops_diverged_output_and_passes_near_through():
+    impl = _DivergingImpl()
+    ec = EchoCanceller(impl)
+    near = np.array([0.1, 0.1, 0.1, 0.1], dtype=np.float32)
+    out = ec.process_16k(near, np.ones(4, dtype=np.float32))
+    # The blown-up output is discarded -> raw near-end passes through (bounded).
+    assert np.allclose(out, near)
+    assert impl.reset_calls == 1  # the diverged filter was reset
+
+
+def test_process_16k_passes_a_real_cancellation_through():
+    # A canceller that REDUCES the level (out <= near) is kept as-is.
+    class _GoodImpl:
+        def process(self, near, far):
+            return np.asarray(near, dtype=np.float32) * 0.1  # cancelled
+
+    near = np.array([0.4, 0.4, 0.4, 0.4], dtype=np.float32)
+    out = EchoCanceller(_GoodImpl()).process_16k(near, np.ones(4, dtype=np.float32))
+    assert float(np.sqrt(np.mean(out.astype(np.float64) ** 2))) < float(
+        np.sqrt(np.mean(near.astype(np.float64) ** 2))
+    )
+
+
 # --- far-end ring alignment math --------------------------------------------
 
 
@@ -280,6 +321,24 @@ def test_fdaf_cancels_linear_echo_single_talk():
     half = len(e) // 2  # measure ERLE on the converged tail
     erle = 10 * np.log10(np.sum(d[half:] ** 2) / (np.sum(e[half:] ** 2) + 1e-12))
     assert np.isfinite(erle) and erle > 20.0  # >=20 dB cancellation
+
+
+def test_fdaf_does_not_amplify_on_nonlinear_mismatched_echo():
+    # The live failure: on a NONLINEAR open laptop speaker the linear filter
+    # diverged and amplified (post-AEC RMS ~7.4). Simulate an un-cancellable echo
+    # (a hard nonlinearity the linear filter can't model) + a mis-aligned reference
+    # and assert the output never blows up past the input -- the divergence
+    # recovery (leak + tap-shrink + raw passthrough) holds it bounded.
+    rng = np.random.default_rng(7)
+    far = (rng.standard_normal(16000) * 0.3).astype(np.float32)
+    echo = np.tanh(8.0 * np.convolve(far, [0.0, 0.0, 0.9])[: len(far)]).astype(np.float32)  # clipped + delayed
+    near = echo
+    filt = _FDAFAdaptiveFilter(frame=512)
+    e = _run(filt, near, far, 512)
+    near_rms = float(np.sqrt(np.mean(near[: len(e)].astype(np.float64) ** 2)))
+    out_rms = float(np.sqrt(np.mean(e.astype(np.float64) ** 2)))
+    assert np.all(np.isfinite(e))
+    assert out_rms <= near_rms * 2.0 + 1e-6   # never amplifies -> can't self-interrupt
 
 
 def test_fdaf_no_far_is_passthrough():

@@ -185,6 +185,19 @@ class EchoCoherenceDetector:
                 return np.zeros(0, dtype="float32")
             return np.concatenate(list(self._ref))
 
+    def measured_delay_samples(self) -> Optional[int]:
+        """Median of the recently-measured ECHO-ONLY speaker->mic delays (in
+        ``sample_rate`` samples), or ``None`` if none measured yet.
+
+        The engine feeds this to the AEC's far-end read delay to auto-calibrate it
+        during the run: both the coherence reference ring (``note_playback``) and
+        the AEC far-end ring are teed from the SAME audio callback (true playback
+        position), so the delay is directly transferable. Read from the capture
+        thread, which is the only writer of ``_delays`` (no lock needed)."""
+        if not self._delays:
+            return None
+        return int(np.median(self._delays))
+
     # --- decision (capture thread) ------------------------------------------
     def decide(self, mic_samples: Sequence[float]) -> Optional[bool]:
         """Return True (user barge), False (echo-only) or None (can't decide ->

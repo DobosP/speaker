@@ -39,21 +39,38 @@ class AddressingClassifier(Protocol):
     def classify(self, text: str, recent: Iterable[str] = ()) -> str: ...
 
 
-_SYSTEM_PROMPT = """You are an addressing classifier for a voice assistant.
-The microphone is always on. Audio from the room reaches you the same way
-whether the user is speaking TO the assistant, thinking out loud, reading
-something aloud, or another person is talking nearby.
+# NOTE: the framing is "is this a QUESTION/REQUEST/COMMAND for the assistant?",
+# NOT "is this addressed to the assistant?". The latter (the original prompt) made
+# the small fast model drop clear questions as ambient -- live, gemma3:4b INGESTed
+# "how do I make pasta", "why is the sky blue", "what about Italy" (missed-question
+# bug). Reframing around question/request/command + explicit examples fixed the
+# questions (10/10 novel) while still INGESTing plain statements / talk-to-another /
+# reading-aloud. With unsure_acts=True the borderline cases lean to ACT, which is
+# the right trade (a missed question is worse than answering an occasional aside).
+_SYSTEM_PROMPT = """You are the addressing gate for an always-on voice assistant.
+The microphone hears the whole room. Decide whether THE LATEST utterance is the
+user asking or telling the ASSISTANT to do something.
 
-Given the latest utterance plus a few recent ones for context, decide if
-THE LATEST utterance is addressed to the assistant (the user expects a
-response).
+ACT if it is a QUESTION, a REQUEST, or a COMMAND the user wants the assistant to
+answer or do -- even short, casual, or with no wake word ("what time is it",
+"how do I make pasta", "play some music", "what about Italy").
 
-Reply with exactly one word:
-- ACT     -- clearly addressed to the assistant; it should respond.
-- INGEST  -- not addressed; remember silently, do not respond.
-- UNSURE  -- truly ambiguous.
+INGEST if it is NOT a question/request/command aimed at the assistant:
+- a plain statement or comment with no request ("I think I left the stove on")
+- talking to another person ("no, I told you yesterday")
+- reading aloud or quoting
+- a mid-thought fragment or muttering ("um, so anyway, where was I")
 
-Do not explain. Do not add punctuation. One word."""
+If genuinely torn between ACT and INGEST, answer UNSURE.
+Reply with exactly one word: ACT, INGEST, or UNSURE. No punctuation, no explanation.
+
+"why is the sky blue" -> ACT
+"set a timer for five minutes" -> ACT
+"what about Italy" -> ACT
+"can you help me" -> ACT
+"I think I left the stove on" -> INGEST
+"no I already told you that yesterday" -> INGEST
+"um so anyway where was I" -> INGEST"""
 
 
 class LLMAddressingClassifier:

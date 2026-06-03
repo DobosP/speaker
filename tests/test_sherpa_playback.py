@@ -167,6 +167,24 @@ def test_stop_speaking_without_live_stream_is_silent_noop():
     assert "barge_in_stop" not in metrics
 
 
+def test_stop_speaking_clears_speaking_and_relatches_on_the_cut():
+    # RC-2 regression guard: stop_speaking() must AUTHORITATIVELY end the speaking
+    # state itself, not wait on the playback worker's epilogue. If the native
+    # tts.generate() wedges, the worker never clears _speaking and the capture
+    # loop stays deaf to ASR for the rest of the session. So the cut path must
+    # clear _speaking + re-arm the one-per-run barge latch on its own. (Here we
+    # never run the worker at all -- exactly the wedged case.)
+    eng = _engine(_StreamingTts())
+    eng._out_stream = _FakeOutStream()
+    eng._fifo = _FakeFIFO()
+    eng._speaking.set()                   # worker set it; worker will NOT clear it (wedged)
+    eng._barge_in_fired_this_run = True   # a barge already fired this run
+    eng.stop_speaking()
+    assert eng._fifo.flushed == 1
+    assert eng.is_speaking is False              # ASR re-enables without the worker returning
+    assert eng._barge_in_fired_this_run is False  # barge-in re-armed for the next interrupt
+
+
 # --- clean shutdown: stop() must tear the live stream down so a wedged play ---
 # thread can exit. On a dead device the play thread can block in FIFO.write();
 # the queue sentinel can't wake it, so stop() would hang on the join. stop() now

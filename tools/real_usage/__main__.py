@@ -110,6 +110,18 @@ def _resolve_wavs(args) -> list[Path]:
     return out
 
 
+def _measure_input(wav: Path):
+    """Best-effort level measurement for the silent-skip pre-pass. Returns the
+    level dict, or None if the WAV couldn't be read (then we just run it)."""
+    try:
+        from .runner import load_and_measure
+
+        return load_and_measure(wav)
+    except Exception as exc:  # noqa: BLE001 - a bad/missing WAV must not abort the batch
+        log.warning("could not measure %s level (%s); running it anyway", wav.name, exc)
+        return None
+
+
 def _load_config(args):
     from core.config import _apply_device_profile, _load_config
 
@@ -135,6 +147,7 @@ def _run_one_subprocess(wav: Path, args, timeout: float) -> dict:
         "--_result-file", result_path,
         "--llm", args.llm,
         "--response-timeout", str(args.response_timeout),
+        "--start-timeout", str(args.start_timeout),
         "--shutdown-timeout", str(args.shutdown_timeout),
     ]
     if args.model:
@@ -200,6 +213,7 @@ def _run_one_inprocess(wav: Path, config: dict, args) -> dict:
         response_timeout=args.response_timeout,
         shutdown_timeout=args.shutdown_timeout,
         open_mic=args.open_mic,
+        start_timeout=args.start_timeout,
     )
 
 
@@ -217,6 +231,7 @@ def _child_run_one(args) -> int:
         response_timeout=args.response_timeout,
         shutdown_timeout=args.shutdown_timeout,
         open_mic=args.open_mic,
+        start_timeout=args.start_timeout,
     )
     with open(args._result_file, "w") as fh:
         json.dump(result, fh)
@@ -243,6 +258,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="fast LLM model override (e.g. gemma3:4b)")
     p.add_argument("--response-timeout", type=float, default=60.0,
                    help="per-recording wait for the spoken response (default 60s; clips are 26-44s)")
+    p.add_argument("--start-timeout", type=float, default=20.0, dest="start_timeout",
+                   help="how long to wait for the assistant to even BEGIN responding before "
+                        "moving on (default 20s; raise for long open-mic captures)")
     p.add_argument("--shutdown-timeout", type=float, default=8.0,
                    help="hard timeout on runtime.stop(); exceeding it == the shutdown HANG (default 8s)")
     p.add_argument("--open-mic", action="store_true",
@@ -259,6 +277,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--list", "--list-recordings", dest="list_only", action="store_true",
                    help="list the recordings that would run and exit")
     p.add_argument("--list-devices", action="store_true", help="print audio devices and exit")
+    p.add_argument("--inventory", action="store_true",
+                   help="scan the run-log bundles (logs/runs/*.summary.json + WAV level) and write a "
+                        "history OVERVIEW (no pipeline run); flags digitally-silent/empty captures")
+    p.add_argument("--inventory-out", default=None,
+                   help="where --inventory writes the overview markdown (default logs/runs/OVERVIEW.md)")
     p.add_argument("--out-dir", default=None, help="report root (default logs/real_usage/<run-id>)")
     # Internal flags for subprocess-per-fixture mode (not for direct use).
     p.add_argument("--_run-one", default=None, help=argparse.SUPPRESS)
@@ -276,6 +299,28 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list_devices:
         _list_audio_devices()
+        return 0
+
+    if args.inventory:
+        from . import inventory as inv
+
+        runs_dir = "logs/runs"
+        for rec in (args.recordings or []):
+            if Path(rec).is_dir():
+                runs_dir = rec
+                break
+        print(f"scanning run bundles under {runs_dir} ...")
+        rows = inv.scan_runs(runs_dir)
+        out_path = Path(args.inventory_out) if args.inventory_out else Path(runs_dir) / "OVERVIEW.md"
+        inv.write_inventory(rows, out_path)
+        empties = inv.empty_wavs(rows)
+        n_wav = sum(1 for r in rows if r.get("has_wav"))
+        print(f"{len(rows)} run(s); {n_wav} with a WAV; {len(empties)} empty/silent.")
+        if empties:
+            print("empty captures (prune candidates):")
+            for rid in empties:
+                print(f"  - {rid}")
+        print(f"\nOverview: {out_path}")
         return 0
 
     config = _load_config(args)
@@ -317,11 +362,25 @@ def main(argv: list[str] | None = None) -> int:
     for wav in wavs:
         print(f"--- {wav.name} ---")
         t0 = time.time()
+        # Silent pre-pass: a digitally-silent capture (dead/muted mic) is graded
+        # EMPTY without building a runtime or speaking aloud -- so a known-bad
+        # recording can't masquerade as a "went deaf" pipeline failure.
+        level = _measure_input(wav)
+        if level is not None and report_mod.is_silent_input(level["rms"], level["peak"]):
+            result = report_mod.empty_result(
+                wav.name, input_rms=level["rms"], input_peak=level["peak"])
+            results.append(result)
+            print(f"    EMPTY: digitally-silent capture "
+                  f"(rms={level['rms']:.5f}, peak={level['peak']:.5f}) -- skipped, not run")
+            continue
         if args.in_process:
             result = _run_one_inprocess(wav, config, args)
         else:
             result = _run_one_subprocess(wav, args, child_timeout)
         result.setdefault("fixture", wav.name)
+        if level is not None:
+            result["input_rms"] = level["rms"]
+            result["input_peak"] = level["peak"]
         results.append(result)
         print(f"    done in {time.time() - t0:.1f}s "
               f"(barge_ins={result.get('barge_in_count')}, "

@@ -109,32 +109,81 @@ class InjectingInputStream:
 
 
 class _NullOutputStream:
-    """A drop-in for sd.OutputStream that discards audio, paced at real-time so
-    ``is_speaking`` still reflects a realistic speaking duration. Used by --inject
-    so the assistant's TTS metrics (TTS_FIRST_AUDIO) still fire but a blocking /
-    finicky real audio OUTPUT can't stall the harness (on this machine ALSA
-    out.write() blocks for tens of seconds on a short clip)."""
+    """A drop-in for sd.OutputStream that discards audio but FAITHFULLY drives the
+    PortAudio callback, paced at real-time. Used by --inject so the engine's
+    callback-driven playback path runs exactly as on real hardware -- the audio
+    callback drains the PlaybackFIFO and stamps TTS_FIRST_AUDIO -- without opening
+    a finicky/blocking real output device (which on this box can stall for tens of
+    seconds on a short clip).
 
-    def __init__(self, *args, samplerate: int = 48000, **kwargs):
+    Emulating the callback is REQUIRED, not optional: the engine no longer pushes
+    audio via ``out.write()``; the 2026-06-02 rewrite has PortAudio PULL audio from
+    ``callback=self._audio_cb`` (which is where TTS_FIRST_AUDIO -- and thus every
+    latency metric, since the driver gates latency on that stamp -- is recorded).
+    A fake that only implements ``write()`` leaves the callback unfired, so the
+    FIFO never drains, TTS_FIRST_AUDIO never stamps, and the run reports null
+    latencies + a 'tts stuck' watchdog stall. So this fake spawns a thread that
+    calls the callback with a zero buffer, paced at ``blocksize/samplerate``,
+    exactly like a low-latency PortAudio device pulling from the FIFO."""
+
+    def __init__(self, *args, samplerate: int = 48000, channels: int = 1,
+                 callback=None, blocksize: int = 0, **kwargs):
         self._sr = int(samplerate) or 48000
-        self.active = True
+        self._channels = int(channels) or 1
+        self._callback = callback
+        # ~10ms blocks: fine enough that TTS_FIRST_AUDIO stamps within a frame of
+        # audio becoming available, paced like a low-latency device.
+        self._block = int(blocksize) or max(1, self._sr // 100)
+        self.active = False
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
 
     def start(self):
         self.active = True
+        if self._callback is None:
+            return  # no callback to pull -> behaves as a pure sink
+        self._stop.clear()
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(
+                target=self._pump, name="inject-null-output", daemon=True)
+            self._thread.start()
+
+    def _pump(self):
+        import numpy as np
+
+        period = self._block / float(self._sr)
+        buf = np.zeros((self._block, self._channels), dtype="float32")
+        while not self._stop.is_set():
+            buf[:] = 0.0  # PortAudio hands the callback a fresh buffer to fill
+            try:
+                self._callback(buf, self._block, None, None)
+            except Exception:  # noqa: BLE001 - mirror PortAudio: a callback raise
+                pass           # is swallowed, never kills the pump thread
+            time.sleep(period)
 
     def write(self, samples):
+        # Legacy blocking path (the callback engine never calls this); keep it a
+        # real-time-paced no-op for any caller that still pushes.
         n = len(samples) if hasattr(samples, "__len__") else 0
         if n:
             time.sleep(n / float(self._sr))
 
-    def stop(self):
+    def _halt(self):
         self.active = False
+        self._stop.set()
+        t = self._thread
+        if t is not None and t.is_alive() and t is not threading.current_thread():
+            t.join(timeout=0.5)
+        self._thread = None
+
+    def stop(self):
+        self._halt()
 
     def abort(self):
-        self.active = False
+        self._halt()
 
     def close(self):
-        self.active = False
+        self._halt()
 
 
 def make_recording_engine(config):
@@ -201,6 +250,8 @@ class LiveConversation:
         self._out.mkdir(parents=True, exist_ok=True)
         self._timeout = response_timeout
         self._inject = inject
+        self._llm_backend = llm_backend
+        self._llm_host = ((config.get("llm", {}) or {}).get("host") or "http://127.0.0.1:11434")
         # Driver-side post-speech cooldown. config.sherpa.post_speech_cooldown_sec
         # is DEAD config in core (never read), so the harness enforces the settle
         # itself: after the assistant goes idle we wait this long before the NEXT
@@ -309,7 +360,63 @@ class LiveConversation:
             return self._hb_last, self._hb_count
 
     # --- lifecycle ---
+    def _free_llm_vram(self) -> None:
+        """Unload any resident Ollama models so the CPU-side sherpa ONNX models
+        build into a clean memory state.
+
+        On a 16GB-VRAM laptop, two pinned gemma tiers (keep_alive=-1, ~14GB) leave
+        the Windows GPU near-full, which commits enough *shared* system memory that
+        the sherpa ASR/TTS onnxruntime load fails with 'bad allocation'. The harness
+        builds a FRESH runtime per scenario, so models pinned by the PREVIOUS
+        scenario would starve this scenario's engine build -- scenario 1 passes
+        (empty GPU) and every later scenario in a suite dies. Freeing them here
+        lets the engine load first; ``warm_on_start`` re-loads the LLM tiers AFTER
+        the engine is built (the proven-working order). Best-effort: a missing /
+        unreachable Ollama, or any error, is a silent no-op."""
+        if self._llm_backend != "ollama":
+            return
+        try:
+            import requests
+
+            host = self._llm_host.rstrip("/")
+            ps = requests.get(f"{host}/api/ps", timeout=3).json()
+            models = ps.get("models", [])
+            resident_gb = sum(m.get("size_vram", 0) for m in models) / 1e9
+            # Only EVICT a heavy resident set. On this 16GB Windows box the
+            # CPU-side sherpa ONNX load `bad alloc`s FLAKILY when the GPU is more
+            # than ~half full (Windows commits shared system memory for a near-full
+            # GPU and the commit charge varies run to run). A light set (e.g. 4b+1b
+            # ~5.7GB) coexists with sherpa fine, so leaving it WARM avoids a slow
+            # cold reload (and the >12GB churn that degraded a long suite). A heavy
+            # set (12b-resident, ~10GB+) is unloaded so the engine builds into a
+            # clean GPU; warm_on_start reloads the tiers after, and start() waits
+            # the warmup out so turn 1 isn't stalled.
+            if resident_gb <= 8.0:
+                return
+            for m in models:
+                name = m.get("name")
+                if name:
+                    requests.post(
+                        f"{host}/api/generate",
+                        json={"model": name, "keep_alive": 0, "prompt": ""},
+                        timeout=5,
+                    )
+            # Wait (bounded) for the driver to actually RELEASE the VRAM before the
+            # engine's onnxruntime models allocate -- ``keep_alive=0`` evicts
+            # asynchronously, so loading sherpa immediately would still race a
+            # near-full GPU.
+            for _ in range(20):
+                if not requests.get(f"{host}/api/ps", timeout=3).json().get("models"):
+                    break
+                time.sleep(0.25)
+        except Exception:  # noqa: BLE001 - VRAM hygiene is strictly best-effort
+            log.debug("could not free Ollama VRAM before start (continuing)", exc_info=True)
+
     def start(self) -> None:
+        # Free any VRAM pinned by a previous scenario BEFORE the engine builds its
+        # CPU-side sherpa models (see _free_llm_vram); warm_on_start reloads the
+        # LLM tiers afterwards.
+        self._free_llm_vram()
         if self._inject:
             # Patch the audio device seams BEFORE start() so the engine never
             # touches the real hardware:
@@ -342,7 +449,12 @@ class LiveConversation:
         self._wall_t0 = time.monotonic()
         ready = getattr(self.runtime, "warm_ready", None)
         if ready is not None:
-            ready.wait(timeout=20.0)
+            # Generous wait: _free_llm_vram evicted the LLM tiers, so warm_on_start
+            # COLD-reloads them here (main ~10GB). Under concurrent load that warmup
+            # can take tens of seconds; waiting it out means turn 1 runs on warm
+            # models instead of stalling behind a still-loading main tier (which
+            # blew past the old 20s wait and broke first-turn latency attribution).
+            ready.wait(timeout=120.0)
         if self._inject:
             self._inject_stream = self._inject_holder.get("stream")
             if self._inject_stream is None:
@@ -702,13 +814,22 @@ class LiveConversation:
         })
 
     def _consume_latency(self) -> Optional[dict]:
-        """Pair this answer with the next unconsumed metrics turn that produced
-        first audio (in order)."""
-        from core.metrics import TTS_FIRST_AUDIO
+        """Pair this answer with the next unconsumed metrics turn that the model
+        actually answered (in order).
+
+        Pairs on LLM_FIRST_TOKEN, not TTS_FIRST_AUDIO: every answered turn stamps
+        a first token, but the first-audio stamp is TTS-side and -- in --inject
+        mode, where a Python pump thread emulates the PortAudio callback -- can be
+        missed under load (the pump gets GIL-starved past the watchdog deadline).
+        Gating on first-audio there silently DROPPED the whole turn's latency
+        (endpoint + final->token, the reliable ASR/LLM response-speed numbers) just
+        because the racy audio stamp didn't land. as_dict() still carries
+        first_audio_latency when present and None when not."""
+        from core.metrics import LLM_FIRST_TOKEN
 
         recs = self.runtime.metrics.records()
         for i in range(self._metrics_consumed, len(recs)):
-            if TTS_FIRST_AUDIO in recs[i].stamps:
+            if LLM_FIRST_TOKEN in recs[i].stamps:
                 self._metrics_consumed = i + 1
                 return recs[i].as_dict()
         return None

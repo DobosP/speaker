@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.recorded, pytest.mark.slow]
+pytestmark = [pytest.mark.recorded, pytest.mark.slow, pytest.mark.real_model]
 
 FIXTURE = Path(__file__).parent / "fixture_audio" / "recorded_ocean_utterance.npy"
 

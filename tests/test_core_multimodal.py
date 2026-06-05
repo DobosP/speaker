@@ -32,9 +32,11 @@ class RecordingLLM:
     def __init__(self, tag: str):
         self.tag = tag
         self.prompts: list[str] = []
+        self.images: list = []  # the images= each call received (None when text-only)
 
     def generate(self, prompt, *, system=None, images=None) -> str:
         self.prompts.append(prompt)
+        self.images.append(images)
         return f"[{self.tag}] {prompt}"
 
     def stream(self, prompt, *, system=None, images=None) -> Iterator[str]:
@@ -99,6 +101,80 @@ def test_single_model_when_no_fast_llm():
     main = RecordingLLM("main")
     registry = attach_llm_capabilities(CapabilityRegistry(), main)
     assert registry.invoke("assistant.answer", "hi").text.startswith("[main]")
+
+
+# --- visual context: a frame reaches the model through the CAPABILITY --------
+#
+# test_multimodal_e2e pins the LLM-chain forwarding; these pin the layer above
+# it -- the assistant capability actually reading an image off the turn and
+# forwarding it, routing it to the main/multimodal tier, and the VoiceRuntime
+# set_current_frame() feed that makes a host machine's frame ambient.
+
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32  # a token PNG header -- enough for a fake
+
+
+def test_per_turn_image_forwards_to_model_and_forces_main_tier():
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    registry = attach_llm_capabilities(CapabilityRegistry(), main, fast_llm=fast)
+    # "what is this" alone routes to fast; an attached image forces the main tier.
+    answer = registry.invoke("assistant.answer", "what is this", {"images": [_PNG]})
+    assert answer.text.startswith("[main]")          # routed to the multimodal main tier
+    assert main.images and main.images[-1] == [_PNG]  # the image bytes reached the model
+    assert not fast.prompts                            # the fast (non-multimodal) tier never ran
+
+
+def test_text_only_turn_carries_no_images():
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    registry = attach_llm_capabilities(CapabilityRegistry(), main, fast_llm=fast)
+    registry.invoke("assistant.answer", "what time is it")
+    assert fast.images == [None]   # answered on fast tier, no images attached
+    assert not main.prompts
+
+
+def test_ambient_image_provider_feeds_turns_then_clears():
+    main = RecordingLLM("main")
+    fast = RecordingLLM("fast")
+    box = {"frame": _PNG}
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, fast_llm=fast,
+        image_provider=lambda: ([box["frame"]] if box["frame"] is not None else None),
+    )
+    # With a frame set, even a simple turn goes to main carrying the frame.
+    registry.invoke("assistant.answer", "what time is it")
+    assert main.images and main.images[-1] == [_PNG]
+    # Clear the frame -> back to text-only on the fast tier.
+    main.prompts.clear(); main.images.clear()
+    box["frame"] = None
+    registry.invoke("assistant.answer", "what time is it")
+    assert not main.prompts and fast.prompts
+
+
+def test_per_turn_image_overrides_ambient_provider():
+    main = RecordingLLM("main")
+    registry = attach_llm_capabilities(
+        CapabilityRegistry(), main, image_provider=lambda: [b"AMBIENT"],
+    )
+    registry.invoke("assistant.answer", "what is this", {"images": [_PNG]})
+    assert main.images[-1] == [_PNG]  # the per-turn image wins over the ambient frame
+
+
+def test_runtime_set_current_frame_feeds_the_capability():
+    from always_on_agent.events import Mode
+    from core.engines.scripted import ScriptedEngine
+    from core.runtime import VoiceRuntime
+
+    main = RecordingLLM("main")
+    rt = VoiceRuntime(ScriptedEngine(), main, start_mode=Mode.ASSISTANT)
+    rt.set_current_frame(_PNG)
+    rt.supervisor.capabilities.invoke("assistant.answer", "what is this", {})
+    assert main.images and main.images[-1] == [_PNG]  # the host frame reached the model
+    # Clearing it returns to text-only.
+    main.prompts.clear(); main.images.clear()
+    rt.clear_current_frame()
+    rt.supervisor.capabilities.invoke("assistant.answer", "what is this", {})
+    assert main.images[-1] is None
 
 
 # --- CPU thread tuning -------------------------------------------------------

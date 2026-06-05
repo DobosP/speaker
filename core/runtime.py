@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from threading import Event, Thread
 from typing import Callable, Mapping, Optional
@@ -143,11 +144,20 @@ class VoiceRuntime:
         # prefix with the REAL prompt (not a throwaway "hi" with no system), so
         # turn 1's first token isn't paying to fill a cold KV-cache prefix.
         self._system_prompt = system_prompt
+        # Visual context feed (machine -> model). A host process (screen grabber,
+        # camera, app) sets the current frame via set_current_frame(); the latest
+        # frame rides AMBIENT on every assistant turn so the model has visual
+        # context of what the user is doing. None by default -> the image_provider
+        # returns None and behaviour is byte-identical (text-only). Must be set
+        # BEFORE attach_llm_capabilities so the bound provider sees it.
+        self._frame_lock = threading.Lock()
+        self._current_frame: Optional[object] = None
         attach_llm_capabilities(
             registry, llm, fast_llm=fast_llm, system=system_prompt, router=router,
             escalate=escalate, recorder=self.metrics, memory=memory, recall=recall_config,
             recent_context=recent_context_config,
             live_routing=live_routing, load_snapshot=load_snapshot,
+            image_provider=self._current_images,
         )
         if planner_on:
             # Thread the persona name (a plain string -- no core import in the
@@ -237,6 +247,36 @@ class VoiceRuntime:
         for model in (fast_llm, llm):
             _add_warm(model)
         self._warm_models = warm_models
+
+    # --- visual context feed (machine -> model) -----------------------------
+    def set_current_frame(self, image: Optional[object]) -> None:
+        """Set (or clear, with ``None``) the current visual frame fed to the model.
+
+        ``image`` is whatever the configured multimodal LLM accepts -- raw image
+        bytes (e.g. a PNG/JPEG) or a file path. A host process (a screen grabber,
+        camera, or app) calls this; the latest frame is then attached AMBIENTLY to
+        every subsequent assistant turn's context, so the model has visual context
+        of what the user is doing without the user having to ask for a capture each
+        time. Thread-safe. ``None`` clears it (back to text-only).
+
+        Only the main/multimodal model receives the frame -- the fast tier (e.g.
+        gemma3:1b) can't see images -- so an image-bearing turn is forced to the
+        main tier and treated as PRIVATE (a screen capture never rides a public
+        cloud chain; docs/target_architecture.md §9.7). A per-turn
+        ``context['images']`` still overrides this ambient frame when set."""
+        with self._frame_lock:
+            self._current_frame = image
+
+    def clear_current_frame(self) -> None:
+        """Stop feeding a visual frame (same as ``set_current_frame(None)``)."""
+        self.set_current_frame(None)
+
+    def _current_images(self) -> Optional[list]:
+        """``image_provider`` hook for the capability layer: the latest frame as a
+        one-item list, or ``None`` when no frame is set (text-only)."""
+        with self._frame_lock:
+            frame = self._current_frame
+        return [frame] if frame is not None else None
 
     def _reconcile_capabilities(self, registry, planner_config) -> None:
         """Log the capability manifest once and warn on planner-tool drift.

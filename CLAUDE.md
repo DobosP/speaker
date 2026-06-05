@@ -122,9 +122,16 @@ the exact fields it parses.
 
 ## Conventions
 
-- Python, standard `pytest`. Run tests: `python -m pytest tests -q`. For staged
-  runs with structured reports (per-stage + a tabular run summary under
-  `test-reports/`), use `python tools/run_tests.py list|core|sandbox|memory|cloud|imports|full`.
+- Python, standard `pytest`. Run tests: `python -m pytest tests -q`. Tests are
+  categorized by **one marker taxonomy → four tiers** (Tier 0 unit/logic = the
+  default CI-safe set; Tier 2 `real_model` = real weights over fixtures, self-
+  skips without models; Tier 3 `live_output` = REAL speakers, double-gated behind
+  `SPEAKER_LIVE=1`). **Full guide: [`docs/testing.md`](docs/testing.md).** For
+  staged runs with structured reports (per-stage + a tabular run summary under
+  `test-reports/`), use `python tools/run_tests.py
+  list|unit|core|sandbox|memory|cloud|imports|e2e|real_model|live|full` (`fast`
+  aliases `unit`; `live` preflights `tools.live_session --check` + sets
+  `SPEAKER_LIVE=1` — the only stage that makes sound).
   The `imports` stage is a whole-tree import smoke that catches syntax errors
   and missing optional libs across `core/`/`always_on_agent/`/`remote/`/`tools/`
   before any logic test runs — use it as a "does the code compile and are the

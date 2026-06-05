@@ -10,6 +10,8 @@ import statistics
 
 from pathlib import Path
 
+import pytest
+
 from core.endpointing import (
     AdaptiveEndpointPolicy,
     EndpointConfig,
@@ -61,9 +63,8 @@ def test_prosody_logmel_shape_is_whisper_input():
 # --- prosody detector -- real model (skipped if the ONNX isn't downloaded) ----
 
 
+@pytest.mark.real_model
 def test_prosody_score_in_unit_range_on_real_model():
-    import pytest
-
     if not _SMART_TURN_MODEL.exists():
         pytest.skip("Smart Turn ONNX not downloaded (python -m tools.setup_models --turn-model)")
     import numpy as np
@@ -74,11 +75,10 @@ def test_prosody_score_in_unit_range_on_real_model():
     assert 0.0 <= s <= 1.0
 
 
+@pytest.mark.real_model
 def test_prosody_separates_recorded_complete_vs_incomplete_if_present():
     import glob
     import os
-
-    import pytest
 
     if not _SMART_TURN_MODEL.exists():
         pytest.skip("Smart Turn ONNX not downloaded")
@@ -116,9 +116,8 @@ def test_engine_prosody_missing_model_falls_back_to_lexical():
     assert isinstance(d, LexicalTurnCompletionDetector)  # graceful fallback, no crash
 
 
+@pytest.mark.real_model
 def test_engine_prosody_builds_detector_when_model_present():
-    import pytest
-
     if not _SMART_TURN_MODEL.exists():
         pytest.skip("Smart Turn ONNX not downloaded")
     from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine

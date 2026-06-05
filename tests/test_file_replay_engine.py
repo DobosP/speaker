@@ -115,6 +115,7 @@ def test_load_waveform_rejects_unknown_format():
         load_waveform("something.mp3")
 
 
+@pytest.mark.real_model
 @pytest.mark.skipif(
     __import__("importlib").util.find_spec("sherpa_onnx") is None,
     reason="sherpa_onnx native package not installed",

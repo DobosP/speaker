@@ -1,6 +1,6 @@
 # Run history overview
 
-**20 runs** -- 5 with a recorded WAV, 0 digitally-silent/empty, 0 with errors.
+**21 runs** -- 5 with a recorded WAV, 0 digitally-silent/empty, 0 with errors.
 
 
 ## Runs
@@ -27,4 +27,5 @@
 | run-20260603-001213 | 2026-06-03 00:12:13 | 0.12 | 4 | 0 | 0 | 0 | - | no-wav | assistant please help me / research mode / the history of... |
 | run-20260603-101040 | 2026-06-03 10:10:40 | 0.14 | 4 | 0 | 0 | 0 | - | no-wav | assistant please help me / research mode / the history of... |
 | run-20260603-101952 | 2026-06-03 10:19:52 | 74.03 | 5 | 5 | 0 | 1 | - | no-wav | And / And / And |
+| run-20260603-110501 | 2026-06-03 11:05:01 | 0.12 | 4 | 0 | 0 | 0 | - | no-wav | assistant please help me / research mode / the history of... |
 

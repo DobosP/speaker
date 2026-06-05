@@ -110,6 +110,45 @@ jobs:
         with:
           path: test-reports/perf
 
+  real_model_tests:
+    # Tier-2 real-weight CORRECTNESS over fixtures (ASR accuracy, partial->final
+    # consistency, Smart-Turn, DTLN) -- the regressions the model-free logic suite
+    # (tests.yml) cannot catch. Independent of the bench/deploy jobs so an ASR
+    # regression alerts without blocking the perf-report publish. Same triggers as
+    # bench (push to main, manual dispatch, or the "perf" label on a PR).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
+      github.event.label.name == 'perf'
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache sherpa models
+        uses: actions/cache@v4
+        with:
+          path: pretrained_models/sherpa
+          key: sherpa-models-${{ hashFiles('tools/setup_models.py') }}
+          restore-keys: |
+            sherpa-models-
+
+      - name: Install dependencies
+        run: pip install numpy pytest sherpa-onnx huggingface_hub requests
+
+      - name: Download sherpa models (ASR + SenseVoice + Smart-Turn + DTLN)
+        # Writes config.local.json with the model paths; the real_model tests opt
+        # back into that overlay (SPEAKER_NO_LOCAL_CONFIG=0) per-test.
+        run: python -m tools.setup_models --sense-voice --turn-model --aec-model
+
+      - name: Run the real_model test tier
+        run: python -m pytest tests -q -m "real_model or recorded"
+
   deploy:
     needs: bench
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'

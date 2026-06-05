@@ -147,7 +147,7 @@ def test_process_16k_applies_impl():
     assert d._impl.seen[0][1] == 16000
 
 
-def test_process_16k_passthrough_on_error():
+def test_denoise_process_16k_passthrough_on_error():
     class _Boom:
         def run(self, samples, sample_rate):
             raise RuntimeError("onnx exploded")

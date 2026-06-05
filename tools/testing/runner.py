@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -57,6 +58,32 @@ class PytestRunner:
         extra_pytest_args: list[str] | None = None,
     ) -> dict[str, object]:
         artifacts = self.artifact_store.for_stage(stage.name)
+        # Preflight gate (the live tier's `tools.live_session --check`): if it
+        # fails, ABORT the stage without running pytest -- the tier's prerequisites
+        # (models / audio device) aren't ready, which is a skip, not a failure.
+        if stage.preflight:
+            pre = subprocess.run(
+                list(stage.preflight), cwd=".", text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            if pre.returncode != 0:
+                print(
+                    f"[{stage.name}] preflight failed -- skipping tier "
+                    f"({' '.join(stage.preflight)}):\n{pre.stdout}"
+                )
+                artifacts.stdout_path.write_text(
+                    f"PREFLIGHT FAILED ({' '.join(stage.preflight)}):\n{pre.stdout}",
+                    encoding="utf-8", errors="replace",
+                )
+                return {
+                    "stage": stage.name,
+                    "returncode": 0,  # not ready != failed -> don't redden the run
+                    "preflight_failed": True,
+                    "purpose": stage.purpose,
+                    "allowed_to_fail": True,
+                    "command": list(stage.preflight),
+                    "note": "stage skipped: preflight did not pass (models/audio not ready)",
+                }
         args = [
             *_pytest_invocation(),
             *stage.pytest_args(maxfail=maxfail),
@@ -65,6 +92,9 @@ class PytestRunner:
         if extra_pytest_args:
             args.extend(extra_pytest_args)
 
+        # Stage-specific env (the live tier sets SPEAKER_LIVE=1 so the conftest
+        # gate lets live_output tests run); inherit the parent env otherwise.
+        env = {**os.environ, **dict(stage.env)} if stage.env else None
         timeout_sec = self.test_timeout if self.test_timeout is not None else stage.timeout_sec
         start = time.time()
         proc = subprocess.run(
@@ -74,6 +104,7 @@ class PytestRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout_sec,
+            env=env,
         )
         duration = time.time() - start
         artifacts.stdout_path.write_text(proc.stdout, encoding="utf-8", errors="replace")

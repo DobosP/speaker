@@ -35,7 +35,7 @@ def test_no_gate_fails_open():
     assert _engine(gate=None)._should_act_on_final([0.0]) is True
 
 
-def test_unenrolled_gate_fails_open():
+def test_unenrolled_input_gate_fails_open():
     eng = _engine(gate=_gate(OTHER, enrolled_to=None))
     assert not eng._speaker_gate.is_enrolled
     assert eng._should_act_on_final([0.0]) is True

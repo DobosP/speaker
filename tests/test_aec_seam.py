@@ -488,6 +488,7 @@ def test_resolve_dtln_paths_stage1_file_derives_stage2(tmp_path):
 _DTLN1 = os.path.join("pretrained_models", "sherpa", "aec", "dtln_aec_stage1.onnx")
 
 
+@pytest.mark.real_model
 @pytest.mark.skipif(
     not os.path.exists(_DTLN1),
     reason="DTLN-aec ONNX not present (run tools.setup_models --aec-model)",

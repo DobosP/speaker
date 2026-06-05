@@ -48,13 +48,26 @@ def pytest_addoption(parser):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip tests marked ``postgres`` unless ``--postgres`` was passed."""
-    if config.getoption("postgres"):
-        return
-    skip = pytest.mark.skip(reason="requires --postgres (pg_ctl + pgvector)")
+    """Gate side-effectful / opt-in test tiers behind an explicit switch:
+
+    - ``postgres`` tests need ``--postgres`` (pg_ctl + pgvector).
+    - ``live_output`` tests MAKE SOUND on the real speakers/mic (Tier 3). They
+      are skipped unless ``SPEAKER_LIVE=1`` is in the env, so a bare ``pytest``,
+      CI's ``tests.yml``, and the ``unit``/``fast`` stages NEVER play audio --
+      even if a ``live_output`` test is collected. Run them on purpose with
+      ``python tools/run_tests.py live`` (which sets the env after a preflight).
+    """
+    want_pg = config.getoption("postgres")
+    want_live = os.environ.get("SPEAKER_LIVE", "").strip().lower() not in ("", "0", "false", "no")
+    skip_pg = pytest.mark.skip(reason="requires --postgres (pg_ctl + pgvector)")
+    skip_live = pytest.mark.skip(
+        reason="requires SPEAKER_LIVE=1 + real speakers/mic (run: python tools/run_tests.py live)"
+    )
     for item in items:
-        if "postgres" in item.keywords:
-            item.add_marker(skip)
+        if not want_pg and "postgres" in item.keywords:
+            item.add_marker(skip_pg)
+        if not want_live and "live_output" in item.keywords:
+            item.add_marker(skip_live)
 
 
 def pytest_configure(config):

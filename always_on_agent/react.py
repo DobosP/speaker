@@ -52,8 +52,11 @@ PLANNER_SYSTEM = (
 )
 
 FINAL_SYSTEM = (
-    "You are a local, on-device voice assistant. Using the findings, reply in "
-    "one or two short, natural spoken sentences. No markdown or preambles."
+    "You are a local, on-device voice assistant. Answer the user's request in "
+    "one or two short, natural spoken sentences. Use the findings when they are "
+    "relevant; if they are empty or unhelpful, answer from your own knowledge "
+    "instead -- never reply that you cannot answer a general-knowledge question. "
+    "No markdown or preambles."
 )
 
 _LINE = re.compile(r"^\s*(TOOL|FINAL)\b", re.IGNORECASE)
@@ -73,8 +76,15 @@ _ESCALATE_MARKERS = (
     "options",
     "list of",
     "and then",
-    "step by step",
 )
+# NB: "step by step" was DROPPED as an escalation marker. It asks for answer
+# *structure* ("explain how rainbows form step by step"), not for tool use, so it
+# was sending pure general-knowledge questions into the ReAct tool planner -- which
+# then called the local/web search stubs, got an irrelevant hit, and answered with
+# that junk instead of from the model's own knowledge. Genuine gathering turns
+# still escalate via "search"/"find"/"compare"/"latest"/etc.; every routing test
+# that paired "step by step" with one of those (e.g. "compare a and b step by
+# step") still escalates on the surviving marker.
 
 
 @dataclass
@@ -158,8 +168,11 @@ class ReactPlanner:
         if self._persona_name:
             return (
                 f"You are {self._persona_name}, a local, on-device voice assistant. "
-                "Using the findings, reply in one or two short, natural spoken "
-                "sentences. No markdown or preambles."
+                "Answer the user's request in one or two short, natural spoken "
+                "sentences. Use the findings when relevant; if they are empty or "
+                "unhelpful, answer from your own knowledge instead -- never reply "
+                "that you cannot answer a general-knowledge question. No markdown "
+                "or preambles."
             )
         return FINAL_SYSTEM
 
@@ -199,7 +212,8 @@ class ReactPlanner:
         prompt = (
             f"User request: {query}\n"
             f"Findings:\n{gathered}\n\n"
-            "Give the final spoken answer."
+            "Give the final spoken answer. If the findings do not actually help, "
+            "ignore them and answer from your own knowledge."
         )
         return self._drain(self._llm.stream(prompt, system=self._final_system()), cancel)
 

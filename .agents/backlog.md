@@ -52,8 +52,20 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [ ] **SQLite + sqlite-vec memory backend** for mobile (the `Memory` protocol makes it
       a drop-in for the Postgres adapter). See unified doc §6.
 
-## P1 — adopt Gemma 4 (eval in progress, 2026-06-05)
-- [ ] **Evaluate + adopt Gemma 4** (Google, Apache-2.0, ~Mar 2026, actively updated).
+## Gemma 4 — ADOPTED 2026-06-05 (gemma4:12b)
+- [x] **Adopted gemma4:12b** as the model (config.local.json, machine-local).
+      Required updating **Ollama 0.24.0 -> 0.30.5** (0.30.4 412s on the gemma4
+      manifest; 0.30.5 was the gemma4-capable release, GitHub installer since
+      winget lagged). Measured head-to-head via `tools.model_probe` on the 16GB
+      box: **gemma4:12b = 8.1GB VRAM (all GPU, ~7GB headroom), text 4/4, multimodal
+      YES ('Red'), 256K-capable (num_ctx 8192)** -- a clean upgrade from gemma3:4b.
+      gemma4:e4b = tiny (3.3GB VRAM) + 4/4 text but vision NOT wired in Ollama
+      ('Please provide the image...') -> text-only. End-to-end VERIFIED: a host
+      frame via `runtime.set_current_frame()` reaches gemma4 through the capability
+      (image turn -> main tier -> 'Red'); text-only -> fast tier. Suite 1366 green.
+      OPTIONAL next: two-tier gemma4:12b main + gemma4:e4b fast (~11.4GB, fits) for
+      a real fast/main split; bump num_ctx toward 256K if memory/context needs it.
+- [ ] _(superseded eval notes)_ **Evaluate + adopt Gemma 4** (Google, Apache-2.0, ~Mar 2026, actively updated).
       Ollama tags: `e2b`(7.2GB,+audio,128K), `e4b`(9.6GB,+audio,128K),
       **`12b`(7.6GB, image, 256K)** ← smaller than gemma3:12b's ~10GB, the best
       16GB fit; `26b`(18GB, MoE 3.8B active) + `31b`(20GB) too big. All multimodal

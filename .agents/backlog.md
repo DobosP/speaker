@@ -52,6 +52,24 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [ ] **SQLite + sqlite-vec memory backend** for mobile (the `Memory` protocol makes it
       a drop-in for the Postgres adapter). See unified doc §6.
 
+## P1 — adopt Gemma 4 (eval in progress, 2026-06-05)
+- [ ] **Evaluate + adopt Gemma 4** (Google, Apache-2.0, ~Mar 2026, actively updated).
+      Ollama tags: `e2b`(7.2GB,+audio,128K), `e4b`(9.6GB,+audio,128K),
+      **`12b`(7.6GB, image, 256K)** ← smaller than gemma3:12b's ~10GB, the best
+      16GB fit; `26b`(18GB, MoE 3.8B active) + `31b`(20GB) too big. All multimodal
+      (image); E2B/E4B/12B add native AUDIO + VIDEO in. The swap is **config-only**
+      (`OllamaLLM` is model-name-agnostic; the `images=` path already works):
+      `config.local.json` → `device_profiles.desktop_gpu_4090.llm`:
+      `main_model`/`fast_model` → `gemma4:12b`, bump `options.num_ctx` (256K-capable).
+      Harness ready: **`python -m tools.model_probe gemma4:12b gemma4:e4b --pull`**
+      measures VRAM + text quality/TTFT + multimodal, vs the gemma3:4b baseline
+      (4.4GB VRAM, 4/4 text, sees-image yes). BLOCKED on disk: C: had **1.8GB free**
+      (need ~17GB for the 12b+e4b head-to-head). VERIFY when disk is freed:
+      (a) Ollama 0.24.0 loads the gemma4 architecture (else update Ollama),
+      (b) real VRAM on 16GB, (c) multimodal through the pipeline. Follow-ups:
+      audio/video IN = new plumbing; mobile needs a LiteRT/.task Gemma 4 for
+      flutter_gemma. See tools/model_probe.py.
+
 ## P1 — capability / testing (from 2026-06-05 test-unification pass)
 - [x] **Multimodal image plumbing wired (2026-06-05).** The capability layer now
       forwards images: `core/capabilities.py::assistant()` reads `context['images']`

@@ -202,6 +202,15 @@ def main(argv: list[str] | None = None) -> int:
         # stream. Have the engine release its TTS stream when idle so the device is
         # free for the synthetic user's next line (turn-taking hands it back).
         config.setdefault("sherpa", {})["release_output_when_idle"] = True
+    else:
+        # INJECT mode: the assistant's TTS goes to a null sink, so NONE of it
+        # reaches the recognizer -- there is no acoustic echo to cancel. Leaving
+        # AEC on mis-applies the post-AEC residual-FLOOR barge gate, which expects
+        # a real echo floor and rejects a clean injected barge ("0.4s of voiced
+        # speech ... did not trip the gate"). Turn AEC off so barge-in gates on the
+        # reference-coherence/level path over the clean injected audio -- the
+        # injected barge is energy the (teed) playback can't explain, so it fires.
+        config.setdefault("sherpa", {})["aec_enabled"] = False
     if args.barge_in:
         config.setdefault("sherpa", {})["barge_in_enabled"] = True
         if not args.inject:

@@ -7,6 +7,7 @@ answer filtering, and report generation -- so they don't rot.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import tools.live_session.__main__ as live_main
@@ -229,13 +230,15 @@ def _bare_convo(engine, runtime, tmp_path):
 
 
 def test_flush_assistant_joins_streamed_sentences_into_one_event(tmp_path):
-    from core.metrics import TTS_FIRST_AUDIO
+    from core.metrics import LLM_FIRST_TOKEN, TTS_FIRST_AUDIO
 
     eng = _FakeEngine()
     eng.speak("Paris is the capital.", 2.0)
     eng.speak("It has about 2 million people.", 2.4)
     sup = _FakeSupervisor()
-    metrics = _FakeMetrics([_FakeRec({TTS_FIRST_AUDIO: 1.9})])
+    # An answered turn stamps a first token (the pairing key) and, when the TTS
+    # stamp lands, first audio too.
+    metrics = _FakeMetrics([_FakeRec({LLM_FIRST_TOKEN: 1.4, TTS_FIRST_AUDIO: 1.9})])
     c = _bare_convo(eng, _FakeRuntime(eng, sup, metrics), tmp_path)
 
     c._flush_assistant()
@@ -322,12 +325,21 @@ def test_poll_capture_ignores_stale_last_partial_across_turns(tmp_path):
 
 
 def test_consume_latency_pairs_turns_in_order(tmp_path):
-    from core.metrics import TTS_FIRST_AUDIO
+    # Pairing is on LLM_FIRST_TOKEN (every answered turn stamps it), NOT
+    # TTS_FIRST_AUDIO (TTS-side, racy under load in --inject). A record with a
+    # first token but no first-audio stamp must STILL be paired+reported (its
+    # endpoint/final->token numbers are the reliable ones); only a record the
+    # model never answered (no first token) is skipped.
+    from core.metrics import LLM_FIRST_TOKEN, TTS_FIRST_AUDIO
 
-    recs = [_FakeRec({TTS_FIRST_AUDIO: 1.0}), _FakeRec({}), _FakeRec({TTS_FIRST_AUDIO: 5.0})]
+    recs = [
+        _FakeRec({LLM_FIRST_TOKEN: 0.5, TTS_FIRST_AUDIO: 1.0}),  # answered + audio
+        _FakeRec({}),                                            # never answered -> skip
+        _FakeRec({LLM_FIRST_TOKEN: 4.0}),                        # answered, audio MISSING -> still paired
+    ]
     c = _bare_convo(_FakeEngine(), _FakeRuntime(_FakeEngine(), _FakeSupervisor(), _FakeMetrics(recs)), tmp_path)
-    assert c._consume_latency() is not None  # first audio turn
-    assert c._consume_latency() is not None  # third (skips the empty middle)
+    assert c._consume_latency() is not None  # first answered turn
+    assert c._consume_latency() is not None  # third (paired despite no first-audio; skips empty middle)
     assert c._consume_latency() is None      # no more
 
 
@@ -1481,3 +1493,67 @@ def test_capability_latency_turns_route_to_intended_tiers():
     research = [t for t in s.turns if t.note.startswith("RESEARCH")]
     for t in research:
         assert r.score(t.text, {"intent_kind": "research"}) >= 0.3, f"research: {t.text!r}"
+
+
+# --- inject-mode null output stream: MUST drive the PortAudio callback ----------
+#
+# Regression for a SILENT inject-mode break: the engine's playback path was
+# rewritten (2026-06-02) to have PortAudio PULL audio from ``callback=_audio_cb``
+# (where TTS_FIRST_AUDIO is stamped) instead of pushing via ``out.write()``. The
+# inject-mode ``_NullOutputStream`` still only implemented ``write()`` and
+# swallowed the ``callback=`` kwarg, so the callback NEVER fired -> the FIFO never
+# drained -> TTS_FIRST_AUDIO never stamped -> every inject-mode latency field came
+# back null and the run logged a 'tts stuck' watchdog stall. The fix has the fake
+# stream emulate PortAudio by calling the callback from a real-time-paced thread.
+
+
+def test_null_output_stream_drives_the_callback():
+    """The inject sink must CALL the callback (not just accept it) so the engine's
+    callback-driven playback drains the FIFO and stamps TTS_FIRST_AUDIO."""
+    import threading
+
+    from tools.live_session.driver import _NullOutputStream
+
+    calls = {"n": 0, "shape": None, "dtype": None}
+    first = threading.Event()
+
+    def cb(outdata, frames, time_info, status):
+        calls["n"] += 1
+        calls["shape"] = tuple(outdata.shape)
+        calls["dtype"] = str(outdata.dtype)
+        first.set()
+
+    # Construct it exactly as the engine does: sd.OutputStream(channels=1,
+    # samplerate=..., dtype=..., device=..., latency="low", callback=...).
+    out = _NullOutputStream(
+        channels=1, samplerate=22050, dtype="float32",
+        device=None, latency="low", callback=cb,
+    )
+    try:
+        out.start()
+        assert first.wait(timeout=2.0), "callback was never driven (the inject-latency bug)"
+        n_at_stop = calls["n"]
+        assert n_at_stop >= 1
+        # The callback is handed a writable (frames, channels) float32 buffer,
+        # matching what _audio_cb does: ``view = outdata[:, 0]``.
+        assert calls["shape"] is not None and calls["shape"][1] == 1
+        assert calls["dtype"] == "float32"
+    finally:
+        out.stop()
+    # After stop() the pump thread halts: no further callbacks.
+    time.sleep(0.1)
+    settled = calls["n"]
+    time.sleep(0.2)
+    assert calls["n"] == settled, "callback kept firing after stop()"
+
+
+def test_null_output_stream_without_callback_is_a_pure_sink():
+    """No callback (legacy/None) -> behaves as a paced sink, never errors."""
+    from tools.live_session.driver import _NullOutputStream
+
+    out = _NullOutputStream(samplerate=16000, callback=None)
+    out.start()
+    assert out.active is True
+    out.write([0.0] * 16)  # legacy blocking path is a real-time-paced no-op
+    out.stop()
+    assert out.active is False

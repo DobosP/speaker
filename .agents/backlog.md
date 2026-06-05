@@ -62,9 +62,13 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       `clear_current_frame()` let a host machine feed the current frame ambiently
       to every assistant turn. Tests in `tests/test_core_multimodal.py`
       (per-turn/ambient/override/runtime + text-only-carries-none).
-      **REMAINING (the user's future integration, not a bug):** the actual frame
-      SOURCE — a screen-grabber / camera / app that calls `set_current_frame(bytes)`
-      on a cadence — is not built; this PR is the plumbing it will plug into.
+      A screen-capture SOURCE now exists too (`core/screen_capture.py`,
+      `ScreenFrameFeed` + `build_screen_feed`, wired in `core/app.py`), **OFF by
+      default** (`config.screen_capture.enabled`); when on it grabs the screen
+      every `interval_sec` (mss + optional Pillow) and feeds `set_current_frame`.
+      **REMAINING:** on-hardware validation (enable it on a live `--engine sherpa`
+      run and confirm a frame reaches the multimodal model + the latency cost is
+      acceptable), and any non-screen source (camera/app) if wanted.
 
 ## P2
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.

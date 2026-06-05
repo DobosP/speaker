@@ -583,6 +583,14 @@ def main(argv: list[str] | None = None) -> int:
         force_stream_tts=bool(args.stream_tts),
         load_fraction=monitor.load_fraction,
     )
+    # Optional screen-capture feed (OFF by default; config.screen_capture.enabled).
+    # When on, a background loop grabs the screen on a cadence and feeds the latest
+    # frame to the model as ambient visual context (runtime.set_current_frame).
+    from .screen_capture import build_screen_feed
+
+    screen_feed = build_screen_feed(config, runtime)
+    if screen_feed is not None:
+        screen_feed.start()
     try:
         if args.engine == "replay":
             if not args.replay_dir:
@@ -594,6 +602,8 @@ def main(argv: list[str] | None = None) -> int:
             runtime.start(run_bus=False)
             _run_console(runtime, engine)
     finally:
+        if screen_feed is not None:
+            screen_feed.stop()
         try:
             monitor.stop()  # folds baseline/peak/final/deltas into the summary
         except Exception:  # noqa: BLE001

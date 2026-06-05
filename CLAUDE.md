@@ -15,6 +15,20 @@ on-device (raw audio never leaves), with an optional cloud *thinking tier*
 (main planner / research / multimodal summarize / web search) for work that
 exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
 
+> **HARD REQUIREMENT — open-speaker barge-in, NO headphones (owner decision,
+> 2026-06-05).** Barge-in MUST work on the **bare laptop speaker** (the open
+> Realtek speaker). **Headphones are NOT an acceptable requirement and must
+> never be assumed or suggested as the fix.** The earlier "open-speaker
+> barge-in is a hardware limit → use headphones" conclusion in prior session
+> notes is **REJECTED**: robust open-speaker barge-in is required work — the
+> assistant must NOT self-interrupt on its own TTS leaking into the mic, yet
+> MUST cut off promptly on a real talk-over. This is an open P1 (see
+> `.agents/backlog.md`); the levers are AEC calibration (`aec_ref_delay_ms` vs
+> the real ~260ms acoustic delay), gating DTLN to run only while `_speaking`,
+> and triggering barge on the reference-**coherence** detector (which sees the
+> user) rather than the DTLN-suppressed residual. Evidence: the live
+> `logs/runs/run-20260605-204551` bundle (self-interrupts + rejected real barges).
+
 > **Architecture reference:** `docs/unified_architecture.md` is the single
 > **current-truth** overview (how every subsystem is wired today, §0–§13). It
 > sits between `docs/architecture.md` (as-built) and `docs/target_architecture.md`

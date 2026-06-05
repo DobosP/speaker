@@ -52,6 +52,20 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [ ] **SQLite + sqlite-vec memory backend** for mobile (the `Memory` protocol makes it
       a drop-in for the Postgres adapter). See unified doc §6.
 
+## P1 — capability / testing (from 2026-06-05 test-unification pass)
+- [ ] **Multimodal capability drops images (found while writing `test_multimodal_e2e.py`).**
+      The LLM clients forward `images=` faithfully (the routed/raced
+      `SensitivityRouterLLM`/`HedgeLLM` chain is now tested), but the
+      capability/runtime layer **never reads `context['images']`** —
+      `core/capabilities.py::assistant()`/`research_synth()` call
+      `model.stream(query, system=...)` with no images, and nothing populates an
+      image into the turn context (grep for `images` in `core/runtime.py`/
+      `core/capabilities.py`/`always_on_agent/` is empty). So a "describe this
+      image" turn silently loses the image — the vision model is reachable but
+      unfed. Fix: thread an image source → `turn context['images']` →
+      `stream(..., images=...)` in the assistant/main-tier capability, then extend
+      `test_multimodal_e2e.py` with a `registry.invoke('assistant.answer', …)` case.
+
 ## P2
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.
 

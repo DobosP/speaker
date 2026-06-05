@@ -1,0 +1,511 @@
+20:45:51.287 INFO  speaker | run 20260605-204551 started (debug=False) -> logs\runs\run-20260605-204551.txt
+20:45:51.335 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=16827.5MB(49.6%) proc_rss=22.7MB gpu=0.0% gpu_mem=39.0/16376.0MB
+20:45:51.857 INFO  speaker.sysinfo | system mark after_build: cpu=5.5% ram=16899.2MB(49.8%) proc_rss=93.7MB gpu=0.0% gpu_mem=39.0/16376.0MB
+20:45:51.857 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+20:45:54.528 INFO  speaker.sherpa | second-pass final ASR: sense_voice (C:\Users\Paul Work\personal_repos\speaker\pretrained_models\sherpa\sense_voice\model.int8.onnx)
+20:45:54.557 INFO  speaker.sherpa | coherence barge-in ACTIVE (scale-invariant, no enrollment; band (300.0, 3400.0) Hz, margin delta 0.08, confirm 2 frames)
+20:45:55.409 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (C:\Users\Paul Work\personal_repos\speaker\pretrained_models\sherpa\aec\dtln_aec_stage1.onnx)
+20:45:55.409 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=19ms)
+20:45:55.409 WARNING speaker.sherpa | speaker-ID model loaded but no enrollment found -- gate is fail-open (everything passes). Run `python -m core --enroll` to enroll your voice.
+20:45:55.409 INFO  speaker.sherpa | input device: Microphone Array (Realtek(R) Au
+20:45:55.409 INFO  speaker.sherpa | output device: Speakers (Realtek(R) Audio)
+20:45:55.424 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+20:45:55.741 INFO  speaker.runtime | capture state: open (opened at 16000 Hz)
+20:45:55.741 INFO  speaker.sherpa | recording session audio -> logs\runs\run-20260605-204551.wav
+20:45:55.741 INFO  speaker.sherpa | capture loop started (capture_sr=16000 -> asr_sr=16000)
+20:45:57.762 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0010 partials=0 finals=0 speaking=False
+20:45:59.760 DEBUG speaker.sherpa | capture heartbeat: blocks=40 avg_rms=0.0020 partials=0 finals=0 speaking=False
+20:46:01.622 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=19295.4MB(56.8%) proc_rss=901.4MB gpu=55.0% gpu_mem=8724.0/16376.0MB
+20:46:01.762 DEBUG speaker.sherpa | capture heartbeat: blocks=60 avg_rms=0.0011 partials=0 finals=0 speaking=False
+20:46:02.582 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: hi
+20:46:02.582 INFO  speaker.llm.ollama | ollama gemma4:12b: 6.83s ttft=- out=32ch tokens=- | 'hi'
+20:46:03.762 DEBUG speaker.sherpa | capture heartbeat: blocks=80 avg_rms=0.0019 partials=0 finals=0 speaking=False
+20:46:04.486 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: hi
+20:46:04.486 INFO  speaker.llm.ollama | ollama gemma4:12b: 1.90s ttft=- out=32ch tokens=- | 'hi'
+20:46:05.758 DEBUG speaker.sherpa | capture heartbeat: blocks=100 avg_rms=0.0061 partials=0 finals=0 speaking=False
+20:46:07.762 DEBUG speaker.sherpa | capture heartbeat: blocks=120 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:09.762 DEBUG speaker.sherpa | capture heartbeat: blocks=140 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:11.682 DEBUG speaker.sysinfo | system sample: cpu=36.6% ram=19516.2MB(57.5%) proc_rss=902.2MB gpu=77.0% gpu_mem=8726.0/16376.0MB
+20:46:11.762 DEBUG speaker.sherpa | capture heartbeat: blocks=160 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:13.761 DEBUG speaker.sherpa | capture heartbeat: blocks=180 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:15.762 DEBUG speaker.sherpa | capture heartbeat: blocks=200 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:16.194 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Latest utterance: "hi"
+20:46:16.194 INFO  speaker.llm.ollama | ollama gemma4:12b: 11.71s ttft=- out=0ch tokens=- | 'Latest utterance: "hi"'
+20:46:17.761 DEBUG speaker.sherpa | capture heartbeat: blocks=220 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:18.992 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Raw ASR text: hi
+
+Cleaned:
+20:46:18.992 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.80s ttft=- out=2ch tokens=- | 'Raw ASR text: hi Cleaned:'
+20:46:19.822 INFO  speaker.sherpa | sherpa TTS warm-up complete
+20:46:19.822 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+20:46:19.851 DEBUG speaker.sherpa | capture heartbeat: blocks=241 avg_rms=0.0064 partials=0 finals=0 speaking=False
+20:46:21.722 DEBUG speaker.sysinfo | system sample: cpu=34.9% ram=19948.5MB(58.7%) proc_rss=915.8MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:46:21.851 DEBUG speaker.sherpa | capture heartbeat: blocks=261 avg_rms=0.0065 partials=0 finals=0 speaking=False
+20:46:23.851 DEBUG speaker.sherpa | capture heartbeat: blocks=281 avg_rms=0.0063 partials=0 finals=0 speaking=False
+20:46:25.852 DEBUG speaker.sherpa | capture heartbeat: blocks=301 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:27.852 DEBUG speaker.sherpa | capture heartbeat: blocks=321 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:29.851 DEBUG speaker.sherpa | capture heartbeat: blocks=341 avg_rms=0.0063 partials=0 finals=0 speaking=False
+20:46:31.761 DEBUG speaker.sysinfo | system sample: cpu=30.7% ram=19980.2MB(58.8%) proc_rss=916.2MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:46:31.857 DEBUG speaker.sherpa | capture heartbeat: blocks=361 avg_rms=0.0062 partials=0 finals=0 speaking=False
+20:46:33.853 DEBUG speaker.sherpa | capture heartbeat: blocks=381 avg_rms=0.0063 partials=0 finals=0 speaking=False
+20:46:35.854 DEBUG speaker.sherpa | capture heartbeat: blocks=401 avg_rms=0.0063 partials=0 finals=0 speaking=False
+20:46:37.855 DEBUG speaker.sherpa | capture heartbeat: blocks=421 avg_rms=0.0116 partials=0 finals=0 speaking=False
+20:46:39.856 DEBUG speaker.sherpa | capture heartbeat: blocks=441 avg_rms=0.0130 partials=0 finals=0 speaking=False
+20:46:41.821 DEBUG speaker.sysinfo | system sample: cpu=29.9% ram=19966.8MB(58.8%) proc_rss=916.2MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:46:41.857 DEBUG speaker.sherpa | capture heartbeat: blocks=461 avg_rms=0.0109 partials=0 finals=0 speaking=False
+20:46:43.857 DEBUG speaker.sherpa | capture heartbeat: blocks=481 avg_rms=0.0099 partials=0 finals=0 speaking=False
+20:46:45.858 DEBUG speaker.sherpa | capture heartbeat: blocks=501 avg_rms=0.0100 partials=0 finals=0 speaking=False
+20:46:47.859 DEBUG speaker.sherpa | capture heartbeat: blocks=521 avg_rms=0.0096 partials=0 finals=0 speaking=False
+20:46:49.851 DEBUG speaker.sherpa | capture heartbeat: blocks=541 avg_rms=0.0096 partials=0 finals=0 speaking=False
+20:46:51.850 DEBUG speaker.sherpa | capture heartbeat: blocks=561 avg_rms=0.0290 partials=0 finals=0 speaking=False
+20:46:51.871 DEBUG speaker.sysinfo | system sample: cpu=29.9% ram=19952.2MB(58.8%) proc_rss=916.3MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:46:52.271 DEBUG speaker.sherpa | asr partial: 'Hey'
+20:46:52.271 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hey'
+20:46:52.571 DEBUG speaker.sherpa | asr partial: 'Hey is'
+20:46:52.571 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hey is'
+20:46:52.971 DEBUG speaker.sherpa | asr partial: 'Hey is this'
+20:46:52.971 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hey is this'
+20:46:53.273 DEBUG speaker.sherpa | asr partial: 'Hey is this working'
+20:46:53.273 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Hey is this working'
+20:46:53.850 DEBUG speaker.sherpa | capture heartbeat: blocks=581 avg_rms=0.0317 partials=4 finals=0 speaking=False
+20:46:54.250 INFO  speaker.sherpa | asr final: 'Hey, is this working?' (raw 'HEY IS THIS WORKING')
+20:46:54.250 INFO  speaker.runtime | final -> brain: 'Hey, is this working?' (mode=assistant)
+20:46:57.011 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Latest utterance: "Hey, is this working?"
+20:46:57.011 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.76s ttft=- out=3ch tokens=- | 'Latest utterance: "Hey, is this working?"'
+20:46:57.011 INFO  speaker.runtime | addressing decision: ACT for 'Hey, is this working?'
+20:46:59.138 WARNING speaker.watchdog | capture silent: no heartbeat for 5.3s (audio thread crashed or stalled?)
+20:46:59.230 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Raw ASR text: Hey, is this working?
+
+Cleaned:
+20:46:59.230 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.22s ttft=- out=21ch tokens=- | 'Raw ASR text: Hey, is this working? Cleaned:'
+20:46:59.230 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Hey, is this working?'
+20:46:59.230 DEBUG speaker.sherpa | capture heartbeat: blocks=585 avg_rms=0.0094 partials=4 finals=1 speaking=False
+20:46:59.230 INFO  speaker.tasks | task b35ddb7b068c started: mode=assistant capability=assistant.answer input='Hey, is this working?'
+20:46:59.250 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Hey, is this working?'
+20:47:01.323 DEBUG speaker.sherpa | capture heartbeat: blocks=608 avg_rms=0.0096 partials=4 finals=1 speaking=False
+20:47:01.923 DEBUG speaker.sysinfo | system sample: cpu=21.1% ram=19876.7MB(58.5%) proc_rss=927.1MB gpu=79.0% gpu_mem=8726.0/16376.0MB
+20:47:03.315 DEBUG speaker.sherpa | capture heartbeat: blocks=628 avg_rms=0.0096 partials=4 finals=1 speaking=False
+20:47:03.778 INFO  speaker.runtime | assistant: 'Yes, I can hear you clearly.'
+20:47:03.778 DEBUG speaker.sherpa | speaking: 'Yes, I can hear you clearly.' (queue depth=0)
+20:47:03.918 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Hey, is this working?
+20:47:03.918 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.67s ttft=4.36s out=54ch tokens=15 | 'Hey, is this working?'
+20:47:03.918 INFO  speaker.llm | fast tier done in 4.67s (54 chars, streamed)
+20:47:03.918 INFO  speaker.tasks | task b35ddb7b068c completed in 4.69s (54 chars)
+20:47:03.918 INFO  speaker.runtime | assistant: 'How can I help you today?'
+20:47:04.173 INFO  speaker.sherpa | playback opened at 22050 Hz on device default (callback)
+20:47:04.646 DEBUG speaker.sherpa | speaking: 'How can I help you today?' (queue depth=0)
+20:47:05.213 DEBUG speaker.sherpa | barge confirmed: residual=0.0670 floor=0.0085 (+6dB margin) coherence_incoh=0.89 delay=193ms
+20:47:05.313 DEBUG speaker.sherpa | capture heartbeat: blocks=644 avg_rms=0.0216 partials=4 finals=1 speaking=True
+20:47:05.316 DEBUG speaker.sherpa | barge confirmed: residual=0.0456 floor=0.0085 (+6dB margin) coherence_incoh=0.98 delay=193ms
+20:47:05.615 DEBUG speaker.sherpa | barge confirmed: residual=0.0498 floor=0.0087 (+6dB margin) coherence_incoh=0.87 delay=193ms
+20:47:05.713 DEBUG speaker.sherpa | barge confirmed: residual=0.0409 floor=0.0087 (+6dB margin) coherence_incoh=0.80 delay=193ms
+20:47:05.816 DEBUG speaker.sherpa | barge confirmed: residual=0.0350 floor=0.0087 (+6dB margin) coherence_incoh=0.92 delay=193ms
+20:47:06.016 DEBUG speaker.sherpa | barge confirmed: residual=0.0195 floor=0.0086 (+6dB margin) coherence_incoh=0.92 delay=193ms
+20:47:06.113 DEBUG speaker.sherpa | barge confirmed: residual=0.0632 floor=0.0086 (+6dB margin) coherence_incoh=0.87 delay=193ms
+20:47:06.216 DEBUG speaker.sherpa | barge confirmed: residual=0.0304 floor=0.0086 (+6dB margin) coherence_incoh=0.94 delay=193ms
+20:47:06.312 DEBUG speaker.sherpa | barge confirmed: residual=0.0741 floor=0.0086 (+6dB margin) coherence_incoh=0.65 delay=193ms
+20:47:06.312 INFO  speaker.sherpa | barge-in detected
+20:47:06.312 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+20:47:06.313 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+20:47:07.310 DEBUG speaker.sherpa | asr partial: 'How'
+20:47:07.311 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='How'
+20:47:07.392 DEBUG speaker.sherpa | capture heartbeat: blocks=665 avg_rms=0.0275 partials=5 finals=1 speaking=False
+20:47:07.949 INFO  speaker.sherpa | asr final: 'I.' (raw 'HOW')
+20:47:07.951 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+20:47:10.433 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Hey, is this working?
+  - Yes, I can hear you clearly. How can I help you today?
+
+Latest utterance: "I."
+20:47:10.434 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.48s ttft=- out=6ch tokens=- | 'Recent utterances (most recent last): - Hey, is this working? - Yes, I can hear you clearly. How can I help you today? Latest utterance: "I."'
+20:47:10.434 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+20:47:10.434 DEBUG speaker.sherpa | capture heartbeat: blocks=671 avg_rms=0.0097 partials=5 finals=2 speaking=False
+20:47:11.982 DEBUG speaker.sysinfo | system sample: cpu=22.6% ram=20002.3MB(58.9%) proc_rss=942.9MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:47:12.524 DEBUG speaker.sherpa | capture heartbeat: blocks=694 avg_rms=0.0113 partials=5 finals=2 speaking=False
+20:47:14.523 DEBUG speaker.sherpa | capture heartbeat: blocks=714 avg_rms=0.0093 partials=5 finals=2 speaking=False
+20:47:16.524 DEBUG speaker.sherpa | capture heartbeat: blocks=734 avg_rms=0.0095 partials=5 finals=2 speaking=False
+20:47:18.523 DEBUG speaker.sherpa | capture heartbeat: blocks=754 avg_rms=0.0095 partials=5 finals=2 speaking=False
+20:47:20.524 DEBUG speaker.sherpa | capture heartbeat: blocks=774 avg_rms=0.0094 partials=5 finals=2 speaking=False
+20:47:22.048 DEBUG speaker.sysinfo | system sample: cpu=29.8% ram=20008.0MB(58.9%) proc_rss=942.9MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:47:22.524 DEBUG speaker.sherpa | capture heartbeat: blocks=794 avg_rms=0.0095 partials=5 finals=2 speaking=False
+20:47:24.523 DEBUG speaker.sherpa | capture heartbeat: blocks=814 avg_rms=0.0094 partials=5 finals=2 speaking=False
+20:47:26.525 DEBUG speaker.sherpa | capture heartbeat: blocks=834 avg_rms=0.0096 partials=5 finals=2 speaking=False
+20:47:28.524 DEBUG speaker.sherpa | capture heartbeat: blocks=854 avg_rms=0.0108 partials=5 finals=2 speaking=False
+20:47:30.523 DEBUG speaker.sherpa | capture heartbeat: blocks=874 avg_rms=0.0101 partials=5 finals=2 speaking=False
+20:47:31.940 DEBUG speaker.sherpa | asr partial: 'Enemy'
+20:47:31.940 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Enemy'
+20:47:32.101 DEBUG speaker.sysinfo | system sample: cpu=29.3% ram=20012.4MB(58.9%) proc_rss=943.4MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:47:32.239 DEBUG speaker.sherpa | asr partial: 'Enemy alo'
+20:47:32.239 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Enemy alo'
+20:47:32.523 DEBUG speaker.sherpa | capture heartbeat: blocks=894 avg_rms=0.0456 partials=7 finals=2 speaking=False
+20:47:32.541 DEBUG speaker.sherpa | asr partial: 'Enemy alone story'
+20:47:32.543 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Enemy alone story'
+20:47:33.595 INFO  speaker.sherpa | asr final: 'Tell me a long story.' (raw 'ENEMY ALONE STORY')
+20:47:33.595 INFO  speaker.runtime | final -> brain: 'Tell me a long story.' (mode=assistant)
+20:47:35.703 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Hey, is this working?
+  - Yes, I can hear you clearly. How can I help you today?
+  - I.
+
+Latest utterance: "Tell me a long story."
+20:47:35.703 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.11s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Hey, is this working? - Yes, I can hear you clearly. How can I help you today? - I. Latest utterance: "Tell me a long story."'
+20:47:35.703 INFO  speaker.runtime | addressing decision: ACT for 'Tell me a long story.'
+20:47:38.384 WARNING speaker.watchdog | capture silent: no heartbeat for 5.9s (audio thread crashed or stalled?)
+20:47:38.973 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Hey, is this working?
+  - Yes, I can hear you clearly. How can I help you today?
+  - I.
+
+Raw ASR text: Tell me a long story.
+
+Cleaned:
+20:47:38.974 INFO  speaker.llm.ollama | ollama gemma4:12b: 3.27s ttft=- out=21ch tokens=- | 'Recent utterances (most recent last): - Hey, is this working? - Yes, I can hear you clearly. How can I help you today? - I. Raw ASR text: Tell me a long story. Cleaned:'
+20:47:38.974 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Tell me a long story.'
+20:47:38.974 DEBUG speaker.sherpa | capture heartbeat: blocks=905 avg_rms=0.0095 partials=8 finals=3 speaking=False
+20:47:38.975 INFO  speaker.tasks | task ae7bf8aa426f started: mode=assistant capability=assistant.answer input='Tell me a long story.'
+20:47:38.995 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Tell me a long story.'
+20:47:41.065 DEBUG speaker.sherpa | capture heartbeat: blocks=928 avg_rms=0.0096 partials=8 finals=3 speaking=False
+20:47:42.219 DEBUG speaker.sysinfo | system sample: cpu=19.9% ram=20010.0MB(58.9%) proc_rss=943.9MB gpu=78.0% gpu_mem=8726.0/16376.0MB
+20:47:43.065 DEBUG speaker.sherpa | capture heartbeat: blocks=948 avg_rms=0.0095 partials=8 finals=3 speaking=False
+20:47:45.065 DEBUG speaker.sherpa | capture heartbeat: blocks=968 avg_rms=0.0095 partials=8 finals=3 speaking=False
+20:47:46.423 WARNING speaker.watchdog | llm stuck: turn 2 had asr_final but no llm_first_token after 10.7s
+20:47:47.064 DEBUG speaker.sherpa | capture heartbeat: blocks=988 avg_rms=0.0097 partials=8 finals=3 speaking=False
+20:47:48.283 DEBUG speaker.sherpa | asr partial: 'What is'
+20:47:48.283 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What is'
+20:47:48.581 DEBUG speaker.sherpa | asr partial: 'What is the cap'
+20:47:48.581 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What is the cap'
+20:47:48.884 DEBUG speaker.sherpa | asr partial: 'What is the capital'
+20:47:48.885 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What is the capital'
+20:47:49.064 DEBUG speaker.sherpa | capture heartbeat: blocks=1008 avg_rms=0.0407 partials=11 finals=3 speaking=False
+20:47:49.284 DEBUG speaker.sherpa | asr partial: 'What is the capital of'
+20:47:49.284 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What is the capital of'
+20:47:49.582 DEBUG speaker.sherpa | asr partial: 'What is the capital of france'
+20:47:49.584 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='What is the capital of france'
+20:47:50.426 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Tell me a long story.
+20:47:50.426 INFO  speaker.llm.ollama | ollama gemma4:12b: 11.43s ttft=- out=0ch tokens=0 | 'Tell me a long story.'
+20:47:50.426 INFO  speaker.llm | main tier done in 11.44s (0 chars, streamed)
+20:47:50.426 INFO  speaker.tasks | task ae7bf8aa426f completed in 11.45s (39 chars)
+20:47:50.559 INFO  speaker.sherpa | asr final: 'What is the capital of France.' (raw 'WHAT IS THE CAPITAL OF FRANCE')
+20:47:50.559 INFO  speaker.runtime | final -> brain: 'What is the capital of France.' (mode=assistant)
+20:47:52.300 DEBUG speaker.sysinfo | system sample: cpu=30.2% ram=20154.0MB(59.3%) proc_rss=944.6MB gpu=80.0% gpu_mem=8726.0/16376.0MB
+20:47:52.380 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Yes, I can hear you clearly. How can I help you today?
+  - I.
+  - Tell me a long story.
+  - Sorry, I don't have an answer for that.
+
+Latest utterance: "What is the capital of France."
+20:47:52.380 INFO  speaker.llm.ollama | ollama gemma4:12b: 1.82s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Yes, I can hear you clearly. How can I help you today? - I. - Tell me a long story. - Sorry, I don\'t have an answer for that. Latest utterance: "What is the cap'
+20:47:52.380 INFO  speaker.runtime | addressing decision: ACT for 'What is the capital of France.'
+20:47:54.474 WARNING speaker.watchdog | capture silent: no heartbeat for 5.4s (audio thread crashed or stalled?)
+20:47:56.122 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - I.
+  - Tell me a long story.
+  - Sorry, I don't have an answer for that.
+
+Raw ASR text: What is the capital of France.
+
+Cleaned:
+20:47:56.123 INFO  speaker.llm.ollama | ollama gemma4:12b: 3.74s ttft=- out=30ch tokens=- | "Recent utterances (most recent last): - I. - Tell me a long story. - Sorry, I don't have an answer for that. Raw ASR text: What is the capital of France. Cleaned:"
+20:47:56.123 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='What is the capital of France.'
+20:47:56.124 DEBUG speaker.sherpa | capture heartbeat: blocks=1023 avg_rms=0.0101 partials=13 finals=4 speaking=False
+20:47:56.124 INFO  speaker.tasks | task 187772a6d4a7 started: mode=assistant capability=assistant.answer input='What is the capital of France.'
+20:47:56.145 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'What is the capital of France.'
+20:47:58.115 DEBUG speaker.sherpa | capture heartbeat: blocks=1045 avg_rms=0.0099 partials=13 finals=4 speaking=False
+20:48:00.114 DEBUG speaker.sherpa | capture heartbeat: blocks=1065 avg_rms=0.0156 partials=13 finals=4 speaking=False
+20:48:01.098 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: What is the capital of France.
+20:48:01.098 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.95s ttft=4.81s out=31ch tokens=7 | 'What is the capital of France.'
+20:48:01.098 INFO  speaker.llm | fast tier done in 4.95s (31 chars, streamed)
+20:48:01.098 INFO  speaker.tasks | task 187772a6d4a7 completed in 4.97s (31 chars)
+20:48:01.099 INFO  speaker.runtime | assistant: 'The capital of France is Paris.'
+20:48:01.099 DEBUG speaker.sherpa | speaking: 'The capital of France is Paris.' (queue depth=0)
+20:48:01.433 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+20:48:02.127 DEBUG speaker.sherpa | capture heartbeat: blocks=1085 avg_rms=0.0244 partials=13 finals=4 speaking=True
+20:48:02.387 DEBUG speaker.sysinfo | system sample: cpu=22.0% ram=20004.7MB(58.9%) proc_rss=956.1MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:48:04.115 DEBUG speaker.sherpa | capture heartbeat: blocks=1105 avg_rms=0.0129 partials=13 finals=4 speaking=False
+20:48:05.232 DEBUG speaker.sherpa | asr partial: 'Ex'
+20:48:05.232 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ex'
+20:48:05.526 DEBUG speaker.sherpa | asr partial: 'Explain'
+20:48:05.526 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain'
+20:48:05.927 DEBUG speaker.sherpa | asr partial: 'Explain in de'
+20:48:05.927 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in de'
+20:48:06.114 DEBUG speaker.sherpa | capture heartbeat: blocks=1125 avg_rms=0.0685 partials=16 finals=4 speaking=False
+20:48:06.231 DEBUG speaker.sherpa | asr partial: 'Explain in detail'
+20:48:06.231 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in detail'
+20:48:06.528 DEBUG speaker.sherpa | asr partial: 'Explain in details'
+20:48:06.528 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in details'
+20:48:06.826 DEBUG speaker.sherpa | asr partial: 'Explain in details how'
+20:48:06.832 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in details how'
+20:48:07.126 DEBUG speaker.sherpa | asr partial: 'Explain in details how rain'
+20:48:07.126 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in details how rain'
+20:48:07.532 DEBUG speaker.sherpa | asr partial: 'Explain in details how rainbow'
+20:48:07.532 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in details how rainbow'
+20:48:07.826 DEBUG speaker.sherpa | asr partial: 'Explain in details how rainbows'
+20:48:07.826 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in details how rainbows'
+20:48:08.126 DEBUG speaker.sherpa | asr partial: 'Explain in details how rainbows form'
+20:48:08.126 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explain in details how rainbows form'
+20:48:08.214 DEBUG speaker.sherpa | capture heartbeat: blocks=1146 avg_rms=0.0443 partials=23 finals=4 speaking=False
+20:48:09.235 INFO  speaker.sherpa | asr final: 'Explain in details how rainbows form.' (raw 'EXPLAIN IN DETAILS HOW RAINBOWS FORM')
+20:48:09.235 INFO  speaker.runtime | final -> brain: 'Explain in details how rainbows form.' (mode=assistant)
+20:48:11.178 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Tell me a long story.
+  - Sorry, I don't have an answer for that.
+  - What is the capital of France.
+  - The capital of France is Paris.
+
+Latest utterance: "Explain in details how rainbows form."
+20:48:11.178 INFO  speaker.llm.ollama | ollama gemma4:12b: 1.93s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Tell me a long story. - Sorry, I don\'t have an answer for that. - What is the capital of France. - The capital of France is Paris. Latest utterance: "Explain in'
+20:48:11.178 INFO  speaker.runtime | addressing decision: ACT for 'Explain in details how rainbows form.'
+20:48:12.574 DEBUG speaker.sysinfo | system sample: cpu=22.5% ram=20080.6MB(59.1%) proc_rss=970.0MB gpu=79.0% gpu_mem=8726.0/16376.0MB
+20:48:13.583 WARNING speaker.watchdog | capture silent: no heartbeat for 5.4s (audio thread crashed or stalled?)
+20:48:16.728 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Sorry, I don't have an answer for that.
+  - What is the capital of France.
+  - The capital of France is Paris.
+
+Raw ASR text: Explain in details how rainbows form.
+
+Cleaned:
+20:48:16.728 INFO  speaker.llm.ollama | ollama gemma4:12b: 5.55s ttft=- out=37ch tokens=- | "Recent utterances (most recent last): - Sorry, I don't have an answer for that. - What is the capital of France. - The capital of France is Paris. Raw ASR text: Explain in details how rainbows form. C"
+20:48:16.728 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Explain in details how rainbows form.'
+20:48:16.729 DEBUG speaker.sherpa | capture heartbeat: blocks=1156 avg_rms=0.0100 partials=23 finals=5 speaking=False
+20:48:16.729 INFO  speaker.tasks | task 004ad22d5001 started: mode=assistant capability=assistant.answer input='Explain in details how rainbows form.'
+20:48:16.745 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Explain in details how rainbows form.'
+20:48:18.819 DEBUG speaker.sherpa | capture heartbeat: blocks=1179 avg_rms=0.0082 partials=23 finals=5 speaking=False
+20:48:20.818 DEBUG speaker.sherpa | capture heartbeat: blocks=1199 avg_rms=0.0058 partials=23 finals=5 speaking=False
+20:48:21.618 WARNING speaker.watchdog | llm stuck: turn 4 had asr_final but no llm_first_token after 10.4s
+20:48:22.636 DEBUG speaker.sysinfo | system sample: cpu=22.2% ram=20089.7MB(59.2%) proc_rss=970.1MB gpu=80.0% gpu_mem=8726.0/16376.0MB
+20:48:22.818 DEBUG speaker.sherpa | capture heartbeat: blocks=1219 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:24.818 DEBUG speaker.sherpa | capture heartbeat: blocks=1239 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:26.819 DEBUG speaker.sherpa | capture heartbeat: blocks=1259 avg_rms=0.0030 partials=23 finals=5 speaking=False
+20:48:28.021 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Explain in details how rainbows form.
+20:48:28.021 INFO  speaker.llm.ollama | ollama gemma4:12b: 11.28s ttft=- out=0ch tokens=0 | 'Explain in details how rainbows form.'
+20:48:28.021 INFO  speaker.llm | main tier done in 11.28s (0 chars, streamed)
+20:48:28.021 INFO  speaker.tasks | task 004ad22d5001 completed in 11.29s (39 chars)
+20:48:28.819 DEBUG speaker.sherpa | capture heartbeat: blocks=1279 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:30.819 DEBUG speaker.sherpa | capture heartbeat: blocks=1299 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:32.675 DEBUG speaker.sysinfo | system sample: cpu=31.4% ram=20103.8MB(59.2%) proc_rss=970.0MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:48:32.818 DEBUG speaker.sherpa | capture heartbeat: blocks=1319 avg_rms=0.0029 partials=23 finals=5 speaking=False
+20:48:34.819 DEBUG speaker.sherpa | capture heartbeat: blocks=1339 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:36.818 DEBUG speaker.sherpa | capture heartbeat: blocks=1359 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:38.819 DEBUG speaker.sherpa | capture heartbeat: blocks=1379 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:40.919 DEBUG speaker.sherpa | capture heartbeat: blocks=1400 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:42.713 DEBUG speaker.sysinfo | system sample: cpu=29.3% ram=20150.9MB(59.3%) proc_rss=970.0MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:48:42.919 DEBUG speaker.sherpa | capture heartbeat: blocks=1420 avg_rms=0.0029 partials=23 finals=5 speaking=False
+20:48:44.919 DEBUG speaker.sherpa | capture heartbeat: blocks=1440 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:46.919 DEBUG speaker.sherpa | capture heartbeat: blocks=1460 avg_rms=0.0029 partials=23 finals=5 speaking=False
+20:48:48.913 DEBUG speaker.sherpa | capture heartbeat: blocks=1480 avg_rms=0.0027 partials=23 finals=5 speaking=False
+20:48:50.918 DEBUG speaker.sherpa | capture heartbeat: blocks=1500 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:52.765 DEBUG speaker.sysinfo | system sample: cpu=29.4% ram=20154.1MB(59.3%) proc_rss=970.0MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:48:52.918 DEBUG speaker.sherpa | capture heartbeat: blocks=1520 avg_rms=0.0028 partials=23 finals=5 speaking=False
+20:48:54.919 DEBUG speaker.sherpa | capture heartbeat: blocks=1540 avg_rms=0.0031 partials=23 finals=5 speaking=False
+20:48:56.918 DEBUG speaker.sherpa | capture heartbeat: blocks=1560 avg_rms=0.0059 partials=23 finals=5 speaking=False
+20:48:58.913 DEBUG speaker.sherpa | capture heartbeat: blocks=1580 avg_rms=0.0046 partials=23 finals=5 speaking=False
+20:49:00.917 DEBUG speaker.sherpa | capture heartbeat: blocks=1600 avg_rms=0.0161 partials=23 finals=5 speaking=False
+20:49:01.533 DEBUG speaker.sherpa | asr partial: 'Eh'
+20:49:01.533 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Eh'
+20:49:01.835 DEBUG speaker.sherpa | asr partial: 'Are there'
+20:49:01.835 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Are there'
+20:49:02.825 DEBUG speaker.sysinfo | system sample: cpu=29.6% ram=20136.5MB(59.3%) proc_rss=970.0MB gpu=0.0% gpu_mem=8726.0/16376.0MB
+20:49:02.900 INFO  speaker.sherpa | asr final: 'Hey, are you there.' (raw 'ARE THERE')
+20:49:02.900 INFO  speaker.runtime | final -> brain: 'Hey, are you there.' (mode=assistant)
+20:49:06.755 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - What is the capital of France.
+  - The capital of France is Paris.
+  - Explain in details how rainbows form.
+  - Sorry, I don't have an answer for that.
+
+Latest utterance: "Hey, are you there."
+20:49:06.755 INFO  speaker.llm.ollama | ollama gemma4:12b: 3.85s ttft=- out=3ch tokens=- | "Recent utterances (most recent last): - What is the capital of France. - The capital of France is Paris. - Explain in details how rainbows form. - Sorry, I don't have an answer for that. Latest uttera"
+20:49:06.755 INFO  speaker.runtime | addressing decision: ACT for 'Hey, are you there.'
+20:49:06.873 WARNING speaker.watchdog | capture silent: no heartbeat for 6.0s (audio thread crashed or stalled?)
+20:49:11.004 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - The capital of France is Paris.
+  - Explain in details how rainbows form.
+  - Sorry, I don't have an answer for that.
+
+Raw ASR text: Hey, are you there.
+
+Cleaned:
+20:49:11.005 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.25s ttft=- out=19ch tokens=- | "Recent utterances (most recent last): - The capital of France is Paris. - Explain in details how rainbows form. - Sorry, I don't have an answer for that. Raw ASR text: Hey, are you there. Cleaned:"
+20:49:11.005 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Hey, are you there.'
+20:49:11.006 INFO  speaker.tasks | task 0afbf05e0baf started: mode=assistant capability=assistant.answer input='Hey, are you there.'
+20:49:11.006 DEBUG speaker.sherpa | capture heartbeat: blocks=1620 avg_rms=0.0180 partials=25 finals=6 speaking=False
+20:49:11.023 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Hey, are you there.'
+20:49:13.025 DEBUG speaker.sysinfo | system sample: cpu=13.3% ram=20134.4MB(59.3%) proc_rss=970.1MB gpu=82.0% gpu_mem=8728.0/16376.0MB
+20:49:13.094 DEBUG speaker.sherpa | capture heartbeat: blocks=1643 avg_rms=0.0027 partials=25 finals=6 speaking=False
+20:49:14.972 INFO  speaker.runtime | assistant: "I'm here."
+20:49:14.972 DEBUG speaker.sherpa | speaking: "I'm here." (queue depth=0)
+20:49:15.094 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Hey, are you there.
+20:49:15.094 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.07s ttft=3.85s out=29ch tokens=11 | 'Hey, are you there.'
+20:49:15.094 INFO  speaker.llm | fast tier done in 4.06s (29 chars, streamed)
+20:49:15.094 INFO  speaker.tasks | task 0afbf05e0baf completed in 4.09s (29 chars)
+20:49:15.094 INFO  speaker.runtime | assistant: 'How can I help you?'
+20:49:15.115 DEBUG speaker.sherpa | capture heartbeat: blocks=1663 avg_rms=0.0026 partials=25 finals=6 speaking=True
+20:49:15.313 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+20:49:15.603 DEBUG speaker.sherpa | speaking: 'How can I help you?' (queue depth=0)
+20:49:17.195 DEBUG speaker.sherpa | capture heartbeat: blocks=1684 avg_rms=0.0181 partials=25 finals=6 speaking=False
+20:49:18.114 DEBUG speaker.sherpa | asr partial: 'Ex'
+20:49:18.114 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ex'
+20:49:18.417 DEBUG speaker.sherpa | asr partial: 'Expla'
+20:49:18.417 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Expla'
+20:49:18.813 DEBUG speaker.sherpa | asr partial: 'Explained'
+20:49:18.813 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained'
+20:49:19.113 DEBUG speaker.sherpa | asr partial: 'Explained indic'
+20:49:19.113 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained indic'
+20:49:19.195 DEBUG speaker.sherpa | capture heartbeat: blocks=1704 avg_rms=0.0731 partials=29 finals=6 speaking=False
+20:49:19.413 DEBUG speaker.sherpa | asr partial: 'Explained in details'
+20:49:19.413 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details'
+20:49:19.711 DEBUG speaker.sherpa | asr partial: 'Explained in details how'
+20:49:19.712 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details how'
+20:49:20.013 DEBUG speaker.sherpa | asr partial: 'Explained in details how rain'
+20:49:20.013 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details how rain'
+20:49:20.413 DEBUG speaker.sherpa | asr partial: 'Explained in details how rainbow'
+20:49:20.413 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details how rainbow'
+20:49:20.713 DEBUG speaker.sherpa | asr partial: 'Explained in details how rainbows'
+20:49:20.713 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details how rainbows'
+20:49:21.012 DEBUG speaker.sherpa | asr partial: 'Explained in details how rainbows are form'
+20:49:21.012 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details how rainbows are form'
+20:49:21.194 DEBUG speaker.sherpa | capture heartbeat: blocks=1724 avg_rms=0.0453 partials=35 finals=6 speaking=False
+20:49:21.313 DEBUG speaker.sherpa | asr partial: 'Explained in details how rainbows are formed'
+20:49:21.313 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Explained in details how rainbows are formed'
+20:49:22.405 INFO  speaker.sherpa | asr final: 'Explain in details how rainbows are formed.' (raw 'EXPLAINED IN DETAILS HOW RAINBOWS ARE FORMED')
+20:49:22.405 INFO  speaker.runtime | final -> brain: 'Explain in details how rainbows are formed.' (mode=assistant)
+20:49:23.090 DEBUG speaker.sysinfo | system sample: cpu=29.6% ram=20147.0MB(59.3%) proc_rss=971.8MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:49:24.493 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Explain in details how rainbows form.
+  - Sorry, I don't have an answer for that.
+  - Hey, are you there.
+  - I'm here. How can I help you?
+
+Latest utterance: "Explain in details how rainbows are formed."
+20:49:24.493 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.09s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Explain in details how rainbows form. - Sorry, I don\'t have an answer for that. - Hey, are you there. - I\'m here. How can I help you? Latest utterance: "Explain'
+20:49:24.493 INFO  speaker.runtime | addressing decision: ACT for 'Explain in details how rainbows are formed.'
+20:49:26.963 WARNING speaker.watchdog | capture silent: no heartbeat for 5.8s (audio thread crashed or stalled?)
+20:49:29.841 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Sorry, I don't have an answer for that.
+  - Hey, are you there.
+  - I'm here. How can I help you?
+
+Raw ASR text: Explain in details how rainbows are formed.
+
+Cleaned:
+20:49:29.841 INFO  speaker.llm.ollama | ollama gemma4:12b: 5.35s ttft=- out=43ch tokens=- | "Recent utterances (most recent last): - Sorry, I don't have an answer for that. - Hey, are you there. - I'm here. How can I help you? Raw ASR text: Explain in details how rainbows are formed. Cleaned:"
+20:49:29.841 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Explain in details how rainbows are formed.'
+20:49:29.843 DEBUG speaker.sherpa | capture heartbeat: blocks=1736 avg_rms=0.0028 partials=36 finals=7 speaking=False
+20:49:29.843 INFO  speaker.tasks | task 69f7957a7243 started: mode=assistant capability=assistant.answer input='Explain in details how rainbows are formed.'
+20:49:29.863 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Explain in details how rainbows are formed.'
+20:49:31.832 DEBUG speaker.sherpa | capture heartbeat: blocks=1758 avg_rms=0.0032 partials=36 finals=7 speaking=False
+20:49:33.141 DEBUG speaker.sysinfo | system sample: cpu=16.0% ram=20174.1MB(59.4%) proc_rss=971.9MB gpu=76.0% gpu_mem=8728.0/16376.0MB
+20:49:33.832 DEBUG speaker.sherpa | capture heartbeat: blocks=1778 avg_rms=0.0032 partials=36 finals=7 speaking=False
+20:49:35.012 WARNING speaker.watchdog | llm stuck: turn 6 had asr_final but no llm_first_token after 10.5s
+20:49:35.833 DEBUG speaker.sherpa | capture heartbeat: blocks=1798 avg_rms=0.0031 partials=36 finals=7 speaking=False
+20:49:37.832 DEBUG speaker.sherpa | capture heartbeat: blocks=1818 avg_rms=0.0030 partials=36 finals=7 speaking=False
+20:49:39.833 DEBUG speaker.sherpa | capture heartbeat: blocks=1838 avg_rms=0.0041 partials=36 finals=7 speaking=False
+20:49:40.502 INFO  speaker.runtime | assistant: 'A rainbow forms when sunlight passes through raindrops in the atmosphere.'
+20:49:40.502 DEBUG speaker.sherpa | speaking: 'A rainbow forms when sunlight passes through raindrops in the atmosphere.' (queue depth=0)
+20:49:40.849 INFO  speaker.runtime | assistant: 'As light enters a droplet, it slows down and bends, which is called refraction.'
+20:49:40.859 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+20:49:41.487 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Explain in details how rainbows are formed.
+20:49:41.487 INFO  speaker.llm.ollama | ollama gemma4:12b: 11.63s ttft=10.39s out=323ch tokens=60 | 'Explain in details how rainbows are formed.'
+20:49:41.488 INFO  speaker.llm | main tier done in 11.62s (323 chars, streamed)
+20:49:41.488 INFO  speaker.tasks | task 69f7957a7243 completed in 11.65s (323 chars)
+20:49:41.488 INFO  speaker.runtime | assistant: 'Because white light is actually made up of many different colors, each color bends at a slightly different angle based on its wavelength, causing the light to spread out'
+20:49:41.553 DEBUG speaker.sherpa | AEC diverged (out_rms=0.023 >> near_rms=0.009); reset + passthrough
+20:49:41.652 DEBUG speaker.sherpa | barge confirmed: residual=0.0136 floor=0.0051 (+6dB margin) coherence_incoh=0.84 delay=281ms
+20:49:41.757 DEBUG speaker.sherpa | barge confirmed: residual=0.0365 floor=0.0051 (+6dB margin) coherence_incoh=0.41 delay=281ms
+20:49:41.852 DEBUG speaker.sherpa | capture heartbeat: blocks=1858 avg_rms=0.0194 partials=36 finals=7 speaking=True
+20:49:41.852 DEBUG speaker.sherpa | barge confirmed: residual=0.0220 floor=0.0051 (+6dB margin) coherence_incoh=0.36 delay=281ms
+20:49:41.955 DEBUG speaker.sherpa | barge confirmed: residual=0.0231 floor=0.0051 (+6dB margin) coherence_incoh=0.79 delay=281ms
+20:49:41.955 INFO  speaker.sherpa | barge-in detected
+20:49:41.955 INFO  speaker.supervisor | cancel_all: epoch=3 0 active, 0 queued, 0 pending-confirm
+20:49:41.955 INFO  speaker.supervisor | cancel_all: epoch=4 0 active, 0 queued, 0 pending-confirm
+20:49:42.851 DEBUG speaker.sherpa | asr partial: 'Was'
+20:49:42.851 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Was'
+20:49:43.177 DEBUG speaker.sysinfo | system sample: cpu=31.3% ram=20222.4MB(59.5%) proc_rss=1020.2MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:49:43.602 INFO  speaker.sherpa | asr final: 'Was.' (raw 'WAS')
+20:49:43.602 INFO  speaker.runtime | final -> brain: 'Was.' (mode=assistant)
+20:49:47.062 WARNING speaker.watchdog | capture silent: no heartbeat for 5.2s (audio thread crashed or stalled?)
+20:49:51.958 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - Hey, are you there.
+  - I'm here. How can I help you?
+  - Explain in details how rainbows are formed.
+  - A rainbow forms when sunlight passes through raindrops in the atmosphere. As light enters a droplet, it slows down and bends, which is called refraction. Because white light is actually made up of many different colors, each color bends at a slightly different angle based on its wavelength, causing the light to spread out
+
+Latest utterance: "Was."
+20:49:51.958 INFO  speaker.llm.ollama | ollama gemma4:12b: 8.36s ttft=- out=6ch tokens=- | "Recent utterances (most recent last): - Hey, are you there. - I'm here. How can I help you? - Explain in details how rainbows are formed. - A rainbow forms when sunlight passes through raindrops in th"
+20:49:51.958 INFO  speaker.runtime | addressing decision: INGEST for 'Was.'
+20:49:51.958 DEBUG speaker.sherpa | capture heartbeat: blocks=1876 avg_rms=0.0074 partials=37 finals=8 speaking=False
+20:49:53.269 DEBUG speaker.sysinfo | system sample: cpu=11.9% ram=20385.6MB(60.0%) proc_rss=1020.5MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:49:54.048 DEBUG speaker.sherpa | capture heartbeat: blocks=1899 avg_rms=0.0060 partials=37 finals=8 speaking=False
+20:49:56.048 DEBUG speaker.sherpa | capture heartbeat: blocks=1919 avg_rms=0.0086 partials=37 finals=8 speaking=False
+20:49:58.048 DEBUG speaker.sherpa | capture heartbeat: blocks=1939 avg_rms=0.0063 partials=37 finals=8 speaking=False
+20:50:00.146 DEBUG speaker.sherpa | capture heartbeat: blocks=1960 avg_rms=0.0063 partials=37 finals=8 speaking=False
+20:50:02.147 DEBUG speaker.sherpa | capture heartbeat: blocks=1980 avg_rms=0.0061 partials=37 finals=8 speaking=False
+20:50:03.314 DEBUG speaker.sysinfo | system sample: cpu=30.3% ram=20402.5MB(60.1%) proc_rss=1020.5MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:50:04.148 DEBUG speaker.sherpa | capture heartbeat: blocks=2000 avg_rms=0.0046 partials=37 finals=8 speaking=False
+20:50:06.147 DEBUG speaker.sherpa | capture heartbeat: blocks=2020 avg_rms=0.0056 partials=37 finals=8 speaking=False
+20:50:08.147 DEBUG speaker.sherpa | capture heartbeat: blocks=2040 avg_rms=0.0068 partials=37 finals=8 speaking=False
+20:50:10.147 DEBUG speaker.sherpa | capture heartbeat: blocks=2060 avg_rms=0.0260 partials=37 finals=8 speaking=False
+20:50:12.148 DEBUG speaker.sherpa | capture heartbeat: blocks=2080 avg_rms=0.0341 partials=37 finals=8 speaking=False
+20:50:13.356 DEBUG speaker.sysinfo | system sample: cpu=29.9% ram=20393.1MB(60.1%) proc_rss=1020.5MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:50:14.147 DEBUG speaker.sherpa | capture heartbeat: blocks=2100 avg_rms=0.0210 partials=37 finals=8 speaking=False
+20:50:16.148 DEBUG speaker.sherpa | capture heartbeat: blocks=2120 avg_rms=0.0055 partials=37 finals=8 speaking=False
+20:50:18.146 DEBUG speaker.sherpa | capture heartbeat: blocks=2140 avg_rms=0.0054 partials=37 finals=8 speaking=False
+20:50:20.147 DEBUG speaker.sherpa | capture heartbeat: blocks=2160 avg_rms=0.0037 partials=37 finals=8 speaking=False
+20:50:22.148 DEBUG speaker.sherpa | capture heartbeat: blocks=2180 avg_rms=0.0225 partials=37 finals=8 speaking=False
+20:50:22.664 DEBUG speaker.sherpa | asr partial: 'Tell me'
+20:50:22.666 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me'
+20:50:22.963 DEBUG speaker.sherpa | asr partial: 'Tell me how ra'
+20:50:22.965 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me how ra'
+20:50:23.263 DEBUG speaker.sherpa | asr partial: 'Tell me how rainbow'
+20:50:23.263 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me how rainbow'
+20:50:23.393 DEBUG speaker.sysinfo | system sample: cpu=30.1% ram=20414.8MB(60.1%) proc_rss=1020.6MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:50:23.663 DEBUG speaker.sherpa | asr partial: 'Tell me how rainbows'
+20:50:23.663 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me how rainbows'
+20:50:23.963 DEBUG speaker.sherpa | asr partial: 'Tell me how rainbows are for'
+20:50:23.967 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me how rainbows are for'
+20:50:24.147 DEBUG speaker.sherpa | capture heartbeat: blocks=2200 avg_rms=0.0533 partials=42 finals=8 speaking=False
+20:50:24.261 DEBUG speaker.sherpa | asr partial: 'Tell me how rainbows are formed'
+20:50:24.261 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me how rainbows are formed'
+20:50:25.321 INFO  speaker.sherpa | asr final: 'Rainbows are formed.' (raw 'TELL ME HOW RAINBOWS ARE FORMED')
+20:50:25.321 INFO  speaker.runtime | final -> brain: 'Rainbows are formed.' (mode=assistant)
+20:50:29.411 WARNING speaker.watchdog | capture silent: no heartbeat for 5.3s (audio thread crashed or stalled?)
+20:50:29.946 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Recent utterances (most recent last):
+  - I'm here. How can I help you?
+  - Explain in details how rainbows are formed.
+  - A rainbow forms when sunlight passes through raindrops in the atmosphere. As light enters a droplet, it slows down and bends, which is called refraction. Because white light is actually made up of many different colors, each color bends at a slightly different angle based on its wavelength, causing the light to spread out
+  - Was.
+
+Latest utterance: "Rainbows are formed."
+20:50:29.946 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.62s ttft=- out=6ch tokens=- | "Recent utterances (most recent last): - I'm here. How can I help you? - Explain in details how rainbows are formed. - A rainbow forms when sunlight passes through raindrops in the atmosphere. As light"
+20:50:29.946 INFO  speaker.runtime | addressing decision: INGEST for 'Rainbows are formed.'
+20:50:29.946 DEBUG speaker.sherpa | capture heartbeat: blocks=2212 avg_rms=0.0056 partials=43 finals=9 speaking=False
+20:50:32.037 DEBUG speaker.sherpa | capture heartbeat: blocks=2235 avg_rms=0.0031 partials=43 finals=9 speaking=False
+20:50:33.486 DEBUG speaker.sysinfo | system sample: cpu=21.2% ram=20769.6MB(61.2%) proc_rss=1020.6MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:50:34.037 DEBUG speaker.sherpa | capture heartbeat: blocks=2255 avg_rms=0.0036 partials=43 finals=9 speaking=False
+20:50:36.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2275 avg_rms=0.0077 partials=43 finals=9 speaking=False
+20:50:38.037 DEBUG speaker.sherpa | capture heartbeat: blocks=2295 avg_rms=0.0050 partials=43 finals=9 speaking=False
+20:50:40.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2315 avg_rms=0.0032 partials=43 finals=9 speaking=False
+20:50:42.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2335 avg_rms=0.0032 partials=43 finals=9 speaking=False
+20:50:43.526 DEBUG speaker.sysinfo | system sample: cpu=30.0% ram=20764.0MB(61.1%) proc_rss=1020.6MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:50:44.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2355 avg_rms=0.0032 partials=43 finals=9 speaking=False
+20:50:46.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2375 avg_rms=0.0044 partials=43 finals=9 speaking=False
+20:50:48.034 DEBUG speaker.sherpa | capture heartbeat: blocks=2395 avg_rms=0.0031 partials=43 finals=9 speaking=False
+20:50:50.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2415 avg_rms=0.0065 partials=43 finals=9 speaking=False
+20:50:52.037 DEBUG speaker.sherpa | capture heartbeat: blocks=2435 avg_rms=0.0031 partials=43 finals=9 speaking=False
+20:50:53.573 DEBUG speaker.sysinfo | system sample: cpu=29.9% ram=20739.9MB(61.1%) proc_rss=1020.8MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:50:54.037 DEBUG speaker.sherpa | capture heartbeat: blocks=2455 avg_rms=0.0031 partials=43 finals=9 speaking=False
+20:50:56.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2475 avg_rms=0.0048 partials=43 finals=9 speaking=False
+20:50:58.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2495 avg_rms=0.0031 partials=43 finals=9 speaking=False
+20:51:00.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2515 avg_rms=0.0037 partials=43 finals=9 speaking=False
+20:51:02.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2535 avg_rms=0.0033 partials=43 finals=9 speaking=False
+20:51:03.613 DEBUG speaker.sysinfo | system sample: cpu=30.3% ram=20756.8MB(61.1%) proc_rss=1020.8MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:51:04.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2555 avg_rms=0.0033 partials=43 finals=9 speaking=False
+20:51:06.036 DEBUG speaker.sherpa | capture heartbeat: blocks=2575 avg_rms=0.0034 partials=43 finals=9 speaking=False
+20:51:08.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2595 avg_rms=0.0036 partials=43 finals=9 speaking=False
+20:51:10.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2615 avg_rms=0.0040 partials=43 finals=9 speaking=False
+20:51:12.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2635 avg_rms=0.0047 partials=43 finals=9 speaking=False
+20:51:13.650 DEBUG speaker.sysinfo | system sample: cpu=29.9% ram=20755.6MB(61.1%) proc_rss=1020.8MB gpu=0.0% gpu_mem=8728.0/16376.0MB
+20:51:14.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2655 avg_rms=0.0053 partials=43 finals=9 speaking=False
+20:51:16.035 DEBUG speaker.sherpa | capture heartbeat: blocks=2675 avg_rms=0.0041 partials=43 finals=9 speaking=False

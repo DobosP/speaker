@@ -12,6 +12,20 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - _(none open — full logic suite green: 1205 passed, 10 skipped)_
 
 ## P1 — voice / audio (migrated from session_2026-06-01 handoff)
+- [ ] **★ HARD REQUIREMENT (owner, 2026-06-05): open-speaker barge-in WITHOUT
+      headphones.** Barge-in MUST work on the bare laptop speaker; headphones are
+      NOT acceptable and the prior "hardware-limit → use headphones" stance is
+      REJECTED (see CLAUDE.md). Currently BROKEN: the live run-20260605-204551 test
+      self-interrupted (the assistant barged its own TTS leaking into the open mic)
+      AND rejected quiet real talk-overs. Solve it: (a) the gate must distinguish
+      the assistant's own echo from a real user voice during double-talk WITHOUT
+      headphones, (b) `aec_ref_delay_ms` is pinned 19ms but the real acoustic delay
+      is ~260ms (coherence logs 258-337ms) → CALIBRATE with `tools/echo_probe.py`,
+      (c) gate DTLN to run only while `_speaking` (sherpa.py engage gate), (d) trigger
+      barge on the reference-COHERENCE detector (sees the user) not the
+      DTLN-suppressed residual, (e) loosen `barge_in_min_speech_sec`/residual margin
+      so a 0.4s "stop" lands. Validate: zero self-interrupts AND a real barge cuts
+      within ~0.8s, on the OPEN SPEAKER.
 - [ ] **Enable + validate AEC on real hardware** (needs the mic). `config.local.json`
       → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"`. Calibrate
       `aec_ref_delay_ms` with `tools/echo_probe.py`. Confirm no self-interrupt AND a

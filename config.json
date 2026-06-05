@@ -3,6 +3,15 @@
   "device": "desktop",
   "_warm_on_start_comment": "Pre-warm the LLM tiers at startup (core/runtime.py) so turn 1 doesn't pay the ~3s model cold-load on the user's first utterance (measured ttft 3.17s cold vs ~0.27s warm). Set false to measure cold start.",
   "warm_on_start": true,
+  "_screen_capture_comment": "OFF by default. When enabled, a background loop (core/screen_capture.py) grabs the screen every interval_sec, encodes a frame, and feeds it to the model as AMBIENT visual context via runtime.set_current_frame -- so the assistant sees what you're doing. Needs `pip install mss` (and Pillow to downscale+JPEG; without it sends a full-res PNG). PRIVACY: this continuously reads your screen while on; an image-bearing turn is forced to the on-device/main tier and treated as PRIVATE (never a public cloud chain, §9.7). monitor: mss index (1=primary, 0=all). max_width: downscale longest edge (0=full). format: jpeg|png.",
+  "screen_capture": {
+    "enabled": false,
+    "interval_sec": 2.0,
+    "monitor": 1,
+    "max_width": 1280,
+    "format": "jpeg",
+    "jpeg_quality": 70
+  },
   "llm": {
     "backend": "ollama",
     "main_model": "gemma3:12b",

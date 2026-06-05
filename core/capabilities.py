@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass
 from threading import Event
-from typing import Callable, Iterator, Mapping, Optional
+from typing import Callable, Iterator, Mapping, Optional, Sequence
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
@@ -162,6 +162,7 @@ def attach_llm_capabilities(
     recent_context: Optional[RecentContextConfig] = None,
     live_routing: bool = False,
     load_snapshot: Optional[Callable[[], Optional[float]]] = None,
+    image_provider: Optional[Callable[[], Optional[Sequence[object]]]] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -311,7 +312,26 @@ def attach_llm_capabilities(
                     live["load"] = load
             if live:
                 context[LIVE_CONTEXT_KEY] = live
+        # Visual context: an image attached to THIS turn (context['images'], set
+        # explicitly per turn) takes precedence over the AMBIENT frame a machine
+        # feeds continuously via image_provider (e.g. the current screen). Only the
+        # main/multimodal model can SEE an image -- the fast tier (e.g. gemma3:1b)
+        # ignores or chokes on it -- so an image-bearing turn is forced to main,
+        # and its sensitivity floats to PRIVATE so a screen capture never rides a
+        # public cloud chain (docs/target_architecture.md §9.7).
+        images = context.get("images")
+        if not images and image_provider is not None:
+            try:
+                images = image_provider()
+            except Exception:  # noqa: BLE001 - the frame feed is best-effort, never fatal
+                images = None
+        if images:
+            context["sensitivity"] = most_sensitive(
+                str(context.get("sensitivity") or PRIVATE), PRIVATE
+            )
         tier = router.choose(query, context)
+        if images:
+            tier = "main"
         model = llm if tier == "main" else fast
         if debug_routing:
             print(
@@ -342,6 +362,8 @@ def attach_llm_capabilities(
             # signal, or a pure-local model) is byte-identical. Forwarded only to
             # a backend that accepts the PINNED-CONTRACT keyword.
             stream_kwargs: dict[str, object] = {"system": system_for_call}
+            if images:
+                stream_kwargs["images"] = list(images)
             if live_routing:
                 base_ms = _base_hedge_delay_ms(model)
                 if base_ms is not None:

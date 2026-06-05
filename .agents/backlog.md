@@ -53,18 +53,18 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       a drop-in for the Postgres adapter). See unified doc §6.
 
 ## P1 — capability / testing (from 2026-06-05 test-unification pass)
-- [ ] **Multimodal capability drops images (found while writing `test_multimodal_e2e.py`).**
-      The LLM clients forward `images=` faithfully (the routed/raced
-      `SensitivityRouterLLM`/`HedgeLLM` chain is now tested), but the
-      capability/runtime layer **never reads `context['images']`** —
-      `core/capabilities.py::assistant()`/`research_synth()` call
-      `model.stream(query, system=...)` with no images, and nothing populates an
-      image into the turn context (grep for `images` in `core/runtime.py`/
-      `core/capabilities.py`/`always_on_agent/` is empty). So a "describe this
-      image" turn silently loses the image — the vision model is reachable but
-      unfed. Fix: thread an image source → `turn context['images']` →
-      `stream(..., images=...)` in the assistant/main-tier capability, then extend
-      `test_multimodal_e2e.py` with a `registry.invoke('assistant.answer', …)` case.
+- [x] **Multimodal image plumbing wired (2026-06-05).** The capability layer now
+      forwards images: `core/capabilities.py::assistant()` reads `context['images']`
+      (per-turn) or an ambient `image_provider()`, forwards them as
+      `stream(images=…)`, forces the **main/multimodal** tier (the fast 1b can't
+      see images), and floats sensitivity to PRIVATE (a screen capture never rides
+      a public cloud chain, §9.7). `VoiceRuntime.set_current_frame(image)` /
+      `clear_current_frame()` let a host machine feed the current frame ambiently
+      to every assistant turn. Tests in `tests/test_core_multimodal.py`
+      (per-turn/ambient/override/runtime + text-only-carries-none).
+      **REMAINING (the user's future integration, not a bug):** the actual frame
+      SOURCE — a screen-grabber / camera / app that calls `set_current_frame(bytes)`
+      on a cadence — is not built; this PR is the plumbing it will plug into.
 
 ## P2
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.

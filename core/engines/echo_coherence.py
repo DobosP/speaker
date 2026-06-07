@@ -101,6 +101,7 @@ class EchoCoherenceDetector:
         margin_delta: float = 0.08,
         sigma_k: float = 3.0,
         confirm_frames: int = 1,
+        warmup_frames: int = 5,
         nperseg: int = 256,
         baseline_alpha: float = 0.2,
         var_alpha: float = 0.15,
@@ -122,6 +123,25 @@ class EchoCoherenceDetector:
         # confirmed moment can never fall through to the legacy level gate.
         self._confirm_frames = max(1, int(confirm_frames))
         self._consec = 0  # consecutive over-threshold frames so far (capture thread)
+        # Warm-up seeding (nonlinear-echo robustness). The control chart only LEARNS
+        # the room's echo baseline on below-threshold (echo-only) frames; if the
+        # echo's incoherent fraction is PERSISTENTLY above the provisional threshold
+        # -- which a nonlinear/clipping open speaker can produce -- the learning
+        # branch never runs, _baseline stays pinned at ``provisional_baseline``, and
+        # every echo frame reads as a barge (self-interrupt that no confirm/sustain
+        # can prevent, only delay). To break that starvation, the first
+        # ``warmup_frames`` echo-bearing blocks after each reset/new speaking run --
+        # which are echo-only by construction (a reply has just started; the user has
+        # not begun talking over it) -- seed the baseline UNCONDITIONALLY (running
+        # mean), even above the provisional threshold, so the chart learns this
+        # room+speaker's TRUE echo floor (be it 0.2 or 0.8). During warm-up the
+        # verdict is always echo-only (False): a barge in the first ~Nx0.1 s of a
+        # reply is rare, and is only DELAYED, never lost. After warm-up the normal
+        # mean+k*sigma control chart runs from the learned floor.
+        self._warmup_frames = max(0, int(warmup_frames))
+        self._warmup_left = self._warmup_frames
+        self._warmup_sum = 0.0
+        self._warmup_n = 0
         self.nperseg = int(nperseg)
         self.min_ref_rms = float(min_ref_rms)
         self.max_delay = max(1, int(self.sample_rate * max_delay_ms / 1000.0))
@@ -178,6 +198,9 @@ class EchoCoherenceDetector:
             self._ref_len = 0
         self._delays.clear()
         self._consec = 0  # new turn starts with a fresh confirmation run
+        self._warmup_left = self._warmup_frames  # re-seed the echo floor each run
+        self._warmup_sum = 0.0
+        self._warmup_n = 0
 
     def _snapshot_ref(self) -> np.ndarray:
         with self._lock:
@@ -226,6 +249,26 @@ class EchoCoherenceDetector:
             return None  # nothing actually playing -> no echo reference to test
 
         frac = self._incoherent_fraction(x, seg)
+        # Warm-up seeding: for the first ``warmup_frames`` echo-bearing blocks after a
+        # reset, fold ``frac`` into the baseline UNCONDITIONALLY (running mean) so the
+        # control chart learns this room+speaker's true echo floor instead of
+        # starving with _baseline pinned at provisional_baseline (which makes a
+        # persistently-over-threshold nonlinear echo self-interrupt). Always echo-only
+        # (False) during warm-up. ``raw_delay`` still feeds the alignment history.
+        if self._warmup_left > 0:
+            self._warmup_left -= 1
+            self._warmup_sum += frac
+            self._warmup_n += 1
+            self._baseline = self._warmup_sum / self._warmup_n
+            self._delays.append(raw_delay)
+            self._consec = 0
+            self.last_incoherent_fraction = frac
+            self.last_delay_ms = 1000.0 * use_delay / self.sample_rate
+            self.last_baseline = self._baseline
+            self.last_effective_margin = self.margin_delta
+            self.last_consec = 0
+            self.last_decided = False
+            return False
         # Self-calibrating EWMA control chart: a barge must clear the room's mean
         # echo incoherence by the LARGER of the configured floor and k standard
         # deviations of that room's own echo fluctuation. No fixed per-room

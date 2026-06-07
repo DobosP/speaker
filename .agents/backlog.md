@@ -12,20 +12,29 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - _(none open — full logic suite green: 1205 passed, 10 skipped)_
 
 ## P1 — voice / audio (migrated from session_2026-06-01 handoff)
-- [ ] **★ HARD REQUIREMENT (owner, 2026-06-05): open-speaker barge-in WITHOUT
+- [~] **★ HARD REQUIREMENT (owner, 2026-06-05): open-speaker barge-in WITHOUT
       headphones.** Barge-in MUST work on the bare laptop speaker; headphones are
-      NOT acceptable and the prior "hardware-limit → use headphones" stance is
-      REJECTED (see CLAUDE.md). Currently BROKEN: the live run-20260605-204551 test
-      self-interrupted (the assistant barged its own TTS leaking into the open mic)
-      AND rejected quiet real talk-overs. Solve it: (a) the gate must distinguish
-      the assistant's own echo from a real user voice during double-talk WITHOUT
-      headphones, (b) `aec_ref_delay_ms` is pinned 19ms but the real acoustic delay
-      is ~260ms (coherence logs 258-337ms) → CALIBRATE with `tools/echo_probe.py`,
-      (c) gate DTLN to run only while `_speaking` (sherpa.py engage gate), (d) trigger
-      barge on the reference-COHERENCE detector (sees the user) not the
-      DTLN-suppressed residual, (e) loosen `barge_in_min_speech_sec`/residual margin
-      so a 0.4s "stop" lands. Validate: zero self-interrupts AND a real barge cuts
-      within ~0.8s, on the OPEN SPEAKER.
+      NOT acceptable and the "hardware-limit → use headphones" stance is REJECTED.
+      **CODE FIX LANDED 2026-06-07 (coherence-primary redesign, commit fe0617b →
+      main; full audit + handoff: docs/session_2026-06-07_barge_in_coherence_primary.md).**
+      The trigger is now the scale-invariant reference-COHERENCE detector fed the
+      RAW pre-AEC mic (it sees the user; AEC removes the correlation, so the old
+      post-AEC feed was the self-interrupt bug). The residual LEVEL gate is demoted
+      to a fallback. Adversarial review found + fixed a control-chart STARVATION
+      blocker (baseline froze at 0.5 on persistently-over-threshold nonlinear echo
+      → warm-up seeding now learns the true echo floor). Compute-stop leak fixed
+      (cancel now closes the Ollama stream). All calibration params plumbed to
+      SherpaConfig. 1356 green. **STILL OPEN — needs the mic:** the premise (raw-mic
+      coherence separates echo from voice on the nonlinear ALC285) is theoretically
+      sound + unit-validated but UNVERIFIED on hardware. VALIDATE: `python -m
+      tools.echo_probe` (echo-only → self_interruptions=0, inspect learned
+      baseline/margin) + `python -m core --engine sherpa` (talk over a long reply →
+      must cut, must NOT self-interrupt). If it over-fires, tune (no code):
+      `coherence_warmup_frames↑`, `coherence_provisional_baseline↑`,
+      `coherence_confirm_frames↑`. ref_delay stays 0 until a fresh echo_probe ERLE
+      sweep says otherwise (the audit refuted the "set it to 260ms" lever — the
+      prior sweep peaked at 0; the reference is already teed at the true playback
+      position via the PlaybackFIFO/_audio_cb callback).
 - [ ] **Enable + validate AEC on real hardware** (needs the mic). `config.local.json`
       → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"`. Calibrate
       `aec_ref_delay_ms` with `tools/echo_probe.py`. Confirm no self-interrupt AND a

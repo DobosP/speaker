@@ -59,10 +59,12 @@ from .echo_coherence import EchoCoherenceDetector
 # cancellation, so this engine adds its own optional AEC front-end (core/engines/
 # _aec.py, OFF by default via sherpa.aec_enabled) -- a NumPy adaptive filter that
 # subtracts the played TTS (far-end, teed from the playback thread into a ring and
-# read at sherpa.aec_ref_delay_ms) from the mic block before any consumer. Three
-# layers defend full-duplex barge-in, strongest first: speaker-ID identity gate
-# (when enrolled), AEC + a relaxed output margin, then the bare output-margin
-# guard. Use a headset to sidestep echo entirely. The gate hook is `_looks_like_user`.
+# read at sherpa.aec_ref_delay_ms) from the mic block before any consumer. Barge-in
+# must work on the OPEN laptop speaker (no headphones -- HARD REQUIREMENT). The
+# PRIMARY trigger is scale-invariant reference COHERENCE on the RAW pre-AEC mic
+# (sees the user, volume-independent); the level gates (residual-floor / output-
+# margin) are a fallback only for when coherence can't decide. AEC still cleans the
+# block for ASR. The gate hook is `_looks_like_user`.
 
 
 def _capture_attempts(
@@ -328,6 +330,23 @@ class SherpaConfig:
     # (that is a separate feature). 1 = the original fire-on-first-frame behaviour;
     # 2 is a conservative default. Raise it for more confidence at more latency.
     coherence_confirm_frames: int = 2
+    # Warm-up: the first N echo-bearing blocks (~0.1 s each) after a reply starts
+    # seed the detector's echo-incoherence baseline UNCONDITIONALLY (they are
+    # echo-only by construction), so the self-calibrating control chart learns this
+    # room+speaker's TRUE echo floor instead of starving at the provisional value
+    # when a nonlinear speaker's echo is persistently over-threshold (which would
+    # self-interrupt). Verdict is echo-only during warm-up. Raise it if a barge in
+    # the first ~0.5 s is being missed; lower it for a faster cold-start.
+    coherence_warmup_frames: int = 5
+    # Self-calibration of the control chart, exposed so a nonlinear room is field-
+    # tunable (calibrate with tools.echo_probe / tools.interrupt_suite). The live
+    # barge margin is max(coherence_margin_delta, sigma_k * sqrt(running echo-incoh
+    # variance)); baseline_alpha/var_alpha are the EWMA rates for that mean/variance;
+    # provisional_baseline is the pre-warm-up starting floor.
+    coherence_sigma_k: float = 3.0
+    coherence_baseline_alpha: float = 0.2
+    coherence_var_alpha: float = 0.15
+    coherence_provisional_baseline: float = 0.5
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0
@@ -621,6 +640,11 @@ class SherpaOnnxEngine(AudioEngine):
                 max_delay_ms=c.coherence_max_delay_ms,
                 margin_delta=c.coherence_margin_delta,
                 confirm_frames=c.coherence_confirm_frames,
+                warmup_frames=c.coherence_warmup_frames,
+                sigma_k=c.coherence_sigma_k,
+                baseline_alpha=c.coherence_baseline_alpha,
+                var_alpha=c.coherence_var_alpha,
+                provisional_baseline=c.coherence_provisional_baseline,
             )
             if det.available:
                 self._echo_coherence = det
@@ -1149,6 +1173,17 @@ class SherpaOnnxEngine(AudioEngine):
                 # inside, so it can never crash this daemon thread. Output length may
                 # differ (the adaptive filter frames internally) -- consumers accept
                 # any length, like the resampler/denoiser.
+                # Tee the RAW pre-AEC mic block for the coherence barge detector.
+                # Coherence measures correlation between the mic and the played
+                # reference; AEC REMOVES that correlation, so the detector must see
+                # the echo-bearing raw mic, not the suppressed residual (feeding it
+                # the residual made cancelled echo read as "user" and self-interrupt).
+                # ASR/VAD/the level-floor fallback keep using the post-AEC samples.
+                # No copy needed: AEC.process_16k / denoiser.process_16k RETURN new
+                # arrays (never mutate the input), and ``samples`` below is reassigned
+                # to those new arrays -- so this reference keeps pointing at the
+                # untouched pre-AEC block for the rest of the iteration.
+                mic_raw = samples
                 if self._aec is not None:
                     far = self._far_ref.read(samples.shape[0], self._aec_ref_delay)
                     # ONLY cancel when the assistant is actually playing (the
@@ -1238,7 +1273,7 @@ class SherpaOnnxEngine(AudioEngine):
                         if now < self._barge_in_suppressed_until:
                             voiced_run = 0.0
                             rejected_run = 0.0
-                        elif self._barge_in_fire_eligible(samples):
+                        elif self._barge_in_fire_eligible(samples, mic_raw):
                             voiced_run += block_sec
                             rejected_run = 0.0
                             if voiced_run >= self.config.barge_in_min_speech_sec:
@@ -1743,89 +1778,73 @@ class SherpaOnnxEngine(AudioEngine):
                 break
             write(samples[i : i + chunk])
 
-    def _looks_like_user(self, samples) -> bool:
+    def _looks_like_user(self, samples, mic_raw=None) -> bool:
         # Is playback-time mic voice a genuine barge-in (vs the assistant's own TTS
-        # echo)? This decision is IDENTITY-FREE: speaker/user detection is a
-        # SEPARATE feature used only to gate FINALS (``_should_act_on_final``); the
-        # interrupt must never depend on it. (The enrolled embedder is unreliable --
-        # measured 2026-06-01 it scored the user's OWN voice ~0.15 -- and the
-        # product brief is "no user detection in the interrupt".) Discriminators,
-        # strongest first:
+        # echo)? IDENTITY-FREE: speaker/user detection is a SEPARATE feature used
+        # only to gate FINALS (``_should_act_on_final``); the interrupt must never
+        # depend on it (the enrolled embedder is unreliable -- measured 2026-06-01
+        # it scored the user's OWN voice ~0.15 -- and the brief is "no user
+        # detection in the interrupt").
         #
-        # 1) PRIMARY -- scale-invariant reference COHERENCE: "is there mic energy
-        #    the playback can't explain?" Volume-independent, no enrollment,
-        #    structurally rejects the echo. Wins when it can decide; abstains
-        #    (None) only with no reference yet (session start) or during TTS silence.
-        # 2) POST-AEC -- with the echo cancelled, compare the residual to the
-        #    ambient/echo-residual FLOOR (loudness_admits): a real barge stands
-        #    above it (the playback-relative gate would wrongly need the user LOUDER
-        #    than the speaker buffer).
-        # 3) NO-AEC -- best-effort output-margin level gate: the user stands a
-        #    margin above the playback buffer; residual echo does not.
-        # 4) Nothing configured -> fail open (treat playback-time voice as a barge).
-        #
-        # AEC ON: the AUTO-CALIBRATED residual-floor gate is PRIMARY. The post-AEC
-        # residual echo sits at _playback_floor_rms (learned online during playback;
-        # adapts to speaker volume + room noise), and a real barge stands
-        # barge_in_residual_margin_db ABOVE it. The coherence detector still runs --
-        # its cross-correlation delay auto-calibrates the AEC far-end reference, and
-        # a CONFIDENT echo-only verdict can veto -- but it can NO LONGER fire on its
-        # own. That is the fix for nonlinear open speakers, where the linear
-        # coherence model over-fires on the assistant's own distorted echo and
-        # self-interrupts (observed incoherent~0.93 on pure echo).
-        if self._aec is not None and self.config.barge_in_residual_margin_db > 0.0:
-            det = self._echo_coherence
-            # Run the detector for its echo-only VETO (a confident "echo-only" can
-            # reject a floor pass) -- but do NOT re-align the AEC reference from its
-            # delay estimate: on a nonlinear speaker the cross-correlation peak is
-            # noisy (measured jumping 19 -> 229 ms), and re-aligning the far-end
-            # reference every block DESTABILISES the canceller -> it diverges ->
-            # passthrough echo bursts that trip this very gate. The AEC reference
-            # delay stays pinned at the configured aec_ref_delay_ms.
-            verdict = det.decide(samples) if det is not None else None
-            if self._playback_floor_rms <= 0.0:
-                return False  # floor not learned yet -> fail closed (no warmup self-interrupt)
-            if not loudness_admits(
-                rms(samples), self._playback_floor_rms,
-                margin_db=self.config.barge_in_residual_margin_db,
-            ):
-                return False  # at/near the residual echo+noise floor -> echo, not a barge
-            if verdict is False:
-                return False  # floor cleared but coherence is confident it is echo-only
-            if verdict:
-                log.debug(
-                    "barge confirmed: residual=%.4f floor=%.4f (+%.0fdB margin) coherence_incoh=%.2f delay=%.0fms",
-                    rms(samples), self._playback_floor_rms,
-                    self.config.barge_in_residual_margin_db,
-                    det.last_incoherent_fraction, det.last_delay_ms,
-                )
-            return True
+        # ARCHITECTURE (2026-06-07 redesign -- see the barge-in audit). The PRIMARY
+        # trigger is scale-invariant reference COHERENCE on the RAW pre-AEC mic
+        # (``mic_raw``): "does the mic contain sound the played reference can't
+        # explain?" The user adds such sound; the assistant's own echo does not.
+        # Coherence is volume-INDEPENDENT and structurally rejects the echo, so it
+        # has the clean operating point a residual LEVEL gate can never have on an
+        # open NONLINEAR speaker (where post-AEC residual echo spikes overlap real-
+        # voice levels -- no threshold both ignores echo and catches a talk-over).
+        # It MUST see the RAW mic: AEC removes the very correlation coherence keys
+        # on, so feeding it the post-AEC residual made it misread cancelled echo as
+        # "user" (the old self-interrupt; that is why coherence was wrongly thought
+        # to "conflict with AEC"). The in-detector ``confirm_frames`` hysteresis +
+        # the self-calibrating control chart reject one-off nonlinear-echo spikes.
+        #   decide() -> True  : user barge        -> fire
+        #            -> False : echo-only         -> reject
+        #            -> None  : no reference yet / TTS silence -> fall through to the
+        #                       level-gate FALLBACK below (never worse than before).
+        # The level gates (residual-floor / ambient / output-margin) are retained
+        # ONLY as that fallback, for the moments coherence cannot decide. The barge
+        # gate does NOT re-align the AEC reference from coherence's delay estimate:
+        # on a nonlinear speaker that peak is noisy and re-aligning every block
+        # destabilises the canceller. The reference stays pinned at aec_ref_delay_ms.
+        if mic_raw is None:
+            mic_raw = samples  # single-arg callers (legacy/tests): no separate raw tee
         det = self._echo_coherence
         if det is not None:
-            verdict = det.decide(samples)
+            verdict = det.decide(mic_raw)
             if verdict is not None:
                 if verdict:
                     log.debug(
-                        "coherence barge: incoherent=%.2f baseline=%.2f delay=%.0fms",
-                        det.last_incoherent_fraction, det.last_baseline, det.last_delay_ms,
+                        "coherence barge: incoherent=%.2f baseline=%.2f eff_margin=%.2f "
+                        "delay=%.0fms consec=%d",
+                        det.last_incoherent_fraction, det.last_baseline,
+                        det.last_effective_margin, det.last_delay_ms, det.last_consec,
                     )
-                return verdict
-        # POST-AEC barge discriminator. With the echo cancelled the residual
-        # during echo-only sits at the ambient/echo-residual FLOOR, while a real
-        # barge stands well ABOVE it -- so compare the residual to that floor
-        # (loudness_admits vs _ambient_rms), NOT to the playback buffer level. The
-        # playback-relative gate below requires the user to be LOUDER than the
-        # speaker output, which post-AEC MISSES real barges (measured on this box:
-        # echo-only residual ~0.02, a real barge ~0.4, but playback_level ~0.2 so
-        # a +margin gate vs playback never clears). The capture loop maintains
-        # _ambient_rms on the post-AEC residual when input_loudness_margin_db > 0.
+                return bool(verdict)
+            # verdict is None -> coherence abstains (no reference yet / TTS silence);
+            # fall through to the level-gate fallback so behaviour is never worse.
+
+        # FALLBACK 1 -- AEC on, auto-calibrated residual FLOOR. With the echo
+        # cancelled the residual during echo-only sits at _playback_floor_rms
+        # (learned online during playback; freeze-on-burst -> adapts to speaker
+        # volume + room noise); a real barge stands barge_in_residual_margin_db
+        # ABOVE it. Fails closed until the floor is learned (no warmup self-fire).
+        if self._aec is not None and self.config.barge_in_residual_margin_db > 0.0:
+            if self._playback_floor_rms <= 0.0:
+                return False
+            return loudness_admits(
+                rms(samples), self._playback_floor_rms,
+                margin_db=self.config.barge_in_residual_margin_db,
+            )
+        # FALLBACK 2 -- AEC on, ambient-floor loudness gate (residual vs the quiet
+        # floor the capture loop maintains when input_loudness_margin_db > 0).
         if self._aec is not None and self._input_loudness_margin_db > 0.0:
             return loudness_admits(
                 rms(samples), self._ambient_rms, margin_db=self._input_loudness_margin_db
             )
-        # No AEC (or no ambient floor configured): the echo is still in `samples`,
-        # so fall back to the playback-relative level gate. With AEC the margin
-        # would be the smaller aec_relaxed_margin_db; without it, the full guard.
+        # FALLBACK 3 -- no AEC (the echo is still in `samples`): the playback-
+        # relative output-margin gate. With AEC the smaller aec_relaxed_margin_db.
         margin_db = (
             self.config.aec_relaxed_margin_db
             if self._aec is not None
@@ -1877,22 +1896,25 @@ class SherpaOnnxEngine(AudioEngine):
             self._playback_floor_rms = (1.0 - a) * f + a * level
         # else: a >+6 dB burst -- likely a real barge -> freeze the floor.
 
-    def _barge_in_fire_eligible(self, samples) -> bool:
+    def _barge_in_fire_eligible(self, samples, mic_raw=None) -> bool:
         """Whether this block may *start/continue* arming a barge-in.
 
-        Combines the one-per-run latch with the VAD + identity/level gate.
-        Factored out of the capture loop so the latch behaviour is unit-
-        testable without an audio device. The latch (``_barge_in_fired_this_run``)
-        hard-caps a speaking run to a single interrupt: open speakers with no
-        AEC make the VAD re-fire many times per utterance on the assistant's own
-        echo, and without the latch each one re-cancels the (already-cancelled)
-        turn. The latch is reset on the silent->speaking transition in
-        ``_playback_loop`` so a genuinely new interruption still fires."""
+        Combines the one-per-run latch with the VAD + coherence/level gate.
+        ``samples`` is the post-AEC block (VAD + level-floor fallback); ``mic_raw``
+        is the RAW pre-AEC block the coherence detector needs (it defaults to
+        ``samples`` for single-arg callers/tests). Factored out of the capture loop
+        so the latch behaviour is unit-testable without an audio device. The latch
+        (``_barge_in_fired_this_run``) hard-caps a speaking run to a single
+        interrupt: open speakers with no AEC make the VAD re-fire many times per
+        utterance on the assistant's own echo, and without the latch each one
+        re-cancels the (already-cancelled) turn. The latch is reset on the
+        silent->speaking transition in ``_playback_loop`` so a genuinely new
+        interruption still fires."""
         if self._barge_in_fired_this_run:
             return False
         if self._vad is None or not self._vad.is_speech_detected():
             return False
-        return self._looks_like_user(samples)
+        return self._looks_like_user(samples, mic_raw)
 
     def note_barge_in_storm(self) -> None:
         """Hook for the watchdog: a barge-in storm was detected (gate flapping,

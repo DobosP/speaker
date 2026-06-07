@@ -227,3 +227,58 @@ def test_measured_delay_samples_median_and_none():
     assert det.measured_delay_samples() is None
     det._delays.extend([100, 120, 110])
     assert det.measured_delay_samples() == 110
+
+
+# --- warm-up baseline seeding (control-chart starvation fix, 2026-06-07) --------
+# The control chart learns the echo baseline ONLY on below-threshold frames. A
+# nonlinear/clipping open speaker can make the echo's incoherent fraction
+# PERSISTENTLY exceed the provisional threshold -> the learning branch never runs,
+# _baseline stays pinned at provisional_baseline (0.5), and every echo frame reads
+# as a barge (a self-interrupt that confirm_frames/sustain only DELAY). Warm-up
+# seeds the baseline from the first N echo-bearing frames (echo-only by
+# construction) so the chart learns the true echo floor -- whatever it is.
+
+
+def _stub_decide_inputs(det, monkeypatch, frac):
+    """Drive decide() straight to the control chart with a controlled incoherent
+    fraction: a big-enough reference snapshot + a fixed delay; _segment/_rms run
+    for real on the ones() window (rms 1.0 > min_ref_rms)."""
+    win = np.ones(8000, dtype="float32")
+    monkeypatch.setattr(det, "_snapshot_ref", lambda: win)
+    monkeypatch.setattr(det, "_estimate_delay", lambda x, w: 0)
+    monkeypatch.setattr(det, "_incoherent_fraction", frac)
+
+
+def test_warmup_seeds_baseline_and_prevents_nonlinear_echo_starvation(monkeypatch):
+    det = EchoCoherenceDetector(SR, warmup_frames=5, confirm_frames=2, margin_delta=0.08)
+    _stub_decide_inputs(det, monkeypatch, lambda x, r: 0.8)  # persistent HIGH echo incoherence
+    mic = np.full(160, 0.1, dtype="float32")
+    verdicts = [det.decide(mic) for _ in range(20)]
+    # Pre-fix this self-interrupted within confirm_frames (0.8 > 0.5+0.08 forever).
+    assert all(v is False for v in verdicts), verdicts        # never self-interrupts
+    assert det.last_baseline == pytest.approx(0.8, abs=0.05)  # learned the true echo floor
+
+
+def test_warmup_then_a_clear_outlier_still_fires(monkeypatch):
+    det = EchoCoherenceDetector(SR, warmup_frames=3, confirm_frames=2, margin_delta=0.08)
+    fracs = iter([0.2, 0.2, 0.2, 0.9, 0.9, 0.9])  # 3 warm-up echo frames, then a barge
+    _stub_decide_inputs(det, monkeypatch, lambda x, r: next(fracs))
+    mic = np.full(160, 0.1, dtype="float32")
+    v = [det.decide(mic) for _ in range(6)]
+    assert v[:3] == [False, False, False]   # warm-up: always echo-only
+    assert v[3] is False and v[4] is True   # outlier fires after confirm_frames=2 consecutive
+
+
+def test_reset_re_arms_warmup(monkeypatch):
+    det = EchoCoherenceDetector(SR, warmup_frames=2)
+    _stub_decide_inputs(det, monkeypatch, lambda x, r: 0.7)
+    mic = np.full(160, 0.1, dtype="float32")
+    det.decide(mic)
+    assert det._warmup_left == 1   # one warm-up frame consumed
+    det.reset()
+    assert det._warmup_left == 2   # a new speaking run re-seeds the echo floor
+
+
+def test_warmup_frames_param_is_stored_and_configurable():
+    assert EchoCoherenceDetector(SR)._warmup_frames == 5  # default
+    assert EchoCoherenceDetector(SR, warmup_frames=0)._warmup_frames == 0  # disable

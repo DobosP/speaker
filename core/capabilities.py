@@ -103,19 +103,46 @@ class RecallConfig:
         )
 
 
+def _close_token_stream(tokens: Iterator[str]) -> None:
+    """Best-effort close of a token generator after a barge-in cut.
+
+    The token chain is ``mark_first_token(model.stream(...))`` -- generators whose
+    ``finally`` blocks tear down the underlying HTTP body / SDK stream (Ollama,
+    OpenAI-compat) so the SERVER stops generating. On a plain ``break`` those
+    ``finally`` blocks only run when the generator is garbage-collected, which is
+    not deterministic (and the ``mark_first_token`` wrapper adds a layer that must
+    ALSO be collected) -- so an interrupted turn could keep the model generating
+    (burning compute) until GC catches up. Calling ``close()`` here propagates
+    ``GeneratorExit`` down the chain immediately at the barge point. A plain
+    iterator with no ``close()`` is a no-op; any teardown error is swallowed (the
+    turn is already being abandoned)."""
+    close = getattr(tokens, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception:  # noqa: BLE001 - teardown of an abandoned stream is best-effort
+            pass
+
+
 def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]:
     """Drain a token stream, stopping early if ``cancel`` fires.
 
     Returns ``(text, cancelled)``. Streaming (rather than a blocking
     ``generate``) is what makes a slow local model interruptible: barge-in cuts
-    generation off mid-stream instead of waiting for the whole answer."""
+    generation off mid-stream instead of waiting for the whole answer. On a cut
+    the stream is closed explicitly so the model server stops generating at once
+    (see :func:`_close_token_stream`)."""
     parts: list[str] = []
     cancelled = False
-    for token in tokens:
-        if cancel is not None and cancel.is_set():
-            cancelled = True
-            break
-        parts.append(token)
+    try:
+        for token in tokens:
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                break
+            parts.append(token)
+    finally:
+        if cancelled:
+            _close_token_stream(tokens)
     return "".join(parts).strip(), cancelled
 
 
@@ -132,15 +159,21 @@ def _stream_and_speak(
     parts: list[str] = []
     buffer = ""
     cancelled = False
-    for token in tokens:
-        if cancel is not None and cancel.is_set():
-            cancelled = True
-            break
-        parts.append(token)
-        buffer += token
-        sentences, buffer = drain_complete_sentences(buffer)
-        for sentence in sentences:
-            emit(sentence)
+    try:
+        for token in tokens:
+            if cancel is not None and cancel.is_set():
+                cancelled = True
+                break
+            parts.append(token)
+            buffer += token
+            sentences, buffer = drain_complete_sentences(buffer)
+            for sentence in sentences:
+                emit(sentence)
+    finally:
+        # Barge-in cut: close the stream so the model server stops generating
+        # immediately rather than at GC time (see :func:`_close_token_stream`).
+        if cancelled:
+            _close_token_stream(tokens)
     tail = buffer.strip()
     if tail and not cancelled:
         emit(tail)

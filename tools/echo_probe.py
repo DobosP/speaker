@@ -133,8 +133,11 @@ def main() -> int:
     # Instrument the unenrolled echo gate to record exactly what it compares.
     _orig_llu = engine._looks_like_user
 
-    def _wrapped_llu(samples):
-        passed = _orig_llu(samples)
+    def _wrapped_llu(samples, mic_raw=None):
+        # The engine now calls _looks_like_user(samples, mic_raw): post-AEC block
+        # for the level fallback + the RAW pre-AEC mic for the coherence detector.
+        # Forward both so the probe instruments the exact same path the engine runs.
+        passed = _orig_llu(samples, mic_raw)
         try:
             gate_samples.append((round(_rms(samples), 5), round(float(engine._playback_level), 5), bool(passed)))
             det = getattr(engine, "_echo_coherence", None)

@@ -174,25 +174,34 @@ def test_looks_like_user_is_identity_free_ignores_enrolled_gate():
     assert eng._looks_like_user([0.0]) is False  # identity is not consulted for barge-in
 
 
-# --- AEC-on barge: auto-calibrated residual-FLOOR gate (primary over coherence) -
-# With AEC active the echo is cancelled, so the post-AEC residual during echo-only
-# sits at the learned _playback_floor_rms (online, freeze-on-burst -> adapts to
-# speaker volume + room noise); a real barge stands barge_in_residual_margin_db
-# ABOVE it. This is the PRIMARY gate when AEC is on, so the coherence detector --
-# which over-fires on nonlinear open speakers -- can no longer self-interrupt.
+# --- AEC-on barge: coherence-PRIMARY trigger, level FLOOR as fallback ----------
+# REDESIGN 2026-06-07 (barge-in audit): the PRIMARY trigger is reference-coherence
+# on the RAW pre-AEC mic -- it sees the user, is volume-independent, and rejects
+# the echo structurally. The residual-FLOOR gate (a barge stands
+# barge_in_residual_margin_db above the learned _playback_floor_rms) is retained
+# ONLY as a FALLBACK for when coherence abstains (returns None: no reference yet /
+# TTS silence). The old "residual floor is primary, coherence is veto-only" design
+# self-interrupted on the open nonlinear speaker and is retired.
 
 
 class _FakeCoherence:
     """Stand-in for EchoCoherenceDetector so the engine wiring is testable without
-    scipy/audio: a fixed decide() verdict + a fixed measured speaker->mic delay."""
+    scipy/audio: a fixed decide() verdict + a fixed measured speaker->mic delay.
+    Records the samples it was handed (``seen``) so a test can assert the detector
+    is fed the RAW pre-AEC mic, not the post-AEC residual."""
 
     def __init__(self, verdict=None, delay=None):
         self._verdict = verdict
         self._delay = delay
+        self.seen = None
         self.last_incoherent_fraction = 0.5
+        self.last_baseline = 0.2
+        self.last_effective_margin = 0.08
         self.last_delay_ms = 0.0
+        self.last_consec = 0
 
     def decide(self, samples):
+        self.seen = samples
         return self._verdict
 
     def measured_delay_samples(self):
@@ -217,22 +226,54 @@ def test_residual_floor_gate_rejects_echo_accepts_barge():
     assert eng._looks_like_user([0.04] * 1600) is False  # +6 dB: below the margin
 
 
-def test_coherence_cannot_self_interrupt_alone_when_aec_on():
-    # Even if the (nonlinear-echo-fooled) coherence detector says "user", a residual
-    # sitting at the floor must NOT fire -- the floor gate vetoes the false positive.
+def test_coherence_is_primary_trigger_and_fires_independent_of_residual_level():
+    # REDESIGN: coherence (on the raw mic) is the PRIMARY trigger. A confident
+    # "user" verdict FIRES even when the post-AEC residual sits right at the floor
+    # -- the residual level is no longer a precondition. (Pre-redesign this case
+    # returned False: the floor gate vetoed coherence, which is the behaviour we
+    # retired because it missed real barges on the open speaker.)
     eng = _engine(barge_in_residual_margin_db=10.0)
     eng._aec = object()
     eng._playback_floor_rms = 0.03
-    eng._echo_coherence = _FakeCoherence(verdict=True)   # coherence WOULD fire
-    assert eng._looks_like_user([0.03] * 1600) is False  # floor gate rejects the echo
+    eng._echo_coherence = _FakeCoherence(verdict=True)
+    assert eng._looks_like_user([0.03] * 1600) is True
 
 
-def test_coherence_echo_only_verdict_vetoes_a_floor_pass():
+def test_coherence_is_fed_raw_mic_not_post_aec_residual():
+    # The core fix: coherence measures correlation between the mic and the played
+    # reference; AEC REMOVES that correlation, so feeding it the post-AEC residual
+    # made cancelled echo read as "user" (self-interrupt). It must receive the RAW
+    # pre-AEC mic block (echo present) handed in via _looks_like_user(.., mic_raw=).
+    eng = _engine(barge_in_residual_margin_db=10.0)
+    eng._aec = object()
+    eng._playback_floor_rms = 0.03
+    spy = _FakeCoherence(verdict=False)
+    eng._echo_coherence = spy
+    post_aec = [0.03] * 1600
+    raw_mic = [0.5] * 1600
+    eng._looks_like_user(post_aec, mic_raw=raw_mic)
+    assert spy.seen is raw_mic  # decided on the RAW mic, not the suppressed residual
+
+
+def test_coherence_echo_only_verdict_rejects_directly():
+    # A confident "echo-only" verdict rejects the barge directly (coherence is
+    # primary), even for a residual that would clear the fallback floor.
     eng = _engine(barge_in_residual_margin_db=10.0)
     eng._aec = object()
     eng._playback_floor_rms = 0.03
     eng._echo_coherence = _FakeCoherence(verdict=False)  # confident echo-only
-    assert eng._looks_like_user([0.3] * 1600) is False   # vetoed despite clearing the floor
+    assert eng._looks_like_user([0.3] * 1600) is False
+
+
+def test_level_floor_is_fallback_only_when_coherence_abstains():
+    # When coherence returns None (no reference yet / TTS silence) the residual-
+    # floor gate still runs as the fallback -- never worse than before the redesign.
+    eng = _engine(barge_in_residual_margin_db=12.0)
+    eng._aec = object()
+    eng._playback_floor_rms = 0.02
+    eng._echo_coherence = _FakeCoherence(verdict=None)   # abstains -> fall through
+    assert eng._looks_like_user([0.4] * 1600) is True    # ~26 dB above floor -> fallback fires
+    assert eng._looks_like_user([0.02] * 1600) is False  # at the floor -> echo
 
 
 def test_barge_gate_does_not_re_align_the_aec_reference():

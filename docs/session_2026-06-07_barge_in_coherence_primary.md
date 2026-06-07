@@ -57,20 +57,43 @@ on, so it misread cancelled echo as "user" = the self-interrupt).
   "hardware limit → headphones" note marked SUPERSEDED. (Code default was already
   `True`, so the redesign is on by default for every machine.)
 
+## Live validation on the open ALC285 (same session) — and the v2 fix
+
+Ran `tools.echo_probe` on the **built-in ALC285 mic + speaker** (worst-case coupling;
+the AT2020 USB mic was not connected) at a speaker-volume sweep. **Coherence-alone
+did NOT pass:** the nonlinear echo's raw-mic incoherent fraction is ~0.88 (p95 0.98),
+overlapping a real voice (~1.0), so safety headroom was negative at every audible
+volume, coherence fired on the assistant's own TTS 13–23×/run, and a full
+self-interrupt slipped through once (`self_int=1`, `gate_passed=21`). The warm-up fix
+worked (baseline learned 0.63–0.88, not starved) but couldn't separate echo from voice.
+
+**v2 fix (commit 377d10e): coherence AND post-AEC residual energy.** On an open
+speaker a coherence "user" verdict is now necessary-but-not-sufficient — it must also
+clear the residual floor. The signals are orthogonal: AEC suppresses the echo's
+ENERGY (ERLE ~10–20 dB) but not its incoherence; a real talk-over is not
+energy-suppressed (uncorrelated with the played reference). **Result: 0 self-interrupts
+across 5 runs at full volume** (`gate_passed` 1–5; coherence still harmlessly fires on
+the echo). AEC off (headphones) → coherence alone fires. Audio settings restored to
+as-found after testing.
+
+**Still unproven (needs a human):** that a REAL talk-over still fires — the positive
+half can't be machine-tested. The AND-gate is more conservative, so if a real barge is
+missed, lower `barge_in_residual_margin_db` (currently the SherpaConfig default 10.0;
+it's the residual-energy margin on the coherence path now too).
+
 ## Next steps (pick up here)
 
-1. **★ LIVE-VALIDATE barge-in on the open ALC285 (the real test — needs the mic).**
-   The raw-mic-coherence premise on the nonlinear speaker is theoretically sound +
-   unit-validated, and the demonstrated self-interrupt mechanism (chart starvation)
-   is closed, but it is **UNVERIFIED on hardware**.
-   - `python -m tools.echo_probe` — echo-only: confirm `self_interruptions=0`, read
-     the learned baseline/effective-margin (shows what the chart calibrated to).
-   - `python -m tools.interrupt_suite` — mic × strategy sweep.
-   - `python -m core --engine sherpa` — talk over a long reply: it MUST cut off and
-     MUST NOT self-interrupt. Tune (no code): `coherence_warmup_frames↑`,
-     `coherence_provisional_baseline↑`, `coherence_confirm_frames↑`, and consider
-     lowering `barge_in_min_speech_sec` (0.8) now that coherence — not a level gate —
-     is the discriminator, for a snappier cut.
+1. **★ CONFIRM A REAL TALK-OVER STILL FIRES (needs a human — the only remaining gap).**
+   The self-interrupt (no-false-fire) half is now **validated on hardware**: 5/5 runs
+   at full speaker volume on the open ALC285 with `self_interruptions=0` (v2 AND-gate).
+   What machine-testing CANNOT confirm is the positive half: `python -m core --engine
+   sherpa`, talk over a long reply — it must CUT OFF within ~1 s. If it does NOT fire,
+   the AND-gate is too conservative: lower `barge_in_residual_margin_db` (default 10.0)
+   first, then `barge_in_min_speech_sec` (0.8) for a snappier cut. If it self-interrupts
+   again, raise `barge_in_residual_margin_db` / `coherence_confirm_frames`. Re-run
+   `python -m tools.echo_probe` (echo-only → `self_interruptions=0`) after any change.
+   NOTE: validated on the built-in ALC285 mic; re-confirm on the AT2020 USB mic (was
+   unplugged this session) — pin it by name and watch the touch-mute.
    - `aec_ref_delay_ms` stays 0 until a fresh echo_probe ERLE sweep on this code says
      otherwise (the audit refuted "set it to 260ms"; the reference is already teed at
      the true playback position).

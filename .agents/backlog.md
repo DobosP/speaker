@@ -88,6 +88,18 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       (image turn -> main tier -> 'Red'); text-only -> fast tier. Suite 1366 green.
       OPTIONAL next: two-tier gemma4:12b main + gemma4:e4b fast (~11.4GB, fits) for
       a real fast/main split; bump num_ctx toward 256K if memory/context needs it.
+
+## Barge-in coherence-primary — v2 AND-gate LANDED + self-interrupt VALIDATED 2026-06-07
+- [~] Coherence-on-raw-mic is the barge trigger (fe0617b); v2 (377d10e) requires a
+      coherence "user" verdict to ALSO clear the post-AEC residual floor (orthogonal
+      signals: AEC kills echo ENERGY not its incoherence; a real talk-over is incoherent
+      AND loud). **LIVE-MEASURED on the open ALC285: 0 self-interrupts across 5 runs at
+      full volume** (coherence-alone self-interrupted; echo raw-mic incoherent ~0.88
+      overlaps real voice). **REMAINING (needs a human, can't be machine-tested):**
+      confirm a REAL talk-over STILL fires — `python -m core --engine sherpa`, talk over
+      a long reply; if missed lower `barge_in_residual_margin_db` (10.0). Re-confirm on
+      the AT2020 USB mic (was unplugged this session). Handoff:
+      docs/session_2026-06-07_barge_in_coherence_primary.md.
 - [ ] _(superseded eval notes)_ **Evaluate + adopt Gemma 4** (Google, Apache-2.0, ~Mar 2026, actively updated).
       Ollama tags: `e2b`(7.2GB,+audio,128K), `e4b`(9.6GB,+audio,128K),
       **`12b`(7.6GB, image, 256K)** ← smaller than gemma3:12b's ~10GB, the best

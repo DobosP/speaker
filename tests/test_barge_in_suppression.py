@@ -226,17 +226,27 @@ def test_residual_floor_gate_rejects_echo_accepts_barge():
     assert eng._looks_like_user([0.04] * 1600) is False  # +6 dB: below the margin
 
 
-def test_coherence_is_primary_trigger_and_fires_independent_of_residual_level():
-    # REDESIGN: coherence (on the raw mic) is the PRIMARY trigger. A confident
-    # "user" verdict FIRES even when the post-AEC residual sits right at the floor
-    # -- the residual level is no longer a precondition. (Pre-redesign this case
-    # returned False: the floor gate vetoed coherence, which is the behaviour we
-    # retired because it missed real barges on the open speaker.)
+def test_coherence_user_verdict_also_requires_residual_energy_when_aec_on():
+    # REDESIGN v2 (2026-06-07 live finding on the open ALC285): the nonlinear echo
+    # can FOOL coherence (its raw-mic incoherent fraction overlaps a real voice), so
+    # a coherence "user" verdict is NECESSARY but not SUFFICIENT on an open speaker --
+    # it must ALSO clear the post-AEC residual floor. Echo is incoherent but AEC-
+    # energy-suppressed (rejected); a real talk-over is incoherent AND loud (fires).
     eng = _engine(barge_in_residual_margin_db=10.0)
     eng._aec = object()
     eng._playback_floor_rms = 0.03
     eng._echo_coherence = _FakeCoherence(verdict=True)
-    assert eng._looks_like_user([0.03] * 1600) is True
+    assert eng._looks_like_user([0.03] * 1600) is False  # user-verdict but residual AT floor -> echo
+    assert eng._looks_like_user([0.3] * 1600) is True    # user-verdict AND ~20 dB above floor -> barge
+
+
+def test_coherence_user_verdict_fires_alone_when_aec_off():
+    # Headphones / echo-free path (no AEC): there is no echo to confuse the energy
+    # test, so a coherence "user" verdict fires on its own (no residual-floor gate).
+    eng = _engine(barge_in_residual_margin_db=10.0)
+    eng._aec = None
+    eng._echo_coherence = _FakeCoherence(verdict=True)
+    assert eng._looks_like_user([0.05] * 1600) is True
 
 
 def test_coherence_is_fed_raw_mic_not_post_aec_residual():

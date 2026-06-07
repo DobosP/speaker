@@ -12,29 +12,47 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - _(none open — full logic suite green: 1205 passed, 10 skipped)_
 
 ## P1 — voice / audio (migrated from session_2026-06-01 handoff)
-- [~] **★ HARD REQUIREMENT (owner, 2026-06-05): open-speaker barge-in WITHOUT
-      headphones.** Barge-in MUST work on the bare laptop speaker; headphones are
-      NOT acceptable and the "hardware-limit → use headphones" stance is REJECTED.
-      **CODE FIX LANDED 2026-06-07 (coherence-primary redesign, commit fe0617b →
-      main; full audit + handoff: docs/session_2026-06-07_barge_in_coherence_primary.md).**
-      The trigger is now the scale-invariant reference-COHERENCE detector fed the
-      RAW pre-AEC mic (it sees the user; AEC removes the correlation, so the old
-      post-AEC feed was the self-interrupt bug). The residual LEVEL gate is demoted
-      to a fallback. Adversarial review found + fixed a control-chart STARVATION
-      blocker (baseline froze at 0.5 on persistently-over-threshold nonlinear echo
-      → warm-up seeding now learns the true echo floor). Compute-stop leak fixed
-      (cancel now closes the Ollama stream). All calibration params plumbed to
-      SherpaConfig. 1356 green. **STILL OPEN — needs the mic:** the premise (raw-mic
-      coherence separates echo from voice on the nonlinear ALC285) is theoretically
-      sound + unit-validated but UNVERIFIED on hardware. VALIDATE: `python -m
-      tools.echo_probe` (echo-only → self_interruptions=0, inspect learned
-      baseline/margin) + `python -m core --engine sherpa` (talk over a long reply →
-      must cut, must NOT self-interrupt). If it over-fires, tune (no code):
-      `coherence_warmup_frames↑`, `coherence_provisional_baseline↑`,
-      `coherence_confirm_frames↑`. ref_delay stays 0 until a fresh echo_probe ERLE
-      sweep says otherwise (the audit refuted the "set it to 260ms" lever — the
-      prior sweep peaked at 0; the reference is already teed at the true playback
-      position via the PlaybackFIFO/_audio_cb callback).
+- [x] **★ HARD REQUIREMENT (owner): open-speaker barge-in WITHOUT headphones —
+      DONE + LIVE-VALIDATED 2026-06-08** on the bare ALC285 laptop mic+speaker (no
+      premium mic). Owner: "barge feels good now" — a NORMAL-volume talk-over
+      interrupts reliably, no shout, no self-interrupt. Solution: device-adaptive
+      fused z-score double-talk detector `AdaptiveDTD` (core/engines/_dtd.py) — three
+      features (raw energy / post-AEC residual / coherence) each a self-calibrated
+      upward z-score from its OWN echo-only control chart; fire on the weighted SUM
+      D > dimensionless K. NO fixed margin (the prior fixed-margin attempts all
+      failed: self-interrupt, or rejected normal talk-over, or needed a shout). The
+      decisive fix was the FIRING LOGIC, not the physics: per-frame fire
+      (dtd_confirm_frames=1) + the capture-loop LEAKY integrator, because a real
+      talk-over scored D=90-130 but flickered, so the old 3-consecutive rule
+      discarded it. Tuned (SherpaConfig defaults): weights (raw 0.2, resid 1.0, coh
+      0.0) -- z_resid is the discriminator (user voice isn't in the reference -> AEC
+      can't cancel it -> lands in the residual); dtd_chart_rel_floor 0.4 (echo-leak
+      precision). Commits fe0617b→5cd7f60 (coherence-primary audit) then
+      71fd4ec/bbc4e01 (DTD + live tuning). Handoff:
+      docs/session_2026-06-08_device_adaptive_barge_in.md. tools/echo_probe.py logs
+      per-frame D for re-calibration on any machine. ref_delay stays 0 (FIFO already
+      aligns the far-ref; do NOT set 260ms).
+- [ ] **★ Stream the TTS for long answers (owner 2026-06-08).** A long story feels
+      like it waits for the whole LLM answer before speaking. `_stream_and_speak`
+      (core/capabilities.py) already emits sentence-by-sentence, so investigate why
+      long answers feel un-streamed on the sherpa path: likely gemma4:12b main-tier
+      first-token latency for a story, and/or confirm the per-sentence emit reaches
+      TTS playback incrementally end-to-end. Goal: first audio after sentence 1, not
+      after the whole story.
+- [ ] **★ Smarter endpointing / turn-taking — don't barge in on the user's pauses
+      (owner 2026-06-08).** When the user speaks with small mid-thought pauses, the
+      assistant replies too early. It should use context to tell "still talking" from
+      "done" and respond only with HIGH CONFIDENCE the turn is complete. Lever exists:
+      Smart Turn v3 PROSODY endpoint detector on disk
+      (pretrained_models/sherpa/smart_turn/), but endpoint_detector='lexical'. Switch
+      to 'prosody' (needs onnxruntime+transformers), live-tune the confidence floor.
+      See core/endpointing.py (adaptive confidence-tiered floor).
+- [ ] **SenseVoice 2nd-pass agreement-guard (STT quality).** Re-enable sense_voice
+      but accept it only when it AGREES with / clearly improves the streaming final
+      (kills the short-clip hallucination 'I'->'Okay.'). New core/asr_text.py
+      token-agreement helper + _final_transcribe word-count gate. (Currently reverted
+      to streaming-only in config.local.json because the unguarded 2nd pass
+      hallucinated.)
 - [ ] **Enable + validate AEC on real hardware** (needs the mic). `config.local.json`
       → `sherpa`: `aec_enabled=true`, start `aec_backend="nlms"`. Calibrate
       `aec_ref_delay_ms` with `tools/echo_probe.py`. Confirm no self-interrupt AND a

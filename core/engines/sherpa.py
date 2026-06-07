@@ -1813,15 +1813,37 @@ class SherpaOnnxEngine(AudioEngine):
         det = self._echo_coherence
         if det is not None:
             verdict = det.decide(mic_raw)
-            if verdict is not None:
-                if verdict:
-                    log.debug(
-                        "coherence barge: incoherent=%.2f baseline=%.2f eff_margin=%.2f "
-                        "delay=%.0fms consec=%d",
-                        det.last_incoherent_fraction, det.last_baseline,
-                        det.last_effective_margin, det.last_delay_ms, det.last_consec,
+            if verdict is False:
+                return False  # coherence is confident this is echo-only
+            if verdict is True:
+                # Coherence says "user" -- but on an OPEN speaker the nonlinear echo
+                # can FOOL coherence: its raw-mic incoherent fraction overlaps a real
+                # voice (measured on the ALC285: echo p50~0.88, p95~0.98, NEGATIVE
+                # safety headroom -> intermittent self-interrupt). Confirm with the
+                # ORTHOGONAL post-AEC ENERGY signal: AEC suppresses the echo's energy
+                # (ERLE ~10-20 dB) but NOT a real talk-over (it does not correlate
+                # with the played reference), so a genuine barge ALSO stands above the
+                # learned residual floor. Echo = incoherent but low-energy -> rejected;
+                # user = incoherent AND loud -> fires. (AEC off -- headphones, no echo
+                # -- coherence alone fires; floor not learned yet -> coherence alone.)
+                if (
+                    self._aec is not None
+                    and self.config.barge_in_residual_margin_db > 0.0
+                    and self._playback_floor_rms > 0.0
+                    and not loudness_admits(
+                        rms(samples), self._playback_floor_rms,
+                        margin_db=self.config.barge_in_residual_margin_db,
                     )
-                return bool(verdict)
+                ):
+                    return False  # coherence said user, but post-AEC energy is at the echo floor
+                log.debug(
+                    "coherence barge: incoherent=%.2f baseline=%.2f eff_margin=%.2f "
+                    "delay=%.0fms consec=%d residual=%.4f floor=%.4f",
+                    det.last_incoherent_fraction, det.last_baseline,
+                    det.last_effective_margin, det.last_delay_ms, det.last_consec,
+                    rms(samples), self._playback_floor_rms,
+                )
+                return True
             # verdict is None -> coherence abstains (no reference yet / TTS silence);
             # fall through to the level-gate fallback so behaviour is never worse.
 

@@ -226,18 +226,33 @@ def test_residual_floor_gate_rejects_echo_accepts_barge():
     assert eng._looks_like_user([0.04] * 1600) is False  # +6 dB: below the margin
 
 
-def test_coherence_user_verdict_also_requires_residual_energy_when_aec_on():
-    # REDESIGN v2 (2026-06-07 live finding on the open ALC285): the nonlinear echo
-    # can FOOL coherence (its raw-mic incoherent fraction overlaps a real voice), so
-    # a coherence "user" verdict is NECESSARY but not SUFFICIENT on an open speaker --
-    # it must ALSO clear the post-AEC residual floor. Echo is incoherent but AEC-
-    # energy-suppressed (rejected); a real talk-over is incoherent AND loud (fires).
+def test_coherence_user_verdict_also_requires_RAW_mic_energy_when_aec_on():
+    # REDESIGN v3 (2026-06-07 live finding on the open ALC285): a coherence "user"
+    # verdict must ALSO clear an echo floor by energy -- but on the RAW pre-AEC mic,
+    # NOT the post-AEC residual. DTLN suppresses the user's voice during double-talk,
+    # so the residual barely rises on a real talk-over and the gate rejected EVERY
+    # barge live (0 fired / 7 rejected). The raw mic is untouched by AEC, so a
+    # talk-over genuinely stands above the raw echo floor.
     eng = _engine(barge_in_residual_margin_db=10.0)
     eng._aec = object()
-    eng._playback_floor_rms = 0.03
+    eng._raw_playback_floor_rms = 0.03  # echo-only RAW-mic floor (post-AEC floor is irrelevant now)
     eng._echo_coherence = _FakeCoherence(verdict=True)
-    assert eng._looks_like_user([0.03] * 1600) is False  # user-verdict but residual AT floor -> echo
-    assert eng._looks_like_user([0.3] * 1600) is True    # user-verdict AND ~20 dB above floor -> barge
+    # samples (post-AEC) is irrelevant to the gate now; the RAW mic decides.
+    assert eng._looks_like_user([0.1] * 1600, mic_raw=[0.03] * 1600) is False  # raw AT floor -> echo
+    assert eng._looks_like_user([0.1] * 1600, mic_raw=[0.3] * 1600) is True    # raw ~20 dB up -> barge
+
+
+def test_raw_playback_floor_bootstraps_tracks_and_freezes_on_burst():
+    eng = _engine()
+    assert eng._raw_playback_floor_rms == 0.0
+    eng._update_raw_playback_floor(0.05)                 # bootstrap to first raw echo level
+    assert eng._raw_playback_floor_rms == pytest.approx(0.05)
+    for _ in range(300):
+        eng._update_raw_playback_floor(0.06)             # track a slightly higher steady echo
+    assert eng._raw_playback_floor_rms == pytest.approx(0.06, abs=2e-3)
+    floor = eng._raw_playback_floor_rms
+    eng._update_raw_playback_floor(0.8)                  # a >+6 dB burst (a real talk-over) -> freeze
+    assert eng._raw_playback_floor_rms == pytest.approx(floor)
 
 
 def test_coherence_user_verdict_fires_alone_when_aec_off():
@@ -553,7 +568,11 @@ def test_gating_off_falls_back_to_margin_gate():
     assert eng._looks_like_user([0.2, 0.2]) is False        # echo at level: no
 
 
-def test_default_system_prompt_abstains_and_drops_persona():
+def test_default_system_prompt_answers_directly_and_stays_honest():
     from core.capabilities import DEFAULT_SYSTEM
     s = DEFAULT_SYSTEM.lower()
+    # New direct-answer behavior: answer directly, don't interrogate, clarify
+    # only as a last resort (at most one question on truly unintelligible input).
+    assert "directly" in s and "interrogate" in s and "at most" in s
+    # Honesty + no-persona-commentary survive the rewrite.
     assert "clarif" in s and "never invent" in s and ("tone" in s or "mood" in s)

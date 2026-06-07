@@ -128,6 +128,10 @@ def main() -> int:
     # frame is echo-only -- the run shows what margin the detector SELF-CALIBRATED
     # to on this hardware and whether it ever wrongly fired on the assistant.
     coh_samples: list[tuple[float, float, float, float, object]] = []
+    # Adaptive-DTD diagnostics per frame: (D, z_raw, z_resid, z_coh, fired). The
+    # probe never talks back, so EVERY frame is echo-only -- this shows the fused
+    # statistic D the detector self-calibrated to, and whether it wrongly fired.
+    dtd_samples: list[tuple[float, float, float, float, object]] = []
     peak_playback = 0.0
 
     # Instrument the unenrolled echo gate to record exactly what it compares.
@@ -148,6 +152,15 @@ def main() -> int:
                     round(float(det.last_effective_margin), 4),
                     round(float(det.last_delay_ms), 1),
                     det.last_decided,
+                ))
+            dtd = getattr(engine, "_dtd", None)
+            if dtd is not None and dtd.last_decided is not None:
+                dtd_samples.append((
+                    round(float(dtd.last_D), 3),
+                    round(float(dtd.last_z_raw), 3),
+                    round(float(dtd.last_z_resid), 3),
+                    round(float(dtd.last_z_coh), 3),
+                    dtd.last_decided,
                 ))
         except Exception:
             pass
@@ -274,6 +287,39 @@ def main() -> int:
     elif det is not None:
         coh = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
 
+    # Adaptive-DTD calibration block -- the device-adaptive barge trigger. All frames
+    # are echo-only here, so a HEALTHY result is dtd_fired_on_own_tts == 0 and the
+    # echo-only D well BELOW K (large positive K - p95(D) headroom). To set K on a
+    # NEW machine: run this (echo-only) for echo D, then talk over a reply once and
+    # read the live 'adaptive barge:' D in logs/runs/*.txt -- pick K between them.
+    dtd_blk = None
+    dtd = getattr(engine, "_dtd", None)
+    if dtd_samples:
+        Ds = sorted(s[0] for s in dtd_samples)
+        fired = sum(1 for s in dtd_samples if s[4] is True)
+        p95D = Ds[max(0, int(0.95 * (len(Ds) - 1)))]
+        K = float(getattr(sherpa_cfg, "dtd_k", 5.0))
+        dtd_blk = {
+            "active": True,
+            "frames": len(dtd_samples),
+            "K": K,
+            "dtd_fired_on_own_tts": fired,             # >0 = self-interrupt risk
+            "echo_only_D_p50": Ds[len(Ds) // 2],
+            "echo_only_D_p95": p95D,
+            "echo_only_D_max": Ds[-1],
+            "headroom_K_minus_p95D": round(K - p95D, 3),  # >0 and large = safe on echo
+            "D_samples": Ds[-40:],
+            "hint": (
+                "dtd_fired_on_own_tts == 0 with a large headroom_K_minus_p95D means the "
+                "echo never approaches the bar. K is dimensionless/device-independent: "
+                "raise dtd_k if it self-interrupts, lower it if a real talk-over (whose "
+                "live D prints as 'adaptive barge: D=..' in the run .txt) is missed. "
+                "Confirm a real barge with `python -m core --engine sherpa`."
+            ),
+        }
+    elif dtd is not None:
+        dtd_blk = {"active": True, "frames": 0, "note": "no echo coupled (volume low/headphones); raise volume"}
+
     erle_db = None
     if erle_acc["post2"] > 0 and erle_acc["near2"] > 0:
         erle_db = round(10.0 * math.log10(erle_acc["near2"] / erle_acc["post2"]), 1)
@@ -301,6 +347,7 @@ def main() -> int:
         "max_mic_over_playback_dB": (ratios_sorted[-1] if ratios_sorted else None),
         "mic_over_playback_dB_samples": ratios[:40],
         "coherence": coh,
+        "adaptive_dtd": dtd_blk,
         "note": (
             "self_interruptions>0 means the assistant's own TTS tripped barge-in. "
             "peak_playback_level~0 or vad_flagged_during_play==0 means little/no echo "

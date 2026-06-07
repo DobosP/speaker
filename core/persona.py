@@ -28,9 +28,12 @@ _STYLE = (
     "yourself; never summarize it or offer to find it elsewhere."
 )
 _ASR = (
-    "Your input is from speech recognition and may be garbled or misheard: if a "
-    "request is unclear or sounds like a fragment, ask one short clarifying "
-    "question instead of guessing, and never invent facts you're unsure of."
+    "Your input comes from speech recognition and may be slightly garbled or cut "
+    "short. Just answer the user's actual request directly and conversationally -- "
+    "treat short or casual messages as normal chat, not as something to interrogate. "
+    "Do NOT ask the user what they want, what to talk about, or to clarify when you "
+    "can reasonably answer; only when a message is truly unintelligible, ask at most "
+    "one brief clarifying question. Never invent facts you're unsure of."
 )
 # Web-access limit, runtime-conditional (the §9.7 egress state decides which).
 _NO_WEB = (

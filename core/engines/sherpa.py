@@ -362,11 +362,25 @@ class SherpaConfig:
     # lower by default (it overlaps voice on a nonlinear speaker).
     dtd_enabled: bool = True
     dtd_k: float = 5.0
-    dtd_weight_raw: float = 1.0
+    # Weights tuned from live fire data (2026-06-08): z_resid is the true
+    # discriminator -- the user's voice is NOT in the played reference, so AEC
+    # cannot cancel it and it lands in the residual (real talk-overs measured
+    # resid z 85-121); z_raw fires on loud ECHO transients (kept tiny as a shout
+    # nudge only); z_coh is erratic/backwards on a nonlinear speaker (dropped).
+    dtd_weight_raw: float = 0.2
     dtd_weight_resid: float = 1.0
-    dtd_weight_coh: float = 0.5
-    dtd_confirm_frames: int = 3
+    dtd_weight_coh: float = 0.0
+    # confirm_frames=1: the DTD reports per-frame; the capture loop's LEAKY
+    # integrator (barge_in_min_speech_sec) does the temporal confirmation. A real
+    # talk-over's D flickers frame-to-frame (breath/pauses), so requiring N
+    # CONSECUTIVE in-detector frames rejected huge-D real barges (measured D=103
+    # fired=False) -- the leaky outer integrator tolerates the flicker instead.
+    dtd_confirm_frames: int = 1
     dtd_warmup_frames: int = 5
+    # Sigma floor as a fraction of the chart mean: a higher floor stops a small
+    # DTLN echo LEAK (residual 0.04 over a 0.02 echo floor) from printing a huge
+    # z and tripping K, without needing a shout (precision against leaks).
+    dtd_chart_rel_floor: float = 0.4
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0
@@ -718,6 +732,7 @@ class SherpaOnnxEngine(AudioEngine):
                 weights=(c.dtd_weight_raw, c.dtd_weight_resid, c.dtd_weight_coh),
                 confirm_frames=c.dtd_confirm_frames,
                 warmup_frames=c.dtd_warmup_frames,
+                chart_rel_floor=c.dtd_chart_rel_floor,
             )
             log.info(
                 "adaptive barge-in (fused z-score DTD) ACTIVE: K=%.1f weights=(%.1f,%.1f,%.1f) "
@@ -1897,14 +1912,15 @@ class SherpaOnnxEngine(AudioEngine):
             fired = self._dtd.decide(
                 raw_rms=rms(mic_raw), resid_rms=rms(samples), incoherent_fraction=incoh,
             )
-            if fired:
-                log.debug(
-                    "adaptive barge: D=%.2f K=%.1f (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
-                    "raw=%.4f resid=%.4f incoh=%.2f consec=%d",
-                    self._dtd.last_D, self._dtd.k, self._dtd.last_z_raw,
-                    self._dtd.last_z_resid, self._dtd.last_z_coh,
-                    rms(mic_raw), rms(samples), incoh, self._dtd.last_consec,
-                )
+            # Log EVERY evaluation (not just fires) so a run bundle shows the full D
+            # distribution -- echo-only D vs talk-over D -- to calibrate K per device.
+            log.debug(
+                "dtd: D=%.2f K=%.1f fired=%s (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
+                "raw=%.4f resid=%.4f incoh=%.2f consec=%d",
+                self._dtd.last_D, self._dtd.k, fired, self._dtd.last_z_raw,
+                self._dtd.last_z_resid, self._dtd.last_z_coh,
+                rms(mic_raw), rms(samples), incoh, self._dtd.last_consec,
+            )
             return fired
         det = self._echo_coherence
         if det is not None:

@@ -45,6 +45,7 @@ from .speaker_gate import (
     rms,
     sherpa_speaker_gate,
 )
+from ._dtd import AdaptiveDTD
 from .echo_coherence import EchoCoherenceDetector
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
@@ -347,6 +348,25 @@ class SherpaConfig:
     coherence_baseline_alpha: float = 0.2
     coherence_var_alpha: float = 0.15
     coherence_provisional_baseline: float = 0.5
+    # --- Device-adaptive fused double-talk detector (core/engines/_dtd.py) -------
+    # The open-speaker barge trigger. ON when coherence + AEC are both on. It fuses
+    # three self-calibrated z-scores (raw-mic energy, post-AEC residual energy,
+    # coherence incoherent-fraction) and fires when their weighted SUM exceeds
+    # dtd_k for dtd_confirm_frames consecutive blocks. NO fixed dB/coherence margin:
+    # each feature's bar is mean + k*sigma learned from THIS device's echo, so the
+    # threshold auto-adapts to the speaker/volume/room. dtd_k is dimensionless and
+    # device-INDEPENDENT (z-scores are unit-variance) -- calibrate it once with
+    # `tools.echo_probe` (it prints per-frame z_raw/z_resid/z_coh/D + the echo-only
+    # p95(D) vs talk-over min(D) headroom). Lower dtd_k if a real talk-over is
+    # missed; raise it if the assistant self-interrupts. Coherence is weighted
+    # lower by default (it overlaps voice on a nonlinear speaker).
+    dtd_enabled: bool = True
+    dtd_k: float = 5.0
+    dtd_weight_raw: float = 1.0
+    dtd_weight_resid: float = 1.0
+    dtd_weight_coh: float = 0.5
+    dtd_confirm_frames: int = 3
+    dtd_warmup_frames: int = 5
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0
@@ -598,11 +618,22 @@ class SherpaOnnxEngine(AudioEngine):
         # the instant playback echo arrives and so stays at the quiet level), this
         # one deliberately tracks the echo level present during playback.
         self._playback_floor_rms: float = 0.0
+        # The same echo-only floor measured on the RAW pre-AEC mic. The barge
+        # energy-confirmation uses THIS instead of the post-AEC residual: DTLN
+        # suppresses the near-end (user) voice during double-talk, so the residual
+        # does not rise on a real talk-over, but the raw mic does (the user's
+        # energy adds on top of the echo). See _looks_like_user / the capture loop.
+        self._raw_playback_floor_rms: float = 0.0
         # Scale-invariant reference-coherence barge-in detector (the PRIMARY
         # discriminator; the level margin above is only a fallback). Built in
         # _build() when coherence_barge_in_enabled and scipy is present; fed the
         # played TTS from the playback thread and queried from the capture thread.
         self._echo_coherence: Optional[EchoCoherenceDetector] = None
+        # Device-adaptive fused double-talk detector (raw + residual + coherence as
+        # self-calibrated z-scores; no fixed margin). Built in _build() when
+        # coherence + AEC are on (the open-speaker case); else the legacy coherence/
+        # level path runs. See core/engines/_dtd.py.
+        self._dtd: Optional[AdaptiveDTD] = None
         # monotonic deadline until which barge-in triggers are debounced (set
         # after a barge-in fires or when a watchdog storm is reported).
         self._barge_in_suppressed_until: float = 0.0
@@ -676,6 +707,23 @@ class SherpaOnnxEngine(AudioEngine):
             log.info(
                 "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms)",
                 c.aec_backend, c.aec_ref_delay_ms,
+            )
+        # Device-adaptive fused double-talk detector: the open-speaker barge trigger.
+        # Built only when coherence + AEC are both on (it fuses the coherence
+        # incoherent-fraction with the raw-mic + post-AEC residual energy). With no
+        # AEC (headphones / echo-free) the legacy coherence-alone path handles it.
+        if c.dtd_enabled and self._echo_coherence is not None and self._aec is not None:
+            self._dtd = AdaptiveDTD(
+                k=c.dtd_k,
+                weights=(c.dtd_weight_raw, c.dtd_weight_resid, c.dtd_weight_coh),
+                confirm_frames=c.dtd_confirm_frames,
+                warmup_frames=c.dtd_warmup_frames,
+            )
+            log.info(
+                "adaptive barge-in (fused z-score DTD) ACTIVE: K=%.1f weights=(%.1f,%.1f,%.1f) "
+                "confirm=%d -- no fixed margin, self-calibrating per device",
+                c.dtd_k, c.dtd_weight_raw, c.dtd_weight_resid, c.dtd_weight_coh,
+                c.dtd_confirm_frames,
             )
         self._kws = build_keyword_spotter(c)
         if self._kws is not None:
@@ -937,6 +985,8 @@ class SherpaOnnxEngine(AudioEngine):
         self._barge_in_fired_this_run = False
         if self._echo_coherence is not None:
             self._echo_coherence.reset()
+        if self._dtd is not None:
+            self._dtd.reset()
         if self._far_ref is not None:
             self._far_ref.clear()
         if self._aec is not None:
@@ -1265,6 +1315,14 @@ class SherpaOnnxEngine(AudioEngine):
                     # calibration, and the steady echo can't self-interrupt.
                     if self._aec is not None:
                         self._update_playback_floor(rms(samples))
+                        # ALSO track the echo-only floor on the RAW pre-AEC mic. The
+                        # barge energy-confirmation keys off THIS (not the post-AEC
+                        # residual): DTLN suppresses the user's voice during double-
+                        # talk, so the residual barely rises on a real talk-over and
+                        # the gate rejected every barge (live: 0 fired / 7 rejected).
+                        # The raw mic is untouched by AEC, so a talk-over genuinely
+                        # adds the user's energy on top of the steady echo floor.
+                        self._update_raw_playback_floor(rms(mic_raw))
                     if self.config.barge_in_enabled and self._vad is not None:
                         self._vad.accept_waveform(samples)
                         # Debounce: ignore triggers for a short window after a
@@ -1288,7 +1346,15 @@ class SherpaOnnxEngine(AudioEngine):
                                 log.info("barge-in detected")
                                 self._cb.on_barge_in()
                         else:
-                            voiced_run = 0.0
+                            # LEAKY integrator (not a hard reset): a real talk-over's
+                            # eligibility flickers True/False block-to-block on an open
+                            # speaker (the detector sits near the echo-overlap edge), so
+                            # a hard `voiced_run = 0.0` on any miss meant a continuous
+                            # talk-over never accumulated to barge_in_min_speech_sec --
+                            # the measured "7 eligible frames, 0 fired" bug. Decaying
+                            # lets a mostly-continuous run survive isolated misses while
+                            # still bleeding off a one-off spike.
+                            voiced_run *= 0.5
                             # RC-5: the gate rejected this block. If the VAD still
                             # hears SUSTAINED speech during playback and no barge
                             # has fired this run, the user is likely talking over
@@ -1699,6 +1765,8 @@ class SherpaOnnxEngine(AudioEngine):
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         if self._echo_coherence is not None:
                             self._echo_coherence.reset()  # drop the stale reference
+                        if self._dtd is not None:
+                            self._dtd.reset()  # re-arm per-device chart warm-up next run
                         # Drop the far-end reference + reset the canceller so a
                         # cut-off sentence's stale tail isn't subtracted from the
                         # next near-end block once playback resumes.
@@ -1810,6 +1878,34 @@ class SherpaOnnxEngine(AudioEngine):
         # destabilises the canceller. The reference stays pinned at aec_ref_delay_ms.
         if mic_raw is None:
             mic_raw = samples  # single-arg callers (legacy/tests): no separate raw tee
+        # DEVICE-ADAPTIVE PRIMARY (open speaker, AEC on): the fused z-score DTD.
+        # No fixed margin -- each feature (raw-mic energy, post-AEC residual energy,
+        # coherence incoherent-fraction) is a self-calibrated outlier from THIS
+        # device's echo-only chart, and a real talk-over is the JOINT outlier whose
+        # summed z-scores cross the dimensionless threshold K. This escapes BOTH the
+        # self-interrupt (coherence alone overlaps voice on a nonlinear speaker) AND
+        # the scream-to-stop (a fixed dB over a loud echo) failure modes that the
+        # prior single-feature gates hit live. The coherence detector still runs --
+        # but only to PRODUCE the incoherent-fraction feature, not to decide. See
+        # core/engines/_dtd.py.
+        if self._dtd is not None:
+            det = self._echo_coherence
+            incoh = 0.0
+            if det is not None:
+                det.decide(mic_raw)
+                incoh = float(det.last_incoherent_fraction)
+            fired = self._dtd.decide(
+                raw_rms=rms(mic_raw), resid_rms=rms(samples), incoherent_fraction=incoh,
+            )
+            if fired:
+                log.debug(
+                    "adaptive barge: D=%.2f K=%.1f (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
+                    "raw=%.4f resid=%.4f incoh=%.2f consec=%d",
+                    self._dtd.last_D, self._dtd.k, self._dtd.last_z_raw,
+                    self._dtd.last_z_resid, self._dtd.last_z_coh,
+                    rms(mic_raw), rms(samples), incoh, self._dtd.last_consec,
+                )
+            return fired
         det = self._echo_coherence
         if det is not None:
             verdict = det.decide(mic_raw)
@@ -1819,29 +1915,33 @@ class SherpaOnnxEngine(AudioEngine):
                 # Coherence says "user" -- but on an OPEN speaker the nonlinear echo
                 # can FOOL coherence: its raw-mic incoherent fraction overlaps a real
                 # voice (measured on the ALC285: echo p50~0.88, p95~0.98, NEGATIVE
-                # safety headroom -> intermittent self-interrupt). Confirm with the
-                # ORTHOGONAL post-AEC ENERGY signal: AEC suppresses the echo's energy
-                # (ERLE ~10-20 dB) but NOT a real talk-over (it does not correlate
-                # with the played reference), so a genuine barge ALSO stands above the
-                # learned residual floor. Echo = incoherent but low-energy -> rejected;
-                # user = incoherent AND loud -> fires. (AEC off -- headphones, no echo
-                # -- coherence alone fires; floor not learned yet -> coherence alone.)
+                # safety headroom -> intermittent self-interrupt). Confirm with an
+                # ORTHOGONAL ENERGY signal -- but on the RAW pre-AEC mic, NOT the
+                # post-AEC residual: DTLN suppresses the near-end (user) voice during
+                # double-talk, so the residual barely rises on a real talk-over and
+                # the gate rejected EVERY barge (live: 0 fired / 7 rejected, user had
+                # to scream). On the raw mic the echo-only level is a steady floor and
+                # a talk-over genuinely adds the user's energy on top, so the +Nd B
+                # elevation the gate looks for actually exists there. Echo = incoherent
+                # but no raw elevation -> rejected; user = incoherent AND raw-loud ->
+                # fires. (AEC off -- headphones, no echo -- coherence alone fires;
+                # raw floor not learned yet -> coherence alone.)
                 if (
                     self._aec is not None
                     and self.config.barge_in_residual_margin_db > 0.0
-                    and self._playback_floor_rms > 0.0
+                    and self._raw_playback_floor_rms > 0.0
                     and not loudness_admits(
-                        rms(samples), self._playback_floor_rms,
+                        rms(mic_raw), self._raw_playback_floor_rms,
                         margin_db=self.config.barge_in_residual_margin_db,
                     )
                 ):
-                    return False  # coherence said user, but post-AEC energy is at the echo floor
+                    return False  # coherence said user, but the RAW mic is at the echo floor
                 log.debug(
                     "coherence barge: incoherent=%.2f baseline=%.2f eff_margin=%.2f "
-                    "delay=%.0fms consec=%d residual=%.4f floor=%.4f",
+                    "delay=%.0fms consec=%d raw=%.4f raw_floor=%.4f residual=%.4f",
                     det.last_incoherent_fraction, det.last_baseline,
                     det.last_effective_margin, det.last_delay_ms, det.last_consec,
-                    rms(samples), self._playback_floor_rms,
+                    rms(mic_raw), self._raw_playback_floor_rms, rms(samples),
                 )
                 return True
             # verdict is None -> coherence abstains (no reference yet / TTS silence);
@@ -1917,6 +2017,24 @@ class SherpaOnnxEngine(AudioEngine):
             a = self._PLAYBACK_FLOOR_ALPHA
             self._playback_floor_rms = (1.0 - a) * f + a * level
         # else: a >+6 dB burst -- likely a real barge -> freeze the floor.
+
+    def _update_raw_playback_floor(self, level: float) -> None:
+        """Same online floor estimate as :meth:`_update_playback_floor`, but on the
+        RAW pre-AEC mic. This is the echo-only level the assistant's own TTS couples
+        into the mic before cancellation; the barge energy-confirmation requires a
+        real talk-over to stand barge_in_residual_margin_db above it. Bootstrap on
+        the first block, EWMA within +6 dB, FREEZE on a larger burst (the talk-over
+        itself must not raise its own bar). Capture thread only; single float write."""
+        if level < 0.0 or not math.isfinite(level):
+            return
+        f = self._raw_playback_floor_rms
+        if f <= 0.0:
+            self._raw_playback_floor_rms = level
+            return
+        if level <= f * self._PLAYBACK_FLOOR_BURST_RATIO:
+            a = self._PLAYBACK_FLOOR_ALPHA
+            self._raw_playback_floor_rms = (1.0 - a) * f + a * level
+        # else: a >+6 dB burst -- likely a real talk-over -> freeze the floor.
 
     def _barge_in_fire_eligible(self, samples, mic_raw=None) -> bool:
         """Whether this block may *start/continue* arming a barge-in.

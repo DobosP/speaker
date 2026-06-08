@@ -107,6 +107,32 @@ def test_committed_config_defaults_to_sense_voice_at_standard_path():
     assert c["asr_final_tokens"].endswith("sense_voice/tokens.txt")
 
 
+# --- L3: short-clip 2nd-pass hallucination rejected via the agreement guard ----
+
+
+def test_final_transcribe_rejects_short_hallucination():
+    # The Windows cascade trigger (run-20260608-181250): a short open-speaker echo
+    # clip the streaming pass heard as 'BEING' and the SenseVoice 2nd pass HALLUCINATED
+    # into 'I.'. _final_transcribe must route through agreement_guard (short clip, no
+    # shared content token) and keep the streaming final, NOT emit the invented 'I.'.
+    eng = _engine()
+    eng._final_recognizer = _FakeOffline("I.")
+    seg = np.ones(int(0.4 * 16000), dtype="float32")  # 0.4s < short_sec -> guarded
+    out = eng._final_transcribe(seg, "BEING")
+    assert out != "I."
+    assert "eing" in out.lower()  # the (post-processed) streaming final stands
+
+
+def test_final_transcribe_keeps_long_garbled_correction():
+    # The legit case the 2nd pass exists for: a real, longer utterance the streaming
+    # pass mangled ('Ario der' -> 'are you there'), near-zero token overlap. NOT a
+    # short clip -> trust the 2nd pass unconditionally (the guard must not regress it).
+    eng = _engine()
+    eng._final_recognizer = _FakeOffline("are you there")
+    seg = np.ones(2 * 16000, dtype="float32")  # 2.0s -> not short
+    assert eng._final_transcribe(seg, "Ario der") == "are you there"
+
+
 def test_config_parses_final_fields():
     c = SherpaConfig.from_dict({
         "asr_final_backend": "sense_voice", "asr_final_model": "/m.onnx",

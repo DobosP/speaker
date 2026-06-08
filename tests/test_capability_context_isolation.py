@@ -335,6 +335,122 @@ def test_escalated_turn_resets_context_on_failure_path():
     )
 
 
+def test_escalated_turn_receives_recent_conversation_context():
+    """An ESCALATED (ReAct planner) turn must see the recent-conversation block so
+    "explain that step by step" keeps the thread -- before the fix the recent block
+    was built only on the one-shot path (after the escalation early-return), so the
+    planner got a contextless query."""
+    from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
+    from always_on_agent.memory import SessionMemory
+
+    seen: dict = {}
+
+    def _planner(query: str, context: dict) -> CapabilityResult:
+        seen.update(context)
+        return CapabilityResult(True, "planned")
+
+    class _Spy:
+        def generate(self, prompt, *, system=None, images=None) -> str:
+            return "ok"
+
+        def stream(self, prompt, *, system=None, images=None):
+            yield "ok"
+
+    memory = SessionMemory()
+    memory.add("what is the capital of france", tags=("user",))
+    memory.add("Paris.", tags=("assistant_output",))
+
+    registry = CapabilityRegistry()
+    registry.register("agent.react", _planner)
+    attach_llm_capabilities(
+        registry, _Spy(), escalate=lambda q, ctx: True, memory=memory
+    )
+
+    result = registry.invoke(
+        "assistant.answer",
+        "explain that in more detail",
+        {"mode": Mode.ASSISTANT.value},
+    )
+    assert result.ok and result.text == "planned"
+    block = seen.get("recent_conversation", "")
+    assert block, "escalated turn did not receive the recent-conversation context"
+    assert "Recent conversation" in block
+    assert "capital of france" in block and "Paris" in block
+
+
+def test_escalated_turn_floats_sensitivity_over_recent_turns():
+    """§9.7: when a prior turn in the recent block is private, the escalated turn's
+    published sensitivity must float to private BEFORE the planner's nested LLM
+    calls run (the recent turns now ride the planner prompt, so they must not pull
+    a public chain)."""
+    from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
+    from always_on_agent.memory import SessionMemory
+    from core.sensitivity import PRIVATE
+
+    seen: dict = {}
+
+    def _planner(query: str, context: dict) -> CapabilityResult:
+        seen.update(capability_context.get())
+        return CapabilityResult(True, "planned")
+
+    class _Spy:
+        def generate(self, prompt, *, system=None, images=None) -> str:
+            return "ok"
+
+        def stream(self, prompt, *, system=None, images=None):
+            yield "ok"
+
+    memory = SessionMemory()
+    memory.add("my social security number is 123-45-6789", tags=("user",))
+    memory.add("Got it.", tags=("assistant_output",))
+
+    registry = CapabilityRegistry()
+    registry.register("agent.react", _planner)
+    attach_llm_capabilities(
+        registry, _Spy(), escalate=lambda q, ctx: True, memory=memory
+    )
+
+    registry.invoke(
+        "assistant.answer", "explain that", {"mode": Mode.ASSISTANT.value}
+    )
+    assert seen.get("sensitivity") == PRIVATE, (
+        "escalated turn did not float sensitivity over a private prior turn"
+    )
+
+
+def test_one_shot_path_still_composes_recent_conversation_into_system():
+    """Regression: refactoring the recent block to build BEFORE the escalation
+    branch must NOT change the one-shot path -- the block still lands in the
+    answering model's system prompt."""
+    from always_on_agent.capabilities import CapabilityRegistry
+    from always_on_agent.memory import SessionMemory
+
+    seen_systems: list = []
+
+    class _Spy:
+        def generate(self, prompt, *, system=None, images=None) -> str:
+            return "ok"
+
+        def stream(self, prompt, *, system=None, images=None):
+            seen_systems.append(system or "")
+            yield "ok"
+
+    memory = SessionMemory()
+    memory.add("what is the capital of france", tags=("user",))
+    memory.add("Paris.", tags=("assistant_output",))
+
+    registry = CapabilityRegistry()
+    # escalate=None -> always the one-shot path.
+    attach_llm_capabilities(registry, _Spy(), memory=memory)
+    result = registry.invoke(
+        "assistant.answer", "what is its population", {"mode": Mode.ASSISTANT.value}
+    )
+    assert result.ok
+    assert seen_systems, "the answering model was never streamed"
+    assert "Recent conversation" in seen_systems[-1]
+    assert "Paris" in seen_systems[-1]
+
+
 def test_research_synth_publishes_context_and_resets_after():
     """research.local streams through the same SensitivityRouterLLM, so it must
     also classify + publish sensitivity and reset the ContextVar afterward."""

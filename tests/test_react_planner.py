@@ -184,3 +184,52 @@ def test_planner_can_call_web_search_tool():
     assert result.ok
     assert result.data["steps"] == ["web.search"]
     assert result.text == "pipecat is a voice framework"
+
+
+def test_planner_threads_recent_conversation_into_plan_and_final_prompts():
+    """The runtime publishes a recent-conversation block under
+    ``context['recent_conversation']``; the planner must weave it into BOTH the
+    plan prompt (so it can resolve "explain that") AND the final-answer prompt (so
+    the spoken reply keeps the thread). Absent -> prompts unchanged (other tests)."""
+    from always_on_agent.react import FINAL_SYSTEM
+
+    class _CapturingLLM:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self._plan = ["FINAL"]  # FINAL with NO arg -> forces _final()
+
+        def generate(self, prompt: str, *, system=None) -> str:
+            self.prompts.append(prompt)
+            return "answer"
+
+        def stream(self, prompt: str, *, system=None) -> Iterator[str]:
+            self.prompts.append(prompt)
+            if system == FINAL_SYSTEM:
+                yield "final answer"
+                return
+            yield self._plan.pop(0) if self._plan else "FINAL"
+
+    registry = create_default_capabilities()
+    llm = _CapturingLLM()
+    planner = ReactPlanner(llm, registry)
+    recent = (
+        "=== Recent conversation (most recent last) ===\n"
+        "User: what is the capital of france\nYou: Paris."
+    )
+    result = planner.run("explain that", {"recent_conversation": recent})
+    assert result.ok
+    # Both the plan prompt and the final prompt carried the conversation block.
+    assert len(llm.prompts) >= 2
+    assert all("Recent conversation" in p and "Paris" in p for p in llm.prompts)
+
+
+def test_planner_omits_recent_block_when_absent():
+    """No recent_conversation in context -> the prompts are byte-identical to the
+    pre-enhancement shape (no stray blank header)."""
+    registry = create_default_capabilities()
+    llm = ScriptLLM(["FINAL: done"])
+    planner = ReactPlanner(llm, registry)
+    planner.run("just answer", {})
+    assert llm.plan_prompts
+    assert "Recent conversation" not in llm.plan_prompts[0]
+    assert llm.plan_prompts[0].startswith("User request:")

@@ -75,11 +75,22 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
 
     host = llm_cfg.get("host")
     keep_alive = llm_cfg.get("keep_alive")
+    # Reasoning-model "thinking" is OFF by default on the voice path: a model
+    # like gemma4 streams a silent chain-of-thought before any spoken content
+    # (measured ~9 s of dead air before the first word of a story on gemma4:12b),
+    # which is unacceptable for a real-time turn. Set llm.think=true to opt back
+    # in. None would defer to the model's own default (thinking on for gemma4),
+    # so we pass an explicit False unless config overrides it.
+    think = llm_cfg.get("think", False)
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
-    main = OllamaLLM(model=main_model, host=host, options=options, keep_alive=keep_alive)
+    main = OllamaLLM(
+        model=main_model, host=host, options=options, keep_alive=keep_alive, think=think
+    )
     fast = (
-        OllamaLLM(model=fast_model, host=host, options=options, keep_alive=keep_alive)
+        OllamaLLM(
+            model=fast_model, host=host, options=options, keep_alive=keep_alive, think=think
+        )
         if fast_model
         else None
     )

@@ -130,6 +130,18 @@ class OllamaLLM:
 
     Multimodal: pass ``images`` (file paths or bytes) to ``generate``/``stream``
     with a vision-capable model (gemma3:4b / 12b / 27b).
+
+    ``think`` controls Ollama's reasoning-model "thinking" phase. A reasoning
+    model (e.g. gemma4) streams a silent chain-of-thought into a SEPARATE
+    ``thinking`` field BEFORE any ``content`` token -- which our stream only
+    yields content from, so for voice that thinking is pure dead air: measured
+    ~9 s of silence before the first spoken word of a *story* on gemma4:12b.
+    ``think=False`` skips it (first content token ~1.9 s instead), ``True``
+    forces it on, ``None`` (default here) leaves the model's own default. The
+    voice factory (:func:`core.llm_factory.build_llms`) defaults it to ``False``
+    -- thinking's multi-second latency is unacceptable for a real-time voice
+    turn. Passed only when not ``None`` so non-reasoning models / older Ollama
+    builds are unaffected.
     """
 
     def __init__(
@@ -140,11 +152,15 @@ class OllamaLLM:
         options: Optional[dict] = None,
         keep_alive: Optional[str | int] = None,
         timeout: Optional[float] = 60.0,
+        think: Optional[bool] = None,
         client=None,
     ):
         self.model = model
         self._host = host
         self._options = dict(options) if options else None
+        # Reasoning-model "thinking" toggle (see the class docstring). Sent as a
+        # top-level chat arg only when not None, so the default path is unchanged.
+        self._think = think
         # How long Ollama keeps the model resident after a request. A long value
         # (e.g. "30m") or -1 (forever) avoids a cold reload on the next turn --
         # the single biggest win for a snappy first token on a warm box.
@@ -193,6 +209,8 @@ class OllamaLLM:
             kwargs["options"] = self._options
         if self._keep_alive is not None:
             kwargs["keep_alive"] = self._keep_alive
+        if self._think is not None:
+            kwargs["think"] = self._think
         return kwargs
 
     def generate(

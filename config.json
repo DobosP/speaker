@@ -18,6 +18,8 @@
     "fast_model": "gemma3:4b",
     "host": null,
     "keep_alive": "30m",
+    "_think_comment": "false (default): skip a reasoning model's silent chain-of-thought on the voice path. gemma4 streams 'thinking' into a separate field BEFORE any spoken content; measured ~9s of dead air before the first word of a story on gemma4:12b (vs ~1.9s with think off). Set true to opt back in (e.g. for a deliberate, non-real-time research tier).",
+    "think": false,
     "options": {
       "num_ctx": 4096
     },

@@ -75,6 +75,27 @@ def test_ollama_stream_yields_pieces():
     assert client.calls[0]["stream"] is True
 
 
+def test_ollama_passes_think_when_set():
+    # think=False skips a reasoning model's silent chain-of-thought (the ~9s of
+    # dead air before the first spoken word on gemma4); think=True forces it on.
+    for value in (False, True):
+        client = FakeOllamaClient()
+        OllamaLLM(model="gemma4:12b", client=client, think=value).generate("hi")
+        assert client.calls[0]["think"] is value
+
+
+def test_ollama_omits_think_when_none():
+    # Default (think=None): the key is not sent, so non-reasoning models / older
+    # Ollama builds see byte-identical request kwargs.
+    client = FakeOllamaClient()
+    OllamaLLM(model="gemma3:4b", client=client).generate("hi")
+    assert "think" not in client.calls[0]
+    # ... on the streaming path too.
+    client = FakeOllamaClient(reply="x")
+    list(OllamaLLM(client=client).stream("hi"))
+    assert "think" not in client.calls[0]
+
+
 def test_echo_llm_tolerates_images():
     out = EchoLLM().generate("look", images=["/tmp/x.png"])
     assert "1 image" in out

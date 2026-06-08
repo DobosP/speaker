@@ -253,6 +253,36 @@ def test_build_llms_desktop_profile_builds_ollama_clients():
     assert main.model == "gemma3:12b" and fast.model == "gemma3:4b"
 
 
+def test_build_llms_defaults_think_off():
+    # The voice path disables reasoning-model thinking by default: gemma4 would
+    # otherwise burn seconds of silent chain-of-thought before any spoken word.
+    # An explicit False (not None) is forwarded so we override the model default.
+    config = {"llm": {"backend": "ollama", "main_model": "gemma4:12b", "fast_model": "gemma3:4b"}}
+    main, fast = _build_llms(_args(), config)
+    assert main._think is False
+    assert fast._think is False
+
+
+def test_build_llms_think_opt_in():
+    config = {
+        "llm": {
+            "backend": "ollama",
+            "main_model": "gemma4:12b",
+            "fast_model": "gemma3:4b",
+            "think": True,
+        }
+    }
+    main, fast = _build_llms(_args(), config)
+    assert main._think is True and fast._think is True
+
+
+def test_shipped_config_disables_think_on_desktop():
+    # Regression: the shipped config keeps thinking off and that survives the
+    # device-profile merge (the latency fix is the committed default).
+    config = _apply_device_profile(_load_config(), "desktop")
+    assert config["llm"]["think"] is False
+
+
 def test_llamacpp_backend_requires_main_path():
     config = {"llm": {"backend": "llamacpp"}}
     try:

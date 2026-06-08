@@ -762,6 +762,24 @@ class SherpaOnnxEngine(AudioEngine):
                 c.dtd_k, c.dtd_weight_raw, c.dtd_weight_resid, c.dtd_weight_coh,
                 c.dtd_confirm_frames,
             )
+        # L1 echo-floor gate needs a LEARNED floor to compare against, and the only
+        # floor sources are the post-AEC residual-echo floor (_playback_floor_rms,
+        # maintained only when AEC is on) and the quiet ambient floor (_ambient_rms,
+        # maintained only when input_loudness_margin_db > 0). With NEITHER, the floor
+        # stays 0.0 and _final_above_floor fails OPEN -- L1 is inert. That is fine for
+        # a no-AEC (echo-free) setup, but if the gate is configured ON with no source
+        # the no-op should be LOUD, not silent.
+        if (
+            c.final_floor_margin_db > 0.0
+            and c.input_loudness_margin_db <= 0.0
+            and self._aec is None
+        ):
+            log.warning(
+                "final_floor_margin_db=%.1f is set but the L1 echo-floor gate is INERT: "
+                "no learned floor (enable aec_enabled=true OR input_loudness_margin_db>0). "
+                "Harmless on an echo-free setup; required for open-speaker echo rejection.",
+                c.final_floor_margin_db,
+            )
         self._kws = build_keyword_spotter(c)
         if self._kws is not None:
             self._kws_stream = self._kws.create_stream()
@@ -2138,7 +2156,13 @@ class SherpaOnnxEngine(AudioEngine):
         Both floors are learned online per device/room, so the bar is RELATIVE (a
         dB margin), never an absolute RMS. Fail OPEN until a floor is learned (cold
         start) so the first real turn is never dropped; disabled when
-        ``final_floor_margin_db <= 0`` (the dataclass default)."""
+        ``final_floor_margin_db <= 0`` (the dataclass default).
+
+        NB a learned floor exists only when AEC is on (``_playback_floor_rms``) or
+        ``input_loudness_margin_db > 0`` (``_ambient_rms``); with NEITHER the gate
+        is inert (fail-open) -- fine for an echo-free setup, and ``_build`` logs a
+        warning if the gate is configured ON with no source. The open-speaker
+        configs that actually cascade run AEC, so the gate is live exactly there."""
         margin = self.config.final_floor_margin_db
         if margin <= 0.0:
             return True

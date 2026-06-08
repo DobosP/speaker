@@ -100,7 +100,12 @@ def agreement_guard(
     1. If either side is empty/blank, return the non-empty side.
     2. Decide whether this is a short, hallucination-prone clip: by ``segment_sec``
        when known (``< short_sec``), else by the streaming final's token count
-       (``<= short_words``).
+       (``<= short_words``). KNOWN LIMITATION: a real but garbled correction whose
+       clip lands in ``[asr_final_min_sec, short_sec)`` (the 2nd pass runs but the
+       clip is still "short") with zero >=2-char token overlap would be demoted to
+       the streaming final. Dormant while the 2nd pass is off; if re-enabled, shrink
+       the band (raise ``asr_final_min_sec`` toward ``short_sec``) or let a
+       high-overlap 2nd pass through even when short.
     3. If NOT short, trust the 2nd pass unconditionally (keeps ``"Ario der" ->
        "are you there"`` even though the tokens don't overlap).
     4. If short, accept the 2nd pass only when it AGREES with the streaming final

@@ -106,27 +106,26 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       high-load snapshot -- the first measured proof these levers help. Needs cloud keys to
       validate -> do on a cloud-enabled device. Files: config.json device_profiles
       (cpu_laptop/phone_lite/macbook), tools/bench/{runner,report}.py, docs/unified_architecture.md §5.
-- [ ] **P2 routing polish (verified, low-impact):**
-      (a) Bound the hung-worker daemon-thread leak: WORKER_JOIN_TIMEOUT=0.5s < reap latency
-      (cloud up to 5s; in-process LlamaCppLLM pre-first-token is uncancellable) -> losers
-      leak threads/sockets; at minimum WARN when shutdown() returns with live workers
-      (core/llm.py:695,737-759,822-839).
-      (b) Lower WINNER_SELECT_BUDGET_FLOOR 30s -> ~8-10s (core/llm.py:683-687) -- 30s pre-
-      first-token wedge exceeds any voice-turn budget (phone_lite).
-      (c) Word-boundary-aware tier markers + add compose/draft/'write an' generation verbs
-      (core/routing.py:226-229,268,272) -- substring matches mis-fire ('show me the time'
-      hits 'how') / miss ('compose'); never alone flips a route (max nudge 0.25 < 0.5 gap).
-      (d) Centralize capability_context set/reset so the ESCALATED ReAct + research.local
-      paths also publish sensitivity (core/capabilities.py:269-278,444-466; set runs only
-      at :383, after the escalation early-return at :278) + a guard test.
-      (e) Tier-aware load_fraction + shorter SystemMonitor cadence when live_routing on
-      (core/sysinfo.py) -- the headroom signal mis-attributes CPU STT/TTS vs GPU LLM and
-      lags 10s vs 1-3s turns. Matters once live_routing is enabled.
-      (f) Test the LearnedRouter build path (backend='learned' raises documented RuntimeError
-      when torch absent; core/routing.py:287-326 has zero tests).
-      (g) Doc-truth: docs/unified_architecture.md:789 cites the wrong test file for Cost Order
-      (it's tests/test_core_routing.py:296-396); config.json cost_order comment says
-      'cheaper/faster' but the sort is fastest-then-cheapest.
+- [x] **P2 routing polish (6 of 7 shipped 2026-06-08d via the `p2-routing-polish` fan-out;
+      merged to main).**
+      (a) DONE -- HedgeLLM.shutdown() now WARNs (`speaker.llm.hedge`) with the survivor count
+      when worker threads outlive the join budget (core/llm.py); the leak is visible in the
+      run bundle instead of silent.
+      (b) DONE -- WINNER_SELECT_BUDGET_FLOOR 30s -> 10s (core/llm.py:687).
+      (c) DONE -- tier markers are now `\b`-anchored regexes ('show me the time' no longer
+      hits 'how'; multi-word markers still match) + added 'compose'/'draft'/'write an'
+      (core/routing.py `_compile_markers`). No route flips (nudges only).
+      (d) DONE -- the ESCALATED (ReAct) + research.local paths now `_enrich_context` + publish
+      `capability_context` (set/reset in try/finally, no cross-turn leak) so SensitivityRouterLLM
+      picks the right cloud chain on those turns too (core/capabilities.py).
+      (f) DONE -- LearnedRouter build-path test (backend='learned' raises RuntimeError when
+      torch absent; tests/test_core_routing.py).
+      (g) DONE -- doc-truth fixes (config.json cost_order comment; docs/unified_architecture.md
+      Cost Order test-file citation -> tests/test_core_routing.py + host_rank note).
+      (e) DEFERRED (coupled to audit #4) -- tier-aware load_fraction + shorter SystemMonitor
+      cadence when live_routing on (core/sysinfo.py). The headroom signal mis-attributes CPU
+      STT/TTS vs GPU LLM and lags 10s vs 1-3s turns, but it only matters once live_routing is
+      enabled (the deferred #4), so do it WITH that work.
 
 ## P1 — desktop / 4090 fit
 - [ ] Adopt `desktop_gpu_4090` profile on this machine (currently `device=desktop`;

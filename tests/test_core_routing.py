@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Iterator
 
+import pytest
+
 from always_on_agent.capabilities import CapabilityRegistry
 
 from core.capabilities import attach_llm_capabilities
@@ -79,6 +81,48 @@ def test_heuristic_dictation_mode_stays_fast():
     assert router.choose(long_dictation, {"mode": "dictation"}) == FAST
 
 
+# --- Word-boundary aware tier markers (item c) ------------------------------
+#
+# The complexity/generation marker lists are matched with \b word boundaries
+# (precompiled regex alternations) instead of plain substring `in` checks, so a
+# marker never mis-fires inside a larger word ("how" inside "show") and
+# multi-word markers ("step by step") still match across spaces.
+
+
+def test_complexity_marker_no_substring_misfire():
+    # "show me the time" contains the substring "how" but NOT the word "how";
+    # the word-boundary matcher must give it zero complexity nudge -> the static
+    # score stays 0.0 and the query stays on fast.
+    router = HeuristicRouter()
+    assert router.score("show me the time", {}) == 0.0
+    assert router.choose("show me the time", {}) == FAST
+
+
+def test_complexity_marker_design_substring_does_not_fire():
+    # "i designed it" contains "design" as a substring only; no nudge.
+    router = HeuristicRouter()
+    assert router.score("i designed it", {}) == 0.0
+
+
+def test_complexity_multiword_markers_still_match_across_spaces():
+    # \b only anchors the marker's outer edges, so the internal space in
+    # "step by step" / "difference between" still matches -> the nudge fires.
+    router = HeuristicRouter()
+    # one marker hit -> 0.18 (well below the 0.5 threshold: still a nudge, not a
+    # route flip, which is the contract for marker tweaks).
+    assert router.score("do it step by step", {}) == 0.18
+    assert router.score("the difference between them", {}) == 0.18
+
+
+def test_generation_verbs_compose_draft_write_an_escalate():
+    # "compose"/"draft"/"write an" are generation verbs that previously scored
+    # 0 (not in the list). Each is now an unambiguous generation request -> main.
+    router = HeuristicRouter()
+    assert router.choose("compose a poem", {}) == MAIN
+    assert router.choose("draft an email to my landlord", {}) == MAIN
+    assert router.choose("write an essay about the sea", {}) == MAIN
+
+
 def test_build_router_defaults_to_heuristic():
     router = build_router({})
     assert isinstance(router, HeuristicRouter)
@@ -89,6 +133,27 @@ def test_build_router_reads_threshold():
     router = build_router({"llm": {"router": {"threshold": 0.8}}})
     assert isinstance(router, HeuristicRouter)
     assert router.threshold == 0.8
+
+
+def test_build_router_learned_without_torch_raises_runtimeerror(monkeypatch):
+    # The learned backend constructs LearnedRouter, whose __init__ lazily imports
+    # torch+transformers and raises a documented RuntimeError when they are
+    # absent. Force the missing-dep path deterministically by making the import
+    # of torch/transformers fail, regardless of whether they are installed, so
+    # this test asserts the build-path contract on any machine.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in ("torch", "transformers") or name.startswith("transformers."):
+            raise ImportError(f"forced missing: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with pytest.raises(RuntimeError):
+        build_router({"llm": {"router": {"backend": "learned"}}})
 
 
 def test_assistant_routes_simple_query_to_fast_model():

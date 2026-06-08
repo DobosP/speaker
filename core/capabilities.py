@@ -275,7 +275,20 @@ def attach_llm_capabilities(
             and agent_capability in registry.names()
             and escalate(query, context)
         ):
-            return registry.invoke(agent_capability, query, context)
+            # An escalated (ReAct planner) turn must STILL classify sensitivity
+            # and publish capability_context so SensitivityRouterLLM can pick the
+            # right cloud chain for the nested LLM calls the planner makes -- the
+            # early-return here used to skip both, defaulting every escalated turn
+            # to the fail-safe chain (smart-routing-2 / backlog P2 (d)). Enrich +
+            # publish, then reset via finally so the ContextVar is restored on
+            # EVERY return/raise out of the planner (a missed reset is a cross-turn
+            # sensitivity LEAK -- the §9.7 risk the isolation tests guard).
+            _enrich_context(query, context)
+            ctx_token = capability_context.set(context)
+            try:
+                return registry.invoke(agent_capability, query, context)
+            finally:
+                capability_context.reset(ctx_token)
         _enrich_context(query, context)
         # Memory recall (the headline P2 fix), assistant-only (R5):
         #   1. Ingest the answered query first (R1) so recall has something to
@@ -455,15 +468,27 @@ def attach_llm_capabilities(
         )
         cancel = context.get("cancel_event")
         emit = context.get("emit_speech")
-        tokens = mark_first_token(
-            llm.stream(prompt, system=system), recorder,
-            fold_local_ttft=_answers_locally(llm),
-        )
-        if callable(emit):
-            text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
-            return CapabilityResult(True, text, data={"cancelled": cancelled, "streamed": True})
-        text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
-        return CapabilityResult(True, text, data={"cancelled": cancelled})
+        # Classify + publish sensitivity for the synthesis call too: research.local
+        # streams through the same SensitivityRouterLLM, so without this its turns
+        # always fell back to the default cloud chain (smart-routing-2 / backlog P2
+        # (d)). Enrich first (no-op if sensitivity already present), then set the
+        # ContextVar and reset it in a finally so it is restored on EVERY exit
+        # path -- a missed reset would leak this turn's tag into the next, unrelated
+        # turn (the §9.7 cross-turn leak the isolation tests guard).
+        _enrich_context(query, context)
+        ctx_token = capability_context.set(context)
+        try:
+            tokens = mark_first_token(
+                llm.stream(prompt, system=system), recorder,
+                fold_local_ttft=_answers_locally(llm),
+            )
+            if callable(emit):
+                text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
+                return CapabilityResult(True, text, data={"cancelled": cancelled, "streamed": True})
+            text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
+            return CapabilityResult(True, text, data={"cancelled": cancelled})
+        finally:
+            capability_context.reset(ctx_token)
 
     registry.register("assistant.answer", assistant)
     registry.register("research.local", research_synth)

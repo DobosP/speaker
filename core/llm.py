@@ -18,6 +18,7 @@ capability_context: ContextVar[Mapping[str, object]] = ContextVar(
 )
 
 _ollama_log = logging.getLogger("speaker.llm.ollama")
+_hedge_log = logging.getLogger("speaker.llm.hedge")
 
 
 def _log_llm_request(
@@ -683,8 +684,11 @@ class HedgeLLM:
     WINNER_SELECT_TTFT_BUDGET_MULT = 4
     # Floor for the winner-selection budget so a tiny configured ttft_deadline
     # (or a zero hedge_delay) still leaves a sane wall-clock window before a hung
-    # source is reaped. Shares the same scale as DRAIN_IDLE_TIMEOUT.
-    WINNER_SELECT_BUDGET_FLOOR = 30.0
+    # source is reaped. Capped at a real-time voice-turn budget: this is the max
+    # wait for a FIRST token before we give up and end the turn, so it must stay
+    # within a conversational latency budget (a 30s floor far exceeds any voice
+    # turn and would wedge the turn on a hung source for half a minute).
+    WINNER_SELECT_BUDGET_FLOOR = 10.0
     # Total budget the generator's cleanup spends joining worker threads once
     # they have been told to stop. A live worker stops at its next token
     # boundary (sub-ms once signalled) or when its socket read timeout fires;
@@ -837,6 +841,25 @@ class HedgeLLM:
                     if remaining <= 0:
                         break
                     t.join(timeout=remaining)
+            # Observability for the known leak: WORKER_JOIN_TIMEOUT is below real
+            # reap latency (a cloud worker can take up to ~5s; an in-process
+            # LlamaCppLLM pre-first-token native call is uncancellable), so a
+            # loser can outlive the join and leak a live thread/socket. A barge-in
+            # storm accumulates them. Surface the survivor count in the run bundle
+            # so the leak is visible instead of silent. Best-effort: never raise
+            # from cleanup (this runs in a generator finally, including on
+            # GeneratorExit), so guard the whole check.
+            try:
+                leaked = sum(1 for t in threads.values() if t.is_alive())
+                if leaked:
+                    _hedge_log.warning(
+                        "HedgeLLM shutdown: %d worker thread(s) still alive after "
+                        "%.3fs join budget; may leak thread/socket until reaped",
+                        leaked,
+                        self.WORKER_JOIN_TIMEOUT,
+                    )
+            except Exception:
+                pass
 
         try:
             cloud_iter = iter(cloud_tags)

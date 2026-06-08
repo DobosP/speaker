@@ -786,7 +786,7 @@ The assistant knows what it is and what skills it has, driven by a single **capa
 | **Continuation** (add-on merging) | `continuation.enabled` | ON (default) | `tests/test_continuation.py` | KEEP, gated |
 | **Followups** (proactive listen-ahead) | `followups.enabled` | OFF | `tests/test_followups.py` | KEEP, gated |
 | **Live Routing** (dynamic hedge nudging) | `llm.live_routing` or `SPEAKER_LIVE_ROUTING=1` | OFF | `tests/test_core_routing.py` | KEEP, gated |
-| **Cost Order** (sensitivity-routed chains) | `llm.cloud.cost_order` | OFF | `tests/test_cloud_providers.py` | KEEP, gated |
+| **Cost Order** (host/ttft/cost chain reorder) | `llm.cloud.cost_order` | OFF | `tests/test_core_routing.py` | KEEP, gated |
 
 ### Design & user decision
 
@@ -802,7 +802,7 @@ Every tier below is **kept as a load-bearing gate**. The experimental ones yield
 - **Continuation** (`always_on_agent/continuation.py`): Enabled by default (`config.json` `continuation.enabled=true`); merges add-ons into in-flight turns deterministically (marker + length heuristic, no LLM). Safe by omission — anything unclear becomes a fresh task. (Mechanics in [§2](#2--the-control-plane-brain-always_on_agent).)
 - **Followups** (`always_on_agent/followups.py`): Disabled by default (`config.json` `followups.enabled=false`); cycles a marker cadence so the assistant gently continues after silence. Bounded to `max_followups=3` and not persisted to memory.
 - **Live Routing** (`core/routing.py`): Disabled by default (`llm.live_routing=false` or no `SPEAKER_LIVE_ROUTING` env). When on, feeds the tier router an additive-only, clamped live nudge from the recorder's rolling local TTFT EWMA + a cheap SystemMonitor load snapshot; shortens the HedgeLLM's `hedge_delay_ms` so cloud races start sooner when local is slow. A missing/garbage signal is a no-op. (See [§4](#4--the-decision--routing-layer-the-4-gate-ladder) and [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97).)
-- **Cost Order** (`core/routing.py::order_presets_by_cost`): Disabled by default (`llm.cloud.cost_order=false`); an optional stable reorder of `cloud_chains` presets by TTFT / $-per-Mtok metadata before the HedgeLLM is built. Fail-safe: same multiset, original order on malformed input. (See [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97).)
+- **Cost Order** (`core/routing.py::order_presets_by_cost`): Disabled by default (`llm.cloud.cost_order=false`); an optional stable reorder of `cloud_chains` presets by `(host_rank, ttft_ms, in $/Mtok, out $/Mtok)` metadata before the HedgeLLM is built. `host_rank` is the **outermost** key, so ordering is fastest-then-cheapest *within* a jurisdiction tier but never *across* it: every US/unknown-hosted preset races before any PRC-hosted (`host=CN`) one even when the CN preset is cheaper/faster (§9.7 PRC-opt-in intent); only inside a host tier does lower ttft (then input, then output $) win. Fail-safe: same multiset, original order on malformed input. Covered by the Cost Order tests in `tests/test_core_routing.py`. (See [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97).)
 
 Each tier uses the same pattern: disabled → zero cost, enabled → wired deterministically via a config block + optional env / per-device profile. No dead code, no silent fallbacks — the gate inventory is exhaustive.
 

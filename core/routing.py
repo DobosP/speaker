@@ -17,7 +17,8 @@ module's docstring for the full relationship.
 
 from __future__ import annotations
 
-from typing import Mapping, Optional, Protocol, runtime_checkable
+import re
+from typing import Iterable, Mapping, Optional, Pattern, Protocol, runtime_checkable
 
 # A model tier: "fast" (small, snappy) or "main" (large/multimodal, slower).
 ModelTier = str
@@ -224,9 +225,33 @@ _FAST_INTENTS = {"command", "dictation", "meeting_note"}
 # ``_COMPLEXITY_MARKERS`` so the calibrated borderline router tests are
 # undisturbed (no overlap with "explain ... difference between").
 _GENERATION_MARKERS = (
-    "story", "poem", "write me", "write a", "tell me a", "tell me about",
+    "story", "poem", "write me", "write a", "write an", "compose", "draft",
+    "tell me a", "tell me about",
     "walk me through", "a list of", "give me a", "essay", "lyrics", "joke",
 )
+
+
+def _compile_markers(markers: Iterable[str]) -> Pattern[str]:
+    r"""Compile a marker list into one word-boundary alternation.
+
+    Plain ``marker in q`` substring matching mis-fires (``"show me the time"``
+    contains ``"how"`` -> a bogus complexity nudge; ``"i designed it"`` contains
+    ``"design"``) and silently misses verb stems we *do* want. Wrapping each
+    marker in ``\b...\b`` makes ``"how"`` match the word "how" but NOT the "how"
+    inside "show", while multi-word markers like ``"step by step"`` and
+    ``"difference between"`` still match across spaces (``\b`` only anchors at
+    the marker's outer edges; the internal spaces match literally). Markers are
+    sorted longest-first so a longer phrase is tried before any prefix of it,
+    and each is regex-escaped so punctuation (e.g. ``"trade-off"``) is literal."""
+    ordered = sorted(set(markers), key=len, reverse=True)
+    alternation = "|".join(re.escape(m) for m in ordered)
+    return re.compile(r"\b(?:" + alternation + r")\b", re.IGNORECASE)
+
+
+# Precompiled once at import (the marker sets are static) so scoring stays a
+# single regex scan per list rather than N substring checks.
+_COMPLEXITY_RE = _compile_markers(_COMPLEXITY_MARKERS)
+_GENERATION_RE = _compile_markers(_GENERATION_MARKERS)
 
 
 class HeuristicRouter(BaseRouter):
@@ -265,11 +290,14 @@ class HeuristicRouter(BaseRouter):
         elif n >= 12:
             s += 0.12
 
-        hits = sum(1 for marker in _COMPLEXITY_MARKERS if marker in q)
+        # Word-boundary aware: each distinct marker counts at most once (so
+        # "show me the time" no longer gets a bogus "how" hit, and the count is
+        # by marker, not by overlapping substring occurrence).
+        hits = len(set(_COMPLEXITY_RE.findall(q)))
         s += min(0.5, 0.18 * hits)
 
         # Long-form / generation request -> the big model (one hit is enough).
-        if any(marker in q for marker in _GENERATION_MARKERS):
+        if _GENERATION_RE.search(q):
             s += 0.5
 
         if q.count("?") >= 2:

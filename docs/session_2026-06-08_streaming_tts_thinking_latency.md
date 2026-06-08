@@ -96,28 +96,42 @@ These are **perceptual** changes (turn-taking / STT accuracy). The project's
 repeated lesson (the whole barge-in saga) is that perceptual audio changes must
 be live-validated; #1 was uniquely headless-measurable, these are not.
 
-### #2 Prosody endpointing — CODE COMPLETE + runtime-ready, just needs the flip + tuning
-Stop replying on the user's mid-thought pauses. The infrastructure is **already
-built** (`core/endpointing.py` `ProsodyTurnCompletionDetector` + Smart Turn v3,
-`AdaptiveEndpointPolicy`; wired in `core/engines/sherpa.py` `_build_turn_detector`
-/ `_decide_endpoint` with graceful fallback). **Verified ready on this box:**
-onnxruntime 1.23.2 installed, `pretrained_models/sherpa/smart_turn/smart-turn-v3.1-cpu.onnx`
-present, the detector **loads + runs** — a real finished human clip scored
-**0.9134** (correctly "complete"), thin audio → 0.5 (neutral).
+### #2 Prosody endpointing — ✅ ACTIVATED on the Windows box; needs the owner's live tuning
+Stop replying on the user's mid-thought pauses.
 
-To activate (per-machine, in `config.local.json` — committed config keeps model
-paths empty by convention):
-1. `sherpa.endpoint_detector = "prosody"`
-2. `sherpa.endpoint_prosody_model = "<abs path to smart-turn-v3.1-cpu.onnx>"`
-3. Run `python -m core --engine sherpa`, talk with mid-thought pauses, and
-   **live-tune**: `endpoint_complete_threshold` (0.6; real complete turns
-   0.74–0.98), `endpoint_incomplete_threshold` (0.3; real incomplete 0.01–0.56),
-   `endpoint_high_confidence_floor`. `endpoint_prosody_min_silence` (0.15) gates
-   when the audio model runs.
+**Owner clarification (important):** Smart Turn v3 does **not** replace SenseVoice
+STT. They are different layers — SenseVoice decides *what words* were said
+(transcription); Smart Turn v3 decides *when the turn is finished* (endpointing).
+Enabling prosody is **not in the STT path**, so it cannot lower transcription
+accuracy; if anything it *raises* effective accuracy by holding through pauses
+instead of truncating the utterance. (That's why this was the safe one to start.)
 
-**Caveat:** the model is human-audio only (returns flat ~0.97 on TTS), so the
+The infrastructure was already built (`core/endpointing.py`
+`ProsodyTurnCompletionDetector` + Smart Turn v3, `AdaptiveEndpointPolicy`; wired
+in `core/engines/sherpa.py` `_build_turn_detector` / `_decide_endpoint` with
+graceful fallback). **Verified ready + activated on this box:** onnxruntime
+1.23.2, `pretrained_models/sherpa/smart_turn/smart-turn-v3.1-cpu.onnx` present,
+the detector loads + runs (real finished human clip → **0.9134**, thin audio →
+0.5), and the runtime builds `ProsodyTurnCompletionDetector` from the merged
+config.
+
+**Now set in `config.local.json`** (gitignored, per-machine):
+- `sherpa.endpoint_detector = "prosody"`
+- `sherpa.endpoint_prosody_model = "<abs path to smart-turn-v3.1-cpu.onnx>"`
+- `sherpa.endpoint_incomplete_threshold = 0.5` (raised from 0.3 so mid-thought
+  pauses — which score low — trigger the bounded HOLD; complete turns score ≥0.74
+  so they're unaffected).
+
+**Live-tune** (`python -m core --engine sherpa`, talk with mid-thought pauses):
+if it still replies on a pause, raise `endpoint_incomplete_threshold` toward 0.6;
+if it holds too long on finished turns, lower it; to cut post-speech latency,
+lower `endpoint_min_silence_sec` (1.1 → ~0.5) once happy.
+`endpoint_prosody_min_silence` (0.15) gates when the audio model runs.
+
+**Caveat:** the model is human-audio only (flat ~0.97 on TTS), so the
 synthetic-user / inject harness CANNOT validate turn-taking — validate on real
-speech.
+speech. **On other machines it's still OFF** (config.local.json is per-machine —
+flip the same keys there).
 
 ### #3 SenseVoice agreement-guard (STT) — needs real recorded clips to tune
 SenseVoice 2nd-pass is currently **disabled** (`config.local.json asr_final_backend=""`)
@@ -139,8 +153,11 @@ Re-enable (`true`) for normal always-on use so the assistant ignores overheard
 speech.
 
 ## Next steps (pick up here)
-1. **Prosody endpointing** (improvement #2): flip the two `config.local.json`
-   keys above and live-tune the thresholds with mid-thought pauses. Code is ready.
+1. **Prosody endpointing** (improvement #2): **already activated** on the Windows
+   box's `config.local.json`. Just run `python -m core --engine sherpa` and
+   live-tune `endpoint_incomplete_threshold` / `endpoint_min_silence_sec` by
+   talking with mid-thought pauses. (Activate on other machines by flipping the
+   same keys.)
 2. **SenseVoice agreement-guard** (improvement #3): build `core/asr_text.py`
    length-aware guard; tune against real recorded clips.
 3. Re-enable `input_gate` for always-on; (housekeeping) tame the `logs/runs`

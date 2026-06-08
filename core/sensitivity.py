@@ -123,6 +123,20 @@ _NAME_AND_MONEY = re.compile(
     rf"(?:{_MONEY})(?:\s+\w+){{0,4}}\s+{_NAME})",
 )
 
+# Compensation / pay terms imply someone's earnings (PII) on their OWN. The
+# name+money rule above ALSO catches them next to a name, but it is case-
+# SENSITIVE (the ``_NAME`` [A-Z] proper-name signal) -- and production sherpa ASR
+# emits LOWERCASE ("what is john salary"), defeating that signal and letting
+# third-party financial PII reach a public (possibly PRC-hosted) chain. The §9.7
+# boundary fails safe toward PRIVATE, so a bare comp word forces PRIVATE
+# regardless of casing or an adjacent capitalized name (security-6). The cost of
+# the rare over-match ("average teacher salary") is only that the turn stays
+# LOCAL -- the safe direction.
+_COMPENSATION = re.compile(
+    r"\b(?:salary|salaries|wage|wages|income|paycheck|pay ?stub|net worth|bonus)\b",
+    re.IGNORECASE,
+)
+
 # Other obvious PII categories (case-insensitive). Addresses, health, and
 # credentials each independently force PRIVATE.
 _PII_CATEGORY = re.compile(
@@ -162,6 +176,8 @@ def _is_personal(text: str) -> bool:
     if _PERSONAL_ACTIONS.search(text):
         return True
     if _NAME_AND_MONEY.search(text):
+        return True
+    if _COMPENSATION.search(text):
         return True
     if _PII_CATEGORY.search(text):
         return True

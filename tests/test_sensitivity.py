@@ -146,6 +146,20 @@ def test_compensation_terms_fail_safe_private():
     assert classify_sensitivity("What is the minimum wage") == PRIVATE
 
 
+def test_lowercased_compensation_pii_fails_safe_private():
+    """Production sherpa ASR emits LOWERCASE, defeating the capitalized-name
+    signal in the name+money rule -- so 'what is john salary' used to slip
+    through to PUBLIC (a cloud/CN chain when cloud is enabled). A bare comp word
+    must force PRIVATE regardless of casing or an adjacent name (security-6)."""
+    # The exact gap from the audit: lowercase name + comp word, public opener.
+    assert classify_sensitivity("what is john salary") == PRIVATE
+    assert classify_sensitivity("how much is sarah paycheck") == PRIVATE
+    assert classify_sensitivity("tell me about mike net worth") == PRIVATE
+    assert classify_sensitivity("what is your income") == PRIVATE
+    # The egress gate shares the _is_personal precedence, so it's blocked too.
+    assert may_leave_device("what is john salary") is False
+
+
 # --- mode + intent overrides -----------------------------------------------
 
 

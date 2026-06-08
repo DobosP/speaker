@@ -184,3 +184,101 @@ def test_planner_can_call_web_search_tool():
     assert result.ok
     assert result.data["steps"] == ["web.search"]
     assert result.text == "pipecat is a voice framework"
+
+
+def test_planner_threads_recent_conversation_into_plan_and_final_prompts():
+    """The runtime publishes a recent-conversation block under
+    ``context['recent_conversation']``; the planner must weave it into BOTH the
+    plan prompt (so it can resolve "explain that") AND the final-answer prompt (so
+    the spoken reply keeps the thread). Absent -> prompts unchanged (other tests)."""
+    from always_on_agent.react import FINAL_SYSTEM
+
+    class _CapturingLLM:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self._plan = ["FINAL"]  # FINAL with NO arg -> forces _final()
+
+        def generate(self, prompt: str, *, system=None) -> str:
+            self.prompts.append(prompt)
+            return "answer"
+
+        def stream(self, prompt: str, *, system=None) -> Iterator[str]:
+            self.prompts.append(prompt)
+            if system == FINAL_SYSTEM:
+                yield "final answer"
+                return
+            yield self._plan.pop(0) if self._plan else "FINAL"
+
+    registry = create_default_capabilities()
+    llm = _CapturingLLM()
+    planner = ReactPlanner(llm, registry)
+    recent = (
+        "=== Recent conversation (most recent last) ===\n"
+        "User: what is the capital of france\nYou: Paris."
+    )
+    result = planner.run("explain that", {"recent_conversation": recent})
+    assert result.ok
+    # Both the plan prompt and the final prompt carried the conversation block.
+    assert len(llm.prompts) >= 2
+    assert all("Recent conversation" in p and "Paris" in p for p in llm.prompts)
+
+
+def test_planner_omits_recent_block_when_absent():
+    """No recent_conversation in context -> the prompts are byte-identical to the
+    pre-enhancement shape (no stray blank header)."""
+    registry = create_default_capabilities()
+    llm = ScriptLLM(["FINAL: done"])
+    planner = ReactPlanner(llm, registry)
+    planner.run("just answer", {})
+    assert llm.plan_prompts
+    assert "Recent conversation" not in llm.plan_prompts[0]
+    assert llm.plan_prompts[0].startswith("User request:")
+
+
+def test_recent_conversation_reaches_the_real_planner_end_to_end():
+    """Contract pin: a turn that ESCALATES through the real assistant() -> the real
+    ReactPlanner must carry the recent-conversation block into the planner's
+    prompts. Guards the constant<->literal coupling between
+    core.capabilities.RECENT_CONVERSATION_KEY and the "recent_conversation" literal
+    in always_on_agent.react that the unit tests pin only one side of -- a rename of
+    one without the other would pass both unit tests yet break production."""
+    from always_on_agent.memory import SessionMemory
+    from always_on_agent.react import FINAL_SYSTEM, attach_react_capability
+    from core.capabilities import RECENT_CONVERSATION_KEY
+
+    # The two modules must agree on the literal key, end to end.
+    assert RECENT_CONVERSATION_KEY == "recent_conversation"
+
+    class _CapturingLLM:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self._plan = ["FINAL"]
+
+        def generate(self, prompt: str, *, system=None, images=None) -> str:
+            self.prompts.append(prompt)
+            return "answer"
+
+        def stream(self, prompt: str, *, system=None, images=None) -> Iterator[str]:
+            self.prompts.append(prompt)
+            if system == FINAL_SYSTEM:
+                yield "final answer"
+                return
+            yield self._plan.pop(0) if self._plan else "FINAL"
+
+    memory = SessionMemory()
+    memory.add("what is the capital of france", tags=("user",))
+    memory.add("Paris.", tags=("assistant_output",))
+
+    llm = _CapturingLLM()
+    registry = CapabilityRegistry()
+    attach_react_capability(registry, llm)  # the REAL planner under "agent.react"
+    attach_llm_capabilities(registry, llm, escalate=lambda q, ctx: True, memory=memory)
+
+    result = registry.invoke(
+        "assistant.answer", "explain that in detail", {"mode": "assistant"}
+    )
+    assert result.ok
+    assert llm.prompts, "the real planner never called the LLM"
+    assert any("Recent conversation" in p and "Paris" in p for p in llm.prompts), (
+        "recent-conversation block did not reach the real planner end-to-end"
+    )

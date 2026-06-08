@@ -182,9 +182,14 @@ class ReactPlanner:
         # the actually-registered capabilities.
         return self._registry.describe(self._tools, planner=True)
 
-    def _plan_prompt(self, query: str, observations: list[str]) -> str:
+    def _plan_prompt(self, query: str, observations: list[str], recent: str = "") -> str:
         gathered = "\n".join(observations) if observations else "(none yet)"
+        # The recent-conversation block (when the runtime supplies it) lets the
+        # planner resolve references in the request -- "explain THAT" / "the second
+        # one" -- against what was just said, instead of planning on a bare query.
+        convo = f"{recent}\n\n" if recent else ""
         return (
+            f"{convo}"
             f"User request: {query}\n\n"
             f"Available tools:\n{self._catalog()}\n\n"
             f"Findings so far:\n{gathered}\n\n"
@@ -206,10 +211,14 @@ class ReactPlanner:
         return "".join(parts).strip()
 
     def _final(
-        self, query: str, observations: list[str], cancel: Optional[Event]
+        self, query: str, observations: list[str], cancel: Optional[Event], recent: str = ""
     ) -> str:
         gathered = "\n".join(observations) if observations else "(no findings)"
+        # Prepend the recent conversation (when supplied) so the spoken answer keeps
+        # the thread -- an escalated "tell me more about it" resolves "it".
+        convo = f"{recent}\n\n" if recent else ""
         prompt = (
+            f"{convo}"
             f"User request: {query}\n"
             f"Findings:\n{gathered}\n\n"
             "Give the final spoken answer. If the findings do not actually help, "
@@ -219,6 +228,10 @@ class ReactPlanner:
 
     def run(self, query: str, context: Mapping[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")  # type: ignore[assignment]
+        # Bounded recent-conversation block the runtime publishes (core.capabilities
+        # RECENT_CONVERSATION_KEY) so an escalated turn keeps the conversation
+        # thread; absent on a bare/test invocation -> "" -> prompts unchanged.
+        recent = str(context.get("recent_conversation", "") or "")
         # This runs under the short ASSISTANT mode budget, but a multi-step plan
         # (up to max_steps LLM calls + tool calls) legitimately takes longer.
         # Push the reap deadline out so a real agent turn isn't killed mid-plan.
@@ -242,7 +255,7 @@ class ReactPlanner:
             # ``_parse_step`` strips again before matching TOOL/FINAL.
             raw = self._drain(
                 self._llm.stream(
-                    self._plan_prompt(query, observations), system=PLANNER_SYSTEM
+                    self._plan_prompt(query, observations, recent), system=PLANNER_SYSTEM
                 ),
                 cancel,
             )
@@ -253,7 +266,7 @@ class ReactPlanner:
             action, arg = _parse_step(raw)
 
             if action is None or action.upper() == "FINAL":
-                text = arg if (action and arg) else self._final(query, observations, cancel)
+                text = arg if (action and arg) else self._final(query, observations, cancel, recent)
                 return CapabilityResult(
                     True,
                     text or "Sorry, I couldn't work that out.",
@@ -274,7 +287,7 @@ class ReactPlanner:
                 observations.append(f"{action} failed: {result.error}")
 
         # Step budget exhausted -> synthesize whatever we have.
-        text = self._final(query, observations, cancel)
+        text = self._final(query, observations, cancel, recent)
         return CapabilityResult(
             True,
             text or "Sorry, I couldn't work that out.",

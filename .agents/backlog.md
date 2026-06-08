@@ -78,6 +78,56 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       the capture/worker thread, like `FarEndRing`) before `coherence_ring_ms` is
       raised materially. Documented inline in `_audio_cb`'s docstring.
 
+## Smart routing — phase-2 audit (2026-06-08, 6-dimension fan-out: 28 findings, 19 confirmed)
+> Verdict: smart routing is largely HEALTHY + fail-safe (no P0, no active §9.7
+> boundary leak, every risky path double-bounded toward the more-private/conservative
+> choice). Through-line = DORMANT intelligence (live_routing/cost_order/capability_router
+> built+tested but off in most profiles) + one narrow PII gap. Adversarial verify
+> dropped 9 plausible-but-wrong findings (e.g. "screen captures ride US cloud" is
+> §9.7-authorized; several "boundary leak" claims were post-ASR-text egress, which
+> the boundary permits). Landed in `feat/smart-routing-phase2-hardening` -> main.
+- [x] **PII fail-safe for lowercased ASR (core/sensitivity.py).** Name+money rule was
+      case-SENSITIVE; lowercase ASR ("what is john salary") slipped to PUBLIC. Added a
+      case-insensitive comp-word rule (salary/wage/income/paycheck/pay stub/net worth/
+      bonus) -> PRIVATE. The single fail-UNSAFE path, now closed.
+- [x] **Host-aware cost ordering (core/routing.py `_preset_cost_key`).** Added host_rank
+      as the OUTERMOST sort key so CN sorts after US/unknown (cost optimizes within a
+      jurisdiction, not across it); fixes the CN-floats-ahead + OpenRouter-sinks-below-CN
+      bugs. Latent until cost_order is enabled -> fixed before enablement.
+- [x] **capability_router ON for desktop_gpu_4090 (config.json).** The shipped device
+      inherited enabled=false while base 'desktop' had it on (most-capable profile, least
+      routing intelligence). Mirrored desktop's block.
+- [ ] **Activate dormant cost/latency levers on the CLOUD profiles + add measured evidence
+      (the audit's #4, deferred).** Set `live_routing:true` (llm block) + `cloud.cost_order:true`
+      on `cpu_laptop` / `phone_lite` (optionally `macbook_m_series`) where local is slow and
+      cloud is on; keep desktop/4090 OFF (local 12b is fast). The cost_order fix above
+      unblocks this. PAIR with a `tools/bench` (or replay) smoke that emits the chosen chain
+      order + asserts cost_order lowers TTFT and the live nudge shortens the hedge under a
+      high-load snapshot -- the first measured proof these levers help. Needs cloud keys to
+      validate -> do on a cloud-enabled device. Files: config.json device_profiles
+      (cpu_laptop/phone_lite/macbook), tools/bench/{runner,report}.py, docs/unified_architecture.md §5.
+- [ ] **P2 routing polish (verified, low-impact):**
+      (a) Bound the hung-worker daemon-thread leak: WORKER_JOIN_TIMEOUT=0.5s < reap latency
+      (cloud up to 5s; in-process LlamaCppLLM pre-first-token is uncancellable) -> losers
+      leak threads/sockets; at minimum WARN when shutdown() returns with live workers
+      (core/llm.py:695,737-759,822-839).
+      (b) Lower WINNER_SELECT_BUDGET_FLOOR 30s -> ~8-10s (core/llm.py:683-687) -- 30s pre-
+      first-token wedge exceeds any voice-turn budget (phone_lite).
+      (c) Word-boundary-aware tier markers + add compose/draft/'write an' generation verbs
+      (core/routing.py:226-229,268,272) -- substring matches mis-fire ('show me the time'
+      hits 'how') / miss ('compose'); never alone flips a route (max nudge 0.25 < 0.5 gap).
+      (d) Centralize capability_context set/reset so the ESCALATED ReAct + research.local
+      paths also publish sensitivity (core/capabilities.py:269-278,444-466; set runs only
+      at :383, after the escalation early-return at :278) + a guard test.
+      (e) Tier-aware load_fraction + shorter SystemMonitor cadence when live_routing on
+      (core/sysinfo.py) -- the headroom signal mis-attributes CPU STT/TTS vs GPU LLM and
+      lags 10s vs 1-3s turns. Matters once live_routing is enabled.
+      (f) Test the LearnedRouter build path (backend='learned' raises documented RuntimeError
+      when torch absent; core/routing.py:287-326 has zero tests).
+      (g) Doc-truth: docs/unified_architecture.md:789 cites the wrong test file for Cost Order
+      (it's tests/test_core_routing.py:296-396); config.json cost_order comment says
+      'cheaper/faster' but the sort is fastest-then-cheapest.
+
 ## P1 — desktop / 4090 fit
 - [ ] Adopt `desktop_gpu_4090` profile on this machine (currently `device=desktop`;
       4090 profile raises `num_ctx` 4096→8192, `num_predict`→512, enables both gates).

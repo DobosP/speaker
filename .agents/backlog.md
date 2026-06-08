@@ -229,6 +229,13 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 
 ## P2
 - [ ] Wire `tools/swarm/harness.py perf --real` into `.github/workflows/perf.yml` parity.
+- [ ] **`web.search` egress vs the floated turn sensitivity (review nit, 2026-06-08g).**
+      `core/websearch.py` gates egress on the raw tool `arg` via `may_leave_device(arg)`,
+      independent of `context["sensitivity"]`. Now that the ReAct planner also sees the
+      recent-conversation block (2026-06-08g), it has more material it *could* phrase into
+      a search arg. `_is_personal` re-classifies that exact arg so literal PII still fails
+      closed, but consider ALSO gating the search arg on the turn's floated sensitivity
+      (defence-in-depth). Orthogonal to the 2026-06-08g change; not a regression.
 
 ## Shipped this session (2026-06-02)
 - [x] **Landed the unification refactor on `main`** (merge `d215a31`): merged

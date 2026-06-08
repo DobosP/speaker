@@ -27,6 +27,12 @@ from .sensitivity import PRIVATE, classify_sensitivity, most_sensitive
 
 log = logging.getLogger("speaker.llm")
 
+# Context-dict key under which assistant() publishes the bounded recent-conversation
+# block so the escalated ReAct planner sees "what was just said" too (not only the
+# one-shot answer path). Read by literal in always_on_agent/react.py (the brain
+# avoids importing core), so keep the two in sync.
+RECENT_CONVERSATION_KEY = "recent_conversation"
+
 
 def _answers_locally(model: LLMClient) -> bool:
     """True when ``model`` can only answer from the on-device tier.
@@ -268,6 +274,41 @@ def attach_llm_capabilities(
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
+        # Classify intent + sensitivity once, up front, for BOTH the one-shot and
+        # the escalated path (idempotent: only fills what's absent).
+        _enrich_context(query, context)
+        # A continuation turn (ADD-ON) carries a synthetic, folded prompt and the
+        # supervisor has already ingested the raw user utterance, so skip the query
+        # ingest + recent block here -- otherwise memory would hold both the prior
+        # turn and the merged "prev + addon" prompt (the double-ingest the design
+        # flagged), and its folded prompt already embeds the prior context.
+        meta = context.get("metadata")
+        skip_user_memory = bool(meta.get("skip_user_memory")) if isinstance(meta, dict) else False
+        # Recent-conversation context (short-term memory): the PRIOR turns, built
+        # ONCE here -- BEFORE the escalation branch and BEFORE ingesting the current
+        # query -- so the model can resolve "its"/"the second one". Built up front
+        # (not just on the one-shot path) so an ESCALATED "explain that step by
+        # step" reaches the ReAct planner WITH the conversation thread instead of a
+        # contextless query. §9.7: a private prior turn must float the turn's
+        # sensitivity to the most-private over EVERY included prior turn before
+        # EITHER path's LLM calls run. Best-effort: never break a turn.
+        recent_block = ""
+        try:
+            recent_turns = (
+                collect_recent_turns(memory, recent_cfg)
+                if (memory is not None and not skip_user_memory)
+                else []
+            )
+            if recent_turns:
+                sens = context.get("sensitivity") or PRIVATE
+                for _role, turn_text in recent_turns:
+                    sens = most_sensitive(str(sens), classify_sensitivity(turn_text))
+                context["sensitivity"] = sens
+                recent_block = format_recent_block(recent_turns, recent_cfg)
+        except Exception:  # noqa: BLE001 - context is best-effort, never fatal
+            log.exception("recent-conversation context failed; continuing without it")
+        if recent_block:
+            context[RECENT_CONVERSATION_KEY] = recent_block
         # Smart-mode escalation: hand reasoning/gathering queries to the ReAct
         # planner (when registered) instead of a one-shot reply.
         if (
@@ -275,57 +316,29 @@ def attach_llm_capabilities(
             and agent_capability in registry.names()
             and escalate(query, context)
         ):
-            # An escalated (ReAct planner) turn must STILL classify sensitivity
-            # and publish capability_context so SensitivityRouterLLM can pick the
-            # right cloud chain for the nested LLM calls the planner makes -- the
-            # early-return here used to skip both, defaulting every escalated turn
-            # to the fail-safe chain (smart-routing-2 / backlog P2 (d)). Enrich +
-            # publish, then reset via finally so the ContextVar is restored on
-            # EVERY return/raise out of the planner (a missed reset is a cross-turn
-            # sensitivity LEAK -- the §9.7 risk the isolation tests guard).
-            _enrich_context(query, context)
+            # An escalated (ReAct planner) turn must STILL publish capability_context
+            # so SensitivityRouterLLM can pick the right cloud chain for the nested
+            # LLM calls the planner makes (sensitivity already classified + floated
+            # over the recent block above). Reset via finally so the ContextVar is
+            # restored on EVERY return/raise out of the planner (a missed reset is a
+            # cross-turn sensitivity LEAK -- the §9.7 risk the isolation tests guard).
             ctx_token = capability_context.set(context)
             try:
                 return registry.invoke(agent_capability, query, context)
             finally:
                 capability_context.reset(ctx_token)
-        _enrich_context(query, context)
-        # Memory recall (the headline P2 fix), assistant-only (R5):
-        #   1. Ingest the answered query first (R1) so recall has something to
-        #      find on the next turn. Never mutate ``query`` itself -- the
-        #      router/sensitivity inputs stay clean.
-        #   2. Gated prepend: only when recall is enabled (cheap config gate,
-        #      default off) AND the backend returns a non-empty (relevant)
-        #      block. Wrapped so a memory error can never break a live turn.
-        # A continuation turn (ADD-ON) carries a synthetic, folded prompt and the
-        # supervisor has already ingested the raw user utterance, so skip the
-        # query ingest here -- otherwise memory would hold both the prior turn and
-        # the merged "prev + addon" prompt (the double-ingest the design flagged).
-        meta = context.get("metadata")
-        skip_user_memory = bool(meta.get("skip_user_memory")) if isinstance(meta, dict) else False
+        # One-shot answer path. Memory recall (the headline P2 fix), assistant-only
+        # (R5): ingest the answered query first (R1) so recall has something to find
+        # next turn (never mutate ``query`` itself -- the router/sensitivity inputs
+        # stay clean), then a gated prepend only when recall is enabled AND the
+        # backend returns a non-empty block. Wrapped so a memory error can't break
+        # a live turn.
         system_for_call = system
         if memory is not None:
             try:
-                # Recent-conversation context (short-term memory): the PRIOR turns
-                # (collected BEFORE ingesting the current query) so the model can
-                # resolve "its"/"the second one". Suppressed on a continuation turn
-                # -- its merge/continue prompt already embeds the prior context.
-                recent_turns = (
-                    [] if skip_user_memory else collect_recent_turns(memory, recent_cfg)
-                )
                 if not skip_user_memory:
                     memory.add(query, tags=("user",))
                 recall_block = memory.context_for_llm(query) if recall_cfg.enabled else ""
-                recent_block = format_recent_block(recent_turns, recent_cfg)
-                # §9.7: a private prior turn in the recent block must not ride a
-                # public current query to a public/cloud chain. Float the prompt's
-                # sensitivity to the most-private over the current turn AND every
-                # included prior turn.
-                if recent_turns:
-                    sens = context.get("sensitivity") or PRIVATE
-                    for _role, turn_text in recent_turns:
-                        sens = most_sensitive(str(sens), classify_sensitivity(turn_text))
-                    context["sensitivity"] = sens
                 # Compose: stable system FIRST (the pre-warmed, cacheable prefix),
                 # then the volatile recent block AFTER, so the prefix cache is
                 # reused turn to turn. Recall (default-off, past sessions) keeps its

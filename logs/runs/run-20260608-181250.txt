@@ -1,0 +1,1429 @@
+18:12:50.105 INFO  speaker | run 20260608-181250 started (debug=False) -> logs\runs\run-20260608-181250.txt
+18:12:50.154 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=26282.9MB(77.4%) proc_rss=23.4MB gpu=8.0% gpu_mem=13060.0/16376.0MB
+18:12:50.643 INFO  speaker.sherpa | endpoint detector: prosody (Smart Turn) C:\Users\Paul Work\personal_repos\speaker\pretrained_models\sherpa\smart_turn\smart-turn-v3.1-cpu.onnx
+18:12:50.695 INFO  speaker.sysinfo | system mark after_build: cpu=10.3% ram=26350.2MB(77.6%) proc_rss=94.7MB gpu=16.0% gpu_mem=13060.0/16376.0MB
+18:12:50.696 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+18:12:53.517 INFO  speaker.sherpa | second-pass final ASR: sense_voice (C:\Users\Paul Work\personal_repos\speaker\pretrained_models\sherpa\sense_voice\model.int8.onnx)
+18:12:53.555 INFO  speaker.sherpa | coherence barge-in ACTIVE (scale-invariant, no enrollment; band (300.0, 3400.0) Hz, margin delta 0.08, confirm 2 frames)
+18:12:54.481 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (C:\Users\Paul Work\personal_repos\speaker\pretrained_models\sherpa\aec\dtln_aec_stage1.onnx)
+18:12:54.481 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=19ms)
+18:12:54.481 INFO  speaker.sherpa | adaptive barge-in (fused z-score DTD) ACTIVE: K=5.0 weights=(0.2,1.0,0.0) confirm=1 -- no fixed margin, self-calibrating per device
+18:12:54.481 WARNING speaker.sherpa | speaker-ID model loaded but no enrollment found -- gate is fail-open (everything passes). Run `python -m core --enroll` to enroll your voice.
+18:12:54.481 INFO  speaker.sherpa | input device: Microphone Array (Realtek(R) Au
+18:12:54.481 INFO  speaker.sherpa | output device: Speakers (Realtek(R) Audio)
+18:12:54.481 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+18:12:54.784 INFO  speaker.runtime | capture state: open (opened at 16000 Hz)
+18:12:54.787 INFO  speaker.sherpa | recording session audio -> logs\runs\run-20260608-181250.wav
+18:12:54.789 INFO  speaker.sherpa | capture loop started (capture_sr=16000 -> asr_sr=16000)
+18:12:56.801 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0008 partials=0 finals=0 speaking=False
+18:12:58.800 DEBUG speaker.sherpa | capture heartbeat: blocks=40 avg_rms=0.0009 partials=0 finals=0 speaking=False
+18:13:00.207 DEBUG speaker.sysinfo | system sample: cpu=0.0% ram=26334.4MB(77.5%) proc_rss=902.9MB gpu=19.0% gpu_mem=4375.0/16376.0MB
+18:13:00.801 DEBUG speaker.sherpa | capture heartbeat: blocks=60 avg_rms=0.0010 partials=0 finals=0 speaking=False
+18:13:02.801 DEBUG speaker.sherpa | capture heartbeat: blocks=80 avg_rms=0.0010 partials=0 finals=0 speaking=False
+18:13:04.801 DEBUG speaker.sherpa | capture heartbeat: blocks=100 avg_rms=0.0010 partials=0 finals=0 speaking=False
+18:13:05.313 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+18:13:05.313 INFO  speaker.llm.ollama | ollama gemma3:4b: 10.52s ttft=- out=38ch tokens=- | 'hi'
+18:13:06.801 DEBUG speaker.sherpa | capture heartbeat: blocks=120 avg_rms=0.0009 partials=0 finals=0 speaking=False
+18:13:08.801 DEBUG speaker.sherpa | capture heartbeat: blocks=140 avg_rms=0.0014 partials=0 finals=0 speaking=False
+18:13:10.312 DEBUG speaker.sysinfo | system sample: cpu=40.0% ram=27934.2MB(82.3%) proc_rss=903.7MB gpu=18.0% gpu_mem=15779.0/16376.0MB
+18:13:10.801 DEBUG speaker.sherpa | capture heartbeat: blocks=160 avg_rms=0.0009 partials=0 finals=0 speaking=False
+18:13:12.801 DEBUG speaker.sherpa | capture heartbeat: blocks=180 avg_rms=0.0009 partials=0 finals=0 speaking=False
+18:13:14.831 DEBUG speaker.sherpa | capture heartbeat: blocks=190 avg_rms=0.0011 partials=0 finals=0 speaking=False
+18:13:17.153 DEBUG speaker.sherpa | capture heartbeat: blocks=194 avg_rms=0.0018 partials=0 finals=0 speaking=False
+18:13:17.310 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: hi
+18:13:17.310 INFO  speaker.llm.ollama | ollama gemma4:12b: 12.00s ttft=- out=32ch tokens=- | 'hi'
+18:13:18.273 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "hi"
+18:13:18.273 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.96s ttft=- out=3ch tokens=- | 'Latest utterance: "hi"'
+18:13:19.271 DEBUG speaker.sherpa | capture heartbeat: blocks=198 avg_rms=0.0023 partials=0 finals=0 speaking=False
+18:13:19.682 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Raw ASR text: hi
+
+Cleaned:
+18:13:19.682 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.41s ttft=- out=2ch tokens=- | 'Raw ASR text: hi Cleaned:'
+18:13:20.383 DEBUG speaker.sysinfo | system sample: cpu=30.6% ram=29259.3MB(86.2%) proc_rss=904.2MB gpu=6.0% gpu_mem=15899.0/16376.0MB
+18:13:21.411 DEBUG speaker.sherpa | capture heartbeat: blocks=204 avg_rms=0.0145 partials=0 finals=0 speaking=False
+18:13:21.752 INFO  speaker.sherpa | sherpa TTS warm-up complete
+18:13:21.753 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+18:13:22.801 DEBUG speaker.sherpa | asr partial: 'Being'
+18:13:22.801 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Being'
+18:13:23.480 DEBUG speaker.sherpa | capture heartbeat: blocks=220 avg_rms=0.0066 partials=1 finals=0 speaking=False
+18:13:23.894 INFO  speaker.sherpa | asr final: 'I.' (raw 'BEING')
+18:13:23.894 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:13:25.408 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Latest utterance: "I."
+18:13:25.408 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.51s ttft=- out=6ch tokens=- | 'Latest utterance: "I."'
+18:13:25.408 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:13:25.499 DEBUG speaker.sherpa | capture heartbeat: blocks=227 avg_rms=0.0017 partials=1 finals=1 speaking=False
+18:13:27.499 DEBUG speaker.sherpa | capture heartbeat: blocks=247 avg_rms=0.0017 partials=1 finals=1 speaking=False
+18:13:29.499 DEBUG speaker.sherpa | capture heartbeat: blocks=267 avg_rms=0.0017 partials=1 finals=1 speaking=False
+18:13:30.429 DEBUG speaker.sysinfo | system sample: cpu=30.3% ram=29313.5MB(86.3%) proc_rss=967.4MB gpu=6.0% gpu_mem=15899.0/16376.0MB
+18:13:31.499 DEBUG speaker.sherpa | capture heartbeat: blocks=287 avg_rms=0.0017 partials=1 finals=1 speaking=False
+18:13:33.499 DEBUG speaker.sherpa | capture heartbeat: blocks=307 avg_rms=0.0017 partials=1 finals=1 speaking=False
+18:13:34.718 DEBUG speaker.sherpa | asr partial: 'The low'
+18:13:34.718 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The low'
+18:13:35.018 DEBUG speaker.sherpa | asr partial: 'The low is'
+18:13:35.018 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The low is'
+18:13:35.320 DEBUG speaker.sherpa | asr partial: 'The low is this'
+18:13:35.320 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The low is this'
+18:13:35.498 DEBUG speaker.sherpa | capture heartbeat: blocks=327 avg_rms=0.0337 partials=4 finals=1 speaking=False
+18:13:35.619 DEBUG speaker.sherpa | asr partial: 'The low is this cord work'
+18:13:35.619 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The low is this cord work'
+18:13:36.019 DEBUG speaker.sherpa | asr partial: 'The low is this cordoor king'
+18:13:36.020 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The low is this cordoor king'
+18:13:37.114 INFO  speaker.sherpa | asr final: 'Hello, is this code working?' (raw 'THE LOW IS THIS CORDOOR KING')
+18:13:37.114 INFO  speaker.runtime | final -> brain: 'Hello, is this code working?' (mode=assistant)
+18:13:38.392 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+
+Latest utterance: "Hello, is this code working?"
+18:13:38.392 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.28s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - I. Latest utterance: "Hello, is this code working?"'
+18:13:38.392 INFO  speaker.runtime | addressing decision: ACT for 'Hello, is this code working?'
+18:13:40.480 DEBUG speaker.sysinfo | system sample: cpu=27.8% ram=29311.3MB(86.3%) proc_rss=976.7MB gpu=6.0% gpu_mem=15899.0/16376.0MB
+18:13:40.558 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+
+Raw ASR text: Hello, is this code working?
+
+Cleaned:
+18:13:40.558 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.17s ttft=- out=29ch tokens=- | 'Recent utterances (most recent last): - I. Raw ASR text: Hello, is this code working? Cleaned:'
+18:13:40.558 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'Hello, is this code working?'
+18:13:40.558 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Hello, is this code working?'
+18:13:40.558 DEBUG speaker.sherpa | capture heartbeat: blocks=343 avg_rms=0.0021 partials=6 finals=2 speaking=False
+18:13:40.559 INFO  speaker.tasks | task 0fdcd82e00bd started: mode=assistant capability=assistant.answer input='Hello, is this code working?'
+18:13:40.575 INFO  speaker.llm | answering on fast tier (sensitivity=code, intent=assistant): 'Hello, is this code working?'
+18:13:41.573 INFO  speaker.runtime | assistant: 'I’m not sure what code you are referring to.'
+18:13:41.575 DEBUG speaker.sherpa | speaking: 'I’m not sure what code you are referring to.' (queue depth=0)
+18:13:41.673 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Hello, is this code working?
+18:13:41.673 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.10s ttft=0.90s out=101ch tokens=25 | 'Hello, is this code working?'
+18:13:41.673 INFO  speaker.llm | fast tier done in 1.09s (101 chars, streamed)
+18:13:41.673 INFO  speaker.tasks | task 0fdcd82e00bd completed in 1.11s (101 chars)
+18:13:41.673 INFO  speaker.runtime | assistant: 'Could you please tell me which code you’re asking about?'
+18:13:41.955 INFO  speaker.sherpa | playback opened at 22050 Hz on device default (callback)
+18:13:42.626 DEBUG speaker.sherpa | capture heartbeat: blocks=362 avg_rms=0.0166 partials=6 finals=2 speaking=True
+18:13:42.731 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0575 resid=0.0331 incoh=0.08 consec=0
+18:13:42.829 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0560 resid=0.0553 incoh=0.76 consec=0
+18:13:42.928 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0807 resid=0.0892 incoh=0.15 consec=0
+18:13:43.028 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0692 resid=0.0524 incoh=0.50 consec=0
+18:13:43.029 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:13:43.121 DEBUG speaker.sherpa | speaking: 'Could you please tell me which code you’re asking about?' (queue depth=0)
+18:13:43.128 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0392 resid=0.0572 incoh=0.33 consec=0
+18:13:43.241 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=2.88) raw=0.0217 resid=0.0209 incoh=0.78 consec=0
+18:13:43.328 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0491 resid=0.0489 incoh=0.13 consec=0
+18:13:43.430 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.99) raw=0.0315 resid=0.0302 incoh=0.53 consec=0
+18:13:43.528 DEBUG speaker.sherpa | dtd: D=0.27 K=5.0 fired=False (z_raw=0.48 z_resid=0.18 z_coh=0.00) raw=0.0676 resid=0.0578 incoh=0.08 consec=0
+18:13:43.626 DEBUG speaker.sherpa | dtd: D=1.42 K=5.0 fired=False (z_raw=0.95 z_resid=1.23 z_coh=0.00) raw=0.0790 resid=0.0808 incoh=0.05 consec=0
+18:13:43.723 DEBUG speaker.sherpa | dtd: D=0.45 K=5.0 fired=False (z_raw=0.00 z_resid=0.45 z_coh=0.77) raw=0.0554 resid=0.0655 incoh=0.47 consec=0
+18:13:43.826 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.99) raw=0.0211 resid=0.0102 incoh=0.51 consec=0
+18:13:43.922 DEBUG speaker.sherpa | dtd: D=0.33 K=5.0 fired=False (z_raw=0.15 z_resid=0.30 z_coh=1.95) raw=0.0598 resid=0.0601 incoh=0.67 consec=0
+18:13:44.026 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.66) raw=0.0151 resid=0.0237 incoh=0.50 consec=0
+18:13:44.127 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=2.65) raw=0.0133 resid=0.0135 incoh=0.86 consec=0
+18:13:44.229 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=2.21) raw=0.0089 resid=0.0075 incoh=0.95 consec=0
+18:13:44.328 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.36) raw=0.0030 resid=0.0044 incoh=0.86 consec=0
+18:13:44.429 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.30) raw=0.0019 resid=0.0009 incoh=0.89 consec=0
+18:13:44.527 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0266 resid=0.0204 incoh=0.48 consec=0
+18:13:44.626 DEBUG speaker.sherpa | capture heartbeat: blocks=382 avg_rms=0.0388 partials=6 finals=2 speaking=True
+18:13:44.628 DEBUG speaker.sherpa | dtd: D=0.04 K=5.0 fired=False (z_raw=0.09 z_resid=0.02 z_coh=0.00) raw=0.0463 resid=0.0432 incoh=0.36 consec=0
+18:13:44.729 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0176 resid=0.0274 incoh=0.42 consec=0
+18:13:44.831 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0357 resid=0.0304 incoh=0.30 consec=0
+18:13:44.925 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0336 resid=0.0355 incoh=0.29 consec=0
+18:13:45.030 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.48) raw=0.0130 resid=0.0175 incoh=0.96 consec=0
+18:13:45.126 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0313 resid=0.0142 incoh=0.46 consec=0
+18:13:45.229 DEBUG speaker.sherpa | dtd: D=0.22 K=5.0 fired=False (z_raw=0.00 z_resid=0.22 z_coh=0.00) raw=0.0374 resid=0.0421 incoh=0.23 consec=0
+18:13:45.326 DEBUG speaker.sherpa | dtd: D=0.01 K=5.0 fired=False (z_raw=0.06 z_resid=0.00 z_coh=0.00) raw=0.0414 resid=0.0378 incoh=0.13 consec=0
+18:13:45.430 DEBUG speaker.sherpa | dtd: D=0.84 K=5.0 fired=False (z_raw=0.55 z_resid=0.73 z_coh=0.00) raw=0.0493 resid=0.0502 incoh=0.13 consec=0
+18:13:45.528 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0173 resid=0.0198 incoh=0.27 consec=0
+18:13:45.631 DEBUG speaker.sherpa | dtd: D=0.02 K=5.0 fired=False (z_raw=0.11 z_resid=0.00 z_coh=0.00) raw=0.0415 resid=0.0206 incoh=0.42 consec=0
+18:13:45.724 DEBUG speaker.sherpa | dtd: D=2.38 K=5.0 fired=False (z_raw=1.77 z_resid=2.03 z_coh=0.22) raw=0.0680 resid=0.0679 incoh=0.51 consec=0
+18:13:45.828 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.14) raw=0.0348 resid=0.0256 incoh=0.48 consec=0
+18:13:45.924 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.53) raw=0.0375 resid=0.0340 incoh=0.60 consec=0
+18:13:46.029 DEBUG speaker.sherpa | dtd: D=0.11 K=5.0 fired=False (z_raw=0.57 z_resid=0.00 z_coh=0.00) raw=0.0500 resid=0.0068 incoh=0.24 consec=0
+18:13:46.126 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.22) raw=0.0212 resid=0.0114 incoh=0.80 consec=0
+18:13:46.228 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.12) raw=0.0202 resid=0.0225 incoh=0.80 consec=0
+18:13:46.323 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.89) raw=0.0179 resid=0.0071 incoh=0.75 consec=0
+18:13:46.424 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0204 resid=0.0152 incoh=0.21 consec=0
+18:13:46.530 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0316 resid=0.0065 incoh=0.11 consec=0
+18:13:46.701 DEBUG speaker.sherpa | capture heartbeat: blocks=403 avg_rms=0.0240 partials=6 finals=2 speaking=False
+18:13:48.419 DEBUG speaker.sherpa | asr partial: 'I may'
+18:13:48.419 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may'
+18:13:48.700 DEBUG speaker.sherpa | capture heartbeat: blocks=423 avg_rms=0.0477 partials=7 finals=2 speaking=False
+18:13:48.722 DEBUG speaker.sherpa | asr partial: 'I may thank'
+18:13:48.722 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank'
+18:13:49.021 DEBUG speaker.sherpa | asr partial: 'I may thank to this'
+18:13:49.021 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this'
+18:13:49.321 DEBUG speaker.sherpa | asr partial: 'I may thank to this up'
+18:13:49.322 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up'
+18:13:50.529 DEBUG speaker.sysinfo | system sample: cpu=27.3% ram=29452.5MB(86.7%) proc_rss=1016.7MB gpu=13.0% gpu_mem=15899.0/16376.0MB
+18:13:50.620 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but'
+18:13:50.621 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but'
+18:13:50.701 DEBUG speaker.sherpa | capture heartbeat: blocks=443 avg_rms=0.0215 partials=11 finals=2 speaking=False
+18:13:50.919 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I'
+18:13:50.919 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I'
+18:13:51.322 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see'
+18:13:51.322 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see'
+18:13:51.621 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that'
+18:13:51.621 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that'
+18:13:51.919 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you'
+18:13:51.921 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you'
+18:13:52.219 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you are ru'
+18:13:52.221 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you are ru'
+18:13:52.521 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you are running now'
+18:13:52.521 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you are running now'
+18:13:52.701 DEBUG speaker.sherpa | capture heartbeat: blocks=463 avg_rms=0.0654 partials=17 finals=2 speaking=False
+18:13:53.223 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you are running now so'
+18:13:53.223 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you are running now so'
+18:13:53.519 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you are running now so let'
+18:13:53.519 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you are running now so let'
+18:13:53.818 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you are running now so let me t'
+18:13:53.818 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you are running now so let me t'
+18:13:54.118 DEBUG speaker.sherpa | asr partial: 'I may thank to this up but I see that you are running now so let me test you'
+18:13:54.119 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I may thank to this up but I see that you are running now so let me test you'
+18:13:54.701 DEBUG speaker.sherpa | capture heartbeat: blocks=483 avg_rms=0.0188 partials=21 finals=2 speaking=False
+18:13:55.884 INFO  speaker.sherpa | asr final: 'Iring to this app, but I see that you are running now, so let me test you.' (raw 'I MAY THANK TO THIS UP BUT I SEE THAT YOU ARE RUNNING NOW SO LET ME TEST YOU')
+18:13:55.884 INFO  speaker.runtime | final -> brain: 'Iring to this app, but I see that you are running now, so let me test you.' (mode=assistant)
+18:13:57.211 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - Hello, is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+
+Latest utterance: "Iring to this app, but I see that you are running now, so let me test you."
+18:13:57.211 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.33s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - I. - Hello, is this code working? - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? Latest utterance: "Iri'
+18:13:57.211 INFO  speaker.runtime | addressing decision: ACT for 'Iring to this app, but I see that you are running now, so let me test you.'
+18:13:59.619 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - Hello, is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+
+Raw ASR text: Iring to this app, but I see that you are running now, so let me test you.
+
+Cleaned:
+18:13:59.619 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.41s ttft=- out=78ch tokens=- | 'Recent utterances (most recent last): - I. - Hello, is this code working? - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? Raw ASR text: Iring to'
+18:13:59.619 INFO  speaker.runtime | cleaned: 'Iring to this app, but I see that you are running now, so let me test you.' -> 'I’m trying to this app, but I see that you are running now, so let me test it.'
+18:14:00.281 WARNING speaker.watchdog | capture silent: no heartbeat for 5.6s (audio thread crashed or stalled?)
+18:14:00.569 DEBUG speaker.sysinfo | system sample: cpu=25.1% ram=29490.1MB(86.8%) proc_rss=1033.3MB gpu=6.0% gpu_mem=15901.0/16376.0MB
+18:14:01.343 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Turn: "I’m trying to this app, but I see that you are running now, so let me test it."
+18:14:01.344 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.72s ttft=- out=3ch tokens=- | 'Turn: "I’m trying to this app, but I see that you are running now, so let me test it."'
+18:14:01.344 INFO  speaker.runtime | route: action=act tier=main conf=0.90 source=llm (llm disambiguation) for 'I’m trying to this app, but I see that you are running now, so let me test it.'
+18:14:01.345 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='I’m trying to this app, but I see that you are running now, so let me test it.'
+18:14:01.345 DEBUG speaker.sherpa | capture heartbeat: blocks=494 avg_rms=0.0018 partials=21 finals=3 speaking=False
+18:14:01.346 INFO  speaker.tasks | task 01aa2d6a4484 started: mode=assistant capability=assistant.answer input='I’m trying to this app, but I see that you are running now, so let me test it.'
+18:14:03.334 DEBUG speaker.sherpa | capture heartbeat: blocks=516 avg_rms=0.0018 partials=21 finals=3 speaking=False
+18:14:04.359 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: User request: I’m trying to this app, but I see that you are running now, so let me test it.
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+(none yet)
+
+Next step:
+18:14:04.359 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.99s ttft=2.44s out=115ch tokens=25 | 'User request: I’m trying to this app, but I see that you are running now, so let me test it. Available tools: - web.search: search the web for current information on a topic - search.local: look up a '
+18:14:04.359 INFO  speaker.tasks | task 01aa2d6a4484 completed in 3.01s (108 chars)
+18:14:04.359 INFO  speaker.runtime | assistant: "I understand you are testing the app's functionality while I am active; feel free to proceed with your test!"
+18:14:04.359 DEBUG speaker.sherpa | speaking: "I understand you are testing the app's functionality while I am active; feel free to proceed with your test!" (queue depth=0)
+18:14:04.435 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0018 incoh=0.11 consec=0
+18:14:04.536 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0017 incoh=0.11 consec=0
+18:14:04.636 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0017 incoh=0.11 consec=0
+18:14:04.759 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0003 incoh=0.11 consec=0
+18:14:04.759 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:14:04.861 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.11 consec=0
+18:14:04.960 DEBUG speaker.sherpa | dtd: D=0.04 K=5.0 fired=False (z_raw=0.22 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0001 incoh=0.11 consec=0
+18:14:05.358 DEBUG speaker.sherpa | capture heartbeat: blocks=536 avg_rms=0.0069 partials=21 finals=3 speaking=True
+18:14:05.360 DEBUG speaker.sherpa | dtd: D=158.93 K=5.0 fired=True (z_raw=120.15 z_resid=134.90 z_coh=18.93) raw=0.0866 resid=0.0582 incoh=0.96 consec=1
+18:14:05.462 DEBUG speaker.sherpa | dtd: D=41.33 K=5.0 fired=True (z_raw=85.64 z_resid=24.20 z_coh=19.72) raw=0.0622 resid=0.0113 incoh=0.99 consec=2
+18:14:05.562 DEBUG speaker.sherpa | dtd: D=24.44 K=5.0 fired=True (z_raw=106.06 z_resid=3.23 z_coh=6.31) raw=0.0767 resid=0.0024 incoh=0.39 consec=3
+18:14:05.663 DEBUG speaker.sherpa | dtd: D=20.94 K=5.0 fired=True (z_raw=89.80 z_resid=2.98 z_coh=11.43) raw=0.0652 resid=0.0023 incoh=0.62 consec=4
+18:14:05.663 INFO  speaker.sherpa | barge-in detected
+18:14:05.663 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+18:14:05.664 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+18:14:06.554 DEBUG speaker.sherpa | asr partial: 'Thirteen'
+18:14:06.554 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Thirteen'
+18:14:07.434 DEBUG speaker.sherpa | capture heartbeat: blocks=557 avg_rms=0.0087 partials=22 finals=3 speaking=False
+18:14:07.659 INFO  speaker.sherpa | asr final: 'Whatt.' (raw 'THIRTEEN')
+18:14:07.659 INFO  speaker.runtime | final -> brain: 'Whatt.' (mode=assistant)
+18:14:08.901 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I.
+  - Hello, is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+  - I understand you are testing the app's functionality while I am active; feel free to proceed with your test!
+
+Latest utterance: "Whatt."
+18:14:08.901 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.24s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - I. - Hello, is this code working? - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? - I understand you are'
+18:14:08.901 INFO  speaker.runtime | addressing decision: ACT for 'Whatt.'
+18:14:10.615 DEBUG speaker.sysinfo | system sample: cpu=26.6% ram=29710.4MB(87.5%) proc_rss=1096.6MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:14:10.921 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Hello, is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+  - I understand you are testing the app's functionality while I am active; feel free to proceed with your test!
+
+Raw ASR text: Whatt.
+
+Cleaned:
+18:14:10.921 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.02s ttft=- out=26ch tokens=- | 'Recent utterances (most recent last): - Hello, is this code working? - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? - I understand you are test'
+18:14:10.921 INFO  speaker.runtime | cleaned: 'Whatt.' -> 'What is this code working?'
+18:14:10.921 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'What is this code working?'
+18:14:10.922 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='What is this code working?'
+18:14:10.922 DEBUG speaker.sherpa | capture heartbeat: blocks=559 avg_rms=0.0018 partials=22 finals=4 speaking=False
+18:14:10.922 INFO  speaker.tasks | task c9e2977c3a10 started: mode=assistant capability=assistant.answer input='What is this code working?'
+18:14:10.934 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'What is this code working?'
+18:14:11.960 INFO  speaker.runtime | assistant: 'I’m not sure what code you are referring to.'
+18:14:11.960 DEBUG speaker.sherpa | speaking: 'I’m not sure what code you are referring to.' (queue depth=0)
+18:14:12.015 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0031 resid=0.0031 incoh=0.62 consec=0
+18:14:12.065 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: What is this code working?
+18:14:12.065 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.13s ttft=0.92s out=101ch tokens=25 | 'What is this code working?'
+18:14:12.065 INFO  speaker.llm | fast tier done in 1.12s (101 chars, streamed)
+18:14:12.065 INFO  speaker.tasks | task c9e2977c3a10 completed in 1.14s (101 chars)
+18:14:12.066 INFO  speaker.runtime | assistant: 'Could you please tell me which code you’re asking about?'
+18:14:12.141 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0050 resid=0.0003 incoh=0.62 consec=0
+18:14:12.242 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0024 resid=0.0002 incoh=0.62 consec=0
+18:14:12.339 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0001 incoh=0.62 consec=0
+18:14:12.339 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:14:12.735 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0404 resid=0.0478 incoh=0.86 consec=0
+18:14:12.839 DEBUG speaker.sherpa | dtd: D=21.96 K=5.0 fired=True (z_raw=20.66 z_resid=17.82 z_coh=0.74) raw=0.0979 resid=0.0836 incoh=0.87 consec=1
+18:14:12.941 DEBUG speaker.sherpa | capture heartbeat: blocks=581 avg_rms=0.0146 partials=22 finals=4 speaking=True
+18:14:12.942 DEBUG speaker.sherpa | dtd: D=14.24 K=5.0 fired=True (z_raw=10.27 z_resid=12.19 z_coh=0.89) raw=0.0540 resid=0.0604 incoh=0.91 consec=2
+18:14:13.039 DEBUG speaker.sherpa | dtd: D=12.97 K=5.0 fired=True (z_raw=11.42 z_resid=10.69 z_coh=0.00) raw=0.0588 resid=0.0543 incoh=0.49 consec=3
+18:14:13.076 DEBUG speaker.sherpa | speaking: 'Could you please tell me which code you’re asking about?' (queue depth=0)
+18:14:13.141 DEBUG speaker.sherpa | dtd: D=8.98 K=5.0 fired=True (z_raw=6.05 z_resid=7.77 z_coh=0.00) raw=0.0361 resid=0.0423 incoh=0.30 consec=4
+18:14:13.141 INFO  speaker.sherpa | barge-in detected
+18:14:13.141 INFO  speaker.supervisor | cancel_all: epoch=3 0 active, 0 queued, 0 pending-confirm
+18:14:13.141 INFO  speaker.supervisor | cancel_all: epoch=4 0 active, 0 queued, 0 pending-confirm
+18:14:13.734 DEBUG speaker.sherpa | asr partial: 'Co'
+18:14:13.734 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Co'
+18:14:14.032 DEBUG speaker.sherpa | asr partial: 'Code'
+18:14:14.032 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Code'
+18:14:15.013 DEBUG speaker.sherpa | capture heartbeat: blocks=602 avg_rms=0.0128 partials=24 finals=4 speaking=False
+18:14:15.143 INFO  speaker.sherpa | asr final: 'Code.' (raw 'CODE')
+18:14:15.143 INFO  speaker.runtime | final -> brain: 'Code.' (mode=assistant)
+18:14:16.333 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+  - I understand you are testing the app's functionality while I am active; feel free to proceed with your test!
+  - What is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+
+Latest utterance: "Code."
+18:14:16.333 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.19s ttft=- out=3ch tokens=- | "Recent utterances (most recent last): - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? - I understand you are testing the app's functionality whi"
+18:14:16.333 INFO  speaker.runtime | addressing decision: ACT for 'Code.'
+18:14:18.490 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I understand you are testing the app's functionality while I am active; feel free to proceed with your test!
+  - What is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+
+Raw ASR text: Code.
+
+Cleaned:
+18:14:18.490 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.16s ttft=- out=32ch tokens=- | "Recent utterances (most recent last): - I understand you are testing the app's functionality while I am active; feel free to proceed with your test! - What is this code working? - I’m not sure what co"
+18:14:18.490 INFO  speaker.runtime | cleaned: 'Code.' -> 'Which code are you asking about?'
+18:14:18.490 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'Which code are you asking about?'
+18:14:18.490 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Which code are you asking about?'
+18:14:18.491 DEBUG speaker.sherpa | capture heartbeat: blocks=603 avg_rms=0.0026 partials=24 finals=5 speaking=False
+18:14:18.491 INFO  speaker.tasks | task 830b6ab13c06 started: mode=assistant capability=assistant.answer input='Which code are you asking about?'
+18:14:18.503 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Which code are you asking about?'
+18:14:19.103 DEBUG speaker.sherpa | asr partial: 'Be'
+18:14:19.103 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Be'
+18:14:19.403 DEBUG speaker.sherpa | asr partial: 'Be a lo'
+18:14:19.404 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Be a lo'
+18:14:19.508 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Which code are you asking about?
+18:14:19.508 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.00s ttft=0.84s out=77ch tokens=19 | 'Which code are you asking about?'
+18:14:19.508 INFO  speaker.llm | fast tier done in 1.02s (77 chars, streamed)
+18:14:19.508 INFO  speaker.tasks | task 830b6ab13c06 completed in 1.02s (77 chars)
+18:14:19.508 INFO  speaker.runtime | assistant: "I'm still not entirely clear, could you specify the code you're referring to?"
+18:14:19.508 DEBUG speaker.sherpa | speaking: "I'm still not entirely clear, could you specify the code you're referring to?" (queue depth=0)
+18:14:19.584 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0182 resid=0.0182 incoh=0.30 consec=0
+18:14:19.683 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0239 resid=0.0239 incoh=0.30 consec=0
+18:14:19.804 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0537 resid=0.0367 incoh=0.30 consec=0
+18:14:19.905 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0490 resid=0.0569 incoh=0.30 consec=0
+18:14:19.905 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:14:20.004 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0029 resid=0.0022 incoh=0.30 consec=0
+18:14:20.107 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0060 resid=0.0005 incoh=0.30 consec=0
+18:14:20.205 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=5.04) raw=0.0059 resid=0.0004 incoh=0.90 consec=0
+18:14:20.310 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=2.38) raw=0.0036 resid=0.0003 incoh=0.88 consec=0
+18:14:20.408 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0066 resid=0.0002 incoh=0.18 consec=0
+18:14:20.507 DEBUG speaker.sherpa | capture heartbeat: blocks=625 avg_rms=0.0388 partials=26 finals=5 speaking=True
+18:14:20.510 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.03) raw=0.0174 resid=0.0001 incoh=0.36 consec=0
+18:14:20.609 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.48) raw=0.0057 resid=0.0001 incoh=0.48 consec=0
+18:14:20.667 DEBUG speaker.sysinfo | system sample: cpu=26.9% ram=29723.8MB(87.5%) proc_rss=1096.7MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:14:22.509 DEBUG speaker.sherpa | capture heartbeat: blocks=645 avg_rms=0.0002 partials=26 finals=5 speaking=True
+18:14:23.575 INFO  speaker.sherpa | asr final: 'G me a long story.' (raw 'BE A LO')
+18:14:23.575 INFO  speaker.runtime | final -> brain: 'G me a long story.' (mode=assistant)
+18:14:25.357 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - What is this code working?
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+  - Which code are you asking about?
+  - I'm still not entirely clear, could you specify the code you're referring to?
+
+Latest utterance: "G me a long story."
+18:14:25.357 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.78s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - What is this code working? - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? - Which code are you asking a'
+18:14:25.357 INFO  speaker.runtime | addressing decision: ACT for 'G me a long story.'
+18:14:27.439 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+  - Which code are you asking about?
+  - I'm still not entirely clear, could you specify the code you're referring to?
+
+Raw ASR text: G me a long story.
+
+Cleaned:
+18:14:27.439 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.08s ttft=- out=21ch tokens=- | "Recent utterances (most recent last): - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? - Which code are you asking about? - I'm still not entirel"
+18:14:27.439 INFO  speaker.runtime | cleaned: 'G me a long story.' -> 'Give me a long story.'
+18:14:27.439 INFO  speaker.runtime | route: action=simple tier=main conf=0.70 source=heuristic (no gather/action markers) for 'Give me a long story.'
+18:14:27.440 DEBUG speaker.sherpa | capture heartbeat: blocks=656 avg_rms=0.0021 partials=26 finals=6 speaking=False
+18:14:27.440 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Give me a long story.'
+18:14:27.441 INFO  speaker.tasks | task 560975e67638 started: mode=assistant capability=assistant.answer input='Give me a long story.'
+18:14:27.459 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Give me a long story.'
+18:14:27.469 DEBUG speaker.sherpa | asr partial: 'Sto'
+18:14:27.469 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Sto'
+18:14:27.651 DEBUG speaker.sherpa | asr partial: 'W story'
+18:14:27.651 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='W story'
+18:14:28.253 DEBUG speaker.sherpa | asr partial: 'W story old'
+18:14:28.254 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='W story old'
+18:14:29.359 INFO  speaker.sherpa | asr final: 'O.' (raw 'W STORY OLD')
+18:14:29.359 INFO  speaker.runtime | final -> brain: 'O.' (mode=assistant)
+18:14:30.712 DEBUG speaker.sysinfo | system sample: cpu=20.9% ram=29652.8MB(87.3%) proc_rss=1097.6MB gpu=94.0% gpu_mem=15903.0/16376.0MB
+18:14:30.809 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about?
+  - Which code are you asking about?
+  - I'm still not entirely clear, could you specify the code you're referring to?
+  - Give me a long story.
+
+Latest utterance: "O."
+18:14:30.809 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.45s ttft=- out=6ch tokens=- | "Recent utterances (most recent last): - I’m not sure what code you are referring to. Could you please tell me which code you’re asking about? - Which code are you asking about? - I'm still not entirel"
+18:14:30.809 INFO  speaker.runtime | addressing decision: INGEST for 'O.'
+18:14:30.809 DEBUG speaker.sherpa | capture heartbeat: blocks=677 avg_rms=0.0052 partials=29 finals=7 speaking=False
+18:14:30.828 INFO  speaker.runtime | assistant: 'In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rusted iron gate.'
+18:14:30.829 DEBUG speaker.sherpa | speaking: 'In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rusted iron gate.' (queue depth=0)
+18:14:31.691 INFO  speaker.runtime | assistant: 'One evening, she found an ancient key buried beneath the roots of a dying willow tree and realized that the shadows were not missing, they were simply being held captive behind the bars.'
+18:14:32.032 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0062 resid=0.0054 incoh=0.53 consec=0
+18:14:32.131 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0036 resid=0.0050 incoh=0.56 consec=0
+18:14:32.229 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0099 resid=0.0097 incoh=0.91 consec=0
+18:14:32.330 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0048 resid=0.0041 incoh=0.38 consec=0
+18:14:32.330 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:14:32.431 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0054 resid=0.0046 incoh=0.92 consec=0
+18:14:32.531 DEBUG speaker.sherpa | dtd: D=1.24 K=5.0 fired=False (z_raw=0.97 z_resid=1.05 z_coh=0.00) raw=0.0083 resid=0.0082 incoh=0.64 consec=0
+18:14:32.628 DEBUG speaker.sherpa | dtd: D=0.52 K=5.0 fired=False (z_raw=0.89 z_resid=0.35 z_coh=0.00) raw=0.0082 resid=0.0067 incoh=0.33 consec=0
+18:14:32.659 INFO  speaker.runtime | assistant: 'When she turned the key in the lock, the mechanism groaned with centuries of rust, and for the first time in generations, a sliver of cool, purple twilight bled into the valley.'
+18:14:32.729 DEBUG speaker.sherpa | dtd: D=0.87 K=5.0 fired=False (z_raw=1.22 z_resid=0.62 z_coh=0.00) raw=0.0092 resid=0.0074 incoh=0.27 consec=0
+18:14:32.826 DEBUG speaker.sherpa | capture heartbeat: blocks=699 avg_rms=0.0040 partials=29 finals=7 speaking=True
+18:14:32.828 DEBUG speaker.sherpa | dtd: D=2.42 K=5.0 fired=False (z_raw=1.41 z_resid=2.14 z_coh=0.00) raw=0.0099 resid=0.0111 incoh=0.34 consec=0
+18:14:32.939 DEBUG speaker.sherpa | dtd: D=0.22 K=5.0 fired=False (z_raw=1.08 z_resid=0.00 z_coh=0.00) raw=0.0093 resid=0.0045 incoh=0.44 consec=0
+18:14:33.028 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.01 z_resid=0.00 z_coh=0.51) raw=0.0067 resid=0.0058 incoh=0.72 consec=0
+18:14:33.127 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.23) raw=0.0018 resid=0.0005 incoh=0.91 consec=0
+18:14:33.228 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.11) raw=0.0018 resid=0.0002 incoh=0.90 consec=0
+18:14:33.325 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.11) raw=0.0017 resid=0.0001 incoh=0.92 consec=0
+18:14:33.424 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.99) raw=0.0018 resid=0.0001 incoh=0.91 consec=0
+18:14:33.526 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.90) raw=0.0018 resid=0.0001 incoh=0.90 consec=0
+18:14:33.624 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.91) raw=0.0018 resid=0.0001 incoh=0.92 consec=0
+18:14:33.731 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.41) raw=0.0027 resid=0.0018 incoh=0.80 consec=0
+18:14:33.743 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Give me a long story.
+18:14:33.743 INFO  speaker.llm.ollama | ollama gemma4:12b: 6.28s ttft=2.12s out=769ch tokens=156 | 'Give me a long story.'
+18:14:33.743 INFO  speaker.llm | main tier done in 6.28s (769 chars, streamed)
+18:14:33.743 INFO  speaker.tasks | task 560975e67638 completed in 6.30s (769 chars)
+18:14:33.743 INFO  speaker.runtime | assistant: "As the colors shifted, the people saw the stars emerge like diamonds scattered on velvet, and they finally understood that the world wasn't stuck in a permanent day; it was simply waiting for someone brave enough to open the door."
+18:14:33.826 DEBUG speaker.sherpa | dtd: D=0.34 K=5.0 fired=False (z_raw=1.68 z_resid=0.00 z_coh=0.26) raw=0.0087 resid=0.0023 incoh=0.77 consec=0
+18:14:33.929 DEBUG speaker.sherpa | dtd: D=2.86 K=5.0 fired=False (z_raw=1.22 z_resid=2.62 z_coh=0.00) raw=0.0082 resid=0.0101 incoh=0.51 consec=0
+18:14:34.027 DEBUG speaker.sherpa | dtd: D=2.19 K=5.0 fired=False (z_raw=2.73 z_resid=1.65 z_coh=1.07) raw=0.0120 resid=0.0096 incoh=0.98 consec=0
+18:14:34.128 DEBUG speaker.sherpa | dtd: D=2.43 K=5.0 fired=False (z_raw=2.68 z_resid=1.89 z_coh=0.00) raw=0.0148 resid=0.0112 incoh=0.34 consec=0
+18:14:34.226 DEBUG speaker.sherpa | dtd: D=4.67 K=5.0 fired=False (z_raw=2.93 z_resid=4.08 z_coh=0.52) raw=0.0198 resid=0.0214 incoh=0.83 consec=0
+18:14:34.326 DEBUG speaker.sherpa | AEC diverged (out_rms=0.006 >> near_rms=0.003); reset + passthrough
+18:14:34.329 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.01) raw=0.0026 resid=0.0026 incoh=0.69 consec=0
+18:14:34.426 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.79) raw=0.0021 resid=0.0000 incoh=0.91 consec=0
+18:14:34.528 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.72) raw=0.0028 resid=0.0004 incoh=0.91 consec=0
+18:14:34.627 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.61) raw=0.0020 resid=0.0003 incoh=0.89 consec=0
+18:14:34.728 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0042 resid=0.0002 incoh=0.48 consec=0
+18:14:34.826 DEBUG speaker.sherpa | capture heartbeat: blocks=719 avg_rms=0.0036 partials=29 finals=7 speaking=True
+18:14:34.828 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0055 resid=0.0004 incoh=0.63 consec=0
+18:14:34.930 DEBUG speaker.sherpa | dtd: D=0.67 K=5.0 fired=False (z_raw=0.80 z_resid=0.51 z_coh=0.00) raw=0.0114 resid=0.0083 incoh=0.29 consec=0
+18:14:35.029 DEBUG speaker.sherpa | dtd: D=0.37 K=5.0 fired=False (z_raw=0.80 z_resid=0.21 z_coh=0.00) raw=0.0115 resid=0.0062 incoh=0.43 consec=0
+18:14:35.127 DEBUG speaker.sherpa | dtd: D=1.92 K=5.0 fired=False (z_raw=1.23 z_resid=1.67 z_coh=0.00) raw=0.0144 resid=0.0154 incoh=0.29 consec=0
+18:14:35.223 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.46) raw=0.0025 resid=0.0025 incoh=0.77 consec=0
+18:14:35.327 DEBUG speaker.sherpa | dtd: D=0.42 K=5.0 fired=False (z_raw=0.40 z_resid=0.34 z_coh=0.00) raw=0.0093 resid=0.0076 incoh=0.20 consec=0
+18:14:35.423 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.97) raw=0.0029 resid=0.0044 incoh=0.88 consec=0
+18:14:35.526 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.02) raw=0.0029 resid=0.0016 incoh=0.91 consec=0
+18:14:35.561 WARNING speaker.watchdog | llm stuck: turn 5 had asr_final but no llm_first_token after 10.2s
+18:14:35.625 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0058 resid=0.0014 incoh=0.63 consec=0
+18:14:35.724 DEBUG speaker.sherpa | dtd: D=6.01 K=5.0 fired=True (z_raw=10.62 z_resid=3.88 z_coh=1.16) raw=0.0721 resid=0.0308 incoh=0.97 consec=1
+18:14:35.822 DEBUG speaker.sherpa | dtd: D=9.79 K=5.0 fired=True (z_raw=10.12 z_resid=7.77 z_coh=1.12) raw=0.0690 resid=0.0566 incoh=0.95 consec=2
+18:14:35.924 DEBUG speaker.sherpa | dtd: D=0.63 K=5.0 fired=False (z_raw=0.18 z_resid=0.59 z_coh=0.54) raw=0.0075 resid=0.0089 incoh=0.80 consec=0
+18:14:36.027 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.80) raw=0.0021 resid=0.0010 incoh=0.88 consec=0
+18:14:36.129 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.85) raw=0.0017 resid=0.0003 incoh=0.91 consec=0
+18:14:36.226 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.70) raw=0.0017 resid=0.0002 incoh=0.88 consec=0
+18:14:36.327 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.70) raw=0.0017 resid=0.0004 incoh=0.89 consec=0
+18:14:36.427 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.80) raw=0.0018 resid=0.0002 incoh=0.93 consec=0
+18:14:36.527 DEBUG speaker.sherpa | dtd: D=0.28 K=5.0 fired=False (z_raw=1.40 z_resid=0.00 z_coh=0.07) raw=0.0134 resid=0.0006 incoh=0.74 consec=0
+18:14:36.626 DEBUG speaker.sherpa | dtd: D=0.66 K=5.0 fired=False (z_raw=1.77 z_resid=0.30 z_coh=0.00) raw=0.0166 resid=0.0058 incoh=0.68 consec=0
+18:14:36.728 DEBUG speaker.sherpa | dtd: D=0.64 K=5.0 fired=False (z_raw=1.17 z_resid=0.41 z_coh=0.00) raw=0.0146 resid=0.0064 incoh=0.28 consec=0
+18:14:36.823 DEBUG speaker.sherpa | capture heartbeat: blocks=739 avg_rms=0.0080 partials=29 finals=7 speaking=True
+18:14:36.825 DEBUG speaker.sherpa | dtd: D=0.44 K=5.0 fired=False (z_raw=2.22 z_resid=0.00 z_coh=0.00) raw=0.0228 resid=0.0019 incoh=0.15 consec=0
+18:14:36.928 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0072 resid=0.0011 incoh=0.54 consec=0
+18:14:37.028 DEBUG speaker.sherpa | dtd: D=0.33 K=5.0 fired=False (z_raw=0.00 z_resid=0.33 z_coh=0.00) raw=0.0061 resid=0.0056 incoh=0.37 consec=0
+18:14:37.129 DEBUG speaker.sherpa | dtd: D=0.02 K=5.0 fired=False (z_raw=0.08 z_resid=0.00 z_coh=0.00) raw=0.0082 resid=0.0036 incoh=0.36 consec=0
+18:14:37.227 DEBUG speaker.sherpa | dtd: D=0.07 K=5.0 fired=False (z_raw=0.33 z_resid=0.00 z_coh=0.11) raw=0.0103 resid=0.0031 incoh=0.66 consec=0
+18:14:37.329 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0034 resid=0.0007 incoh=0.62 consec=0
+18:14:37.426 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.90) raw=0.0019 resid=0.0003 incoh=0.86 consec=0
+18:14:37.524 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.11) raw=0.0018 resid=0.0001 incoh=0.93 consec=0
+18:14:37.622 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.89) raw=0.0028 resid=0.0001 incoh=0.89 consec=0
+18:14:37.725 DEBUG speaker.sherpa | dtd: D=0.42 K=5.0 fired=False (z_raw=1.08 z_resid=0.20 z_coh=0.00) raw=0.0151 resid=0.0042 incoh=0.18 consec=0
+18:14:37.823 DEBUG speaker.sherpa | dtd: D=0.24 K=5.0 fired=False (z_raw=1.19 z_resid=0.00 z_coh=0.00) raw=0.0165 resid=0.0011 incoh=0.47 consec=0
+18:14:37.924 DEBUG speaker.sherpa | dtd: D=0.05 K=5.0 fired=False (z_raw=0.24 z_resid=0.00 z_coh=0.00) raw=0.0095 resid=0.0015 incoh=0.16 consec=0
+18:14:38.021 DEBUG speaker.sherpa | dtd: D=0.15 K=5.0 fired=False (z_raw=0.76 z_resid=0.00 z_coh=1.45) raw=0.0134 resid=0.0005 incoh=0.97 consec=0
+18:14:38.124 DEBUG speaker.sherpa | dtd: D=9.67 K=5.0 fired=True (z_raw=5.72 z_resid=8.53 z_coh=0.78) raw=0.0497 resid=0.0433 incoh=0.83 consec=1
+18:14:38.224 DEBUG speaker.sherpa | dtd: D=12.26 K=5.0 fired=True (z_raw=7.03 z_resid=10.85 z_coh=0.40) raw=0.0593 resid=0.0543 incoh=0.73 consec=2
+18:14:38.329 DEBUG speaker.sherpa | dtd: D=11.15 K=5.0 fired=True (z_raw=5.86 z_resid=9.98 z_coh=0.87) raw=0.0507 resid=0.0502 incoh=0.85 consec=3
+18:14:38.426 DEBUG speaker.sherpa | dtd: D=9.38 K=5.0 fired=True (z_raw=4.17 z_resid=8.54 z_coh=1.19) raw=0.0384 resid=0.0434 incoh=0.93 consec=4
+18:14:38.426 INFO  speaker.sherpa | barge-in detected
+18:14:38.426 INFO  speaker.supervisor | cancel_all: epoch=5 0 active, 0 queued, 0 pending-confirm
+18:14:38.426 INFO  speaker.supervisor | cancel_all: epoch=6 0 active, 0 queued, 0 pending-confirm
+18:14:38.900 DEBUG speaker.sherpa | capture heartbeat: blocks=760 avg_rms=0.0196 partials=29 finals=7 speaking=False
+18:14:39.019 DEBUG speaker.sherpa | asr partial: 'But he'
+18:14:39.019 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='But he'
+18:14:39.419 DEBUG speaker.sherpa | asr partial: 'But hear that'
+18:14:39.419 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='But hear that'
+18:14:39.718 DEBUG speaker.sherpa | asr partial: 'But hear that any'
+18:14:39.718 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='But hear that any'
+18:14:40.018 DEBUG speaker.sherpa | asr partial: 'But hear that any more'
+18:14:40.018 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='But hear that any more'
+18:14:40.770 DEBUG speaker.sysinfo | system sample: cpu=23.0% ram=29744.3MB(87.6%) proc_rss=1187.1MB gpu=19.0% gpu_mem=15903.0/16376.0MB
+18:14:40.899 DEBUG speaker.sherpa | capture heartbeat: blocks=780 avg_rms=0.0094 partials=33 finals=7 speaking=False
+18:14:41.123 INFO  speaker.sherpa | asr final: 'To hear that anymore.' (raw 'BUT HEAR THAT ANY MORE')
+18:14:41.123 INFO  speaker.runtime | final -> brain: 'To hear that anymore.' (mode=assistant)
+18:14:42.380 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I'm still not entirely clear, could you specify the code you're referring to?
+  - Give me a long story.
+  - O.
+  - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rusted iron gate. One evening, she found an ancient key buried beneath the roots of a dying willow tree and realized that the shadows were not missing, they were simply being held captive behind the bars. When she turned the key in the lock, the mechanism groaned with centuries of rust, and for the first time in generations, a sliver of cool, purple twilight bled into the valley. As the colors shifted, the people saw the stars emerge like diamonds scattered on velvet, and they finally understood that the world wasn't stuck in a permanent day; it was simply waiting for someone brave enough to open the door.
+
+Latest utterance: "To hear that anymore."
+18:14:42.380 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.26s ttft=- out=6ch tokens=- | "Recent utterances (most recent last): - I'm still not entirely clear, could you specify the code you're referring to? - Give me a long story. - O. - In a kingdom where the sun never set, the people li"
+18:14:42.380 INFO  speaker.runtime | addressing decision: INGEST for 'To hear that anymore.'
+18:14:42.970 DEBUG speaker.sherpa | capture heartbeat: blocks=790 avg_rms=0.0239 partials=33 finals=8 speaking=False
+18:14:43.292 DEBUG speaker.sherpa | asr partial: 'A'
+18:14:43.292 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='A'
+18:14:43.692 DEBUG speaker.sherpa | asr partial: 'Ah'
+18:14:43.692 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ah'
+18:14:44.383 INFO  speaker.sherpa | asr final: 'Okay.' (raw 'AH')
+18:14:44.383 INFO  speaker.runtime | final -> brain: 'Okay.' (mode=assistant)
+18:14:45.560 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Give me a long story.
+  - O.
+  - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rusted iron gate. One evening, she found an ancient key buried beneath the roots of a dying willow tree and realized that the shadows were not missing, they were simply being held captive behind the bars. When she turned the key in the lock, the mechanism groaned with centuries of rust, and for the first time in generations, a sliver of cool, purple twilight bled into the valley. As the colors shifted, the people saw the stars emerge like diamonds scattered on velvet, and they finally understood that the world wasn't stuck in a permanent day; it was simply waiting for someone brave enough to open the door.
+  - To hear that anymore.
+
+Latest utterance: "Okay."
+18:14:45.560 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.18s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Give me a long story. - O. - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actual'
+18:14:45.560 INFO  speaker.runtime | addressing decision: ACT for 'Okay.'
+18:14:47.304 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - O.
+  - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rusted iron gate. One evening, she found an ancient key buried beneath the roots of a dying willow tree and realized that the shadows were not missing, they were simply being held captive behind the bars. When she turned the key in the lock, the mechanism groaned with centuries of rust, and for the first time in generations, a sliver of cool, purple twilight bled into the valley. As the colors shifted, the people saw the stars emerge like diamonds scattered on velvet, and they finally understood that the world wasn't stuck in a permanent day; it was simply waiting for someone brave enough to open the door.
+  - To hear that anymore.
+
+Raw ASR text: Okay.
+
+Cleaned:
+18:14:47.304 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.75s ttft=- out=21ch tokens=- | 'Recent utterances (most recent last): - O. - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive,'
+18:14:47.304 INFO  speaker.runtime | cleaned: 'Okay.' -> 'To hear that anymore.'
+18:14:47.305 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'To hear that anymore.'
+18:14:47.305 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='To hear that anymore.'
+18:14:47.306 DEBUG speaker.sherpa | capture heartbeat: blocks=804 avg_rms=0.0145 partials=35 finals=9 speaking=False
+18:14:47.306 INFO  speaker.tasks | task 29d9047ab417 started: mode=assistant capability=assistant.answer input='To hear that anymore.'
+18:14:47.327 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'To hear that anymore.'
+18:14:47.615 DEBUG speaker.sherpa | asr partial: 'Tell'
+18:14:47.615 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell'
+18:14:48.019 DEBUG speaker.sherpa | asr partial: 'Tell me'
+18:14:48.019 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me'
+18:14:48.128 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: To hear that anymore.
+18:14:48.128 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.80s ttft=0.74s out=20ch tokens=7 | 'To hear that anymore.'
+18:14:48.128 INFO  speaker.llm | fast tier done in 0.80s (20 chars, streamed)
+18:14:48.128 INFO  speaker.tasks | task 29d9047ab417 completed in 0.82s (20 chars)
+18:14:48.128 INFO  speaker.runtime | assistant: 'That’s quite a tale!'
+18:14:48.128 DEBUG speaker.sherpa | speaking: 'That’s quite a tale!' (queue depth=0)
+18:14:48.197 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0368 resid=0.0368 incoh=0.93 consec=0
+18:14:48.318 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.1060 resid=0.0871 incoh=0.93 consec=0
+18:14:48.421 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.1080 resid=0.0866 incoh=0.93 consec=0
+18:14:48.522 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.1313 resid=0.1230 incoh=0.93 consec=0
+18:14:48.522 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:14:48.625 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0585 resid=0.0704 incoh=0.93 consec=0
+18:14:48.719 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0435 resid=0.0202 incoh=0.77 consec=0
+18:14:48.820 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0460 resid=0.0024 incoh=0.52 consec=0
+18:14:48.919 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0387 resid=0.0003 incoh=0.46 consec=0
+18:14:49.021 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.09) raw=0.0200 resid=0.0002 incoh=0.91 consec=0
+18:14:49.119 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0204 resid=0.0001 incoh=0.76 consec=0
+18:14:49.220 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0599 resid=0.0002 incoh=0.41 consec=0
+18:14:49.395 DEBUG speaker.sherpa | capture heartbeat: blocks=827 avg_rms=0.0481 partials=37 finals=9 speaking=False
+18:14:49.415 DEBUG speaker.sherpa | asr partial: 'Tell me in'
+18:14:49.415 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tell me in'
+18:14:50.410 INFO  speaker.sherpa | asr final: 'Tell me link.' (raw 'TELL ME IN')
+18:14:50.410 INFO  speaker.runtime | final -> brain: 'Tell me link.' (mode=assistant)
+18:14:50.873 DEBUG speaker.sysinfo | system sample: cpu=28.4% ram=29778.7MB(87.7%) proc_rss=1188.4MB gpu=11.0% gpu_mem=15903.0/16376.0MB
+18:14:51.725 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rusted iron gate. One evening, she found an ancient key buried beneath the roots of a dying willow tree and realized that the shadows were not missing, they were simply being held captive behind the bars. When she turned the key in the lock, the mechanism groaned with centuries of rust, and for the first time in generations, a sliver of cool, purple twilight bled into the valley. As the colors shifted, the people saw the stars emerge like diamonds scattered on velvet, and they finally understood that the world wasn't stuck in a permanent day; it was simply waiting for someone brave enough to open the door.
+  - To hear that anymore.
+  - To hear that anymore.
+  - That’s quite a tale!
+
+Latest utterance: "Tell me link."
+18:14:51.725 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.31s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - In a kingdom where the sun never set, the people lived in a perpetual golden haze, but Elara discovered that the horizon was actually blocked by a massive, rust'
+18:14:51.725 INFO  speaker.runtime | addressing decision: ACT for 'Tell me link.'
+18:14:53.821 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - To hear that anymore.
+  - To hear that anymore.
+  - That’s quite a tale!
+
+Raw ASR text: Tell me link.
+
+Cleaned:
+18:14:53.821 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.10s ttft=- out=15ch tokens=- | 'Recent utterances (most recent last): - To hear that anymore. - To hear that anymore. - That’s quite a tale! Raw ASR text: Tell me link. Cleaned:'
+18:14:53.821 INFO  speaker.runtime | cleaned: 'Tell me link.' -> 'Tell me a link.'
+18:14:53.821 INFO  speaker.runtime | route: action=simple tier=main conf=0.85 source=heuristic (no gather/action markers) for 'Tell me a link.'
+18:14:53.821 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Tell me a link.'
+18:14:53.822 INFO  speaker.tasks | task 42b40d6a56ca started: mode=assistant capability=assistant.answer input='Tell me a link.'
+18:14:53.822 DEBUG speaker.sherpa | capture heartbeat: blocks=837 avg_rms=0.0017 partials=38 finals=10 speaking=False
+18:14:53.841 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Tell me a link.'
+18:14:54.530 DEBUG speaker.sherpa | asr partial: 'No'
+18:14:54.530 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No'
+18:14:55.228 INFO  speaker.sherpa | asr final: 'No.' (raw 'NO')
+18:14:55.228 INFO  speaker.runtime | final -> brain: 'No.' (mode=assistant)
+18:14:56.644 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - To hear that anymore.
+  - To hear that anymore.
+  - That’s quite a tale!
+  - Tell me a link.
+
+Latest utterance: "No."
+18:14:56.644 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.41s ttft=- out=6ch tokens=- | 'Recent utterances (most recent last): - To hear that anymore. - To hear that anymore. - That’s quite a tale! - Tell me a link. Latest utterance: "No."'
+18:14:56.644 INFO  speaker.runtime | addressing decision: INGEST for 'No.'
+18:14:56.644 DEBUG speaker.sherpa | capture heartbeat: blocks=853 avg_rms=0.0156 partials=39 finals=11 speaking=False
+18:14:57.009 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Tell me a link.
+18:14:57.009 INFO  speaker.llm.ollama | ollama gemma4:12b: 3.17s ttft=2.04s out=98ch tokens=26 | 'Tell me a link.'
+18:14:57.009 INFO  speaker.llm | main tier done in 3.17s (98 chars, streamed)
+18:14:57.009 INFO  speaker.tasks | task 42b40d6a56ca completed in 3.19s (98 chars)
+18:14:57.009 INFO  speaker.runtime | assistant: "I'm sorry, I can't provide links since I don't have access to the internet or your personal files."
+18:14:57.010 DEBUG speaker.sherpa | speaking: "I'm sorry, I can't provide links since I don't have access to the internet or your personal files." (queue depth=0)
+18:14:57.037 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0017 incoh=0.41 consec=0
+18:14:57.137 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0019 incoh=0.41 consec=0
+18:14:57.759 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0323 resid=0.0240 incoh=0.88 consec=0
+18:14:57.860 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0300 resid=0.0224 incoh=0.93 consec=0
+18:14:57.958 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0831 resid=0.0008 incoh=0.94 consec=0
+18:14:58.059 DEBUG speaker.sherpa | dtd: D=0.24 K=5.0 fired=False (z_raw=1.19 z_resid=0.00 z_coh=0.00) raw=0.0440 resid=0.0003 incoh=0.69 consec=0
+18:14:58.059 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:14:58.157 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.27) raw=0.0245 resid=0.0002 incoh=0.79 consec=0
+18:14:58.259 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.14) raw=0.0112 resid=0.0023 incoh=0.76 consec=0
+18:14:58.359 DEBUG speaker.sherpa | dtd: D=0.15 K=5.0 fired=False (z_raw=0.73 z_resid=0.00 z_coh=0.08) raw=0.0377 resid=0.0027 incoh=0.74 consec=0
+18:14:58.462 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0088 resid=0.0003 incoh=0.55 consec=0
+18:14:58.562 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0129 resid=0.0002 incoh=0.56 consec=0
+18:14:58.665 DEBUG speaker.sherpa | capture heartbeat: blocks=875 avg_rms=0.0136 partials=39 finals=11 speaking=True
+18:14:58.668 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0131 resid=0.0001 incoh=0.46 consec=0
+18:14:58.761 DEBUG speaker.sherpa | dtd: D=0.66 K=5.0 fired=False (z_raw=3.32 z_resid=0.00 z_coh=0.00) raw=0.0631 resid=0.0001 incoh=0.21 consec=0
+18:14:58.866 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0168 resid=0.0003 incoh=0.24 consec=0
+18:14:59.462 DEBUG speaker.sherpa | dtd: D=0.25 K=5.0 fired=False (z_raw=1.25 z_resid=0.00 z_coh=0.00) raw=0.0470 resid=0.0046 incoh=0.29 consec=0
+18:14:59.561 DEBUG speaker.sherpa | dtd: D=0.16 K=5.0 fired=False (z_raw=0.82 z_resid=0.00 z_coh=0.00) raw=0.0421 resid=0.0062 incoh=0.08 consec=0
+18:14:59.664 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0262 resid=0.0021 incoh=0.56 consec=0
+18:14:59.764 DEBUG speaker.sherpa | dtd: D=0.05 K=5.0 fired=False (z_raw=0.27 z_resid=0.00 z_coh=0.00) raw=0.0338 resid=0.0005 incoh=0.31 consec=0
+18:14:59.866 DEBUG speaker.sherpa | dtd: D=41.04 K=5.0 fired=True (z_raw=9.35 z_resid=39.17 z_coh=1.73) raw=0.1621 resid=0.1003 incoh=0.99 consec=1
+18:14:59.960 DEBUG speaker.sherpa | dtd: D=86.69 K=5.0 fired=True (z_raw=9.97 z_resid=84.69 z_coh=1.68) raw=0.1709 resid=0.2100 incoh=0.98 consec=2
+18:15:00.062 DEBUG speaker.sherpa | dtd: D=9.66 K=5.0 fired=True (z_raw=0.00 z_resid=9.66 z_coh=0.58) raw=0.0200 resid=0.0293 incoh=0.72 consec=3
+18:15:00.158 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.90) raw=0.0058 resid=0.0042 incoh=0.80 consec=0
+18:15:00.261 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0200 resid=0.0015 incoh=0.16 consec=0
+18:15:00.363 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0217 resid=0.0008 incoh=0.31 consec=0
+18:15:00.461 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0101 resid=0.0003 incoh=0.35 consec=0
+18:15:00.559 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0112 resid=0.0006 incoh=0.53 consec=0
+18:15:00.659 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=1.05) raw=0.0133 resid=0.0004 incoh=0.78 consec=0
+18:15:00.758 DEBUG speaker.sherpa | capture heartbeat: blocks=896 avg_rms=0.0185 partials=39 finals=11 speaking=True
+18:15:00.761 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.02) raw=0.0174 resid=0.0008 incoh=0.56 consec=0
+18:15:00.863 DEBUG speaker.sherpa | dtd: D=99.58 K=5.0 fired=True (z_raw=13.27 z_resid=96.92 z_coh=1.76) raw=0.2129 resid=0.1808 incoh=0.95 consec=1
+18:15:00.961 DEBUG speaker.sherpa | dtd: D=63.06 K=5.0 fired=True (z_raw=4.07 z_resid=62.25 z_coh=1.55) raw=0.0828 resid=0.1177 incoh=0.91 consec=2
+18:15:00.964 DEBUG speaker.sysinfo | system sample: cpu=20.4% ram=29770.5MB(87.7%) proc_rss=1188.5MB gpu=2.0% gpu_mem=15903.0/16376.0MB
+18:15:01.063 DEBUG speaker.sherpa | dtd: D=16.50 K=5.0 fired=True (z_raw=3.11 z_resid=15.88 z_coh=1.75) raw=0.0692 resid=0.0334 incoh=0.95 consec=3
+18:15:01.161 DEBUG speaker.sherpa | dtd: D=36.97 K=5.0 fired=True (z_raw=2.45 z_resid=36.48 z_coh=0.20) raw=0.0599 resid=0.0709 incoh=0.61 consec=4
+18:15:01.161 INFO  speaker.sherpa | barge-in detected
+18:15:01.161 INFO  speaker.supervisor | cancel_all: epoch=7 0 active, 0 queued, 0 pending-confirm
+18:15:01.161 INFO  speaker.supervisor | cancel_all: epoch=8 0 active, 0 queued, 0 pending-confirm
+18:15:01.759 WARNING speaker.watchdog | llm stuck: turn 9 had asr_final but no llm_first_token after 10.0s
+18:15:01.854 DEBUG speaker.sherpa | asr partial: 'Then'
+18:15:01.854 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Then'
+18:15:02.835 DEBUG speaker.sherpa | capture heartbeat: blocks=917 avg_rms=0.0396 partials=40 finals=11 speaking=False
+18:15:02.947 INFO  speaker.sherpa | asr final: 'Tam, council.' (raw 'THEN')
+18:15:02.947 INFO  speaker.runtime | final -> brain: 'Tam, council.' (mode=assistant)
+18:15:04.174 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - That’s quite a tale!
+  - Tell me a link.
+  - No.
+  - I'm sorry, I can't provide links since I don't have access to the internet or your personal files.
+
+Latest utterance: "Tam, council."
+18:15:04.174 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.23s ttft=- out=7ch tokens=- | "Recent utterances (most recent last): - That’s quite a tale! - Tell me a link. - No. - I'm sorry, I can't provide links since I don't have access to the internet or your personal files. Latest utteran"
+18:15:04.174 INFO  speaker.runtime | addressing decision: INGEST for 'Tam, council.'
+18:15:04.483 DEBUG speaker.sherpa | asr partial: 'Comes it'
+18:15:04.484 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Comes it'
+18:15:04.784 DEBUG speaker.sherpa | asr partial: 'Come to ten'
+18:15:04.785 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Come to ten'
+18:15:04.866 DEBUG speaker.sherpa | capture heartbeat: blocks=927 avg_rms=0.0180 partials=42 finals=12 speaking=False
+18:15:05.882 INFO  speaker.sherpa | asr final: '1.' (raw 'COME TO TEN')
+18:15:05.883 INFO  speaker.runtime | final -> brain: '1.' (mode=assistant)
+18:15:06.922 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Tell me a link.
+  - No.
+  - I'm sorry, I can't provide links since I don't have access to the internet or your personal files.
+  - Tam, council.
+
+Latest utterance: "1."
+18:15:06.922 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.04s ttft=- out=4ch tokens=- | 'Recent utterances (most recent last): - Tell me a link. - No. - I\'m sorry, I can\'t provide links since I don\'t have access to the internet or your personal files. - Tam, council. Latest utterance: "1.'
+18:15:06.922 INFO  speaker.runtime | addressing decision: ACT for '1.'
+18:15:09.189 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - No.
+  - I'm sorry, I can't provide links since I don't have access to the internet or your personal files.
+  - Tam, council.
+
+Raw ASR text: 1.
+
+Cleaned:
+18:15:09.190 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.27s ttft=- out=12ch tokens=- | "Recent utterances (most recent last): - No. - I'm sorry, I can't provide links since I don't have access to the internet or your personal files. - Tam, council. Raw ASR text: 1. Cleaned:"
+18:15:09.190 INFO  speaker.runtime | cleaned: '1.' -> 'Tam, council'
+18:15:09.190 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Tam, council'
+18:15:09.191 DEBUG speaker.sherpa | capture heartbeat: blocks=937 avg_rms=0.0021 partials=42 finals=13 speaking=False
+18:15:09.191 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Tam, council'
+18:15:09.192 INFO  speaker.tasks | task 24fb0851f086 started: mode=assistant capability=assistant.answer input='Tam, council'
+18:15:09.218 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Tam, council'
+18:15:10.193 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Tam, council
+18:15:10.193 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.97s ttft=0.78s out=86ch tokens=21 | 'Tam, council'
+18:15:10.193 INFO  speaker.llm | fast tier done in 0.98s (86 chars, streamed)
+18:15:10.193 INFO  speaker.tasks | task 24fb0851f086 completed in 1.00s (86 chars)
+18:15:10.193 INFO  speaker.runtime | assistant: 'I don’t recognize that term, could you please clarify what you mean by “Tam, council”?'
+18:15:10.193 DEBUG speaker.sherpa | speaking: 'I don’t recognize that term, could you please clarify what you mean by “Tam, council”?' (queue depth=0)
+18:15:10.283 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0021 resid=0.0021 incoh=0.61 consec=0
+18:15:10.383 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0021 resid=0.0021 incoh=0.61 consec=0
+18:15:10.506 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0001 incoh=0.61 consec=0
+18:15:10.609 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.61 consec=0
+18:15:10.609 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:15:10.706 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0192 resid=0.0000 incoh=0.61 consec=0
+18:15:10.808 DEBUG speaker.sherpa | dtd: D=58.20 K=5.0 fired=True (z_raw=19.28 z_resid=54.34 z_coh=0.00) raw=0.0468 resid=0.0198 incoh=0.61 consec=1
+18:15:10.910 DEBUG speaker.sherpa | dtd: D=3.22 K=5.0 fired=False (z_raw=13.61 z_resid=0.50 z_coh=0.00) raw=0.0346 resid=0.0010 incoh=0.10 consec=0
+18:15:11.011 DEBUG speaker.sherpa | dtd: D=60.13 K=5.0 fired=True (z_raw=2.60 z_resid=59.61 z_coh=0.00) raw=0.0363 resid=0.0219 incoh=0.29 consec=1
+18:15:11.030 DEBUG speaker.sysinfo | system sample: cpu=27.7% ram=29719.3MB(87.5%) proc_rss=1188.6MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:15:11.107 DEBUG speaker.sherpa | dtd: D=79.37 K=5.0 fired=True (z_raw=1.27 z_resid=79.12 z_coh=0.00) raw=0.0212 resid=0.0287 incoh=0.27 consec=2
+18:15:11.207 DEBUG speaker.sherpa | capture heartbeat: blocks=959 avg_rms=0.0051 partials=42 finals=13 speaking=True
+18:15:11.209 DEBUG speaker.sherpa | dtd: D=42.94 K=5.0 fired=True (z_raw=1.34 z_resid=42.68 z_coh=0.97) raw=0.0220 resid=0.0159 incoh=0.81 consec=3
+18:15:11.305 DEBUG speaker.sherpa | dtd: D=25.70 K=5.0 fired=True (z_raw=1.92 z_resid=25.32 z_coh=0.00) raw=0.0286 resid=0.0098 incoh=0.58 consec=4
+18:15:11.305 INFO  speaker.sherpa | barge-in detected
+18:15:11.305 INFO  speaker.supervisor | cancel_all: epoch=9 0 active, 0 queued, 0 pending-confirm
+18:15:11.305 INFO  speaker.supervisor | cancel_all: epoch=10 0 active, 0 queued, 0 pending-confirm
+18:15:11.898 DEBUG speaker.sherpa | asr partial: 'As'
+18:15:11.899 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='As'
+18:15:12.600 DEBUG speaker.sherpa | asr partial: 'As it'
+18:15:12.600 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='As it'
+18:15:13.313 INFO  speaker.sherpa | asr final: 'Is it.' (raw 'AS IT')
+18:15:13.313 INFO  speaker.runtime | final -> brain: 'Is it.' (mode=assistant)
+18:15:14.522 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I'm sorry, I can't provide links since I don't have access to the internet or your personal files.
+  - Tam, council.
+  - Tam, council
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Latest utterance: "Is it."
+18:15:14.522 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.21s ttft=- out=3ch tokens=- | "Recent utterances (most recent last): - I'm sorry, I can't provide links since I don't have access to the internet or your personal files. - Tam, council. - Tam, council - I don’t recognize that term,"
+18:15:14.522 INFO  speaker.runtime | addressing decision: ACT for 'Is it.'
+18:15:16.903 WARNING speaker.watchdog | capture silent: no heartbeat for 5.7s (audio thread crashed or stalled?)
+18:15:16.989 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Tam, council.
+  - Tam, council
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Raw ASR text: Is it.
+
+Cleaned:
+18:15:16.989 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.47s ttft=- out=86ch tokens=- | 'Recent utterances (most recent last): - Tam, council. - Tam, council - I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Raw ASR text: Is it. Cleaned:'
+18:15:16.989 INFO  speaker.runtime | cleaned: 'Is it.' -> 'I don’t recognize that term, could you please clarify what you mean by “Tam, council”?'
+18:15:18.867 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Turn: "I don’t recognize that term, could you please clarify what you mean by “Tam, council”?"
+18:15:18.867 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.88s ttft=- out=8ch tokens=- | 'Turn: "I don’t recognize that term, could you please clarify what you mean by “Tam, council”?"'
+18:15:18.867 INFO  speaker.runtime | route: action=research tier=main conf=0.90 source=llm (llm disambiguation) for 'I don’t recognize that term, could you please clarify what you mean by “Tam, council”?'
+18:15:18.867 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='I don’t recognize that term, could you please clarify what you mean by “Tam, council”?'
+18:15:18.868 DEBUG speaker.sherpa | capture heartbeat: blocks=980 avg_rms=0.0044 partials=44 finals=14 speaking=False
+18:15:18.868 INFO  speaker.tasks | task 140559b98371 started: mode=assistant capability=assistant.answer input='I don’t recognize that term, could you please clarify what you mean by “Tam, council”?'
+18:15:20.959 DEBUG speaker.sherpa | capture heartbeat: blocks=1003 avg_rms=0.0020 partials=44 finals=14 speaking=False
+18:15:21.115 DEBUG speaker.sysinfo | system sample: cpu=22.7% ram=29896.7MB(88.0%) proc_rss=1189.6MB gpu=100.0% gpu_mem=15903.0/16376.0MB
+18:15:21.574 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+(none yet)
+
+Next step:
+18:15:21.574 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.69s ttft=2.38s out=52ch tokens=13 | 'User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Available tools: - web.search: search the web for current information on a topic - search.local: lo'
+18:15:22.959 DEBUG speaker.sherpa | capture heartbeat: blocks=1023 avg_rms=0.0017 partials=44 finals=14 speaking=False
+18:15:24.178 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+search.local: No local result for: "Tam, council" meaning or context
+
+Next step:
+18:15:24.178 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.60s ttft=2.29s out=51ch tokens=13 | 'User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Available tools: - web.search: search the web for current information on a topic - search.local: lo'
+18:15:24.959 DEBUG speaker.sherpa | capture heartbeat: blocks=1043 avg_rms=0.0026 partials=44 finals=14 speaking=False
+18:15:25.581 DEBUG speaker.sherpa | asr partial: 'Count'
+18:15:25.581 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Count'
+18:15:25.981 DEBUG speaker.sherpa | asr partial: 'Count from'
+18:15:25.981 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Count from'
+18:15:26.280 DEBUG speaker.sherpa | asr partial: 'Count from one to'
+18:15:26.281 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Count from one to'
+18:15:26.581 DEBUG speaker.sherpa | asr partial: 'Count from one to them'
+18:15:26.581 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Count from one to them'
+18:15:26.959 DEBUG speaker.sherpa | capture heartbeat: blocks=1063 avg_rms=0.0319 partials=48 finals=14 speaking=False
+18:15:26.986 WARNING speaker.watchdog | tts stuck: turn 13 had llm_first_token but no tts_first_audio after 5.7s
+18:15:27.297 INFO  speaker.sherpa | asr final: 'Count from one to them.' (raw 'COUNT FROM ONE TO THEM')
+18:15:27.297 INFO  speaker.runtime | final -> brain: 'Count from one to them.' (mode=assistant)
+18:15:27.342 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+search.local: No local result for: "Tam, council" meaning or context
+web.search: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Pipecat is an open-source Python framework for realtime voice and multimodal conversational agents. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+
+Next step:
+18:15:27.342 INFO  speaker.llm.ollama | ollama gemma4:12b: 3.16s ttft=2.74s out=84ch tokens=18 | 'User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Available tools: - web.search: search the web for current information on a topic - search.local: lo'
+18:15:28.772 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I'm sorry, I can't provide links since I don't have access to the internet or your personal files.
+  - Tam, council.
+  - Tam, council
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Latest utterance: "Count from one to them."
+18:15:28.772 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.47s ttft=- out=3ch tokens=- | "Recent utterances (most recent last): - I'm sorry, I can't provide links since I don't have access to the internet or your personal files. - Tam, council. - Tam, council - I don’t recognize that term,"
+18:15:28.772 INFO  speaker.runtime | addressing decision: ACT for 'Count from one to them.'
+18:15:29.897 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+search.local: No local result for: "Tam, council" meaning or context
+web.search: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Pipecat is an open-source Python framework for realtime voice and multimodal conversational agents. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+web.search: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Pipecat is an open-source Python framework for realtime voice and multimodal conversational agents. LiveKit Agents is an open-source framework for realtime voice agents, WebRTC sessions, and STT-LLM-TTS pipelines.
+
+Next step:
+18:15:29.897 INFO  speaker.llm.ollama | ollama gemma4:12b: 2.55s ttft=2.16s out=79ch tokens=17 | 'User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Available tools: - web.search: search the web for current information on a topic - search.local: lo'
+18:15:30.714 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Tam, council.
+  - Tam, council
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+
+Raw ASR text: Count from one to them.
+
+Cleaned:
+18:15:30.714 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.94s ttft=- out=22ch tokens=- | 'Recent utterances (most recent last): - Tam, council. - Tam, council - I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Raw ASR text: Count from one to them. Clea'
+18:15:30.714 INFO  speaker.runtime | cleaned: 'Count from one to them.' -> 'Count from one to ten.'
+18:15:30.714 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'Count from one to ten.'
+18:15:30.715 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Count from one to ten.'
+18:15:30.716 DEBUG speaker.sherpa | capture heartbeat: blocks=1066 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:15:30.716 INFO  speaker.tasks | task 471d3cf172e7 started: mode=assistant capability=assistant.answer input='Count from one to ten.'
+18:15:30.730 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Count from one to ten.'
+18:15:31.231 DEBUG speaker.sysinfo | system sample: cpu=32.1% ram=29983.0MB(88.3%) proc_rss=1189.8MB gpu=13.0% gpu_mem=15903.0/16376.0MB
+18:15:32.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1089 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:15:32.817 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Count from one to ten.
+18:15:32.817 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.09s ttft=1.07s out=62ch tokens=21 | 'Count from one to ten.'
+18:15:32.817 INFO  speaker.llm | fast tier done in 2.08s (62 chars, streamed)
+18:15:32.817 INFO  speaker.tasks | task 471d3cf172e7 completed in 2.10s (62 chars)
+18:15:32.818 INFO  speaker.runtime | assistant: 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:15:32.818 DEBUG speaker.sherpa | speaking: 'One, two, three, four, five, six, seven, eight, nine, and ten.' (queue depth=0)
+18:15:32.907 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0017 incoh=0.58 consec=0
+18:15:33.007 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0017 incoh=0.58 consec=0
+18:15:33.136 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0000 incoh=0.58 consec=0
+18:15:33.239 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.58 consec=0
+18:15:33.239 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:15:33.341 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.58 consec=0
+18:15:33.436 DEBUG speaker.sherpa | dtd: D=14.46 K=5.0 fired=True (z_raw=56.00 z_resid=3.26 z_coh=0.00) raw=0.0400 resid=0.0016 incoh=0.58 consec=1
+18:15:33.535 DEBUG speaker.sherpa | dtd: D=6.20 K=5.0 fired=True (z_raw=30.98 z_resid=0.00 z_coh=0.00) raw=0.0229 resid=0.0006 incoh=0.46 consec=2
+18:15:33.637 DEBUG speaker.sherpa | dtd: D=35.45 K=5.0 fired=True (z_raw=20.46 z_resid=31.35 z_coh=1.65) raw=0.0157 resid=0.0094 incoh=0.96 consec=3
+18:15:33.731 DEBUG speaker.sherpa | dtd: D=39.62 K=5.0 fired=True (z_raw=23.49 z_resid=34.92 z_coh=1.39) raw=0.0178 resid=0.0104 incoh=0.90 consec=4
+18:15:33.731 INFO  speaker.sherpa | barge-in detected
+18:15:33.731 INFO  speaker.supervisor | cancel_all: epoch=11 1 active, 0 queued, 0 pending-confirm
+18:15:33.732 INFO  speaker.supervisor | cancel_all: epoch=12 1 active, 0 queued, 0 pending-confirm
+18:15:34.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1109 avg_rms=0.0043 partials=48 finals=15 speaking=False
+18:15:34.853 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+Findings:
+search.local: No local result for: "Tam, council" meaning or context
+web.search: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Pipecat is an open-source Python framework for realtime voice and multimodal conversational agents. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+web.search: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Pipecat is an open-source Python framework for realtime voice and multimodal conversational agents. LiveKit Agents is an open-source framework for realtime voice agents, WebRTC sessions, and STT-LLM-TTS pipelines.
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS.
+
+Give the final spoken answer. If the findings do not actually help, ignore them and answer from your own knowledge.
+18:15:34.853 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.96s ttft=4.96s out=1ch tokens=1 CANCELLED | 'User request: I don’t recognize that term, could you please clarify what you mean by “Tam, council”? Findings: search.local: No local result for: "Tam, council" meaning or context web.search: Wyoming '
+18:15:34.853 INFO  speaker.tasks | task 140559b98371 cancelled after 15.99s
+18:15:36.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1129 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:15:38.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1149 avg_rms=0.0047 partials=48 finals=15 speaking=False
+18:15:40.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1169 avg_rms=0.0092 partials=48 finals=15 speaking=False
+18:15:41.315 DEBUG speaker.sysinfo | system sample: cpu=35.5% ram=30139.8MB(88.8%) proc_rss=1192.3MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:15:42.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1189 avg_rms=0.0188 partials=48 finals=15 speaking=False
+18:15:44.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1209 avg_rms=0.0100 partials=48 finals=15 speaking=False
+18:15:46.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1229 avg_rms=0.0049 partials=48 finals=15 speaking=False
+18:15:48.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1249 avg_rms=0.0186 partials=48 finals=15 speaking=False
+18:15:50.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1269 avg_rms=0.0168 partials=48 finals=15 speaking=False
+18:15:51.369 DEBUG speaker.sysinfo | system sample: cpu=34.5% ram=30175.2MB(88.9%) proc_rss=1192.3MB gpu=28.0% gpu_mem=15903.0/16376.0MB
+18:15:52.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1289 avg_rms=0.0095 partials=48 finals=15 speaking=False
+18:15:54.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1309 avg_rms=0.0026 partials=48 finals=15 speaking=False
+18:15:56.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1329 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:15:58.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1349 avg_rms=0.0069 partials=48 finals=15 speaking=False
+18:16:00.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1369 avg_rms=0.0171 partials=48 finals=15 speaking=False
+18:16:01.411 DEBUG speaker.sysinfo | system sample: cpu=34.3% ram=30156.9MB(88.8%) proc_rss=1192.3MB gpu=7.0% gpu_mem=15903.0/16376.0MB
+18:16:02.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1389 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:04.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1409 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:06.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1429 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:08.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1449 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:10.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1469 avg_rms=0.0019 partials=48 finals=15 speaking=False
+18:16:11.466 DEBUG speaker.sysinfo | system sample: cpu=33.5% ram=30148.0MB(88.8%) proc_rss=1192.3MB gpu=19.0% gpu_mem=15903.0/16376.0MB
+18:16:12.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1489 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:16:14.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1509 avg_rms=0.0197 partials=48 finals=15 speaking=False
+18:16:16.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1529 avg_rms=0.0177 partials=48 finals=15 speaking=False
+18:16:18.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1549 avg_rms=0.0205 partials=48 finals=15 speaking=False
+18:16:20.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1569 avg_rms=0.0150 partials=48 finals=15 speaking=False
+18:16:21.517 DEBUG speaker.sysinfo | system sample: cpu=34.4% ram=30152.8MB(88.8%) proc_rss=1192.3MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:16:22.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1589 avg_rms=0.0155 partials=48 finals=15 speaking=False
+18:16:24.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1609 avg_rms=0.0021 partials=48 finals=15 speaking=False
+18:16:26.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1629 avg_rms=0.0030 partials=48 finals=15 speaking=False
+18:16:28.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1649 avg_rms=0.0108 partials=48 finals=15 speaking=False
+18:16:30.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1669 avg_rms=0.0219 partials=48 finals=15 speaking=False
+18:16:31.563 DEBUG speaker.sysinfo | system sample: cpu=34.1% ram=30147.0MB(88.8%) proc_rss=1192.3MB gpu=20.0% gpu_mem=15903.0/16376.0MB
+18:16:32.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1689 avg_rms=0.0166 partials=48 finals=15 speaking=False
+18:16:34.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1709 avg_rms=0.0195 partials=48 finals=15 speaking=False
+18:16:36.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1729 avg_rms=0.0186 partials=48 finals=15 speaking=False
+18:16:38.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1749 avg_rms=0.0172 partials=48 finals=15 speaking=False
+18:16:40.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1769 avg_rms=0.0139 partials=48 finals=15 speaking=False
+18:16:41.603 DEBUG speaker.sysinfo | system sample: cpu=34.4% ram=30152.1MB(88.8%) proc_rss=1192.3MB gpu=7.0% gpu_mem=15903.0/16376.0MB
+18:16:42.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1789 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:16:44.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1809 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:46.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1829 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:16:48.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1849 avg_rms=0.0021 partials=48 finals=15 speaking=False
+18:16:50.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1869 avg_rms=0.0025 partials=48 finals=15 speaking=False
+18:16:51.641 DEBUG speaker.sysinfo | system sample: cpu=34.9% ram=30225.6MB(89.0%) proc_rss=1192.3MB gpu=12.0% gpu_mem=15903.0/16376.0MB
+18:16:52.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1889 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:54.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1909 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:16:56.804 DEBUG speaker.sherpa | capture heartbeat: blocks=1929 avg_rms=0.0019 partials=48 finals=15 speaking=False
+18:16:58.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1949 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:00.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1969 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:01.689 DEBUG speaker.sysinfo | system sample: cpu=33.5% ram=30082.5MB(88.6%) proc_rss=1192.3MB gpu=0.0% gpu_mem=15903.0/16376.0MB
+18:17:02.805 DEBUG speaker.sherpa | capture heartbeat: blocks=1989 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:04.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2009 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:06.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2029 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:08.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2049 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:10.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2069 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:11.733 DEBUG speaker.sysinfo | system sample: cpu=32.6% ram=30109.8MB(88.7%) proc_rss=1192.3MB gpu=0.0% gpu_mem=15903.0/16376.0MB
+18:17:12.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2089 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:14.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2109 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:16.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2129 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:18.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2149 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:20.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2169 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:21.790 DEBUG speaker.sysinfo | system sample: cpu=33.1% ram=30146.2MB(88.8%) proc_rss=1192.3MB gpu=16.0% gpu_mem=15903.0/16376.0MB
+18:17:22.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2189 avg_rms=0.0024 partials=48 finals=15 speaking=False
+18:17:24.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2209 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:26.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2229 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:28.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2249 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:30.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2269 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:31.861 DEBUG speaker.sysinfo | system sample: cpu=36.9% ram=30376.3MB(89.4%) proc_rss=1192.3MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:17:32.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2289 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:17:34.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2309 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:36.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2329 avg_rms=0.0037 partials=48 finals=15 speaking=False
+18:17:38.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2349 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:40.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2369 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:41.914 DEBUG speaker.sysinfo | system sample: cpu=33.9% ram=30034.9MB(88.4%) proc_rss=1192.3MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:17:42.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2389 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:44.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2409 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:46.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2429 avg_rms=0.0020 partials=48 finals=15 speaking=False
+18:17:48.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2449 avg_rms=0.0022 partials=48 finals=15 speaking=False
+18:17:50.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2469 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:51.965 DEBUG speaker.sysinfo | system sample: cpu=33.1% ram=30008.8MB(88.4%) proc_rss=1192.4MB gpu=0.0% gpu_mem=15903.0/16376.0MB
+18:17:52.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2489 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:54.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2509 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:56.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2529 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:17:58.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2549 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:00.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2569 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:02.017 DEBUG speaker.sysinfo | system sample: cpu=33.8% ram=30046.5MB(88.5%) proc_rss=1192.4MB gpu=0.0% gpu_mem=15903.0/16376.0MB
+18:18:02.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2589 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:18:04.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2609 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:06.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2629 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:08.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2649 avg_rms=0.0018 partials=48 finals=15 speaking=False
+18:18:10.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2669 avg_rms=0.0019 partials=48 finals=15 speaking=False
+18:18:12.058 DEBUG speaker.sysinfo | system sample: cpu=33.2% ram=29966.0MB(88.2%) proc_rss=1192.4MB gpu=0.0% gpu_mem=15903.0/16376.0MB
+18:18:12.804 DEBUG speaker.sherpa | capture heartbeat: blocks=2689 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:14.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2709 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:16.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2729 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:18.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2749 avg_rms=0.0017 partials=48 finals=15 speaking=False
+18:18:20.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2769 avg_rms=0.0019 partials=48 finals=15 speaking=False
+18:18:22.113 DEBUG speaker.sysinfo | system sample: cpu=33.8% ram=30045.6MB(88.5%) proc_rss=1192.4MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:18:22.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2789 avg_rms=0.0019 partials=48 finals=15 speaking=False
+18:18:24.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2809 avg_rms=0.0137 partials=48 finals=15 speaking=False
+18:18:26.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2829 avg_rms=0.0024 partials=48 finals=15 speaking=False
+18:18:28.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2849 avg_rms=0.0070 partials=48 finals=15 speaking=False
+18:18:30.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2869 avg_rms=0.0227 partials=48 finals=15 speaking=False
+18:18:32.159 DEBUG speaker.sysinfo | system sample: cpu=32.6% ram=29907.2MB(88.1%) proc_rss=1192.4MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:18:32.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2889 avg_rms=0.0056 partials=48 finals=15 speaking=False
+18:18:34.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2909 avg_rms=0.0032 partials=48 finals=15 speaking=False
+18:18:36.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2929 avg_rms=0.0072 partials=48 finals=15 speaking=False
+18:18:36.922 DEBUG speaker.sherpa | asr partial: 'But'
+18:18:36.922 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='But'
+18:18:37.414 INFO  speaker.sherpa | asr final: 'B of pressure.' (raw 'BUT')
+18:18:37.414 INFO  speaker.runtime | final -> brain: 'B of pressure.' (mode=assistant)
+18:18:38.890 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Tam, council
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+  - Count from one to ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+
+Latest utterance: "B of pressure."
+18:18:38.890 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.48s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Tam, council - I don’t recognize that term, could you please clarify what you mean by “Tam, council”? - Count from one to ten. - One, two, three, four, five, si'
+18:18:38.890 INFO  speaker.runtime | addressing decision: ACT for 'B of pressure.'
+18:18:40.893 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+  - Count from one to ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+
+Raw ASR text: B of pressure.
+
+Cleaned:
+18:18:40.893 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.00s ttft=- out=22ch tokens=- | 'Recent utterances (most recent last): - I don’t recognize that term, could you please clarify what you mean by “Tam, council”? - Count from one to ten. - One, two, three, four, five, six, seven, eight'
+18:18:40.893 INFO  speaker.runtime | cleaned: 'B of pressure.' -> 'Count from one to ten.'
+18:18:40.893 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'Count from one to ten.'
+18:18:40.893 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Count from one to ten.'
+18:18:40.893 DEBUG speaker.sherpa | capture heartbeat: blocks=2935 avg_rms=0.0181 partials=49 finals=16 speaking=False
+18:18:40.893 INFO  speaker.tasks | task ba0d86aff35d started: mode=assistant capability=assistant.answer input='Count from one to ten.'
+18:18:40.907 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Count from one to ten.'
+18:18:40.921 DEBUG speaker.sherpa | asr partial: 'Bit of'
+18:18:40.921 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Bit of'
+18:18:41.203 DEBUG speaker.sherpa | asr partial: 'Bit of it'
+18:18:41.203 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Bit of it'
+18:18:41.887 INFO  speaker.sherpa | asr final: 'Right.' (raw 'BIT OF IT')
+18:18:41.887 INFO  speaker.runtime | final -> brain: 'Right.' (mode=assistant)
+18:18:42.197 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Count from one to ten.
+18:18:42.197 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.29s ttft=1.07s out=62ch tokens=21 | 'Count from one to ten.'
+18:18:42.197 INFO  speaker.llm | fast tier done in 1.30s (62 chars, streamed)
+18:18:42.197 INFO  speaker.tasks | task ba0d86aff35d completed in 1.30s (62 chars)
+18:18:42.197 INFO  speaker.runtime | assistant: 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:42.197 DEBUG speaker.sherpa | speaking: 'One, two, three, four, five, six, seven, eight, nine, and ten.' (queue depth=0)
+18:18:42.201 DEBUG speaker.sysinfo | system sample: cpu=27.5% ram=29950.9MB(88.2%) proc_rss=1192.5MB gpu=65.0% gpu_mem=15903.0/16376.0MB
+18:18:43.195 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - I don’t recognize that term, could you please clarify what you mean by “Tam, council”?
+  - Count from one to ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - Count from one to ten.
+
+Latest utterance: "Right."
+18:18:43.195 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.31s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - I don’t recognize that term, could you please clarify what you mean by “Tam, council”? - Count from one to ten. - One, two, three, four, five, six, seven, eight'
+18:18:43.195 INFO  speaker.runtime | addressing decision: ACT for 'Right.'
+18:18:45.399 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - Count from one to ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+
+Raw ASR text: Right.
+
+Cleaned:
+18:18:45.399 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.20s ttft=- out=62ch tokens=- | 'Recent utterances (most recent last): - One, two, three, four, five, six, seven, eight, nine, and ten. - Count from one to ten. - One, two, three, four, five, six, seven, eight, nine, and ten. Raw ASR'
+18:18:45.399 INFO  speaker.runtime | cleaned: 'Right.' -> 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:45.399 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:45.400 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:45.401 INFO  speaker.tasks | task 289def2d2088 started: mode=assistant capability=assistant.answer input='One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:45.420 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:45.429 DEBUG speaker.sherpa | capture heartbeat: blocks=2947 avg_rms=0.0046 partials=51 finals=17 speaking=True
+18:18:45.432 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.89 consec=0
+18:18:45.457 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0030 resid=0.0000 incoh=0.95 consec=0
+18:18:45.481 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0000 incoh=0.91 consec=0
+18:18:45.522 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0047 resid=0.0012 incoh=0.99 consec=0
+18:18:45.522 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:18:45.618 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0044 resid=0.0006 incoh=0.94 consec=0
+18:18:45.719 DEBUG speaker.sherpa | dtd: D=185.95 K=5.0 fired=True (z_raw=32.51 z_resid=179.45 z_coh=0.00) raw=0.0439 resid=0.0272 incoh=0.26 consec=1
+18:18:45.819 DEBUG speaker.sherpa | dtd: D=198.06 K=5.0 fired=True (z_raw=14.91 z_resid=195.07 z_coh=0.00) raw=0.0218 resid=0.0295 incoh=0.27 consec=2
+18:18:45.922 DEBUG speaker.sherpa | dtd: D=100.44 K=5.0 fired=True (z_raw=9.39 z_resid=98.56 z_coh=0.00) raw=0.0149 resid=0.0151 incoh=0.83 consec=3
+18:18:46.017 DEBUG speaker.sherpa | dtd: D=122.16 K=5.0 fired=True (z_raw=12.14 z_resid=119.73 z_coh=0.00) raw=0.0183 resid=0.0182 incoh=0.64 consec=4
+18:18:46.017 INFO  speaker.sherpa | barge-in detected
+18:18:46.017 INFO  speaker.supervisor | cancel_all: epoch=13 1 active, 0 queued, 0 pending-confirm
+18:18:46.018 INFO  speaker.supervisor | cancel_all: epoch=14 1 active, 0 queued, 0 pending-confirm
+18:18:46.892 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: One, two, three, four, five, six, seven, eight, nine, and ten.
+18:18:46.892 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.47s ttft=1.47s out=4ch tokens=1 CANCELLED | 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:18:46.892 INFO  speaker.llm | fast tier cancelled in 1.47s (0 chars, streamed)
+18:18:46.892 INFO  speaker.tasks | task 289def2d2088 cancelled after 1.49s
+18:18:47.490 DEBUG speaker.sherpa | capture heartbeat: blocks=2970 avg_rms=0.0055 partials=51 finals=17 speaking=False
+18:18:49.389 WARNING speaker.watchdog | llm stuck: turn 15 had asr_final but no llm_first_token after 10.5s
+18:18:49.491 DEBUG speaker.sherpa | capture heartbeat: blocks=2990 avg_rms=0.0019 partials=51 finals=17 speaking=False
+18:18:51.491 DEBUG speaker.sherpa | capture heartbeat: blocks=3010 avg_rms=0.0018 partials=51 finals=17 speaking=False
+18:18:52.254 DEBUG speaker.sysinfo | system sample: cpu=25.5% ram=29974.4MB(88.3%) proc_rss=1192.5MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:18:53.491 DEBUG speaker.sherpa | capture heartbeat: blocks=3030 avg_rms=0.0023 partials=51 finals=17 speaking=False
+18:18:55.491 DEBUG speaker.sherpa | capture heartbeat: blocks=3050 avg_rms=0.0028 partials=51 finals=17 speaking=False
+18:18:57.491 DEBUG speaker.sherpa | capture heartbeat: blocks=3070 avg_rms=0.0024 partials=51 finals=17 speaking=False
+18:18:59.490 DEBUG speaker.sherpa | capture heartbeat: blocks=3090 avg_rms=0.0029 partials=51 finals=17 speaking=False
+18:19:01.491 DEBUG speaker.sherpa | capture heartbeat: blocks=3110 avg_rms=0.0243 partials=51 finals=17 speaking=False
+18:19:02.008 DEBUG speaker.sherpa | asr partial: 'Fool'
+18:19:02.008 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Fool'
+18:19:02.304 DEBUG speaker.sysinfo | system sample: cpu=33.8% ram=29997.7MB(88.3%) proc_rss=1193.5MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:19:03.390 INFO  speaker.sherpa | asr final: 'You could.' (raw 'FOOL')
+18:19:03.390 INFO  speaker.runtime | final -> brain: 'You could.' (mode=assistant)
+18:19:04.917 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - Count from one to ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+
+Latest utterance: "You could."
+18:19:04.917 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.53s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - One, two, three, four, five, six, seven, eight, nine, and ten. - Count from one to ten. - One, two, three, four, five, six, seven, eight, nine, and ten. - One, '
+18:19:04.917 INFO  speaker.runtime | addressing decision: ACT for 'You could.'
+18:19:06.501 WARNING speaker.watchdog | capture silent: no heartbeat for 5.0s (audio thread crashed or stalled?)
+18:19:07.179 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Count from one to ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+
+Raw ASR text: You could.
+
+Cleaned:
+18:19:07.179 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.26s ttft=- out=62ch tokens=- | 'Recent utterances (most recent last): - Count from one to ten. - One, two, three, four, five, six, seven, eight, nine, and ten. - One, two, three, four, five, six, seven, eight, nine, and ten. Raw ASR'
+18:19:07.179 INFO  speaker.runtime | cleaned: 'You could.' -> 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:19:07.179 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:19:07.179 DEBUG speaker.sherpa | capture heartbeat: blocks=3129 avg_rms=0.0315 partials=52 finals=18 speaking=False
+18:19:07.179 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:19:07.180 INFO  speaker.tasks | task c7a95d21a16e started: mode=assistant capability=assistant.answer input='One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:19:07.195 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:19:07.204 DEBUG speaker.sherpa | asr partial: 'Nikuil'
+18:19:07.205 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Nikuil'
+18:19:07.592 DEBUG speaker.sherpa | asr partial: 'Nikoliki'
+18:19:07.593 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Nikoliki'
+18:19:08.166 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: One, two, three, four, five, six, seven, eight, nine, and ten.
+18:19:08.166 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.97s ttft=0.93s out=13ch tokens=5 | 'One, two, three, four, five, six, seven, eight, nine, and ten.'
+18:19:08.166 INFO  speaker.llm | fast tier done in 0.97s (13 chars, streamed)
+18:19:08.166 INFO  speaker.tasks | task c7a95d21a16e completed in 0.99s (13 chars)
+18:19:08.166 INFO  speaker.runtime | assistant: 'That’s right!'
+18:19:08.166 DEBUG speaker.sherpa | speaking: 'That’s right!' (queue depth=0)
+18:19:08.172 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0021 resid=0.0021 incoh=0.64 consec=0
+18:19:08.298 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0001 incoh=0.64 consec=0
+18:19:08.399 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0002 incoh=0.64 consec=0
+18:19:08.497 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0000 incoh=0.64 consec=0
+18:19:08.497 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:19:08.599 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0201 resid=0.0090 incoh=0.64 consec=0
+18:19:08.697 DEBUG speaker.sherpa | dtd: D=14.47 K=5.0 fired=True (z_raw=4.95 z_resid=13.48 z_coh=0.00) raw=0.0165 resid=0.0145 incoh=0.64 consec=1
+18:19:08.802 DEBUG speaker.sherpa | dtd: D=53.06 K=5.0 fired=True (z_raw=31.76 z_resid=46.70 z_coh=0.00) raw=0.0758 resid=0.0447 incoh=0.07 consec=2
+18:19:09.058 INFO  speaker.sherpa | asr final: 'Thank.' (raw 'NIKOLIKI')
+18:19:09.058 INFO  speaker.runtime | final -> brain: 'Thank.' (mode=assistant)
+18:19:10.487 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - That’s right!
+
+Latest utterance: "Thank."
+18:19:10.487 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.43s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - One, two, three, four, five, six, seven, eight, nine, and ten. - One, two, three, four, five, six, seven, eight, nine, and ten. - One, two, three, four, five, s'
+18:19:10.487 INFO  speaker.runtime | addressing decision: ACT for 'Thank.'
+18:19:12.412 DEBUG speaker.sysinfo | system sample: cpu=21.3% ram=30082.2MB(88.6%) proc_rss=1193.5MB gpu=12.0% gpu_mem=15903.0/16376.0MB
+18:19:12.492 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - That’s right!
+
+Raw ASR text: Thank.
+
+Cleaned:
+18:19:12.492 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.01s ttft=- out=14ch tokens=- | 'Recent utterances (most recent last): - One, two, three, four, five, six, seven, eight, nine, and ten. - One, two, three, four, five, six, seven, eight, nine, and ten. - That’s right! Raw ASR text: Th'
+18:19:12.492 INFO  speaker.runtime | cleaned: 'Thank.' -> 'That’s right!'
+18:19:12.492 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'That’s right!'
+18:19:12.493 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='That’s right!'
+18:19:12.494 DEBUG speaker.sherpa | capture heartbeat: blocks=3150 avg_rms=0.0113 partials=54 finals=19 speaking=False
+18:19:12.494 INFO  speaker.tasks | task 3472ba8442cf started: mode=assistant capability=assistant.answer input='That’s right!'
+18:19:12.509 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'That’s right!'
+18:19:13.587 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: That’s right!
+18:19:13.587 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.08s ttft=0.99s out=40ch tokens=10 | 'That’s right!'
+18:19:13.587 INFO  speaker.llm | fast tier done in 1.08s (40 chars, streamed)
+18:19:13.587 INFO  speaker.tasks | task 3472ba8442cf completed in 1.09s (40 chars)
+18:19:13.587 INFO  speaker.runtime | assistant: 'Is there anything else I can do for you?'
+18:19:13.587 DEBUG speaker.sherpa | speaking: 'Is there anything else I can do for you?' (queue depth=0)
+18:19:13.685 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0017 incoh=0.07 consec=0
+18:19:13.812 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0000 incoh=0.07 consec=0
+18:19:13.911 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.07 consec=0
+18:19:14.008 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0024 resid=0.0002 incoh=0.07 consec=0
+18:19:14.008 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:19:14.108 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0054 resid=0.0039 incoh=0.07 consec=0
+18:19:14.206 DEBUG speaker.sherpa | dtd: D=52.54 K=5.0 fired=True (z_raw=32.41 z_resid=46.06 z_coh=6.39) raw=0.0368 resid=0.0227 incoh=0.25 consec=1
+18:19:14.308 DEBUG speaker.sherpa | dtd: D=94.47 K=5.0 fired=True (z_raw=35.72 z_resid=87.32 z_coh=24.46) raw=0.0403 resid=0.0419 incoh=0.75 consec=2
+18:19:14.407 DEBUG speaker.sherpa | dtd: D=42.84 K=5.0 fired=True (z_raw=26.36 z_resid=37.57 z_coh=19.34) raw=0.0305 resid=0.0187 incoh=0.61 consec=3
+18:19:14.507 DEBUG speaker.sherpa | capture heartbeat: blocks=3172 avg_rms=0.0055 partials=54 finals=19 speaking=True
+18:19:14.509 DEBUG speaker.sherpa | dtd: D=20.68 K=5.0 fired=True (z_raw=26.10 z_resid=15.46 z_coh=3.98) raw=0.0302 resid=0.0084 incoh=0.18 consec=4
+18:19:14.509 INFO  speaker.sherpa | barge-in detected
+18:19:14.509 INFO  speaker.supervisor | cancel_all: epoch=15 0 active, 0 queued, 0 pending-confirm
+18:19:14.509 INFO  speaker.supervisor | cancel_all: epoch=16 0 active, 0 queued, 0 pending-confirm
+18:19:15.201 DEBUG speaker.sherpa | asr partial: 'Ye'
+18:19:15.201 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ye'
+18:19:15.602 DEBUG speaker.sherpa | asr partial: 'Yes'
+18:19:15.602 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Yes'
+18:19:16.312 INFO  speaker.sherpa | asr final: 'Any else?' (raw 'YES')
+18:19:16.313 INFO  speaker.runtime | final -> brain: 'Any else?' (mode=assistant)
+18:19:17.851 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - One, two, three, four, five, six, seven, eight, nine, and ten.
+  - That’s right!
+  - That’s right!
+  - Is there anything else I can do for you?
+
+Latest utterance: "Any else?"
+18:19:17.851 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.54s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - One, two, three, four, five, six, seven, eight, nine, and ten. - That’s right! - That’s right! - Is there anything else I can do for you? Latest utterance: "Any'
+18:19:17.851 INFO  speaker.runtime | addressing decision: ACT for 'Any else?'
+18:19:19.591 WARNING speaker.watchdog | capture silent: no heartbeat for 5.1s (audio thread crashed or stalled?)
+18:19:19.877 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - That’s right!
+  - That’s right!
+  - Is there anything else I can do for you?
+
+Raw ASR text: Any else?
+
+Cleaned:
+18:19:19.877 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.03s ttft=- out=40ch tokens=- | 'Recent utterances (most recent last): - That’s right! - That’s right! - Is there anything else I can do for you? Raw ASR text: Any else? Cleaned:'
+18:19:19.877 INFO  speaker.runtime | cleaned: 'Any else?' -> 'Is there anything else I can do for you?'
+18:19:19.877 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'Is there anything else I can do for you?'
+18:19:19.878 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Is there anything else I can do for you?'
+18:19:19.878 INFO  speaker.tasks | task ed9c371eb946 started: mode=assistant capability=assistant.answer input='Is there anything else I can do for you?'
+18:19:19.878 DEBUG speaker.sherpa | capture heartbeat: blocks=3190 avg_rms=0.0083 partials=56 finals=20 speaking=False
+18:19:19.903 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Is there anything else I can do for you?'
+18:19:21.042 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Is there anything else I can do for you?
+18:19:21.042 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.14s ttft=1.02s out=63ch tokens=13 | 'Is there anything else I can do for you?'
+18:19:21.042 INFO  speaker.llm | fast tier done in 1.14s (63 chars, streamed)
+18:19:21.042 INFO  speaker.tasks | task ed9c371eb946 completed in 1.16s (63 chars)
+18:19:21.042 INFO  speaker.runtime | assistant: 'Yes, I can answer questions or chat directly from my knowledge.'
+18:19:21.042 DEBUG speaker.sherpa | speaking: 'Yes, I can answer questions or chat directly from my knowledge.' (queue depth=0)
+18:19:21.071 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0028 resid=0.0028 incoh=0.18 consec=0
+18:19:21.169 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0029 resid=0.0029 incoh=0.18 consec=0
+18:19:21.295 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0027 resid=0.0004 incoh=0.18 consec=0
+18:19:21.392 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0026 resid=0.0001 incoh=0.18 consec=0
+18:19:21.392 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:19:21.490 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0025 resid=0.0002 incoh=0.18 consec=0
+18:19:21.592 DEBUG speaker.sherpa | dtd: D=3.50 K=5.0 fired=False (z_raw=17.49 z_resid=0.00 z_coh=0.00) raw=0.0216 resid=0.0005 incoh=0.18 consec=0
+18:19:21.691 DEBUG speaker.sherpa | dtd: D=0.27 K=5.0 fired=False (z_raw=1.34 z_resid=0.00 z_coh=0.00) raw=0.0134 resid=0.0003 incoh=0.18 consec=0
+18:19:21.794 DEBUG speaker.sherpa | dtd: D=16.38 K=5.0 fired=True (z_raw=1.28 z_resid=16.12 z_coh=9.29) raw=0.0140 resid=0.0089 incoh=0.85 consec=1
+18:19:21.890 DEBUG speaker.sherpa | capture heartbeat: blocks=3212 avg_rms=0.0026 partials=56 finals=20 speaking=True
+18:19:21.893 DEBUG speaker.sherpa | dtd: D=13.35 K=5.0 fired=True (z_raw=1.44 z_resid=13.06 z_coh=0.00) raw=0.0152 resid=0.0074 incoh=0.08 consec=2
+18:19:21.993 DEBUG speaker.sherpa | dtd: D=2.04 K=5.0 fired=False (z_raw=5.99 z_resid=0.84 z_coh=5.31) raw=0.0505 resid=0.0016 incoh=0.56 consec=0
+18:19:22.092 DEBUG speaker.sherpa | dtd: D=7.79 K=5.0 fired=True (z_raw=0.52 z_resid=7.69 z_coh=2.39) raw=0.0164 resid=0.0050 incoh=0.55 consec=1
+18:19:22.195 DEBUG speaker.sherpa | dtd: D=12.27 K=5.0 fired=True (z_raw=0.71 z_resid=12.13 z_coh=0.23) raw=0.0202 resid=0.0071 incoh=0.23 consec=2
+18:19:22.291 DEBUG speaker.sherpa | dtd: D=10.25 K=5.0 fired=True (z_raw=1.06 z_resid=10.04 z_coh=0.09) raw=0.0269 resid=0.0061 incoh=0.21 consec=3
+18:19:22.291 INFO  speaker.sherpa | barge-in detected
+18:19:22.291 INFO  speaker.supervisor | cancel_all: epoch=17 0 active, 0 queued, 0 pending-confirm
+18:19:22.291 INFO  speaker.supervisor | cancel_all: epoch=18 0 active, 0 queued, 0 pending-confirm
+18:19:22.463 DEBUG speaker.sysinfo | system sample: cpu=26.8% ram=29961.6MB(88.2%) proc_rss=1194.3MB gpu=1.0% gpu_mem=15903.0/16376.0MB
+18:19:23.088 DEBUG speaker.sherpa | asr partial: 'Ter'
+18:19:23.088 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Ter'
+18:19:23.890 INFO  speaker.sherpa | asr final: 'Tir.' (raw 'TER')
+18:19:23.890 INFO  speaker.runtime | final -> brain: 'Tir.' (mode=assistant)
+18:19:25.465 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - That’s right!
+  - Is there anything else I can do for you?
+  - Is there anything else I can do for you?
+  - Yes, I can answer questions or chat directly from my knowledge.
+
+Latest utterance: "Tir."
+18:19:25.465 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.58s ttft=- out=6ch tokens=- | 'Recent utterances (most recent last): - That’s right! - Is there anything else I can do for you? - Is there anything else I can do for you? - Yes, I can answer questions or chat directly from my knowl'
+18:19:25.465 INFO  speaker.runtime | addressing decision: INGEST for 'Tir.'
+18:19:25.467 DEBUG speaker.sherpa | capture heartbeat: blocks=3232 avg_rms=0.0053 partials=57 finals=21 speaking=False
+18:19:27.458 DEBUG speaker.sherpa | capture heartbeat: blocks=3254 avg_rms=0.0079 partials=57 finals=21 speaking=False
+18:19:29.458 DEBUG speaker.sherpa | capture heartbeat: blocks=3274 avg_rms=0.0061 partials=57 finals=21 speaking=False
+18:19:31.557 DEBUG speaker.sherpa | capture heartbeat: blocks=3295 avg_rms=0.0535 partials=57 finals=21 speaking=False
+18:19:32.175 DEBUG speaker.sherpa | asr partial: 'Thou'
+18:19:32.175 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Thou'
+18:19:32.503 DEBUG speaker.sysinfo | system sample: cpu=31.8% ram=30031.4MB(88.4%) proc_rss=1194.3MB gpu=6.0% gpu_mem=15903.0/16376.0MB
+18:19:33.277 INFO  speaker.sherpa | asr final: 'The?' (raw 'THOU')
+18:19:33.277 INFO  speaker.runtime | final -> brain: 'The?' (mode=assistant)
+18:19:34.881 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Is there anything else I can do for you?
+  - Is there anything else I can do for you?
+  - Yes, I can answer questions or chat directly from my knowledge.
+  - Tir.
+
+Latest utterance: "The?"
+18:19:34.881 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.60s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Is there anything else I can do for you? - Is there anything else I can do for you? - Yes, I can answer questions or chat directly from my knowledge. - Tir. Lat'
+18:19:34.881 INFO  speaker.runtime | addressing decision: ACT for 'The?'
+18:19:36.731 WARNING speaker.watchdog | capture silent: no heartbeat for 5.2s (audio thread crashed or stalled?)
+18:19:36.788 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Is there anything else I can do for you?
+  - Yes, I can answer questions or chat directly from my knowledge.
+  - Tir.
+
+Raw ASR text: The?
+
+Cleaned:
+18:19:36.788 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.91s ttft=- out=3ch tokens=- | 'Recent utterances (most recent last): - Is there anything else I can do for you? - Yes, I can answer questions or chat directly from my knowledge. - Tir. Raw ASR text: The? Cleaned:'
+18:19:36.788 INFO  speaker.runtime | cleaned: 'The?' -> 'Tir'
+18:19:36.788 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Tir'
+18:19:36.788 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Tir'
+18:19:36.789 DEBUG speaker.sherpa | capture heartbeat: blocks=3312 avg_rms=0.0261 partials=58 finals=22 speaking=False
+18:19:36.789 INFO  speaker.tasks | task b848fbc9cd15 started: mode=assistant capability=assistant.answer input='Tir'
+18:19:36.810 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Tir'
+18:19:36.813 DEBUG speaker.sherpa | asr partial: 'She'
+18:19:36.814 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She'
+18:19:37.097 DEBUG speaker.sherpa | asr partial: 'She went'
+18:19:37.097 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She went'
+18:19:37.395 DEBUG speaker.sherpa | asr partial: 'She went in'
+18:19:37.395 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='She went in'
+18:19:37.992 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Tir
+18:19:37.992 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.18s ttft=0.98s out=69ch tokens=17 | 'Tir'
+18:19:37.992 INFO  speaker.llm | fast tier done in 1.19s (69 chars, streamed)
+18:19:37.992 INFO  speaker.tasks | task b848fbc9cd15 completed in 1.20s (69 chars)
+18:19:37.992 INFO  speaker.runtime | assistant: "That doesn't make sense; could you please clarify what you’re asking?"
+18:19:37.992 DEBUG speaker.sherpa | speaking: "That doesn't make sense; could you please clarify what you’re asking?" (queue depth=0)
+18:19:38.080 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0023 resid=0.0023 incoh=0.21 consec=0
+18:19:38.201 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0020 resid=0.0000 incoh=0.21 consec=0
+18:19:38.301 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0000 incoh=0.21 consec=0
+18:19:38.400 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0021 resid=0.0000 incoh=0.21 consec=0
+18:19:38.400 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:19:38.502 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0163 resid=0.0001 incoh=0.21 consec=0
+18:19:38.599 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0048 resid=0.0000 incoh=0.21 consec=0
+18:19:38.702 DEBUG speaker.sherpa | dtd: D=132.44 K=5.0 fired=True (z_raw=10.30 z_resid=130.38 z_coh=0.00) raw=0.0252 resid=0.0242 incoh=0.17 consec=1
+18:19:38.798 DEBUG speaker.sherpa | capture heartbeat: blocks=3334 avg_rms=0.0068 partials=61 finals=22 speaking=True
+18:19:38.800 DEBUG speaker.sherpa | dtd: D=71.47 K=5.0 fired=True (z_raw=5.49 z_resid=70.37 z_coh=0.00) raw=0.0157 resid=0.0132 incoh=0.17 consec=2
+18:19:38.903 DEBUG speaker.sherpa | dtd: D=130.27 K=5.0 fired=True (z_raw=9.32 z_resid=128.40 z_coh=6.40) raw=0.0233 resid=0.0238 incoh=0.76 consec=3
+18:19:39.001 DEBUG speaker.sherpa | dtd: D=126.14 K=5.0 fired=True (z_raw=10.71 z_resid=124.00 z_coh=2.73) raw=0.0260 resid=0.0230 incoh=0.45 consec=4
+18:19:39.001 INFO  speaker.sherpa | barge-in detected
+18:19:39.001 INFO  speaker.supervisor | cancel_all: epoch=19 0 active, 0 queued, 0 pending-confirm
+18:19:39.001 INFO  speaker.supervisor | cancel_all: epoch=20 0 active, 0 queued, 0 pending-confirm
+18:19:39.176 INFO  speaker.sherpa | asr final: 'Okay.' (raw 'SHE WENT IN')
+18:19:39.176 INFO  speaker.runtime | final -> brain: 'Okay.' (mode=assistant)
+18:19:40.367 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Yes, I can answer questions or chat directly from my knowledge.
+  - Tir.
+  - Tir
+  - That doesn't make sense; could you please clarify what you’re asking?
+
+Latest utterance: "Okay."
+18:19:40.368 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.19s ttft=- out=3ch tokens=- | "Recent utterances (most recent last): - Yes, I can answer questions or chat directly from my knowledge. - Tir. - Tir - That doesn't make sense; could you please clarify what you’re asking? Latest utte"
+18:19:40.368 INFO  speaker.runtime | addressing decision: ACT for 'Okay.'
+18:19:42.553 DEBUG speaker.sysinfo | system sample: cpu=20.8% ram=30058.0MB(88.5%) proc_rss=1194.8MB gpu=96.0% gpu_mem=15903.0/16376.0MB
+18:19:42.580 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Tir.
+  - Tir
+  - That doesn't make sense; could you please clarify what you’re asking?
+
+Raw ASR text: Okay.
+
+Cleaned:
+18:19:42.580 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.21s ttft=- out=69ch tokens=- | "Recent utterances (most recent last): - Tir. - Tir - That doesn't make sense; could you please clarify what you’re asking? Raw ASR text: Okay. Cleaned:"
+18:19:42.580 INFO  speaker.runtime | cleaned: 'Okay.' -> 'That doesn’t make sense; could you please clarify what you’re asking?'
+18:19:42.580 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'That doesn’t make sense; could you please clarify what you’re asking?'
+18:19:42.581 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='That doesn’t make sense; could you please clarify what you’re asking?'
+18:19:42.581 DEBUG speaker.sherpa | capture heartbeat: blocks=3338 avg_rms=0.0210 partials=61 finals=23 speaking=False
+18:19:42.581 INFO  speaker.tasks | task faa3f33428f6 started: mode=assistant capability=assistant.answer input='That doesn’t make sense; could you please clarify what you’re asking?'
+18:19:42.601 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'That doesn’t make sense; could you please clarify what you’re asking?'
+18:19:43.672 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: That doesn’t make sense; could you please clarify what you’re asking?
+18:19:43.672 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.07s ttft=1.01s out=33ch tokens=8 | 'That doesn’t make sense; could you please clarify what you’re asking?'
+18:19:43.672 INFO  speaker.llm | fast tier done in 1.06s (33 chars, streamed)
+18:19:43.672 INFO  speaker.tasks | task faa3f33428f6 completed in 1.09s (33 chars)
+18:19:43.672 INFO  speaker.runtime | assistant: 'Could you say that again, please?'
+18:19:43.672 DEBUG speaker.sherpa | speaking: 'Could you say that again, please?' (queue depth=0)
+18:19:43.674 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0019 incoh=0.45 consec=0
+18:19:43.797 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0001 incoh=0.45 consec=0
+18:19:43.898 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0000 incoh=0.45 consec=0
+18:19:43.994 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0000 incoh=0.45 consec=0
+18:19:43.994 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:19:44.095 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0039 resid=0.0015 incoh=0.45 consec=0
+18:19:44.195 DEBUG speaker.sherpa | dtd: D=51.93 K=5.0 fired=True (z_raw=29.39 z_resid=46.05 z_coh=0.00) raw=0.0291 resid=0.0137 incoh=0.45 consec=1
+18:19:44.296 DEBUG speaker.sherpa | dtd: D=73.77 K=5.0 fired=True (z_raw=21.32 z_resid=69.50 z_coh=0.66) raw=0.0218 resid=0.0204 incoh=0.56 consec=2
+18:19:44.396 DEBUG speaker.sherpa | dtd: D=114.14 K=5.0 fired=True (z_raw=65.40 z_resid=101.06 z_coh=2.54) raw=0.0620 resid=0.0293 incoh=0.90 consec=3
+18:19:44.499 DEBUG speaker.sherpa | dtd: D=105.38 K=5.0 fired=True (z_raw=60.46 z_resid=93.29 z_coh=0.00) raw=0.0575 resid=0.0271 incoh=0.23 consec=4
+18:19:44.499 INFO  speaker.sherpa | barge-in detected
+18:19:44.499 INFO  speaker.supervisor | cancel_all: epoch=21 0 active, 0 queued, 0 pending-confirm
+18:19:44.500 INFO  speaker.supervisor | cancel_all: epoch=22 0 active, 0 queued, 0 pending-confirm
+18:19:44.572 DEBUG speaker.sherpa | capture heartbeat: blocks=3360 avg_rms=0.0096 partials=61 finals=23 speaking=False
+18:19:45.090 DEBUG speaker.sherpa | asr partial: 'And'
+18:19:45.091 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And'
+18:19:45.391 DEBUG speaker.sherpa | asr partial: 'And again'
+18:19:45.391 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='And again'
+18:19:46.191 INFO  speaker.sherpa | asr final: 'Yeahep that again.' (raw 'AND AGAIN')
+18:19:46.191 INFO  speaker.runtime | final -> brain: 'Yeahep that again.' (mode=assistant)
+18:19:47.604 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - Tir
+  - That doesn't make sense; could you please clarify what you’re asking?
+  - That doesn’t make sense; could you please clarify what you’re asking?
+  - Could you say that again, please?
+
+Latest utterance: "Yeahep that again."
+18:19:47.604 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.41s ttft=- out=3ch tokens=- | "Recent utterances (most recent last): - Tir - That doesn't make sense; could you please clarify what you’re asking? - That doesn’t make sense; could you please clarify what you’re asking? - Could you "
+18:19:47.604 INFO  speaker.runtime | addressing decision: ACT for 'Yeahep that again.'
+18:19:49.705 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - That doesn't make sense; could you please clarify what you’re asking?
+  - That doesn’t make sense; could you please clarify what you’re asking?
+  - Could you say that again, please?
+
+Raw ASR text: Yeahep that again.
+
+Cleaned:
+18:19:49.705 INFO  speaker.llm.ollama | ollama gemma3:4b: 2.10s ttft=- out=33ch tokens=- | "Recent utterances (most recent last): - That doesn't make sense; could you please clarify what you’re asking? - That doesn’t make sense; could you please clarify what you’re asking? - Could you say th"
+18:19:49.705 INFO  speaker.runtime | cleaned: 'Yeahep that again.' -> 'Could you say that again, please?'
+18:19:49.706 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'Could you say that again, please?'
+18:19:49.706 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Could you say that again, please?'
+18:19:49.706 DEBUG speaker.sherpa | capture heartbeat: blocks=3376 avg_rms=0.0045 partials=63 finals=24 speaking=False
+18:19:49.706 INFO  speaker.tasks | task adfb5b1e617e started: mode=assistant capability=assistant.answer input='Could you say that again, please?'
+18:19:49.724 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Could you say that again, please?'
+18:19:50.942 INFO  speaker.runtime | assistant: "I'm sorry, I didn’t quite catch that."
+18:19:50.942 DEBUG speaker.sherpa | speaking: "I'm sorry, I didn’t quite catch that." (queue depth=0)
+18:19:50.995 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Could you say that again, please?
+18:19:50.995 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.27s ttft=1.11s out=68ch tokens=19 | 'Could you say that again, please?'
+18:19:50.995 INFO  speaker.llm | fast tier done in 1.27s (68 chars, streamed)
+18:19:50.995 INFO  speaker.tasks | task adfb5b1e617e completed in 1.29s (68 chars)
+18:19:50.995 INFO  speaker.runtime | assistant: 'Could you repeat your request?'
+18:19:50.998 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0021 resid=0.0021 incoh=0.23 consec=0
+18:19:51.124 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0018 resid=0.0002 incoh=0.23 consec=0
+18:19:51.227 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0017 resid=0.0000 incoh=0.23 consec=0
+18:19:51.323 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0019 resid=0.0000 incoh=0.23 consec=0
+18:19:51.323 INFO  speaker.sherpa | barge-in REJECTED: 0.4s of voiced speech during playback did not trip the gate (talk-over ignored?)
+18:19:51.427 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0114 resid=0.0082 incoh=0.23 consec=0
+18:19:51.524 DEBUG speaker.sherpa | dtd: D=21.21 K=5.0 fired=True (z_raw=9.81 z_resid=19.25 z_coh=0.00) raw=0.0185 resid=0.0183 incoh=0.23 consec=1
+18:19:51.626 DEBUG speaker.sherpa | dtd: D=52.16 K=5.0 fired=True (z_raw=34.90 z_resid=45.18 z_coh=0.00) raw=0.0563 resid=0.0402 incoh=0.14 consec=2
+18:19:51.721 DEBUG speaker.sherpa | capture heartbeat: blocks=3398 avg_rms=0.0066 partials=63 finals=24 speaking=True
+18:19:51.725 DEBUG speaker.sherpa | dtd: D=69.11 K=5.0 fired=True (z_raw=52.25 z_resid=58.66 z_coh=0.00) raw=0.0824 resid=0.0516 incoh=0.19 consec=3
+18:19:51.778 DEBUG speaker.sherpa | speaking: 'Could you repeat your request?' (queue depth=0)
+18:19:51.832 DEBUG speaker.sherpa | dtd: D=46.11 K=5.0 fired=True (z_raw=25.91 z_resid=40.92 z_coh=0.00) raw=0.0428 resid=0.0366 incoh=0.18 consec=4
+18:19:51.832 INFO  speaker.sherpa | barge-in detected
+18:19:51.832 INFO  speaker.supervisor | cancel_all: epoch=23 0 active, 0 queued, 0 pending-confirm
+18:19:51.832 INFO  speaker.supervisor | cancel_all: epoch=24 0 active, 0 queued, 0 pending-confirm
+18:19:52.519 DEBUG speaker.sherpa | asr partial: 'Egg'
+18:19:52.520 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Egg'
+18:19:52.664 DEBUG speaker.sysinfo | system sample: cpu=27.8% ram=30082.1MB(88.6%) proc_rss=1194.8MB gpu=5.0% gpu_mem=15903.0/16376.0MB
+18:19:53.632 INFO  speaker.sherpa | asr final: 'I.' (raw 'EGG')
+18:19:53.632 INFO  speaker.runtime | final -> brain: 'I.' (mode=assistant)
+18:19:55.151 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Recent utterances (most recent last):
+  - That doesn’t make sense; could you please clarify what you’re asking?
+  - Could you say that again, please?
+  - Could you say that again, please?
+  - I'm sorry, I didn’t quite catch that. Could you repeat your request?
+
+Latest utterance: "I."
+18:19:55.151 INFO  speaker.llm.ollama | ollama gemma3:4b: 1.52s ttft=- out=6ch tokens=- | "Recent utterances (most recent last): - That doesn’t make sense; could you please clarify what you’re asking? - Could you say that again, please? - Could you say that again, please? - I'm sorry, I did"
+18:19:55.151 INFO  speaker.runtime | addressing decision: INGEST for 'I.'
+18:19:55.153 DEBUG speaker.sherpa | capture heartbeat: blocks=3417 avg_rms=0.0064 partials=64 finals=25 speaking=False
+18:19:57.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3440 avg_rms=0.0021 partials=64 finals=25 speaking=False
+18:19:59.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3460 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:01.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3480 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:02.709 DEBUG speaker.sysinfo | system sample: cpu=36.2% ram=30195.4MB(88.9%) proc_rss=1195.4MB gpu=19.0% gpu_mem=15903.0/16376.0MB
+18:20:03.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3500 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:05.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3520 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:07.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3540 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:09.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3560 avg_rms=0.0019 partials=64 finals=25 speaking=False
+18:20:11.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3580 avg_rms=0.0019 partials=64 finals=25 speaking=False
+18:20:12.747 DEBUG speaker.sysinfo | system sample: cpu=37.6% ram=30231.0MB(89.0%) proc_rss=1195.4MB gpu=22.0% gpu_mem=15903.0/16376.0MB
+18:20:13.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3600 avg_rms=0.0019 partials=64 finals=25 speaking=False
+18:20:15.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3620 avg_rms=0.0019 partials=64 finals=25 speaking=False
+18:20:17.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3640 avg_rms=0.0019 partials=64 finals=25 speaking=False
+18:20:19.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3660 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:21.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3680 avg_rms=0.0018 partials=64 finals=25 speaking=False
+18:20:22.802 DEBUG speaker.sysinfo | system sample: cpu=37.7% ram=30248.5MB(89.1%) proc_rss=1195.4MB gpu=19.0% gpu_mem=15903.0/16376.0MB
+18:20:23.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3700 avg_rms=0.0019 partials=64 finals=25 speaking=False
+18:20:25.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3720 avg_rms=0.0022 partials=64 finals=25 speaking=False
+18:20:27.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3740 avg_rms=0.0024 partials=64 finals=25 speaking=False
+18:20:29.243 DEBUG speaker.sherpa | capture heartbeat: blocks=3760 avg_rms=0.0023 partials=64 finals=25 speaking=False
+18:20:31.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3780 avg_rms=0.0021 partials=64 finals=25 speaking=False
+18:20:32.849 DEBUG speaker.sysinfo | system sample: cpu=38.4% ram=30345.4MB(89.4%) proc_rss=1195.4MB gpu=19.0% gpu_mem=15903.0/16376.0MB
+18:20:33.242 DEBUG speaker.sherpa | capture heartbeat: blocks=3800 avg_rms=0.0022 partials=64 finals=25 speaking=False

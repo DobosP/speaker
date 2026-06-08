@@ -24,7 +24,7 @@ def _auto_threads() -> int:
     cores = os.cpu_count() or 4
     return max(2, min(4, cores // 2))
 
-from ..asr_text import restore_casing
+from ..asr_text import agreement_guard, restore_casing
 from ..audio_frontend import CLEAN_CAPTURE_RATES, AudioResampler, apply_gain_soft_limit
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
@@ -388,6 +388,13 @@ class SherpaConfig:
     # barge-in triggers for this long. Debounces a flapping VAD gate / TTS-echo
     # storm into a single interrupt instead of a rapid-fire string of them.
     barge_in_suppress_sec: float = 0.5
+    # L2 post-speaking refractory: for this long AFTER the assistant stops speaking
+    # (a turn ends, or a barge-in cancels it), suppress a RE-fired barge-in so the
+    # just-cancelled utterance's own echo TAIL cannot immediately self-interrupt the
+    # next reply -- the cross-response runaway seen on the open speaker. A short
+    # fixed CLEARANCE window (a time, not an energy threshold -- mirrors
+    # barge_in_suppress_sec); 0 disables (byte-identical parity).
+    barge_in_refractory_sec: float = 0.5
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -405,6 +412,16 @@ class SherpaConfig:
     # (default) = identity-only, unchanged. Only narrows toward MORE admits (a
     # rescue), never rejects what identity already accepted.
     input_loudness_margin_db: float = 0.0
+    # L1 echo gate on the FINAL-dispatch path: a completed ASR final reaches the
+    # brain only when its level stands at least this many dB above the device's
+    # LEARNED echo/quiet floor -- max(_ambient_rms, _playback_floor_rms), both
+    # learned online. The assistant's own residual echo / ambient noise that the
+    # recognizer turned into words sits AT that floor and is dropped; real speech
+    # is many dB above it and passes. A dB-above-LEARNED-floor margin (relative,
+    # device-adaptive -- never an absolute RMS), exactly like input_loudness_margin_db.
+    # 0 (the dataclass default) disables it so every existing unit test is
+    # byte-identical; config.json turns it on (config.json wins for real runs).
+    final_floor_margin_db: float = 0.0
     # When enrolled, also gate the *normal* ASR finals on speaker identity (not
     # just barge-in), so ambient voices / a TV / a read-aloud quotation aren't
     # answered as if addressed to the assistant. Fail-open when unenrolled.
@@ -651,6 +668,11 @@ class SherpaOnnxEngine(AudioEngine):
         # monotonic deadline until which barge-in triggers are debounced (set
         # after a barge-in fires or when a watchdog storm is reported).
         self._barge_in_suppressed_until: float = 0.0
+        # monotonic stamp of the most recent _speaking->clear (a turn ended or a
+        # barge cancelled it). The L2 refractory (barge_in_refractory_sec) reads it
+        # to suppress an immediate re-fired barge on the cancelled tail's echo.
+        # Plain float, GIL-atomic, no lock -- same idiom as _barge_in_suppressed_until.
+        self._last_speaking_end: float = 0.0
         # Latch: once a barge-in has fired during the CURRENT speaking run, do
         # not emit another on_barge_in for the same run -- open speakers with no
         # AEC make the VAD re-fire ~12x/utterance on self-echo, each one
@@ -998,6 +1020,7 @@ class SherpaOnnxEngine(AudioEngine):
         # again on its way out is harmless.
         self._speaking.clear()
         self._barge_in_fired_this_run = False
+        self._last_speaking_end = time.monotonic()  # arm the L2 post-speaking refractory
         if self._echo_coherence is not None:
             self._echo_coherence.reset()
         if self._dtd is not None:
@@ -1113,7 +1136,17 @@ class SherpaOnnxEngine(AudioEngine):
                     rec.decode_stream(st)
                     text = (st.result.text or "").strip()
                     if text:
-                        return text
+                        # L3: the offline 2nd pass HALLUCINATES a plausible sentence
+                        # from a short open-speaker echo clip ("BEING" -> "I."). Trust
+                        # it only when it agrees with / clearly improves the streaming
+                        # final; the discriminator keys on clip LENGTH, not energy. A
+                        # rejected hallucination falls back to the (post-processed)
+                        # streaming final, which the L1 echo-floor gate then drops.
+                        return agreement_guard(
+                            self._postprocess_final(raw_final),
+                            text,
+                            segment_sec=n / self.config.sample_rate,
+                        )
                 except Exception:  # noqa: BLE001 - fall back to the streaming final
                     log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
         return self._postprocess_final(raw_final)
@@ -1343,7 +1376,10 @@ class SherpaOnnxEngine(AudioEngine):
                         # Debounce: ignore triggers for a short window after a
                         # barge-in / reported storm so a flapping VAD gate (TTS
                         # echo with no AEC) collapses into a single interrupt.
-                        if now < self._barge_in_suppressed_until:
+                        if (
+                            now < self._barge_in_suppressed_until
+                            or self._in_post_speaking_refractory(now)
+                        ):
                             voiced_run = 0.0
                             rejected_run = 0.0
                         elif self._barge_in_fire_eligible(samples, mic_raw):
@@ -1457,7 +1493,17 @@ class SherpaOnnxEngine(AudioEngine):
                             # else this is the streaming final + post-processing.
                             final_text = self._final_transcribe(seg, raw_final)
                             log.info("asr final: %r (raw %r)", final_text, raw_final)
-                            if self._should_act_on_final(seg):
+                            if not self._final_above_floor(seg):
+                                # L1: at/near the device's learned echo/quiet floor --
+                                # the assistant's own residual echo or ambient noise
+                                # transcribed into words. Drop it (this is what breaks
+                                # the open-speaker echo-final self-interrupt cascade).
+                                log.info(
+                                    "dropping final %r -- at/near the learned echo/quiet "
+                                    "floor (echo/ambient, not speech)", final_text,
+                                )
+                                self._cb.on_metric("echo_floor_rejected_final")
+                            elif self._should_act_on_final(seg):
                                 self._cb.on_metric(SPEECH_END, at=speech_end_ts)
                                 self._cb.on_final(final_text)
                             else:
@@ -1778,6 +1824,7 @@ class SherpaOnnxEngine(AudioEngine):
                             time.sleep(0.01)
                         self._speaking.clear()
                         self._playback_level = 0.0  # nothing playing -> no echo ref
+                        self._last_speaking_end = time.monotonic()  # arm the L2 refractory
                         if self._echo_coherence is not None:
                             self._echo_coherence.reset()  # drop the stale reference
                         if self._dtd is not None:
@@ -2080,6 +2127,33 @@ class SherpaOnnxEngine(AudioEngine):
         self._barge_in_suppressed_until = (
             time.monotonic() + max(0.0, self.config.barge_in_suppress_sec)
         )
+
+    def _final_above_floor(self, samples) -> bool:
+        """L1 echo gate: True iff this completed final stands clearly above the
+        device's LEARNED echo/quiet floor -- i.e. it is real speech, not the
+        assistant's own residual echo or ambient noise the recognizer turned into
+        words. The reference is ``max(_ambient_rms, _playback_floor_rms)``: an
+        echo-borne final sits AT the playback residual-echo floor and an ambient-
+        noise final at the quiet floor, while real speech is many dB above BOTH.
+        Both floors are learned online per device/room, so the bar is RELATIVE (a
+        dB margin), never an absolute RMS. Fail OPEN until a floor is learned (cold
+        start) so the first real turn is never dropped; disabled when
+        ``final_floor_margin_db <= 0`` (the dataclass default)."""
+        margin = self.config.final_floor_margin_db
+        if margin <= 0.0:
+            return True
+        floor = max(self._ambient_rms, self._playback_floor_rms)
+        if floor <= 0.0:
+            return True
+        return loudness_admits(rms(samples), floor, margin_db=margin)
+
+    def _in_post_speaking_refractory(self, now: float) -> bool:
+        """L2: True while within ``barge_in_refractory_sec`` of the last
+        ``_speaking``->clear (a turn ended or a barge cancelled it). Used to
+        suppress a re-fired barge-in on the just-cancelled utterance's echo TAIL.
+        ``barge_in_refractory_sec <= 0`` disables it (the deadline is then never in
+        the future, since ``_last_speaking_end`` is a past stamp)."""
+        return now < self._last_speaking_end + self.config.barge_in_refractory_sec
 
     def _should_act_on_final(self, samples) -> bool:
         """Whether a completed ASR utterance should be delivered to the runtime.

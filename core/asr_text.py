@@ -57,3 +57,71 @@ def restore_casing(text: str, *, force: bool = False) -> str:
     cased = "".join(out)
     # The pronoun "I" (and its contractions) is always uppercase, anywhere.
     return _I_WORD.sub("I", cased)
+
+
+# Content-token extractor for the agreement guard: lowercase alphanumeric runs,
+# keeping only tokens of length >= 2 so single-letter artifacts ("I", "1", "O")
+# collapse to nothing and can never spuriously "agree" with a real word.
+_CONTENT_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _content_tokens(text: str) -> set[str]:
+    """Normalized content tokens (lowercased, len>=2 alphanumeric runs).
+
+    A SenseVoice hallucination on a short echo clip ("I.", "1.", "O.") yields an
+    empty set under this filter, so it can never share a token with the streaming
+    final -- which is exactly how the short-clip agreement test rejects it."""
+    return {t for t in _CONTENT_TOKEN.findall(text.lower()) if len(t) >= 2}
+
+
+def agreement_guard(
+    streaming_final: str,
+    second_pass: str,
+    *,
+    segment_sec: float | None = None,
+    short_sec: float = 1.2,
+    short_words: int = 2,
+) -> str:
+    """Pick the final transcript, guarding against short-clip 2nd-pass hallucination.
+
+    The offline 2nd-pass recognizer (SenseVoice) exists to *correct* the streaming
+    final on genuinely garbled but real speech -- e.g. ``"Ario der" -> "are you
+    there"`` (a real, longer utterance the streaming pass mangled, with near-zero
+    token overlap). But on a SHORT clip that is really just open-speaker echo /
+    ambient noise it instead *invents* a plausible sentence from nothing -- the
+    pairs logged in ``logs/runs/run-20260608-181250``: ``"BEING" -> "I."``,
+    ``"THIRTEEN" -> "Whatt."``, ``"THE LOW IS THIS CORDOOR KING" -> "Hello, is
+    this code working?"``. Those echo-borne finals then reach the brain and
+    cascade into a self-interrupt runaway.
+
+    The discriminator keys on clip *length* (a text/duration risk, never energy),
+    not on overlap, so the legit long correction is preserved:
+
+    1. If either side is empty/blank, return the non-empty side.
+    2. Decide whether this is a short, hallucination-prone clip: by ``segment_sec``
+       when known (``< short_sec``), else by the streaming final's token count
+       (``<= short_words``).
+    3. If NOT short, trust the 2nd pass unconditionally (keeps ``"Ario der" ->
+       "are you there"`` even though the tokens don't overlap).
+    4. If short, accept the 2nd pass only when it AGREES with the streaming final
+       -- i.e. they share at least one normalized content token (lowercased,
+       len>=2 alphanumeric; single-letter artifacts like ``"I."`` collapse to the
+       empty set). On disagreement, return the streaming final raw: it is left
+       un-postprocessed because the L1/L2 energy/refractory gates then drop the
+       echo final anyway.
+
+    Pure, dependency-free, no I/O -- mirrors ``restore_casing`` so it runs on the
+    final path with no model or audio import."""
+    if not second_pass or not second_pass.strip():
+        return streaming_final
+    if not streaming_final or not streaming_final.strip():
+        return second_pass
+    if segment_sec is not None:
+        short = segment_sec < short_sec
+    else:
+        short = len(streaming_final.split()) <= short_words
+    if not short:
+        return second_pass
+    if _content_tokens(streaming_final) & _content_tokens(second_pass):
+        return second_pass
+    return streaming_final

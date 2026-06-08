@@ -242,6 +242,131 @@ def test_attach_llm_capabilities_assistant_enriches_context_directly():
     assert seen.get("sensitivity") == "public"
 
 
+def test_escalated_turn_publishes_context_and_resets_after():
+    """An ESCALATED (ReAct planner) turn must classify sensitivity and publish
+    a non-empty capability_context to the invoked planner capability, AND the
+    ContextVar must be reset to its default after the call returns -- no leak
+    into the next, unrelated turn (the §9.7 cross-turn risk, backlog P2 (d)).
+
+    Before the fix the escalation early-return ran BEFORE _enrich_context and
+    BEFORE capability_context.set(), so the planner's nested LLM calls saw an
+    empty context and fell back to the default cloud chain."""
+    from always_on_agent.capabilities import CapabilityRegistry
+
+    seen: dict = {}
+
+    def _planner(query: str, context: dict) -> "CapabilityResult":  # type: ignore[name-defined]
+        from always_on_agent.capabilities import CapabilityResult
+
+        # Capture what the planner-layer sees published in the ContextVar.
+        seen.update(capability_context.get())
+        return CapabilityResult(True, "planned")
+
+    class _Spy:
+        def generate(self, prompt, *, system=None, images=None) -> str:
+            return "ok"
+
+        def stream(self, prompt, *, system=None, images=None):
+            yield "ok"
+
+    registry = CapabilityRegistry()
+    # Register the planner under the default agent capability name so the
+    # escalation branch can find + invoke it.
+    registry.register("agent.react", _planner)
+    attach_llm_capabilities(registry, _Spy(), escalate=lambda q, ctx: True)
+
+    # Sanity: clean ContextVar going in.
+    assert capability_context.get() == {}
+
+    result = registry.invoke(
+        "assistant.answer",
+        "research the latest news and compare options",
+        {"mode": Mode.ASSISTANT.value},
+    )
+    assert result.ok
+    assert result.text == "planned"  # the planner ran, not the one-shot reply
+
+    # The planner saw a non-empty, sensitivity-bearing context.
+    assert seen.get("sensitivity"), "escalated turn did not publish sensitivity"
+    assert seen.get("intent_kind") == IntentKind.ASSISTANT.value
+
+    # And the ContextVar is back to its default afterward -- no cross-turn leak.
+    assert capability_context.get() == {}, (
+        "capability_context leaked after the escalated planner returned"
+    )
+
+
+def test_escalated_turn_resets_context_on_failure_path():
+    """The reset must run via finally on EVERY exit path. A planner that raises
+    is turned into a failed CapabilityResult by registry.invoke (it swallows the
+    exception), so the escalated branch returns normally -- but the finally must
+    still have restored the ContextVar so a failed escalated turn can't leak its
+    tag into the next turn."""
+    from always_on_agent.capabilities import CapabilityRegistry
+
+    def _planner(query: str, context: dict):
+        # During this call the ContextVar must be set (published to the planner);
+        # raising here exercises the finally-reset on the failure path.
+        assert capability_context.get(), "context not published to the planner"
+        raise RuntimeError("planner boom")
+
+    class _Spy:
+        def generate(self, prompt, *, system=None, images=None) -> str:
+            return "ok"
+
+        def stream(self, prompt, *, system=None, images=None):
+            yield "ok"
+
+    registry = CapabilityRegistry()
+    registry.register("agent.react", _planner)
+    attach_llm_capabilities(registry, _Spy(), escalate=lambda q, ctx: True)
+
+    assert capability_context.get() == {}
+    result = registry.invoke(
+        "assistant.answer",
+        "compare the options",
+        {"mode": Mode.ASSISTANT.value},
+    )
+    # registry.invoke swallowed the planner's RuntimeError into a failed result.
+    assert not result.ok
+    assert "planner boom" in result.error
+    assert capability_context.get() == {}, (
+        "context leaked after the escalated planner raised"
+    )
+
+
+def test_research_synth_publishes_context_and_resets_after():
+    """research.local streams through the same SensitivityRouterLLM, so it must
+    also classify + publish sensitivity and reset the ContextVar afterward."""
+    from always_on_agent.capabilities import CapabilityRegistry
+
+    seen: dict = {}
+
+    class _Spy:
+        def generate(self, prompt, *, system=None, images=None) -> str:
+            seen.update(capability_context.get())
+            return "ok"
+
+        def stream(self, prompt, *, system=None, images=None):
+            seen.update(capability_context.get())
+            yield "ok"
+
+    registry = CapabilityRegistry()
+    attach_llm_capabilities(registry, _Spy())
+
+    assert capability_context.get() == {}
+    result = registry.invoke(
+        "research.local",
+        "what is the weather in Paris",
+        {"mode": Mode.RESEARCH.value},
+    )
+    assert result.ok
+    assert seen.get("sensitivity"), "research.local did not publish sensitivity"
+    assert capability_context.get() == {}, (
+        "capability_context leaked after research.local returned"
+    )
+
+
 def test_attach_llm_capabilities_preserves_explicit_intent_kind():
     """If the caller already set intent_kind, the enricher must NOT
     overwrite it (the brain's task layer is the source of truth)."""

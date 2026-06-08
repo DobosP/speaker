@@ -10,6 +10,8 @@ import threading
 import time
 from typing import Iterator
 
+import logging
+
 from core.llm import HedgeLLM, SensitivityRouterLLM, capability_context
 from core.routing import ChainSelector
 
@@ -148,7 +150,7 @@ def test_chain_normalizes_none_cloud_to_empty_list():
 
 def _budget(seconds: float) -> dict:
     """Class-constant overrides that shrink the wall-clock budget for a fast
-    test (the production floor is 30s). Applied per-instance."""
+    test (the production floor is 10s). Applied per-instance."""
     return {
         "WINNER_SELECT_BUDGET_FLOOR": seconds,
         "WINNER_SELECT_TTFT_BUDGET_MULT": 0,  # budget := the floor alone
@@ -162,7 +164,7 @@ def test_hung_local_pre_first_token_is_reaped_within_wall_clock_budget():
     hung_local = HangingLLM()
     cloud = FakeStreamLLM([], error="cloud also down")  # nothing usable
     h = HedgeLLM(local=hung_local, cloud=[cloud], strategy="hedge", hedge_delay_ms=0)
-    # Shrink the budget so the test is fast (production floor is 30s).
+    # Shrink the budget so the test is fast (production floor is 10s).
     h.WINNER_SELECT_BUDGET_FLOOR = 0.3
     h.WINNER_SELECT_TTFT_BUDGET_MULT = 0
     t0 = time.monotonic()
@@ -171,7 +173,7 @@ def test_hung_local_pre_first_token_is_reaped_within_wall_clock_budget():
     # No token produced; ended cleanly (empty), not wedged.
     assert out == ""
     assert hung_local.started is True
-    # Reaped within a small multiple of the budget, never the 30s default.
+    # Reaped within a small multiple of the budget, never the 10s default.
     assert elapsed < 2.0, f"hung pre-first-token wedged the turn for {elapsed:.2f}s"
     hung_local.released.set()  # let the daemon worker exit promptly
 
@@ -193,7 +195,7 @@ def test_winner_select_budget_is_finite_and_scales_with_chain_length():
     """The budget is always bounded (never inf) and grows with the number of
     sources so a healthy fallback chain that retires each cloud at its own
     ttft_deadline is never tripped."""
-    # ttft_deadline large enough that the scaling term clears the 30s floor.
+    # ttft_deadline large enough that the scaling term clears the 10s floor.
     one = HedgeLLM(local=FakeStreamLLM(["x"]), cloud=[FakeStreamLLM(["c"])],
                    ttft_deadline_ms=10000)
     many = HedgeLLM(
@@ -205,6 +207,41 @@ def test_winner_select_budget_is_finite_and_scales_with_chain_length():
     b3 = many._winner_select_budget()
     assert b1 != float("inf") and b3 != float("inf")
     assert b3 > b1  # more sources -> more pre-first-token headroom
+
+
+# --- worker-leak observability (item a) ------------------------------------
+
+
+def test_shutdown_warns_when_a_worker_survives_the_join_budget(caplog):
+    """A loser that cannot be reaped within WORKER_JOIN_TIMEOUT (here a hung
+    pre-first-token native-style call that ignores both the stop event and
+    generator close) must surface a WARNING naming the survivor count, so the
+    thread/socket leak is visible in the run bundle instead of silent.
+
+    Deterministic: a small local first-token delay lets the hedge KICK the cloud
+    worker (hedge launches the cloud on the first per-iteration timeout, so the
+    cloud must actually start to be a survivor -- an instant local would win
+    before the cloud is ever launched). The HangingLLM cloud then blocks in
+    stream() regardless of stop/close; with the join budget pinned to 0 the join
+    returns immediately with that worker still alive -> WARNING fires. Local still
+    wins (the cloud never yields) so the turn completes normally."""
+    local = FakeStreamLLM(["L"], first_token_delay=0.1)  # wins, but AFTER the cloud launches
+    hung_cloud = HangingLLM()  # never yields, never reaps within the budget
+    h = HedgeLLM(local=local, cloud=[hung_cloud], strategy="hedge", hedge_delay_ms=0)
+    # Pin the join budget to 0 so the survivor is detected without a real wait;
+    # we are exercising the observability, not the reap latency itself.
+    h.WORKER_JOIN_TIMEOUT = 0.0
+    with caplog.at_level(logging.WARNING, logger="speaker.llm.hedge"):
+        out = "".join(h.stream("q"))
+    assert out == "L"  # turn completed normally despite the leaked loser
+    warnings = [
+        r for r in caplog.records
+        if r.name == "speaker.llm.hedge" and r.levelno == logging.WARNING
+    ]
+    assert warnings, "expected a WARNING when a worker outlives the join budget"
+    assert "still alive" in warnings[0].getMessage()
+    # Release the hung daemon worker so it exits and the test process stays clean.
+    hung_cloud.released.set()
 
 
 # --- per-call hedge_delay_ms override (PINNED CONTRACT) --------------------

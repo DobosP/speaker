@@ -147,7 +147,7 @@
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "desktop_gpu_4090": {
-      "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; both gates ON (fast tier has plenty of headroom). Specsim quick TTFA 0.96s. Cloud chains off by default -- local 12b is fast enough; enable in config.local.json for paragraph-length research-mode answers.",
+      "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; input_gate + cleanup + the unified capability_router all ON (fast tier has plenty of headroom). The capability_router mirrors base 'desktop' (was missing here, so the most-capable profile had LESS routing intelligence than the weaker base): action classification CONTROL/SIMPLE/RESEARCH/ACT drives tier+escalate, with fast-LLM disambiguation only on LOW-confidence long turns (set llm_assist=false to drop that extra call if latency matters). Specsim quick TTFA 0.96s. Cloud chains off by default -- local 12b is fast enough; enable in config.local.json for paragraph-length research-mode answers.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:12b",
@@ -165,7 +165,8 @@
         "tts_num_threads": 2
       },
       "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
-      "cleanup": {"enabled": true, "max_context": 3}
+      "cleanup": {"enabled": true, "max_context": 3},
+      "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "macbook_m_series": {
       "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. Sensitivity-routed cloud chains ENABLED (hedge strategy): private turns -> Cerebras+Groq (US); code turns -> Cerebras Coder+Kimi; public turns -> DeepSeek-Flash (CN, cheap). Provide the four API keys via env to activate; missing keys disable that chain individually.",

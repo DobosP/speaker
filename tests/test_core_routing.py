@@ -343,6 +343,33 @@ def test_order_presets_all_unannotated_preserves_chain_order():
     ]
 
 
+def test_order_presets_cn_sorts_after_us_regardless_of_speed():
+    # host_rank is the OUTERMOST key: cost/latency optimizes WITHIN a jurisdiction
+    # tier, never across it -- a faster, cheaper CN preset still races LAST so it
+    # can't float ahead of a US preset the user ordered first (§9.7 / PRC opt-in).
+    providers = {
+        "us_slow": {"_pricing_usd_per_mtok": {"in": 0.60, "out": 1.20, "ttft_ms": 500, "host": "US"}},
+        "cn_fast": {"_pricing_usd_per_mtok": {"in": 0.10, "out": 0.20, "ttft_ms": 80, "host": "CN"}},
+    }
+    assert order_presets_by_cost(["cn_fast", "us_slow"], providers) == ["us_slow", "cn_fast"]
+
+
+def test_order_presets_us_no_ttft_still_outranks_cn():
+    # The shipped-public-chain bug: a US aggregator with cost but NO ttft_ms
+    # (OpenRouter) must NOT sink below a CN provider. host_rank lifts every
+    # US/unknown preset above all CN ones; within US, the ttft-annotated cerebras
+    # races first and the no-ttft openrouter follows -- but both beat CN deepseek.
+    providers = {
+        # host can be top-level (openrouter) OR inside the pricing block (others).
+        "openrouter": {"host": "US", "_pricing_usd_per_mtok": {"in": 0.15, "out": 0.60, "host": "US"}},
+        "deepseek": {"_pricing_usd_per_mtok": {"in": 0.14, "out": 0.28, "ttft_ms": 400, "host": "CN"}},
+        "cerebras": {"_pricing_usd_per_mtok": {"in": 0.60, "out": 1.20, "ttft_ms": 80, "host": "US"}},
+    }
+    assert order_presets_by_cost(
+        ["openrouter", "deepseek", "cerebras"], providers
+    ) == ["cerebras", "openrouter", "deepseek"]
+
+
 # --- cost_order flag wiring in _wrap_cloud (smart-routing-5) -----------------
 #
 # The flag-gated reorder lands in the multi-provider HedgeLLM chain. Models are

@@ -383,21 +383,43 @@ def build_chain_selector(config: Optional[Mapping[str, object]]) -> ChainSelecto
     return ChainSelector(mapping, default_chain=default)
 
 
-def _preset_cost_key(preset: object) -> tuple[float, float, float]:
-    """Sort key for a ``cloud_providers`` preset: (ttft_ms, in_cost, out_cost).
+def _preset_cost_key(preset: object) -> tuple[float, float, float, float]:
+    """Sort key for a ``cloud_providers`` preset:
+    ``(host_rank, ttft_ms, in_cost, out_cost)``.
 
-    Reads the documentation-only ``_pricing_usd_per_mtok`` metadata already in
-    config (``ttft_ms`` + ``in``/``out`` $/Mtok). Any preset missing a field
-    sorts *last* on that field (``+inf``) so well-annotated, cheaper/faster
-    presets float to the front while unannotated ones keep their relative
-    place behind them rather than jumping ahead on a phantom zero cost."""
-    pricing = preset.get("_pricing_usd_per_mtok") if isinstance(preset, Mapping) else None
+    ``host_rank`` is the OUTERMOST dimension so cost/latency ordering stays
+    WITHIN a jurisdiction tier and never reorders ACROSS it: a PRC-hosted
+    (``host == "CN"``) preset always sorts AFTER every US/unknown-hosted one,
+    even when it is cheaper or faster. This keeps the §9.7 / PRC-opt-in intent
+    (prefer US jurisdiction) intact under cost ordering -- the bug it fixes is a
+    cheap CN provider floating ahead of a US provider the user ordered first.
+    The host tag is read from ``preset['host']`` or the pricing block's ``host``
+    (the two forms ``_preset_host`` accepts), so both annotated shapes are tiered.
+
+    The remaining dimensions read the documentation-only
+    ``_pricing_usd_per_mtok`` metadata (``ttft_ms`` + ``in``/``out`` $/Mtok):
+    lower ttft first, ties broken by input then output cost. Any preset missing a
+    field sorts *last* on that field (``+inf``) so well-annotated, faster presets
+    float to the front of their host group while unannotated ones keep their
+    relative place behind them. NB a cost-annotated preset with NO ``ttft_ms``
+    (an aggregator like OpenRouter) sorts after ttft-annotated peers in its host
+    group; add ``ttft_ms`` to refine its position -- but host_rank still keeps it
+    ahead of any CN preset (the reported sink-below-CN bug)."""
+    host = None
+    pricing = None
+    if isinstance(preset, Mapping):
+        host = preset.get("host")
+        pricing = preset.get("_pricing_usd_per_mtok")
+        if not host and isinstance(pricing, Mapping):
+            host = pricing.get("host")
+    host_rank = 1.0 if str(host or "").upper() == "CN" else 0.0
     if not isinstance(pricing, Mapping):
-        return (float("inf"), float("inf"), float("inf"))
+        return (host_rank, float("inf"), float("inf"), float("inf"))
     ttft = _as_float(pricing.get("ttft_ms"))
     cost_in = _as_float(pricing.get("in"))
     cost_out = _as_float(pricing.get("out"))
     return (
+        host_rank,
         ttft if ttft is not None else float("inf"),
         cost_in if cost_in is not None else float("inf"),
         cost_out if cost_out is not None else float("inf"),
@@ -408,13 +430,15 @@ def order_presets_by_cost(
     preset_names: object,
     providers: Optional[Mapping[str, object]],
 ) -> list[str]:
-    """Stable-reorder a chain's preset names by ttft/cost metadata (smart-routing-5).
+    """Stable-reorder a chain's preset names by host/ttft/cost metadata (smart-routing-5).
 
     ADDITIVE + fail-safe: the chain's configured order is the floor. Presets are
-    stably sorted by ``(ttft_ms, in $/Mtok, out $/Mtok)`` read from each entry's
-    existing ``_pricing_usd_per_mtok`` block in ``providers`` (the same metadata
-    today documentation-only). A name with no metadata keeps its original
-    relative position (sorts last on each missing key). Anything malformed --
+    stably sorted by ``(host_rank, ttft_ms, in $/Mtok, out $/Mtok)`` (see
+    :func:`_preset_cost_key`): CN-hosted presets always sort after US/unknown
+    ones (cost optimizes WITHIN a jurisdiction, never across it), then by
+    ttft/cost from each entry's ``_pricing_usd_per_mtok`` block in ``providers``
+    (the same metadata today documentation-only). A name with no metadata keeps
+    its original relative position (sorts last on each missing key). Anything malformed --
     non-sequence input, missing ``providers``, an exploding comparison -- returns
     the input order unchanged, so a bad signal can never reshuffle (let alone
     empty) a chain. Names absent from ``providers`` are preserved in place too.

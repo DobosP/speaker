@@ -9,22 +9,32 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > (`python -m tools.session_bootstrap`) reads the OPEN P0 items below.
 
 ## P0 — correctness / blocker
-- [ ] **★ WINDOWS-side self-interrupt (live 2026-06-08e, run-20260608-181250).** First live
-      `--engine sherpa` run on the WINDOWS side self-interrupts on its own open-speaker echo:
-      every `barge-in detected` fired at avg_rms ~0.005-0.018 (echo, not a ~0.2-0.4 voice),
-      and each cancelled tail's echo became a SenseVoice-hallucinated short final that fired a
-      new response -> a runaway "two outputs one after another" cascade. NOT a regression from
-      the think/routing/polish work (those don't touch AEC/barge/ASR). Cause: the Windows
-      `config.local.json` still has the pre-FIFO `aec_ref_delay_ms=19` + `asr_final_backend=
-      sense_voice`; barge-in was only ever calibrated on the LINUX side (validated ref_delay=0).
-      FIX (needs the mic): `python -m tools.echo_probe` (echo-only) -> pick the ERLE-max
-      `aec_ref_delay_ms` for THIS box (don't assume 0), raise `dtd_k` if echo-only D approaches
-      K=5.0; target self_interruptions=0; then disable/guard SenseVoice (`asr_final_backend=""`
-      or the core/asr_text.py agreement-guard) to break the cascade. Replay
-      run-20260608-181250.wav through echo_probe to iterate without re-talking. FULL ANALYSIS:
-      docs/session_2026-06-08_live_session_self_interrupt.md. NB the think=false latency fix
-      WORKED live (story first-sentence ~3.4s) and prosody endpointing is active (re-assess
-      turn-taking after the self-interrupt is fixed).
+- [~] **★ WINDOWS-side self-interrupt (live 2026-06-08e, run-20260608-181250) —
+      CASCADE HALF FIXED 2026-06-08f.** The runaway "two outputs back-to-back" is now
+      broken on ANY device (merged `fix/echo-final-cascade` → main, 1416 green;
+      handoff `docs/session_2026-06-08_echo_final_cascade_fix.md`). Three
+      device-adaptive, additive, off-switchable layers — NO fixed magic-number
+      thresholds (every bar RELATIVE to a LEARNED per-device floor): **L1**
+      `_final_above_floor` drops a final at/near `max(_ambient_rms, _playback_floor_rms)`
+      (a dB-above-LEARNED-floor margin via `loudness_admits`, never an absolute RMS),
+      wired at the final-dispatch seam; fails OPEN until a floor is learned, so it only
+      bites on AEC/open-speaker configs. **L2** `_in_post_speaking_refractory` (per-reply,
+      stamped at both `_speaking→clear` sites) suppresses a re-fired barge on the
+      cancelled echo tail; on the barge debounce ONLY, never the final seam, so a real
+      barged-in request is never dropped. **L3** `agreement_guard` (core/asr_text.py)
+      demotes short-clip SenseVoice hallucinations (`BEING`→`I.`) back to the streaming
+      final. +30 tests; off-switch parity (`final_floor_margin_db=0`,
+      `barge_in_refractory_sec=0`). **STILL OPEN — the FIRST self-interrupt itself
+      (needs the mic):** the Windows AEC mis-calibration (stale pre-FIFO
+      `aec_ref_delay_ms`). Run `python -m tools.echo_probe` (echo-only) on the Windows
+      box → pick the ERLE-max `aec_ref_delay_ms` (don't assume 0), raise `dtd_k` if
+      echo-only D approaches K=5.0; target self_interruptions=0. Replay
+      run-20260608-181250.wav through echo_probe to iterate without re-talking. The
+      cascade fix makes this miscalibration NON-catastrophic until it's done. Then
+      live-tune `final_floor_margin_db` (6.0) / `barge_in_refractory_sec` (0.5) — watch
+      the `echo_floor_rejected_final` metric in run bundles. Original analysis:
+      docs/session_2026-06-08_live_session_self_interrupt.md (think=false latency +
+      prosody endpointing both validated live; re-assess turn-taking after the mic fix).
 
 ## P1 — voice / audio (migrated from session_2026-06-01 handoff)
 - [x] **★ HARD REQUIREMENT (owner): open-speaker barge-in WITHOUT headphones —

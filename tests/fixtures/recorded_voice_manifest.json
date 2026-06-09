@@ -1,0 +1,76 @@
+{
+  "_README": "Single source of truth for the recorded-voice replay harness. Privacy-safe: run/start/end/text only -- NO audio lives here. Consumer contract (all three code pieces read coordinates ONLY from this file, never inline): json.load(open('tests/fixtures/recorded_voice_manifest.json')) -> {clip_dir, clips:[...], barge:[...]}. clip_dir is the LOCAL gitignored dir where the extraction tool writes clips. Each clips[] entry = {id, run, start_sec, end_sec, expected_text, rms_peak}; each barge[] entry = {id, run, start_sec, end_sec}. Filename convention every piece agrees on: the extractor writes <clip_dir>/<id>.wav (16 kHz mono 16-bit PCM) plus a sibling <clip_dir>/<id>.json. The id is the clip filename stem. Timestamps are seconds into logs/runs/<run>.wav on the WAV TIMELINE (NOT summary.json at_sec, which is on the runtime clock); the extractor adds 100 ms pre/post padding. Consumers self-skip when a source WAV (extraction) or an extracted clip (replay/tests) is absent -- so a clean checkout with no models/audio stays CI-green. Windows below were VERIFIED by replaying each through the real sherpa recognizer: the recorded final reproduces expected_text at the listed word-overlap (all >= 0.6).",
+  "clip_dir": "logs/fixture_audio",
+  "clips": [
+    {
+      "id": "utterance-00",
+      "run": "run-20260602-215044",
+      "start_sec": 16.7,
+      "end_sec": 18.8,
+      "expected_text": "Can you tell me a story",
+      "rms_peak": 0.217,
+      "note": "Clean request. Verified real-ASR final 'CAN YOU TELL ME A STORY' (overlap 1.0)."
+    },
+    {
+      "id": "utterance-01",
+      "run": "run-20260602-235431",
+      "start_sec": 29.8,
+      "end_sec": 32.1,
+      "expected_text": "Tell me a long story",
+      "rms_peak": 0.236,
+      "note": "Clean request. Verified real-ASR final 'TELL ME A LONG STORY' (overlap 1.0)."
+    },
+    {
+      "id": "utterance-02",
+      "run": "run-20260602-235431",
+      "start_sec": 36.6,
+      "end_sec": 38.5,
+      "expected_text": "Stop speaking",
+      "rms_peak": 0.291,
+      "note": "Clean command. Verified real-ASR final 'STOP SPEAKING' (overlap 1.0)."
+    },
+    {
+      "id": "utterance-03",
+      "run": "run-20260602-233813",
+      "start_sec": 2.3,
+      "end_sec": 3.8,
+      "expected_text": "Hey hey",
+      "rms_peak": 0.149,
+      "note": "Greeting. Verified real-ASR final 'HEY HEY' (overlap 1.0)."
+    },
+    {
+      "id": "utterance-04",
+      "run": "run-20260602-233813",
+      "start_sec": 20.1,
+      "end_sec": 22.2,
+      "expected_text": "are you listening to me",
+      "rms_peak": 0.147,
+      "note": "Question. Verified real-ASR final 'OUR LISTENING TO ME' (overlap 0.6 -- 'are'->'our')."
+    },
+    {
+      "id": "utterance-05",
+      "run": "run-20260602-231913",
+      "start_sec": 26.8,
+      "end_sec": 28.6,
+      "expected_text": "Tell me a long story",
+      "rms_peak": 0.329,
+      "note": "Second long-story sample, different session. Verified real-ASR 'TELL ME A WRONG STORY' (overlap 0.8)."
+    }
+  ],
+  "barge": [
+    {
+      "id": "barge-00",
+      "run": "run-20260602-235431",
+      "start_sec": 39.3,
+      "end_sec": 41.0,
+      "note": "Loud sustained talk-over ('can you stop / stop', RMS~0.45) for the SPEAKER_LIVE-gated barge-overlap test -- the user voice that should cut the assistant."
+    },
+    {
+      "id": "barge-01",
+      "run": "run-20260602-231913",
+      "start_sec": 31.5,
+      "end_sec": 37.5,
+      "note": "Sustained talk-over sequence ('stop... hey stop', RMS~0.33) -- alternate barge clip."
+    }
+  ]
+}

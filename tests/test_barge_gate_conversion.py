@@ -32,19 +32,14 @@ audio fixtures. ``load_trace_frames()`` reads the committed JSON parse.
 """
 from __future__ import annotations
 
-import pytest
-
 from tests.barge_fixtures import (
     LIVE_FIRE_INDICES,
-    LIVE_INTEGRATOR_PARAMS,
+    build_live_sustain,
     live_engine_with_dtd,
     load_trace_frames,
     make_block,
     talkover_frames,
 )
-
-# All four cases pin the SAME recorded run; one reason string for the xfail.
-_RUN_REASON = "run run-20260609-203236: barge does not cut on normal-volume talk-over"
 
 
 def _drive_looks_like_user(engine, frame):
@@ -138,23 +133,21 @@ def test_fire_eligible_blocked_by_latch_then_real_barge_starves():
     )
 
 
-@pytest.mark.xfail(strict=True, reason=_RUN_REASON)
 def test_real_barge_must_convert_to_eligible_within_one_turn():
-    """REQUIREMENT at the gate seam: a fresh-turn normal-volume talk-over must
-    convert eligible -> cut.
+    """REQUIREMENT at the gate seam: a fresh-turn normal-volume talk-over converts
+    eligible -> cut.
 
-    Drives the REAL ``_barge_in_fire_eligible`` over the turn-2 normal-volume
-    burst with a FRESH latch (a new speaking run), then runs the live capture-loop
-    integrator (block_sec=0.1, min_speech=0.3, decay=0.5 -- the mirrored
-    sherpa.py:1404-1426 accumulator) on top. The requirement is that eligibility
-    stays True long enough for ``voiced_run`` to reach
-    ``barge_in_min_speech_sec`` (0.3s) and produce a cut.
+    Drives the REAL ``_barge_in_fire_eligible`` (sherpa.py:2120) over the turn-2
+    normal-volume burst with a FRESH latch (a new speaking run), feeding each
+    block's eligibility into the REAL ``BargeSustain`` -- the SAME windowed sustain
+    the capture loop runs (built here via ``build_live_sustain()``). The
+    requirement: enough eligible blocks land within the window to produce a cut.
 
-    Fails today: the DTD fires intermittently on the normal-volume burst (idx 10,
-    11 fire; 12, 13 miss; 14 fires) and the 0.5 decay halves ``voiced_run`` on
-    every miss, so it never reaches 0.3s -- only the turn-3 shout breaks through.
-    strict=True so the integrator/latch/sustain fix flips this to FAIL: that is
-    the signal to remove the marker.
+    Before the fix the DTD fired intermittently on the normal-volume burst (idx
+    10, 11 fire; 12, 13 miss; 14 fires) and the leaky ``voiced_run *= 0.5``
+    accumulator never reached the threshold -- only the turn-3 shout broke through.
+    The windowed sustain now cuts on the 2nd eligible block; this guards that the
+    gate seam converts a real normal-volume talk-over into a cut.
     """
     frames = load_trace_frames()
     t2 = talkover_frames(frames)["turn2_normal"]  # idx 10..14, normal volume
@@ -165,28 +158,19 @@ def test_real_barge_must_convert_to_eligible_within_one_turn():
     # FRESH latch: a new speaking run, nothing fired yet.
     engine._barge_in_fired_this_run = False
 
-    p = LIVE_INTEGRATOR_PARAMS
-    block_sec = float(p["block_sec"])
-    min_speech_sec = float(p["min_speech_sec"])
-    decay = float(p["decay"])
-
-    voiced_run = 0.0
+    sustain = build_live_sustain()  # REAL core.engines._dtd.BargeSustain
     cut_produced = False
     for f in t2:
         engine._fake_coherence.last_incoherent_fraction = f.incoh
         # REAL eligibility seam (latch checked first, then VAD, then _looks_like_user).
         eligible = engine._barge_in_fire_eligible(make_block(f.resid), make_block(f.raw))
-        if eligible:
-            voiced_run += block_sec              # sherpa.py:1404
-            if voiced_run >= min_speech_sec:     # sherpa.py:1406
-                cut_produced = True              # -> on_barge_in (sherpa.py:1416)
-                break
-        else:
-            voiced_run *= decay                  # sherpa.py:1426 (leaky integrator)
+        if sustain.update(eligible):  # REAL BargeSustain windowed confirmation
+            cut_produced = True
+            break
 
     assert cut_produced, (
         "normal-volume talk-over must convert eligible->cut within the burst "
-        f"(voiced_run reached {voiced_run:.2f}s, needed {min_speech_sec}s)"
+        f"(sustain last_count={sustain.last_count}, need={sustain.need_frames})"
     )
 
 

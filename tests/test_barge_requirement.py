@@ -1,28 +1,28 @@
-"""Owner-requirement pins for open-speaker barge-in (CLAUDE.md HARD REQUIREMENT).
+"""Owner-requirement guards for open-speaker barge-in (CLAUDE.md HARD REQUIREMENT).
 
 These three tests encode what the owner demands and the recorded live failure
-``run-20260609-203236`` does NOT yet deliver: a NORMAL-volume talk-over on the
-bare ALC285 laptop speaker MUST cut the assistant's TTS promptly -- WITHOUT a
+``run-20260609-203236`` did NOT originally deliver: a NORMAL-volume talk-over on
+the bare ALC285 laptop speaker MUST cut the assistant's TTS promptly -- WITHOUT a
 shout and WITHOUT headphones. Live, the fused-z-score ``AdaptiveDTD`` *fired* on
 the turn-2 normal-volume talk-over (raw 0.0024-0.0068), but the downstream
 capture-loop integrator + one-per-run latch only converted a fire into an actual
 cut on the turn-3 SHOUT (raw=0.0704, ~10x normal). summary.json recorded turn-2
 ``barge_in_latency=null`` -- a missed barge.
 
-All three are ``@pytest.mark.xfail(strict=True)``: they fail TODAY (so they stay
-GREEN in CI as expected-fails), and the moment the integrator/latch/sustain fix
-makes a normal-volume talk-over cut within the latency bound they FLIP TO FAILURE
-(strict forbids xpass) -- the explicit signal to remove the marker.
+THE FIX (2026-06-09): the leaky ``voiced_run *= 0.5`` accumulator was replaced by
+``core.engines._dtd.BargeSustain`` -- a bounded windowed sustain that cuts when
+enough eligible blocks land within a short trailing window, so the intermittent
+DTD fires of a NORMAL-volume talk-over now convert to a cut (and the bounded
+window keeps sporadic echo from ever self-interrupting -- pinned in
+``test_barge_echo_must_not_fire.py``). These tests therefore now PASS, and stand
+as the regression guards for the requirement: if the integrator/latch is changed
+so a normal-volume talk-over stops cutting in time, they go red.
 
 Tier 0: pure replay of the recorded per-frame DTD trace through the REAL
-``AdaptiveDTD.decide`` (via ``barge_fixtures.run_frames``). No audio device, no
-model, no sound card. The seam under test -- ``decide()`` -- is the real code;
-only the ~6-line capture-loop accumulator is mirrored in the driver (see
-``barge_fixtures.run_frames`` / core/engines/sherpa.py:1404-1426).
+``AdaptiveDTD.decide`` + the REAL ``BargeSustain`` (via ``barge_fixtures.run_frames``).
+No audio device, no model, no sound card.
 """
 from __future__ import annotations
-
-import pytest
 
 from tests.barge_fixtures import (
     build_live_dtd,
@@ -37,24 +37,19 @@ _LATENCY_BOUND_SEC = 0.5
 #: 0-based indices of the turn-2 NORMAL-volume talk-over burst.
 _TURN2_NORMAL_IDX = range(10, 15)  # idx 10..14
 
-_XFAIL_REASON = (
-    "run run-20260609-203236: barge does not cut on normal-volume talk-over"
-)
 
-
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 def test_normal_volume_talkover_must_produce_a_stop_within_latency_bound():
     """A normal-volume talk-over MUST produce a stop within the latency bound.
 
     Seed the live ``AdaptiveDTD`` on the preceding echo-floor frames (idx 0..9)
     so the control charts learn the same echo baseline they had live, then feed
     the turn-2 NORMAL-volume burst (idx 10..14, raw 0.0024-0.0068) through the
-    REAL detector + the live integrator.
+    REAL detector + the REAL ``BargeSustain``.
 
-    OWNER REQUIREMENT: a stop IS produced and it lands within ~0.5s. Fails today
-    -- the intermittent DTD fires + the ``voiced_run *= 0.5`` decay never let the
-    leaky integrator reach the 0.3s ``min_speech_sec`` threshold on the normal
-    burst; only a shout breaks through.
+    OWNER REQUIREMENT: a stop IS produced, it lands within the turn-2 burst, and
+    its latency *from the talk-over start* is within ~0.5s. Before the fix the
+    intermittent DTD fires never let the leaky ``voiced_run *= 0.5`` accumulator
+    reach the threshold; the windowed sustain now cuts on the 2nd eligible block.
     """
     frames = load_trace_frames()
     # Seed the chart baseline on the echo floor that preceded the talk-over.
@@ -69,23 +64,34 @@ def test_normal_volume_talkover_must_produce_a_stop_within_latency_bound():
         "normal-volume talk-over produced NO stop (barge_in_latency=null) -- it "
         "must cut without a shout"
     )
-    assert result.first_fire_latency_sec <= _LATENCY_BOUND_SEC, (
-        f"normal-volume talk-over cut too late: "
-        f"{result.first_fire_latency_sec:.3f}s > {_LATENCY_BOUND_SEC}s bound"
+    # The cut lands within the turn-2 normal-volume burst, not later.
+    assert result.first_fire_index in _TURN2_NORMAL_IDX, (
+        f"cut landed at idx {result.first_fire_index}, outside the turn-2 burst "
+        f"{list(_TURN2_NORMAL_IDX)}"
+    )
+    # Latency is measured from the talk-over START (idx 10), not the echo-seed
+    # start -- the seed frames only warm the chart, they are not the barge.
+    talkover_start_t = next(f.t_sec for f in frames if f.idx == 10)
+    latency = result.first_fire_t_sec - talkover_start_t
+    assert 0.0 <= latency <= _LATENCY_BOUND_SEC, (
+        f"normal-volume talk-over cut too late: {latency:.3f}s "
+        f"(bound {_LATENCY_BOUND_SEC}s)"
     )
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 def test_talkover_does_not_require_a_shout_to_fire():
     """The cut must NOT wait for the 10x shout escalation to land.
 
     Feed only the turn-3 PRE-escalation frames (idx 185..189, raw <= 0.0144) --
-    the normal-loudness portion BEFORE raw jumps ~10x to 0.0704 at idx 196. The
-    cut must occur within these pre-shout frames.
+    the normal-loudness portion BEFORE raw jumps ~10x to 0.0704 at idx 196 -- to a
+    detector already warmed on the preceding real audio (a fresh ``AdaptiveDTD``
+    needs ``warmup_frames`` blocks before it can fire at all; live it was long
+    warmed by idx 185). The cut must occur within these pre-shout frames.
 
-    OWNER REQUIREMENT (CLAUDE.md HARD REQUIREMENT, 'no scream' half): normal
-    talk-over must cut; headphones/shout are NOT an acceptable fix. Fails today
-    -- live, the cut only landed at idx 196 (raw 0.0704, a 10x shout).
+    OWNER REQUIREMENT (CLAUDE.md HARD REQUIREMENT, 'no scream' half): a normal
+    talk-over must cut; headphones/shout are NOT an acceptable fix. Live, the cut
+    only landed at idx 196 (raw 0.0704, a 10x shout); the windowed sustain now
+    cuts on the 2 pre-shout eligible blocks (idx 188, 189).
     """
     frames = load_trace_frames()
     pre_shout = [f for f in frames if 185 <= f.idx <= 189]
@@ -94,7 +100,11 @@ def test_talkover_does_not_require_a_shout_to_fire():
         "pre-shout window unexpectedly contains a shout-level frame"
     )
 
-    result = run_frames(pre_shout, build_live_dtd(), reset_latch_per_turn=False)
+    # Warm the detector on the real frames preceding the burst (the chart state it
+    # had live), then replay ONLY the pre-shout burst through the warmed detector.
+    dtd = build_live_dtd()
+    run_frames([f for f in frames if f.idx < 185], dtd, reset_latch_per_turn=True)
+    result = run_frames(pre_shout, dtd, reset_latch_per_turn=False)
 
     assert result.first_fire_index is not None, (
         "no cut on the pre-escalation (normal-loudness) talk-over frames -- the "
@@ -106,28 +116,27 @@ def test_talkover_does_not_require_a_shout_to_fire():
     )
 
 
-@pytest.mark.xfail(strict=True, reason=_XFAIL_REASON)
 def test_recorded_barge_latency_bound_holds_on_first_real_talkover():
-    """End-to-end: the first real talk-over in the recorded run must cut in time.
+    """End-to-end: the first real talk-over in the recorded run cuts in time.
 
     Replay the WHOLE recorded sequence with the latch re-armed per turn
     (``reset_latch_per_turn=True`` models the silent->speaking re-arm). The FIRST
     human talk-over is turn-2 (the normal-volume burst at idx 10..14, ~20:34:22).
-    That first real talk-over must produce a cut whose latency from burst-start
-    is within the owner bound.
+    That first real talk-over must produce a cut whose latency from burst-start is
+    within the owner bound.
 
-    Today the first real talk-over (turn-2) yields ``barge_in_latency=null`` -- no
-    fire converts there; the only cut lands on the turn-3 shout (idx 196). strict
-    xfail flips to FAIL once the chain turns the first normal talk-over into a
-    timely stop.
+    Before the fix the first real talk-over (turn-2) yielded
+    ``barge_in_latency=null`` -- no fire converted there and the only cut landed on
+    the turn-3 shout (idx 196). With the windowed sustain the cut now lands inside
+    turn-2.
     """
     frames = load_trace_frames()
     result = run_frames(frames, build_live_dtd(), reset_latch_per_turn=True)
 
     # The first real talk-over is turn-2 (idx 10..14). Find the first cut there.
     turn2_fire = next(
-        (idx, t) for idx, t in result.fires if idx in _TURN2_NORMAL_IDX
-    ) if any(idx in _TURN2_NORMAL_IDX for idx, _ in result.fires) else None
+        ((idx, t) for idx, t in result.fires if idx in _TURN2_NORMAL_IDX), None
+    )
 
     assert turn2_fire is not None, (
         f"first real talk-over (turn-2, idx 10..14) produced no cut; all cuts "

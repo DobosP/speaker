@@ -1,0 +1,1043 @@
+00:38:00.976 INFO  speaker | run 20260610-003800 started (debug=True) -> logs/runs/run-20260610-003800.txt
+00:38:01.043 INFO  speaker.sysinfo | system baseline: cpu=0.0% ram=31870.9MB(98.0%) proc_rss=20.4MB gpu=24.0% gpu_mem=74.0/16376.0MB
+00:38:01.473 INFO  speaker.sysinfo | system mark after_build: cpu=29.1% ram=31877.6MB(98.0%) proc_rss=93.0MB gpu=18.0% gpu_mem=74.0/16376.0MB
+00:38:01.473 INFO  speaker.runtime | capabilities (9): agent.react, assistant.answer, command.stage, dictation.clean, meeting.note, research.local, research.scope, search.local, web.search
+00:38:03.206 INFO  speaker.sherpa | coherence barge-in ACTIVE (scale-invariant, no enrollment; band (300.0, 3400.0) Hz, margin delta 0.08, confirm 2 frames)
+00:38:04.097 INFO  speaker.sherpa | AEC active: DTLN-aec deep ONNX tier (/home/dobo/work/speaker/pretrained_models/sherpa/aec/dtln_aec_stage1.onnx)
+00:38:04.097 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=0ms)
+00:38:04.097 INFO  speaker.sherpa | adaptive barge-in (fused z-score DTD) ACTIVE: K=5.0 weights=(0.2,1.0,0.0) confirm=1 -- no fixed margin, self-calibrating per device
+00:38:04.099 INFO  speaker.sherpa | speaker-ID gate enrolled (threshold=0.50, input gating=False)
+00:38:04.099 INFO  speaker.sherpa | input device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+00:38:04.099 INFO  speaker.sherpa | output device: HDA Intel PCH: ALC285 Analog (hw:1,0)
+00:38:04.099 INFO  speaker.sherpa | models: recognizer=True vad=True tts=True kws=False
+00:38:04.168 INFO  speaker.runtime | capture state: open (opened at 44100 Hz)
+00:38:04.173 INFO  speaker.sherpa | recording session audio -> logs/runs/run-20260610-003800.wav
+00:38:04.175 INFO  speaker.sherpa | capture loop started (capture_sr=44100 -> asr_sr=16000)
+00:38:06.273 DEBUG speaker.sherpa | capture heartbeat: blocks=14 avg_rms=0.0533 partials=0 finals=0 speaking=False
+00:38:08.477 DEBUG speaker.sherpa | capture heartbeat: blocks=29 avg_rms=0.0043 partials=0 finals=0 speaking=False
+00:38:10.684 DEBUG speaker.sherpa | capture heartbeat: blocks=41 avg_rms=0.0042 partials=0 finals=0 speaking=False
+00:38:11.063 DEBUG speaker.sysinfo | system sample: cpu=11.3% ram=30819.9MB(94.9%) proc_rss=689.6MB gpu=22.0% gpu_mem=3998.0/16376.0MB
+00:38:11.144 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: hi
+00:38:11.144 INFO  speaker.llm.ollama | ollama gemma3:4b: 6.97s ttft=- out=38ch tokens=- | 'hi'
+00:38:12.788 DEBUG speaker.sherpa | capture heartbeat: blocks=53 avg_rms=0.0042 partials=0 finals=0 speaking=False
+00:38:14.995 DEBUG speaker.sherpa | capture heartbeat: blocks=64 avg_rms=0.0042 partials=0 finals=0 speaking=False
+00:38:17.200 DEBUG speaker.sherpa | capture heartbeat: blocks=78 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:38:19.203 DEBUG speaker.sherpa | capture heartbeat: blocks=93 avg_rms=0.0085 partials=0 finals=0 speaking=False
+00:38:20.589 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: hi
+00:38:20.589 INFO  speaker.llm.ollama | ollama gemma4:12b: 9.45s ttft=- out=32ch tokens=- | 'hi'
+00:38:20.995 INFO  speaker.sherpa | sherpa TTS warm-up complete
+00:38:21.101 DEBUG speaker.sysinfo | system sample: cpu=12.3% ram=27075.9MB(83.8%) proc_rss=557.2MB gpu=2.0% gpu_mem=12329.0/16376.0MB
+00:38:21.207 DEBUG speaker.sherpa | capture heartbeat: blocks=106 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:38:21.339 INFO  speaker.runtime | startup pre-warm complete (2 model(s))
+00:38:23.209 DEBUG speaker.sherpa | capture heartbeat: blocks=124 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:38:25.211 DEBUG speaker.sherpa | capture heartbeat: blocks=139 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:38:27.214 DEBUG speaker.sherpa | capture heartbeat: blocks=156 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:38:29.217 DEBUG speaker.sherpa | capture heartbeat: blocks=170 avg_rms=0.0070 partials=0 finals=0 speaking=False
+00:38:31.121 DEBUG speaker.sysinfo | system sample: cpu=11.2% ram=27869.3MB(86.2%) proc_rss=555.2MB gpu=2.0% gpu_mem=12329.0/16376.0MB
+00:38:31.219 DEBUG speaker.sherpa | capture heartbeat: blocks=185 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:38:33.323 DEBUG speaker.sherpa | capture heartbeat: blocks=201 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:38:35.428 DEBUG speaker.sherpa | capture heartbeat: blocks=214 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:38:37.431 DEBUG speaker.sherpa | capture heartbeat: blocks=228 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:38:39.438 DEBUG speaker.sherpa | capture heartbeat: blocks=238 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:38:41.140 DEBUG speaker.sysinfo | system sample: cpu=10.5% ram=28846.5MB(89.1%) proc_rss=555.2MB gpu=19.0% gpu_mem=12329.0/16376.0MB
+00:38:41.642 DEBUG speaker.sherpa | capture heartbeat: blocks=252 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:38:43.847 DEBUG speaker.sherpa | capture heartbeat: blocks=266 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:38:45.851 DEBUG speaker.sherpa | capture heartbeat: blocks=280 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:38:47.956 DEBUG speaker.sherpa | capture heartbeat: blocks=293 avg_rms=0.0078 partials=0 finals=0 speaking=False
+00:38:49.960 DEBUG speaker.sherpa | capture heartbeat: blocks=304 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:38:51.163 DEBUG speaker.sysinfo | system sample: cpu=10.4% ram=30441.2MB(93.9%) proc_rss=555.2MB gpu=18.0% gpu_mem=12329.0/16376.0MB
+00:38:52.064 DEBUG speaker.sherpa | capture heartbeat: blocks=319 avg_rms=0.0069 partials=0 finals=0 speaking=False
+00:38:54.066 DEBUG speaker.sherpa | capture heartbeat: blocks=336 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:38:56.069 DEBUG speaker.sherpa | capture heartbeat: blocks=351 avg_rms=0.0116 partials=0 finals=0 speaking=False
+00:38:58.274 DEBUG speaker.sherpa | capture heartbeat: blocks=364 avg_rms=0.0072 partials=0 finals=0 speaking=False
+00:39:00.281 DEBUG speaker.sherpa | capture heartbeat: blocks=372 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:39:01.188 DEBUG speaker.sysinfo | system sample: cpu=10.6% ram=31247.0MB(96.3%) proc_rss=515.0MB gpu=18.0% gpu_mem=12329.0/16376.0MB
+00:39:02.287 DEBUG speaker.sherpa | capture heartbeat: blocks=384 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:04.392 DEBUG speaker.sherpa | capture heartbeat: blocks=395 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:06.498 DEBUG speaker.sherpa | capture heartbeat: blocks=407 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:08.501 DEBUG speaker.sherpa | capture heartbeat: blocks=422 avg_rms=0.0094 partials=0 finals=0 speaking=False
+00:39:10.707 DEBUG speaker.sherpa | capture heartbeat: blocks=435 avg_rms=0.0104 partials=0 finals=0 speaking=False
+00:39:11.209 DEBUG speaker.sysinfo | system sample: cpu=10.0% ram=31265.7MB(96.4%) proc_rss=495.8MB gpu=23.0% gpu_mem=12329.0/16376.0MB
+00:39:12.712 DEBUG speaker.sherpa | capture heartbeat: blocks=447 avg_rms=0.0074 partials=0 finals=0 speaking=False
+00:39:14.715 DEBUG speaker.sherpa | capture heartbeat: blocks=461 avg_rms=0.0076 partials=0 finals=0 speaking=False
+00:39:16.719 DEBUG speaker.sherpa | capture heartbeat: blocks=475 avg_rms=0.0117 partials=0 finals=0 speaking=False
+00:39:18.720 DEBUG speaker.sherpa | capture heartbeat: blocks=492 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:20.823 DEBUG speaker.sherpa | capture heartbeat: blocks=508 avg_rms=0.0095 partials=0 finals=0 speaking=False
+00:39:21.231 DEBUG speaker.sysinfo | system sample: cpu=11.3% ram=31954.4MB(98.5%) proc_rss=493.9MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:39:22.828 DEBUG speaker.sherpa | capture heartbeat: blocks=522 avg_rms=0.0080 partials=0 finals=0 speaking=False
+00:39:24.927 DEBUG speaker.sherpa | capture heartbeat: blocks=543 avg_rms=0.0074 partials=0 finals=0 speaking=False
+00:39:27.029 DEBUG speaker.sherpa | capture heartbeat: blocks=559 avg_rms=0.0077 partials=0 finals=0 speaking=False
+00:39:29.135 DEBUG speaker.sherpa | capture heartbeat: blocks=571 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:39:31.140 DEBUG speaker.sherpa | capture heartbeat: blocks=583 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:39:31.255 DEBUG speaker.sysinfo | system sample: cpu=11.2% ram=31954.1MB(98.5%) proc_rss=493.8MB gpu=18.0% gpu_mem=12329.0/16376.0MB
+00:39:33.143 DEBUG speaker.sherpa | capture heartbeat: blocks=599 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:35.143 DEBUG speaker.sherpa | capture heartbeat: blocks=619 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:39:37.248 DEBUG speaker.sherpa | capture heartbeat: blocks=632 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:39:39.353 DEBUG speaker.sherpa | capture heartbeat: blocks=643 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:41.276 DEBUG speaker.sysinfo | system sample: cpu=11.4% ram=31969.4MB(98.5%) proc_rss=493.8MB gpu=24.0% gpu_mem=12329.0/16376.0MB
+00:39:41.354 DEBUG speaker.sherpa | capture heartbeat: blocks=660 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:43.562 DEBUG speaker.sherpa | capture heartbeat: blocks=671 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:45.568 DEBUG speaker.sherpa | capture heartbeat: blocks=681 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:39:47.671 DEBUG speaker.sherpa | capture heartbeat: blocks=695 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:39:49.674 DEBUG speaker.sherpa | capture heartbeat: blocks=712 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:39:51.296 DEBUG speaker.sysinfo | system sample: cpu=10.7% ram=32025.4MB(98.7%) proc_rss=493.8MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:39:51.676 DEBUG speaker.sherpa | capture heartbeat: blocks=728 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:39:53.679 DEBUG speaker.sherpa | capture heartbeat: blocks=744 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:39:55.781 DEBUG speaker.sherpa | capture heartbeat: blocks=760 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:39:57.784 DEBUG speaker.sherpa | capture heartbeat: blocks=774 avg_rms=0.0087 partials=0 finals=0 speaking=False
+00:39:59.789 DEBUG speaker.sherpa | capture heartbeat: blocks=787 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:40:01.318 DEBUG speaker.sysinfo | system sample: cpu=10.9% ram=32056.6MB(98.8%) proc_rss=475.4MB gpu=18.0% gpu_mem=12329.0/16376.0MB
+00:40:01.895 DEBUG speaker.sherpa | capture heartbeat: blocks=798 avg_rms=0.0076 partials=0 finals=0 speaking=False
+00:40:03.897 DEBUG speaker.sherpa | capture heartbeat: blocks=814 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:40:05.901 DEBUG speaker.sherpa | capture heartbeat: blocks=828 avg_rms=0.0071 partials=0 finals=0 speaking=False
+00:40:07.906 DEBUG speaker.sherpa | capture heartbeat: blocks=839 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:40:09.911 DEBUG speaker.sherpa | capture heartbeat: blocks=852 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:11.352 DEBUG speaker.sysinfo | system sample: cpu=10.3% ram=32207.6MB(99.2%) proc_rss=446.2MB gpu=4.0% gpu_mem=12329.0/16376.0MB
+00:40:11.914 DEBUG speaker.sherpa | capture heartbeat: blocks=865 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:13.917 DEBUG speaker.sherpa | capture heartbeat: blocks=881 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:16.021 DEBUG speaker.sherpa | capture heartbeat: blocks=896 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:18.023 DEBUG speaker.sherpa | capture heartbeat: blocks=913 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:40:20.128 DEBUG speaker.sherpa | capture heartbeat: blocks=924 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:40:21.374 DEBUG speaker.sysinfo | system sample: cpu=11.7% ram=32223.7MB(99.3%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:40:22.331 DEBUG speaker.sherpa | capture heartbeat: blocks=943 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:24.334 DEBUG speaker.sherpa | capture heartbeat: blocks=958 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:26.538 DEBUG speaker.sherpa | capture heartbeat: blocks=973 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:28.744 DEBUG speaker.sherpa | capture heartbeat: blocks=985 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:30.745 DEBUG speaker.sherpa | capture heartbeat: blocks=1002 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:31.394 DEBUG speaker.sysinfo | system sample: cpu=9.2% ram=32134.0MB(99.0%) proc_rss=413.2MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:40:32.746 DEBUG speaker.sherpa | capture heartbeat: blocks=1021 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:34.847 DEBUG speaker.sherpa | capture heartbeat: blocks=1039 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:36.952 DEBUG speaker.sherpa | capture heartbeat: blocks=1053 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:39.157 DEBUG speaker.sherpa | capture heartbeat: blocks=1067 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:41.258 DEBUG speaker.sherpa | capture heartbeat: blocks=1083 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:41.416 DEBUG speaker.sysinfo | system sample: cpu=9.4% ram=32138.7MB(99.0%) proc_rss=413.3MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:40:43.262 DEBUG speaker.sherpa | capture heartbeat: blocks=1098 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:45.267 DEBUG speaker.sherpa | capture heartbeat: blocks=1109 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:40:47.270 DEBUG speaker.sherpa | capture heartbeat: blocks=1123 avg_rms=0.0106 partials=0 finals=0 speaking=False
+00:40:49.274 DEBUG speaker.sherpa | capture heartbeat: blocks=1138 avg_rms=0.0109 partials=0 finals=0 speaking=False
+00:40:51.275 DEBUG speaker.sherpa | capture heartbeat: blocks=1156 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:40:51.438 DEBUG speaker.sysinfo | system sample: cpu=9.4% ram=32001.6MB(98.6%) proc_rss=413.3MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:40:53.279 DEBUG speaker.sherpa | capture heartbeat: blocks=1170 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:40:55.488 DEBUG speaker.sherpa | capture heartbeat: blocks=1178 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:40:57.693 DEBUG speaker.sherpa | capture heartbeat: blocks=1192 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:40:59.697 DEBUG speaker.sherpa | capture heartbeat: blocks=1204 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:41:01.460 DEBUG speaker.sysinfo | system sample: cpu=8.7% ram=31907.4MB(98.3%) proc_rss=413.3MB gpu=22.0% gpu_mem=12329.0/16376.0MB
+00:41:01.802 DEBUG speaker.sherpa | capture heartbeat: blocks=1217 avg_rms=0.0091 partials=0 finals=0 speaking=False
+00:41:03.807 DEBUG speaker.sherpa | capture heartbeat: blocks=1227 avg_rms=0.0179 partials=0 finals=0 speaking=False
+00:41:05.810 DEBUG speaker.sherpa | capture heartbeat: blocks=1242 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:41:08.016 DEBUG speaker.sherpa | capture heartbeat: blocks=1255 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:41:10.316 DEBUG speaker.sherpa | capture heartbeat: blocks=1276 avg_rms=0.0082 partials=0 finals=0 speaking=False
+00:41:11.485 DEBUG speaker.sysinfo | system sample: cpu=8.7% ram=32078.3MB(98.8%) proc_rss=413.6MB gpu=9.0% gpu_mem=12329.0/16376.0MB
+00:41:12.521 DEBUG speaker.sherpa | capture heartbeat: blocks=1290 avg_rms=0.0095 partials=0 finals=0 speaking=False
+00:41:14.622 DEBUG speaker.sherpa | capture heartbeat: blocks=1309 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:41:16.625 DEBUG speaker.sherpa | capture heartbeat: blocks=1325 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:41:18.629 DEBUG speaker.sherpa | capture heartbeat: blocks=1336 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:41:20.634 DEBUG speaker.sherpa | capture heartbeat: blocks=1349 avg_rms=0.0082 partials=0 finals=0 speaking=False
+00:41:21.506 DEBUG speaker.sysinfo | system sample: cpu=9.2% ram=32082.2MB(98.9%) proc_rss=413.6MB gpu=18.0% gpu_mem=12329.0/16376.0MB
+00:41:22.638 DEBUG speaker.sherpa | capture heartbeat: blocks=1361 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:41:24.743 DEBUG speaker.sherpa | capture heartbeat: blocks=1374 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:41:26.746 DEBUG speaker.sherpa | capture heartbeat: blocks=1388 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:41:28.850 DEBUG speaker.sherpa | capture heartbeat: blocks=1403 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:41:31.057 DEBUG speaker.sherpa | capture heartbeat: blocks=1413 avg_rms=0.0125 partials=0 finals=0 speaking=False
+00:41:31.526 DEBUG speaker.sysinfo | system sample: cpu=8.9% ram=31992.6MB(98.6%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:41:33.163 DEBUG speaker.sherpa | capture heartbeat: blocks=1425 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:41:35.167 DEBUG speaker.sherpa | capture heartbeat: blocks=1438 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:41:37.174 DEBUG speaker.sherpa | capture heartbeat: blocks=1447 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:41:39.274 DEBUG speaker.sherpa | capture heartbeat: blocks=1467 avg_rms=0.0079 partials=0 finals=0 speaking=False
+00:41:41.279 DEBUG speaker.sherpa | capture heartbeat: blocks=1480 avg_rms=0.0086 partials=0 finals=0 speaking=False
+00:41:41.546 DEBUG speaker.sysinfo | system sample: cpu=8.9% ram=32062.1MB(98.8%) proc_rss=413.6MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:41:43.283 DEBUG speaker.sherpa | capture heartbeat: blocks=1492 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:41:45.288 DEBUG speaker.sherpa | capture heartbeat: blocks=1504 avg_rms=0.0080 partials=0 finals=0 speaking=False
+00:41:47.393 DEBUG speaker.sherpa | capture heartbeat: blocks=1517 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:41:49.394 DEBUG speaker.sherpa | capture heartbeat: blocks=1534 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:41:51.496 DEBUG speaker.sherpa | capture heartbeat: blocks=1551 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:41:51.568 DEBUG speaker.sysinfo | system sample: cpu=9.6% ram=31818.3MB(98.1%) proc_rss=413.6MB gpu=21.0% gpu_mem=12329.0/16376.0MB
+00:41:53.502 DEBUG speaker.sherpa | capture heartbeat: blocks=1562 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:41:55.605 DEBUG speaker.sherpa | capture heartbeat: blocks=1577 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:41:57.608 DEBUG speaker.sherpa | capture heartbeat: blocks=1593 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:41:59.610 DEBUG speaker.sherpa | capture heartbeat: blocks=1609 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:42:01.586 DEBUG speaker.sysinfo | system sample: cpu=9.6% ram=31659.6MB(97.6%) proc_rss=413.6MB gpu=14.0% gpu_mem=12329.0/16376.0MB
+00:42:01.612 DEBUG speaker.sherpa | capture heartbeat: blocks=1627 avg_rms=0.0069 partials=0 finals=0 speaking=False
+00:42:03.614 DEBUG speaker.sherpa | capture heartbeat: blocks=1643 avg_rms=0.0158 partials=0 finals=0 speaking=False
+00:42:05.617 DEBUG speaker.sherpa | capture heartbeat: blocks=1656 avg_rms=0.0070 partials=0 finals=0 speaking=False
+00:42:07.721 DEBUG speaker.sherpa | capture heartbeat: blocks=1671 avg_rms=0.0073 partials=0 finals=0 speaking=False
+00:42:09.723 DEBUG speaker.sherpa | capture heartbeat: blocks=1688 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:42:11.605 DEBUG speaker.sysinfo | system sample: cpu=9.5% ram=31259.0MB(96.4%) proc_rss=413.6MB gpu=19.0% gpu_mem=12329.0/16376.0MB
+00:42:11.826 DEBUG speaker.sherpa | capture heartbeat: blocks=1704 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:42:13.828 DEBUG speaker.sherpa | capture heartbeat: blocks=1721 avg_rms=0.0152 partials=0 finals=0 speaking=False
+00:42:15.929 DEBUG speaker.sherpa | capture heartbeat: blocks=1740 avg_rms=0.0084 partials=0 finals=0 speaking=False
+00:42:18.135 DEBUG speaker.sherpa | capture heartbeat: blocks=1752 avg_rms=0.1470 partials=0 finals=0 speaking=False
+00:42:20.237 DEBUG speaker.sherpa | capture heartbeat: blocks=1769 avg_rms=0.0113 partials=0 finals=0 speaking=False
+00:42:21.623 DEBUG speaker.sysinfo | system sample: cpu=9.8% ram=30771.3MB(94.9%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:42:22.240 DEBUG speaker.sherpa | capture heartbeat: blocks=1785 avg_rms=0.0135 partials=0 finals=0 speaking=False
+00:42:24.345 DEBUG speaker.sherpa | capture heartbeat: blocks=1797 avg_rms=0.0342 partials=0 finals=0 speaking=False
+00:42:26.350 DEBUG speaker.sherpa | capture heartbeat: blocks=1810 avg_rms=0.0304 partials=0 finals=0 speaking=False
+00:42:28.352 DEBUG speaker.sherpa | capture heartbeat: blocks=1825 avg_rms=0.0086 partials=0 finals=0 speaking=False
+00:42:30.356 DEBUG speaker.sherpa | capture heartbeat: blocks=1840 avg_rms=0.1043 partials=0 finals=0 speaking=False
+00:42:31.647 DEBUG speaker.sysinfo | system sample: cpu=9.2% ram=30793.0MB(95.0%) proc_rss=413.7MB gpu=24.0% gpu_mem=12329.0/16376.0MB
+00:42:32.358 DEBUG speaker.sherpa | capture heartbeat: blocks=1856 avg_rms=0.0072 partials=0 finals=0 speaking=False
+00:42:34.562 DEBUG speaker.sherpa | capture heartbeat: blocks=1872 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:42:36.565 DEBUG speaker.sherpa | capture heartbeat: blocks=1886 avg_rms=0.0070 partials=0 finals=0 speaking=False
+00:42:38.669 DEBUG speaker.sherpa | capture heartbeat: blocks=1900 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:42:40.872 DEBUG speaker.sherpa | capture heartbeat: blocks=1917 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:42:41.675 DEBUG speaker.sysinfo | system sample: cpu=9.5% ram=30896.9MB(95.3%) proc_rss=413.7MB gpu=30.0% gpu_mem=12329.0/16376.0MB
+00:42:42.874 DEBUG speaker.sherpa | capture heartbeat: blocks=1932 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:42:44.977 DEBUG speaker.sherpa | capture heartbeat: blocks=1949 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:42:46.979 DEBUG speaker.sherpa | capture heartbeat: blocks=1965 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:42:49.183 DEBUG speaker.sherpa | capture heartbeat: blocks=1982 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:42:51.287 DEBUG speaker.sherpa | capture heartbeat: blocks=1996 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:42:51.696 DEBUG speaker.sysinfo | system sample: cpu=9.4% ram=30952.1MB(95.4%) proc_rss=413.7MB gpu=24.0% gpu_mem=12329.0/16376.0MB
+00:42:53.290 DEBUG speaker.sherpa | capture heartbeat: blocks=2012 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:42:55.293 DEBUG speaker.sherpa | capture heartbeat: blocks=2026 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:42:57.297 DEBUG speaker.sherpa | capture heartbeat: blocks=2040 avg_rms=0.0062 partials=0 finals=0 speaking=False
+00:42:59.300 DEBUG speaker.sherpa | capture heartbeat: blocks=2054 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:01.505 DEBUG speaker.sherpa | capture heartbeat: blocks=2068 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:43:01.725 DEBUG speaker.sysinfo | system sample: cpu=9.1% ram=30347.0MB(93.6%) proc_rss=413.7MB gpu=8.0% gpu_mem=12329.0/16376.0MB
+00:43:03.611 DEBUG speaker.sherpa | capture heartbeat: blocks=2079 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:05.614 DEBUG speaker.sherpa | capture heartbeat: blocks=2093 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:07.718 DEBUG speaker.sherpa | capture heartbeat: blocks=2108 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:09.924 DEBUG speaker.sherpa | capture heartbeat: blocks=2120 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:43:11.757 DEBUG speaker.sysinfo | system sample: cpu=8.7% ram=29351.3MB(90.6%) proc_rss=413.7MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:43:12.026 DEBUG speaker.sherpa | capture heartbeat: blocks=2137 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:14.231 DEBUG speaker.sherpa | capture heartbeat: blocks=2151 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:43:16.436 DEBUG speaker.sherpa | capture heartbeat: blocks=2165 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:18.539 DEBUG speaker.sherpa | capture heartbeat: blocks=2179 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:20.743 DEBUG speaker.sherpa | capture heartbeat: blocks=2196 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:21.778 DEBUG speaker.sysinfo | system sample: cpu=9.6% ram=22124.0MB(68.9%) proc_rss=413.7MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:43:22.946 DEBUG speaker.sherpa | capture heartbeat: blocks=2212 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:43:25.047 DEBUG speaker.sherpa | capture heartbeat: blocks=2230 avg_rms=0.0069 partials=0 finals=0 speaking=False
+00:43:27.150 DEBUG speaker.sherpa | capture heartbeat: blocks=2245 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:43:29.254 DEBUG speaker.sherpa | capture heartbeat: blocks=2260 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:43:31.257 DEBUG speaker.sherpa | capture heartbeat: blocks=2275 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:31.799 DEBUG speaker.sysinfo | system sample: cpu=9.1% ram=21943.3MB(68.3%) proc_rss=413.7MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:43:33.263 DEBUG speaker.sherpa | capture heartbeat: blocks=2287 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:43:35.465 DEBUG speaker.sherpa | capture heartbeat: blocks=2305 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:43:37.468 DEBUG speaker.sherpa | capture heartbeat: blocks=2319 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:43:39.471 DEBUG speaker.sherpa | capture heartbeat: blocks=2335 avg_rms=0.0063 partials=0 finals=0 speaking=False
+00:43:41.577 DEBUG speaker.sherpa | capture heartbeat: blocks=2346 avg_rms=0.0090 partials=0 finals=0 speaking=False
+00:43:41.818 DEBUG speaker.sysinfo | system sample: cpu=8.9% ram=21626.2MB(67.4%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:43:43.579 DEBUG speaker.sherpa | capture heartbeat: blocks=2362 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:45.582 DEBUG speaker.sherpa | capture heartbeat: blocks=2376 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:47.584 DEBUG speaker.sherpa | capture heartbeat: blocks=2392 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:43:49.587 DEBUG speaker.sherpa | capture heartbeat: blocks=2408 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:51.589 DEBUG speaker.sherpa | capture heartbeat: blocks=2424 avg_rms=0.0065 partials=0 finals=0 speaking=False
+00:43:51.839 DEBUG speaker.sysinfo | system sample: cpu=9.6% ram=21206.4MB(66.1%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:43:53.693 DEBUG speaker.sherpa | capture heartbeat: blocks=2439 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:55.699 DEBUG speaker.sherpa | capture heartbeat: blocks=2449 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:57.805 DEBUG speaker.sherpa | capture heartbeat: blocks=2460 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:43:59.808 DEBUG speaker.sherpa | capture heartbeat: blocks=2474 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:44:01.860 DEBUG speaker.sysinfo | system sample: cpu=8.6% ram=20711.8MB(64.6%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:44:01.912 DEBUG speaker.sherpa | capture heartbeat: blocks=2486 avg_rms=0.0248 partials=0 finals=0 speaking=False
+00:44:04.016 DEBUG speaker.sherpa | capture heartbeat: blocks=2503 avg_rms=0.0324 partials=0 finals=0 speaking=False
+00:44:06.021 DEBUG speaker.sherpa | capture heartbeat: blocks=2515 avg_rms=0.0409 partials=0 finals=0 speaking=False
+00:44:08.027 DEBUG speaker.sherpa | capture heartbeat: blocks=2525 avg_rms=0.0406 partials=0 finals=0 speaking=False
+00:44:10.131 DEBUG speaker.sherpa | capture heartbeat: blocks=2540 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:44:11.890 DEBUG speaker.sysinfo | system sample: cpu=9.0% ram=4187.8MB(14.9%) proc_rss=413.7MB gpu=6.0% gpu_mem=12329.0/16376.0MB
+00:44:12.238 DEBUG speaker.sherpa | capture heartbeat: blocks=2549 avg_rms=0.0066 partials=0 finals=0 speaking=False
+00:44:14.246 DEBUG speaker.sherpa | capture heartbeat: blocks=2557 avg_rms=0.0101 partials=0 finals=0 speaking=False
+00:44:16.249 DEBUG speaker.sherpa | capture heartbeat: blocks=2573 avg_rms=0.0077 partials=0 finals=0 speaking=False
+00:44:18.348 DEBUG speaker.sherpa | capture heartbeat: blocks=2594 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:44:20.448 DEBUG speaker.sherpa | capture heartbeat: blocks=2614 avg_rms=0.0075 partials=0 finals=0 speaking=False
+00:44:21.911 DEBUG speaker.sysinfo | system sample: cpu=11.8% ram=6913.5MB(23.1%) proc_rss=413.7MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:44:22.548 DEBUG speaker.sherpa | capture heartbeat: blocks=2636 avg_rms=0.0072 partials=0 finals=0 speaking=False
+00:44:24.548 DEBUG speaker.sherpa | capture heartbeat: blocks=2656 avg_rms=0.0068 partials=0 finals=0 speaking=False
+00:44:26.548 DEBUG speaker.sherpa | capture heartbeat: blocks=2676 avg_rms=0.0064 partials=0 finals=0 speaking=False
+00:44:28.648 DEBUG speaker.sherpa | capture heartbeat: blocks=2697 avg_rms=0.0076 partials=0 finals=0 speaking=False
+00:44:30.649 DEBUG speaker.sherpa | capture heartbeat: blocks=2717 avg_rms=0.0080 partials=0 finals=0 speaking=False
+00:44:31.932 DEBUG speaker.sysinfo | system sample: cpu=13.2% ram=9637.8MB(31.3%) proc_rss=413.7MB gpu=2.0% gpu_mem=12329.0/16376.0MB
+00:44:32.649 DEBUG speaker.sherpa | capture heartbeat: blocks=2737 avg_rms=0.0086 partials=0 finals=0 speaking=False
+00:44:34.649 DEBUG speaker.sherpa | capture heartbeat: blocks=2757 avg_rms=0.0071 partials=0 finals=0 speaking=False
+00:44:36.649 DEBUG speaker.sherpa | capture heartbeat: blocks=2777 avg_rms=0.0084 partials=0 finals=0 speaking=False
+00:44:38.649 DEBUG speaker.sherpa | capture heartbeat: blocks=2797 avg_rms=0.0067 partials=0 finals=0 speaking=False
+00:44:40.749 DEBUG speaker.sherpa | capture heartbeat: blocks=2818 avg_rms=0.0071 partials=0 finals=0 speaking=False
+00:44:41.950 DEBUG speaker.sysinfo | system sample: cpu=13.2% ram=12219.9MB(39.1%) proc_rss=413.7MB gpu=12.0% gpu_mem=12329.0/16376.0MB
+00:44:42.749 DEBUG speaker.sherpa | capture heartbeat: blocks=2838 avg_rms=0.0072 partials=0 finals=0 speaking=False
+00:44:44.849 DEBUG speaker.sherpa | capture heartbeat: blocks=2858 avg_rms=0.0079 partials=0 finals=0 speaking=False
+00:44:46.477 DEBUG speaker.sherpa | asr partial: 'Maybe'
+00:44:46.492 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Maybe'
+00:44:46.774 DEBUG speaker.sherpa | asr partial: 'Maybe not'
+00:44:46.777 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Maybe not'
+00:44:46.849 DEBUG speaker.sherpa | capture heartbeat: blocks=2879 avg_rms=0.0121 partials=2 finals=0 speaking=False
+00:44:47.767 INFO  speaker.sherpa | asr final: 'Maybe not' (raw 'MAYBE NOT')
+00:44:47.772 INFO  speaker.runtime | final -> brain: 'Maybe not' (mode=assistant)
+00:44:47.778 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Maybe not'
+00:44:47.780 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Maybe not'
+00:44:47.791 INFO  speaker.tasks | task fe0ef8adf0fe started: mode=assistant capability=assistant.answer input='Maybe not'
+00:44:47.807 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Maybe not'
+00:44:48.691 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Maybe not
+00:44:48.691 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.88s ttft=0.87s out=5ch tokens=2 | 'Maybe not'
+00:44:48.691 INFO  speaker.llm | fast tier done in 0.88s (5 chars, streamed)
+00:44:48.692 INFO  speaker.tasks | task fe0ef8adf0fe completed in 0.91s (5 chars)
+00:44:48.693 INFO  speaker.runtime | assistant: 'Okay.'
+00:44:48.695 DEBUG speaker.sherpa | speaking: 'Okay.' (queue depth=0)
+00:44:48.811 INFO  speaker.sherpa | playback opened at 44100 Hz on device ALC285 Analog (callback; resampling from 22050 Hz TTS -- device rejects 22050 Hz)
+00:44:48.849 DEBUG speaker.sherpa | capture heartbeat: blocks=2899 avg_rms=0.0138 partials=2 finals=1 speaking=True
+00:44:50.949 DEBUG speaker.sherpa | capture heartbeat: blocks=2920 avg_rms=0.0053 partials=2 finals=1 speaking=False
+00:44:51.975 DEBUG speaker.sysinfo | system sample: cpu=13.3% ram=15139.6MB(47.9%) proc_rss=520.5MB gpu=2.0% gpu_mem=12329.0/16376.0MB
+00:44:53.049 DEBUG speaker.sherpa | capture heartbeat: blocks=2941 avg_rms=0.0103 partials=2 finals=1 speaking=False
+00:44:55.049 DEBUG speaker.sherpa | capture heartbeat: blocks=2961 avg_rms=0.0078 partials=2 finals=1 speaking=False
+00:44:57.149 DEBUG speaker.sherpa | capture heartbeat: blocks=2982 avg_rms=0.0075 partials=2 finals=1 speaking=False
+00:44:59.149 DEBUG speaker.sherpa | capture heartbeat: blocks=3002 avg_rms=0.0075 partials=2 finals=1 speaking=False
+00:45:01.249 DEBUG speaker.sherpa | capture heartbeat: blocks=3023 avg_rms=0.0081 partials=2 finals=1 speaking=False
+00:45:01.993 DEBUG speaker.sysinfo | system sample: cpu=13.2% ram=17616.7MB(55.3%) proc_rss=520.7MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:45:03.249 DEBUG speaker.sherpa | capture heartbeat: blocks=3043 avg_rms=0.0085 partials=2 finals=1 speaking=False
+00:45:05.249 DEBUG speaker.sherpa | capture heartbeat: blocks=3063 avg_rms=0.0078 partials=2 finals=1 speaking=False
+00:45:06.383 DEBUG speaker.sherpa | asr partial: 'Philip'
+00:45:06.383 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Philip'
+00:45:06.974 DEBUG speaker.sherpa | asr partial: 'So they'
+00:45:06.974 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='So they'
+00:45:07.249 DEBUG speaker.sherpa | capture heartbeat: blocks=3083 avg_rms=0.0269 partials=4 finals=1 speaking=False
+00:45:07.373 INFO  speaker.sherpa | asr final: 'So they' (raw 'SO THEY')
+00:45:07.375 INFO  speaker.runtime | final -> brain: 'So they' (mode=assistant)
+00:45:07.375 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'So they'
+00:45:07.376 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='So they'
+00:45:07.376 INFO  speaker.tasks | task e11c0725eb3e started: mode=assistant capability=assistant.answer input='So they'
+00:45:07.387 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'So they'
+00:45:07.677 DEBUG speaker.sherpa | asr partial: 'Very amaz'
+00:45:07.677 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Very amaz'
+00:45:07.825 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: So they
+00:45:07.825 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.44s ttft=0.38s out=34ch tokens=6 | 'So they'
+00:45:07.825 INFO  speaker.llm | fast tier done in 0.44s (34 chars, streamed)
+00:45:07.825 INFO  speaker.tasks | task e11c0725eb3e completed in 0.45s (34 chars)
+00:45:07.825 INFO  speaker.runtime | assistant: 'are probably asking about someone.'
+00:45:07.826 DEBUG speaker.sherpa | speaking: 'are probably asking about someone.' (queue depth=0)
+00:45:08.795 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0322 resid=0.0449 incoh=0.92 resid_floor=0.0183 consec=0
+00:45:08.860 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0182 resid=0.0134 incoh=0.97 resid_floor=0.0181 consec=0
+00:45:08.860 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:45:08.957 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0519 resid=0.0150 incoh=0.94 resid_floor=0.0179 consec=0
+00:45:09.057 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0418 resid=0.0273 incoh=0.92 resid_floor=0.0184 consec=0
+00:45:09.255 DEBUG speaker.sherpa | capture heartbeat: blocks=3102 avg_rms=0.0210 partials=5 finals=2 speaking=True
+00:45:09.266 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0282 resid=0.0083 incoh=0.82 resid_floor=0.0179 consec=0
+00:45:09.273 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.08) raw=0.0195 resid=0.0029 incoh=0.94 resid_floor=0.0171 consec=0
+00:45:09.357 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0142 resid=0.0019 incoh=0.90 resid_floor=0.0164 consec=0
+00:45:09.466 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.03) raw=0.0139 resid=0.0009 incoh=0.92 resid_floor=0.0156 consec=0
+00:45:09.557 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.02) raw=0.0224 resid=0.0020 incoh=0.92 resid_floor=0.0149 consec=0
+00:45:09.658 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0151 resid=0.0007 incoh=0.87 resid_floor=0.0142 consec=0
+00:45:09.757 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0157 resid=0.0004 incoh=0.91 resid_floor=0.0135 consec=0
+00:45:10.067 DEBUG speaker.sherpa | asr partial: 'Very amazing calling'
+00:45:10.067 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Very amazing calling'
+00:45:10.373 DEBUG speaker.sherpa | asr partial: 'Very amazing calling up'
+00:45:10.373 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Very amazing calling up'
+00:45:11.149 INFO  speaker.sherpa | asr final: 'Very amazing calling up' (raw 'VERY AMAZING CALLING UP')
+00:45:11.150 INFO  speaker.sherpa | dropping final 'Very amazing calling up' -- at/near the learned echo/quiet floor (echo/ambient, not speech)
+00:45:11.349 DEBUG speaker.sherpa | capture heartbeat: blocks=3124 avg_rms=0.0079 partials=7 finals=3 speaking=False
+00:45:12.017 DEBUG speaker.sysinfo | system sample: cpu=12.6% ram=20045.1MB(62.6%) proc_rss=554.0MB gpu=0.0% gpu_mem=12329.0/16376.0MB
+00:45:13.349 DEBUG speaker.sherpa | capture heartbeat: blocks=3144 avg_rms=0.0210 partials=7 finals=3 speaking=False
+00:45:15.349 DEBUG speaker.sherpa | capture heartbeat: blocks=3163 avg_rms=0.0313 partials=7 finals=3 speaking=False
+00:45:15.866 DEBUG speaker.sherpa | asr partial: 'He'
+00:45:15.866 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='He'
+00:45:16.066 DEBUG speaker.sherpa | asr partial: 'He is this'
+00:45:16.066 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='He is this'
+00:45:16.374 DEBUG speaker.sherpa | asr partial: 'He is this runn'
+00:45:16.375 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='He is this runn'
+00:45:16.766 DEBUG speaker.sherpa | asr partial: 'He is this running'
+00:45:16.766 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='He is this running'
+00:45:17.349 DEBUG speaker.sherpa | capture heartbeat: blocks=3184 avg_rms=0.0355 partials=11 finals=3 speaking=False
+00:45:17.549 INFO  speaker.sherpa | asr final: 'He is this running' (raw 'HE IS THIS RUNNING')
+00:45:17.552 INFO  speaker.runtime | final -> brain: 'He is this running' (mode=assistant)
+00:45:17.552 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'He is this running'
+00:45:17.552 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='He is this running'
+00:45:17.553 INFO  speaker.tasks | task 7b6d6f41f9c9 started: mode=assistant capability=assistant.answer input='He is this running'
+00:45:17.563 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'He is this running'
+00:45:18.020 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: He is this running
+00:45:18.020 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.46s ttft=0.37s out=47ch tokens=11 | 'He is this running'
+00:45:18.020 INFO  speaker.llm | fast tier done in 0.46s (47 chars, streamed)
+00:45:18.020 INFO  speaker.tasks | task 7b6d6f41f9c9 completed in 0.47s (47 chars)
+00:45:18.020 INFO  speaker.runtime | assistant: 'That sounds like you’re talking about a runner!'
+00:45:18.020 DEBUG speaker.sherpa | speaking: 'That sounds like you’re talking about a runner!' (queue depth=0)
+00:45:18.051 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0127 resid=0.0127 incoh=0.91 resid_floor=0.0127 consec=0
+00:45:18.158 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0139 resid=0.0003 incoh=0.91 resid_floor=0.0120 consec=0
+00:45:18.158 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:45:18.256 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0098 resid=0.0001 incoh=0.91 resid_floor=0.0114 consec=0
+00:45:18.356 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0115 resid=0.0001 incoh=0.91 resid_floor=0.0109 consec=0
+00:45:19.459 DEBUG speaker.sherpa | capture heartbeat: blocks=3199 avg_rms=0.0062 partials=11 finals=4 speaking=True
+00:45:21.657 DEBUG speaker.sherpa | capture heartbeat: blocks=3213 avg_rms=0.0068 partials=11 finals=4 speaking=False
+00:45:22.035 DEBUG speaker.sysinfo | system sample: cpu=12.7% ram=22840.6MB(71.0%) proc_rss=555.8MB gpu=2.0% gpu_mem=12329.0/16376.0MB
+00:45:23.757 DEBUG speaker.sherpa | capture heartbeat: blocks=3234 avg_rms=0.0201 partials=11 finals=4 speaking=False
+00:45:23.975 DEBUG speaker.sherpa | asr partial: 'Can'
+00:45:23.976 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can'
+00:45:24.277 DEBUG speaker.sherpa | asr partial: 'Cantony again'
+00:45:24.277 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Cantony again'
+00:45:24.675 DEBUG speaker.sherpa | asr partial: 'Can tell me again'
+00:45:24.675 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Can tell me again'
+00:45:25.275 INFO  speaker.sherpa | asr final: 'Can tell me again' (raw 'CAN TELL ME AGAIN')
+00:45:25.277 INFO  speaker.runtime | final -> brain: 'Can tell me again' (mode=assistant)
+00:45:25.277 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Can tell me again'
+00:45:25.277 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Can tell me again'
+00:45:25.277 INFO  speaker.tasks | task 9c565aaafb2c started: mode=assistant capability=assistant.answer input='Can tell me again'
+00:45:25.295 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Can tell me again'
+00:45:25.757 DEBUG speaker.sherpa | capture heartbeat: blocks=3253 avg_rms=0.0224 partials=14 finals=5 speaking=False
+00:45:25.815 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Can tell me again
+00:45:25.815 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.52s ttft=0.38s out=72ch tokens=16 | 'Can tell me again'
+00:45:25.815 INFO  speaker.llm | fast tier done in 0.52s (72 chars, streamed)
+00:45:25.815 INFO  speaker.tasks | task 9c565aaafb2c completed in 0.54s (72 chars)
+00:45:25.816 INFO  speaker.runtime | assistant: 'Of course, I can repeat that – you were saying something about a runner.'
+00:45:25.816 DEBUG speaker.sherpa | speaking: 'Of course, I can repeat that – you were saying something about a runner.' (queue depth=0)
+00:45:27.862 DEBUG speaker.sherpa | capture heartbeat: blocks=3274 avg_rms=0.0016 partials=14 finals=5 speaking=True
+00:45:29.958 DEBUG speaker.sherpa | capture heartbeat: blocks=3293 avg_rms=0.0034 partials=14 finals=5 speaking=False
+00:45:31.777 DEBUG speaker.sherpa | asr partial: 'The one'
+00:45:31.777 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The one'
+00:45:31.958 DEBUG speaker.sherpa | capture heartbeat: blocks=3313 avg_rms=0.0319 partials=15 finals=5 speaking=False
+00:45:32.054 DEBUG speaker.sysinfo | system sample: cpu=12.2% ram=25391.0MB(78.7%) proc_rss=594.7MB gpu=2.0% gpu_mem=12331.0/16376.0MB
+00:45:32.478 DEBUG speaker.sherpa | asr partial: 'The bonus took'
+00:45:32.478 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The bonus took'
+00:45:32.785 DEBUG speaker.sherpa | asr partial: 'The one mistook was'
+00:45:32.785 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The one mistook was'
+00:45:33.184 DEBUG speaker.sherpa | asr partial: 'The one mist was too low'
+00:45:33.185 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The one mist was too low'
+00:45:33.959 INFO  speaker.sherpa | asr final: 'The one mist was too low' (raw 'THE ONE MIST WAS TOO LOW')
+00:45:33.961 INFO  speaker.runtime | final -> brain: 'The one mist was too low' (mode=assistant)
+00:45:33.961 INFO  speaker.runtime | route: action=simple tier=fast conf=0.70 source=heuristic (no gather/action markers) for 'The one mist was too low'
+00:45:33.961 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='The one mist was too low'
+00:45:33.961 INFO  speaker.tasks | task 1ccff192fbdd started: mode=assistant capability=assistant.answer input='The one mist was too low'
+00:45:33.972 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'The one mist was too low'
+00:45:34.058 DEBUG speaker.sherpa | capture heartbeat: blocks=3335 avg_rms=0.0227 partials=18 finals=6 speaking=False
+00:45:34.464 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: The one mist was too low
+00:45:34.464 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.49s ttft=0.37s out=67ch tokens=15 | 'The one mist was too low'
+00:45:34.464 INFO  speaker.llm | fast tier done in 0.49s (67 chars, streamed)
+00:45:34.464 INFO  speaker.tasks | task 1ccff192fbdd completed in 0.50s (67 chars)
+00:45:34.464 INFO  speaker.runtime | assistant: "Could you clarify if you're referring to a cloud or something else?"
+00:45:34.465 DEBUG speaker.sherpa | speaking: "Could you clarify if you're referring to a cloud or something else?" (queue depth=0)
+00:45:36.069 DEBUG speaker.sherpa | capture heartbeat: blocks=3347 avg_rms=0.0023 partials=18 finals=6 speaking=True
+00:45:38.165 DEBUG speaker.sherpa | capture heartbeat: blocks=3364 avg_rms=0.0020 partials=18 finals=6 speaking=False
+00:45:40.166 DEBUG speaker.sherpa | capture heartbeat: blocks=3382 avg_rms=0.0294 partials=18 finals=6 speaking=False
+00:45:40.883 DEBUG speaker.sherpa | asr partial: 'No'
+00:45:40.883 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No'
+00:45:41.182 DEBUG speaker.sherpa | asr partial: 'No I was'
+00:45:41.182 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was'
+00:45:41.490 DEBUG speaker.sherpa | asr partial: 'No I was refer'
+00:45:41.491 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was refer'
+00:45:41.782 DEBUG speaker.sherpa | asr partial: 'No I was referring'
+00:45:41.783 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring'
+00:45:42.074 DEBUG speaker.sysinfo | system sample: cpu=11.3% ram=27819.1MB(86.0%) proc_rss=598.1MB gpu=0.0% gpu_mem=12331.0/16376.0MB
+00:45:42.090 DEBUG speaker.sherpa | asr partial: 'No I was referring to'
+00:45:42.090 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring to'
+00:45:42.266 DEBUG speaker.sherpa | capture heartbeat: blocks=3403 avg_rms=0.0708 partials=23 finals=6 speaking=False
+00:45:42.382 DEBUG speaker.sherpa | asr partial: 'No I was referring to our in'
+00:45:42.382 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring to our in'
+00:45:42.682 DEBUG speaker.sherpa | asr partial: 'No I was referring to our intera'
+00:45:42.682 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring to our intera'
+00:45:43.090 DEBUG speaker.sherpa | asr partial: 'No I was referring to our interaction'
+00:45:43.090 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring to our interaction'
+00:45:43.792 DEBUG speaker.sherpa | asr partial: 'No I was referring to our interaction the v'
+00:45:43.792 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring to our interaction the v'
+00:45:44.085 DEBUG speaker.sherpa | asr partial: 'No I was referring to our interaction the volume'
+00:45:44.086 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='No I was referring to our interaction the volume'
+00:45:44.469 DEBUG speaker.sherpa | capture heartbeat: blocks=3419 avg_rms=0.0413 partials=28 finals=6 speaking=False
+00:45:44.870 INFO  speaker.sherpa | asr final: 'No I was referring to our interaction the volume' (raw 'NO I WAS REFERRING TO OUR INTERACTION THE VOLUME')
+00:45:44.873 INFO  speaker.runtime | final -> brain: 'No I was referring to our interaction the volume' (mode=assistant)
+00:45:44.873 INFO  speaker.runtime | route: action=act tier=main conf=0.70 source=heuristic (action marker) for 'No I was referring to our interaction the volume'
+00:45:44.874 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='No I was referring to our interaction the volume'
+00:45:44.874 INFO  speaker.tasks | task 2fca5968ea14 started: mode=assistant capability=assistant.answer input='No I was referring to our interaction the volume'
+00:45:45.685 DEBUG speaker.sherpa | asr partial: 'Lo'
+00:45:45.686 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Lo'
+00:45:46.471 DEBUG speaker.sherpa | capture heartbeat: blocks=3437 avg_rms=0.0226 partials=29 finals=7 speaking=False
+00:45:46.690 DEBUG speaker.sherpa | asr partial: 'Low'
+00:45:46.690 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Low'
+00:45:46.881 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: === Recent conversation (most recent last) ===
+User: He is this running
+You: That sounds like you’re talking about a runner!
+User: Can tell me again
+You: Of course, I can repeat that – you were saying something about a runner.
+User: The one mist was too low
+You: Could you clarify if you're referring to a cloud or something else?
+
+User request: No I was referring to our interaction the volume
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+(none yet)
+
+Next step:
+00:45:46.881 INFO  speaker.llm.ollama | ollama gemma4:12b: 1.99s ttft=1.14s out=194ch tokens=44 | '=== Recent conversation (most recent last) === User: He is this running You: That sounds like you’re talking about a runner! User: Can tell me again You: Of course, I can repeat that – you were saying'
+00:45:46.881 INFO  speaker.tasks | task 2fca5968ea14 completed in 2.01s (187 chars)
+00:45:46.881 INFO  speaker.runtime | assistant: 'I apologize for the misunderstanding! You were referring to the volume of my voice or your device\'s audio output, not a "runner" or weather conditions. How can I help you with the volume?'
+00:45:46.882 DEBUG speaker.sherpa | speaking: 'I apologize for the misunderstanding! You were referring to the volume of my voice or your device\'s audio output, not a "runner" or weather conditions. How can I help you with the volume?' (queue depth=0)
+00:45:48.680 DEBUG speaker.sherpa | capture heartbeat: blocks=3453 avg_rms=0.0031 partials=30 finals=7 speaking=True
+00:45:49.591 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0702 resid=0.0040 incoh=0.16 resid_floor=0.0002 consec=0
+00:45:49.684 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0375 resid=0.0019 incoh=0.55 resid_floor=0.0002 consec=0
+00:45:49.684 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:45:49.784 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0368 resid=0.0015 incoh=0.96 resid_floor=0.0002 consec=0
+00:45:49.984 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0389 resid=0.0012 incoh=0.94 resid_floor=0.0002 consec=0
+00:45:49.999 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0201 resid=0.0033 incoh=0.73 resid_floor=0.0002 consec=0
+00:45:50.084 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.16) raw=0.0223 resid=0.0011 incoh=0.98 resid_floor=0.0002 consec=0
+00:45:50.386 DEBUG speaker.sherpa | dtd: D=2.57 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=2.57 z_coh=0.93) raw=0.0242 resid=0.0047 incoh=0.94 resid_floor=0.0002 consec=0
+00:45:50.484 DEBUG speaker.sherpa | dtd: D=7.10 K=5.0 fired=True gated=True (z_raw=0.00 z_resid=7.10 z_coh=0.00) raw=0.0144 resid=0.0093 incoh=0.29 resid_floor=0.0002 consec=1
+00:45:50.684 DEBUG speaker.sherpa | capture heartbeat: blocks=3468 avg_rms=0.0028 partials=30 finals=7 speaking=True
+00:45:50.686 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.55) raw=0.0074 resid=0.0013 incoh=0.85 resid_floor=0.0002 consec=0
+00:45:50.693 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0075 resid=0.0008 incoh=0.64 resid_floor=0.0002 consec=0
+00:45:50.785 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.64) raw=0.0069 resid=0.0006 incoh=0.88 resid_floor=0.0002 consec=0
+00:45:50.985 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.73) raw=0.0063 resid=0.0005 incoh=0.92 resid_floor=0.0002 consec=0
+00:45:50.992 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0080 resid=0.0004 incoh=0.62 resid_floor=0.0002 consec=0
+00:45:51.085 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0132 resid=0.0009 incoh=0.26 resid_floor=0.0002 consec=0
+00:45:51.194 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.41) raw=0.0072 resid=0.0006 incoh=0.80 resid_floor=0.0002 consec=0
+00:45:51.486 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.72) raw=0.0067 resid=0.0003 incoh=0.90 resid_floor=0.0002 consec=0
+00:45:51.586 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0075 resid=0.0006 incoh=0.58 resid_floor=0.0002 consec=0
+00:45:51.687 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0082 resid=0.0004 incoh=0.53 resid_floor=0.0002 consec=0
+00:45:52.101 DEBUG speaker.sysinfo | system sample: cpu=10.9% ram=30621.6MB(94.5%) proc_rss=633.5MB gpu=1.0% gpu_mem=12333.0/16376.0MB
+00:45:52.784 DEBUG speaker.sherpa | capture heartbeat: blocks=3488 avg_rms=0.0004 partials=30 finals=7 speaking=True
+00:45:54.784 DEBUG speaker.sherpa | capture heartbeat: blocks=3508 avg_rms=0.0002 partials=30 finals=7 speaking=True
+00:45:56.695 INFO  speaker.sherpa | asr final: 'Low' (raw 'LOW')
+00:45:56.697 INFO  speaker.runtime | final -> brain: 'Low' (mode=assistant)
+00:45:56.697 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Low'
+00:45:56.698 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Low'
+00:45:56.698 INFO  speaker.tasks | task 22f994151d4f started: mode=assistant capability=assistant.answer input='Low'
+00:45:56.709 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Low'
+00:45:56.878 DEBUG speaker.sherpa | capture heartbeat: blocks=3529 avg_rms=0.0024 partials=30 finals=8 speaking=False
+00:45:57.191 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Low
+00:45:57.191 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.48s ttft=0.38s out=60ch tokens=12 | 'Low'
+00:45:57.191 INFO  speaker.llm | fast tier done in 0.48s (60 chars, streamed)
+00:45:57.191 INFO  speaker.tasks | task 22f994151d4f completed in 0.49s (60 chars)
+00:45:57.192 INFO  speaker.runtime | assistant: 'That sounds like you’re having trouble adjusting the volume!'
+00:45:57.192 DEBUG speaker.sherpa | speaking: 'That sounds like you’re having trouble adjusting the volume!' (queue depth=0)
+00:45:58.884 DEBUG speaker.sherpa | capture heartbeat: blocks=3548 avg_rms=0.0016 partials=30 finals=8 speaking=True
+00:46:00.978 DEBUG speaker.sherpa | capture heartbeat: blocks=3570 avg_rms=0.0051 partials=30 finals=8 speaking=False
+00:46:02.132 DEBUG speaker.sysinfo | system sample: cpu=10.2% ram=32063.5MB(98.8%) proc_rss=580.5MB gpu=1.0% gpu_mem=12333.0/16376.0MB
+00:46:02.395 DEBUG speaker.sherpa | asr partial: 'I'
+00:46:02.395 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I'
+00:46:02.796 DEBUG speaker.sherpa | asr partial: 'I am now'
+00:46:02.797 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now'
+00:46:03.179 DEBUG speaker.sherpa | capture heartbeat: blocks=3590 avg_rms=0.0475 partials=32 finals=8 speaking=False
+00:46:03.197 DEBUG speaker.sherpa | asr partial: 'I am now in good'
+00:46:03.198 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good'
+00:46:04.097 DEBUG speaker.sherpa | asr partial: 'I am now in good tell'
+00:46:04.097 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good tell'
+00:46:04.398 DEBUG speaker.sherpa | asr partial: 'I am now in good tell me'
+00:46:04.399 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good tell me'
+00:46:05.098 DEBUG speaker.sherpa | asr partial: 'I am now in good tell me a story'
+00:46:05.098 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good tell me a story'
+00:46:05.280 DEBUG speaker.sherpa | capture heartbeat: blocks=3608 avg_rms=0.0575 partials=36 finals=8 speaking=False
+00:46:05.397 DEBUG speaker.sherpa | asr partial: 'I am now in good tell me a story about'
+00:46:05.397 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good tell me a story about'
+00:46:05.697 DEBUG speaker.sherpa | asr partial: 'I am now in good tell me a story about the'
+00:46:05.697 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good tell me a story about the'
+00:46:05.999 DEBUG speaker.sherpa | asr partial: 'I am now in good tell me a story about the fisherman'
+00:46:05.999 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='I am now in good tell me a story about the fisherman'
+00:46:06.798 INFO  speaker.sherpa | asr final: 'I am now in good tell me a story about the fisherman' (raw 'I AM NOW IN GOOD TELL ME A STORY ABOUT THE FISHERMAN')
+00:46:06.801 INFO  speaker.runtime | final -> brain: 'I am now in good tell me a story about the fisherman' (mode=assistant)
+00:46:07.331 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Turn: "I am now in good tell me a story about the fisherman"
+00:46:07.331 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.53s ttft=- out=4ch tokens=- | 'Turn: "I am now in good tell me a story about the fisherman"'
+00:46:07.331 INFO  speaker.runtime | route: action=act tier=main conf=0.90 source=llm (llm disambiguation) for 'I am now in good tell me a story about the fisherman'
+00:46:07.332 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='I am now in good tell me a story about the fisherman'
+00:46:07.337 INFO  speaker.tasks | task ea31c8e994d1 started: mode=assistant capability=assistant.answer input='I am now in good tell me a story about the fisherman'
+00:46:07.433 DEBUG speaker.sherpa | capture heartbeat: blocks=3623 avg_rms=0.0166 partials=39 finals=9 speaking=False
+00:46:08.119 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: === Recent conversation (most recent last) ===
+You: Of course, I can repeat that – you were saying something about a runner.
+User: The one mist was too low
+You: Could you clarify if you're referring to a cloud or something else?
+You: I apologize for the misunderstanding! You were referring to the volume of my voice or your device's audio output, not a "runner" or weather conditions. How can I help you with the volume?
+User: Low
+You: That sounds like you’re having trouble adjusting the volume!
+
+User request: I am now in good tell me a story about the fisherman
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+(none yet)
+
+Next step:
+00:46:08.119 INFO  speaker.llm.ollama | ollama gemma4:12b: 0.77s ttft=0.55s out=54ch tokens=12 | "=== Recent conversation (most recent last) === You: Of course, I can repeat that – you were saying something about a runner. User: The one mist was too low You: Could you clarify if you're referring t"
+00:46:08.883 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: === Recent conversation (most recent last) ===
+You: Of course, I can repeat that – you were saying something about a runner.
+User: The one mist was too low
+You: Could you clarify if you're referring to a cloud or something else?
+You: I apologize for the misunderstanding! You were referring to the volume of my voice or your device's audio output, not a "runner" or weather conditions. How can I help you with the volume?
+User: Low
+You: That sounds like you’re having trouble adjusting the volume!
+
+User request: I am now in good tell me a story about the fisherman
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+
+Next step:
+00:46:08.883 INFO  speaker.llm.ollama | ollama gemma4:12b: 0.76s ttft=0.44s out=54ch tokens=12 | "=== Recent conversation (most recent last) === You: Of course, I can repeat that – you were saying something about a runner. User: The one mist was too low You: Could you clarify if you're referring t"
+00:46:09.498 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: === Recent conversation (most recent last) ===
+You: Of course, I can repeat that – you were saying something about a runner.
+User: The one mist was too low
+You: Could you clarify if you're referring to a cloud or something else?
+You: I apologize for the misunderstanding! You were referring to the volume of my voice or your device's audio output, not a "runner" or weather conditions. How can I help you with the volume?
+User: Low
+You: That sounds like you’re having trouble adjusting the volume!
+
+User request: I am now in good tell me a story about the fisherman
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+
+Next step:
+00:46:09.498 INFO  speaker.llm.ollama | ollama gemma4:12b: 0.61s ttft=0.39s out=54ch tokens=12 | "=== Recent conversation (most recent last) === You: Of course, I can repeat that – you were saying something about a runner. User: The one mist was too low You: Could you clarify if you're referring t"
+00:46:09.537 DEBUG speaker.sherpa | capture heartbeat: blocks=3636 avg_rms=0.0070 partials=39 finals=9 speaking=False
+00:46:11.540 DEBUG speaker.sherpa | capture heartbeat: blocks=3652 avg_rms=0.0067 partials=39 finals=9 speaking=False
+00:46:12.153 DEBUG speaker.sysinfo | system sample: cpu=14.0% ram=32001.9MB(98.6%) proc_rss=553.8MB gpu=88.0% gpu_mem=12333.0/16376.0MB
+00:46:13.257 WARNING speaker.watchdog | tts stuck: turn 7 had llm_first_token but no tts_first_audio after 5.4s
+00:46:13.535 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: === Recent conversation (most recent last) ===
+You: Of course, I can repeat that – you were saying something about a runner.
+User: The one mist was too low
+You: Could you clarify if you're referring to a cloud or something else?
+You: I apologize for the misunderstanding! You were referring to the volume of my voice or your device's audio output, not a "runner" or weather conditions. How can I help you with the volume?
+User: Low
+You: That sounds like you’re having trouble adjusting the volume!
+
+User request: I am now in good tell me a story about the fisherman
+
+Available tools:
+- web.search: search the web for current information on a topic
+- search.local: look up a topic in the local knowledge corpus
+- research.scope: outline the scope and key questions for a topic
+- research.local: synthesize gathered findings into a recommendation
+
+Findings so far:
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+search.local: Wyoming is a protocol used by Home Assistant to connect local voice services such as wake word, STT, and TTS. Ollama runs local LLMs behind a simple API and is useful for offline assistant reasoning.
+
+Next step:
+00:46:13.535 INFO  speaker.llm.ollama | ollama gemma4:12b: 4.04s ttft=0.41s out=853ch tokens=190 | "=== Recent conversation (most recent last) === You: Of course, I can repeat that – you were saying something about a runner. User: The one mist was too low You: Could you clarify if you're referring t"
+00:46:13.536 INFO  speaker.tasks | task ea31c8e994d1 completed in 6.20s (846 chars)
+00:46:13.537 INFO  speaker.runtime | assistant: "Once upon a time, in a small village by the sea, there lived an old fisherman who had spent forty years casting his nets into the deep blue. Every morning before dawn, he would push his weathered boat out into the waves, guided only by the stars and the rhythm of the tide. One stormy night, his net caught something heavy—not a fish, but an ancient, rusted chest tied to some seaweed. When he pried it open, it wasn't filled with gold, but with hundreds of sealed glass jars. Each jar contained a different memory: the smell of rain on dry earth, the sound of a child’s laughter, and the warmth of a first kiss. He realized that the most precious treasures aren't always made of gold; some are kept in glass and moments. From then on, he shared one jar each day with the villagers, bringing a little piece of forgotten joy back into their lives."
+00:46:13.537 DEBUG speaker.sherpa | speaking: "Once upon a time, in a small village by the sea, there lived an old fisherman who had spent forty years casting his nets into the deep blue. Every morning before dawn, he would push his weathered boat out into the waves, guided only by the stars and the rhythm of the tide. One stormy night, his net caught something heavy—not a fish, but an ancient, rusted chest tied to some seaweed. When he pried it open, it wasn't filled with gold, but with hundreds of sealed glass jars. Each jar contained a different memory: the smell of rain on dry earth, the sound of a child’s laughter, and the warmth of a first kiss. He realized that the most precious treasures aren't always made of gold; some are kept in glass and moments. From then on, he shared one jar each day with the villagers, bringing a little piece of forgotten joy back into their lives." (queue depth=0)
+00:46:13.541 DEBUG speaker.sherpa | capture heartbeat: blocks=3669 avg_rms=0.0066 partials=39 finals=9 speaking=True
+00:46:15.550 DEBUG speaker.sherpa | capture heartbeat: blocks=3684 avg_rms=0.0171 partials=39 finals=9 speaking=True
+00:46:15.557 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0825 resid=0.0443 incoh=0.34 resid_floor=0.0061 consec=0
+00:46:15.857 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.1052 resid=0.0986 incoh=0.22 resid_floor=0.0061 consec=0
+00:46:15.857 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:46:16.055 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0459 resid=0.0239 incoh=0.96 resid_floor=0.0061 consec=0
+00:46:16.062 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0976 resid=0.0682 incoh=0.53 resid_floor=0.0061 consec=0
+00:46:16.152 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0918 resid=0.0469 incoh=0.84 resid_floor=0.0061 consec=0
+00:46:16.354 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.36) raw=0.0498 resid=0.0414 incoh=0.89 resid_floor=0.0061 consec=0
+00:46:16.362 DEBUG speaker.sherpa | dtd: D=0.01 K=5.0 fired=False gated=False (z_raw=0.07 z_resid=0.00 z_coh=0.00) raw=0.0851 resid=0.0308 incoh=0.53 resid_floor=0.0061 consec=0
+00:46:16.454 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0509 resid=0.0065 incoh=0.49 resid_floor=0.0061 consec=0
+00:46:16.554 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.39) raw=0.0137 resid=0.0015 incoh=0.91 resid_floor=0.0059 consec=0
+00:46:16.854 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.11) raw=0.0384 resid=0.0251 incoh=0.87 resid_floor=0.0059 consec=0
+00:46:16.955 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.23) raw=0.0521 resid=0.0473 incoh=0.92 resid_floor=0.0059 consec=0
+00:46:17.056 DEBUG speaker.sherpa | dtd: D=0.27 K=5.0 fired=False gated=False (z_raw=1.05 z_resid=0.06 z_coh=0.00) raw=0.1064 resid=0.0494 incoh=0.41 resid_floor=0.0059 consec=0
+00:46:17.258 DEBUG speaker.sherpa | dtd: D=0.34 K=5.0 fired=False gated=False (z_raw=1.69 z_resid=0.00 z_coh=1.18) raw=0.1280 resid=0.0112 incoh=0.91 resid_floor=0.0062 consec=0
+00:46:17.265 DEBUG speaker.sherpa | dtd: D=0.32 K=5.0 fired=False gated=False (z_raw=1.60 z_resid=0.00 z_coh=0.00) raw=0.1295 resid=0.0121 incoh=0.16 resid_floor=0.0065 consec=0
+00:46:17.355 DEBUG speaker.sherpa | dtd: D=0.17 K=5.0 fired=False gated=False (z_raw=0.84 z_resid=0.00 z_coh=0.00) raw=0.1089 resid=0.0042 incoh=0.20 resid_floor=0.0064 consec=0
+00:46:17.654 DEBUG speaker.sherpa | capture heartbeat: blocks=3699 avg_rms=0.0318 partials=39 finals=9 speaking=True
+00:46:17.656 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.77) raw=0.0548 resid=0.0102 incoh=0.77 resid_floor=0.0065 consec=0
+00:46:17.858 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.50) raw=0.0685 resid=0.0259 incoh=0.96 resid_floor=0.0065 consec=0
+00:46:17.865 DEBUG speaker.sherpa | dtd: D=5.46 K=5.0 fired=True gated=True (z_raw=2.28 z_resid=5.01 z_coh=0.00) raw=0.1545 resid=0.1210 incoh=0.57 resid_floor=0.0065 consec=1
+00:46:18.158 DEBUG speaker.sherpa | dtd: D=0.34 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.34 z_coh=1.05) raw=0.0320 resid=0.0458 incoh=0.87 resid_floor=0.0065 consec=0
+00:46:18.459 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.50) raw=0.0660 resid=0.0039 incoh=0.75 resid_floor=0.0064 consec=0
+00:46:18.661 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.88) raw=0.0691 resid=0.0028 incoh=0.86 resid_floor=0.0062 consec=0
+00:46:18.669 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.79) raw=0.0110 resid=0.0018 incoh=0.85 resid_floor=0.0060 consec=0
+00:46:18.759 DEBUG speaker.sherpa | dtd: D=0.08 K=5.0 fired=False gated=False (z_raw=0.42 z_resid=0.00 z_coh=0.00) raw=0.0865 resid=0.0012 incoh=0.48 resid_floor=0.0058 consec=0
+00:46:18.858 DEBUG speaker.sherpa | dtd: D=0.49 K=5.0 fired=False gated=False (z_raw=2.43 z_resid=0.00 z_coh=0.00) raw=0.1473 resid=0.0061 incoh=0.28 resid_floor=0.0058 consec=0
+00:46:19.058 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=1.34) raw=0.0765 resid=0.0017 incoh=0.97 resid_floor=0.0056 consec=0
+00:46:19.065 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0558 resid=0.0020 incoh=0.40 resid_floor=0.0054 consec=0
+00:46:19.159 DEBUG speaker.sherpa | dtd: D=11.74 K=5.0 fired=True gated=True (z_raw=4.62 z_resid=10.81 z_coh=0.27) raw=0.2501 resid=0.1553 incoh=0.70 resid_floor=0.0054 consec=1
+00:46:19.259 DEBUG speaker.sherpa | dtd: D=9.64 K=5.0 fired=True gated=True (z_raw=1.71 z_resid=9.30 z_coh=0.00) raw=0.1410 resid=0.1377 incoh=0.53 resid_floor=0.0054 consec=2
+00:46:19.260 INFO  speaker.sherpa | barge-in detected
+00:46:19.260 INFO  speaker.supervisor | cancel_all: epoch=1 0 active, 0 queued, 0 pending-confirm
+00:46:19.261 INFO  speaker.supervisor | cancel_all: epoch=2 0 active, 0 queued, 0 pending-confirm
+00:46:19.750 DEBUG speaker.sherpa | capture heartbeat: blocks=3716 avg_rms=0.0325 partials=39 finals=9 speaking=False
+00:46:21.753 DEBUG speaker.sherpa | capture heartbeat: blocks=3732 avg_rms=0.0066 partials=39 finals=9 speaking=False
+00:46:22.173 DEBUG speaker.sysinfo | system sample: cpu=10.3% ram=31980.1MB(98.5%) proc_rss=640.4MB gpu=0.0% gpu_mem=12333.0/16376.0MB
+00:46:23.758 DEBUG speaker.sherpa | capture heartbeat: blocks=3744 avg_rms=0.0066 partials=39 finals=9 speaking=False
+00:46:25.076 DEBUG speaker.sherpa | asr partial: 'Tar'
+00:46:25.076 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Tar'
+00:46:25.681 DEBUG speaker.sherpa | asr partial: 'Start again'
+00:46:25.681 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Start again'
+00:46:25.760 DEBUG speaker.sherpa | capture heartbeat: blocks=3760 avg_rms=0.0356 partials=41 finals=9 speaking=False
+00:46:27.180 INFO  speaker.sherpa | asr final: 'Start again' (raw 'START AGAIN')
+00:46:27.182 INFO  speaker.runtime | final -> brain: 'Start again' (mode=assistant)
+00:46:27.182 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Start again'
+00:46:27.182 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Start again'
+00:46:27.182 INFO  speaker.tasks | task c8ed519fef0b started: mode=assistant capability=assistant.answer input='Start again'
+00:46:27.193 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Start again'
+00:46:27.719 INFO  speaker.runtime | assistant: 'I apologize for the misunderstanding!'
+00:46:27.719 DEBUG speaker.sherpa | speaking: 'I apologize for the misunderstanding!' (queue depth=0)
+00:46:27.763 DEBUG speaker.sherpa | capture heartbeat: blocks=3774 avg_rms=0.0080 partials=41 finals=10 speaking=True
+00:46:27.765 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0080 resid=0.0080 incoh=0.53 resid_floor=0.0080 consec=0
+00:46:27.924 INFO  speaker.runtime | assistant: 'You were referring to the volume of my voice or your device’s audio output, not a "runner" or weather conditions.'
+00:46:27.994 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Start again
+00:46:27.994 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.80s ttft=0.47s out=187ch tokens=42 | 'Start again'
+00:46:27.994 INFO  speaker.llm | fast tier done in 0.80s (187 chars, streamed)
+00:46:27.994 INFO  speaker.tasks | task c8ed519fef0b completed in 0.81s (187 chars)
+00:46:27.994 INFO  speaker.runtime | assistant: 'How can I help you with the volume?'
+00:46:28.073 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0464 resid=0.0002 incoh=0.53 resid_floor=0.0076 consec=0
+00:46:28.073 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:46:28.172 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0617 resid=0.0003 incoh=0.53 resid_floor=0.0073 consec=0
+00:46:28.473 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0258 resid=0.0048 incoh=0.85 resid_floor=0.0072 consec=0
+00:46:28.573 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0354 resid=0.0040 incoh=0.97 resid_floor=0.0070 consec=0
+00:46:28.674 DEBUG speaker.sherpa | dtd: D=1.04 K=5.0 fired=False gated=False (z_raw=0.84 z_resid=0.87 z_coh=0.32) raw=0.0474 resid=0.0047 incoh=0.77 resid_floor=0.0069 consec=0
+00:46:28.777 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0143 resid=0.0013 incoh=0.51 resid_floor=0.0066 consec=0
+00:46:28.870 DEBUG speaker.sherpa | speaking: 'You were referring to the volume of my voice or your device’s audio output, not a "runner" or weather conditions.' (queue depth=1)
+00:46:29.482 DEBUG speaker.sherpa | dtd: D=0.86 K=5.0 fired=False gated=False (z_raw=0.38 z_resid=0.78 z_coh=0.08) raw=0.0403 resid=0.0045 incoh=0.70 resid_floor=0.0060 consec=0
+00:46:29.574 DEBUG speaker.sherpa | dtd: D=15.15 K=5.0 fired=True gated=True (z_raw=2.75 z_resid=14.60 z_coh=0.00) raw=0.0740 resid=0.0238 incoh=0.35 resid_floor=0.0060 consec=1
+00:46:29.673 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0204 resid=0.0017 incoh=0.41 resid_floor=0.0058 consec=0
+00:46:29.771 DEBUG speaker.sherpa | capture heartbeat: blocks=3790 avg_rms=0.0061 partials=41 finals=10 speaking=True
+00:46:29.774 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.09) raw=0.0211 resid=0.0029 incoh=0.69 resid_floor=0.0056 consec=0
+00:46:29.874 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.94) raw=0.0077 resid=0.0011 incoh=0.91 resid_floor=0.0054 consec=0
+00:46:30.077 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.97) raw=0.0065 resid=0.0008 incoh=0.94 resid_floor=0.0052 consec=0
+00:46:30.085 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0115 resid=0.0003 incoh=0.66 resid_floor=0.0049 consec=0
+00:46:30.174 DEBUG speaker.sherpa | dtd: D=0.45 K=5.0 fired=False gated=False (z_raw=2.27 z_resid=0.00 z_coh=0.00) raw=0.0577 resid=0.0008 incoh=0.10 resid_floor=0.0047 consec=0
+00:46:30.273 DEBUG speaker.sherpa | dtd: D=0.85 K=5.0 fired=False gated=False (z_raw=4.27 z_resid=0.00 z_coh=0.06) raw=0.0856 resid=0.0006 incoh=0.67 resid_floor=0.0045 consec=0
+00:46:30.473 DEBUG speaker.sherpa | dtd: D=0.31 K=5.0 fired=False gated=False (z_raw=1.53 z_resid=0.00 z_coh=0.80) raw=0.0703 resid=0.0007 incoh=0.87 resid_floor=0.0043 consec=0
+00:46:31.974 DEBUG speaker.sherpa | capture heartbeat: blocks=3806 avg_rms=0.0028 partials=41 finals=10 speaking=True
+00:46:32.189 DEBUG speaker.sysinfo | system sample: cpu=10.1% ram=32070.6MB(98.8%) proc_rss=640.7MB gpu=0.0% gpu_mem=12333.0/16376.0MB
+00:46:34.079 DEBUG speaker.sherpa | capture heartbeat: blocks=3820 avg_rms=0.0016 partials=41 finals=10 speaking=True
+00:46:34.139 DEBUG speaker.sherpa | speaking: 'How can I help you with the volume?' (queue depth=0)
+00:46:35.081 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.64) raw=0.0062 resid=0.0011 incoh=0.84 resid_floor=0.0021 consec=0
+00:46:35.182 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.73) raw=0.0062 resid=0.0005 incoh=0.88 resid_floor=0.0020 consec=0
+00:46:35.281 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.80) raw=0.0064 resid=0.0007 incoh=0.91 resid_floor=0.0019 consec=0
+00:46:35.380 DEBUG speaker.sherpa | dtd: D=0.01 K=5.0 fired=False gated=False (z_raw=0.06 z_resid=0.00 z_coh=0.00) raw=0.0334 resid=0.0004 incoh=0.36 resid_floor=0.0019 consec=0
+00:46:35.581 DEBUG speaker.sherpa | dtd: D=0.03 K=5.0 fired=False gated=False (z_raw=0.16 z_resid=0.00 z_coh=1.12) raw=0.0356 resid=0.0004 incoh=0.99 resid_floor=0.0018 consec=0
+00:46:35.589 DEBUG speaker.sherpa | dtd: D=0.66 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.66 z_coh=0.00) raw=0.0240 resid=0.0028 incoh=0.61 resid_floor=0.0018 consec=0
+00:46:35.681 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0307 resid=0.0020 incoh=0.36 resid_floor=0.0018 consec=0
+00:46:35.781 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.01 z_resid=0.00 z_coh=0.00) raw=0.0319 resid=0.0010 incoh=0.17 resid_floor=0.0018 consec=0
+00:46:35.883 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0238 resid=0.0006 incoh=0.24 resid_floor=0.0017 consec=0
+00:46:36.079 DEBUG speaker.sherpa | capture heartbeat: blocks=3840 avg_rms=0.0024 partials=41 finals=10 speaking=True
+00:46:36.106 DEBUG speaker.sherpa | dtd: D=0.16 K=5.0 fired=False gated=False (z_raw=0.82 z_resid=0.00 z_coh=1.43) raw=0.0479 resid=0.0005 incoh=0.99 resid_floor=0.0017 consec=0
+00:46:36.114 DEBUG speaker.sherpa | dtd: D=67.31 K=5.0 fired=True gated=True (z_raw=1.71 z_resid=66.96 z_coh=0.00) raw=0.0659 resid=0.0556 incoh=0.18 resid_floor=0.0017 consec=1
+00:46:36.181 DEBUG speaker.sherpa | dtd: D=10.67 K=5.0 fired=True gated=True (z_raw=0.00 z_resid=10.67 z_coh=0.42) raw=0.0088 resid=0.0105 incoh=0.76 resid_floor=0.0017 consec=2
+00:46:36.181 INFO  speaker.sherpa | barge-in detected
+00:46:36.181 INFO  speaker.supervisor | cancel_all: epoch=3 0 active, 0 queued, 0 pending-confirm
+00:46:36.182 INFO  speaker.supervisor | cancel_all: epoch=4 0 active, 0 queued, 0 pending-confirm
+00:46:38.176 DEBUG speaker.sherpa | capture heartbeat: blocks=3858 avg_rms=0.0100 partials=41 finals=10 speaking=False
+00:46:40.276 DEBUG speaker.sherpa | capture heartbeat: blocks=3878 avg_rms=0.0063 partials=41 finals=10 speaking=False
+00:46:42.206 DEBUG speaker.sysinfo | system sample: cpu=10.5% ram=32016.8MB(98.6%) proc_rss=641.7MB gpu=1.0% gpu_mem=12333.0/16376.0MB
+00:46:42.378 DEBUG speaker.sherpa | capture heartbeat: blocks=3895 avg_rms=0.0184 partials=41 finals=10 speaking=False
+00:46:43.298 DEBUG speaker.sherpa | asr partial: 'Start'
+00:46:43.298 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Start'
+00:46:43.803 DEBUG speaker.sherpa | asr partial: 'Start disor'
+00:46:43.803 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Start disor'
+00:46:44.099 DEBUG speaker.sherpa | asr partial: 'Start disorient'
+00:46:44.099 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Start disorient'
+00:46:44.381 DEBUG speaker.sherpa | capture heartbeat: blocks=3909 avg_rms=0.0274 partials=44 finals=10 speaking=False
+00:46:45.098 INFO  speaker.sherpa | asr final: 'Start disorient' (raw 'START DISORIENT')
+00:46:45.100 INFO  speaker.runtime | final -> brain: 'Start disorient' (mode=assistant)
+00:46:45.100 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Start disorient'
+00:46:45.101 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Start disorient'
+00:46:45.101 INFO  speaker.tasks | task a6f725c6f77d started: mode=assistant capability=assistant.answer input='Start disorient'
+00:46:45.112 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Start disorient'
+00:46:45.606 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Start disorient
+00:46:45.606 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.49s ttft=0.37s out=69ch tokens=15 | 'Start disorient'
+00:46:45.606 INFO  speaker.llm | fast tier done in 0.49s (69 chars, streamed)
+00:46:45.606 INFO  speaker.tasks | task a6f725c6f77d completed in 0.51s (69 chars)
+00:46:45.606 INFO  speaker.runtime | assistant: "I'm sorry, could you please clarify if you mean restarting something?"
+00:46:45.607 DEBUG speaker.sherpa | speaking: "I'm sorry, could you please clarify if you mean restarting something?" (queue depth=0)
+00:46:45.793 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0062 resid=0.0010 incoh=0.76 resid_floor=0.0010 consec=0
+00:46:45.805 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0070 resid=0.0001 incoh=0.76 resid_floor=0.0009 consec=0
+00:46:45.805 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:46:45.991 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0073 resid=0.0001 incoh=0.76 resid_floor=0.0009 consec=0
+00:46:45.997 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0183 resid=0.0001 incoh=0.76 resid_floor=0.0009 consec=0
+00:46:46.189 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0229 resid=0.0004 incoh=0.76 resid_floor=0.0008 consec=0
+00:46:46.196 DEBUG speaker.sherpa | dtd: D=0.07 K=5.0 fired=False gated=False (z_raw=0.35 z_resid=0.00 z_coh=0.00) raw=0.0141 resid=0.0003 incoh=0.76 resid_floor=0.0008 consec=0
+00:46:46.387 DEBUG speaker.sherpa | capture heartbeat: blocks=3930 avg_rms=0.0047 partials=44 finals=11 speaking=True
+00:46:48.389 DEBUG speaker.sherpa | capture heartbeat: blocks=3945 avg_rms=0.0019 partials=44 finals=11 speaking=True
+00:46:50.687 DEBUG speaker.sherpa | capture heartbeat: blocks=3963 avg_rms=0.0135 partials=44 finals=11 speaking=False
+00:46:51.004 DEBUG speaker.sherpa | asr partial: 'Yep'
+00:46:51.005 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Yep'
+00:46:52.225 DEBUG speaker.sysinfo | system sample: cpu=10.0% ram=31976.7MB(98.5%) proc_rss=641.9MB gpu=1.0% gpu_mem=12333.0/16376.0MB
+00:46:52.407 INFO  speaker.sherpa | asr final: 'Yep' (raw 'YEP')
+00:46:52.409 INFO  speaker.runtime | final -> brain: 'Yep' (mode=assistant)
+00:46:52.410 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Yep'
+00:46:52.410 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Yep'
+00:46:52.410 INFO  speaker.tasks | task 6a032849cc25 started: mode=assistant capability=assistant.answer input='Yep'
+00:46:52.421 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Yep'
+00:46:52.790 DEBUG speaker.sherpa | capture heartbeat: blocks=3977 avg_rms=0.0628 partials=45 finals=12 speaking=False
+00:46:52.866 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Yep
+00:46:52.866 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.44s ttft=0.36s out=46ch tokens=10 | 'Yep'
+00:46:52.866 INFO  speaker.llm | fast tier done in 0.44s (46 chars, streamed)
+00:46:52.866 INFO  speaker.tasks | task 6a032849cc25 completed in 0.46s (46 chars)
+00:46:52.866 INFO  speaker.runtime | assistant: 'Okay, let me restart this conversation for us.'
+00:46:52.866 DEBUG speaker.sherpa | speaking: 'Okay, let me restart this conversation for us.' (queue depth=0)
+00:46:53.505 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0479 resid=0.0190 incoh=0.15 resid_floor=0.0266 consec=0
+00:46:53.800 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0527 resid=0.0594 incoh=0.82 resid_floor=0.0266 consec=0
+00:46:53.800 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:46:54.101 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0340 resid=0.0134 incoh=0.88 resid_floor=0.0260 consec=0
+00:46:54.301 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0342 resid=0.0150 incoh=0.99 resid_floor=0.0254 consec=0
+00:46:54.309 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0291 resid=0.0019 incoh=0.99 resid_floor=0.0243 consec=0
+00:46:54.401 DEBUG speaker.sherpa | dtd: D=0.10 K=5.0 fired=False gated=False (z_raw=0.51 z_resid=0.00 z_coh=0.00) raw=0.0477 resid=0.0010 incoh=0.40 resid_floor=0.0231 consec=0
+00:46:54.502 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.20) raw=0.0109 resid=0.0019 incoh=0.81 resid_floor=0.0220 consec=0
+00:46:54.703 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.61) raw=0.0093 resid=0.0008 incoh=0.93 resid_floor=0.0210 consec=0
+00:46:54.710 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.47) raw=0.0259 resid=0.0010 incoh=0.90 resid_floor=0.0200 consec=0
+00:46:54.902 DEBUG speaker.sherpa | capture heartbeat: blocks=3992 avg_rms=0.0233 partials=45 finals=12 speaking=True
+00:46:54.905 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.59) raw=0.0225 resid=0.0006 incoh=0.95 resid_floor=0.0190 consec=0
+00:46:54.916 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.33) raw=0.0163 resid=0.0004 incoh=0.88 resid_floor=0.0181 consec=0
+00:46:55.001 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.18) raw=0.0290 resid=0.0006 incoh=0.84 resid_floor=0.0172 consec=0
+00:46:55.102 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.16) raw=0.0097 resid=0.0005 incoh=0.83 resid_floor=0.0164 consec=0
+00:46:55.302 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.55) raw=0.0102 resid=0.0012 incoh=0.96 resid_floor=0.0156 consec=0
+00:46:55.309 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.06) raw=0.0182 resid=0.0003 incoh=0.81 resid_floor=0.0148 consec=0
+00:46:55.402 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.37) raw=0.0304 resid=0.0033 incoh=0.91 resid_floor=0.0143 consec=0
+00:46:55.611 DEBUG speaker.sherpa | asr partial: 'In the'
+00:46:55.611 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='In the'
+00:46:55.912 DEBUG speaker.sherpa | asr partial: 'In the story'
+00:46:55.912 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='In the story'
+00:46:56.795 INFO  speaker.sherpa | asr final: 'In the story' (raw 'IN THE STORY')
+00:46:56.796 INFO  speaker.runtime | final -> brain: 'In the story' (mode=assistant)
+00:46:56.797 INFO  speaker.runtime | route: action=simple tier=main conf=0.85 source=heuristic (no gather/action markers) for 'In the story'
+00:46:56.798 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='In the story'
+00:46:56.798 INFO  speaker.tasks | task a7d0bffcfc4c started: mode=assistant capability=assistant.answer input='In the story'
+00:46:56.808 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'In the story'
+00:46:57.195 DEBUG speaker.sherpa | capture heartbeat: blocks=4012 avg_rms=0.0051 partials=47 finals=13 speaking=False
+00:46:57.770 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: In the story
+00:46:57.770 INFO  speaker.llm.ollama | ollama gemma4:12b: 0.96s ttft=0.71s out=62ch tokens=13 | 'In the story'
+00:46:57.770 INFO  speaker.llm | main tier done in 0.96s (62 chars, streamed)
+00:46:57.770 INFO  speaker.tasks | task a7d0bffcfc4c completed in 0.97s (62 chars)
+00:46:57.771 INFO  speaker.runtime | assistant: 'Could you tell me more about which story you are referring to?'
+00:46:57.771 DEBUG speaker.sherpa | speaking: 'Could you tell me more about which story you are referring to?' (queue depth=0)
+00:46:57.910 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0467 resid=0.0215 incoh=0.91 resid_floor=0.0215 consec=0
+00:46:58.007 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0530 resid=0.0629 incoh=0.91 resid_floor=0.0215 consec=0
+00:46:58.007 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:46:58.104 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0235 resid=0.0188 incoh=0.91 resid_floor=0.0214 consec=0
+00:46:58.204 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0347 resid=0.0099 incoh=0.91 resid_floor=0.0208 consec=0
+00:46:58.306 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0216 resid=0.0066 incoh=0.91 resid_floor=0.0201 consec=0
+00:46:58.505 DEBUG speaker.sherpa | dtd: D=0.03 K=5.0 fired=False gated=False (z_raw=0.14 z_resid=0.00 z_coh=0.00) raw=0.0379 resid=0.0208 incoh=0.65 resid_floor=0.0202 consec=0
+00:46:58.513 DEBUG speaker.sherpa | dtd: D=0.09 K=5.0 fired=False gated=False (z_raw=0.45 z_resid=0.00 z_coh=0.13) raw=0.0424 resid=0.0228 incoh=0.95 resid_floor=0.0203 consec=0
+00:46:58.706 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0307 resid=0.0115 incoh=0.82 resid_floor=0.0198 consec=0
+00:46:58.713 DEBUG speaker.sherpa | dtd: D=0.02 K=5.0 fired=False gated=False (z_raw=0.08 z_resid=0.00 z_coh=0.21) raw=0.0372 resid=0.0074 incoh=0.97 resid_floor=0.0192 consec=0
+00:46:58.808 DEBUG speaker.sherpa | dtd: D=0.47 K=5.0 fired=False gated=False (z_raw=2.33 z_resid=0.00 z_coh=0.00) raw=0.0698 resid=0.0046 incoh=0.90 resid_floor=0.0185 consec=0
+00:46:58.905 DEBUG speaker.sherpa | dtd: D=0.03 K=5.0 fired=False gated=False (z_raw=0.16 z_resid=0.00 z_coh=0.00) raw=0.0402 resid=0.0041 incoh=0.71 resid_floor=0.0178 consec=0
+00:46:59.006 DEBUG speaker.sherpa | dtd: D=0.11 K=5.0 fired=False gated=False (z_raw=0.56 z_resid=0.00 z_coh=0.00) raw=0.0464 resid=0.0070 incoh=0.62 resid_floor=0.0172 consec=0
+00:46:59.105 DEBUG speaker.sherpa | dtd: D=0.14 K=5.0 fired=False gated=False (z_raw=0.68 z_resid=0.00 z_coh=0.00) raw=0.0488 resid=0.0047 incoh=0.19 resid_floor=0.0166 consec=0
+00:46:59.405 DEBUG speaker.sherpa | capture heartbeat: blocks=4028 avg_rms=0.0138 partials=47 finals=13 speaking=True
+00:46:59.407 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0258 resid=0.0044 incoh=0.79 resid_floor=0.0160 consec=0
+00:46:59.507 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0240 resid=0.0028 incoh=0.26 resid_floor=0.0153 consec=0
+00:46:59.607 DEBUG speaker.sherpa | dtd: D=0.20 K=5.0 fired=False gated=False (z_raw=0.98 z_resid=0.00 z_coh=0.00) raw=0.0522 resid=0.0016 incoh=0.16 resid_floor=0.0146 consec=0
+00:46:59.807 DEBUG speaker.sherpa | dtd: D=0.21 K=5.0 fired=False gated=False (z_raw=1.05 z_resid=0.00 z_coh=0.46) raw=0.0544 resid=0.0016 incoh=0.92 resid_floor=0.0140 consec=0
+00:46:59.814 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0226 resid=0.0014 incoh=0.20 resid_floor=0.0134 consec=0
+00:46:59.907 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0293 resid=0.0013 incoh=0.67 resid_floor=0.0128 consec=0
+00:47:00.007 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0164 resid=0.0008 incoh=0.35 resid_floor=0.0122 consec=0
+00:47:00.207 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.71) raw=0.0094 resid=0.0007 incoh=0.94 resid_floor=0.0116 consec=0
+00:47:01.500 DEBUG speaker.sherpa | capture heartbeat: blocks=4047 avg_rms=0.0050 partials=47 finals=13 speaking=False
+00:47:02.246 DEBUG speaker.sysinfo | system sample: cpu=10.5% ram=32146.3MB(99.0%) proc_rss=640.7MB gpu=1.0% gpu_mem=12333.0/16376.0MB
+00:47:02.526 DEBUG speaker.sherpa | asr partial: 'The'
+00:47:02.527 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The'
+00:47:03.019 DEBUG speaker.sherpa | asr partial: 'The fish'
+00:47:03.019 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The fish'
+00:47:03.705 DEBUG speaker.sherpa | capture heartbeat: blocks=4061 avg_rms=0.0282 partials=49 finals=13 speaking=False
+00:47:03.823 DEBUG speaker.sherpa | asr partial: 'The fisherman'
+00:47:03.823 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='The fisherman'
+00:47:05.326 INFO  speaker.sherpa | asr final: 'The fisherman' (raw 'THE FISHERMAN')
+00:47:05.329 INFO  speaker.runtime | final -> brain: 'The fisherman' (mode=assistant)
+00:47:05.329 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'The fisherman'
+00:47:05.329 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='The fisherman'
+00:47:05.330 INFO  speaker.tasks | task e5d33b834fa2 started: mode=assistant capability=assistant.answer input='The fisherman'
+00:47:05.340 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'The fisherman'
+00:47:05.773 INFO  speaker.runtime | assistant: 'That’s a lovely tale!'
+00:47:05.774 DEBUG speaker.sherpa | speaking: 'That’s a lovely tale!' (queue depth=0)
+00:47:05.808 DEBUG speaker.sherpa | capture heartbeat: blocks=4075 avg_rms=0.0062 partials=50 finals=14 speaking=True
+00:47:05.812 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0062 resid=0.0062 incoh=0.94 resid_floor=0.0065 consec=0
+00:47:05.869 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: The fisherman
+00:47:05.869 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.53s ttft=0.37s out=83ch tokens=19 | 'The fisherman'
+00:47:05.869 INFO  speaker.llm | fast tier done in 0.53s (83 chars, streamed)
+00:47:05.869 INFO  speaker.tasks | task e5d33b834fa2 completed in 0.54s (83 chars)
+00:47:05.869 INFO  speaker.runtime | assistant: 'It was about a humble fisherman who found a mysterious pearl.'
+00:47:05.919 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0064 resid=0.0001 incoh=0.94 resid_floor=0.0062 consec=0
+00:47:05.919 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:47:06.018 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0143 resid=0.0001 incoh=0.94 resid_floor=0.0059 consec=0
+00:47:06.215 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0375 resid=0.0004 incoh=0.94 resid_floor=0.0056 consec=0
+00:47:06.222 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0318 resid=0.0005 incoh=0.94 resid_floor=0.0053 consec=0
+00:47:06.316 DEBUG speaker.sherpa | dtd: D=0.38 K=5.0 fired=False gated=False (z_raw=1.88 z_resid=0.00 z_coh=0.00) raw=0.0337 resid=0.0006 incoh=0.94 resid_floor=0.0051 consec=0
+00:47:06.516 DEBUG speaker.sherpa | dtd: D=0.90 K=5.0 fired=False gated=False (z_raw=4.48 z_resid=0.00 z_coh=0.00) raw=0.0557 resid=0.0003 incoh=0.43 resid_floor=0.0049 consec=0
+00:47:06.524 DEBUG speaker.sherpa | dtd: D=19.14 K=5.0 fired=True gated=False (z_raw=0.06 z_resid=19.13 z_coh=0.00) raw=0.0226 resid=0.0117 incoh=0.85 resid_floor=0.0049 consec=1
+00:47:06.624 DEBUG speaker.sherpa | dtd: D=30.83 K=5.0 fired=True gated=False (z_raw=0.00 z_resid=30.83 z_coh=0.05) raw=0.0124 resid=0.0180 incoh=0.94 resid_floor=0.0049 consec=2
+00:47:06.722 DEBUG speaker.sherpa | dtd: D=7.92 K=5.0 fired=True gated=False (z_raw=0.04 z_resid=7.91 z_coh=0.04) raw=0.0223 resid=0.0056 incoh=0.93 resid_floor=0.0049 consec=3
+00:47:06.801 DEBUG speaker.sherpa | speaking: 'It was about a humble fisherman who found a mysterious pearl.' (queue depth=0)
+00:47:07.319 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0172 resid=0.0004 incoh=0.93 resid_floor=0.0060 consec=0
+00:47:07.518 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0262 resid=0.0060 incoh=0.25 resid_floor=0.0060 consec=0
+00:47:07.525 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0520 resid=0.0007 incoh=0.99 resid_floor=0.0057 consec=0
+00:47:07.619 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0211 resid=0.0007 incoh=0.75 resid_floor=0.0055 consec=0
+00:47:07.719 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0180 resid=0.0004 incoh=0.88 resid_floor=0.0052 consec=0
+00:47:08.018 DEBUG speaker.sherpa | capture heartbeat: blocks=4092 avg_rms=0.0034 partials=50 finals=14 speaking=True
+00:47:08.020 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.51) raw=0.0237 resid=0.0005 incoh=0.92 resid_floor=0.0050 consec=0
+00:47:08.226 DEBUG speaker.sherpa | dtd: D=0.50 K=5.0 fired=False gated=False (z_raw=2.51 z_resid=0.00 z_coh=0.00) raw=0.0535 resid=0.0009 incoh=0.51 resid_floor=0.0048 consec=0
+00:47:08.238 DEBUG speaker.sherpa | dtd: D=1.19 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=1.19 z_coh=0.65) raw=0.0248 resid=0.0023 incoh=0.96 resid_floor=0.0047 consec=0
+00:47:08.327 DEBUG speaker.sherpa | dtd: D=5.80 K=5.0 fired=True gated=False (z_raw=0.00 z_resid=5.80 z_coh=0.50) raw=0.0207 resid=0.0052 incoh=0.92 resid_floor=0.0047 consec=1
+00:47:08.521 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0121 resid=0.0014 incoh=0.54 resid_floor=0.0045 consec=0
+00:47:08.528 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.55) raw=0.0074 resid=0.0005 incoh=0.92 resid_floor=0.0043 consec=0
+00:47:08.620 DEBUG speaker.sherpa | dtd: D=0.69 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.69 z_coh=0.42) raw=0.0159 resid=0.0019 incoh=0.89 resid_floor=0.0042 consec=0
+00:47:08.720 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.41) raw=0.0116 resid=0.0003 incoh=0.90 resid_floor=0.0040 consec=0
+00:47:08.822 DEBUG speaker.sherpa | dtd: D=0.20 K=5.0 fired=False gated=False (z_raw=1.01 z_resid=0.00 z_coh=0.56) raw=0.0354 resid=0.0003 incoh=0.95 resid_floor=0.0038 consec=0
+00:47:08.919 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0168 resid=0.0003 incoh=0.62 resid_floor=0.0037 consec=0
+00:47:09.221 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.33) raw=0.0168 resid=0.0005 incoh=0.88 resid_floor=0.0035 consec=0
+00:47:09.622 DEBUG speaker.sherpa | dtd: D=0.19 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.19 z_coh=0.49) raw=0.0070 resid=0.0014 incoh=0.94 resid_floor=0.0035 consec=0
+00:47:09.821 DEBUG speaker.sherpa | dtd: D=21.29 K=5.0 fired=True gated=False (z_raw=0.85 z_resid=21.12 z_coh=0.04) raw=0.0326 resid=0.0124 incoh=0.80 resid_floor=0.0035 consec=1
+00:47:09.828 DEBUG speaker.sherpa | dtd: D=65.85 K=5.0 fired=True gated=True (z_raw=2.77 z_resid=65.30 z_coh=0.23) raw=0.0525 resid=0.0357 incoh=0.86 resid_floor=0.0035 consec=2
+00:47:10.315 DEBUG speaker.sherpa | capture heartbeat: blocks=4111 avg_rms=0.0089 partials=50 finals=14 speaking=False
+00:47:11.333 DEBUG speaker.sherpa | asr partial: 'O'
+00:47:11.333 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='O'
+00:47:11.832 DEBUG speaker.sherpa | asr partial: 'Oh'
+00:47:11.833 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Oh'
+00:47:12.266 DEBUG speaker.sysinfo | system sample: cpu=10.3% ram=32169.8MB(99.0%) proc_rss=641.8MB gpu=2.0% gpu_mem=12333.0/16376.0MB
+00:47:12.317 DEBUG speaker.sherpa | capture heartbeat: blocks=4127 avg_rms=0.0063 partials=52 finals=14 speaking=False
+00:47:12.734 INFO  speaker.sherpa | asr final: 'Oh' (raw 'OH')
+00:47:12.736 INFO  speaker.runtime | final -> brain: 'Oh' (mode=assistant)
+00:47:12.736 INFO  speaker.runtime | route: action=simple tier=fast conf=0.85 source=heuristic (no gather/action markers) for 'Oh'
+00:47:12.736 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Oh'
+00:47:12.736 INFO  speaker.tasks | task f528049a9589 started: mode=assistant capability=assistant.answer input='Oh'
+00:47:12.747 INFO  speaker.llm | answering on fast tier (sensitivity=private, intent=assistant): 'Oh'
+00:47:13.204 DEBUG speaker.llm.ollama | ollama gemma3:4b full prompt: Oh
+00:47:13.204 INFO  speaker.llm.ollama | ollama gemma3:4b: 0.46s ttft=0.38s out=44ch tokens=10 | 'Oh'
+00:47:13.204 INFO  speaker.llm | fast tier done in 0.46s (44 chars, streamed)
+00:47:13.204 INFO  speaker.tasks | task f528049a9589 completed in 0.47s (44 chars)
+00:47:13.204 INFO  speaker.runtime | assistant: 'Is there anything I can help you with today?'
+00:47:13.204 DEBUG speaker.sherpa | speaking: 'Is there anything I can help you with today?' (queue depth=0)
+00:47:13.328 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0078 resid=0.0002 incoh=0.86 resid_floor=0.0002 consec=0
+00:47:13.531 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0070 resid=0.0002 incoh=0.86 resid_floor=0.0002 consec=0
+00:47:13.531 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:47:13.542 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0097 resid=0.0005 incoh=0.86 resid_floor=0.0002 consec=0
+00:47:13.726 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0391 resid=0.0055 incoh=0.86 resid_floor=0.0002 consec=0
+00:47:13.732 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0643 resid=0.0562 incoh=0.86 resid_floor=0.0002 consec=0
+00:47:13.832 DEBUG speaker.sherpa | dtd: D=4.71 K=5.0 fired=False gated=False (z_raw=1.50 z_resid=4.41 z_coh=0.00) raw=0.0410 resid=0.0346 incoh=0.25 resid_floor=0.0002 consec=0
+00:47:13.931 DEBUG speaker.sherpa | dtd: D=0.01 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.01 z_coh=0.00) raw=0.0261 resid=0.0137 incoh=0.37 resid_floor=0.0002 consec=0
+00:47:14.028 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.30) raw=0.0234 resid=0.0066 incoh=0.91 resid_floor=0.0002 consec=0
+00:47:14.127 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0195 resid=0.0019 incoh=0.45 resid_floor=0.0002 consec=0
+00:47:14.426 DEBUG speaker.sherpa | capture heartbeat: blocks=4142 avg_rms=0.0102 partials=52 finals=15 speaking=True
+00:47:14.428 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.08) raw=0.0243 resid=0.0028 incoh=0.82 resid_floor=0.0002 consec=0
+00:47:14.729 DEBUG speaker.sherpa | dtd: D=1.63 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=1.63 z_coh=0.44) raw=0.0225 resid=0.0251 incoh=0.94 resid_floor=0.0002 consec=0
+00:47:14.830 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.35) raw=0.0068 resid=0.0017 incoh=0.92 resid_floor=0.0002 consec=0
+00:47:15.131 DEBUG speaker.sherpa | dtd: D=0.11 K=5.0 fired=False gated=False (z_raw=0.57 z_resid=0.00 z_coh=0.00) raw=0.0302 resid=0.0045 incoh=0.79 resid_floor=0.0002 consec=0
+00:47:16.524 DEBUG speaker.sherpa | capture heartbeat: blocks=4157 avg_rms=0.0408 partials=52 finals=15 speaking=False
+00:47:16.542 DEBUG speaker.sherpa | asr partial: 'Contin'
+00:47:16.542 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Contin'
+00:47:17.041 DEBUG speaker.sherpa | asr partial: 'Continuous'
+00:47:17.041 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Continuous'
+00:47:17.349 DEBUG speaker.sherpa | asr partial: 'Continuous thor'
+00:47:17.350 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Continuous thor'
+00:47:17.642 DEBUG speaker.sherpa | asr partial: 'Continuous story'
+00:47:17.642 DEBUG speaker.supervisor | decision: kind=ignore confidence=0.80 reason=partial_non_control mode=assistant text='Continuous story'
+00:47:18.526 DEBUG speaker.sherpa | capture heartbeat: blocks=4172 avg_rms=0.0096 partials=56 finals=15 speaking=False
+00:47:18.543 INFO  speaker.sherpa | asr final: 'Continuous story' (raw 'CONTINUOUS STORY')
+00:47:18.545 INFO  speaker.runtime | final -> brain: 'Continuous story' (mode=assistant)
+00:47:18.545 INFO  speaker.runtime | route: action=simple tier=main conf=0.85 source=heuristic (no gather/action markers) for 'Continuous story'
+00:47:18.546 DEBUG speaker.supervisor | decision: kind=assistant confidence=0.75 reason=assistant_mode mode=assistant text='Continuous story'
+00:47:18.546 INFO  speaker.tasks | task ab043ebecb3c started: mode=assistant capability=assistant.answer input='Continuous story'
+00:47:18.556 INFO  speaker.llm | answering on main tier (sensitivity=private, intent=assistant): 'Continuous story'
+00:47:19.496 INFO  speaker.runtime | assistant: 'The fisherman took the glowing pearl to his village, where it began to emit a soft hum that calmed everyone who heard it.'
+00:47:19.496 DEBUG speaker.sherpa | speaking: 'The fisherman took the glowing pearl to his village, where it began to emit a soft hum that calmed everyone who heard it.' (queue depth=0)
+00:47:19.737 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0062 resid=0.0003 incoh=0.79 resid_floor=0.0003 consec=0
+00:47:19.839 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0063 resid=0.0001 incoh=0.79 resid_floor=0.0003 consec=0
+00:47:19.839 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)
+00:47:19.937 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0067 resid=0.0001 incoh=0.79 resid_floor=0.0002 consec=0
+00:47:20.031 DEBUG speaker.llm.ollama | ollama gemma4:12b full prompt: Continuous story
+00:47:20.031 INFO  speaker.llm.ollama | ollama gemma4:12b: 1.47s ttft=0.47s out=258ch tokens=53 | 'Continuous story'
+00:47:20.031 INFO  speaker.llm | main tier done in 1.48s (258 chars, streamed)
+00:47:20.032 INFO  speaker.tasks | task ab043ebecb3c completed in 1.49s (258 chars)
+00:47:20.032 INFO  speaker.runtime | assistant: 'They soon realized that as long as the pearl stayed in the village, the seas remained calm and the fish were plentiful for all to share.'
+00:47:20.134 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0221 resid=0.0015 incoh=0.79 resid_floor=0.0002 consec=0
+00:47:20.141 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0714 resid=0.0423 incoh=0.79 resid_floor=0.0002 consec=0
+00:47:20.235 DEBUG speaker.sherpa | dtd: D=14.84 K=5.0 fired=True gated=True (z_raw=1.79 z_resid=14.49 z_coh=0.16) raw=0.0387 resid=0.0601 incoh=0.84 resid_floor=0.0002 consec=1
+00:47:20.535 DEBUG speaker.sherpa | capture heartbeat: blocks=4189 avg_rms=0.0102 partials=56 finals=16 speaking=True
+00:47:20.538 DEBUG speaker.sherpa | dtd: D=0.03 K=5.0 fired=False gated=False (z_raw=0.13 z_resid=0.00 z_coh=0.52) raw=0.0237 resid=0.0057 incoh=0.96 resid_floor=0.0002 consec=0
+00:47:20.638 DEBUG speaker.sherpa | dtd: D=0.81 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.81 z_coh=0.00) raw=0.0177 resid=0.0115 incoh=0.75 resid_floor=0.0002 consec=0
+00:47:20.736 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.08) raw=0.0152 resid=0.0027 incoh=0.82 resid_floor=0.0002 consec=0
+00:47:20.837 DEBUG speaker.sherpa | dtd: D=0.51 K=5.0 fired=False gated=False (z_raw=2.56 z_resid=0.00 z_coh=0.00) raw=0.0446 resid=0.0013 incoh=0.39 resid_floor=0.0002 consec=0
+00:47:21.137 DEBUG speaker.sherpa | dtd: D=0.55 K=5.0 fired=False gated=False (z_raw=2.74 z_resid=0.00 z_coh=0.54) raw=0.0485 resid=0.0011 incoh=0.95 resid_floor=0.0002 consec=0
+00:47:21.338 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.37) raw=0.0148 resid=0.0012 incoh=0.90 resid_floor=0.0002 consec=0
+00:47:21.345 DEBUG speaker.sherpa | dtd: D=0.34 K=5.0 fired=False gated=False (z_raw=1.72 z_resid=0.00 z_coh=0.00) raw=0.0458 resid=0.0006 incoh=0.26 resid_floor=0.0002 consec=0
+00:47:21.437 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0228 resid=0.0010 incoh=0.41 resid_floor=0.0002 consec=0
+00:47:21.538 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.00) raw=0.0224 resid=0.0004 incoh=0.31 resid_floor=0.0003 consec=0
+00:47:21.639 DEBUG speaker.sherpa | dtd: D=0.06 K=5.0 fired=False gated=False (z_raw=0.30 z_resid=0.00 z_coh=0.00) raw=0.0292 resid=0.0004 incoh=0.14 resid_floor=0.0003 consec=0
+00:47:21.838 DEBUG speaker.sherpa | dtd: D=0.00 K=5.0 fired=False gated=False (z_raw=0.00 z_resid=0.00 z_coh=0.80) raw=0.0076 resid=0.0004 incoh=0.92 resid_floor=0.0003 consec=0
+00:47:21.845 DEBUG speaker.sherpa | dtd: D=5.67 K=5.0 fired=True gated=True (z_raw=0.89 z_resid=5.49 z_coh=0.00) raw=0.0361 resid=0.0189 incoh=0.13 resid_floor=0.0003 consec=1
+00:47:21.938 DEBUG speaker.sherpa | dtd: D=6.57 K=5.0 fired=True gated=True (z_raw=2.01 z_resid=6.17 z_coh=0.00) raw=0.0512 resid=0.0205 incoh=0.06 resid_floor=0.0003 consec=2
+00:47:21.938 INFO  speaker.sherpa | barge-in detected
+00:47:21.938 INFO  speaker.supervisor | cancel_all: epoch=5 0 active, 0 queued, 0 pending-confirm
+00:47:21.939 INFO  speaker.supervisor | cancel_all: epoch=6 0 active, 0 queued, 0 pending-confirm
+00:47:22.286 DEBUG speaker.sysinfo | system sample: cpu=11.0% ram=32221.2MB(99.2%) proc_rss=639.5MB gpu=4.0% gpu_mem=12333.0/16376.0MB
+00:47:22.630 DEBUG speaker.sherpa | capture heartbeat: blocks=4208 avg_rms=0.0061 partials=56 finals=16 speaking=False
+00:47:24.633 DEBUG speaker.sherpa | capture heartbeat: blocks=4222 avg_rms=0.0066 partials=56 finals=16 speaking=False
+00:47:26.637 DEBUG speaker.sherpa | capture heartbeat: blocks=4235 avg_rms=0.0070 partials=56 finals=16 speaking=False
+00:47:28.738 DEBUG speaker.sherpa | capture heartbeat: blocks=4255 avg_rms=0.0088 partials=56 finals=16 speaking=False
+00:47:30.739 DEBUG speaker.sherpa | capture heartbeat: blocks=4273 avg_rms=0.0107 partials=56 finals=16 speaking=False
+00:47:32.308 DEBUG speaker.sysinfo | system sample: cpu=12.1% ram=32223.2MB(99.3%) proc_rss=627.5MB gpu=0.0% gpu_mem=12333.0/16376.0MB
+00:47:32.841 DEBUG speaker.sherpa | capture heartbeat: blocks=4291 avg_rms=0.0114 partials=56 finals=16 speaking=False
+00:47:35.042 DEBUG speaker.sherpa | capture heartbeat: blocks=4312 avg_rms=0.0103 partials=56 finals=16 speaking=False
+00:47:37.044 DEBUG speaker.sherpa | capture heartbeat: blocks=4328 avg_rms=0.0106 partials=56 finals=16 speaking=False
+00:47:39.046 DEBUG speaker.sherpa | capture heartbeat: blocks=4343 avg_rms=0.0169 partials=56 finals=16 speaking=False
+00:47:41.050 DEBUG speaker.sherpa | capture heartbeat: blocks=4358 avg_rms=0.0071 partials=56 finals=16 speaking=False
+00:47:42.329 DEBUG speaker.sysinfo | system sample: cpu=12.0% ram=32191.9MB(99.2%) proc_rss=626.1MB gpu=0.0% gpu_mem=12333.0/16376.0MB
+00:47:43.052 DEBUG speaker.sherpa | capture heartbeat: blocks=4374 avg_rms=0.0084 partials=56 finals=16 speaking=False
+00:47:45.154 DEBUG speaker.sherpa | capture heartbeat: blocks=4390 avg_rms=0.0183 partials=56 finals=16 speaking=False
+00:47:47.158 DEBUG speaker.sherpa | capture heartbeat: blocks=4405 avg_rms=0.0184 partials=56 finals=16 speaking=False
+00:47:49.361 DEBUG speaker.sherpa | capture heartbeat: blocks=4421 avg_rms=0.0163 partials=56 finals=16 speaking=False
+00:47:51.464 DEBUG speaker.sherpa | capture heartbeat: blocks=4439 avg_rms=0.0099 partials=56 finals=16 speaking=False
+00:47:52.351 DEBUG speaker.sysinfo | system sample: cpu=12.1% ram=32113.5MB(98.9%) proc_rss=620.6MB gpu=35.0% gpu_mem=12333.0/16376.0MB
+00:47:53.466 DEBUG speaker.sherpa | capture heartbeat: blocks=4455 avg_rms=0.0107 partials=56 finals=16 speaking=False
+00:47:55.467 DEBUG speaker.sherpa | capture heartbeat: blocks=4472 avg_rms=0.0069 partials=56 finals=16 speaking=False
+00:47:57.570 DEBUG speaker.sherpa | capture heartbeat: blocks=4490 avg_rms=0.0088 partials=56 finals=16 speaking=False
+00:47:59.673 DEBUG speaker.sherpa | capture heartbeat: blocks=4505 avg_rms=0.0094 partials=56 finals=16 speaking=False
+00:48:01.675 DEBUG speaker.sherpa | capture heartbeat: blocks=4520 avg_rms=0.0177 partials=56 finals=16 speaking=False
+00:48:02.374 DEBUG speaker.sysinfo | system sample: cpu=11.9% ram=32134.5MB(99.0%) proc_rss=613.1MB gpu=3.0% gpu_mem=12333.0/16376.0MB
+00:48:03.776 DEBUG speaker.sherpa | capture heartbeat: blocks=4539 avg_rms=0.0143 partials=56 finals=16 speaking=False
+00:48:05.979 DEBUG speaker.sherpa | capture heartbeat: blocks=4558 avg_rms=0.0160 partials=56 finals=16 speaking=False
+00:48:07.981 DEBUG speaker.sherpa | capture heartbeat: blocks=4574 avg_rms=0.0113 partials=56 finals=16 speaking=False
+00:48:09.983 DEBUG speaker.sherpa | capture heartbeat: blocks=4590 avg_rms=0.0103 partials=56 finals=16 speaking=False
+00:48:12.089 DEBUG speaker.sherpa | capture heartbeat: blocks=4601 avg_rms=0.0158 partials=56 finals=16 speaking=False
+00:48:12.395 DEBUG speaker.sysinfo | system sample: cpu=11.0% ram=32186.2MB(99.2%) proc_rss=610.2MB gpu=19.0% gpu_mem=12333.0/16376.0MB
+00:48:14.092 DEBUG speaker.sherpa | capture heartbeat: blocks=4615 avg_rms=0.0142 partials=56 finals=16 speaking=False
+00:48:16.094 DEBUG speaker.sherpa | capture heartbeat: blocks=4631 avg_rms=0.0107 partials=56 finals=16 speaking=False
+00:48:18.097 DEBUG speaker.sherpa | capture heartbeat: blocks=4647 avg_rms=0.0100 partials=56 finals=16 speaking=False
+00:48:20.198 DEBUG speaker.sherpa | capture heartbeat: blocks=4663 avg_rms=0.0176 partials=56 finals=16 speaking=False
+00:48:22.201 DEBUG speaker.sherpa | capture heartbeat: blocks=4680 avg_rms=0.0136 partials=56 finals=16 speaking=False
+00:48:22.423 DEBUG speaker.sysinfo | system sample: cpu=11.8% ram=32124.3MB(99.0%) proc_rss=574.6MB gpu=35.0% gpu_mem=12333.0/16376.0MB
+00:48:24.204 DEBUG speaker.sherpa | capture heartbeat: blocks=4693 avg_rms=0.0160 partials=56 finals=16 speaking=False
+00:48:26.207 DEBUG speaker.sherpa | capture heartbeat: blocks=4707 avg_rms=0.0166 partials=56 finals=16 speaking=False
+00:48:28.211 DEBUG speaker.sherpa | capture heartbeat: blocks=4721 avg_rms=0.0166 partials=56 finals=16 speaking=False
+00:48:30.415 DEBUG speaker.sherpa | capture heartbeat: blocks=4736 avg_rms=0.0232 partials=56 finals=16 speaking=False
+00:48:32.419 DEBUG speaker.sherpa | capture heartbeat: blocks=4747 avg_rms=0.0193 partials=56 finals=16 speaking=False
+00:48:32.444 DEBUG speaker.sysinfo | system sample: cpu=10.9% ram=32156.0MB(99.1%) proc_rss=506.6MB gpu=0.0% gpu_mem=12333.0/16376.0MB
+00:48:34.423 DEBUG speaker.sherpa | capture heartbeat: blocks=4762 avg_rms=0.0102 partials=56 finals=16 speaking=False
+00:48:36.425 DEBUG speaker.sherpa | capture heartbeat: blocks=4778 avg_rms=0.0128 partials=56 finals=16 speaking=False
+00:48:38.427 DEBUG speaker.sherpa | capture heartbeat: blocks=4794 avg_rms=0.0104 partials=56 finals=16 speaking=False
+00:48:40.429 DEBUG speaker.sherpa | capture heartbeat: blocks=4812 avg_rms=0.0092 partials=56 finals=16 speaking=False
+00:48:42.431 DEBUG speaker.sherpa | capture heartbeat: blocks=4828 avg_rms=0.0135 partials=56 finals=16 speaking=False
+00:48:42.463 DEBUG speaker.sysinfo | system sample: cpu=11.5% ram=32165.2MB(99.1%) proc_rss=487.1MB gpu=12.0% gpu_mem=12333.0/16376.0MB
+00:48:44.433 DEBUG speaker.sherpa | capture heartbeat: blocks=4844 avg_rms=0.0199 partials=56 finals=16 speaking=False
+00:48:46.436 DEBUG speaker.sherpa | capture heartbeat: blocks=4857 avg_rms=0.0198 partials=56 finals=16 speaking=False
+00:48:48.639 DEBUG speaker.sherpa | capture heartbeat: blocks=4876 avg_rms=0.0147 partials=56 finals=16 speaking=False
+00:48:50.641 DEBUG speaker.sherpa | capture heartbeat: blocks=4892 avg_rms=0.0090 partials=56 finals=16 speaking=False
+00:48:52.484 DEBUG speaker.sysinfo | system sample: cpu=11.7% ram=32190.3MB(99.2%) proc_rss=460.8MB gpu=27.0% gpu_mem=12333.0/16376.0MB
+00:48:52.643 DEBUG speaker.sherpa | capture heartbeat: blocks=4907 avg_rms=0.0070 partials=56 finals=16 speaking=False
+00:48:54.645 DEBUG speaker.sherpa | capture heartbeat: blocks=4924 avg_rms=0.0078 partials=56 finals=16 speaking=False
+00:48:56.848 DEBUG speaker.sherpa | capture heartbeat: blocks=4940 avg_rms=0.0074 partials=56 finals=16 speaking=False
+00:48:58.850 DEBUG speaker.sherpa | capture heartbeat: blocks=4957 avg_rms=0.0069 partials=56 finals=16 speaking=False
+00:49:00.852 DEBUG speaker.sherpa | capture heartbeat: blocks=4974 avg_rms=0.0067 partials=56 finals=16 speaking=False
+00:49:02.508 DEBUG speaker.sysinfo | system sample: cpu=11.7% ram=32222.7MB(99.3%) proc_rss=398.3MB gpu=19.0% gpu_mem=12333.0/16376.0MB
+00:49:02.855 DEBUG speaker.sherpa | capture heartbeat: blocks=4988 avg_rms=0.0066 partials=56 finals=16 speaking=False
+00:49:04.858 DEBUG speaker.sherpa | capture heartbeat: blocks=5004 avg_rms=0.0092 partials=56 finals=16 speaking=False
+00:49:06.963 DEBUG speaker.sherpa | capture heartbeat: blocks=5017 avg_rms=0.0092 partials=56 finals=16 speaking=False
+00:49:09.066 DEBUG speaker.sherpa | capture heartbeat: blocks=5032 avg_rms=0.0069 partials=56 finals=16 speaking=False
+00:49:11.068 DEBUG speaker.sherpa | capture heartbeat: blocks=5048 avg_rms=0.0137 partials=56 finals=16 speaking=False
+00:49:12.578 DEBUG speaker.sysinfo | system sample: cpu=11.2% ram=32225.4MB(99.3%) proc_rss=329.7MB gpu=0.0% gpu_mem=12333.0/16376.0MB
+00:49:13.070 DEBUG speaker.sherpa | capture heartbeat: blocks=5063 avg_rms=0.0081 partials=56 finals=16 speaking=False
+00:49:15.170 DEBUG speaker.sherpa | capture heartbeat: blocks=5085 avg_rms=0.0081 partials=56 finals=16 speaking=False
+00:49:17.171 DEBUG speaker.sherpa | capture heartbeat: blocks=5102 avg_rms=0.0079 partials=56 finals=16 speaking=False
+00:49:19.174 DEBUG speaker.sherpa | capture heartbeat: blocks=5119 avg_rms=0.0088 partials=56 finals=16 speaking=False
+00:49:21.176 DEBUG speaker.sherpa | capture heartbeat: blocks=5135 avg_rms=0.0072 partials=56 finals=16 speaking=False
+00:49:22.601 DEBUG speaker.sysinfo | system sample: cpu=10.0% ram=32198.0MB(99.2%) proc_rss=321.7MB gpu=12.0% gpu_mem=12333.0/16376.0MB
+00:49:23.180 DEBUG speaker.sherpa | capture heartbeat: blocks=5149 avg_rms=0.0089 partials=56 finals=16 speaking=False
+00:49:25.184 DEBUG speaker.sherpa | capture heartbeat: blocks=5161 avg_rms=0.0083 partials=56 finals=16 speaking=False
+00:49:27.388 DEBUG speaker.sherpa | capture heartbeat: blocks=5177 avg_rms=0.0072 partials=56 finals=16 speaking=False
+00:49:29.388 DEBUG speaker.sherpa | capture heartbeat: blocks=5195 avg_rms=0.0085 partials=56 finals=16 speaking=False
+00:49:31.590 DEBUG speaker.sherpa | capture heartbeat: blocks=5215 avg_rms=0.0079 partials=56 finals=16 speaking=False
+00:49:31.598 INFO  speaker.sherpa | recorded 521.4s of session audio -> logs/runs/run-20260610-003800.wav
+00:49:31.720 INFO  speaker.sysinfo | system final: cpu=9.8% ram=32166.8MB(99.1%) proc_rss=328.1MB gpu=17.0% gpu_mem=12333.0/16376.0MB | deltas: {'ram_used_mb_delta': 295.9, 'proc_rss_mb_delta': 307.7, 'gpu_mem_used_mb_delta': 12259.0}

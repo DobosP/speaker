@@ -45,7 +45,7 @@ from .speaker_gate import (
     rms,
     sherpa_speaker_gate,
 )
-from ._dtd import AdaptiveDTD
+from ._dtd import AdaptiveDTD, BargeSustain
 from .echo_coherence import EchoCoherenceDetector
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
@@ -276,8 +276,20 @@ class SherpaConfig:
     tts_data_dir: str = ""
     tts_speaker_id: int = 0
     tts_speed: float = 1.0
-    # Barge-in: seconds of detected voice during playback before we interrupt.
+    # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
+    # when at least barge_in_min_speech_sec of detected talk-over lands within the
+    # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
+    # real talk-over (breath/pauses + AEC suppressing the user mid-double-talk), so
+    # the bar is "enough eligible blocks in a short window", NOT "N consecutive":
+    # 0.2s (2 blocks) within a 0.5s window cuts a normal-volume talk-over without a
+    # shout, while the BOUNDED window keeps a sporadic echo leak from ever
+    # accumulating to a self-interrupt. This is the fix for the run-20260609-203236
+    # "needs a shout" failure: the DTD fired on 3 of 5 turn-2 blocks (2 on the
+    # turn-3 pre-shout) but the old voiced_run *= 0.5 decay never reached the 0.3s
+    # threshold on intermittent fires. Raise the window to tolerate more flicker;
+    # raise min_speech to demand a denser/longer talk-over before cutting.
     barge_in_min_speech_sec: float = 0.2
+    barge_in_sustain_window_sec: float = 0.5
     # Master switch for talk-over barge-in during playback. On OPEN SPEAKERS with
     # no AEC, the assistant's own (loud) TTS leaks into the mic and a level-only
     # gate self-interrupts longer responses (observed: a story reply cut itself
@@ -1249,13 +1261,20 @@ class SherpaOnnxEngine(AudioEngine):
                       "capture loop idle -- the assistant will never hear you")
             return
         stream = self._new_asr_stream()
-        voiced_run = 0.0
         # RC-5 observability: track voiced speech DURING playback that the barge
         # gate rejected, so a "user kept talking but nothing fired" failure is
         # visible in the run bundle instead of being silently dropped.
         rejected_run = 0.0
         rejected_flagged = False
         block_sec = 0.1
+        # Temporal confirmation for barge-in: a windowed sustain over the per-frame
+        # DTD/gate eligibility (replaces the old leaky `voiced_run` accumulator that
+        # intermittent fires starved -- see core/engines/_dtd.BargeSustain).
+        barge_sustain = BargeSustain(
+            window_sec=self.config.barge_in_sustain_window_sec,
+            block_sec=block_sec,
+            min_voiced_sec=self.config.barge_in_min_speech_sec,
+        )
         # Rolling buffer of the current (non-speaking) ASR segment, used to embed
         # the speaker when an endpoint fires so input can be gated on identity.
         # Capped so a long monologue can't grow memory; the tail is what the
@@ -1398,13 +1417,23 @@ class SherpaOnnxEngine(AudioEngine):
                             now < self._barge_in_suppressed_until
                             or self._in_post_speaking_refractory(now)
                         ):
-                            voiced_run = 0.0
+                            barge_sustain.reset()
                             rejected_run = 0.0
-                        elif self._barge_in_fire_eligible(samples, mic_raw):
-                            voiced_run += block_sec
-                            rejected_run = 0.0
-                            if voiced_run >= self.config.barge_in_min_speech_sec:
-                                voiced_run = 0.0
+                        else:
+                            # Windowed temporal confirmation (BargeSustain): the
+                            # per-frame eligibility FLICKERS on a real open-speaker
+                            # talk-over (breath/pauses + AEC suppressing the user
+                            # mid-double-talk), so a cut needs enough eligible blocks
+                            # within a short trailing window -- NOT N consecutive, and
+                            # NOT a leaky accumulator the flicker starves (the
+                            # run-20260609-203236 "needs a shout" bug: the DTD fired on
+                            # 3 of 5 turn-2 blocks but voiced_run *= 0.5 never reached
+                            # the threshold). The bounded window keeps a sporadic echo
+                            # leak from ever summing to a self-interrupt.
+                            eligible = self._barge_in_fire_eligible(samples, mic_raw)
+                            if barge_sustain.update(eligible):
+                                barge_sustain.reset()
+                                rejected_run = 0.0
                                 # Latch: one barge-in per speaking run. The 0.5s
                                 # suppress window still debounces; the latch
                                 # caps the whole run so self-echo can't re-fire.
@@ -1414,41 +1443,34 @@ class SherpaOnnxEngine(AudioEngine):
                                 )
                                 log.info("barge-in detected")
                                 self._cb.on_barge_in()
-                        else:
-                            # LEAKY integrator (not a hard reset): a real talk-over's
-                            # eligibility flickers True/False block-to-block on an open
-                            # speaker (the detector sits near the echo-overlap edge), so
-                            # a hard `voiced_run = 0.0` on any miss meant a continuous
-                            # talk-over never accumulated to barge_in_min_speech_sec --
-                            # the measured "7 eligible frames, 0 fired" bug. Decaying
-                            # lets a mostly-continuous run survive isolated misses while
-                            # still bleeding off a one-off spike.
-                            voiced_run *= 0.5
-                            # RC-5: the gate rejected this block. If the VAD still
-                            # hears SUSTAINED speech during playback and no barge
-                            # has fired this run, the user is likely talking over
-                            # the assistant but the echo/level gate is rejecting
-                            # them -- surface it (once per episode) instead of
-                            # dropping it silently, so the failure shows up in the
-                            # run bundle (metric) + watchdog rather than a clean log.
-                            if (
-                                not self._barge_in_fired_this_run
-                                and self._vad.is_speech_detected()
-                            ):
-                                rejected_run += block_sec
-                                if (
-                                    rejected_run >= self.config.barge_in_min_speech_sec
-                                    and not rejected_flagged
-                                ):
-                                    rejected_flagged = True
-                                    log.info(
-                                        "barge-in REJECTED: %.1fs of voiced speech during "
-                                        "playback did not trip the gate (talk-over ignored?)",
-                                        rejected_run,
-                                    )
-                                    self._cb.on_metric("barge_in_rejected")
-                            else:
+                            elif eligible:
                                 rejected_run = 0.0
+                            else:
+                                # RC-5: the gate rejected this block. If the VAD still
+                                # hears SUSTAINED speech during playback and no barge
+                                # has fired this run, the user is likely talking over
+                                # the assistant but the echo/level gate is rejecting
+                                # them -- surface it (once per episode) instead of
+                                # dropping it silently, so the failure shows up in the
+                                # run bundle (metric) + watchdog rather than a clean log.
+                                if (
+                                    not self._barge_in_fired_this_run
+                                    and self._vad.is_speech_detected()
+                                ):
+                                    rejected_run += block_sec
+                                    if (
+                                        rejected_run >= self.config.barge_in_min_speech_sec
+                                        and not rejected_flagged
+                                    ):
+                                        rejected_flagged = True
+                                        log.info(
+                                            "barge-in REJECTED: %.1fs of voiced speech during "
+                                            "playback did not trip the gate (talk-over ignored?)",
+                                            rejected_run,
+                                        )
+                                        self._cb.on_metric("barge_in_rejected")
+                                else:
+                                    rejected_run = 0.0
                     continue
                 # Not speaking -> reset the rejected-talk-over episode tracking.
                 rejected_run = 0.0

@@ -8,22 +8,21 @@ integrator) over the recorded ``run-20260609-203236`` triples via the shared
 
 WHAT THIS FILE PINS
 -------------------
-The recorded live failure: the fused-z-score ``AdaptiveDTD`` *fired* on the
-owner's talk-over, but the downstream integrator + one-per-run latch only
-converted a fire into an actual cut on the turn-3 SHOUT (raw=0.0704); the
-turn-2 NORMAL-volume talk-over (idx 10..14, raw 0.0024-0.0068) was missed
-(summary.json: turn-2 ``barge_in_latency=null``).
+The recorded decision layer AND its post-fix conversion. Replaying the parsed
+inputs through a fresh ``build_live_dtd()`` reproduces all 204 ``fired`` verdicts
+EXACTLY -- the ``AdaptiveDTD.decide`` math is unchanged -- which
+``test_live_dtd_reproduces_every_recorded_fired_verdict`` pins as the regression
+baseline. The FULL chain (``run_frames`` -> REAL ``AdaptiveDTD.decide`` + REAL
+``BargeSustain``) is then asserted to NOW cut on the normal-volume talk-over: the
+windowed sustain (the 2026-06-09 fix) converts the intermittent turn-2 DTD fires
+(idx 10, 11, _, _, 14) into a cut at idx 11, where the old leaky ``voiced_run *=
+0.5`` accumulator needed the turn-3 shout (raw=0.0704). The owner-requirement
+guards live in ``test_barge_requirement.py``; echo-safety in
+``test_barge_echo_must_not_fire.py``.
 
-These tests ASSERT THAT THE BUG EXISTS (they document current behavior, so they
-PASS today). The sibling *requirement* file (``test_barge_requirement.py``)
-carries the strict-xfail assertions that flip to FAILURE the moment a fix makes
-a normal-volume talk-over cut -- that is the signal to revisit these baselines.
-
-Per the foundation's VERIFIED findings, replaying the parsed inputs through a
-fresh ``build_live_dtd()`` reproduces all 204 ``fired`` verdicts EXACTLY, but
-the recomputed ``.last_D`` drifts (the live chart carried pre-trace EWMA state).
-We therefore assert on the ``decide()`` boolean / ``.last_decided`` ONLY and
-NEVER on ``.last_D`` -- see the comment in
+Per the foundation's VERIFIED findings the recomputed ``.last_D`` drifts (the live
+chart carried pre-trace EWMA state), so we assert on the ``decide()`` boolean /
+``.last_decided`` ONLY and NEVER on ``.last_D`` -- see the comment in
 ``test_live_dtd_reproduces_every_recorded_fired_verdict``.
 """
 from __future__ import annotations
@@ -77,20 +76,19 @@ def test_live_dtd_reproduces_every_recorded_fired_verdict():
     assert not mismatches, f"decide() verdict drifted from recorded: {mismatches}"
 
 
-def test_full_chain_replay_reproduces_the_live_miss_on_normal_talkover():
-    """The full chain reproduces the EXACT live miss: the DTD fires 9x, yet the
-    only converted cut lands on the turn-3 SHOUT -- the turn-2 normal-volume
-    talk-over never produces an ``on_barge_in``.
+def test_full_chain_replay_now_cuts_on_the_normal_talkover():
+    """After the BargeSustain fix the full chain CUTS on the normal-volume
+    talk-over.
 
-    Reproduces the bug deterministically: the 9 intermittent DTD fires + the
-    ``voiced_run *= 0.5`` decay between fires never let voiced_run reach the 0.3s
-    threshold on the normal-volume burst, so only the escalating shout breaks
-    through. PASSES today because it ASSERTS the bug exists (documents current
-    behavior); its sibling requirement test xfails on the fix.
+    The REAL ``AdaptiveDTD`` still fires 9x (its decide math is unchanged), and
+    the REAL windowed ``BargeSustain`` now converts the intermittent turn-2 fires
+    (idx 10, 11, _, _, 14) into a cut at idx 11 -- the first real talk-over -- no
+    longer waiting for the turn-3 shout. This is the post-fix counterpart of the
+    recorded live miss (summary.json: turn-2 ``barge_in_latency=null``); it goes
+    red if the integrator regresses to a flicker-starved accumulator.
 
     ``reset_latch_per_turn=True`` models the silent->speaking re-arm at each turn
-    boundary -- i.e. even with the latch generously re-armed every turn, the
-    normal-volume talk-over still does not cut.
+    boundary, so each turn's talk-over is independently eligible.
     """
     frames = bf.load_trace_frames()
 
@@ -102,42 +100,44 @@ def test_full_chain_replay_reproduces_the_live_miss_on_normal_talkover():
         params=bf.LIVE_INTEGRATOR_PARAMS,
     )
 
-    # The REAL DTD fires 9 times across the trace.
+    # The REAL DTD still fires 9 times across the trace (decide() unchanged).
     assert result.dtd_fire_count == 9
 
     fire_indices = [idx for idx, _ in result.fires]
 
-    # The turn-2 NORMAL-volume talk-over (idx 10..14) produces NO cut -- the miss.
-    assert not any(10 <= idx <= 14 for idx in fire_indices), (
-        f"turn-2 normal talk-over unexpectedly cut: {result.fires}"
+    # The turn-2 NORMAL-volume talk-over (idx 10..14) now produces a cut.
+    assert any(10 <= idx <= 14 for idx in fire_indices), (
+        f"normal-volume talk-over still did not cut: {result.fires}"
+    )
+    # The FIRST cut is the first real talk-over (turn-2), not the later shout.
+    assert result.first_fire_index in range(10, 15), (
+        f"first cut at idx {result.first_fire_index}, expected the turn-2 burst"
+    )
+    # The turn-3 talk-over also cuts -- at its ONSET (idx 188/189), not the
+    # idx-196 raw=0.0704 shout peak.
+    turn3_cuts = [idx for idx in fire_indices if 185 <= idx <= 196]
+    assert turn3_cuts and min(turn3_cuts) <= 189, (
+        f"turn-3 cut waited for the shout escalation: {turn3_cuts}"
     )
 
-    # The only cut lands in the turn-3 SHOUT window (idx 185..196).
-    assert fire_indices, "expected at least one cut on the shout"
-    assert all(185 <= idx <= 196 for idx in fire_indices), (
-        f"unexpected cut outside the shout window: {result.fires}"
-    )
 
-    # The shout fire's latency is computed and present.
-    assert result.first_fire_index is not None
-    assert result.first_fire_latency_sec is not None
-
-
-def test_latch_never_reset_collapses_all_turns_to_one_fire():
+def test_latch_never_reset_fires_once_on_the_first_real_talkover():
     """With the latch NEVER reset, the whole 204-frame trace collapses to exactly
-    ONE ``on_barge_in`` -- at idx 196, the maximum shout.
+    ONE ``on_barge_in`` -- now at idx 11, the FIRST real (turn-2 normal-volume)
+    talk-over.
 
-    Pins the secondary latch-collapse failure mode: once the one-per-run latch
-    sets, every later talk-over (turn-2 normal AND the second rejected attempt)
-    is starved. A fix that re-arms the latch per turn flips this expectation,
-    which is how the requirement file's xfail then surfaces.
+    Before the fix the single cut was the idx-196 shout (the normal talk-over
+    never converted, so the latch only tripped on the shout). With the windowed
+    sustain the normal talk-over converts first, so the one-per-run latch trips at
+    idx 11 and starves every later talk-over until the next speaking run -- pinning
+    that the latch still caps a run to ONE interrupt.
     """
     frames = bf.load_trace_frames()
 
     result = bf.run_frames(frames, bf.build_live_dtd(), reset_latch_per_turn=False)
 
     fire_indices = [idx for idx, _ in result.fires]
-    assert fire_indices == [196], (
-        f"expected exactly one fire at idx 196, got {result.fires}"
+    assert fire_indices == [11], (
+        f"expected exactly one fire at idx 11 (first real talk-over), got {result.fires}"
     )
-    assert result.first_fire_index == 196
+    assert result.first_fire_index == 11

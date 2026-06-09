@@ -34,12 +34,13 @@ VERIFIED DURING THE BUILD (load-bearing facts)
   -- NEVER on ``last_D``.
 * Turn boundaries (inter-frame gaps > 1.0s) are at indices ``(88, 130, 185,
   197)``.
-* Live params (sherpa.py:363-383 dataclass defaults, not overridden in
-  config.local.json) -> ``AdaptiveDTD(k=5.0, weights=(0.2, 1.0, 0.0),
-  confirm_frames=1, warmup_frames=5, chart_rel_floor=0.4)``; integrator
-  ``barge_in_min_speech_sec=0.3`` (config.local.json override of the 0.2
-  default), ``block_sec=0.1`` + ``decay=0.5`` hardcoded (sherpa.py:1404-1426),
-  ``barge_in_refractory_sec=0.5`` + ``barge_in_suppress_sec=0.5``.
+* Live DTD params (SherpaConfig dataclass defaults) -> ``AdaptiveDTD(k=5.0,
+  weights=(0.2, 1.0, 0.0), confirm_frames=1, warmup_frames=5,
+  chart_rel_floor=0.4)``. Temporal confirmation is the REAL
+  ``BargeSustain(window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2)`` -- the
+  windowed sustain that replaced the old leaky ``voiced_run *= 0.5`` accumulator
+  (the fix for the recorded miss; ``barge_in_min_speech_sec`` is now 0.2, the
+  shipped default). ``barge_in_refractory_sec=0.5`` + ``barge_in_suppress_sec=0.5``.
 
 This file is named ``barge_fixtures.py`` (not ``test_*``) so pytest does not
 collect it as a test module.
@@ -54,8 +55,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence, Tuple
 
-# REAL detector under test -- imported, never reimplemented.
-from core.engines._dtd import AdaptiveDTD
+# REAL detector + REAL temporal-confirmation integrator under test -- imported,
+# never reimplemented.
+from core.engines._dtd import AdaptiveDTD, BargeSustain
 
 # --------------------------------------------------------------------------- #
 # Paths
@@ -84,13 +86,16 @@ LIVE_FIRE_INDICES: Tuple[int, ...] = (10, 11, 14, 34, 188, 189, 194, 195, 196)
 #: Frame indices that begin a new turn (preceding inter-frame gap > 1.0s).
 TURN_BOUNDARY_IDX: Tuple[int, ...] = (88, 130, 185, 197)
 
-#: Live integrator / latch parameters (the capture-loop accumulator values).
+#: Live integrator / latch parameters -- the REAL ``BargeSustain`` knobs (the
+#: capture-loop now uses ``core.engines._dtd.BargeSustain``, not a leaky
+#: accumulator). These are the shipped SherpaConfig defaults.
 LIVE_INTEGRATOR_PARAMS = dict(
-    min_speech_sec=0.3,    # config.local.json barge_in_min_speech_sec (override of 0.2)
+    window_sec=0.5,        # barge_in_sustain_window_sec (SherpaConfig default)
     block_sec=0.1,         # hardcoded block_sec (sherpa.py capture loop)
-    decay=0.5,             # hardcoded leaky-integrator decay (sherpa.py:1426)
-    refractory_sec=0.5,    # config.local.json barge_in_refractory_sec
-    suppress_sec=0.5,      # config.json barge_in_suppress_sec
+    min_voiced_sec=0.2,    # barge_in_min_speech_sec (config.json default; the bug
+                           #   fix lowered the config.local.json override 0.3 -> 0.2)
+    refractory_sec=0.5,    # barge_in_refractory_sec
+    suppress_sec=0.5,      # barge_in_suppress_sec
 )
 
 # Annotation labels written into the JSON fixture.
@@ -282,6 +287,23 @@ def build_live_dtd() -> AdaptiveDTD:
     )
 
 
+def build_live_sustain(params: Optional[dict] = None) -> BargeSustain:
+    """Construct the REAL ``BargeSustain`` with the live capture-loop knobs.
+
+    This is the SAME class the engine's capture loop runs (core/engines/sherpa.py
+    builds it from ``barge_in_sustain_window_sec`` + ``barge_in_min_speech_sec``),
+    imported -- not reimplemented -- so the driver faithfully mirrors the engine.
+    """
+    p = dict(LIVE_INTEGRATOR_PARAMS)
+    if params:
+        p.update(params)
+    return BargeSustain(
+        window_sec=float(p["window_sec"]),
+        block_sec=float(p["block_sec"]),
+        min_voiced_sec=float(p["min_voiced_sec"]),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Full-chain driver: REAL decide() + the mirrored capture-loop integrator
 # --------------------------------------------------------------------------- #
@@ -323,20 +345,19 @@ def run_frames(
 ) -> RunResult:
     """Walk the REAL barge chain frame-by-frame and report the cuts.
 
-    The seam under test -- ``AdaptiveDTD.decide`` -- is the REAL detector. The
-    only mirrored part is the ~6-line capture-loop accumulator (latch + leaky
-    integrator), which is NOT a separately importable function today; it is
-    replicated here EXACTLY as core/engines/sherpa.py:1404-1426 so a refactor
-    that extracts it can swap this for the import.
+    BOTH seams under test are REAL, imported code: the per-frame verdict is
+    ``AdaptiveDTD.decide`` and the temporal confirmation is
+    ``BargeSustain.update`` -- the SAME class the engine's capture loop runs
+    (core/engines/sherpa.py). Nothing is reimplemented here; the driver only wires
+    the eligibility (latch + VAD gate, mirroring sherpa.py:2134-2138) into the real
+    integrator and records the cuts.
 
     For each frame:
-      decided  = dtd.decide(raw, resid, incoh)            # REAL
+      decided  = dtd.decide(raw, resid, incoh)            # REAL AdaptiveDTD
       eligible = decided and vad(frame) and not latch     # sherpa.py:2134-2138
-      if eligible: voiced_run += block_sec                # sherpa.py:1404
-                   if voiced_run >= min_speech_sec:        # sherpa.py:1406
-                       voiced_run = 0; latch = True        # sherpa.py:1407,1411
-                       record a fire (-> on_barge_in)      # sherpa.py:1416
-      else:        voiced_run *= decay                     # sherpa.py:1426
+      if sustain.update(eligible):                        # REAL BargeSustain
+          sustain.reset(); latch = True                   # sherpa.py fire path
+          record a fire (-> on_barge_in)
 
     ``vad_speech`` may be a bool or a ``Callable[[Frame], bool]``. The latch is
     only cleared by a turn boundary when ``reset_latch_per_turn`` (modelling the
@@ -344,26 +365,20 @@ def run_frames(
     """
     if dtd is None:
         dtd = build_live_dtd()
-    p = dict(LIVE_INTEGRATOR_PARAMS)
-    if params:
-        p.update(params)
-    block_sec = float(p["block_sec"])
-    min_speech_sec = float(p["min_speech_sec"])
-    decay = float(p["decay"])
+    sustain = build_live_sustain(params)  # REAL core.engines._dtd.BargeSustain
 
     def _vad_ok(fr: Frame) -> bool:
         return vad_speech(fr) if callable(vad_speech) else bool(vad_speech)
 
     result = RunResult()
     result._burst_start_t = frames[0].t_sec if frames else None
-    voiced_run = 0.0
     latch = False
 
     for fr in frames:
         if reset_latch_per_turn and fr.idx in TURN_BOUNDARY_IDX:
-            # silent->speaking re-arm: a new turn starts with a fresh latch
+            # silent->speaking re-arm: a new turn starts with a fresh latch + window
             latch = False
-            voiced_run = 0.0
+            sustain.reset()
 
         decided = dtd.decide(fr.raw, fr.resid, fr.incoh)  # REAL AdaptiveDTD.decide
         if decided:
@@ -371,14 +386,10 @@ def run_frames(
 
         # sherpa.py:2134 -> latch checked FIRST; sherpa.py:2136 VAD gate.
         eligible = decided and _vad_ok(fr) and not latch
-        if eligible:
-            voiced_run += block_sec                         # sherpa.py:1404
-            if voiced_run >= min_speech_sec:                # sherpa.py:1406
-                voiced_run = 0.0                            # sherpa.py:1407
-                latch = True                                # sherpa.py:1411
-                result.fires.append((fr.idx, fr.t_sec))     # -> on_barge_in (1416)
-        else:
-            voiced_run *= decay                             # sherpa.py:1426
+        if sustain.update(eligible):                        # REAL BargeSustain.update
+            sustain.reset()                                 # fire -> clear the window
+            latch = True
+            result.fires.append((fr.idx, fr.t_sec))         # -> on_barge_in
 
     return result
 

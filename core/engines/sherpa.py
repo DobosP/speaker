@@ -393,6 +393,24 @@ class SherpaConfig:
     # DTLN echo LEAK (residual 0.04 over a 0.02 echo floor) from printing a huge
     # z and tripping K, without needing a shout (precision against leaks).
     dtd_chart_rel_floor: float = 0.4
+    # Residual-energy floor gate on the DTD barge path (the 2026-06-10 self-
+    # interrupt fix). A DTD fire only counts as eligible if the post-AEC residual
+    # stands at least this many dB above the LEARNED residual echo floor
+    # (_playback_floor_rms, re-bootstrapped per reply at speaking-START). This is
+    # NOT a fixed-energy magic number: the bar is RELATIVE to the device/room echo
+    # floor the engine just measured, so it auto-adapts. It exists because on a
+    # starved laptop mic the per-feature z-scores BLOAT (a tiny absolute residual
+    # transient prints a huge z against a near-silent warmup baseline), so a 2-fire
+    # reply-onset echo burst could trip BargeSustain(need=2) and self-interrupt
+    # (run-20260609-234435). The echo fires sit at resid 0.0008-0.0018 (~at the
+    # floor); a real talk-over (run-20260609-203236 turn-2 resid 0.0024-0.0041,
+    # turn-3 pre-shout resid 0.0105-0.0128) stands well above it, so 12 dB rejects
+    # the echo while the normal-volume talk-over STILL cuts (no shout). The raw
+    # mic does NOT separate the two (echo raw 0.0026-0.0058 overlaps talk-over raw
+    # 0.0024-0.0068) -- only the residual does. 0 disables the gate (pre-fix
+    # behaviour); raise it if the assistant still self-interrupts, lower it if a
+    # real talk-over is missed. See core/engines/_dtd.py + tests/test_barge_*.py.
+    dtd_residual_floor_margin_db: float = 12.0
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0
@@ -694,6 +712,14 @@ class SherpaOnnxEngine(AudioEngine):
         # reply), so a fresh interruption after the assistant goes idle still
         # fires. Dormant while barge_in_enabled is False (the watch is skipped).
         self._barge_in_fired_this_run: bool = False
+        # Cross-thread one-shot: the playback loop sets this True on the silent->
+        # speaking transition; the capture loop consumes it to clear the
+        # BargeSustain window so the prior reply's tail/onset echo can't prime a
+        # 2-fire burst into the new reply (the run-20260609-234435 self-interrupt).
+        # BargeSustain lives in the capture-loop scope, so it can't be reset from
+        # the playback thread directly -- this flag bridges the two. GIL-atomic
+        # bool, same lock-free idiom as _barge_in_fired_this_run.
+        self._barge_sustain_reset_pending: bool = False
 
     def set_record_path(self, path: Optional[str]) -> None:
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
@@ -1393,6 +1419,14 @@ class SherpaOnnxEngine(AudioEngine):
                 # ``barge_in_enabled`` -- off until AEC, so the loud TTS leaking
                 # into an open-speaker mic can't self-interrupt.
                 if self._speaking.is_set():
+                    # Consume the silent->speaking re-arm signalled by the playback
+                    # loop: clear the BargeSustain window so the prior reply's fires
+                    # can't carry into this reply's onset (2026-06-10 self-interrupt
+                    # fix; the floors were reset on the playback thread).
+                    if self._barge_sustain_reset_pending:
+                        self._barge_sustain_reset_pending = False
+                        barge_sustain.reset()
+                        rejected_run = 0.0
                     # Auto-calibrate the post-AEC residual echo+noise floor on EVERY
                     # playback block (the assistant's own cancelled echo). The barge
                     # gate keys off this floor, so the interrupt threshold tracks the
@@ -1740,6 +1774,18 @@ class SherpaOnnxEngine(AudioEngine):
                 self._speaking.set()
                 if not was_speaking:
                     self._barge_in_fired_this_run = False
+                    # Re-arm the per-reply barge state on the silent->speaking
+                    # transition (2026-06-10 self-interrupt fix). Clearing the
+                    # BargeSustain window (via the cross-thread flag) means the
+                    # prior reply's residual fires can't prime a 2-fire burst into
+                    # this reply's onset echo. Re-bootstrapping the learned echo
+                    # floors means the residual-floor gate in _looks_like_user
+                    # measures THIS reply's echo level, not a stale one -- so a
+                    # reply-onset echo transient (which sits at the floor) is
+                    # rejected, while a real talk-over (well above it) still cuts.
+                    self._barge_sustain_reset_pending = True
+                    self._playback_floor_rms = 0.0
+                    self._raw_playback_floor_rms = 0.0
                 # Arm the per-utterance first-audio stamp; the audio callback
                 # clears it and stamps TTS_FIRST_AUDIO when real audio first plays.
                 self._first_audio_pending = True
@@ -1996,19 +2042,46 @@ class SherpaOnnxEngine(AudioEngine):
             if det is not None:
                 det.decide(mic_raw)
                 incoh = float(det.last_incoherent_fraction)
+            resid_rms = rms(samples)
             fired = self._dtd.decide(
-                raw_rms=rms(mic_raw), resid_rms=rms(samples), incoherent_fraction=incoh,
+                raw_rms=rms(mic_raw), resid_rms=resid_rms, incoherent_fraction=incoh,
             )
+            # Residual-floor gate (2026-06-10 self-interrupt fix). On a starved mic
+            # the z-scores BLOAT against a near-silent warmup baseline, so a 2-fire
+            # reply-onset echo burst can fire the DTD even though the absolute
+            # residual barely lifts off the echo floor (run-20260609-234435: echo
+            # fires at resid 0.0008-0.0018). A genuine talk-over stands clearly
+            # above the LEARNED residual echo floor (run-20260609-203236: resid
+            # 0.0024-0.0128). Require the post-AEC residual to clear
+            # dtd_residual_floor_margin_db above the floor before a DTD fire counts
+            # -- RELATIVE to the per-reply-learned floor, never a fixed energy. The
+            # floor is re-bootstrapped each reply (speaking-START reset) so it is the
+            # CURRENT reply's echo level, not a stale prior one. Fail-open until the
+            # floor is learned (cold start) and when the margin is 0 (disabled), so
+            # an echo-free / non-AEC setup is unchanged.
+            floored = fired
+            if (
+                fired
+                and self.config.dtd_residual_floor_margin_db > 0.0
+                and self._playback_floor_rms > 0.0
+                and not loudness_admits(
+                    resid_rms, self._playback_floor_rms,
+                    margin_db=self.config.dtd_residual_floor_margin_db,
+                )
+            ):
+                floored = False  # DTD said barge, but the residual is at the echo floor
             # Log EVERY evaluation (not just fires) so a run bundle shows the full D
             # distribution -- echo-only D vs talk-over D -- to calibrate K per device.
+            # ``gated`` reflects the post-floor verdict the caller acts on.
             log.debug(
-                "dtd: D=%.2f K=%.1f fired=%s (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
-                "raw=%.4f resid=%.4f incoh=%.2f consec=%d",
-                self._dtd.last_D, self._dtd.k, fired, self._dtd.last_z_raw,
+                "dtd: D=%.2f K=%.1f fired=%s gated=%s (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
+                "raw=%.4f resid=%.4f incoh=%.2f resid_floor=%.4f consec=%d",
+                self._dtd.last_D, self._dtd.k, fired, floored, self._dtd.last_z_raw,
                 self._dtd.last_z_resid, self._dtd.last_z_coh,
-                rms(mic_raw), rms(samples), incoh, self._dtd.last_consec,
+                rms(mic_raw), resid_rms, incoh, self._playback_floor_rms,
+                self._dtd.last_consec,
             )
-            return fired
+            return floored
         det = self._echo_coherence
         if det is not None:
             verdict = det.decide(mic_raw)

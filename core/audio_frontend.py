@@ -64,6 +64,33 @@ def apply_gain_soft_limit(samples, gain: float):
     return x.astype("float32")
 
 
+def normalize_rms(samples, target_rms: float, *, max_gain: float = 20.0):
+    """Scale a waveform so its RMS ~= ``target_rms`` (soft-knee limited on peaks).
+
+    Evens out per-sentence TTS output level: an offline VITS model emits a
+    DIFFERENT amplitude per sentence (a function of text/phonetics), so on an open
+    speaker the played-back echo level swings sentence-to-sentence and the barge-in
+    echo floor (``_playback_floor_rms``) can never settle -- which is why the
+    open-speaker interrupt both self-fired (floor dipped) and missed real talk-over
+    (floor spiked). A fixed RMS target couples a STABLE echo level into the mic (and
+    a steady, even output volume for the listener). Reuses ``apply_gain_soft_limit``
+    so a loud sentence saturates smoothly instead of hard-clipping. ``target_rms <=
+    0`` is a no-op (caller keeps the raw stream); ``max_gain`` caps the boost so a
+    near-silent clip is not amplified into noise."""
+    import numpy as np
+
+    if target_rms <= 0.0:
+        return samples
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if x.size == 0:
+        return x
+    rms = float(np.sqrt(np.mean(x.astype("float64") ** 2)))
+    if rms <= 1e-6:  # silence -> nothing to normalize
+        return x
+    gain = min(float(target_rms) / rms, float(max_gain))
+    return apply_gain_soft_limit(x, gain)
+
+
 class AudioResampler:
     """Stateful anti-aliased downsampler for the capture hot path.
 

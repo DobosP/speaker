@@ -28,6 +28,7 @@ calibrate ``K`` on a new machine.
 from __future__ import annotations
 
 import math
+from collections import deque
 from typing import Optional, Sequence
 
 
@@ -195,3 +196,81 @@ class AdaptiveDTD:
         self.last_consec = self._consec
         self.last_decided = decided
         return decided
+
+
+class BargeSustain:
+    """Temporal confirmation that turns the per-frame double-talk verdict into a
+    barge-in CUT.
+
+    ``AdaptiveDTD`` reports per frame, but a real talk-over's verdict FLICKERS:
+    the user breathes/pauses and DTLN suppresses the user's voice mid-double-talk,
+    so the detector fires on only *some* of the talk-over blocks. A single eligible
+    frame is too trigger-happy (one echo spike self-interrupts), and the old
+    capture-loop accumulator -- ``voiced_run += block`` on a fire, ``*= 0.5`` on a
+    miss, fire at ``min_speech_sec`` -- could never accumulate intermittent fires:
+    the live failure ``run-20260609-203236`` fired the DTD on 3 of the 5 turn-2
+    blocks (and only 2 on the turn-3 pre-shout) yet the ``*= 0.5`` decay kept
+    ``voiced_run`` below the 0.3s bar, so a NORMAL-volume talk-over never cut and
+    the owner had to shout.
+
+    This integrates eligibility over a short TRAILING WINDOW and fires when at
+    least ``min_voiced_sec`` worth of the last ``window_sec`` were eligible. Two
+    properties fall out:
+
+    * **Responsive to flicker** -- 2 eligible blocks within the window fire, even
+      with a miss between them, so a genuine talk-over cuts without a shout.
+    * **Echo-safety is STRUCTURAL** -- the window is bounded, so the sporadic
+      single-frame echo leaks that survive AEC over a long reply (the recorded run
+      had exactly one, idx 34) can NEVER accumulate to a cut; only a sustained
+      talk-over packs enough eligible frames into one window. This is what the old
+      unbounded "just lower the threshold / never decay" alternatives could not
+      guarantee on the open nonlinear speaker.
+
+    Pure ints + a bounded ``deque``, so it is cheap on the capture thread and
+    unit-testable with no audio. The caller resets it on a fire (and while the
+    barge debounce/refractory window is active); see core/engines/sherpa.py.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_sec: float = 0.5,
+        block_sec: float = 0.1,
+        min_voiced_sec: float = 0.2,
+    ) -> None:
+        block = max(1e-6, float(block_sec))
+        self._maxlen = max(1, round(float(window_sec) / block))
+        self._need = max(1, round(float(min_voiced_sec) / block))
+        # need can't exceed the window (else it could never fire); clamp defensively.
+        self._need = min(self._need, self._maxlen)
+        self._window: deque = deque(maxlen=self._maxlen)
+        # Diagnostics (parity with AdaptiveDTD; read by debug logs/tests).
+        self.last_count = 0
+        self.last_fired = False
+
+    @property
+    def window_frames(self) -> int:
+        return self._maxlen
+
+    @property
+    def need_frames(self) -> int:
+        return self._need
+
+    def reset(self) -> None:
+        """Clear the window -- a new speaking run, a fire, or a suppressed block."""
+        self._window.clear()
+        self.last_count = 0
+        self.last_fired = False
+
+    def update(self, eligible: bool) -> bool:
+        """Record this block's eligibility and return True iff a cut should fire
+        (>= ``need_frames`` eligible within the trailing ``window_frames``).
+
+        ``update`` never raises and is the only mutator besides ``reset``. The
+        count can only reach the threshold on an *eligible* block (a miss appends
+        ``False`` and cannot raise the count), so a fire always lands on a real
+        talk-over block; the caller should ``reset`` after acting on a True."""
+        self._window.append(bool(eligible))
+        self.last_count = sum(self._window)
+        self.last_fired = self.last_count >= self._need
+        return self.last_fired

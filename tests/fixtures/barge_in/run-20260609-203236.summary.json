@@ -1,0 +1,288 @@
+{
+  "run_id": "20260609-203236",
+  "log_path": "logs/runs/run-20260609-203236.txt",
+  "duration_sec": 338.3,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260609-203236.wav"
+  },
+  "counts": {
+    "llm_requests": 5,
+    "turns": 3,
+    "transcript_entries": 11,
+    "errors": 0,
+    "warnings": 6,
+    "log_lines_by_level": {
+      "INFO": 59,
+      "DEBUG": 441,
+      "WARNING": 6
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "Can you hear me",
+      "mode": "assistant",
+      "at_sec": 90.62
+    },
+    {
+      "role": "assistant",
+      "text": "Yes, I can certainly hear you!",
+      "at_sec": 91.06
+    },
+    {
+      "role": "user",
+      "text": "Tell me a long stay of the lighthouse keeper",
+      "mode": "assistant",
+      "at_sec": 98.43
+    },
+    {
+      "role": "assistant",
+      "text": "Elias had lived on the jagged tooth of rock known as Needle Reach for forty years, his life measured by the rhythmic rotation of the great brass lens.",
+      "at_sec": 99.44
+    },
+    {
+      "role": "assistant",
+      "text": "Each evening, he would climb the spiral stairs with a heavy bucket of oil and a lantern, performing the ritual of polishing the glass until it sparkled against the salt spray.",
+      "at_sec": 100.08
+    },
+    {
+      "role": "assistant",
+      "text": "The only sounds were the crashing of the Atlantic waves below and the steady, mechanical heartbeat of the ticking clockwork gears.",
+      "at_sec": 100.52
+    },
+    {
+      "role": "assistant",
+      "text": "During the long winter months, the fog would roll in so thick that the world beyond the railing ceased to exist, leaving him in a solitude so profound he began to talk to the gulls as if they were old friends.",
+      "at_sec": 101.37
+    },
+    {
+      "role": "assistant",
+      "text": "He found comfort in the meticulous nature of his duties: the cleaning of the wicks, the logging of weather patterns in leather-bound books, and the constant vigilance over the beam that guided sailors through the graveyard of ships.",
+      "at_sec": 102.19
+    },
+    {
+      "role": "assistant",
+      "text": "To Elias, the light was not just a signal; it was a promise kept to every sailor lost at sea, a steady pulse of safety in a wild and unpredictable world.",
+      "at_sec": 102.84
+    },
+    {
+      "role": "user",
+      "text": "Up",
+      "mode": "assistant",
+      "at_sec": 151.67
+    },
+    {
+      "role": "assistant",
+      "text": "Up you go!",
+      "at_sec": 152.08
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1781026356.329,
+      "cpu_percent": 0.0,
+      "ram_used_mb": 3200.5,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 12.0,
+      "proc_rss_mb": 20.6,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 35.0,
+          "mem_used_mb": 74.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 49.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1781026694.614,
+      "cpu_percent": 10.5,
+      "ram_used_mb": 5259.1,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 18.5,
+      "proc_rss_mb": 984.4,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 23.0,
+          "mem_used_mb": 12331.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 54.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 50.8,
+      "ram_used_mb": 5435.8,
+      "ram_percent": 19.0,
+      "proc_rss_mb": 984.6,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 91.0,
+      "gpu_mem_used_mb": 12331.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1781026356.562,
+        "cpu_percent": 50.8,
+        "ram_used_mb": 3250.9,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 12.2,
+        "proc_rss_mb": 95.0,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 35.0,
+            "mem_used_mb": 74.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 49.0
+          }
+        ]
+      }
+    },
+    "samples": 33,
+    "deltas": {
+      "ram_used_mb_delta": 2058.6,
+      "proc_rss_mb_delta": 963.8,
+      "gpu_mem_used_mb_delta": 12257.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 14.05,
+    "avg_time_sec": 2.81,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 1691,
+        "prompt_preview": "hi",
+        "duration_sec": 4.45,
+        "ttft_sec": null,
+        "out_chars": 38,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma4:12b",
+        "prompt_chars": 2,
+        "system_chars": 1691,
+        "prompt_preview": "hi",
+        "duration_sec": 4.379,
+        "ttft_sec": null,
+        "out_chars": 32,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 15,
+        "system_chars": 1691,
+        "prompt_preview": "Can you hear me",
+        "duration_sec": 0.429,
+        "ttft_sec": 0.366,
+        "out_chars": 30,
+        "tokens": 8,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma4:12b",
+        "prompt_chars": 44,
+        "system_chars": 1797,
+        "prompt_preview": "Tell me a long stay of the lighthouse keeper",
+        "duration_sec": 4.393,
+        "ttft_sec": 0.424,
+        "out_chars": 1055,
+        "tokens": 216,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 2094,
+        "prompt_preview": "Up",
+        "duration_sec": 0.398,
+        "ttft_sec": 0.364,
+        "out_chars": 10,
+        "tokens": 4,
+        "streamed": true,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": 1.4596,
+      "endpoint_latency": 0.8853,
+      "final_to_first_token": 0.3769,
+      "first_token_to_audio": 0.1973,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 2.103,
+      "endpoint_latency": 0.788,
+      "final_to_first_token": 0.4352,
+      "first_token_to_audio": 0.8798,
+      "barge_in_latency": 0.0001
+    },
+    {
+      "first_audio_latency": 1.043,
+      "endpoint_latency": 0.6018,
+      "final_to_first_token": 0.3754,
+      "first_token_to_audio": 0.0658,
+      "barge_in_latency": null
+    }
+  ],
+  "stuck_hints": [],
+  "errors": [
+    {
+      "t": "20:34:39",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000077) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "20:34:48",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000080) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "20:34:50",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000037) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "20:34:52",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000036) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "20:34:56",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000079) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    },
+    {
+      "t": "20:35:00",
+      "level": "WARNING",
+      "logger": "speaker.sherpa",
+      "message": "input is ~silent (avg_rms=0.000092) -- wrong mic, muted, or no permission? run `python -m sounddevice` to list devices",
+      "exc": null
+    }
+  ]
+}

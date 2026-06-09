@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from core.engines._dtd import AdaptiveDTD, Chart
+from core.engines._dtd import AdaptiveDTD, BargeSustain, Chart
 
 
 # --- Chart ------------------------------------------------------------------
@@ -121,3 +121,78 @@ def test_reset_rearms_warmup():
     dtd.decide(0.1, 0.02, 0.8)  # post-warmup
     dtd.reset()
     assert dtd.decide(0.1, 0.02, 0.8) is False and dtd._raw.warming  # warming again
+
+
+# --- BargeSustain (windowed temporal confirmation) --------------------------
+# Turns the per-frame DTD verdict into a CUT. The bar is "enough eligible blocks
+# within a short trailing window" -- responsive to the flicker of a real
+# talk-over, yet bounded so a sporadic echo leak over a long reply can never
+# accumulate to a self-interrupt. These pin the fix for run-20260609-203236
+# ("needs a shout"), where the old leaky voiced_run *= 0.5 starved intermittent
+# fires.
+
+
+def _sustain_fires_at(eligibility, **kw):
+    """Index of the first block at which a fresh BargeSustain fires (or None)."""
+    s = BargeSustain(**kw)
+    for i, e in enumerate(eligibility):
+        if s.update(e):
+            return i
+    return None
+
+
+def test_sustain_derives_window_and_need_from_seconds():
+    s = BargeSustain(window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2)
+    assert s.window_frames == 5
+    assert s.need_frames == 2
+
+
+def test_sustain_fires_on_two_consecutive_eligible():
+    # The shipped default (2 blocks within 0.5s) cuts on the 2nd consecutive fire.
+    assert _sustain_fires_at([True, True]) == 1
+
+
+def test_sustain_tolerates_flicker_within_the_window():
+    # The turn-2 normal-volume pattern: fire, fire, miss, miss, fire. The 2nd fire
+    # already crosses the bar -> a cut, despite the later misses (the live failure
+    # never got here because the leaky accumulator decayed below threshold).
+    assert _sustain_fires_at([True, True, False, False, True]) == 1
+    # Even a miss between the two fires still cuts (flicker tolerance).
+    assert _sustain_fires_at([True, False, True]) == 2
+
+
+def test_sustain_does_not_fire_on_an_isolated_single_eligible():
+    # A lone eligible block (an echo leak that survived AEC, e.g. recorded idx 34)
+    # never reaches need=2 -> no self-interrupt.
+    assert _sustain_fires_at([False, False, True, False, False, False]) is None
+
+
+def test_sustain_window_is_bounded_so_spread_fires_never_accumulate():
+    # Single eligible blocks spaced FURTHER apart than the window must never sum to
+    # a cut -- echo-safety is structural, not a function of reply length.
+    spread = ([True] + [False] * 5) * 10  # one fire every 6 blocks, window=5
+    assert _sustain_fires_at(spread, window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2) is None
+
+
+def test_sustain_reset_clears_the_window():
+    s = BargeSustain(window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2)
+    assert s.update(True) is False  # 1 eligible
+    s.reset()
+    # After reset the single prior fire is forgotten, so one more fire is not enough.
+    assert s.update(True) is False
+    assert s.last_count == 1
+
+
+def test_sustain_need_clamped_to_window_can_still_fire():
+    # Defensive: a min_voiced_sec larger than the window must not make it unfireable.
+    s = BargeSustain(window_sec=0.2, block_sec=0.1, min_voiced_sec=1.0)
+    assert s.need_frames == s.window_frames == 2
+    assert _sustain_fires_at([True, True], window_sec=0.2, block_sec=0.1, min_voiced_sec=1.0) == 1
+
+
+def test_sustain_diagnostics_track_count_and_fired():
+    s = BargeSustain(window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2)
+    s.update(True)
+    assert s.last_count == 1 and s.last_fired is False
+    fired = s.update(True)
+    assert s.last_count == 2 and s.last_fired is True and fired is True

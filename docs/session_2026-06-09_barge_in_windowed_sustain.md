@@ -99,3 +99,40 @@ live behavior exactly.
 3. Carryover from prior sessions still open: Windows AEC echo_probe recalibration
    (non-catastrophic now); prosody-endpointing live tuning; `input_gate` re-enable
    for always-on; `logs/runs` committed-bundle churn.
+
+---
+
+## Addendum — Recorded real-voice replay harness (2026-06-09b, `@830e086`)
+
+A second deliverable the same day: a harness that **replays the owner's actual
+recorded speech through the real pipeline** so capabilities are regression-tested
+without live talking. Merged `feat/recorded-voice-replay-harness → main`.
+
+- `tools/extract_voice_clips.py` — slices the owner's utterance windows from
+  `logs/runs/run-*.wav` (via `core.engines.file_replay.load_waveform`) into the
+  **gitignored** `logs/fixture_audio/`, labelled with expected text. Never
+  git-adds voice audio (privacy).
+- `tests/replay_voice_driver.py` — feeds a clip through the real
+  `FileReplayEngine` + `core.app.build_runtime` (EchoLLM, deterministic) and
+  returns `(asr_final, response, latency)`; a `SPEAKER_LIVE`-only barge-overlap
+  path uses the `tools.live_session` inject machinery.
+- `tests/replay_recorded_voice_test.py` — `real_model`/`recorded` tier: 6 clean
+  utterances reproduce at ≥0.4 word-overlap, a `run-235431` multi-turn
+  conversation runs through the real brain, and (`SPEAKER_LIVE=1`) a talk-over
+  cuts the assistant. Self-skips without sherpa models or extracted clips.
+- `tests/fixtures/recorded_voice_manifest.json` — committed text-only windows
+  (run/start/end/expected_text).
+
+**Built via a 4-phase ultracode workflow; corrected a real defect it surfaced.**
+The first automated pass mis-segmented the clips — it used `summary.json at_sec`
+(the runtime clock) instead of the WAV timeline, so the clips held the *wrong*
+audio (all 0.0 overlap). I re-derived the windows with faster-whisper
+word-timestamps + per-clip **real-sherpa-ASR verification**, dropped the 3
+starved-mic clips + 2 that didn't reproduce, and gated the barge-overlap test
+behind `SPEAKER_LIVE` (it opened the real ALC285 device otherwise; the
+deterministic barge coverage already lives in `tests/test_barge_*`).
+
+Verified reproductions: "Can you tell me a story" (1.0), "Tell me a long story"
+×2 (1.0 / 0.8), "Stop speaking" (1.0), "Hey hey" (1.0), "are you listening to me"
+(0.6). **Usage** on a machine with the recordings: `python -m tools.extract_voice_clips`
+then `python -m pytest tests/replay_recorded_voice_test.py -q`.

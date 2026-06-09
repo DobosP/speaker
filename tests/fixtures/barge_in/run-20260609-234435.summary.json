@@ -1,0 +1,309 @@
+{
+  "run_id": "20260609-234435",
+  "log_path": "logs/runs/run-20260609-234435.txt",
+  "duration_sec": 230.9,
+  "meta": {
+    "engine": "sherpa",
+    "llm": "ollama",
+    "device": "desktop",
+    "mode": "assistant",
+    "recording": "logs/runs/run-20260609-234435.wav"
+  },
+  "counts": {
+    "llm_requests": 8,
+    "turns": 6,
+    "transcript_entries": 12,
+    "errors": 0,
+    "warnings": 0,
+    "log_lines_by_level": {
+      "INFO": 85,
+      "DEBUG": 210
+    }
+  },
+  "transcript": [
+    {
+      "role": "user",
+      "text": "A running",
+      "mode": "assistant",
+      "at_sec": 94.61
+    },
+    {
+      "role": "assistant",
+      "text": "That sounds lovely!",
+      "at_sec": 95.3
+    },
+    {
+      "role": "user",
+      "text": "Can you hear me",
+      "mode": "assistant",
+      "at_sec": 116.69
+    },
+    {
+      "role": "assistant",
+      "text": "Yes, I can hear you perfectly fine.",
+      "at_sec": 117.3
+    },
+    {
+      "role": "user",
+      "text": "Dear me",
+      "mode": "assistant",
+      "at_sec": 123.21
+    },
+    {
+      "role": "assistant",
+      "text": "That's quite a statement!",
+      "at_sec": 123.8
+    },
+    {
+      "role": "user",
+      "text": "The fisherman",
+      "mode": "assistant",
+      "at_sec": 126.52
+    },
+    {
+      "role": "assistant",
+      "text": "That\u2019s an interesting story to start.",
+      "at_sec": 127.13
+    },
+    {
+      "role": "user",
+      "text": "A long story about",
+      "mode": "assistant",
+      "at_sec": 132.9
+    },
+    {
+      "role": "assistant",
+      "text": "Please let me know what topic or character you would like the story to be about, and I will write it for you.",
+      "at_sec": 134.98
+    },
+    {
+      "role": "user",
+      "text": "And the lighthouse",
+      "mode": "assistant",
+      "at_sec": 139.13
+    },
+    {
+      "role": "assistant",
+      "text": "Okay, a story about a lighthouse sounds wonderful.",
+      "at_sec": 139.81
+    }
+  ],
+  "system": {
+    "baseline": {
+      "t": 1781037875.937,
+      "cpu_percent": 0.0,
+      "ram_used_mb": 17994.8,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 57.2,
+      "proc_rss_mb": 20.5,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 35.0,
+          "mem_used_mb": 74.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 62.0
+        }
+      ]
+    },
+    "final": {
+      "t": 1781038106.81,
+      "cpu_percent": 28.5,
+      "ram_used_mb": 31863.0,
+      "ram_total_mb": 33248.1,
+      "ram_percent": 99.0,
+      "proc_rss_mb": 548.1,
+      "proc_cpu_percent": 0.0,
+      "gpu": [
+        {
+          "util_percent": 36.0,
+          "mem_used_mb": 12333.0,
+          "mem_total_mb": 16376.0,
+          "temp_c": 65.0
+        }
+      ]
+    },
+    "peak": {
+      "cpu_percent": 39.9,
+      "ram_used_mb": 31914.1,
+      "ram_percent": 99.2,
+      "proc_rss_mb": 747.6,
+      "proc_cpu_percent": 0.0,
+      "gpu_util_percent": 36.0,
+      "gpu_mem_used_mb": 12333.0
+    },
+    "marks": {
+      "after_build": {
+        "t": 1781037876.39,
+        "cpu_percent": 39.9,
+        "ram_used_mb": 18119.9,
+        "ram_total_mb": 33248.1,
+        "ram_percent": 57.6,
+        "proc_rss_mb": 94.4,
+        "proc_cpu_percent": 0.0,
+        "gpu": [
+          {
+            "util_percent": 35.0,
+            "mem_used_mb": 74.0,
+            "mem_total_mb": 16376.0,
+            "temp_c": 62.0
+          }
+        ]
+      }
+    },
+    "samples": 23,
+    "deltas": {
+      "ram_used_mb_delta": 13868.2,
+      "proc_rss_mb_delta": 527.6,
+      "gpu_mem_used_mb_delta": 12259.0
+    }
+  },
+  "llm": {
+    "total_time_sec": 17.96,
+    "avg_time_sec": 2.25,
+    "requests": [
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 2,
+        "system_chars": 1691,
+        "prompt_preview": "hi",
+        "duration_sec": 5.69,
+        "ttft_sec": null,
+        "out_chars": 38,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma4:12b",
+        "prompt_chars": 2,
+        "system_chars": 1691,
+        "prompt_preview": "hi",
+        "duration_sec": 7.085,
+        "ttft_sec": null,
+        "out_chars": 32,
+        "tokens": null,
+        "streamed": false,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 9,
+        "system_chars": 1691,
+        "prompt_preview": "A running",
+        "duration_sec": 0.669,
+        "ttft_sec": 0.631,
+        "out_chars": 19,
+        "tokens": 4,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 15,
+        "system_chars": 1780,
+        "prompt_preview": "Can you hear me",
+        "duration_sec": 0.607,
+        "ttft_sec": 0.522,
+        "out_chars": 35,
+        "tokens": 9,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 7,
+        "system_chars": 1843,
+        "prompt_preview": "Dear me",
+        "duration_sec": 0.573,
+        "ttft_sec": 0.503,
+        "out_chars": 25,
+        "tokens": 7,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 13,
+        "system_chars": 1888,
+        "prompt_preview": "The fisherman",
+        "duration_sec": 0.602,
+        "ttft_sec": 0.517,
+        "out_chars": 37,
+        "tokens": 9,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma4:12b",
+        "prompt_chars": 18,
+        "system_chars": 1910,
+        "prompt_preview": "A long story about",
+        "duration_sec": 2.068,
+        "ttft_sec": 1.512,
+        "out_chars": 109,
+        "tokens": 25,
+        "streamed": true,
+        "cancelled": false
+      },
+      {
+        "model": "gemma3:4b",
+        "prompt_chars": 18,
+        "system_chars": 1987,
+        "prompt_preview": "And the lighthouse",
+        "duration_sec": 0.67,
+        "ttft_sec": 0.546,
+        "out_chars": 50,
+        "tokens": 10,
+        "streamed": true,
+        "cancelled": false
+      }
+    ]
+  },
+  "turns": [
+    {
+      "first_audio_latency": 2.0956,
+      "endpoint_latency": 1.2085,
+      "final_to_first_token": 0.6585,
+      "first_token_to_audio": 0.2286,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 1.4094,
+      "endpoint_latency": 0.681,
+      "final_to_first_token": 0.5332,
+      "first_token_to_audio": 0.1953,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 1.5777,
+      "endpoint_latency": 0.9025,
+      "final_to_first_token": 0.5144,
+      "first_token_to_audio": 0.1609,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 1.6206,
+      "endpoint_latency": 0.8952,
+      "final_to_first_token": 0.5281,
+      "first_token_to_audio": 0.1973,
+      "barge_in_latency": null
+    },
+    {
+      "first_audio_latency": 2.9812,
+      "endpoint_latency": 0.6749,
+      "final_to_first_token": 1.5249,
+      "first_token_to_audio": 0.7814,
+      "barge_in_latency": 0.0006
+    },
+    {
+      "first_audio_latency": 5.7006,
+      "endpoint_latency": 4.8927,
+      "final_to_first_token": 0.5574,
+      "first_token_to_audio": 0.2505,
+      "barge_in_latency": 0.0004
+    }
+  ],
+  "stuck_hints": [],
+  "errors": []
+}

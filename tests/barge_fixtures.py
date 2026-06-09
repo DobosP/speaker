@@ -69,6 +69,16 @@ _FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "barge_in"
 TRACE_TXT = _FIXTURE_DIR / "run-20260609-203236.trace.txt"
 #: Canonical pre-parsed frames (committed; regenerated from TRACE_TXT).
 FRAMES_JSON = _FIXTURE_DIR / "run-20260609-203236.frames.json"
+
+#: The SELF-INTERRUPT live failure (2026-06-10 fix target). On the SAME starved
+#: laptop mic + open speaker, the assistant cut ITSELF off twice on reply-onset
+#: echo while speaking (barge-in detected at 23:46:54.969 and 23:46:57.255).
+#: Two consecutive replies each fired the DTD on 2 echo transients within a 0.5s
+#: window, tripping BargeSustain(need=2). The raw/residual levels of those echo
+#: fires (raw 0.0026-0.0058, resid 0.0008-0.0018) OVERLAP a real talk-over's raw
+#: but sit at/just-above the residual echo floor -- the residual-floor gate is
+#: what separates them. No committed JSON: parsed live from the trace.
+TRACE_TXT_SELF = _FIXTURE_DIR / "run-20260609-234435.trace.txt"
 #: Short mono-16k clip spanning the turn-2 normal-volume talk-over (optional,
 #: for a future real_model replay; none of the Tier0 tests need audio).
 TALKOVER_WAV = _FIXTURE_DIR / "run-20260609-203236.talkover.wav"
@@ -103,6 +113,21 @@ _TALKOVER_TURN2 = "talkover_turn2_normal"   # idx 10..14, raw 0.0024-0.0068
 _TALKOVER_TURN3 = "talkover_turn3_shout"    # idx 185..196, escalates to 0.0704
 _ECHO_ONLY = "echo_only"
 
+# --------------------------------------------------------------------------- #
+# run-20260609-234435 SELF-INTERRUPT ground truth (VERIFIED against the trace)
+# --------------------------------------------------------------------------- #
+#: 28 dtd frames; 4 of them fired=True. 0-based indices of the fires.
+SELF_FIRE_INDICES: Tuple[int, ...] = (15, 18, 26, 27)
+#: 0-based indices of the FIRST dtd frame of each reply (silent->speaking
+#: transition, detected from the trace's ``speaking:`` markers). Reply A (idx
+#: 0..7, no fire) preceded reply B (idx 8..18, the first self-interrupt) and
+#: reply C (idx 19..27, the second self-interrupt).
+SELF_SPEAKING_START_IDX: Tuple[int, ...] = (0, 8, 19)
+#: The two reply-onset ECHO bursts that WRONGLY cut the assistant live. These are
+#: the frames that must NOT produce a barge-in after the fix.
+SELF_INTERRUPT_WINDOW_B = range(8, 19)   # reply B (fires at 15, 18)
+SELF_INTERRUPT_WINDOW_C = range(19, 28)  # reply C (fires at 26, 27)
+
 
 # --------------------------------------------------------------------------- #
 # Frame model + loader
@@ -129,6 +154,13 @@ class Frame:
     exp_z_resid: float = 0.0
     exp_z_coh: float = 0.0
     annotation: str = _ECHO_ONLY
+    #: True iff this is the FIRST dtd frame of a new reply (a silent->speaking
+    #: transition). The engine re-arms its per-reply barge state here -- the
+    #: drivers mirror that by resetting the learned floors + the BargeSustain
+    #: window. Set by the 234435 loader from the trace's ``speaking:`` markers;
+    #: the 203236 loader leaves it False (that fixture's turn boundaries are
+    #: modelled via ``TURN_BOUNDARY_IDX`` + ``reset_latch_per_turn`` instead).
+    reply_start: bool = False
 
 
 # Regex VERIFIED to match all 204 'dtd:' lines.
@@ -179,6 +211,95 @@ def _parse_trace(path: Path) -> List[Frame]:
             )
         )
     return frames
+
+
+# A ``speaking:`` marker line precedes the first dtd frame of every reply.
+_SPEAKING_RE = re.compile(r"speaking: .* \(queue depth=\d+\)")
+
+
+def _parse_self_trace(path: Path) -> List[Frame]:
+    """Parse the run-20260609-234435 SELF-INTERRUPT trace into Frames.
+
+    Identical dtd-line parse to ``_parse_trace``, but ALSO walks the interleaved
+    ``speaking:`` markers so the first dtd frame after each marker is tagged
+    ``reply_start=True`` -- the silent->speaking transition the engine re-arms its
+    per-reply barge state on. That tag is what lets the driver mirror the fix
+    (reset the learned floors + BargeSustain at each reply onset) faithfully,
+    rather than hard-coding the boundaries.
+    """
+    text = path.read_text()
+    rows = []           # (groups, reply_start_bool)
+    pending_start = True  # the very first dtd frame begins reply A
+    for line in text.splitlines():
+        if _SPEAKING_RE.search(line):
+            pending_start = True
+            continue
+        m = _DTD_RE.search(line)
+        if m:
+            rows.append((m.groups(), pending_start))
+            pending_start = False
+    times = [datetime.strptime(r[0][0], "%H:%M:%S.%f") for r in rows]
+    t0 = times[0] if times else None
+    frames: List[Frame] = []
+    for i, (r, is_start) in enumerate(rows):
+        ts, D, fired, z_raw, z_resid, z_coh, raw, resid, incoh, consec = r
+        frames.append(
+            Frame(
+                idx=i,
+                ts=ts,
+                t_sec=round((times[i] - t0).total_seconds(), 6),
+                raw=float(raw),
+                resid=float(resid),
+                incoh=float(incoh),
+                exp_D=float(D),
+                exp_fired=fired == "True",
+                exp_consec=int(consec),
+                exp_z_raw=float(z_raw),
+                exp_z_resid=float(z_resid),
+                exp_z_coh=float(z_coh),
+                annotation=_ECHO_ONLY,  # the WHOLE trace is the assistant's own echo
+                reply_start=is_start,
+            )
+        )
+    return frames
+
+
+def load_self_interrupt_frames() -> List[Frame]:
+    """Return the 28 Frames of the SELF-INTERRUPT live failure (234435).
+
+    Every frame is the assistant's own TTS echo (no human talk-over in this run);
+    the live detector wrongly cut twice on reply-onset echo. Asserts the shape
+    (frame count, fire indices, reply-start indices) loudly so a corrupted fixture
+    fails before any logic assertion.
+    """
+    frames = _parse_self_trace(TRACE_TXT_SELF)
+    assert len(frames) == 28, (
+        f"expected 28 dtd frames in 234435, got {len(frames)} -- truncated fixture?"
+    )
+    parsed_fires = tuple(f.idx for f in frames if f.exp_fired)
+    assert parsed_fires == SELF_FIRE_INDICES, (
+        f"234435 fire indices drifted: {parsed_fires} != {SELF_FIRE_INDICES}"
+    )
+    parsed_starts = tuple(f.idx for f in frames if f.reply_start)
+    assert parsed_starts == SELF_SPEAKING_START_IDX, (
+        f"234435 reply-start indices drifted: {parsed_starts} != "
+        f"{SELF_SPEAKING_START_IDX}"
+    )
+    return frames
+
+
+def self_interrupt_windows(frames: Sequence[Frame]) -> dict:
+    """The two reply-onset ECHO bursts that wrongly cut the assistant live.
+
+    ``reply_B`` (idx 8..18, fires at 15+18) and ``reply_C`` (idx 19..27, fires at
+    26+27). Each is a full reply STARTING at its first frame (``reply_start``), so
+    a driver fed one of these lists re-arms exactly as the engine did. These must
+    produce NO barge-in cut after the fix.
+    """
+    return {
+        "reply_B": [f for f in frames if f.idx in SELF_INTERRUPT_WINDOW_B],
+        "reply_C": [f for f in frames if f.idx in SELF_INTERRUPT_WINDOW_C],
+    }
 
 
 def _load_json_frames(path: Path) -> List[Frame]:
@@ -390,6 +511,82 @@ def run_frames(
             sustain.reset()                                 # fire -> clear the window
             latch = True
             result.fires.append((fr.idx, fr.t_sec))         # -> on_barge_in
+
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Full-chain ENGINE driver: REAL SherpaOnnxEngine._barge_in_fire_eligible
+# --------------------------------------------------------------------------- #
+def run_frames_engine(
+    frames: Sequence[Frame],
+    *,
+    vad_speech=True,
+    residual_floor_margin_db: Optional[float] = None,
+    params: Optional[dict] = None,
+) -> RunResult:
+    """Walk the FULL real barge chain through the ENGINE seam and report cuts.
+
+    This is the highest-fidelity audio-free driver: it drives the REAL
+    ``SherpaOnnxEngine._barge_in_fire_eligible`` -> ``_looks_like_user`` (which now
+    applies the 2026-06-10 residual-floor gate), the REAL ``_update_playback_floor``
+    / ``_update_raw_playback_floor`` (so the gate keys off the SAME learned echo
+    floor the engine learns), and the REAL ``core.engines._dtd.BargeSustain`` --
+    NOTHING is reimplemented. Per frame it mirrors the capture loop exactly:
+
+        eng._update_playback_floor(rms(resid))       # sherpa.py:1402
+        eng._update_raw_playback_floor(rms(raw))     # sherpa.py:1410
+        eligible = eng._barge_in_fire_eligible(...)  # sherpa.py:1433 (-> gated DTD)
+        if sustain.update(eligible): cut             # sherpa.py:1434
+
+    On a frame tagged ``reply_start`` it re-arms exactly as ``_playback_loop`` does
+    on the silent->speaking transition: clears the BargeSustain window, zeroes the
+    learned floors (re-bootstrap per reply), and drops the latch. ``mic_raw`` /
+    ``samples`` are real numpy blocks whose rms equals the frame's raw / resid
+    (see ``make_block``), so the real gate measures them back to those levels.
+    """
+    eng = live_engine_with_dtd()
+    if residual_floor_margin_db is not None:
+        eng.config.dtd_residual_floor_margin_db = float(residual_floor_margin_db)
+    sustain = build_live_sustain(params)  # REAL core.engines._dtd.BargeSustain
+
+    def _vad_ok(fr: Frame) -> bool:
+        return vad_speech(fr) if callable(vad_speech) else bool(vad_speech)
+
+    result = RunResult()
+    result._burst_start_t = frames[0].t_sec if frames else None
+    latch = False
+    # First frame begins a reply run regardless of its explicit flag (a fresh
+    # engine starts with zeroed floors); subsequent reply_start frames re-arm.
+    first = True
+
+    for fr in frames:
+        if fr.reply_start or first:
+            first = False
+            sustain.reset()
+            eng._playback_floor_rms = 0.0       # re-bootstrap the per-reply floors
+            eng._raw_playback_floor_rms = 0.0
+            eng._barge_in_fired_this_run = False
+            latch = False
+
+        samples = make_block(fr.resid)   # post-AEC residual block
+        mic_raw = make_block(fr.raw)     # RAW pre-AEC block
+        eng._fake_coherence.last_incoherent_fraction = fr.incoh
+        eng._fake_vad.set_speech(_vad_ok(fr))
+
+        # Mirror the capture loop: learn the floor BEFORE the barge check.
+        eng._update_playback_floor(fr.resid)     # REAL floor update (rms of const = resid)
+        eng._update_raw_playback_floor(fr.raw)
+
+        # REAL gate: latch + VAD + _looks_like_user (now residual-floor gated).
+        eligible = eng._barge_in_fire_eligible(samples, mic_raw) and not latch
+        if eng._dtd.last_decided:
+            result.dtd_fire_count += 1
+        if sustain.update(eligible):             # REAL BargeSustain.update
+            sustain.reset()
+            latch = True
+            eng._barge_in_fired_this_run = True
+            result.fires.append((fr.idx, fr.t_sec))
 
     return result
 

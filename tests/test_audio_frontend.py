@@ -3,8 +3,13 @@ and the WER utility. Pure numpy / stdlib -- no audio device, no models."""
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
-from core.audio_frontend import AudioResampler, apply_gain_soft_limit
+from core.audio_frontend import (
+    AudioResampler,
+    apply_gain_soft_limit,
+    normalize_rms,
+)
 from core.wer import word_error_rate
 
 
@@ -67,6 +72,46 @@ def test_soft_gain_no_flat_top():
     a = apply_gain_soft_limit(np.array([0.5], dtype="float32"), 2.0)[0]  # 1.0
     b = apply_gain_soft_limit(np.array([0.6], dtype="float32"), 2.0)[0]  # 1.2
     assert a < 1.0 and b < 1.0 and a < b
+
+
+# --- normalize_rms (per-sentence TTS loudness) ------------------------------
+
+
+def test_normalize_rms_off_is_identity():
+    x = np.array([0.1, -0.2], dtype="float32")
+    assert normalize_rms(x, 0.0) is x  # target<=0 -> no-op, same object
+
+
+def test_normalize_rms_equalizes_quiet_and_loud_to_one_level():
+    # The core fix: an offline VITS model emits a different amplitude per sentence;
+    # normalizing to one target RMS couples a STABLE echo level into the mic.
+    rng = np.random.RandomState(0)
+    quiet = (rng.randn(16000) * 0.02).astype("float32")  # a quiet sentence
+    loud = (rng.randn(16000) * 0.30).astype("float32")   # a loud sentence
+    q = normalize_rms(quiet, 0.12)
+    ld = normalize_rms(loud, 0.12)
+    assert np.sqrt(np.mean(q.astype("float64") ** 2)) == pytest.approx(0.12, rel=0.05)
+    # The loud clip saturates a little on the peaks (soft knee), so allow a small
+    # downward tolerance -- the point is both land near the SAME level, not far apart.
+    assert np.sqrt(np.mean(ld.astype("float64") ** 2)) == pytest.approx(0.12, rel=0.12)
+
+
+def test_normalize_rms_does_not_hard_clip_a_loud_clip():
+    loud = (np.random.RandomState(1).randn(16000) * 0.5).astype("float32")
+    y = normalize_rms(loud, 0.15)
+    assert np.abs(y).max() < 1.0  # soft-knee limiter, never full-scale
+
+
+def test_normalize_rms_caps_gain_on_near_silence():
+    # A near-silent clip must not be amplified into noise: max_gain caps it.
+    almost_silent = np.full(1600, 1e-4, dtype="float32")
+    y = normalize_rms(almost_silent, 0.12, max_gain=20.0)
+    assert np.abs(y).max() <= 1e-4 * 20.0 + 1e-6
+
+
+def test_normalize_rms_silence_is_safe():
+    y = normalize_rms(np.zeros(1600, dtype="float32"), 0.12)
+    assert float(np.abs(y).max()) == 0.0  # no divide-by-zero blow-up
 
 
 # --- WER --------------------------------------------------------------------

@@ -25,7 +25,12 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..asr_text import agreement_guard, restore_casing
-from ..audio_frontend import CLEAN_CAPTURE_RATES, AudioResampler, apply_gain_soft_limit
+from ..audio_frontend import (
+    CLEAN_CAPTURE_RATES,
+    AudioResampler,
+    apply_gain_soft_limit,
+    normalize_rms,
+)
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._denoiser import build_denoiser
@@ -276,6 +281,16 @@ class SherpaConfig:
     tts_data_dir: str = ""
     tts_speaker_id: int = 0
     tts_speed: float = 1.0
+    # Per-sentence TTS loudness normalization (core/audio_frontend.normalize_rms).
+    # The offline VITS model emits a DIFFERENT amplitude per sentence, so on an open
+    # speaker the played-back echo level swings and the barge-in echo floor can never
+    # settle (the 2026-06-10 self-interrupt + missed-talk-over root: resid_floor swung
+    # ~20-90x in one reply). >0 normalizes every sentence to this RMS before playback
+    # -> a STABLE echo level for the barge floor + an even output volume; this forgoes
+    # the streaming-synth callback (synth is ~0.1s) for the whole-clip level measure.
+    # 0.0 disables -> the streaming path is byte-identical to before. ~0.1-0.15 is a
+    # normal speech RMS; the soft-knee limiter keeps loud sentences from clipping.
+    tts_target_rms: float = 0.0
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -1970,10 +1985,15 @@ class SherpaOnnxEngine(AudioEngine):
         tts = self._tts
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
+        target_rms = self.config.tts_target_rms
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm
         # pass can't drive the same model at the same time.
         with self._tts_lock:
-            if self._tts_can_stream:
+            # Streaming path (first samples play before the whole sentence is
+            # synthesized). Used ONLY when loudness normalization is OFF -- the
+            # normalizer needs the whole clip's RMS, which the streaming callback
+            # cannot provide. target_rms<=0 -> this branch is byte-identical to before.
+            if target_rms <= 0.0 and self._tts_can_stream:
 
                 def on_chunk(samples, *_progress) -> int:
                     write(np.asarray(samples, dtype="float32").reshape(-1))
@@ -1987,6 +2007,13 @@ class SherpaOnnxEngine(AudioEngine):
 
             audio = tts.generate(text, sid=sid, speed=speed)
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
+        # Normalize the WHOLE sentence to a consistent RMS so every reply couples a
+        # STABLE echo level into the mic (the barge floor learns against this) and the
+        # listener hears an even volume -- the 2026-06-10 fix for the swinging echo
+        # floor + the perceived volume fluctuation. No-op when target_rms<=0.
+        samples = np.asarray(
+            normalize_rms(samples, target_rms), dtype="float32"
+        ).reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):

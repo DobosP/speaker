@@ -283,6 +283,12 @@ def build_runtime(
     from .turn_merge import TurnMergeConfig
 
     turn_merge_config = TurnMergeConfig.from_dict(config.get("turn_merge"))
+    # Resume-after-interrupt + self-echo guard: "start again"/"continue" after
+    # a cut resumes the reply; a final that is the assistant's own TTS echo is
+    # dropped. Default on; the "resume" block overrides.
+    from .resume import ResumeConfig
+
+    resume_config = ResumeConfig.from_dict(config.get("resume"))
 
     intents_cfg = config.get("intents", {}) or {}
     intents = None
@@ -372,6 +378,7 @@ def build_runtime(
         followup_config=followup_config,
         continuation_config=continuation_config,
         turn_merge_config=turn_merge_config,
+        resume_config=resume_config,
         command_map=config.get("commands"),
         intents=intents,
         addressing=addressing,

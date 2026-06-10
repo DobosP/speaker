@@ -79,6 +79,13 @@ def test_looks_like_user_routes_through_dtd_path_when_aec_and_coherence_on():
     """
     frames = load_trace_frames()
     engine = live_engine_with_dtd()
+    # The recorded session ran the PRE-2026-06-10 chart math; this test pins the
+    # ROUTING (PATH A taken, decide() bool converted faithfully), so it swaps in
+    # the legacy-constructed detector to compare against the recorded fire set.
+    # The SHIPPED detector's behavior is owned by the requirement tests.
+    from tests.barge_fixtures import build_live_dtd
+
+    engine._dtd = build_live_dtd(legacy=True)
 
     # Replay the WHOLE trace through the REAL gate; the engine's DTD warms its
     # charts identically to the live run, so its fires must match the ground truth.

@@ -10,7 +10,12 @@ from always_on_agent.capabilities import CapabilityRegistry
 from always_on_agent.memory import SessionMemory
 
 from core.capabilities import DEFAULT_SYSTEM, attach_llm_capabilities
-from core.conversation import RecentContextConfig, build_recent_context
+from core.conversation import (
+    RecentContextConfig,
+    build_recent_context,
+    collect_recent_turns,
+    is_topic_reset,
+)
 
 
 # --- the builder -------------------------------------------------------------
@@ -80,6 +85,115 @@ def test_config_from_dict_defaults_on():
     )
     assert cfg.enabled is False
     assert cfg.max_turns == 3
+
+
+# --- topic reset (2026-06-10 plan step 5) -------------------------------------
+
+
+def test_is_topic_reset_matches_short_reset_utterances():
+    cfg = RecentContextConfig()
+    assert is_topic_reset("Start again", cfg)
+    assert is_topic_reset("never mind", cfg)
+    assert is_topic_reset("Can we start over please?", cfg)  # contained phrase
+    assert is_topic_reset("OK, new topic", cfg)
+    assert is_topic_reset("de la inceput", cfg)  # Romanian, de-diacritic'd
+    assert is_topic_reset("De la început", cfg)  # accented input normalizes
+
+
+def test_is_topic_reset_rejects_long_or_unrelated_utterances():
+    cfg = RecentContextConfig()
+    # A long sentence merely MENTIONING a phrase is not a reset.
+    assert not is_topic_reset(
+        "tell me the story where the hero says never mind and walks away", cfg
+    )
+    assert not is_topic_reset("what is the capital of france", cfg)
+    assert not is_topic_reset("", cfg)
+    # Phrase words present but NOT contiguous.
+    assert not is_topic_reset("start the engine again", cfg)
+
+
+def test_is_topic_reset_disabled_never_matches():
+    cfg = RecentContextConfig(reset_enabled=False)
+    assert not is_topic_reset("start again", cfg)
+
+
+def _stale_then_reset_then_new() -> SessionMemory:
+    """The live run-20260610-003800 shape: a stale topic, 'Start again', new turn."""
+    m = SessionMemory()
+    m.add("no i was referring to our interaction the volume", tags=("user",))
+    m.add("I apologize for the misunderstanding! ... the volume?", tags=("assistant_output",))
+    m.add("Start again", tags=("user",))
+    m.add("Okay, fresh start!", tags=("assistant_output",))
+    m.add("tell me a story about a lighthouse", tags=("user",))
+    return m
+
+
+def test_reset_turn_in_memory_cuts_the_block_at_the_reset():
+    turns = collect_recent_turns(_stale_then_reset_then_new(), RecentContextConfig())
+    texts = [t for _, t in turns]
+    # Everything at/before "Start again" is gone; the post-reset turns survive.
+    assert "Okay, fresh start!" in texts
+    assert "tell me a story about a lighthouse" in texts
+    assert not any("volume" in t for t in texts)
+    assert not any("Start again" in t for t in texts)
+
+
+def test_reset_current_query_suppresses_the_block_for_its_own_turn():
+    m = SessionMemory()
+    m.add("no i was referring to our interaction the volume", tags=("user",))
+    m.add("I apologize ... the volume?", tags=("assistant_output",))
+    # The reset turn ITSELF must answer fresh -- the live failure replied with
+    # the stale volume apology because the block still carried it.
+    assert collect_recent_turns(m, RecentContextConfig(), current_query="Start again") == []
+    # A non-reset query still sees the thread.
+    assert collect_recent_turns(m, RecentContextConfig(), current_query="and the volume?") != []
+
+
+def test_reset_disabled_keeps_the_old_behaviour():
+    cfg = RecentContextConfig(reset_enabled=False)
+    turns = collect_recent_turns(_stale_then_reset_then_new(), cfg)
+    texts = [t for _, t in turns]
+    assert any("volume" in t for t in texts)  # stale topic kept (old behaviour)
+    assert collect_recent_turns(
+        _stale_then_reset_then_new(), cfg, current_query="Start again"
+    ) != []
+
+
+def test_reset_config_from_dict():
+    cfg = RecentContextConfig.from_dict(
+        {
+            "recent_context_reset_enabled": False,
+            "recent_context_reset_max_words": 4,
+            "recent_context_reset_phrases": ["wipe it"],
+        }
+    )
+    assert cfg.reset_enabled is False
+    assert cfg.reset_max_words == 4
+    assert cfg.reset_phrases == ("wipe it",)
+    # Defaults: on, 8 words, the shipped phrase table.
+    dflt = RecentContextConfig.from_dict(None)
+    assert dflt.reset_enabled is True
+    assert dflt.reset_max_words == 8
+    assert "start again" in dflt.reset_phrases
+
+
+def test_assistant_reset_query_answers_without_stale_context():
+    """End-to-end through assistant(): 'Start again' must NOT see the old topic."""
+    llm = _RecordingLLM()
+    mem = SessionMemory()
+    mem.add("no i was referring to our interaction the volume", tags=("user",))
+    mem.add("I apologize for the misunderstanding! ... the volume?", tags=("assistant_output",))
+    reg = _assistant(llm, mem, recent_context=RecentContextConfig(enabled=True))
+
+    reg.invoke("assistant.answer", "Start again", {})
+    assert "Recent conversation" not in llm.systems[-1]
+    assert "volume" not in llm.systems[-1]
+
+    # And the NEXT turn does not resurrect the pre-reset topic either.
+    mem.add("Okay, fresh start!", tags=("assistant_output",))
+    reg.invoke("assistant.answer", "tell me a story about a lighthouse", {})
+    assert "volume" not in llm.systems[-1]
+    assert "Okay, fresh start!" in llm.systems[-1]  # post-reset context kept
 
 
 # --- assistant() injection ---------------------------------------------------
@@ -163,6 +277,33 @@ def test_assistant_floats_sensitivity_over_a_private_prior_turn():
     ctx: dict = {"intent_kind": "assistant"}  # truthy so invoke passes it through
     reg.invoke("assistant.answer", "what is the capital of france", ctx)  # public current
     assert ctx["sensitivity"] == PRIVATE  # floated up by the private prior turn
+
+
+def test_assistant_floats_sensitivity_over_a_private_recall_block():
+    # §9.7 (review lm-3): a PUBLIC current query whose RECALL block surfaces
+    # private remembered facts must route the turn on the private chain. The
+    # recall path previously skipped the sensitivity float that recent-turns
+    # and images get.
+    from core.capabilities import RecallConfig
+    from core.sensitivity import PRIVATE
+
+    class _RecallingMemory(SessionMemory):
+        def context_for_llm(self, query: str) -> str:
+            return "Remembered: the user's salary is $95,000 at Acme Corp."
+
+    llm = _RecordingLLM()
+    mem = _RecallingMemory()
+    reg = _assistant(
+        llm, mem,
+        recall=RecallConfig(enabled=True),
+        recent_context=RecentContextConfig(enabled=False),
+    )
+
+    ctx: dict = {"intent_kind": "assistant"}
+    reg.invoke("assistant.answer", "what is the capital of france", ctx)
+    assert ctx["sensitivity"] == PRIVATE  # floated by the private recall block
+    # The block itself still reaches the prompt (contract unchanged).
+    assert "Remembered:" in llm.systems[-1]
 
 
 def test_abstain_and_apology_replies_are_excluded_from_context():

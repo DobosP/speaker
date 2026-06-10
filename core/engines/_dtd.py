@@ -52,12 +52,34 @@ class Chart:
         var_alpha: float = 0.15,
         rel_floor: float = 0.15,
         provisional: float = 0.0,
+        z_freeze: float = 0.0,
+        robust_seed: bool = False,
+        freeze_limit: int = 30,
     ) -> None:
         self._alpha = float(alpha)
         self._var_alpha = float(var_alpha)
         self._rel_floor = float(rel_floor)  # sigma floor as a fraction of the mean
         self._warmup0 = max(0, int(warmup))
         self._provisional = float(provisional)
+        # Regime-change backstop for z_freeze: after this many CONSECUTIVE frozen
+        # (outlier) updates, absorb anyway. A real talk-over reaches z >> K and
+        # opens a candidate run (decide() freezes the charts there) long before
+        # this bound; only a SUSTAINED sub-K elevation -- a genuine echo regime
+        # change like a volume step-up -- accumulates a frozen run this long, and
+        # without the bound a persistent chart would deadlock below it forever
+        # (every block an outlier, none absorbed, the bar never rises). <= 0 ->
+        # freeze indefinitely.
+        self._freeze_limit = int(freeze_limit)
+        # Anti-contamination (2026-06-10): ``z_freeze`` > 0 -> an echo-only update
+        # whose own z exceeds it is NOT absorbed (it is plausibly the user, and
+        # absorbing it raises the chart's own bar -- the recorded miss-feedback
+        # loop). ``robust_seed`` -> warm-up seeds from the LOWER HALF of the warm
+        # samples instead of their mean, so a user already talking at reply onset
+        # cannot seed the baseline at talk-over level (echo gaps dominate the low
+        # end). Both default OFF here for construction-compat; AdaptiveDTD turns
+        # them ON by default.
+        self._z_freeze = float(z_freeze)
+        self._robust_seed = bool(robust_seed)
         self.reset()
 
     def reset(self) -> None:
@@ -66,6 +88,8 @@ class Chart:
         self._warmup_left = self._warmup0
         self._warm_sum = 0.0
         self._warm_n = 0
+        self._warm_vals: list[float] = []
+        self._frozen_run = 0
 
     @property
     def warming(self) -> bool:
@@ -88,17 +112,50 @@ class Chart:
         return (float(x) - self._mean) / self._sigma()
 
     def seed(self, x: float) -> None:
-        """Warm-up: running mean of the first few (echo-only) blocks, unconditional."""
-        self._warm_sum += float(x)
+        """Warm-up seeding from the first few blocks of a run.
+
+        Legacy (``robust_seed=False``): unconditional running mean -- assumes the
+        warm-up blocks are echo-only by construction. That assumption FAILS when
+        the user is already talking at reply onset (the most common real barge:
+        objecting as soon as the wrong answer starts) -- the live 2026-06-10
+        misses seeded the baseline AT talk-over level so ``z`` stayed 0 for
+        seconds. Robust (``robust_seed=True``): seed from the mean of the LOWER
+        HALF of the warm samples -- user speech only ADDS energy, so the low end
+        of the warm-up blocks (inter-word gaps, echo-only moments) is the best
+        echo estimate under possible double-talk."""
+        x = float(x)
+        self._warm_sum += x
         self._warm_n += 1
-        self._mean = self._warm_sum / self._warm_n
+        if self._robust_seed:
+            self._warm_vals.append(x)
+            low = sorted(self._warm_vals)[: max(1, (len(self._warm_vals) + 1) // 2)]
+            self._mean = sum(low) / len(low)
+        else:
+            self._mean = self._warm_sum / self._warm_n
         self._warmup_left -= 1
 
     def update_echo(self, x: float) -> None:
         """Post-warm-up echo-only update: EWMA mean + UPWARD-only variance. A barge
         excursion is upward and must NOT inflate the echo variance toward itself, so
-        only positive residuals feed the variance (mirrors EchoCoherenceDetector)."""
+        only positive residuals feed the variance (mirrors EchoCoherenceDetector).
+
+        ``z_freeze``: a sample that is an OUTLIER on this chart's own scale
+        (``z > z_freeze``) is never absorbed at all -- even when the FUSED ``D``
+        stayed under ``K`` (e.g. a talk-over that lifted only the residual). The
+        recorded 2026-06-10 miss-feedback loop: each missed talk-over block fed
+        the baseline, inflating mean+variance toward the user until ``z_resid``
+        pinned at 0. Bounded risk: a genuine step-rise in echo level (volume
+        knob) freezes too, but per-sentence TTS normalization keeps the echo
+        stable and the residual-floor margin gate still bounds any false fires."""
         x = float(x)
+        if self._z_freeze > 0.0 and self.z(x) > self._z_freeze:
+            self._frozen_run += 1
+            if self._freeze_limit <= 0 or self._frozen_run < self._freeze_limit:
+                return
+            # Sustained sub-K elevation = a genuine echo regime change (e.g. a
+            # volume step-up): absorb so a persistent chart cannot deadlock
+            # below the new floor forever.
+        self._frozen_run = 0
         resid = x - self._mean
         if resid > 0.0:
             self._var = (1.0 - self._var_alpha) * self._var + self._var_alpha * resid * resid
@@ -126,11 +183,25 @@ class AdaptiveDTD:
         chart_alpha: float = 0.05,
         chart_var_alpha: float = 0.15,
         chart_rel_floor: float = 0.15,
+        chart_z_freeze: float = 3.0,
+        chart_robust_seed: bool = True,
+        chart_freeze_limit: int = 30,
+        persistent_charts: bool = True,
     ) -> None:
         self.k = float(k)
         w = list(weights) + [0.0, 0.0, 0.0]
         self.w_raw, self.w_resid, self.w_coh = float(w[0]), float(w[1]), float(w[2])
         self._confirm = max(1, int(confirm_frames))
+        # Persistent charts (2026-06-10 contamination fix): the learned echo
+        # baselines CARRY ACROSS speaking runs (see new_run). The per-reply cold
+        # restart was the shared root of both recorded failures: warm-up re-seeded
+        # on whatever played at reply onset (often the USER, talking over the
+        # reply's first words -> z_resid pinned at 0 for seconds = the 4s
+        # scream-miss), and a fresh near-zero chart made z explode on reply-onset
+        # echo (= the self-interrupt). Per-sentence TTS loudness normalization
+        # (plan step 1) makes the echo level stable run-to-run, so persistence is
+        # correct-by-design now. False -> legacy per-run reset.
+        self._persistent = bool(persistent_charts)
 
         def _chart(prov: float = 0.0) -> Chart:
             return Chart(
@@ -139,6 +210,9 @@ class AdaptiveDTD:
                 var_alpha=chart_var_alpha,
                 rel_floor=chart_rel_floor,
                 provisional=prov,
+                z_freeze=chart_z_freeze,
+                robust_seed=chart_robust_seed,
+                freeze_limit=chart_freeze_limit,
             )
 
         self._raw = _chart()
@@ -154,11 +228,48 @@ class AdaptiveDTD:
         self.last_decided: Optional[bool] = None
 
     def reset(self) -> None:
-        """New speaking run -> re-arm warm-up + clear the confirmation run."""
+        """FULL reset: re-arm warm-up + clear the confirmation run. For
+        construction/config changes and tests; speaking-run boundaries use
+        :meth:`new_run` (which preserves the learned charts by default)."""
         self._raw.reset()
         self._resid.reset()
         self._coh.reset()
         self._consec = 0
+
+    def new_run(self) -> None:
+        """Speaking-run boundary (silent->speaking / a cut). With persistent
+        charts (the default) only the candidate-confirmation run clears -- the
+        learned per-device echo baselines survive, so the next reply needs no
+        warm-up and a user already talking at its onset cannot poison the seed.
+        With ``persistent_charts=False`` this is the legacy full reset."""
+        if not self._persistent:
+            self.reset()
+            return
+        self._consec = 0
+
+    def observe_echo(
+        self, raw_rms: float, resid_rms: float, incoherent_fraction: float
+    ) -> None:
+        """Echo-only observation from a block the fire path did NOT evaluate.
+
+        ``decide`` only runs on VAD-speech blocks (the capture loop gates the
+        barge check on the VAD), so the charts' learning diet was biased toward
+        exactly the blocks most likely to contain the USER. This tap lets the
+        capture loop feed the charts the VAD-QUIET playback blocks -- the most
+        reliably echo-only samples there are -- so the baselines track the true
+        echo. Seeds during warm-up, learns after; never opens, extends, or
+        breaks a candidate run (skipped while one is open: charts stay frozen
+        during a candidate barge). Never raises; pure floats."""
+        if self._consec > 0:
+            return
+        charts = (self._raw, self._resid, self._coh)
+        vals = (float(raw_rms), float(resid_rms), float(incoherent_fraction))
+        if any(c.warming for c in charts):
+            for c, v in zip(charts, vals):
+                c.seed(v)
+            return
+        for c, v in zip(charts, vals):
+            c.update_echo(v)
 
     def decide(self, raw_rms: float, resid_rms: float, incoherent_fraction: float) -> bool:
         """Return True iff this is a confirmed user talk-over. False = echo-only

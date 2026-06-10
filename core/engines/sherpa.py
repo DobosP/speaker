@@ -408,6 +408,29 @@ class SherpaConfig:
     # DTLN echo LEAK (residual 0.04 over a 0.02 echo floor) from printing a huge
     # z and tripping K, without needing a shout (precision against leaks).
     dtd_chart_rel_floor: float = 0.4
+    # Chart anti-contamination (2026-06-10 plan step 3; run-20260610-003800).
+    # The live misses: (a) the per-reply chart restart re-seeded the baseline on
+    # whatever played at reply onset -- often the USER, already objecting -- so
+    # z_resid pinned at 0 for ~4s of screaming; (b) every missed talk-over block
+    # was then ABSORBED into the baseline (mean+variance), making the next frame
+    # even less likely to fire (the miss-feedback loop). Three levers, all
+    # off-switchable:
+    # * dtd_chart_persist: charts survive speaking-run boundaries (per-sentence
+    #   TTS normalization keeps the echo stable run-to-run); false = legacy
+    #   per-reply re-warm-up.
+    # * dtd_chart_z_freeze: an echo-only update whose own z exceeds this is never
+    #   absorbed (plausibly the user); 0 disables.
+    # * dtd_chart_robust_seed: warm-up seeds from the LOWER HALF of the warm
+    #   samples (user speech only ADDS energy, so the low end is the best echo
+    #   estimate under double-talk); false = legacy running mean.
+    # * dtd_chart_freeze_limit: regime-change backstop -- after this many
+    #   CONSECUTIVE frozen updates the chart absorbs anyway (a volume step-up
+    #   must not deadlock a persistent chart below the new echo floor); <= 0
+    #   freezes indefinitely.
+    dtd_chart_z_freeze: float = 3.0
+    dtd_chart_persist: bool = True
+    dtd_chart_robust_seed: bool = True
+    dtd_chart_freeze_limit: int = 30
     # Residual-energy floor gate on the DTD barge path (the 2026-06-10 self-
     # interrupt fix). A DTD fire only counts as eligible if the post-AEC residual
     # stands at least this many dB above the LEARNED residual echo floor
@@ -808,6 +831,10 @@ class SherpaOnnxEngine(AudioEngine):
                 confirm_frames=c.dtd_confirm_frames,
                 warmup_frames=c.dtd_warmup_frames,
                 chart_rel_floor=c.dtd_chart_rel_floor,
+                chart_z_freeze=c.dtd_chart_z_freeze,
+                chart_robust_seed=c.dtd_chart_robust_seed,
+                chart_freeze_limit=c.dtd_chart_freeze_limit,
+                persistent_charts=c.dtd_chart_persist,
             )
             log.info(
                 "adaptive barge-in (fused z-score DTD) ACTIVE: K=%.1f weights=(%.1f,%.1f,%.1f) "
@@ -1095,7 +1122,7 @@ class SherpaOnnxEngine(AudioEngine):
         if self._echo_coherence is not None:
             self._echo_coherence.reset()
         if self._dtd is not None:
-            self._dtd.reset()
+            self._dtd.new_run()  # charts persist (2026-06-10); only the candidate run clears
         if self._far_ref is not None:
             self._far_ref.clear()
         if self._aec is not None:
@@ -1469,6 +1496,25 @@ class SherpaOnnxEngine(AudioEngine):
                             barge_sustain.reset()
                             rejected_run = 0.0
                         else:
+                            # Echo-learning tap (2026-06-10): on a VAD-QUIET
+                            # playback block, feed the DTD charts an echo-only
+                            # observation. decide() runs only on VAD-speech
+                            # blocks (the eligibility gate below), so without
+                            # this the charts' learning diet is biased toward
+                            # exactly the blocks most likely to contain the
+                            # USER; the quiet blocks are the most reliably
+                            # echo-only samples there are. Skipped during the
+                            # suppress/refractory window above (echo tail mixed
+                            # with the user's own barge speech).
+                            if self._dtd is not None and not self._vad.is_speech_detected():
+                                det = self._echo_coherence
+                                incoh = 0.0
+                                if det is not None:
+                                    det.decide(mic_raw)
+                                    incoh = float(det.last_incoherent_fraction)
+                                self._dtd.observe_echo(
+                                    rms(mic_raw), rms(samples), incoh
+                                )
                             # Windowed temporal confirmation (BargeSustain): the
                             # per-frame eligibility FLICKERS on a real open-speaker
                             # talk-over (breath/pauses + AEC suppressing the user
@@ -1929,7 +1975,11 @@ class SherpaOnnxEngine(AudioEngine):
                         if self._echo_coherence is not None:
                             self._echo_coherence.reset()  # drop the stale reference
                         if self._dtd is not None:
-                            self._dtd.reset()  # re-arm per-device chart warm-up next run
+                            # Run boundary, NOT a full reset: the learned echo charts
+                            # persist across replies (2026-06-10 contamination fix --
+                            # the per-reply re-warm-up seeded on the user talking at
+                            # reply onset). Only the candidate run clears.
+                            self._dtd.new_run()
                         # Drop the far-end reference + reset the canceller so a
                         # cut-off sentence's stale tail isn't subtracted from the
                         # next near-end block once playback resumes.

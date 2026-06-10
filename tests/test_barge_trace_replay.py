@@ -63,7 +63,11 @@ def test_live_dtd_reproduces_every_recorded_fired_verdict():
     them -- not in isolation.
     """
     frames = bf.load_trace_frames()
-    dtd = bf.build_live_dtd()
+    # legacy=True: the recorded session ran the PRE-2026-06-10 chart math (no
+    # persistence/z-freeze/robust seed), so the fidelity pin must construct
+    # that detector. The SHIPPED detector's behavior over this trace is owned
+    # by the requirement/echo-safety tests, not by this parse-fidelity pin.
+    dtd = bf.build_live_dtd(legacy=True)
 
     mismatches = []
     for f in frames:
@@ -77,31 +81,25 @@ def test_live_dtd_reproduces_every_recorded_fired_verdict():
 
 
 def test_full_chain_replay_now_cuts_on_the_normal_talkover():
-    """After the BargeSustain fix the full chain CUTS on the normal-volume
-    talk-over.
+    """The full SHIPPED chain cuts on the normal-volume talk-over -- at its onset.
 
-    The REAL ``AdaptiveDTD`` still fires 9x (its decide math is unchanged), and
-    the REAL windowed ``BargeSustain`` now converts the intermittent turn-2 fires
-    (idx 10, 11, _, _, 14) into a cut at idx 11 -- the first real talk-over -- no
-    longer waiting for the turn-3 shout. This is the post-fix counterpart of the
-    recorded live miss (summary.json: turn-2 ``barge_in_latency=null``); it goes
-    red if the integrator regresses to a flicker-starved accumulator.
+    Drives the highest-fidelity audio-free seam (``run_frames_engine``: REAL
+    ``_barge_in_fire_eligible`` -> ``_looks_like_user`` with the residual-floor
+    gate + REAL ``BargeSustain``) over the whole recorded run, with the
+    silent->speaking re-arm modeled at the verified turn boundaries. The owner
+    requirement this pins: the turn-2 NORMAL-volume talk-over cuts (live it
+    never did; only the turn-3 shout broke through), and turn-3 cuts at its
+    ONSET, not the raw=0.0704 shout peak.
 
-    ``reset_latch_per_turn=True`` models the silent->speaking re-arm at each turn
-    boundary, so each turn's talk-over is independently eligible.
+    NB this intentionally does NOT pin the per-frame decide() count: the
+    2026-06-10 anti-contamination charts refuse to absorb the talk-overs, so
+    the decide layer fires MORE than the recorded 9 on this pre-normalization
+    trace -- the downstream floor gate + latch own the behavior, and the
+    behavior is what this test asserts.
     """
-    frames = bf.load_trace_frames()
+    frames = bf.frames_with_turn_starts(bf.load_trace_frames())
 
-    result = bf.run_frames(
-        frames,
-        bf.build_live_dtd(),
-        vad_speech=True,
-        reset_latch_per_turn=True,
-        params=bf.LIVE_INTEGRATOR_PARAMS,
-    )
-
-    # The REAL DTD still fires 9 times across the trace (decide() unchanged).
-    assert result.dtd_fire_count == 9
+    result = bf.run_frames_engine(frames, vad_speech=True)
 
     fire_indices = [idx for idx, _ in result.fires]
 

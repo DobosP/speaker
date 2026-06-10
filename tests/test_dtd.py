@@ -57,6 +57,62 @@ def test_chart_variance_is_upward_only():
     assert c.sigma <= base * 1.5 + 1e-6
 
 
+# --- Chart anti-contamination (2026-06-10 plan step 3) ------------------------
+
+
+def test_chart_z_freeze_refuses_to_absorb_outliers():
+    """A talk-over-level sample (z > z_freeze) must not drag the chart's own
+    mean/variance up toward itself -- the recorded miss-feedback loop where each
+    missed talk-over block fed the baseline until z_resid pinned at 0."""
+    c = Chart(warmup=1, z_freeze=3.0, rel_floor=0.4)
+    c.seed(0.002)
+    for _ in range(20):
+        c.update_echo(0.002)  # steady echo
+    mean_before = c.mean
+    for _ in range(10):
+        c.update_echo(0.045)  # 22x the floor: a talk-over being missed
+    assert c.mean == pytest.approx(mean_before), (
+        "the talk-over was absorbed into the echo baseline"
+    )
+    assert c.z(0.045) > 5.0  # it still stands out -- the bar did not rise
+
+
+def test_chart_z_freeze_disabled_keeps_legacy_absorption():
+    c = Chart(warmup=1, z_freeze=0.0)
+    c.seed(0.002)
+    mean_before = c.mean
+    for _ in range(10):
+        c.update_echo(0.045)
+    assert c.mean > mean_before * 3  # legacy behavior: absorbed
+
+
+def test_chart_freeze_limit_eventually_accepts_a_regime_change():
+    """A SUSTAINED sub-K elevation (echo volume step-up) must not deadlock a
+    persistent chart below the new floor forever: after freeze_limit
+    consecutive frozen updates the chart absorbs again."""
+    c = Chart(warmup=1, z_freeze=3.0, rel_floor=0.4, freeze_limit=10)
+    c.seed(0.002)
+    for _ in range(20):
+        c.update_echo(0.002)
+    for _ in range(40):  # a genuine new, louder echo regime
+        c.update_echo(0.01)
+    assert c.mean > 0.003, "the chart never adapted to the new echo regime"
+
+
+def test_chart_robust_seed_resists_onset_talkover():
+    """Warm-up seeding from the LOWER HALF: a user already talking during most
+    warm-up blocks cannot seed the baseline at talk-over level (the echo-gap
+    dips dominate the low end)."""
+    talkover_heavy = (0.045, 0.060, 0.003, 0.030, 0.080)  # 1 echo dip in 5
+    legacy = Chart(warmup=5, robust_seed=False)
+    robust = Chart(warmup=5, robust_seed=True)
+    for x in talkover_heavy:
+        legacy.seed(x)
+        robust.seed(x)
+    assert legacy.mean == pytest.approx(sum(talkover_heavy) / 5)
+    assert robust.mean < legacy.mean / 1.5  # anchored toward the echo dips
+
+
 # --- AdaptiveDTD ------------------------------------------------------------
 
 
@@ -113,6 +169,53 @@ def test_candidate_run_freezes_charts():
     for _ in range(3):
         dtd.decide(0.40, 0.20, 0.97)  # candidate frames (D>K) -> frozen
     assert dtd._raw.mean == pytest.approx(mean_before)  # unchanged
+
+
+def test_new_run_preserves_persistent_charts():
+    """The speaking-run boundary keeps the learned echo baselines (persistent
+    default): the next reply needs no warm-up and an onset talk-over fires
+    immediately instead of seeding the baseline."""
+    dtd = AdaptiveDTD(warmup_frames=3, confirm_frames=1, k=5.0,
+                      weights=(0.2, 1.0, 0.0), chart_rel_floor=0.4)
+    for _ in range(3):
+        dtd.decide(0.002, 0.0005, 0.8)  # warm-up on echo
+    for _ in range(10):
+        dtd.decide(0.002, 0.0005, 0.8)  # learned echo floor
+    dtd.new_run()
+    # First block of the NEW reply is already a talk-over -> fires at once.
+    assert dtd.decide(0.05, 0.04, 0.9) is True
+
+
+def test_new_run_legacy_mode_full_resets():
+    dtd = AdaptiveDTD(warmup_frames=3, confirm_frames=1, k=5.0,
+                      persistent_charts=False)
+    for _ in range(13):
+        dtd.decide(0.002, 0.0005, 0.8)
+    dtd.new_run()
+    # Legacy: charts re-warm, so even a huge excursion cannot fire yet.
+    assert dtd.decide(0.5, 0.4, 0.99) is False
+
+
+def test_observe_echo_seeds_warmup_and_learns_after():
+    dtd = AdaptiveDTD(warmup_frames=3, confirm_frames=1, k=5.0,
+                      weights=(0.2, 1.0, 0.0), chart_rel_floor=0.4)
+    for _ in range(3):
+        dtd.observe_echo(0.002, 0.0005, 0.8)  # the VAD-quiet tap warms the charts
+    # Warm-up complete via the tap alone: a talk-over on the first EVALUATED
+    # block fires immediately.
+    assert dtd.decide(0.05, 0.04, 0.9) is True
+
+
+def test_observe_echo_skipped_while_a_candidate_run_is_open():
+    dtd = AdaptiveDTD(warmup_frames=1, confirm_frames=3, k=5.0,
+                      weights=(0.2, 1.0, 0.0), chart_rel_floor=0.4)
+    dtd.decide(0.002, 0.0005, 0.8)  # seed
+    for _ in range(10):
+        dtd.decide(0.002, 0.0005, 0.8)
+    assert dtd.decide(0.05, 0.04, 0.9) is False  # candidate frame 1 of 3
+    mean_before = dtd._resid.mean
+    dtd.observe_echo(0.05, 0.04, 0.9)  # must NOT learn during the open candidate
+    assert dtd._resid.mean == pytest.approx(mean_before)
 
 
 def test_reset_rearms_warmup():

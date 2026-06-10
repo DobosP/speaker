@@ -293,6 +293,13 @@
     "enabled": true,
     "addon_max_words": 8
   },
+  "turn_merge": {
+    "_comment": "Hold-and-merge final dispatch (2026-06-10; core/turn_merge.py). A final that READS mid-thought -- ends on a conjunction/article/preposition ('A long story about') or is a 1-2 word fragment ('So they') -- is HELD up to hold_sec for the user's next words and MERGED into one query, instead of each fragment being answered (the live failure: four fragments, four spoken replies, each reply's echo then destabilized barge-in). Complete-reading finals dispatch with NO added latency; control words (yes/no/stop/never mind/...) are exempt. Partials extend an open hold (cap max_hold_sec). Also moves ALL final processing (addressing gate -> cleaner -> router) off the audio capture thread onto a dispatch worker (review rc-2: LLM calls were blocking mic reads). Complements 'continuation' above, which only merges while a task is still in flight (~0.6s on the fast tier).",
+    "enabled": true,
+    "hold_sec": 1.2,
+    "max_hold_sec": 6.0,
+    "max_fragment_words": 2
+  },
   "assistant": {
     "_comment": "Optional persona so the model knows WHAT IT IS. Its SKILLS are enumerated automatically from the live capability manifest (always_on_agent/capabilities.py specs) into the system prompt, and the web-access line reflects the real web_search.enabled / §9.7 egress state. Leave name empty for the anonymous 'local voice assistant' identity; set name (and optionally a one-line persona / extra guidance) to give it a character.",
     "name": "",

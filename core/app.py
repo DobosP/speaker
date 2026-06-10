@@ -276,6 +276,13 @@ def build_runtime(
     # racing a competing cold task. Shipped on (config.json); a missing block
     # defaults off via from_dict so non-default configs stay unaffected.
     continuation_config = ContinuationConfig.from_dict(config.get("continuation"))
+    # Hold-and-merge final dispatch: an incomplete-reading final waits briefly
+    # for the user's next words instead of being answered as a fragment, and all
+    # final processing moves off the audio capture thread. Shipped on
+    # (config.json); a missing block defaults off via from_dict.
+    from .turn_merge import TurnMergeConfig
+
+    turn_merge_config = TurnMergeConfig.from_dict(config.get("turn_merge"))
 
     intents_cfg = config.get("intents", {}) or {}
     intents = None
@@ -364,6 +371,7 @@ def build_runtime(
         stream_tts=stream_tts,
         followup_config=followup_config,
         continuation_config=continuation_config,
+        turn_merge_config=turn_merge_config,
         command_map=config.get("commands"),
         intents=intents,
         addressing=addressing,

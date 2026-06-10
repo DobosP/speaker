@@ -65,6 +65,49 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       docs/session_2026-06-08_live_session_self_interrupt.md (think=false latency +
       prosody endpointing both validated live; re-assess turn-taking after the mic fix).
 
+## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
+> Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds
+> fixed: AEC ref-delay (19→105ms calibrated, 30.3dB ERLE), DTD chart persistence,
+> hold-and-merge, resume-after-interrupt, self-echo guard (acoustic + the CLEANER-
+> hallucination variant), newest-input-wins supersede, noise-aware addressing +
+> unsure_acts=false. Owner verdict after round 2: "barge in works properly now".
+> These are the REMAINING improvements observed but not yet done:
+- [ ] **Speaker-ID enrollment (OWNER, 2 minutes, biggest remaining lever for
+      house-noise/other-voices).** Model present, gate FAIL-OPEN until enrolled:
+      `python -m core --enroll`, read the sentence. If it then rejects the owner,
+      lower `sherpa.speaker_threshold` toward 0.4 (laptop mics score 0.30-0.46
+      cosine; see memory + docs/session notes). Identity-gates FINALS only (barge
+      stays identity-free by design).
+- [ ] **Investigate `_speaking` clearing while audio still drains (full-sentence
+      echo mechanism).** Whole assistant sentences were transcribed as user turns,
+      which requires ASR to hear playback — plausibly the playback epilogue's
+      bounded FIFO-drain wait (`playback_fifo_sec + 0.5` deadline) expiring on long
+      sentences so `_speaking` clears while sound is still playing. Measure (log
+      fifo.count() at the deadline exit) and extend the wait/anchor on true drain.
+      The L4 text guard now masks the symptom; this is the root.
+- [ ] **Cleaner root-cause hardening:** the guards (rewrite_is_overreach + the
+      own-words drop) bound the damage, but consider REMOVING assistant replies
+      from the cleaner's recent-context entirely (only prior USER utterances are
+      legitimate correction material) so it cannot copy the assistant's sentences
+      in the first place.
+- [ ] **Endpoint latency feels slow live** (endpoint_latency 1.8-3.6s/turn):
+      once turn-merge is proven over a few sessions, lower
+      `endpoint_min_silence_sec` 1.1 → ~0.7 on the Windows config.local.json and
+      re-test mid-thought pauses (turn-merge now catches what the endpointer
+      misses, so the safety margin can shrink).
+- [ ] **Watchdog false "llm stuck"/"tts stuck" on held/merged/INGESTed turns**
+      (review rc-5): stamp a handled_local/held metric and skip those turns in
+      watchdog._check_turns; today every live bundle carries misleading
+      stuck_hints.
+- [ ] **STT garble is now the quality ceiling** ("conversation" for "story",
+      "Skiper" for "keeper" fed weak/confabulated replies): raise mic capture
+      level/gain, live-tune SenseVoice + prosody thresholds, consider the AT2020
+      when docked. Garble also weakens turn-merge joins.
+- [ ] **Fast-tier shallowness on contextful turns** ("That sounds lovely!" to a
+      detail-laden follow-up): the roadmap P3 quality axis (route
+      content-bearing follow-ups to main when recent context is rich) — see
+      docs/review_2026-06-10_gap_analysis.md.
+
 ## P1 — voice / audio (migrated from session_2026-06-01 handoff)
 - [x] **★ HARD REQUIREMENT (owner): open-speaker barge-in WITHOUT headphones —
       DONE + LIVE-VALIDATED 2026-06-08** on the bare ALC285 laptop mic+speaker (no

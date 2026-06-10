@@ -39,6 +39,25 @@ class TranscriptCleaner(Protocol):
     def clean(self, text: str, recent: Iterable[str] = ()) -> str: ...
 
 
+def rewrite_is_overreach(raw: str, cleaned: str, *, max_extra_words: int = 2) -> bool:
+    """True iff the cleaner INVENTED content instead of cleaning it.
+
+    A cleanup removes disfluencies and resolves self-corrections -- it can only
+    SHRINK or lightly reshape the utterance. A rewrite that turns a tiny
+    fragment into a much longer sentence is hallucination: live
+    (run-20260610-132603) the fast-tier cleaner rewrote the noise fragment
+    'Well' into the assistant's own prior sentence 'What would you like to know
+    about your place?' (it sits in the cleaner's recent-context), manufacturing
+    a phantom user turn the assistant then answered. Rule: a raw of N words may
+    grow by at most ``max_extra_words`` -- 'Ario der' -> 'are you there' (2->3)
+    survives, 'Well' -> a 9-word sentence does not. Pure + deterministic."""
+    from always_on_agent.text import normalize_text
+
+    raw_n = len(normalize_text(raw).split())
+    cleaned_n = len(normalize_text(cleaned).split())
+    return cleaned_n > raw_n + max_extra_words
+
+
 _SYSTEM_PROMPT = """You are a transcript cleaner for a voice assistant. The
 microphone produced a raw automatic speech recognition (ASR) final. Your
 job is to return the user's INTENDED sentence -- disfluencies removed and

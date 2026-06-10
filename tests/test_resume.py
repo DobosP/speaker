@@ -285,3 +285,31 @@ def test_runtime_drops_its_own_echo_final():
         assert len(engine.spoken) == spoken_before
     finally:
         runtime.stop()
+
+
+# --- round-4 guards (live run-20260610-132603) ----------------------------------
+
+
+def test_empty_or_punctuation_final_is_dropped():
+    # Live: a bare '.' final got ACTed and answered ("Ten.").
+    engine, runtime = _runtime()
+    try:
+        runtime._on_final(".")
+        runtime._on_final("?")
+        assert runtime.wait_idle(timeout=5.0)
+        assert engine.spoken == []
+    finally:
+        runtime.stop()
+
+
+def test_garbled_user_request_after_long_reply_is_not_eaten():
+    # Live: "Tell me a long story about my gun [cat]" was wrongly dropped when
+    # long finals used FUZZY overlap against a wordy recent reply; exact
+    # overlap keeps the user's garbled-but-real request alive.
+    t = _live_tracker()
+    t.note_spoken(
+        "Vii was not just a house cat; she was the self-appointed guardian of the living room."
+    )
+    t.note_spoken("Yes, I'm here, ready when you are.")
+    t.note_playback_end()
+    assert not t.is_self_echo("Tell me a long story about my gun")

@@ -230,7 +230,13 @@ class ResumeTracker:
         if not recent:
             return False
         spoken_tokens = normalize_text(" ".join(recent)).split()
-        overlap = _token_overlap(tokens, spoken_tokens, fuzzy=self._c.echo_fuzzy_ratio)
+        # EXACT token overlap for multi-word finals: an acoustic echo of a full
+        # sentence comes back near-verbatim, while a garbled USER request can
+        # share many fuzzy-similar words with a long recent reply -- live, the
+        # owner's "Tell me a long story about my gun [cat]" was wrongly eaten
+        # when this used fuzzy matching. Fuzziness belongs only to the
+        # short-tail branch below (where it is bounded to the LAST sentence).
+        overlap = _token_overlap(tokens, spoken_tokens)
         if len(tokens) < self._c.echo_min_words:
             # A tiny final counts as echo only against the LAST spoken
             # sentence's TAIL -- the echo tail is the END of playback. Exact

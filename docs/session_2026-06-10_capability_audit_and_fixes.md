@@ -159,6 +159,52 @@ watchdog still prints false "llm stuck" on merged/held turns (review rc-5,
 P1); STT garble ("Skiper", "T a story about") feeds weak merges — SenseVoice
 is on, but mic gain/quality is the lever.
 
+## Rounds 3-5 — live iteration with the owner (same day)
+
+Round-by-round: live test → bundle analysis → fix → re-test. Owner verdict
+after round 2: **"the barge in works properly now."**
+
+- **Round 3** (run-20260610-130622): phantom ECHO FINALS still derailed turns
+  (the guard's 3s window missed finals that land ~4s after playback because of
+  endpoint lag; garbled tails 'Leleep.'/'Loly.' aren't verbatim) and a stale
+  in-flight turn spoke an old answer. → echo window 8s + char-fuzzy short-tail
+  matching (difflib ≥0.6, tuned on the recorded garbles, control words exempt)
+  + **newest-input-wins**: a NEW final cancels in-flight/queued turns (skips
+  pending-confirm + CONTINUE add-ons). Merged `9f8ccf7`.
+- **Round 4** (run-20260610-132603): "speaks at random house noise". Bundle
+  smoking gun: **the LLM transcript cleaner hallucinated** — `cleaned: 'Well'
+  -> 'What would you like to know about your place?'` (the assistant's own
+  sentence from the cleaner's context) → phantom turns answered. → cleaner
+  guards (own-words rewrite ⇒ DROP the turn; >2-word growth ⇒ keep raw —
+  `core/cleanup.rewrite_is_overreach`), empty/punctuation finals dropped,
+  long-final echo match reverted to EXACT overlap (fuzzy had eaten the owner's
+  garbled real request "...story about my gun [cat]"), addressing prompt now
+  INGESTs recognizer noise/word salad (live examples), `unsure_acts=false` on
+  the enabled profiles (OWNER DECISION: UNSURE stays quiet). Merged `78e1ca9`.
+- **Round 5**: launched for owner testing; session wrapped here. Bundle:
+  run-20260610-135844.
+
+**AEC calibration (machine-local config.local.json, round 2):**
+`aec_ref_delay_ms` 19 → **105** (echo-probe sweep at the owner's problem
+volume: 30.3 dB ERLE, self_interruptions=0; 19ms was the WORST of the sweep
+at 7.3 dB / echo-only D_p95=913 — the volume-dependent self-interrupt root).
+
+**Live-testing technique (reusable):** `.git/live_wrapper.py` (untracked) runs
+`python -m core --engine sherpa --record --debug` and watches
+`.git/STOP_LIVE_RUN`; creating that file raises KeyboardInterrupt in the main
+thread = the graceful Ctrl-C path, so the run bundle flushes — lets an agent
+session start/stop live runs cleanly. Set `SPEAKER_KEEP_RUNS=9999` or the
+runlog pruner deletes committed bundles from the working tree.
+
+**Remaining improvements (full list with rationale → `.agents/backlog.md`
+"follow-ups from the 2026-06-10 LIVE iteration"):** speaker-ID enrollment
+(owner, 2 min — the big remaining lever for other-voices/house-noise);
+`_speaking`-clears-while-audio-drains root cause (full-sentence echo
+mechanism); drop assistant replies from the cleaner context (root-cause vs
+guard); endpoint_min_silence 1.1→0.7 once turn-merge proves out; watchdog
+false stuck-hints on held/merged turns (rc-5); STT garble as the quality
+ceiling; fast-tier shallowness on contextful turns (roadmap P3).
+
 ## Next steps (pick up here)
 
 1. **OWNER: rotate the Gemini key + decide D1/D2 (history purge / fixture

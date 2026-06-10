@@ -15,11 +15,13 @@ from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.supervisor import AgentSupervisor
 
+from always_on_agent.text import normalize_text
+
 from .addressing import ACT, INGEST, UNSURE, AddressingClassifier
 from .capabilities import RecallConfig, _answers_locally, attach_llm_capabilities
 from .capability_router import CapabilityRouter, CapabilityTierRouter, escalate_predicate
 from .conversation import RecentContextConfig
-from .cleanup import TranscriptCleaner
+from .cleanup import TranscriptCleaner, rewrite_is_overreach
 from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
@@ -466,6 +468,12 @@ class VoiceRuntime:
         self._process_final(text)
 
     def _process_final(self, text: str) -> None:
+        # Carrier-signal floor: a final with no words at all ('.', '?') is
+        # recognizer noise -- live it got ACT'ed and answered ('.' -> "Ten.").
+        # Nothing downstream can do anything sensible with it.
+        if not normalize_text(text):
+            log.info("dropping empty/punctuation-only final: %r", text)
+            return
         # L4 self-echo guard (core/resume.py): a final that arrived within the
         # echo window of playback end AND reads like a just-spoken sentence is
         # the assistant hearing ITSELF (live: its own "Okay, let's begin. How
@@ -524,14 +532,35 @@ class VoiceRuntime:
                 log.exception("transcript cleaner failed; passing raw text through")
                 cleaned = text
             if cleaned and cleaned != text:
-                log.info(
-                    "cleaned: %r -> %r", text, cleaned,
-                    extra={"transcript": {
-                        "role": "user", "text": cleaned, "raw": text,
-                        "mode": self.mode.value,
-                    }},
-                )
-                final_text = cleaned
+                # Cleaner-hallucination guards (live run-20260610-132603): the
+                # fast-tier cleaner rewrote noise fragments into the
+                # ASSISTANT'S OWN prior sentences from its recent-context
+                # ('Well' -> "What would you like to know about your place?"),
+                # manufacturing phantom turns the assistant then answered.
+                # (1) A rewrite that reads as a just-spoken assistant sentence
+                # is noise wearing the assistant's words -- drop the turn.
+                # (2) A rewrite that GROWS a fragment materially (cleaning can
+                # only shrink/reshape) is invented content -- keep the raw.
+                if self._resume.is_self_echo(cleaned):
+                    log.info(
+                        "dropping final: cleaner rewrote noise %r into the "
+                        "assistant's own words %r", text, cleaned,
+                    )
+                    return
+                if rewrite_is_overreach(text, cleaned):
+                    log.info(
+                        "ignoring cleaner over-rewrite %r -> %r (kept raw)",
+                        text, cleaned,
+                    )
+                else:
+                    log.info(
+                        "cleaned: %r -> %r", text, cleaned,
+                        extra={"transcript": {
+                            "role": "user", "text": cleaned, "raw": text,
+                            "mode": self.mode.value,
+                        }},
+                    )
+                    final_text = cleaned
         # Unified capability-router decision (the "middle layer"). It DRIVES
         # behaviour via the tier router + escalate predicate wired in __init__;
         # this call records the decision for the run summary AND primes the

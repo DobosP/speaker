@@ -3,7 +3,7 @@
   "device": "desktop",
   "_warm_on_start_comment": "Pre-warm the LLM tiers at startup (core/runtime.py) so turn 1 doesn't pay the ~3s model cold-load on the user's first utterance (measured ttft 3.17s cold vs ~0.27s warm). Set false to measure cold start.",
   "warm_on_start": true,
-  "_screen_capture_comment": "OFF by default. When enabled, a background loop (core/screen_capture.py) grabs the screen every interval_sec, encodes a frame, and feeds it to the model as AMBIENT visual context via runtime.set_current_frame -- so the assistant sees what you're doing. Needs `pip install mss` (and Pillow to downscale+JPEG; without it sends a full-res PNG). PRIVACY: this continuously reads your screen while on; an image-bearing turn is forced to the on-device/main tier and treated as PRIVATE (never a public cloud chain, §9.7). monitor: mss index (1=primary, 0=all). max_width: downscale longest edge (0=full). format: jpeg|png.",
+  "_screen_capture_comment": "OFF by default. When enabled, a background loop (core/screen_capture.py) grabs the screen every interval_sec, encodes a frame, and feeds it to the model as AMBIENT visual context via runtime.set_current_frame -- so the assistant sees what you're doing. Needs `pip install mss` (and Pillow to downscale+JPEG; without it sends a full-res PNG). PRIVACY: this continuously reads your screen while on; an image-bearing turn is forced to the on-device/main tier and treated as PRIVATE (never a public cloud chain, Â§9.7). monitor: mss index (1=primary, 0=all). max_width: downscale longest edge (0=full). format: jpeg|png.",
   "screen_capture": {
     "enabled": false,
     "interval_sec": 2.0,
@@ -143,7 +143,7 @@
         "asr_num_threads": 2,
         "tts_num_threads": 2
       },
-      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
+      "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "desktop_gpu_4090": {
@@ -164,7 +164,7 @@
         "asr_num_threads": 4,
         "tts_num_threads": 2
       },
-      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
+      "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3},
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
@@ -185,7 +185,7 @@
         "asr_num_threads": 4,
         "tts_num_threads": 2
       },
-      "input_gate": {"enabled": true, "unsure_acts": true, "max_context": 4},
+      "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3}
     },
     "cpu_laptop": {
@@ -261,9 +261,9 @@
     "phrases": {}
   },
   "input_gate": {
-    "_comment": "Optional ACT/INGEST gate (core/addressing.py). Disabled by default; enable to stop the assistant from answering ambient speech / read-aloud text. Needs llm.fast_model. unsure_acts=true preserves prior behavior; false is conservative (silently ingest).",
+    "_comment": "Optional ACT/INGEST gate (core/addressing.py). Disabled by default; enable to stop the assistant from answering ambient speech / read-aloud text. Needs llm.fast_model. unsure_acts: OWNER DECISION 2026-06-10 ('speak only with good confidence the input is addressed to her') -- the enabled device profiles ship unsure_acts=false (UNSURE stays quiet; an occasional missed borderline ask beats answering house noise). The classifier prompt also INGESTs recognizer noise / word salad explicitly now.",
     "enabled": false,
-    "unsure_acts": true,
+    "unsure_acts": false,
     "max_context": 4
   },
   "cleanup": {
@@ -310,14 +310,14 @@
     "max_fragment_words": 2
   },
   "assistant": {
-    "_comment": "Optional persona so the model knows WHAT IT IS. Its SKILLS are enumerated automatically from the live capability manifest (always_on_agent/capabilities.py specs) into the system prompt, and the web-access line reflects the real web_search.enabled / §9.7 egress state. Leave name empty for the anonymous 'local voice assistant' identity; set name (and optionally a one-line persona / extra guidance) to give it a character.",
+    "_comment": "Optional persona so the model knows WHAT IT IS. Its SKILLS are enumerated automatically from the live capability manifest (always_on_agent/capabilities.py specs) into the system prompt, and the web-access line reflects the real web_search.enabled / Â§9.7 egress state. Leave name empty for the anonymous 'local voice assistant' identity; set name (and optionally a one-line persona / extra guidance) to give it a character.",
     "name": "",
     "persona": "",
     "extra": ""
   },
   "agent": {
     "planner": {
-      "_comment": "enabled=true makes the ReAct planner reachable: ASSISTANT-mode queries that hit an _ESCALATE_MARKER (search/find/compare/'and then'/step by step -- see always_on_agent/react.py) run a bounded plan->execute loop over the tools below instead of degrading to a one-shot reply. Gated, so ordinary short turns stay one-shot. web.search returns corpus-only results until web_search.enabled=true (egress-gated, §9.7). See docs/archive/flow_control_intelligence_2026-05.md.",
+      "_comment": "enabled=true makes the ReAct planner reachable: ASSISTANT-mode queries that hit an _ESCALATE_MARKER (search/find/compare/'and then'/step by step -- see always_on_agent/react.py) run a bounded plan->execute loop over the tools below instead of degrading to a one-shot reply. Gated, so ordinary short turns stay one-shot. web.search returns corpus-only results until web_search.enabled=true (egress-gated, Â§9.7). See docs/archive/flow_control_intelligence_2026-05.md.",
       "enabled": true,
       "max_steps": 4,
       "tools": [
@@ -330,7 +330,7 @@
     }
   },
   "web_search": {
-    "_comment": "FLAT web.search config (P3, Decision 3). Disabled by default: the runtime ships corpus-only (search.local). To enable real web research, set enabled=true and base_url to your self-hosted SearXNG (keyless). Every query is routed through the §9.7 egress gate (core.sensitivity.may_leave_device) BEFORE any network call -- PII/personal queries never egress (corpus only). timeout_s bounds the connect+read GET (BR7; the only wedge bound since a blocking GET can't poll cancel). max_results caps mapped hits.",
+    "_comment": "FLAT web.search config (P3, Decision 3). Disabled by default: the runtime ships corpus-only (search.local). To enable real web research, set enabled=true and base_url to your self-hosted SearXNG (keyless). Every query is routed through the Â§9.7 egress gate (core.sensitivity.may_leave_device) BEFORE any network call -- PII/personal queries never egress (corpus only). timeout_s bounds the connect+read GET (BR7; the only wedge bound since a blocking GET can't poll cancel). max_results caps mapped hits.",
     "enabled": false,
     "base_url": "http://localhost:8888",
     "timeout_s": 4,
@@ -353,7 +353,7 @@
     "asr_final_tokens": "pretrained_models/sherpa/sense_voice/tokens.txt",
     "asr_final_decoder": "",
     "asr_final_use_itn": true,
-    "_asr_final_language_comment": "PIN the SenseVoice language. 'en' forces English (REQUIRED: SenseVoice is multilingual and its auto-detect mis-fired to Chinese on short English utterances -- 'HEY HEY'->'嘿嘺', 'HOW ARE YOU'->'呦'). Change to 'zh'/'ja'/'ko'/'yue', or '' for auto-detect, to test other languages.",
+    "_asr_final_language_comment": "PIN the SenseVoice language. 'en' forces English (REQUIRED: SenseVoice is multilingual and its auto-detect mis-fired to Chinese on short English utterances -- 'HEY HEY'->'å˜¿å˜º', 'HOW ARE YOU'->'å‘¦'). Change to 'zh'/'ja'/'ko'/'yue', or '' for auto-detect, to test other languages.",
     "asr_final_language": "en",
     "asr_final_min_sec": 0.5,
     "asr_decoding_method": "modified_beam_search",

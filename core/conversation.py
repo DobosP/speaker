@@ -26,20 +26,23 @@ _ASSISTANT_TAGS = ("assistant_output",)
 
 # Phrases that mean "drop the current thread and start fresh". When a USER turn
 # matches one (see ``is_topic_reset``), the recent-conversation block is cut off
-# at that turn so the OLD topic cannot bleed into the new one -- the live failure
-# (run-20260610-003800): after a barge + "Start again" the model re-apologized
-# about the stale "volume" topic because the block still carried it. Matched as
-# a contiguous normalized-token phrase, only on SHORT utterances
+# at that turn so the OLD topic cannot bleed into the new one. Matched as a
+# contiguous normalized-token phrase, only on SHORT utterances
 # (``reset_max_words``) so a long sentence that merely *mentions* "never mind"
 # is not misread as a reset. EN + RO (de-diacritic'd to match normalize_text).
+#
+# DELIBERATELY NARROW (owner feedback 2026-06-10): only utterances whose ONLY
+# sensible reading is "abandon that" belong here. "start again"/"start over"
+# were removed -- after a barge/stop they mean RESUME the interrupted reply
+# (core/resume.py owns that), and an ordinary topic change needs no command at
+# all: the model reads it from the recent-conversation block itself.
 DEFAULT_RESET_PHRASES: tuple[str, ...] = (
     # English
-    "start again", "start over", "start fresh", "never mind", "nevermind",
-    "forget it", "forget that", "forget about it", "new topic",
-    "different topic", "change the subject", "new question", "clean slate",
-    # Romanian (normalize_text folds diacritics): "de la început" -> "de la
-    # inceput", "de la capăt" -> "de la capat", "las-o baltă" -> "las o balta".
-    "de la inceput", "de la capat", "alt subiect", "subiect nou", "las o balta",
+    "never mind", "nevermind", "forget it", "forget that", "forget about it",
+    "new topic", "different topic", "change the subject",
+    # Romanian: "alt subiect" (different subject), "subiect nou" (new topic),
+    # "las-o baltă" -> "las o balta" (forget it).
+    "alt subiect", "subiect nou", "las o balta",
 )
 
 # Placeholder/abstain assistant replies that carry no conversational content --

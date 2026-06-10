@@ -92,12 +92,12 @@ def test_config_from_dict_defaults_on():
 
 def test_is_topic_reset_matches_short_reset_utterances():
     cfg = RecentContextConfig()
-    assert is_topic_reset("Start again", cfg)
     assert is_topic_reset("never mind", cfg)
-    assert is_topic_reset("Can we start over please?", cfg)  # contained phrase
+    assert is_topic_reset("Forget it", cfg)
     assert is_topic_reset("OK, new topic", cfg)
-    assert is_topic_reset("de la inceput", cfg)  # Romanian, de-diacritic'd
-    assert is_topic_reset("De la început", cfg)  # accented input normalizes
+    assert is_topic_reset("can we change the subject", cfg)  # contained phrase
+    assert is_topic_reset("alt subiect", cfg)  # Romanian
+    assert is_topic_reset("Las-o baltă", cfg)  # accented input normalizes
 
 
 def test_is_topic_reset_rejects_long_or_unrelated_utterances():
@@ -109,20 +109,25 @@ def test_is_topic_reset_rejects_long_or_unrelated_utterances():
     assert not is_topic_reset("what is the capital of france", cfg)
     assert not is_topic_reset("", cfg)
     # Phrase words present but NOT contiguous.
-    assert not is_topic_reset("start the engine again", cfg)
+    assert not is_topic_reset("forget the engine that", cfg)
+    # Resume-like phrases are NOT resets (owner 2026-06-10: "start again" after
+    # a cut means CONTINUE the interrupted reply -- core/resume.py owns it).
+    assert not is_topic_reset("start again", cfg)
+    assert not is_topic_reset("start over", cfg)
+    assert not is_topic_reset("continue", cfg)
 
 
 def test_is_topic_reset_disabled_never_matches():
     cfg = RecentContextConfig(reset_enabled=False)
-    assert not is_topic_reset("start again", cfg)
+    assert not is_topic_reset("never mind", cfg)
 
 
 def _stale_then_reset_then_new() -> SessionMemory:
-    """The live run-20260610-003800 shape: a stale topic, 'Start again', new turn."""
+    """The live failure shape: a stale topic, an explicit reset, a new turn."""
     m = SessionMemory()
     m.add("no i was referring to our interaction the volume", tags=("user",))
     m.add("I apologize for the misunderstanding! ... the volume?", tags=("assistant_output",))
-    m.add("Start again", tags=("user",))
+    m.add("Never mind", tags=("user",))
     m.add("Okay, fresh start!", tags=("assistant_output",))
     m.add("tell me a story about a lighthouse", tags=("user",))
     return m
@@ -131,11 +136,11 @@ def _stale_then_reset_then_new() -> SessionMemory:
 def test_reset_turn_in_memory_cuts_the_block_at_the_reset():
     turns = collect_recent_turns(_stale_then_reset_then_new(), RecentContextConfig())
     texts = [t for _, t in turns]
-    # Everything at/before "Start again" is gone; the post-reset turns survive.
+    # Everything at/before "Never mind" is gone; the post-reset turns survive.
     assert "Okay, fresh start!" in texts
     assert "tell me a story about a lighthouse" in texts
     assert not any("volume" in t for t in texts)
-    assert not any("Start again" in t for t in texts)
+    assert not any("Never mind" in t for t in texts)
 
 
 def test_reset_current_query_suppresses_the_block_for_its_own_turn():
@@ -144,7 +149,7 @@ def test_reset_current_query_suppresses_the_block_for_its_own_turn():
     m.add("I apologize ... the volume?", tags=("assistant_output",))
     # The reset turn ITSELF must answer fresh -- the live failure replied with
     # the stale volume apology because the block still carried it.
-    assert collect_recent_turns(m, RecentContextConfig(), current_query="Start again") == []
+    assert collect_recent_turns(m, RecentContextConfig(), current_query="Never mind") == []
     # A non-reset query still sees the thread.
     assert collect_recent_turns(m, RecentContextConfig(), current_query="and the volume?") != []
 
@@ -155,7 +160,7 @@ def test_reset_disabled_keeps_the_old_behaviour():
     texts = [t for _, t in turns]
     assert any("volume" in t for t in texts)  # stale topic kept (old behaviour)
     assert collect_recent_turns(
-        _stale_then_reset_then_new(), cfg, current_query="Start again"
+        _stale_then_reset_then_new(), cfg, current_query="Never mind"
     ) != []
 
 
@@ -174,18 +179,22 @@ def test_reset_config_from_dict():
     dflt = RecentContextConfig.from_dict(None)
     assert dflt.reset_enabled is True
     assert dflt.reset_max_words == 8
-    assert "start again" in dflt.reset_phrases
+    assert "never mind" in dflt.reset_phrases
+    # Resume-like phrases must NOT be in the default reset table (owner
+    # 2026-06-10: they mean CONTINUE the interrupted reply).
+    assert "start again" not in dflt.reset_phrases
+    assert "start over" not in dflt.reset_phrases
 
 
 def test_assistant_reset_query_answers_without_stale_context():
-    """End-to-end through assistant(): 'Start again' must NOT see the old topic."""
+    """End-to-end through assistant(): 'Never mind' must NOT see the old topic."""
     llm = _RecordingLLM()
     mem = SessionMemory()
     mem.add("no i was referring to our interaction the volume", tags=("user",))
     mem.add("I apologize for the misunderstanding! ... the volume?", tags=("assistant_output",))
     reg = _assistant(llm, mem, recent_context=RecentContextConfig(enabled=True))
 
-    reg.invoke("assistant.answer", "Start again", {})
+    reg.invoke("assistant.answer", "Never mind", {})
     assert "Recent conversation" not in llm.systems[-1]
     assert "volume" not in llm.systems[-1]
 

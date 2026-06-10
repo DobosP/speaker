@@ -116,6 +116,49 @@ phone profiles unprovisionable; no cloud cost accounting.
   (incomplete_threshold 0.5, min_silence 1.1) awaiting live tuning.
 - `.venv\Scripts\python.exe` for everything; bash≠PS quirks per memory.
 
+## Round 2 — LIVE owner test + fixes (same day)
+
+Ran `--engine sherpa --record` live with the owner (run-20260610-124002).
+Verdicts: merge/topic behavior partly good, but (a) still self-interrupts at
+HIGHER speaker volume + "speaks out of turn", (b) "start again" semantics were
+WRONG (owner wants RESUME of the cut reply, not a topic reset).
+
+**Evidence + root causes from the bundle:**
+- The transcript shows the assistant's own TTS coming back as USER turns
+  verbatim ("Okay, let's begin. How can I help you today?") and being
+  ANSWERED — the echo tail after playback ends reaches the recognizer, and at
+  high volume it clears the L1 energy floor.
+- `tools.echo_probe` sweep at the owner's problem volume: the stale
+  `aec_ref_delay_ms=19` gives **7.3 dB** ERLE and echo-only D_p95=913 (worst of
+  the whole sweep!); the true peak is **105 ms = 30.3 dB ERLE with
+  self_interruptions=0**. The carried Windows-AEC-miscalibration P0 was the
+  volume-dependence root. → `config.local.json` now 105 (plateau 105–135).
+
+**Landed (branch `fix/resume-echo-guard-aec-calibration`):**
+- NEW `core/resume.py` — `ResumeTracker` wired through `VoiceRuntime`:
+  (a) RESUME-after-interrupt: "start again"/"continue"/"go on" (EN+RO) after a
+  barge/stop cut becomes a continue-from-where-you-stopped prompt embedding the
+  actually-SPOKEN tail (a second cut+continue keeps working; consumed flag; a
+  new query disarms). (b) L4 SELF-ECHO GUARD: a final within `echo_window_sec`
+  (3s) of playback end that reads like the just-spoken sentences (token overlap
+  ≥0.75; short finals must equal the LAST sentence verbatim) is dropped before
+  addressing/ingest — volume-independent, unlike the L1–L3 energy floors.
+  Dataclass defaults OFF (an LLM reply often embeds the user's words verbatim —
+  EchoLLM always does — so a default-on text guard eats harness repeat-queries;
+  caught by test_bench); shipped config.json `resume` block opts both halves on.
+- `DEFAULT_RESET_PHRASES` narrowed (owner): "start again"/"start over"/"de la
+  inceput"/... removed — resume owns those; only unambiguous "never mind /
+  forget it / new topic / change the subject (+RO)" reset; ordinary topic
+  changes need no command at all (the model reads them from context).
+- AEC calibration in machine-local config (above) — a CALIBRATION, not a
+  threshold tune, so the step-2 gate is respected.
+
+**Still watch live:** endpoint feels slow (endpoint_latency 1.8–3.6s — consider
+lowering `endpoint_min_silence_sec` 1.1→0.7 once turn-merge proves itself);
+watchdog still prints false "llm stuck" on merged/held turns (review rc-5,
+P1); STT garble ("Skiper", "T a story about") feeds weak merges — SenseVoice
+is on, but mic gain/quality is the lever.
+
 ## Next steps (pick up here)
 
 1. **OWNER: rotate the Gemini key + decide D1/D2 (history purge / fixture

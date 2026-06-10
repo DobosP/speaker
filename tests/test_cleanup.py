@@ -307,3 +307,70 @@ def test_cleaner_failure_falls_back_to_raw():
     engine.final("hello there")
     assert runtime.wait_idle()
     assert engine.spoken == ["ok"]
+
+
+# --- round-4 hallucination guards (live run-20260610-132603) -------------------
+
+
+def test_rewrite_is_overreach_bounds():
+    from core.cleanup import rewrite_is_overreach
+
+    # The live failure: a 1-word noise fragment "cleaned" into a 9-word sentence.
+    assert rewrite_is_overreach("Well", "What would you like to know about your place?")
+    # Legit corrections survive: garble fix, repeat removal, small word swaps.
+    assert not rewrite_is_overreach("Ario der", "are you there")
+    assert not rewrite_is_overreach("tell me about Paris Paris", "tell me about Paris")
+    assert not rewrite_is_overreach("Count from one to1.", "Count from one to ten.")
+
+
+def test_cleaner_rewrite_into_own_words_drops_the_turn():
+    """Live: the cleaner rewrote noise 'Well' into the assistant's own prior
+    sentence (it sits in the cleaner's recent-context) and the assistant
+    answered itself. The rewritten text must be checked against the just-spoken
+    sentences and the turn dropped."""
+    from core.resume import ResumeConfig
+
+    sentence = "What would you like to know about your place?"
+    engine = ScriptedEngine()
+    cleaner = ScriptedTranscriptCleaner({"Well": sentence})
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(reply=sentence),  # the first turn SPEAKS that sentence
+        start_mode=Mode.ASSISTANT,
+        cleaner=cleaner,
+        resume_config=ResumeConfig(enabled=True, echo_guard_enabled=True),
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final("hello there friend")
+        assert runtime.wait_idle()
+        spoken_before = len(engine.spoken)
+
+        engine.final("Well")  # noise; the cleaner hallucinates the own-sentence
+        assert runtime.wait_idle()
+        assert len(engine.spoken) == spoken_before, (
+            "the cleaner-hallucinated phantom turn was answered"
+        )
+    finally:
+        runtime.stop()
+
+
+def test_cleaner_over_rewrite_keeps_the_raw_text():
+    """A rewrite that GROWS a fragment materially is invented content -- the
+    raw text goes to the brain instead."""
+    engine = ScriptedEngine()
+    cleaner = ScriptedTranscriptCleaner(
+        {"Well my": "I would like to hear all about your placement today friend"}
+    )
+    runtime = VoiceRuntime(
+        engine, EchoLLM(), start_mode=Mode.ASSISTANT, cleaner=cleaner
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final("Well my")
+        assert runtime.wait_idle()
+        joined = " ".join(engine.spoken)
+        assert "Well my" in joined                 # the raw reached the brain
+        assert "placement today" not in joined     # the invention did not
+    finally:
+        runtime.stop()

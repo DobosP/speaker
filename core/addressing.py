@@ -60,6 +60,11 @@ INGEST if it is NOT a question/request/command aimed at the assistant:
 - talking to another person ("no, I told you yesterday")
 - reading aloud or quoting
 - a mid-thought fragment or muttering ("um, so anyway, where was I")
+- RECOGNIZER NOISE: garbled, nonsensical, or disjointed text that does not
+  read as a coherent question, request, or command. The microphone hears
+  household noise and half-words; these come out as word salad. When the
+  utterance does not parse as something a person would deliberately say to
+  an assistant, it is noise -> INGEST, never ACT.
 
 If genuinely torn between ACT and INGEST, answer UNSURE.
 Reply with exactly one word: ACT, INGEST, or UNSURE. No punctuation, no explanation.
@@ -70,7 +75,10 @@ Reply with exactly one word: ACT, INGEST, or UNSURE. No punctuation, no explanat
 "can you help me" -> ACT
 "I think I left the stove on" -> INGEST
 "no I already told you that yesterday" -> INGEST
-"um so anyway where was I" -> INGEST"""
+"um so anyway where was I" -> INGEST
+"N Sanos you know" -> INGEST
+"I just kind cast brand" -> INGEST
+"ca chap for to" -> INGEST"""
 
 
 class LLMAddressingClassifier:

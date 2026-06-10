@@ -95,6 +95,17 @@ FULL_WAV = _REPO_ROOT / "logs" / "runs" / "run-20260609-203236.wav"
 LIVE_FIRE_INDICES: Tuple[int, ...] = (10, 11, 14, 34, 188, 189, 194, 195, 196)
 #: Frame indices that begin a new turn (preceding inter-frame gap > 1.0s).
 TURN_BOUNDARY_IDX: Tuple[int, ...] = (88, 130, 185, 197)
+#: ``echo_only``-annotated frames that are in fact short residual ACOUSTIC
+#: EVENTS, not clean TTS echo: their post-AEC residual stands 16-32x above the
+#: local echo floor -- the same band as a normal-volume talk-over on this
+#: starved mic (turn-2 resid 0.0024-0.0041), so no level-based detector can
+#: separate them from a quiet interjection. idx 34 (resid 0.0104) fired even
+#: LIVE; idx 111-112 (resid 0.0032/0.0016 over a 0.0001-0.0003 floor) only
+#: stayed quiet live because the pre-fix charts had ABSORBED the earlier
+#: talk-over (the contamination bug) -- their "safety" was the same defect as
+#: the 4-second scream miss. Echo-safety assertions exclude them; the CLEAN
+#: floor (everything else) is the non-regressable property.
+ACOUSTIC_EVENT_IDX: Tuple[int, ...] = (34, 111, 112)
 
 #: Live integrator / latch parameters -- the REAL ``BargeSustain`` knobs (the
 #: capture-loop now uses ``core.engines._dtd.BargeSustain``, not a leaky
@@ -302,6 +313,97 @@ def self_interrupt_windows(frames: Sequence[Frame]) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# run-20260610-003800 MISSED-TALK-OVER ground truth (the contamination failure)
+# --------------------------------------------------------------------------- #
+#: The 2026-06-10 plan's step-3 target: the owner's talk-overs were ABSORBED into
+#: the DTD chart baselines. Two recorded misses: a normal talk-over at 00:45:08
+#: (resid 0.0134-0.0449 vs a true echo floor ~0.0002-0.0008 -- z_resid logged
+#: 0.00 on every frame, never fired) and the SCREAM at 00:46:15-19 (resid
+#: 0.0443-0.1553, z_resid 0.00 for ~3.7s; the cut only landed at 00:46:19.26).
+#: This trace logs the NEW dtd format (with gated=/resid_floor= fields).
+TRACE_TXT_MISS = _FIXTURE_DIR / "run-20260610-003800.trace.txt"
+
+# Regex for the gated dtd format this run logs (fired= and gated= both present).
+_DTD_GATED_RE = re.compile(
+    r"(\d\d:\d\d:\d\d\.\d+).*dtd: D=([\d.]+) K=[\d.]+ fired=(True|False) "
+    r"gated=(?:True|False) "
+    r"\(z_raw=(-?[\d.]+) z_resid=(-?[\d.]+) z_coh=(-?[\d.]+)\) "
+    r"raw=([\d.]+) resid=([\d.]+) incoh=([\d.]+) resid_floor=[\d.]+ consec=(\d+)"
+)
+
+
+def load_miss_frames() -> List[Frame]:
+    """All dtd frames of the run-20260610-003800 contamination failure, in
+    order, with ``reply_start`` tagged from the interleaved ``speaking:``
+    markers (same convention as the 234435 loader). Asserts the shape loudly."""
+    text = TRACE_TXT_MISS.read_text()
+    rows = []
+    pending_start = True
+    for line in text.splitlines():
+        if _SPEAKING_RE.search(line):
+            pending_start = True
+            continue
+        m = _DTD_GATED_RE.search(line)
+        if m:
+            rows.append((m.groups(), pending_start))
+            pending_start = False
+    assert rows, "no gated dtd lines parsed from the 003800 trace -- format drift?"
+    times = [datetime.strptime(r[0][0], "%H:%M:%S.%f") for r in rows]
+    t0 = times[0]
+    frames: List[Frame] = []
+    for i, (r, is_start) in enumerate(rows):
+        ts, D, fired, z_raw, z_resid, z_coh, raw, resid, incoh, consec = r
+        frames.append(
+            Frame(
+                idx=i,
+                ts=ts,
+                t_sec=round((times[i] - t0).total_seconds(), 6),
+                raw=float(raw),
+                resid=float(resid),
+                incoh=float(incoh),
+                exp_D=float(D),
+                exp_fired=fired == "True",
+                exp_consec=int(consec),
+                exp_z_raw=float(z_raw),
+                exp_z_resid=float(z_resid),
+                exp_z_coh=float(z_coh),
+                reply_start=is_start,
+            )
+        )
+    return frames
+
+
+def miss_windows(frames: Sequence[Frame]) -> dict:
+    """The two recorded missed-talk-over bursts, selected by wall-clock window.
+
+    ``talkover_0045``: the 00:45:08-09 normal talk-over the live detector NEVER
+    fired on (z_resid logged 0.00 against a warmup-poisoned baseline).
+    ``scream_0046``: the 00:46:15-19 SCREAM that took ~3.7s to cut.
+    """
+    def _in(f: Frame, *prefixes: str) -> bool:
+        return any(f.ts.startswith(p) for p in prefixes)
+
+    return {
+        "talkover_0045": [
+            f for f in frames if _in(f, "00:45:08", "00:45:09")
+        ],
+        "scream_0046": [
+            f for f in frames
+            if _in(f, "00:46:15", "00:46:16", "00:46:17", "00:46:18", "00:46:19")
+        ],
+    }
+
+
+def clean_echo_levels(frames: Sequence[Frame], *, max_resid: float = 0.001) -> List[Frame]:
+    """Frames at the run's true echo floor (resid at/below ``max_resid`` --
+    the genuine quiet playback level this device recorded between bursts).
+    Used to model the engine's VAD-quiet ``observe_echo`` learning tap, which
+    feeds the charts exactly these quiet blocks live but is absent from the
+    trace (only VAD-speech blocks produced ``dtd:`` lines)."""
+    return [f for f in frames if f.resid <= max_resid]
+
+
 def _load_json_frames(path: Path) -> List[Frame]:
     """Load the canonical committed JSON parse."""
     doc = json.loads(path.read_text())
@@ -348,6 +450,23 @@ def load_trace_frames() -> List[Frame]:
     return frames
 
 
+def frames_with_turn_starts(frames: Sequence[Frame]) -> List[Frame]:
+    """The 203236 frames with ``reply_start`` set at the verified turn
+    boundaries (``TURN_BOUNDARY_IDX``), so the ENGINE driver
+    (``run_frames_engine``) re-arms per turn exactly as the live capture loop's
+    silent->speaking transition does. The 203236 fixture predates the
+    ``reply_start`` tag; this derives it from the same ground truth the
+    ``turns()`` splitter uses."""
+    out: List[Frame] = []
+    for f in frames:
+        if f.idx in TURN_BOUNDARY_IDX and not f.reply_start:
+            from dataclasses import replace
+
+            f = replace(f, reply_start=True)
+        out.append(f)
+    return out
+
+
 def turns(frames: Sequence[Frame]) -> List[List[Frame]]:
     """Split frames into turns at the verified > 1.0s inter-frame gaps."""
     out: List[List[Frame]] = []
@@ -390,15 +509,33 @@ def echo_only_frames(frames: Sequence[Frame]) -> List[Frame]:
 # --------------------------------------------------------------------------- #
 # REAL DTD construction
 # --------------------------------------------------------------------------- #
-def build_live_dtd() -> AdaptiveDTD:
-    """Construct the EXACT live ``AdaptiveDTD`` (sherpa.py:752 + the dataclass
+def build_live_dtd(*, legacy: bool = False) -> AdaptiveDTD:
+    """Construct the live ``AdaptiveDTD`` (sherpa.py construction + the dataclass
     defaults that config.local.json does not override).
 
-    NOTE for callers: replaying the trace inputs through a fresh
-    ``build_live_dtd()`` reproduces all 204 ``exp_fired`` verdicts EXACTLY, but
-    ``.last_D`` drifts from the logged D (the live chart carried pre-trace EWMA
-    state). Assert on ``decide()`` / ``.last_decided`` -- NOT on ``.last_D``.
+    ``legacy=False`` (default) mirrors the SHIPPED engine -- including the
+    2026-06-10 anti-contamination defaults (persistent charts, z-freeze,
+    robust warm-up seed). ``legacy=True`` reproduces the detector EXACTLY as it
+    ran in the recorded sessions (pre-fix math) -- use it ONLY for the
+    parse/replay fidelity pin (``test_live_dtd_reproduces_every_recorded_fired_
+    verdict``), where replaying the 203236 trace must reproduce all 204 recorded
+    verdicts.
+
+    NOTE for callers: ``.last_D`` drifts from the logged D (the live chart
+    carried pre-trace EWMA state). Assert on ``decide()`` / ``.last_decided``
+    -- NOT on ``.last_D``.
     """
+    if legacy:
+        return AdaptiveDTD(
+            k=5.0,
+            weights=(0.2, 1.0, 0.0),
+            confirm_frames=1,
+            warmup_frames=5,
+            chart_rel_floor=0.4,
+            chart_z_freeze=0.0,
+            chart_robust_seed=False,
+            persistent_charts=False,
+        )
     return AdaptiveDTD(
         k=5.0,
         weights=(0.2, 1.0, 0.0),
@@ -567,6 +704,7 @@ def run_frames_engine(
             eng._playback_floor_rms = 0.0       # re-bootstrap the per-reply floors
             eng._raw_playback_floor_rms = 0.0
             eng._barge_in_fired_this_run = False
+            eng._dtd.new_run()  # run boundary, as the engine does (charts persist by default)
             latch = False
 
         samples = make_block(fr.resid)   # post-AEC residual block

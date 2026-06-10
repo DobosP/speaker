@@ -27,6 +27,7 @@ from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
 from .routing import Router
+from .turn_merge import FinalDispatcher, TurnMergeConfig
 from .watchdog import StuckWatchdog
 from .websearch import WebSearchConfig, attach_web_search_capability
 
@@ -65,6 +66,7 @@ class VoiceRuntime:
         stream_tts: bool = False,
         followup_config: Optional[FollowupConfig] = None,
         continuation_config: Optional[ContinuationConfig] = None,
+        turn_merge_config: Optional[TurnMergeConfig] = None,
         command_map: Optional[dict[str, str]] = None,
         intents: Optional[LocalIntentHandler] = None,
         addressing: Optional[AddressingClassifier] = None,
@@ -190,6 +192,16 @@ class VoiceRuntime:
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)
         self._bus_threaded = False
+        # Hold-and-merge final dispatch (core/turn_merge.py). When enabled, every
+        # final is processed on the dispatcher's worker thread (taking the
+        # addressing/cleaner/router LLM calls OFF the audio capture thread,
+        # rc-2), and a final that reads mid-thought ("A long story about") is
+        # HELD briefly so the user's next words merge into ONE query instead of
+        # each fragment being answered. None/disabled -> legacy synchronous
+        # dispatch, byte-identical.
+        self._dispatcher: Optional[FinalDispatcher] = None
+        if turn_merge_config is not None and turn_merge_config.enabled:
+            self._dispatcher = FinalDispatcher(self._process_final, turn_merge_config)
         # Live watchdog: warns when a turn stalls or the barge-in gate flaps.
         # See core.watchdog for the heuristics; WARNINGs land in the run
         # bundle so the next stuck reproduction leaves visible evidence.
@@ -314,6 +326,8 @@ class VoiceRuntime:
         """Start the engine. ``run_bus=True`` runs the event loop on a
         background thread (production). Tests pass ``run_bus=False`` and pump
         the bus via :meth:`wait_idle`."""
+        if self._dispatcher is not None:
+            self._dispatcher.start()  # before the engine: callbacks may fire at once
         self.engine.start(
             EngineCallbacks(
                 on_partial=self._on_partial,
@@ -386,6 +400,13 @@ class VoiceRuntime:
     def stop(self) -> None:
         # Guard each step so a teardown error never prevents the engine from
         # stopping -- that is what flushes the session recording to disk.
+        if self._dispatcher is not None:
+            try:
+                # Flush any held final through dispatch (the supervisor below
+                # cancels whatever task it spawns), then stop the worker.
+                self._dispatcher.stop()
+            except Exception:  # noqa: BLE001
+                log.exception("final dispatcher stop failed")
         try:
             self._watchdog.stop()
         except Exception:  # noqa: BLE001
@@ -417,9 +438,21 @@ class VoiceRuntime:
 
     # --- engine callbacks (may run on an audio thread) ---
     def _on_partial(self, text: str) -> None:
+        if self._dispatcher is not None:
+            # The user resumed speaking while a final is held -> keep holding so
+            # their continuation merges into the same turn (bounded).
+            self._dispatcher.note_partial()
         self.bus.publish(AgentEvent.partial(text))
 
     def _on_final(self, text: str) -> None:
+        if self._dispatcher is not None:
+            # Cheap engine-thread handoff (lock + notify); the hold/merge logic
+            # and the full dispatch chain run on the dispatcher worker.
+            self._dispatcher.submit(text)
+            return
+        self._process_final(text)
+
+    def _process_final(self, text: str) -> None:
         log.info(
             "final -> brain: %r (mode=%s)", text, self.mode.value,
             extra={"transcript": {"role": "user", "text": text, "mode": self.mode.value}},
@@ -591,14 +624,34 @@ class VoiceRuntime:
 
     # --- synchronous helper for tests / console demo ---
     def wait_idle(self, timeout: float = 3.0) -> bool:
+        """Wait until the brain is quiet: no held final, no undispatched bus
+        events, no active/queued tasks.
+
+        rc-1 fix: when the bus runs on its own thread (``run_bus=True`` -- the
+        replay harness path), this must NOT also drain the queue from here:
+        two threads racing ``get_nowait`` raised uncaught ``queue.Empty`` and
+        double-dispatched events, poisoning the replay measurement loop. With
+        the bus thread running we POLL ``bus.idle()``; only the test path
+        (``run_bus=False``) pumps the queue from this thread."""
+
+        def _quiet() -> bool:
+            return (
+                (self._dispatcher is None or not self._dispatcher.has_pending)
+                and self.bus.idle()
+                and not self.supervisor.state.active_tasks
+                and not self.supervisor.state.queued_tasks
+            )
+
         deadline = time.time() + timeout
         while time.time() < deadline:
-            self.bus.drain()
-            if not self.supervisor.state.active_tasks and not self.supervisor.state.queued_tasks:
+            if not self._bus_threaded:
                 self.bus.drain()
-                return True
+            if _quiet():
+                if not self._bus_threaded:
+                    self.bus.drain()
+                if _quiet():
+                    return True
             time.sleep(0.005)
-        self.bus.drain()
-        return (
-            not self.supervisor.state.active_tasks and not self.supervisor.state.queued_tasks
-        )
+        if not self._bus_threaded:
+            self.bus.drain()
+        return _quiet()

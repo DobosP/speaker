@@ -44,78 +44,56 @@ from __future__ import annotations
 from tests import barge_fixtures as bf
 
 
-def test_echo_only_frames_never_fire_dtd():
-    """The clean TTS-playback floor never fires the REAL ``AdaptiveDTD.decide``.
+def test_echo_only_frames_never_cut_through_the_shipped_chain():
+    """The clean TTS-playback floor never CUTS through the SHIPPED chain.
 
-    Drives ``build_live_dtd().decide(...)`` over the recorded run in its real
-    interleaved order (the order the live per-device charts calibrated from) and
-    checks that every echo-only frame the LIVE detector scored ``fired=False``
-    -- the 186-frame clean playback floor -- also returns False from the REAL
-    detector, with ``.last_decided`` False on that frame.
+    Drives the highest-fidelity audio-free seam (``run_frames_engine``: REAL
+    ``_barge_in_fire_eligible`` -> ``_looks_like_user`` with the residual-floor
+    gate + REAL ``BargeSustain``) over the recorded run with the per-turn
+    re-arm modeled, and checks that NO cut lands on a clean echo-floor frame.
 
-    Pins the "never self-interrupt on own TTS" half of the requirement at the
-    DECISION layer over the REAL recorded echo floor. A future tuning change that
-    lowers ``K`` or reweights features and starts firing on clean echo flips this
-    red. Asserts on the ``decide()`` bool / ``.last_decided`` ONLY, never on
-    ``.last_D`` (it drifts -- see module docstring).
+    Post-2026-06-10 the safety property is owned by the full chain, not by
+    ``decide()`` alone: the anti-contamination charts refuse to absorb
+    elevated frames, so on this PRE-normalization trace (per-sentence echo
+    levels swung 20-90x) the decide layer fires on stepped-up echo -- and the
+    learned residual-floor gate is what keeps those fires from cutting. The
+    excluded ``ACOUSTIC_EVENT_IDX`` frames are real residual events in the
+    talk-over band (idx 34 fired even live); see the fixture docstring.
     """
-    frames = bf.load_trace_frames()
-    dtd = bf.build_live_dtd()
-
-    # The clean playback floor = echo-only-annotated frames the LIVE detector
-    # itself scored fired=False (excludes idx 34, the borderline residual event
-    # that fired both live and in replay -- see module docstring).
+    frames = bf.frames_with_turn_starts(bf.load_trace_frames())
     clean_floor = {
         f.idx
         for f in bf.echo_only_frames(frames)
-        if not f.exp_fired
+        if f.idx not in bf.ACOUSTIC_EVENT_IDX
     }
     assert clean_floor, "expected a clean echo floor in the recorded trace"
 
-    violations = []
-    for f in frames:  # full trace, real order -> faithful chart calibration
-        decided = dtd.decide(f.raw, f.resid, f.incoh)  # REAL AdaptiveDTD.decide
-        if f.idx in clean_floor and (decided or dtd.last_decided):
-            violations.append((f.idx, f.raw, f.resid, f.incoh, decided))
+    result = bf.run_frames_engine(frames, vad_speech=True)
 
-    assert violations == [], (
-        "clean echo-floor frames self-interrupted (decide()==True): "
-        f"{violations}"
+    echo_cuts = [(idx, t) for (idx, t) in result.fires if idx in clean_floor]
+    assert echo_cuts == [], (
+        f"a clean echo-floor frame produced a cut: {echo_cuts} "
+        f"(all fires: {result.fires})"
     )
 
 
 def test_echo_only_run_produces_no_on_barge_in():
-    """Full-chain echo safety: no ``on_barge_in`` cut ever lands on echo.
+    """Full-chain echo safety on the 234435 SELF-INTERRUPT replies.
 
-    Walks the REAL chain (``run_frames`` -> REAL ``AdaptiveDTD.decide`` + the
-    mirrored leaky integrator/latch) over the entire recorded run, including the
-    long ~85s TTS-playback stretch, and checks that NO cut lands on an echo-only
-    frame -- the only recorded cut is the turn-3 shout (idx 196), exactly the
-    live behavior (summary.json: the assistant never self-interrupted on echo).
-
-    Even with the leaky integrator, echo-only never accumulates ``voiced_run`` to
-    a cut. Must PASS today and stay green: this is the non-regressable safety
-    property a barge fix must not break while making normal talk-over fire.
+    The 234435 trace is echo-only BY CONSTRUCTION (no human talk-over in the
+    run; the live detector wrongly cut twice on reply-onset echo). Each reply
+    window must produce NO ``on_barge_in`` through the REAL engine chain --
+    the non-regressable half of the owner requirement. (The 203236 clean-floor
+    property is owned by the test above.)
     """
-    frames = bf.load_trace_frames()
-    echo_idx = {f.idx for f in bf.echo_only_frames(frames)}
+    frames = bf.load_self_interrupt_frames()
+    windows = bf.self_interrupt_windows(frames)
 
-    # reset_latch_per_turn=True re-arms the latch at each turn boundary (the
-    # silent->speaking re-arm) -- the most permissive setting for the integrator,
-    # so any spurious echo cut would show up here.
-    result = bf.run_frames(
-        frames,
-        bf.build_live_dtd(),
-        vad_speech=True,
-        reset_latch_per_turn=True,
-        params=bf.LIVE_INTEGRATOR_PARAMS,
-    )
-
-    echo_cuts = [(idx, t) for (idx, t) in result.fires if idx in echo_idx]
-    assert echo_cuts == [], (
-        f"on_barge_in cut landed on echo-only frame(s): {echo_cuts} "
-        f"(all fires: {result.fires})"
-    )
+    for name, window in windows.items():
+        result = bf.run_frames_engine(window, vad_speech=True)
+        assert result.fires == [], (
+            f"echo-only {name} produced a self-interrupt cut: {result.fires}"
+        )
 
 
 def test_steady_echo_baseline_does_not_drift_up_to_admit_quiet_talkover():

@@ -9,6 +9,29 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > (`python -m tools.session_bootstrap`) reads the OPEN P0 items below.
 
 ## P0 — correctness / blocker
+- [ ] **★★ SECURITY/PRIVACY EMERGENCY (2026-06-10 gap-analysis, repo is PUBLIC).**
+      A tracked `.env` carried a REAL Google/Gemini API key in pushed public history
+      (since `d32db9f`), and 52 tracked `logs/runs/` files include the owner's raw
+      voice WAVs + verbatim transcripts (`.gitignore` `!logs/runs/*.wav` deliberately
+      commits them) — violating CREDENTIALS.md's golden rule and §9.7 in the published
+      artifact. DONE 2026-06-10: `.env` untracked at tip (`git rm --cached`). **OWNER
+      ACTIONS (cannot be done by the agent):** (1) ROTATE the Gemini key NOW
+      (aistudio.google.com → API keys — treat as compromised; rotation is needed
+      regardless of any history rewrite); (2) decide history remediation (D1 in
+      `docs/review_2026-06-10_gap_analysis.md`: full `git filter-repo` purge of
+      `.env` + PII bundles, optionally going private first; tag/mirror the
+      pre-rewrite SHA privately); (3) decide the voice-WAV fixture policy (D2:
+      recommended synthetic-only public + private store). Then: gitleaks CI gate +
+      SECURITY.md (roadmap P0 list). Full plan + 8 decisions: the gap-analysis doc.
+- [ ] **Adopt the 2026-06-10 gap-analysis roadmap (45 verified findings, P0–P5).**
+      `docs/review_2026-06-10_gap_analysis.md` — security/PII first, then real-time
+      correctness (rc-2 _on_final off the audio thread DONE via turn_merge; rc-1
+      wait_idle double-drain DONE; lm-3 recall sensitivity float DONE — all
+      2026-06-10), then layered memory (no cross-session continuity, broken
+      migration 002, dead knobs), smart routing (no quality axis, mute tier
+      failure, dead KWS), cross-platform (installer omits scipy/soxr; phone
+      profiles unprovisionable), remote/docs sweep. 8 owner decisions D1–D8 listed
+      in the doc.
 - [~] **★ WINDOWS-side self-interrupt (live 2026-06-08e, run-20260608-181250) —
       CASCADE HALF FIXED 2026-06-08f.** The runaway "two outputs back-to-back" is now
       broken on ANY device (merged `fix/echo-final-cascade` → main, 1416 green;

@@ -30,10 +30,24 @@ class EventBus:
     def publish(self, event: AgentEvent) -> None:
         self._queue.put((event.priority, next(self._counter), event))
 
+    def idle(self) -> bool:
+        """True iff every published event has been dispatched AND handled.
+
+        ``unfinished_tasks`` (the task_done bookkeeping) covers the window where
+        the bus thread has popped an event but a handler is still running --
+        ``empty()`` alone would call that idle. Lock-free read; callers poll."""
+        return self._queue.unfinished_tasks == 0
+
     def drain_once(self) -> bool:
-        if self._queue.empty():
+        from queue import Empty
+
+        # get_nowait (not an empty() pre-check) so a concurrent consumer -- e.g.
+        # wait_idle polling while the bus thread runs (rc-1) -- degrades to a
+        # clean False instead of an uncaught queue.Empty TOCTOU crash.
+        try:
+            _, _, event = self._queue.get_nowait()
+        except Empty:
             return False
-        _, _, event = self._queue.get_nowait()
         try:
             for handler in list(self._handlers):
                 try:

@@ -294,8 +294,11 @@ def attach_llm_capabilities(
         # EITHER path's LLM calls run. Best-effort: never break a turn.
         recent_block = ""
         try:
+            # current_query=query: a reset utterance ("start again") answers
+            # FRESH (no block), and a reset turn in memory cuts the thread for
+            # later turns -- see core/conversation.is_topic_reset.
             recent_turns = (
-                collect_recent_turns(memory, recent_cfg)
+                collect_recent_turns(memory, recent_cfg, current_query=query)
                 if (memory is not None and not skip_user_memory)
                 else []
             )
@@ -339,6 +342,17 @@ def attach_llm_capabilities(
                 if not skip_user_memory:
                     memory.add(query, tags=("user",))
                 recall_block = memory.context_for_llm(query) if recall_cfg.enabled else ""
+                # §9.7: recalled PAST-session snippets get the same sensitivity
+                # float the recent-turns block and images get -- a private
+                # remembered fact ("my salary is...") surfacing into a public
+                # current query must route the WHOLE turn on the private chain,
+                # never the cheapest/public one (review finding lm-3; must hold
+                # before recall is ever enabled by default).
+                if recall_block:
+                    context["sensitivity"] = most_sensitive(
+                        str(context.get("sensitivity") or PRIVATE),
+                        classify_sensitivity(recall_block),
+                    )
                 # Compose: stable system FIRST (the pre-warmed, cacheable prefix),
                 # then the volatile recent block AFTER, so the prefix cache is
                 # reused turn to turn. Recall (default-off, past sessions) keeps its

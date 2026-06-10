@@ -53,6 +53,14 @@ DEFAULT_RESUME_TEMPLATE = (
     "do not start over, do not repeat what was already said, do not greet."
 )
 
+# Control words the FUZZY echo rule must never eat: "no" char-matches "now" at
+# 0.8, so a denial within the echo window of a reply ending "...now" would be
+# dropped. These only count as echo via an EXACT last-sentence match. EN + RO.
+_ECHO_FUZZY_EXEMPT: frozenset[str] = frozenset({
+    "yes", "no", "yeah", "yep", "nope", "ok", "okay", "sure", "stop", "what",
+    "why", "how", "da", "nu", "bine", "ce", "cum",
+})
+
 
 @dataclass
 class ResumeConfig:
@@ -72,13 +80,25 @@ class ResumeConfig:
     max_spoken_chars: int = 2000
     # L4 self-echo guard: a final within echo_window_sec of playback end whose
     # normalized tokens overlap a recently spoken sentence >= min_overlap is the
-    # assistant's own echo -> dropped.
+    # assistant's own echo -> dropped. NB the window must cover the FINAL's
+    # arrival, not the echo audio itself: the recognizer adds endpoint trailing
+    # silence (~1-2s) plus the utterance length before the final fires, so a 3s
+    # window missed the recorded verbatim echo finals ("Okay, let's begin. How
+    # can I help you today?" landed ~4s after playback end). 8s default.
     echo_guard_enabled: bool = False
-    echo_window_sec: float = 3.0
+    echo_window_sec: float = 8.0
     echo_min_overlap: float = 0.75
     # Don't echo-drop very short finals on overlap alone ("yes" overlaps lots);
-    # they must match a spoken sentence (almost) exactly.
+    # they must read as the LAST spoken sentence's tail -- exactly, or fuzzily
+    # (the recognizer garbles echo: live 'Leleep.' from "...spin and leap",
+    # 'Loly.' from "lovely"). Char-level similarity vs the tail tokens.
+    # Measured on the recorded garbles: 'wecome'/'welcome'=0.92,
+    # 'loly'/'lovely'=0.8, 'leleep'/'leap'=0.60 -- 0.6 catches them all, while
+    # real reactions stay clear ('great'/'hear'=0.44) and control words are
+    # exempt outright.
     echo_min_words: int = 3
+    echo_fuzzy_ratio: float = 0.6
+    echo_tail_tokens: int = 8
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, object]]) -> "ResumeConfig":
@@ -95,21 +115,38 @@ class ResumeConfig:
             spoken_tail_chars=int(data.get("spoken_tail_chars", 360) or 360),
             max_spoken_chars=int(data.get("max_spoken_chars", 2000) or 2000),
             echo_guard_enabled=bool(data.get("echo_guard_enabled", False)),
-            echo_window_sec=float(data.get("echo_window_sec", 3.0) or 3.0),
+            echo_window_sec=float(data.get("echo_window_sec", 8.0) or 8.0),
             echo_min_overlap=float(data.get("echo_min_overlap", 0.75) or 0.75),
             echo_min_words=int(data.get("echo_min_words", 3) or 3),
+            echo_fuzzy_ratio=float(data.get("echo_fuzzy_ratio", 0.6) or 0.6),
+            echo_tail_tokens=int(data.get("echo_tail_tokens", 8) or 8),
         )
 
 
-def _token_overlap(a_tokens: list[str], b_tokens: list[str]) -> float:
-    """Fraction of ``a``'s tokens found in ``b`` (multiset containment)."""
+def _fuzzy_eq(a: str, b: str, ratio: float) -> bool:
+    """Char-level similarity match (difflib) -- echo gets GARBLED by the
+    recognizer ('Leleep' from 'leap', 'Wecome' from 'welcome'), so exact token
+    equality misses real echo. ``ratio <= 0`` disables fuzziness."""
+    if a == b:
+        return True
+    if ratio <= 0.0:
+        return False
+    from difflib import SequenceMatcher
+
+    return SequenceMatcher(None, a, b).ratio() >= ratio
+
+
+def _token_overlap(a_tokens: list[str], b_tokens: list[str], *, fuzzy: float = 0.0) -> float:
+    """Fraction of ``a``'s tokens found in ``b`` (multiset containment),
+    optionally counting fuzzy char-level matches (garbled echo)."""
     if not a_tokens:
         return 0.0
     pool = list(b_tokens)
     hit = 0
     for t in a_tokens:
-        if t in pool:
-            pool.remove(t)
+        match_i = next((i for i, p in enumerate(pool) if _fuzzy_eq(t, p, fuzzy)), None)
+        if match_i is not None:
+            pool.pop(match_i)
             hit += 1
     return hit / len(a_tokens)
 
@@ -193,14 +230,27 @@ class ResumeTracker:
         if not recent:
             return False
         spoken_tokens = normalize_text(" ".join(recent)).split()
-        overlap = _token_overlap(tokens, spoken_tokens)
+        overlap = _token_overlap(tokens, spoken_tokens, fuzzy=self._c.echo_fuzzy_ratio)
         if len(tokens) < self._c.echo_min_words:
-            # A tiny final counts as echo only if it IS the LAST spoken sentence
-            # verbatim -- the echo tail is the END of playback. Matching any
-            # recent sentence (or plain overlap) would eat a legitimate short
-            # follow-up that parrots a word from earlier in the reply.
+            # A tiny final counts as echo only against the LAST spoken
+            # sentence's TAIL -- the echo tail is the END of playback. Exact
+            # whole-sentence match, or EVERY final token fuzzily matching a
+            # tail token (live: 'Leleep.' from "...spin and leap", 'Loly.'
+            # from "That sounds lovely!"). Matching any recent sentence (or
+            # plain overlap) would eat a legitimate short follow-up that
+            # parrots a word from earlier in the reply.
             joined = " ".join(tokens)
-            hit = joined == normalize_text(recent[-1])
+            last_tokens = normalize_text(recent[-1]).split()
+            tail = last_tokens[-max(1, self._c.echo_tail_tokens):]
+            fuzz_ok = not all(t in _ECHO_FUZZY_EXEMPT for t in tokens)
+            hit = joined == " ".join(last_tokens) or (
+                fuzz_ok
+                and self._c.echo_fuzzy_ratio > 0.0
+                and all(
+                    any(_fuzzy_eq(t, p, self._c.echo_fuzzy_ratio) for p in tail)
+                    for t in tokens
+                )
+            )
         else:
             hit = overlap >= self._c.echo_min_overlap
         if hit:

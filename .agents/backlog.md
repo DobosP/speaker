@@ -20,9 +20,15 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       regardless of any history rewrite); (2) decide history remediation (D1 in
       `docs/review_2026-06-10_gap_analysis.md`: full `git filter-repo` purge of
       `.env` + PII bundles, optionally going private first; tag/mirror the
-      pre-rewrite SHA privately); (3) decide the voice-WAV fixture policy (D2:
-      recommended synthetic-only public + private store). Then: gitleaks CI gate +
-      SECURITY.md (roadmap P0 list). Full plan + 8 decisions: the gap-analysis doc.
+      pre-rewrite SHA privately). (3) **D2 DECIDED by the owner 2026-06-10:**
+      the 7 committed run WAVs STAY for cross-device development; they will be
+      removed when the app reaches a PRE-RELEASE state. NB the eventual removal
+      needs the D1 history rewrite anyway (deleting at tip leaves them in
+      history), so fold both into one pre-release purge window. Then: gitleaks
+      CI gate + SECURITY.md (roadmap P0 list). Full plan + 8 decisions: the
+      gap-analysis doc. ALSO 2026-06-10: `.claude/hooks/guard.ps1` line-28
+      parse error FIXED (owner + agent) -- the guard is live again (denies work
+      SSH key/.ssh config/.gitconfig/git config --global; no main-push rule).
 - [ ] **Adopt the 2026-06-10 gap-analysis roadmap (45 verified findings, P0–P5).**
       `docs/review_2026-06-10_gap_analysis.md` — security/PII first, then real-time
       correctness (rc-2 _on_final off the audio thread DONE via turn_merge; rc-1

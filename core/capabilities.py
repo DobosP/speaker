@@ -294,8 +294,11 @@ def attach_llm_capabilities(
         # EITHER path's LLM calls run. Best-effort: never break a turn.
         recent_block = ""
         try:
+            # current_query=query: a reset utterance ("start again") answers
+            # FRESH (no block), and a reset turn in memory cuts the thread for
+            # later turns -- see core/conversation.is_topic_reset.
             recent_turns = (
-                collect_recent_turns(memory, recent_cfg)
+                collect_recent_turns(memory, recent_cfg, current_query=query)
                 if (memory is not None and not skip_user_memory)
                 else []
             )

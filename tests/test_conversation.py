@@ -279,6 +279,33 @@ def test_assistant_floats_sensitivity_over_a_private_prior_turn():
     assert ctx["sensitivity"] == PRIVATE  # floated up by the private prior turn
 
 
+def test_assistant_floats_sensitivity_over_a_private_recall_block():
+    # §9.7 (review lm-3): a PUBLIC current query whose RECALL block surfaces
+    # private remembered facts must route the turn on the private chain. The
+    # recall path previously skipped the sensitivity float that recent-turns
+    # and images get.
+    from core.capabilities import RecallConfig
+    from core.sensitivity import PRIVATE
+
+    class _RecallingMemory(SessionMemory):
+        def context_for_llm(self, query: str) -> str:
+            return "Remembered: the user's salary is $95,000 at Acme Corp."
+
+    llm = _RecordingLLM()
+    mem = _RecallingMemory()
+    reg = _assistant(
+        llm, mem,
+        recall=RecallConfig(enabled=True),
+        recent_context=RecentContextConfig(enabled=False),
+    )
+
+    ctx: dict = {"intent_kind": "assistant"}
+    reg.invoke("assistant.answer", "what is the capital of france", ctx)
+    assert ctx["sensitivity"] == PRIVATE  # floated by the private recall block
+    # The block itself still reaches the prompt (contract unchanged).
+    assert "Remembered:" in llm.systems[-1]
+
+
 def test_abstain_and_apology_replies_are_excluded_from_context():
     mem = SessionMemory()
     mem.add("real question", tags=("user",))

@@ -116,16 +116,59 @@ def test_own_sentence_heard_back_within_window_is_echo():
     assert t.echo_dropped >= 1
 
 
-def test_garbled_echo_tail_still_matches():
+def test_garbled_echo_tail_fuzzy_matches_but_control_words_never_do():
     t = _live_tracker()
     t.note_spoken("You're very welcome!")
     t.note_playback_end()
-    # The recorded 'Wecome.' tail is sub-min-words; an exact-ish short match is
-    # required -- 'welcome' normalizes to a full spoken-sentence subset but not
-    # an exact sentence, so this one legitimately passes through (energy floors
-    # own it); the guard must NOT eat the user's own short words either.
+    # The recorder garbles echo: the live run produced 'Wecome.' from
+    # "welcome" and 'Leleep.' from "...spin and leap" -- char-fuzzy tail
+    # matching catches those...
+    assert t.is_self_echo("Wecome.")
+    # ...but confirm/deny/control words are EXEMPT from the fuzzy rule (the
+    # user's real "yes"/"okay" must never be eaten).
     assert not t.is_self_echo("yes")
     assert not t.is_self_echo("okay")
+
+
+def test_live_round3_garbled_tails_are_echo():
+    # Recorded phantom finals from run-20260610-130622.
+    t = _live_tracker()
+    t.note_spoken(
+        "She moved like sunlight on water, captivating everyone who watched her spin and leap."
+    )
+    t.note_playback_end()
+    assert t.is_self_echo("Leleep.")
+
+    t2 = _live_tracker()
+    t2.note_spoken("That sounds lovely!")
+    t2.note_playback_end()
+    assert t2.is_self_echo("Loly.")
+
+    # A real short reaction with no resemblance to the tail passes through.
+    t3 = _live_tracker()
+    t3.note_spoken("...until she finally fell fast asleep.")
+    t3.note_playback_end()
+    assert not t3.is_self_echo("Great")
+
+
+def test_no_after_a_now_sentence_is_never_eaten():
+    # 'no' char-matches 'now' at 0.8 -- the exemption keeps denials alive.
+    t = _live_tracker()
+    t.note_spoken("Would you like me to do it now?")
+    t.note_playback_end()
+    assert not t.is_self_echo("No")
+
+
+def test_echo_final_arriving_four_seconds_later_is_still_caught():
+    # The recognizer adds endpoint silence + utterance length before the FINAL
+    # fires: the live verbatim echo landed ~4s after playback end and slipped
+    # the old 3s window. The default window now covers it.
+    t = _live_tracker()
+    t.note_spoken("Okay, let's begin.")
+    t.note_spoken("How can I help you today?")
+    t.note_playback_end()
+    time.sleep(0.0)  # logical check only; window default is 8s
+    assert t.is_self_echo("Okay, let's begin. How can I help you today?")
 
 
 def test_user_speech_is_not_echo():
@@ -191,6 +234,40 @@ def test_runtime_resumes_a_barged_story():
         joined = " ".join(engine.spoken)
         assert "INTERRUPTED" in joined
         assert "lighthouse keeper" in joined
+    finally:
+        runtime.stop()
+
+
+def test_runtime_newest_input_supersedes_the_inflight_turn():
+    """Owner (live round 3): "the output should answer only to my latest
+    input". A NEW final arriving while the prior turn is still GENERATING
+    cancels it -- the stale answer is never spoken."""
+    from core.engines.scripted import ScriptedEngine
+    from core.llm import EchoLLM
+    from core.runtime import VoiceRuntime
+
+    class SlowEchoLLM(EchoLLM):
+        def stream(self, prompt, *, system=None, images=None):
+            time.sleep(0.6)  # still generating when the next final lands
+            yield from super().stream(prompt, system=system, images=images)
+
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(engine, SlowEchoLLM())
+    runtime.start(run_bus=True)  # real bus thread: the task is genuinely in flight
+    try:
+        runtime._on_final("what is the capital of france")
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not runtime.supervisor.state.active_tasks:
+            time.sleep(0.01)
+        assert runtime.supervisor.state.active_tasks  # the stale turn is generating
+
+        runtime._on_final("tell me a story about dragons")  # the user moved on
+        assert runtime.wait_idle(timeout=10.0)
+        joined = " ".join(engine.spoken)
+        assert "dragons" in joined
+        assert "capital of france" not in joined, (
+            "the superseded turn's stale answer was spoken"
+        )
     finally:
         runtime.stop()
 

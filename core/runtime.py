@@ -559,6 +559,21 @@ class VoiceRuntime:
         if self._intents is not None and self._intents.handle(final_text):
             log.debug("handled by intent fast-path: %r", final_text)
             return
+        # Newest-input-wins (owner, live round 3): a NEW final arriving while a
+        # prior turn is still generating/queued SUPERSEDES it -- the user has
+        # moved on, and speaking the stale answer first reads as "answering my
+        # old question". Skipped when a confirmation is pending (this final is
+        # likely its answer -- cancel_all would clear the pending confirm) and
+        # for CONTINUE add-ons (the supervisor merges those into the in-flight
+        # turn instead). Playback isn't a case here: ASR never emits finals
+        # while the assistant is speaking (barge-in owns that path).
+        if (
+            (self.supervisor.state.active_tasks or self.supervisor.state.queued_tasks)
+            and not self.supervisor.state.pending_confirmations
+            and not self.supervisor.looks_like_continuation(final_text)
+        ):
+            log.info("newest input supersedes the in-flight turn: %r", final_text)
+            self.supervisor.cancel_all()
         # A NEW turn for the resume tracker (resets the spoken-text window; a
         # resume turn deliberately bypasses this above and keeps accumulating).
         self._resume.note_query(final_text)

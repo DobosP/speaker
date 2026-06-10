@@ -26,6 +26,7 @@ from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
+from .resume import ResumeConfig, ResumeTracker
 from .routing import Router
 from .turn_merge import FinalDispatcher, TurnMergeConfig
 from .watchdog import StuckWatchdog
@@ -67,6 +68,7 @@ class VoiceRuntime:
         followup_config: Optional[FollowupConfig] = None,
         continuation_config: Optional[ContinuationConfig] = None,
         turn_merge_config: Optional[TurnMergeConfig] = None,
+        resume_config: Optional[ResumeConfig] = None,
         command_map: Optional[dict[str, str]] = None,
         intents: Optional[LocalIntentHandler] = None,
         addressing: Optional[AddressingClassifier] = None,
@@ -202,6 +204,13 @@ class VoiceRuntime:
         self._dispatcher: Optional[FinalDispatcher] = None
         if turn_merge_config is not None and turn_merge_config.enabled:
             self._dispatcher = FinalDispatcher(self._process_final, turn_merge_config)
+        # Resume-after-interrupt + L4 self-echo guard (core/resume.py): tracks
+        # the current turn's query + the sentences actually SPOKEN so (a) a
+        # "start again"/"continue" after a cut resumes the reply from where it
+        # stopped, and (b) a final that is the assistant's own TTS echo (the
+        # mic hearing the reply's tail at high speaker volume) is dropped
+        # instead of being answered. Default on; both halves off-switchable.
+        self._resume = ResumeTracker(resume_config or ResumeConfig())
         # Live watchdog: warns when a turn stalls or the barge-in gate flaps.
         # See core.watchdog for the heuristics; WARNINGs land in the run
         # bundle so the next stuck reproduction leaves visible evidence.
@@ -337,6 +346,10 @@ class VoiceRuntime:
                 on_metric=self.metrics.mark,
                 on_heartbeat=self._watchdog.note_heartbeat,
                 on_capture_state=self._on_capture_state,
+                # Anchors the L4 self-echo window: a final arriving shortly
+                # after playback ends that reads like a just-spoken sentence
+                # is the assistant's own echo (core/resume.py).
+                on_speech_end=self._resume.note_playback_end,
             )
         )
         if run_bus:
@@ -453,10 +466,32 @@ class VoiceRuntime:
         self._process_final(text)
 
     def _process_final(self, text: str) -> None:
+        # L4 self-echo guard (core/resume.py): a final that arrived within the
+        # echo window of playback end AND reads like a just-spoken sentence is
+        # the assistant hearing ITSELF (live: its own "Okay, let's begin. How
+        # can I help you today?" came back as a user turn and got answered).
+        # Volume-independent -- the energy floors (L1-L3) cannot catch a loud
+        # echo, the text match can. Dropped before addressing/ingest/metrics.
+        if self._resume.is_self_echo(text):
+            log.info("dropping self-echo final (own TTS heard back): %r", text)
+            return
+        # Resume-after-interrupt: "start again"/"continue" after a CUT reply
+        # becomes a continue-from-where-you-stopped prompt instead of a fresh
+        # turn (owner: a stopped story must resume, not restart or greet).
+        resume_prompt = self._resume.resume_prompt(text)
         log.info(
             "final -> brain: %r (mode=%s)", text, self.mode.value,
             extra={"transcript": {"role": "user", "text": text, "mode": self.mode.value}},
         )
+        if resume_prompt is not None:
+            log.info("resume request %r -> continuing the interrupted reply", text)
+            self.metrics.mark(ASR_FINAL)
+            # The synthetic prompt is addressed by construction: skip the
+            # addressing gate, cleaner, and intent fast-path. note_query is
+            # deliberately NOT called -- the tracker keeps accumulating the
+            # same turn's spoken text so a second cut+continue still works.
+            self.bus.publish(AgentEvent.final(resume_prompt))
+            return
         # Input gate: classify before opening a metrics turn so an INGEST'd
         # utterance doesn't trip the watchdog's "no llm_first_token" check.
         # When no classifier is configured this is a no-op (legacy behavior).
@@ -524,6 +559,9 @@ class VoiceRuntime:
         if self._intents is not None and self._intents.handle(final_text):
             log.debug("handled by intent fast-path: %r", final_text)
             return
+        # A NEW turn for the resume tracker (resets the spoken-text window; a
+        # resume turn deliberately bypasses this above and keeps accumulating).
+        self._resume.note_query(final_text)
         self.bus.publish(AgentEvent.final(final_text))
 
     def _on_barge_in(self) -> None:
@@ -539,6 +577,11 @@ class VoiceRuntime:
         self._watchdog.note_barge_in()
         self.supervisor.cancel_all()
         self.engine.stop_speaking()
+        # The reply was interrupted mid-way: arm the resume tracker ("start
+        # again"/"continue" now resumes it) + anchor the echo window (the cut
+        # playback's tail still reaches the mic for a moment).
+        self._resume.note_cut()
+        self._resume.note_playback_end()
         self.bus.publish(AgentEvent.stop("barge_in"))
 
     def _on_command(self, keyword: str) -> None:
@@ -560,6 +603,8 @@ class VoiceRuntime:
             # (realtime-concurrency-1).
             self.supervisor.cancel_all()
             self.engine.stop_speaking()
+            self._resume.note_cut()  # "stop" then "continue" resumes the reply
+            self._resume.note_playback_end()
             self.bus.publish(AgentEvent.stop("command"))
         elif action == "confirm":
             self.bus.publish(AgentEvent.confirm("command"))
@@ -615,9 +660,12 @@ class VoiceRuntime:
                 "assistant: %r", text,
                 extra={"transcript": {"role": "assistant", "text": text}},
             )
+            self._resume.note_spoken(text)  # what was ACTUALLY sent to playback
             self.engine.speak(text)
         elif event.kind == EventKind.CONTROL_STOP:
             self.engine.stop_speaking()
+            self._resume.note_cut()  # a spoken "stop" arms resume too
+            self._resume.note_playback_end()
             # Stop also cancels pending fast-path actions (e.g. a running timer).
             if self._intents is not None:
                 self._intents.cancel_all()

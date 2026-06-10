@@ -293,6 +293,13 @@
     "enabled": true,
     "addon_max_words": 8
   },
+  "resume": {
+    "_comment": "Resume-after-interrupt + L4 self-echo guard (2026-06-10 owner feedback; core/resume.py). (a) 'start again'/'continue'/'go on' (EN+RO) after a barge/stop CUT becomes a continue-from-where-you-stopped prompt embedding the last spoken_tail_chars of what was actually SPOKEN -- a stopped story resumes, it does not restart or greet. Only fires when the prior reply was genuinely cut; otherwise the phrase passes through unchanged. (b) echo_guard: a final arriving within echo_window_sec of playback end whose tokens overlap the just-spoken sentences >= echo_min_overlap is the assistant's own TTS echo (live: it answered its own 'How can I help you today?' at high speaker volume) -> dropped before addressing/ingest. Volume-independent (pure text), unlike the L1-L3 energy floors.",
+    "enabled": true,
+    "echo_guard_enabled": true,
+    "echo_window_sec": 3.0,
+    "echo_min_overlap": 0.75
+  },
   "turn_merge": {
     "_comment": "Hold-and-merge final dispatch (2026-06-10; core/turn_merge.py). A final that READS mid-thought -- ends on a conjunction/article/preposition ('A long story about') or is a 1-2 word fragment ('So they') -- is HELD up to hold_sec for the user's next words and MERGED into one query, instead of each fragment being answered (the live failure: four fragments, four spoken replies, each reply's echo then destabilized barge-in). Complete-reading finals dispatch with NO added latency; control words (yes/no/stop/never mind/...) are exempt. Partials extend an open hold (cap max_hold_sec). Also moves ALL final processing (addressing gate -> cleaner -> router) off the audio capture thread onto a dispatch worker (review rc-2: LLM calls were blocking mic reads). Complements 'continuation' above, which only merges while a task is still in flight (~0.6s on the fast tier).",
     "enabled": true,

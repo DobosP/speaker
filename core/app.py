@@ -629,9 +629,17 @@ def main(argv: list[str] | None = None) -> int:
     # Optional screen-capture feed (OFF by default; config.screen_capture.enabled).
     # When on, a background loop grabs the screen on a cadence and feeds the latest
     # frame to the model as ambient visual context (runtime.set_current_frame).
+    # Optionally (screen_capture.memorize) a visual memorizer also turns each frame
+    # into a caption+OCR 'vision' memory off the hot path (core/visual_memory.py).
     from .screen_capture import build_screen_feed
+    from .visual_memory import build_visual_memorizer
 
-    screen_feed = build_screen_feed(config, runtime)
+    memorizer = build_visual_memorizer(config, runtime, llm)
+    screen_feed = build_screen_feed(
+        config, runtime, observer=(memorizer.observe if memorizer is not None else None)
+    )
+    if memorizer is not None:
+        memorizer.start()
     if screen_feed is not None:
         screen_feed.start()
     try:
@@ -647,6 +655,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if screen_feed is not None:
             screen_feed.stop()
+        if memorizer is not None:
+            memorizer.stop()
         try:
             monitor.stop()  # folds baseline/peak/final/deltas into the summary
         except Exception:  # noqa: BLE001

@@ -107,7 +107,12 @@ class SessionMemory:
             if not score:
                 continue
             role = "user" if "user" in item.tags else ("assistant" if "assistant_output" in item.tags else None)
-            kind = "summary" if "summary" in item.tags else "message"
+            if "vision" in item.tags:
+                kind = "vision"
+            elif "summary" in item.tags:
+                kind = "summary"
+            else:
+                kind = "message"
             out.append(Candidate(item.text, float(score), kind=kind, role=role, timestamp=item.timestamp, tags=item.tags))
         return out
 
@@ -182,10 +187,17 @@ class MemoryManagerAdapter:
         # them to the persisting manager unless meeting_persist is enabled.
         if "meeting" in tags and not getattr(self._manager, "meeting_persist", False):
             return
-        # Tag-routed: assistant output is RAM-only context; user/ingested speech
-        # is queued for debounced persistence.
+        # Tag-routed: assistant output is RAM-only context; a VISUAL (screen)
+        # observation persists via the dedicated add_observation path -- NOT
+        # queue_user_utterance, whose _extract_profile would run the "my name is X"
+        # regex over OCR'd screen text and write garbage profile rows; user/ingested
+        # speech is queued for debounced persistence.
         if "assistant_output" in tags:
             self._manager.add_message("assistant", cleaned)
+        elif "vision" in tags:
+            add_observation = getattr(self._manager, "add_observation", None)
+            if callable(add_observation):
+                add_observation(cleaned)
         else:
             self._manager.queue_user_utterance(cleaned)
 

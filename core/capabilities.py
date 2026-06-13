@@ -10,7 +10,7 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import Memory
-from always_on_agent.recall import trim_block_to_tokens
+from always_on_agent.recall import VISION_LABEL, trim_block_to_tokens
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -367,6 +367,14 @@ def attach_llm_capabilities(
                         str(context.get("sensitivity") or PRIVATE),
                         classify_sensitivity(recall_block),
                     )
+                    # A recalled VISUAL (screen) observation is PRIVATE by policy
+                    # (§9.7) regardless of what its caption/OCR text classifies as,
+                    # so a screen memory surfacing into a turn pins it to the
+                    # private chain even when the words look benign.
+                    if VISION_LABEL in recall_block:
+                        context["sensitivity"] = most_sensitive(
+                            str(context.get("sensitivity") or PRIVATE), PRIVATE
+                        )
                 # Compose: stable system FIRST (the pre-warmed, cacheable prefix),
                 # then the volatile recent block AFTER, so the prefix cache is
                 # reused turn to turn. Recall (default-off, past sessions) keeps its

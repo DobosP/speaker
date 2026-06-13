@@ -75,7 +75,7 @@ class Candidate:
 
     text: str
     score: float
-    kind: str = "message"  # 'message' | 'summary' | 'profile'
+    kind: str = "message"  # 'message' | 'summary' | 'profile' | 'vision'
     role: Optional[str] = None  # 'user' | 'assistant' | None
     timestamp: float = 0.0
     tags: tuple[str, ...] = ()
@@ -222,11 +222,16 @@ def collapse(cands: Sequence[Candidate], dedup_ratio: float = 0.0) -> list[Candi
 # --- rendering --------------------------------------------------------------
 
 
+VISION_LABEL = "Screen:"  # rendered prefix for a recalled visual (screen) memory
+
+
 def _render_line(c: Candidate) -> str:
     if c.kind == "summary":
         return f"Summary: {c.text}"
     if c.kind == "profile":
         return f"- {c.text}"
+    if c.kind == "vision":
+        return f"{VISION_LABEL} {c.text}"
     if c.role == "assistant":
         return f"Assistant: {c.text}"
     if c.role == "user":

@@ -603,6 +603,40 @@ class MemoryManager:
         )
         return True
 
+    def add_observation(self, text: str) -> bool:
+        """Persist a VISUAL (screen) observation as a recallable memory row.
+
+        The dedicated ingest path for visual memory: stores the caption+OCR trace
+        with ``role='observation'`` / ``source='vision'`` so it is (a) retrievable
+        by :meth:`search_memory` alongside user messages, (b) NEVER routed through
+        ``queue_user_utterance``/``_extract_profile`` (so OCR'd screen text can't
+        spawn bogus ``user_profile`` rows), and (c) excluded from the recent-
+        conversation block (its tag is not user/assistant). Called from the visual
+        memorizer's BACKGROUND worker, never the bus thread. Returns True on write."""
+        cleaned = (text or "").strip()
+        if not cleaned or not self._db_available:
+            return False
+        message = Message(role="observation", content=cleaned)
+        embedding = self._get_embedding(cleaned)
+        self._save_message_to_db(
+            message, embedding, raw_text=cleaned, cleaned_text=cleaned,
+            source="vision", confidence=1.0,
+        )
+        return True
+
+    def clear_observations(self) -> int:
+        """Purge all persisted visual observations (owner privacy control, §9.7)."""
+        if not self._db_available:
+            return 0
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("DELETE FROM messages WHERE source = %s", ("vision",))
+                    return cur.rowcount or 0
+        except Exception as e:
+            print(f"[warn] Failed to clear observations: {e}")
+            return 0
+
     def set_text_cleaner(self, cleaner):
         """Optional hook: overrides built-in Ollama cleanup when set."""
         self._text_cleaner = cleaner
@@ -915,7 +949,7 @@ class MemoryManager:
                         WHERE embedding IS NOT NULL
                           AND embedder_id = %s
                           AND embedding_dim = %s
-                          AND role = 'user'
+                          AND role IN ('user', 'observation')
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
                         """,
@@ -1009,6 +1043,12 @@ class MemoryManager:
                     cands.append(Candidate(
                         str(r.get('content', '')), _finite(r.get('similarity')),
                         kind='summary', timestamp=_to_epoch(r.get('end_time')), span=span,
+                    ))
+                elif r.get('role') == 'observation':
+                    # A persisted visual (screen) observation -> recall it as vision.
+                    cands.append(Candidate(
+                        str(r.get('content', '')), _finite(r.get('similarity')),
+                        kind='vision', timestamp=_to_epoch(r.get('timestamp')),
                     ))
                 else:
                     cands.append(Candidate(

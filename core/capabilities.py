@@ -103,7 +103,7 @@ class RecallConfig:
     (the same ratio the rest of the recall path uses)."""
 
     enabled: bool = False
-    max_tokens: int = 220
+    max_tokens: int = 150
     max_chars: Optional[int] = None  # deprecated; derives max_tokens when set
 
     def __post_init__(self) -> None:
@@ -116,7 +116,7 @@ class RecallConfig:
         tok = data.get("recall_max_tokens")
         if tok is None:  # legacy: derive from the deprecated char cap, else default
             ch = data.get("recall_max_chars")
-            tok = (int(ch) // 4) if ch else 220
+            tok = (int(ch) // 4) if ch else 150
         return cls(
             enabled=bool(data.get("recall_enabled", False)),
             max_tokens=max(1, int(tok)),

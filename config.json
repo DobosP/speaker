@@ -426,7 +426,7 @@
     "backend": "auto",
     "recall_enabled": false,
     "_recall_budget_comment": "Recall is now bounded by ONE token budget + a data-derived adaptive cutoff (always_on_agent/recall.py), NOT fixed char caps/thresholds. recall_max_tokens caps the whole injected recall block (header included); chars_per_token is the per-device token-estimate ratio (a measurement knob, device-profile tunable, NOT a relevance threshold). recall_cutoff_k / recall_dedup_ratio default to 0 = fully data-derived (the no-magic-number device-adaptive path); a positive value is an opt-in escape hatch (cutoff_k also requires score>=mean+k*std; dedup_ratio pins a SequenceMatcher ratio). recall_recent_reserve_tokens (0=off) folds the recent-conversation block under a token cap so recall+recent can't independently stack. recall_max_chars is a DEPRECATED legacy alias (derives max_tokens=chars//4) kept one release; recall_min_similarity + recall_max_items were dead no-ops (zero readers) and are removed.",
-    "recall_max_tokens": 220,
+    "recall_max_tokens": 150,
     "chars_per_token": 4.0,
     "recall_cutoff_k": 0,
     "recall_dedup_ratio": 0,

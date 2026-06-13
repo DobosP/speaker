@@ -93,7 +93,7 @@ class RecallBudget:
     "fully data-derived"; a positive value is an opt-in escape hatch that pins a
     fixed behavior."""
 
-    max_tokens: int = 220
+    max_tokens: int = 150
     chars_per_token: float = 4.0
     min_keep: int = 1
     cutoff_k: float = 0.0  # 0 == pure adaptive gap; >0 also requires score >= mean + k*std
@@ -126,39 +126,40 @@ def adaptive_cutoff(scores: Sequence[float], k: float = 0.0) -> float:
     """Return the keep-**floor**: candidates with ``score >= floor`` are kept.
 
     The floor is read off the *shape* of the sorted-descending scores. Compute
-    the gaps between consecutive scores; the largest gap is treated as a real
-    "elbow" only when it is a genuine **outlier among the gaps** (greater than
-    ``mean_gap + std_gap`` -- the same self-calibrated z-score rule the repo's
-    AdaptiveDTD uses in ``core/engines/_dtd.py``). When no gap stands out (a
-    smooth gradient or all-equal scores), nothing is cut and the **token budget +
-    dedup** bound the volume instead. This is deliberately *conservative*: it
-    only discards a clearly-detached weak tail, so it never drops a still-useful
-    hit just because the distribution slopes -- and it has **no fixed relevance
-    constant**, so a strong cluster sitting entirely below ``0.6`` survives.
+    the gaps between consecutive scores; the largest gap marks a real "elbow"
+    only when it **dominates** the others -- it is at least twice the
+    next-largest gap. That dominance ratio is **scale-free** (a cliff that is
+    twice as deep as any other drop), so cosine (``0..1``) and integer
+    overlap-counts both work without normalization, and it is **FP-robust**: an
+    even gradient has near-equal gaps (ratio ~1, never >= 2) so nothing is cut --
+    fixing the float-dust mis-cut a variance z-score suffered. It also fires
+    correctly at exactly three candidates (two gaps), where a mean+std test is
+    mathematically inert. When no gap dominates, nothing is cut and the **token
+    budget + dedup** bound the volume instead.
 
-    Because :class:`Candidate` scores are ranked only *within one list* (the
-    module invariant), the gaps share one scale and the gap statistics are
-    well-defined without cross-backend normalization.
+    This is deliberately *conservative* -- it discards only a clearly-detached
+    weak tail, never a still-useful hit on a slope -- and has **no fixed
+    relevance constant**, so a strong cluster sitting entirely below ``0.6``
+    survives. Because :class:`Candidate` scores are ranked only *within one list*
+    (the module invariant), the gaps share one scale.
 
-    Degenerate cases: empty -> ``+inf`` (keep nothing); one score -> keep it.
-    When ``k > 0`` the floor is additionally raised to ``mean + k*std`` over the
-    scores (an opt-in statistical tightening)."""
+    Degenerate cases: empty -> ``+inf`` (keep nothing); one or two scores -> keep
+    them (a single gap has nothing to be judged a cliff against). When ``k > 0``
+    the floor is additionally raised to ``mean + k*std`` over the scores (an
+    opt-in statistical tightening)."""
     vals = sorted((float(s) for s in scores), reverse=True)
     n = len(vals)
     if n == 0:
         return math.inf
-    if n == 1:
-        return vals[0]
-
-    gaps = [vals[i] - vals[i + 1] for i in range(n - 1)]
-    gap_floor = vals[-1]  # default: no standout gap -> keep all
-    if len(gaps) >= 2:
-        mean_g = sum(gaps) / len(gaps)
-        std_g = math.sqrt(sum((g - mean_g) ** 2 for g in gaps) / len(gaps))
-        if std_g > 0:
-            gi = max(range(len(gaps)), key=lambda i: gaps[i])
-            if gaps[gi] > mean_g + std_g:  # the elbow is an outlier among gaps
-                gap_floor = vals[gi]  # keep vals[0..gi]
+    if n <= 2:  # 0/1 gaps: nothing to call a "cliff" against -> keep all
+        gap_floor = vals[-1]
+    else:
+        gaps = [vals[i] - vals[i + 1] for i in range(n - 1)]
+        gi = max(range(len(gaps)), key=lambda i: gaps[i])
+        largest = gaps[gi]
+        second = max((g for j, g in enumerate(gaps) if j != gi), default=0.0)
+        # Dominant cliff: the biggest drop is >= 2x any other drop (and positive).
+        gap_floor = vals[gi] if largest > 0 and largest >= 2.0 * second else vals[-1]
 
     stat_floor = -math.inf
     if k > 0.0:
@@ -207,7 +208,12 @@ def collapse(cands: Sequence[Candidate], dedup_ratio: float = 0.0) -> list[Candi
     for c in sorted(cands, key=lambda x: x.score, reverse=True):
         if subsumed(c):
             continue
-        if any(_near_duplicate(c.text, k.text, eff_ratio) for k in kept):
+        # Profile rows are distinct key:value facts -- only exact-collapse them
+        # (fuzzy near-dup would wrongly merge e.g. "name: Bob" / "nickname: Bobby").
+        if c.kind == "profile":
+            if any(k.kind == "profile" and _norm_for_dedupe(c.text) == _norm_for_dedupe(k.text) for k in kept):
+                continue
+        elif any(k.kind != "profile" and _near_duplicate(c.text, k.text, eff_ratio) for k in kept):
             continue
         kept.append(c)
     return kept
@@ -350,15 +356,25 @@ def build_block(cands: Sequence[Candidate], query: str, budget: RecallBudget) ->
 
     # The highest-value item that did not fully fit is COMPRESSED into the
     # leftover room (whole-sentence, query-aware) rather than dropped or hard-cut.
-    # Reserve a token for the joining newline, then exact-guard the trial block;
-    # when nothing else was placed (min_keep), accept the minimal content even if
-    # it grazes the budget (only reachable when one item alone exceeds it).
+    # The compress target reserves both the joining newline AND the render label
+    # ("User: "/"Summary: "/"- ") so the *rendered line*, not just its raw text,
+    # fits -- then the trial block is exact-guarded against the budget. If even a
+    # one-line trial cannot fit (the budget is too small to hold the header plus
+    # any content), nothing is added and render() returns '' -- the token bound is
+    # honored unconditionally rather than force-emitting an over-budget line.
     if overflow is not None and room > 0:
-        compressed = compress(overflow.text, query, max(room - 1, 1), cpt)
-        if compressed:
-            trial = [*selected, replace(overflow, text=compressed)]
-            if estimate_tokens(render(trial, budget.header), cpt) <= budget.max_tokens or not selected:
-                selected = trial
+        label_overhead = max(
+            estimate_tokens(_render_line(replace(overflow, text="x")), cpt)
+            - estimate_tokens("x", cpt),
+            0,
+        )
+        target = room - 1 - label_overhead
+        if target >= 1:
+            compressed = compress(overflow.text, query, target, cpt)
+            if compressed:
+                trial = [*selected, replace(overflow, text=compressed)]
+                if estimate_tokens(render(trial, budget.header), cpt) <= budget.max_tokens:
+                    selected = trial
 
     return render(selected, budget.header)
 

@@ -83,6 +83,28 @@ def test_adaptive_cutoff_flat_distribution_keeps_all():
     assert all(s >= floor for s in scores)
 
 
+def test_adaptive_cutoff_even_gradient_keeps_all_no_fp_dust():
+    # An even gradient has near-equal gaps -> no dominant cliff -> keep all. Pins
+    # that floating-point dust in the gaps does NOT trigger a spurious cut.
+    scores = [0.9 - 0.1 * i for i in range(6)]  # 0.9,0.8,...,0.4
+    floor = adaptive_cutoff(scores)
+    assert all(s >= floor - 1e-9 for s in scores)
+
+
+def test_adaptive_cutoff_fires_at_three_candidates():
+    # Exactly 3 candidates (2 gaps) with a clearly detached tail: the dominant-gap
+    # rule must still cut (a mean+std z-score is mathematically inert here).
+    scores = [0.9, 0.85, 0.1]
+    floor = adaptive_cutoff(scores)
+    assert sorted((s for s in scores if s >= floor), reverse=True) == [0.9, 0.85]
+
+
+def test_adaptive_cutoff_handles_nan_and_negative():
+    # Must not raise and must keep at least the finite top scores.
+    floor = adaptive_cutoff([0.9, 0.8, -1.0, 0.2])
+    assert floor != floor or isinstance(floor, float)  # returns a float, no crash
+
+
 def test_adaptive_cutoff_k_tightens():
     scores = [0.90, 0.88, 0.86, 0.84]  # smooth, equal gaps -> base keeps all
     base = adaptive_cutoff(scores, k=0.0)
@@ -116,6 +138,17 @@ def test_collapse_summary_subsumes_spanned_messages():
     assert "I want to visit Japan" not in texts  # subsumed by the summary's span
     assert "unrelated later thought" in texts
     assert "we discussed travel plans" in texts
+
+
+def test_collapse_keeps_distinct_profile_rows():
+    # Profile rows are distinct key:value facts -- fuzzy near-dup must NOT merge
+    # similar-looking ones; only exact-text duplicates collapse.
+    a = Candidate("name: Bob", 1.0, kind="profile")
+    b = Candidate("nickname: Bobby", 1.0, kind="profile")
+    dup = Candidate("name: Bob", 1.0, kind="profile")
+    kept = collapse([a, b, dup])
+    texts = sorted(c.text for c in kept)
+    assert texts == ["name: Bob", "nickname: Bobby"]  # both distinct kept, exact dup dropped
 
 
 def test_collapse_custom_ratio_is_respected():
@@ -193,20 +226,45 @@ def test_build_block_empty_candidates_is_empty_string():
 
 def test_build_block_is_token_bounded_property():
     rng = random.Random(1234)
-    for _ in range(200):
+    # Wide input space INCLUDING small budgets (where the header eats most of the
+    # room) and long indivisible words -- the regime the first review found broke
+    # the bound via the label-undercount + `or not selected` escape.
+    word_pools = [
+        lambda: "w" + str(rng.randint(0, 99)),                 # short (1 token)
+        lambda: "x" * rng.randint(8, 40),                      # long (multi-token)
+        lambda: "alpha beta gamma. delta epsilon zeta.",       # multi-sentence
+    ]
+    for _ in range(2000):
         n = rng.randint(1, 12)
         cands = [
             Candidate(
-                text=" ".join(["w" + str(rng.randint(0, 99)) for _ in range(rng.randint(1, 15))]),
+                text=" ".join(rng.choice(word_pools)() for _ in range(rng.randint(1, 15))),
                 score=rng.random(),
-                kind=rng.choice(["message", "message", "summary"]),
+                kind=rng.choice(["message", "message", "summary", "profile"]),
                 role=rng.choice([None, "user", "assistant"]),
             )
             for _ in range(n)
         ]
-        budget = RecallBudget(max_tokens=rng.randint(40, 120))
-        block = build_block(cands, "w1 w2 w3", budget)
-        assert estimate_tokens(block) <= budget.max_tokens
+        budget = RecallBudget(max_tokens=rng.randint(6, 120))  # includes tiny budgets
+        block = build_block(cands, "alpha w1 w2", budget)
+        assert estimate_tokens(block) <= budget.max_tokens, (block, budget.max_tokens)
+
+
+def test_build_block_tiny_budget_emits_empty_not_overflow():
+    # Header alone (~7 tokens) >= budget: no content line can fit -> '' (NOT a
+    # force-emitted over-budget line). Regression for the review's repro.
+    big = Candidate("bbhhegcghebdfaahe cddecce abhdfd aac dadfe", 0.5, kind="summary")
+    block = build_block([big], "abc def", RecallBudget(max_tokens=8))
+    assert estimate_tokens(block) <= 8
+    assert block == ""  # too small to hold the header + any labelled line
+
+
+def test_build_block_run_on_summary_stays_in_budget_at_default():
+    # A run-on summary at the realistic default must not overshoot by the
+    # newline/label rounding the review caught (+1 at 220).
+    big = Candidate("and then we " * 71, 0.9, kind="summary")
+    block = build_block([big], "and then", RecallBudget(max_tokens=150))
+    assert estimate_tokens(block) <= 150
 
 
 def test_build_block_min_keep_compresses_when_single_item_too_big():

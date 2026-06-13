@@ -35,7 +35,7 @@ import hashlib
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -49,9 +49,29 @@ from utils.memory_writer import MemoryWriter, is_junk_stt_text
 # adaptive cutoff, dedup, compression) lives in the brain module so the RAM and
 # Postgres paths emit byte-identical blocks. recall.py imports nothing from
 # utils, so this is a one-way dependency (no cycle).
-from dataclasses import replace as _dc_replace
+from always_on_agent.recall import Candidate, RecallBudget, build_block, estimate_tokens
 
-from always_on_agent.recall import Candidate, RecallBudget, build_block
+# Uniform relevance score for profile candidates in the recall sub-pass. The
+# exact value is irrelevant -- profile rows are ranked only against each other in
+# their OWN build_block pass (never against cosine scores, per the Candidate
+# invariant), and a uniform score makes the adaptive cutoff keep them all and the
+# token budget bound the volume. (The stored per-row confidence is a WRITE-side
+# floor, deliberately not used as a recall score.)
+_PROFILE_RECALL_SCORE = 1.0
+
+
+def _finite(value, default: float = 0.0) -> float:
+    """Coerce a similarity to a finite float (NaN/inf/garbage -> ``default``).
+
+    A NaN cosine score would sort unpredictably and poison the adaptive cutoff's
+    gap math, so sanitize at the candidate boundary."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if f != f or f == float("inf") or f == float("-inf"):  # NaN or +/-inf
+        return default
+    return f
 
 
 def _to_epoch(value) -> float:
@@ -960,36 +980,53 @@ class MemoryManager:
            old fixed ``>0.6`` / ``top-3`` / ``[:150]`` logic.
         2. **Profile** -- gated ONLY on ``profile_enabled`` (default OFF, R8),
            independent of DB/embeddings. Run through build_block in a SEPARATE
-           pass so the flat profile-confidence scores are never ranked against
-           cosine similarities in one list (the Candidate.score invariant); the
-           formerly-unbounded full-profile dump is now budgeted + deduped too."""
+           pass so the flat profile scores are never ranked against cosine
+           similarities in one list (the Candidate.score invariant); the
+           formerly-unbounded full-profile dump is now budgeted + deduped too.
+
+        The two passes SHARE one ``max_tokens`` budget so their concatenation
+        cannot exceed it: durable profile facts get a reserved floor (so a
+        budget-filling recall block can never evict them), recall takes the rest,
+        and the profile pass then claims whatever recall left unused. Combined
+        block tokens <= the single ``recall_budget.max_tokens``."""
+        budget = self._recall_budget
+        total = budget.max_tokens
+        cpt = budget.chars_per_token
+        # Fetch the profile up front so we only reserve its floor when it is both
+        # enabled AND non-empty (no DB / no rows -> {} -> no reservation).
+        profile = self.get_user_profile() if self.profile_enabled else {}
+        prof_floor = (total // 4) if profile else 0  # durable facts: >= a quarter
+        recall_cap = total - prof_floor
+
         parts: list[str] = []
-        if current_query and self._embeddings_available and self._db_available:
+        used = 0
+        if current_query and self._embeddings_available and self._db_available and recall_cap > 0:
             rows = self.search_memory(current_query, limit=self._recall_pool)
             cands: list[Candidate] = []
             for r in rows:
                 if r.get('type') == 'summary':
                     span = (_to_epoch(r.get('start_time')), _to_epoch(r.get('end_time')))
                     cands.append(Candidate(
-                        str(r.get('content', '')), float(r.get('similarity', 0.0)),
+                        str(r.get('content', '')), _finite(r.get('similarity')),
                         kind='summary', timestamp=_to_epoch(r.get('end_time')), span=span,
                     ))
                 else:
                     cands.append(Candidate(
-                        str(r.get('content', '')), float(r.get('similarity', 0.0)),
+                        str(r.get('content', '')), _finite(r.get('similarity')),
                         kind='message', role=r.get('role'), timestamp=_to_epoch(r.get('timestamp')),
                     ))
-            block = build_block(cands, current_query, self._recall_budget)
+            block = build_block(cands, current_query, _dc_replace(budget, max_tokens=recall_cap))
             if block:
                 parts.append(block)
-        if self.profile_enabled:
-            profile = self.get_user_profile()
-            if profile:
-                prof_cands = [Candidate(f"{k}: {v}", 1.0, kind='profile') for k, v in profile.items()]
-                prof_budget = _dc_replace(self._recall_budget, header="=== User Profile ===")
-                prof_block = build_block(prof_cands, current_query or "", prof_budget)
-                if prof_block:
-                    parts.append(prof_block)
+                used = estimate_tokens(block, cpt)
+        if profile:
+            # Profile claims the budget recall did not use (>= prof_floor, since
+            # used <= recall_cap = total - prof_floor) -> combined <= total.
+            prof_cands = [Candidate(f"{k}: {v}", _PROFILE_RECALL_SCORE, kind='profile') for k, v in profile.items()]
+            prof_budget = _dc_replace(budget, max_tokens=max(total - used, 0), header="=== User Profile ===")
+            prof_block = build_block(prof_cands, current_query or "", prof_budget)
+            if prof_block:
+                parts.append(prof_block)
         return "\n\n".join(parts)
 
     def get_chat_history(self) -> List[Dict[str, str]]:

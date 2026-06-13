@@ -131,8 +131,17 @@ def _build_recall_budget(mem_cfg: dict):
     device profile can dial ``recall_max_tokens`` down without touching code."""
     from always_on_agent.recall import RecallBudget
 
+    # Resolve max_tokens with the SAME legacy fallback RecallConfig.from_dict uses
+    # (recall_max_tokens, else deprecated recall_max_chars//4, else 150) so the
+    # memory budget and the injection-site cap derive from ONE value and can never
+    # diverge -- a divergence would let the injection trim run looser than the
+    # budget and inject an over-budget block.
+    tok = mem_cfg.get("recall_max_tokens")
+    if tok is None:
+        ch = mem_cfg.get("recall_max_chars")
+        tok = (int(ch) // 4) if ch else 150
     return RecallBudget(
-        max_tokens=int(mem_cfg.get("recall_max_tokens", 220) or 220),
+        max_tokens=max(1, int(tok)),
         chars_per_token=float(mem_cfg.get("chars_per_token", 4.0) or 4.0),
         cutoff_k=float(mem_cfg.get("recall_cutoff_k", 0.0) or 0.0),
         dedup_ratio=float(mem_cfg.get("recall_dedup_ratio", 0.0) or 0.0),

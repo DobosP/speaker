@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import time
 from typing import Callable, Optional, Protocol, Sequence, runtime_checkable
 
+from .recall import Candidate, RecallBudget, build_block
 from .text import keywords, normalize_text
 
 
@@ -41,23 +42,25 @@ class Memory(Protocol):
 # unbounded over a long session; the oldest items fall off the front.
 DEFAULT_MAX_ITEMS = 200
 
-# Relevance gate for the keyword recall: a candidate must share at least this
-# many normalized words with the query before it is injected. Mirrors the
-# Postgres ``similarity > 0.6`` self-gate (R11) so the in-RAM injection volume
-# stays comparable to the Postgres top-3.
-_RECALL_MIN_OVERLAP = 2
-_RECALL_MAX_ITEMS = 3
-
 
 class SessionMemory:
     """In-memory session store used by tests and the local prototype.
 
     Conforms to :class:`Memory`. The desktop default when ``DATABASE_URL`` is
-    unset."""
+    unset.
 
-    def __init__(self, max_items: int = DEFAULT_MAX_ITEMS):
+    Recall (``context_for_llm``) gathers keyword-overlap candidates and hands
+    them to the shared :func:`always_on_agent.recall.build_block`, so the in-RAM
+    path and the Postgres path apply the *same* token-budgeted, deduped,
+    adaptive-cutoff selection and emit a byte-identical block for identical
+    candidates. The legacy fixed ``overlap >= 2`` gate, ``top-3`` cap, and
+    ``[:150]`` per-item char slice are gone -- the budget + adaptive cutoff
+    replace them (see the module docstring)."""
+
+    def __init__(self, max_items: int = DEFAULT_MAX_ITEMS, *, budget: RecallBudget | None = None):
         self._items: list[MemoryItem] = []
         self._max_items = max(1, int(max_items))
+        self._budget = budget or RecallBudget()
 
     def add(self, text: str, tags: tuple[str, ...] = ()) -> None:
         cleaned = text.strip()
@@ -82,28 +85,35 @@ class SessionMemory:
     def all(self) -> list[MemoryItem]:
         return list(self._items)
 
-    def context_for_llm(self, query: str) -> str:
-        """Keyword recall as a ready-to-prepend block, or ``''`` on no hit.
+    def _candidates(self, query: str) -> list[Candidate]:
+        """Keyword-overlap candidates for the shared selector.
 
-        A relevance gate (min keyword overlap on the message *text* + an item
-        cap, R11) keeps the injection volume close to the Postgres top-3 and
-        means an irrelevant query costs nothing -- the empty string leaves the
-        prompt unchanged."""
+        Score is the integer overlap count between the query words and the
+        item's words *plus its tags* (the tags were already in ``search()``'s
+        haystack at :meth:`search`; including them here too removes a long-
+        standing inconsistency). The current utterance is EXCLUDED -- it was just
+        ingested by the answer path, and echoing the live query back at the model
+        is noise that would also distort the adaptive cutoff."""
         q_words = set(normalize_text(query).split())
         if not q_words:
-            return ""
-        scored: list[tuple[int, MemoryItem]] = []
+            return []
+        q_norm = " ".join(sorted(q_words))
+        out: list[Candidate] = []
         for item in self._items:
-            overlap = len(q_words & set(normalize_text(item.text).split()))
-            if overlap >= _RECALL_MIN_OVERLAP:
-                scored.append((overlap, item))
-        if not scored:
-            return ""
-        scored.sort(key=lambda pair: (pair[0], pair[1].timestamp), reverse=True)
-        lines = ["=== Past Conversations ==="]
-        for _, item in scored[:_RECALL_MAX_ITEMS]:
-            lines.append(item.text[:150])
-        return "\n".join(lines)
+            words = set(normalize_text(item.text).split())
+            if " ".join(sorted(words)) == q_norm:
+                continue  # the current utterance itself -- never recall it back
+            score = len(q_words & (words | set(item.tags)))
+            if not score:
+                continue
+            role = "user" if "user" in item.tags else ("assistant" if "assistant_output" in item.tags else None)
+            kind = "summary" if "summary" in item.tags else "message"
+            out.append(Candidate(item.text, float(score), kind=kind, role=role, timestamp=item.timestamp, tags=item.tags))
+        return out
+
+    def context_for_llm(self, query: str) -> str:
+        """Token-budgeted recall block, or ``''`` on no hit. See class docstring."""
+        return build_block(self._candidates(query), query, self._budget)
 
     def prune(self) -> int:
         # Age-TTL retention is P2b; the working-window cap in add() is the only
@@ -132,6 +142,7 @@ class MemoryManagerAdapter:
         profile_enabled: bool = False,
         episodic_ttl_days: int = 90,
         summary_ttl_days: int = 365,
+        recall_budget: Optional[RecallBudget] = None,
         **manager_kwargs,
     ):
         from utils.memory import create_memory_manager  # lazy: keep the brain DB-free
@@ -140,11 +151,14 @@ class MemoryManagerAdapter:
         # (keyword fallback inside the manager when None), the default-off
         # Postgres-only profile producer, and the episodic/summary age-TTLs that
         # prune() -> apply_retention() enforces. user_profile is never TTL'd.
+        # recall_budget is the shared token budget so the Postgres recall block
+        # is bounded by the SAME contract as the in-RAM SessionMemory.
         self._manager = create_memory_manager(
             summarizer=summarizer,
             profile_enabled=profile_enabled,
             episodic_ttl_days=episodic_ttl_days,
             summary_ttl_days=summary_ttl_days,
+            recall_budget=recall_budget,
             **manager_kwargs,
         )
         # Our own small in-RAM ring buffer of the raw (text, tags) handed to

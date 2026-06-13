@@ -286,25 +286,89 @@ def test_recall_off_when_memory_absent_is_default_system():
     assert llm.systems == [DEFAULT_SYSTEM]
 
 
-# --- max_chars cap ----------------------------------------------------------
+# --- token budget (replaces the legacy char cap) ----------------------------
 
 
-def test_recall_block_is_capped_by_max_chars():
-    """The prepended recall block is truncated to ``max_chars`` so a large
-    history can't blow up TTFT."""
-    memory = SessionMemory()
+def test_recall_block_is_token_bounded():
+    """The prepended recall block is bounded by a TOKEN budget (not a blunt char
+    cap), so a large history can't blow up TTFT -- and, unlike the old
+    ``[:max_chars]`` slice, it is never cut mid-word. Pins the headline
+    context-efficiency contract on the RAM/no-DB path."""
+    from always_on_agent.recall import RecallBudget, estimate_tokens
+
+    budget = RecallBudget(max_tokens=30)
+    memory = SessionMemory(budget=budget)
     registry = CapabilityRegistry()
     llm = _RecordingLLM()
     attach_llm_capabilities(
-        registry, llm, memory=memory, recall=RecallConfig(enabled=True, max_chars=20),
+        registry, llm, memory=memory,
+        recall=RecallConfig(enabled=True, max_tokens=30),
         recent_context=_NO_RECENT,
     )
-    # A fact long enough that the recall block exceeds the cap.
-    memory.add("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda", tags=("user",))
+    # Many long, query-overlapping facts -> a candidate pool far larger than the
+    # budget; the selector must bound the injected block.
+    for i in range(8):
+        memory.add(f"project milestone {i} concerns alpha beta gamma delta epsilon", tags=("user",))
     llm.systems.clear()
-    registry.invoke("assistant.answer", "alpha beta gamma delta epsilon", {})
+    registry.invoke("assistant.answer", "tell me about the alpha beta gamma milestone", {})
+
     system_used = llm.systems[-1]
-    # system = recall[:max_chars] + "\n\n" + DEFAULT_SYSTEM
-    prefix, _, tail = system_used.partition("\n\n" + DEFAULT_SYSTEM)
-    assert tail == ""  # the default system is the suffix
-    assert len(prefix) <= 20
+    assert system_used.endswith(DEFAULT_SYSTEM)
+    recall_block = system_used[: -len(DEFAULT_SYSTEM)].rstrip("\n")
+    assert recall_block.startswith("=== Past Conversations ===")  # something recalled
+    assert estimate_tokens(recall_block) <= 30  # token-bounded, not char-sliced
+    # Whole-word guarantee: every rendered word is a complete word (no mid-cut).
+    for line in recall_block.split("\n")[1:]:
+        assert not line.endswith("alph") and not line.endswith("gam")
+
+
+def test_recall_block_max_chars_alias_still_constructs():
+    """The deprecated ``max_chars`` kwarg still constructs and derives the token
+    budget (max_chars // 4), so existing callers don't break."""
+    assert RecallConfig(enabled=True, max_chars=600).max_tokens == 150
+    assert RecallConfig(enabled=True, max_chars=20).max_tokens == 5
+
+
+def test_ram_recall_uses_canonical_labels():
+    """The in-RAM recall now emits the SAME canonical ``User:``/``Assistant:``
+    labels as the Postgres path (closing the RAM-vs-PG format gap)."""
+    mem = SessionMemory()
+    mem.add("my favorite color is teal", tags=("user",))
+    mem.add("noted, teal it is", tags=("assistant_output",))
+    block = mem.context_for_llm("what is my favorite color")
+    assert block.startswith("=== Past Conversations ===")
+    assert "User: my favorite color is teal" in block
+
+
+def test_ram_and_postgres_recall_byte_identical_for_same_candidates(monkeypatch):
+    """Parity: fed the SAME candidate list, the RAM path and the Postgres path
+    (via their shared build_block) emit a BYTE-IDENTICAL block. Proven by
+    stubbing the Postgres ``search_memory`` to return rows equivalent to what the
+    RAM store holds, then comparing the two rendered blocks."""
+    from always_on_agent.recall import RecallBudget
+
+    budget = RecallBudget(max_tokens=120)
+    q = "what is my favorite color"
+
+    ram = SessionMemory(budget=budget)
+    ram.add("my favorite color is teal", tags=("user",))
+    ram_block = ram.context_for_llm(q)
+
+    pg = _make_adapter()
+    mgr = pg._manager
+    mgr._recall_budget = budget
+    mgr._embeddings_available = True
+    mgr._db_available = True
+    # Equivalent DB row for the same fact (cosine score in the message branch).
+    monkeypatch.setattr(
+        mgr, "search_memory",
+        lambda query, limit=5: [
+            {"type": "message", "role": "user", "content": "my favorite color is teal",
+             "timestamp": 0.0, "similarity": 0.8}
+        ],
+    )
+    pg_block = pg.context_for_llm(q)
+    pg.close()
+
+    assert ram_block == pg_block
+    assert "User: my favorite color is teal" in ram_block

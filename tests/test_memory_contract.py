@@ -372,3 +372,24 @@ def test_ram_and_postgres_recall_byte_identical_for_same_candidates(monkeypatch)
 
     assert ram_block == pg_block
     assert "User: my favorite color is teal" in ram_block
+
+
+def test_build_block_deterministic_on_multi_item_candidate_list():
+    """The real parity contract: build_block is a pure function of (candidates,
+    query, budget). Fed a BYTE-IDENTICAL multi-item list (mixed kinds + distinct
+    scores), it returns identical output -- so both backends, which differ only
+    in how they GATHER candidates, render identically for identical candidates.
+    (The n=1 test above can't catch ordering/cutoff/dedup divergence; this can.)"""
+    from always_on_agent.recall import Candidate, RecallBudget, build_block
+
+    budget = RecallBudget(max_tokens=120)
+    q = "the trip to japan and the coffee order"
+    cands = [
+        Candidate("we planned the trip to japan", 0.91, kind="message", role="user"),
+        Candidate("you wanted a dark roast coffee", 0.74, kind="message", role="assistant"),
+        Candidate("earlier chat about travel and drinks", 0.66, kind="summary", span=(1.0, 2.0)),
+        Candidate("totally unrelated low-relevance line", 0.05, kind="message", role="user"),
+    ]
+    first = build_block(list(cands), q, budget)
+    second = build_block(list(cands), q, budget)
+    assert first == second and first  # deterministic + non-empty

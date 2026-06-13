@@ -94,15 +94,15 @@ class SessionMemory:
         standing inconsistency). The current utterance is EXCLUDED -- it was just
         ingested by the answer path, and echoing the live query back at the model
         is noise that would also distort the adaptive cutoff."""
-        q_words = set(normalize_text(query).split())
+        q_norm = normalize_text(query)
+        q_words = set(q_norm.split())
         if not q_words:
             return []
-        q_norm = " ".join(sorted(q_words))
         out: list[Candidate] = []
         for item in self._items:
-            words = set(normalize_text(item.text).split())
-            if " ".join(sorted(words)) == q_norm:
+            if normalize_text(item.text) == q_norm:
                 continue  # the current utterance itself -- never recall it back
+            words = set(normalize_text(item.text).split())
             score = len(q_words & (words | set(item.tags)))
             if not score:
                 continue

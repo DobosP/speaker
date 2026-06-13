@@ -122,6 +122,32 @@ def _redact_db_url(db_url: str) -> str:
             return db_url.split("@")[-1] if "@" in db_url else db_url
 
 
+def _build_recall_budget(mem_cfg: dict):
+    """Build the shared :class:`~always_on_agent.recall.RecallBudget` from the
+    flat ``memory`` config block (already device-profile shallow-merged by the
+    caller). Injected into BOTH backends so the in-RAM and Postgres recall paths
+    are bounded by ONE config-derived token budget (true parity). Defaults match
+    the dataclass so an absent block preserves today's volume; the ``phone``
+    device profile can dial ``recall_max_tokens`` down without touching code."""
+    from always_on_agent.recall import RecallBudget
+
+    # Resolve max_tokens with the SAME legacy fallback RecallConfig.from_dict uses
+    # (recall_max_tokens, else deprecated recall_max_chars//4, else 150) so the
+    # memory budget and the injection-site cap derive from ONE value and can never
+    # diverge -- a divergence would let the injection trim run looser than the
+    # budget and inject an over-budget block.
+    tok = mem_cfg.get("recall_max_tokens")
+    if tok is None:
+        ch = mem_cfg.get("recall_max_chars")
+        tok = (int(ch) // 4) if ch else 150
+    return RecallBudget(
+        max_tokens=max(1, int(tok)),
+        chars_per_token=float(mem_cfg.get("chars_per_token", 4.0) or 4.0),
+        cutoff_k=float(mem_cfg.get("recall_cutoff_k", 0.0) or 0.0),
+        dedup_ratio=float(mem_cfg.get("recall_dedup_ratio", 0.0) or 0.0),
+    )
+
+
 def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
     """Pick the memory backend (Locked Decision 4).
 
@@ -142,11 +168,12 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
     # memory.all()[-4:]. Independent of the Postgres Layer-1 cap, so size it from
     # its own optional key (default 200) rather than coupling it to max_recent.
     working_window = int(mem_cfg.get("working_window", 200) or 200)
+    recall_budget = _build_recall_budget(mem_cfg)
     backend = str(mem_cfg.get("backend", "auto") or "auto").lower()
     db_url = os.environ.get("DATABASE_URL")
     want_postgres = backend == "postgres" or (backend in ("auto", "") and bool(db_url))
     if not want_postgres:
-        return SessionMemory(max_items=working_window)
+        return SessionMemory(max_items=working_window, budget=recall_budget)
 
     # Rolling-summary closure over the fast tier. Built here where fast_llm is
     # available; the manager schedules the call on its writer thread (R2), so
@@ -166,6 +193,7 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
             summary_ttl_days=int(mem_cfg.get("summary_ttl_days", 365) or 365),
             enable_embeddings=bool(mem_cfg.get("embeddings", False)),
             max_recent_messages=int(mem_cfg.get("max_recent", 20) or 20),
+            recall_budget=recall_budget,
         )
     except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
         redacted = _redact_db_url(db_url) if db_url else "(no DATABASE_URL)"
@@ -173,7 +201,7 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
             f"[memory] Postgres backend unavailable ({type(exc).__name__}); "
             f"falling back to in-RAM. db={redacted}"
         )
-        return SessionMemory(max_items=working_window)
+        return SessionMemory(max_items=working_window, budget=recall_budget)
 
 
 def _run_console(runtime: VoiceRuntime, engine) -> None:

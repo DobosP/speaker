@@ -35,7 +35,7 @@ import hashlib
 import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
@@ -43,6 +43,51 @@ import numpy as np
 
 from utils.memory_config import MemoryWriterConfig, config_from_dict
 from utils.memory_writer import MemoryWriter, is_junk_stt_text
+
+# The shared, backend-neutral recall selector. Postgres-isms (SQL, pgvector,
+# pool, embedder_id) stay HERE; the selection intelligence (token budget,
+# adaptive cutoff, dedup, compression) lives in the brain module so the RAM and
+# Postgres paths emit byte-identical blocks. recall.py imports nothing from
+# utils, so this is a one-way dependency (no cycle).
+from always_on_agent.recall import Candidate, RecallBudget, build_block, estimate_tokens
+
+# Uniform relevance score for profile candidates in the recall sub-pass. The
+# exact value is irrelevant -- profile rows are ranked only against each other in
+# their OWN build_block pass (never against cosine scores, per the Candidate
+# invariant), and a uniform score makes the adaptive cutoff keep them all and the
+# token budget bound the volume. (The stored per-row confidence is a WRITE-side
+# floor, deliberately not used as a recall score.)
+_PROFILE_RECALL_SCORE = 1.0
+
+
+def _finite(value, default: float = 0.0) -> float:
+    """Coerce a similarity to a finite float (NaN/inf/garbage -> ``default``).
+
+    A NaN cosine score would sort unpredictably and poison the adaptive cutoff's
+    gap math, so sanitize at the candidate boundary."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if f != f or f == float("inf") or f == float("-inf"):  # NaN or +/-inf
+        return default
+    return f
+
+
+def _to_epoch(value) -> float:
+    """Coerce a timestamp (``datetime`` | epoch number | ``None``) to epoch secs.
+
+    Postgres ``TIMESTAMPTZ`` rows come back as ``datetime`` while the in-RAM path
+    uses epoch floats; the recall selector only needs a consistent orderable
+    number for recency/span checks, so normalize to seconds (``0.0`` if missing)."""
+    if value is None:
+        return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(value.timestamp())
+    except Exception:  # noqa: BLE001 - a malformed timestamp must not break recall
+        return 0.0
 
 # Database (psycopg3 + connection pool). Both are optional so the rest of
 # the runtime + test suite work without a Postgres install -- ``MemoryManager``
@@ -242,6 +287,7 @@ class MemoryManager:
         profile_enabled: bool = False,
         episodic_ttl_days: int = 90,
         summary_ttl_days: int = 365,
+        recall_budget: Optional[RecallBudget] = None,
     ):
         """Initialize the memory manager.
 
@@ -296,6 +342,14 @@ class MemoryManager:
         # while one is already in flight on the background thread.
         self._summary_in_flight = False
         self._summary_lock = threading.Lock()
+
+        # Recall budget: the shared token-budget contract for get_context_for_llm.
+        # The candidate POOL we over-fetch from the DB is derived from the budget
+        # (clamped) so the adaptive selector -- not a fixed SQL LIMIT -- decides
+        # what is injected. NOTE: this does NOT touch _estimate_tokens / the
+        # summarize trigger, which keep their own (words*1.3) estimator.
+        self._recall_budget = recall_budget or RecallBudget()
+        self._recall_pool = max(6, min(16, self._recall_budget.max_tokens // 20))
         # Rolling summary head: the prior summary folded into the next one so
         # the layer-2 record accumulates rather than fragmenting (R2).
         self._summary_head = ""
@@ -913,31 +967,67 @@ class MemoryManager:
         return results[:limit]
 
     def get_context_for_llm(self, current_query: str = None) -> str:
-        """Formatted context string for the LLM."""
-        context_parts: list[str] = []
-        if current_query and self._embeddings_available and self._db_available:
-            relevant = self.search_memory(current_query, limit=5)
-            high_relevance = [item for item in relevant if item.get('similarity', 0) > 0.6]
-            if high_relevance:
-                context_parts.append("=== Past Conversations ===")
-                for item in high_relevance[:3]:
-                    if item['type'] == 'message':
-                        role_label = "User" if item['role'] == 'user' else "Assistant"
-                        content = item['content'][:150]
-                        context_parts.append(f"{role_label}: {content}")
-                    elif item['type'] == 'summary':
-                        context_parts.append(f"Summary: {item['content'][:150]}")
-                context_parts.append("")
-        # Profile block is gated behind profile_enabled (R8, default OFF): never
-        # injected when the producer is disabled.
-        if self.profile_enabled:
-            profile = self.get_user_profile()
-            if profile:
-                context_parts.append("=== User Profile ===")
-                for key, value in profile.items():
-                    context_parts.append(f"- {key}: {value}")
-                context_parts.append("")
-        return "\n".join(context_parts)
+        """Formatted context string for the LLM (token-budgeted, deduped).
+
+        Two independent, separately-budgeted blocks (concatenated):
+
+        1. **Recall** -- semantic hits (messages + summaries) gated on a query +
+           live embeddings + DB. The pgvector rows become :class:`Candidate`\\ s
+           (cosine ``similarity`` as the backend-native score; summary
+           ``start_time``/``end_time`` as the ``span`` so a summary subsumes the
+           messages it covers) and the shared :func:`build_block` applies the
+           token budget, adaptive cutoff, dedup, and compression -- replacing the
+           old fixed ``>0.6`` / ``top-3`` / ``[:150]`` logic.
+        2. **Profile** -- gated ONLY on ``profile_enabled`` (default OFF, R8),
+           independent of DB/embeddings. Run through build_block in a SEPARATE
+           pass so the flat profile scores are never ranked against cosine
+           similarities in one list (the Candidate.score invariant); the
+           formerly-unbounded full-profile dump is now budgeted + deduped too.
+
+        The two passes SHARE one ``max_tokens`` budget so their concatenation
+        cannot exceed it: durable profile facts get a reserved floor (so a
+        budget-filling recall block can never evict them), recall takes the rest,
+        and the profile pass then claims whatever recall left unused. Combined
+        block tokens <= the single ``recall_budget.max_tokens``."""
+        budget = self._recall_budget
+        total = budget.max_tokens
+        cpt = budget.chars_per_token
+        # Fetch the profile up front so we only reserve its floor when it is both
+        # enabled AND non-empty (no DB / no rows -> {} -> no reservation).
+        profile = self.get_user_profile() if self.profile_enabled else {}
+        prof_floor = (total // 4) if profile else 0  # durable facts: >= a quarter
+        recall_cap = total - prof_floor
+
+        parts: list[str] = []
+        used = 0
+        if current_query and self._embeddings_available and self._db_available and recall_cap > 0:
+            rows = self.search_memory(current_query, limit=self._recall_pool)
+            cands: list[Candidate] = []
+            for r in rows:
+                if r.get('type') == 'summary':
+                    span = (_to_epoch(r.get('start_time')), _to_epoch(r.get('end_time')))
+                    cands.append(Candidate(
+                        str(r.get('content', '')), _finite(r.get('similarity')),
+                        kind='summary', timestamp=_to_epoch(r.get('end_time')), span=span,
+                    ))
+                else:
+                    cands.append(Candidate(
+                        str(r.get('content', '')), _finite(r.get('similarity')),
+                        kind='message', role=r.get('role'), timestamp=_to_epoch(r.get('timestamp')),
+                    ))
+            block = build_block(cands, current_query, _dc_replace(budget, max_tokens=recall_cap))
+            if block:
+                parts.append(block)
+                used = estimate_tokens(block, cpt)
+        if profile:
+            # Profile claims the budget recall did not use (>= prof_floor, since
+            # used <= recall_cap = total - prof_floor) -> combined <= total.
+            prof_cands = [Candidate(f"{k}: {v}", _PROFILE_RECALL_SCORE, kind='profile') for k, v in profile.items()]
+            prof_budget = _dc_replace(budget, max_tokens=max(total - used, 0), header="=== User Profile ===")
+            prof_block = build_block(prof_cands, current_query or "", prof_budget)
+            if prof_block:
+                parts.append(prof_block)
+        return "\n\n".join(parts)
 
     def get_chat_history(self) -> List[Dict[str, str]]:
         """Get recent messages as list of dicts for LLM."""

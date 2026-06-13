@@ -504,7 +504,9 @@ class VoiceRuntime:
         # utterance doesn't trip the watchdog's "no llm_first_token" check.
         # When no classifier is configured this is a no-op (legacy behavior).
         if self._addressing is not None:
-            recent = [item.text for item in self.memory.all()[-4:]]
+            # Conversation window only -- exclude 'vision' (screen) memories so a
+            # caption/OCR trace never enters the addressing classifier's context.
+            recent = [it.text for it in self.memory.all() if "vision" not in it.tags][-4:]
             decision = self._addressing.classify(text, recent=recent)
             log.info("addressing decision: %s for %r", decision, text)
             if decision == INGEST or (decision == UNSURE and not self._unsure_acts):
@@ -525,7 +527,7 @@ class VoiceRuntime:
         # user can audit every rewrite in run-<id>.summary.json.
         final_text = text
         if self._cleaner is not None:
-            recent_for_cleaner = [item.text for item in self.memory.all()[-4:]]
+            recent_for_cleaner = [it.text for it in self.memory.all() if "vision" not in it.tags][-4:]
             try:
                 cleaned = self._cleaner.clean(text, recent=recent_for_cleaner)
             except Exception:  # noqa: BLE001

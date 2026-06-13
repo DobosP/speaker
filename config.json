@@ -4,13 +4,21 @@
   "_warm_on_start_comment": "Pre-warm the LLM tiers at startup (core/runtime.py) so turn 1 doesn't pay the ~3s model cold-load on the user's first utterance (measured ttft 3.17s cold vs ~0.27s warm). Set false to measure cold start.",
   "warm_on_start": true,
   "_screen_capture_comment": "OFF by default. When enabled, a background loop (core/screen_capture.py) grabs the screen every interval_sec, encodes a frame, and feeds it to the model as AMBIENT visual context via runtime.set_current_frame -- so the assistant sees what you're doing. Needs `pip install mss` (and Pillow to downscale+JPEG; without it sends a full-res PNG). PRIVACY: this continuously reads your screen while on; an image-bearing turn is forced to the on-device/main tier and treated as PRIVATE (never a public cloud chain, Â§9.7). monitor: mss index (1=primary, 0=all). max_width: downscale longest edge (0=full). format: jpeg|png.",
+  "_visual_memory_comment": "Persistent visual memory (core/visual_memory.py): when memorize is true (AND enabled above), each new frame is turned -- OFF THE HOT PATH -- into a short LOCAL multimodal caption + an OCR snippet and stored as a recallable 'vision' memory (role='observation', source='vision'), retrieved via the same token-budgeted smart-recall layer. PRIVACY (§9.7): caption uses the local model only; recalled vision floats the turn PRIVATE; purge via MemoryManager.clear_observations(). memorize_min_interval_sec throttles the (slow) captioning; memorize_on_change skips a byte-identical frame. OCR needs pytesseract+Pillow+tesseract (degrades to caption-only if absent). Default OFF -- a default run persists nothing.",
   "screen_capture": {
     "enabled": false,
     "interval_sec": 2.0,
     "monitor": 1,
     "max_width": 1280,
     "format": "jpeg",
-    "jpeg_quality": 70
+    "jpeg_quality": 70,
+    "memorize": false,
+    "memorize_min_interval_sec": 30.0,
+    "memorize_on_change": true,
+    "memorize_caption": true,
+    "memorize_ocr": true,
+    "memorize_max_chars": 280,
+    "memorize_ocr_max_chars": 200
   },
   "llm": {
     "backend": "ollama",

@@ -634,7 +634,10 @@ def main(argv: list[str] | None = None) -> int:
     from .screen_capture import build_screen_feed
     from .visual_memory import build_visual_memorizer
 
-    memorizer = build_visual_memorizer(config, runtime, llm)
+    # Caption on the BARE LOCAL model only (§9.7: raw screen frames never leave the
+    # device) -- never the cloud-wrapped main client. local_main is itself when
+    # cloud is off; the getattr fallback keeps --llm echo working.
+    memorizer = build_visual_memorizer(config, runtime, getattr(llm, "local_main", llm))
     screen_feed = build_screen_feed(
         config, runtime, observer=(memorizer.observe if memorizer is not None else None)
     )

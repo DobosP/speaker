@@ -214,11 +214,18 @@ class VisualMemorizer:
         )
 
     def stop(self) -> None:
+        """Stop the worker. Idempotent. Queued-but-undrained frames are dropped
+        (best-effort — visual memory is ambient, not transactional); an in-flight
+        caption may run briefly after this returns."""
         self._stop.set()
         t = self._thread
         if t is not None and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=1.0)
-        self._thread = None
+        # Only forget the worker if it actually exited; if a slow caption blew the
+        # join timeout, keep the handle so start()'s is_alive() guard refuses to
+        # spawn a duplicate over the still-running worker.
+        if t is None or not t.is_alive():
+            self._thread = None
 
 
 def build_visual_memorizer(config: dict, runtime, llm) -> Optional[VisualMemorizer]:
@@ -232,7 +239,16 @@ def build_visual_memorizer(config: dict, runtime, llm) -> Optional[VisualMemoriz
     if memory is None:
         log.warning("screen_capture.memorize on but runtime has no memory; skipping")
         return None
-    caption_fn = llm_caption_fn(llm) if (cfg.caption and llm is not None) else None
+    # §9.7 defense-in-depth: caption ONLY on a bare local handle. Prefer the
+    # factory-stamped local_main / HedgeLLM.local; if the resolved client is still
+    # a cloud-capable wrapper (a caller forgot to unwrap), hard-skip captioning
+    # (OCR-only) rather than risk encoding a raw frame to a cloud chain.
+    local_llm = getattr(llm, "local_main", None) or getattr(llm, "local", None) or llm
+    if local_llm is not None and type(local_llm).__name__ in ("HedgeLLM", "SensitivityRouterLLM"):
+        log.warning("visual memory: main LLM is cloud-capable and no local handle was found; "
+                    "captioning DISABLED (OCR-only) to keep screen frames on-device (§9.7)")
+        local_llm = None
+    caption_fn = llm_caption_fn(local_llm) if (cfg.caption and local_llm is not None) else None
     ocr_fn = default_ocr_fn(cfg.ocr_max_chars) if cfg.ocr else None
     if caption_fn is None and ocr_fn is None:
         log.warning("screen_capture.memorize on but both caption and ocr are off; skipping")

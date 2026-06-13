@@ -117,11 +117,15 @@ class ScreenFrameFeed:
         *,
         grabber: Optional[Grabber] = None,
         encoder: Optional[Encoder] = None,
+        observer: Optional[Callable[[Optional[bytes]], None]] = None,
     ) -> None:
         self._set_frame = set_frame
         self._cfg = config or ScreenCaptureConfig()
         self._grab = grabber or _default_grabber(self._cfg.monitor)
         self._encode = encoder or _default_encoder(self._cfg)
+        # Optional second consumer of each frame (e.g. the visual memorizer). Cheap
+        # + best-effort; it must never block or break the capture loop.
+        self._observer = observer
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -139,6 +143,11 @@ class ScreenFrameFeed:
             log.exception("screen capture failed; skipping this frame")
             return None
         self._set_frame(frame)
+        if self._observer is not None:
+            try:
+                self._observer(frame)
+            except Exception:  # noqa: BLE001 - a second consumer must never break capture
+                log.exception("screen-frame observer failed; ignoring")
         return frame
 
     def start(self) -> None:
@@ -171,10 +180,13 @@ class ScreenFrameFeed:
             pass
 
 
-def build_screen_feed(config: dict, runtime) -> Optional[ScreenFrameFeed]:
+def build_screen_feed(
+    config: dict, runtime, *, observer: Optional[Callable[[Optional[bytes]], None]] = None
+) -> Optional[ScreenFrameFeed]:
     """Build a feed wired to ``runtime.set_current_frame`` from the
     ``screen_capture`` config block, or ``None`` when it is disabled (the default).
-    Returns None if the runtime can't accept frames (no set_current_frame)."""
+    Returns None if the runtime can't accept frames (no set_current_frame).
+    ``observer`` (e.g. the visual memorizer's ``observe``) gets each frame too."""
     cfg = ScreenCaptureConfig.from_dict(config.get("screen_capture"))
     if not cfg.enabled:
         return None
@@ -182,4 +194,4 @@ def build_screen_feed(config: dict, runtime) -> Optional[ScreenFrameFeed]:
     if not callable(setter):
         log.warning("screen_capture.enabled but the runtime has no set_current_frame; skipping")
         return None
-    return ScreenFrameFeed(setter, cfg)
+    return ScreenFrameFeed(setter, cfg, observer=observer)

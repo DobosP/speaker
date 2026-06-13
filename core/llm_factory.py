@@ -71,7 +71,7 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
             raise SystemExit("llamacpp backend needs llm.main_model_path (a GGUF file).")
         main = LlamaCppLLM(main_path, **common)
         fast = LlamaCppLLM(fast_path, **common) if fast_path else None
-        return _wrap_cloud(main, llm_cfg), fast
+        return _tag_local_main(_wrap_cloud(main, llm_cfg), main), fast
 
     host = llm_cfg.get("host")
     keep_alive = llm_cfg.get("keep_alive")
@@ -94,7 +94,7 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
         if fast_model
         else None
     )
-    return _wrap_cloud(main, llm_cfg), fast
+    return _tag_local_main(_wrap_cloud(main, llm_cfg), main), fast
 
 
 def _preset_host(preset: dict) -> Optional[str]:
@@ -170,6 +170,20 @@ def _build_cloud_client(
         options=preset.get("options"),
         profile=preset.get("profile"),
     )
+
+
+def _tag_local_main(wrapped: LLMClient, local: LLMClient) -> LLMClient:
+    """Stamp the (possibly cloud-wrapped) main client with the BARE LOCAL handle.
+
+    Privacy-critical callers that must NOT reach a cloud chain -- e.g. visual-memory
+    captioning, which encodes raw screen frames (§9.7: raw frames never leave the
+    device) -- read ``llm.local_main`` to caption on-device only. When cloud is
+    off, ``wrapped is local`` and the attribute just points at itself."""
+    try:
+        setattr(wrapped, "local_main", local)
+    except Exception:  # noqa: BLE001 - a client that rejects attrs still works text-only
+        pass
+    return wrapped
 
 
 def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:

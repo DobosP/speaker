@@ -949,7 +949,7 @@ class MemoryManager:
                         WHERE embedding IS NOT NULL
                           AND embedder_id = %s
                           AND embedding_dim = %s
-                          AND role IN ('user', 'observation')
+                          AND role = 'user'
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
                         """,
@@ -1000,73 +1000,126 @@ class MemoryManager:
         results.sort(key=lambda x: x.get('similarity', 0), reverse=True)
         return results[:limit]
 
+    def _search_observations(self, query: str, limit: int, *, ef_search: int = 40) -> List[Dict[str, Any]]:
+        """Semantic search over VISUAL (screen) observations only.
+
+        Kept SEPARATE from :meth:`search_memory` (which is user-conversation +
+        summaries) so visual memories get their OWN bounded recall sub-pass and
+        can never crowd user-message recall out of a single shared pool, and so
+        the generic ``Memory.search`` seam never surfaces screen rows."""
+        if not self._db_available or not self._embeddings_available:
+            return []
+        q = self._get_embedding(query)
+        if q is None:
+            return []
+        self._check_embedding_dim(q)
+        out: list[dict] = []
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(f"SET LOCAL hnsw.ef_search = {int(ef_search)}")
+                    cur.execute(
+                        """
+                        SELECT content, timestamp,
+                               1 - (embedding <=> %s::vector) AS similarity
+                        FROM messages
+                        WHERE embedding IS NOT NULL
+                          AND embedder_id = %s
+                          AND embedding_dim = %s
+                          AND role = 'observation'
+                        ORDER BY embedding <=> %s::vector
+                        LIMIT %s
+                        """,
+                        (q.tolist(), self.embedder_id, int(q.shape[-1]), q.tolist(), limit),
+                    )
+                    for row in cur.fetchall():
+                        out.append({
+                            'type': 'vision',
+                            'content': row['content'],
+                            'timestamp': row['timestamp'],
+                            'similarity': float(row['similarity'] or 0.0),
+                        })
+        except Exception as e:
+            print(f"[warn] Observation search failed: {e}")
+        return out
+
     def get_context_for_llm(self, current_query: str = None) -> str:
         """Formatted context string for the LLM (token-budgeted, deduped).
 
-        Two independent, separately-budgeted blocks (concatenated):
+        THREE independent, separately-budgeted blocks (concatenated), each run
+        through the shared :func:`build_block` (adaptive cutoff + dedup + token
+        budget + compression) so their score scales never mix in one ranked list:
 
-        1. **Recall** -- semantic hits (messages + summaries) gated on a query +
-           live embeddings + DB. The pgvector rows become :class:`Candidate`\\ s
-           (cosine ``similarity`` as the backend-native score; summary
-           ``start_time``/``end_time`` as the ``span`` so a summary subsumes the
-           messages it covers) and the shared :func:`build_block` applies the
-           token budget, adaptive cutoff, dedup, and compression -- replacing the
-           old fixed ``>0.6`` / ``top-3`` / ``[:150]`` logic.
-        2. **Profile** -- gated ONLY on ``profile_enabled`` (default OFF, R8),
-           independent of DB/embeddings. Run through build_block in a SEPARATE
-           pass so the flat profile scores are never ranked against cosine
-           similarities in one list (the Candidate.score invariant); the
-           formerly-unbounded full-profile dump is now budgeted + deduped too.
+        1. **Recall** -- conversation hits (user messages + summaries) gated on a
+           query + live embeddings + DB.
+        2. **Vision** -- persisted visual (screen) observations, fetched by a
+           SEPARATE query so they never crowd conversation recall out of a shared
+           pool, with their OWN reserved floor (and vice versa).
+        3. **Profile** -- gated ONLY on ``profile_enabled`` (default OFF),
+           independent of DB/embeddings.
 
-        The two passes SHARE one ``max_tokens`` budget so their concatenation
-        cannot exceed it: durable profile facts get a reserved floor (so a
-        budget-filling recall block can never evict them), recall takes the rest,
-        and the profile pass then claims whatever recall left unused. Combined
-        block tokens <= the single ``recall_budget.max_tokens``."""
+        All three SHARE one ``max_tokens`` budget so their concatenation cannot
+        exceed it: each present source gets a reserved floor (so none can be
+        evicted by another), and unused budget flows down to the next pass.
+        Combined block tokens <= the single ``recall_budget.max_tokens``."""
         budget = self._recall_budget
         total = budget.max_tokens
         cpt = budget.chars_per_token
-        # Fetch the profile up front so we only reserve its floor when it is both
-        # enabled AND non-empty (no DB / no rows -> {} -> no reservation).
+        have_db = bool(current_query and self._embeddings_available and self._db_available)
+
+        # Fetch each source up front so a floor is reserved ONLY for a source that
+        # is present (absent source -> no reservation -> its share flows to others).
+        conv_rows = self.search_memory(current_query, limit=self._recall_pool) if have_db else []
+        vis_rows = self._search_observations(current_query, limit=self._recall_pool) if have_db else []
         profile = self.get_user_profile() if self.profile_enabled else {}
-        prof_floor = (total // 4) if profile else 0  # durable facts: >= a quarter
-        recall_cap = total - prof_floor
+
+        prof_floor = (total // 4) if profile else 0      # durable facts: >= a quarter
+        vis_floor = (total // 4) if vis_rows else 0       # screen memory: >= a quarter
+        recall_cap = max(total - prof_floor - vis_floor, 0)
 
         parts: list[str] = []
         used = 0
-        if current_query and self._embeddings_available and self._db_available and recall_cap > 0:
-            rows = self.search_memory(current_query, limit=self._recall_pool)
-            cands: list[Candidate] = []
-            for r in rows:
-                if r.get('type') == 'summary':
-                    span = (_to_epoch(r.get('start_time')), _to_epoch(r.get('end_time')))
-                    cands.append(Candidate(
-                        str(r.get('content', '')), _finite(r.get('similarity')),
-                        kind='summary', timestamp=_to_epoch(r.get('end_time')), span=span,
-                    ))
-                elif r.get('role') == 'observation':
-                    # A persisted visual (screen) observation -> recall it as vision.
-                    cands.append(Candidate(
-                        str(r.get('content', '')), _finite(r.get('similarity')),
-                        kind='vision', timestamp=_to_epoch(r.get('timestamp')),
-                    ))
-                else:
-                    cands.append(Candidate(
-                        str(r.get('content', '')), _finite(r.get('similarity')),
-                        kind='message', role=r.get('role'), timestamp=_to_epoch(r.get('timestamp')),
-                    ))
-            block = build_block(cands, current_query, _dc_replace(budget, max_tokens=recall_cap))
+
+        def _emit(cands: list, cap: int, header: Optional[str] = None) -> None:
+            nonlocal used
+            if cap <= 0 or not cands:
+                return
+            b = _dc_replace(budget, max_tokens=cap, header=header) if header \
+                else _dc_replace(budget, max_tokens=cap)
+            block = build_block(cands, current_query or "", b)
             if block:
                 parts.append(block)
-                used = estimate_tokens(block, cpt)
+                used += estimate_tokens(block, cpt)
+
+        # 1. Conversation recall (messages + summaries).
+        conv_cands: list[Candidate] = []
+        for r in conv_rows:
+            if r.get('type') == 'summary':
+                span = (_to_epoch(r.get('start_time')), _to_epoch(r.get('end_time')))
+                conv_cands.append(Candidate(
+                    str(r.get('content', '')), _finite(r.get('similarity')),
+                    kind='summary', timestamp=_to_epoch(r.get('end_time')), span=span,
+                ))
+            else:
+                conv_cands.append(Candidate(
+                    str(r.get('content', '')), _finite(r.get('similarity')),
+                    kind='message', role=r.get('role'), timestamp=_to_epoch(r.get('timestamp')),
+                ))
+        _emit(conv_cands, recall_cap)
+
+        # 2. Vision (screen) memory -- reserved floor + whatever recall left unused.
+        vis_cands = [
+            Candidate(str(r.get('content', '')), _finite(r.get('similarity')),
+                      kind='vision', timestamp=_to_epoch(r.get('timestamp')))
+            for r in vis_rows
+        ]
+        _emit(vis_cands, vis_floor + max(recall_cap - used, 0), header="=== Screen Memory ===")
+
+        # 3. Profile -- claims whatever the prior passes left (>= prof_floor).
         if profile:
-            # Profile claims the budget recall did not use (>= prof_floor, since
-            # used <= recall_cap = total - prof_floor) -> combined <= total.
             prof_cands = [Candidate(f"{k}: {v}", _PROFILE_RECALL_SCORE, kind='profile') for k, v in profile.items()]
-            prof_budget = _dc_replace(budget, max_tokens=max(total - used, 0), header="=== User Profile ===")
-            prof_block = build_block(prof_cands, current_query or "", prof_budget)
-            if prof_block:
-                parts.append(prof_block)
+            _emit(prof_cands, max(total - used, 0), header="=== User Profile ===")
+
         return "\n\n".join(parts)
 
     def get_chat_history(self) -> List[Dict[str, str]]:

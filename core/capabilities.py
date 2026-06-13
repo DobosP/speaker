@@ -10,6 +10,7 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import Memory
+from always_on_agent.recall import trim_block_to_tokens
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -94,18 +95,31 @@ class RecallConfig:
     """Gating for memory recall injection (the flat ``memory`` config block).
 
     ``enabled`` defaults to **false**: the cheap config short-circuit before any
-    embedding/recall work happens. ``max_chars`` bounds how much of the recall
-    block is prepended so TTFT stays bounded."""
+    embedding/recall work happens. ``max_tokens`` bounds how much of the recall
+    block is prepended so TTFT stays bounded -- a whole-line token cap at the
+    injection site, a secondary safety net on top of the memory's own
+    :class:`~always_on_agent.recall.RecallBudget`. ``max_chars`` is a DEPRECATED
+    alias kept for back-compat: when set it derives ``max_tokens = max_chars//4``
+    (the same ratio the rest of the recall path uses)."""
 
     enabled: bool = False
-    max_chars: int = 600
+    max_tokens: int = 150
+    max_chars: Optional[int] = None  # deprecated; derives max_tokens when set
+
+    def __post_init__(self) -> None:
+        if self.max_chars is not None:
+            object.__setattr__(self, "max_tokens", max(1, int(self.max_chars) // 4))
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, object]]) -> "RecallConfig":
         data = data or {}
+        tok = data.get("recall_max_tokens")
+        if tok is None:  # legacy: derive from the deprecated char cap, else default
+            ch = data.get("recall_max_chars")
+            tok = (int(ch) // 4) if ch else 150
         return cls(
             enabled=bool(data.get("recall_enabled", False)),
-            max_chars=int(data.get("recall_max_chars", 600) or 600),
+            max_tokens=max(1, int(tok)),
         )
 
 
@@ -357,7 +371,12 @@ def attach_llm_capabilities(
                 # then the volatile recent block AFTER, so the prefix cache is
                 # reused turn to turn. Recall (default-off, past sessions) keeps its
                 # historical position ahead of system so its contract is unchanged.
-                prefix = (recall_block[: recall_cfg.max_chars] + "\n\n") if recall_block else ""
+                # Secondary, whole-LINE token cap (never a mid-word cut): the
+                # block already arrived budget-bounded from the memory's own
+                # RecallBudget, so this only bites if max_tokens is set tighter
+                # here. Replaces the old blunt recall_block[:max_chars] slice.
+                recall_block = trim_block_to_tokens(recall_block, recall_cfg.max_tokens)
+                prefix = (recall_block + "\n\n") if recall_block else ""
                 suffix = ("\n\n" + recent_block) if recent_block else ""
                 system_for_call = prefix + system + suffix
             except Exception:  # noqa: BLE001 - context is best-effort, never fatal

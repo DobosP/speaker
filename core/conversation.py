@@ -68,6 +68,13 @@ class RecentContextConfig:
     max_turns: int = 6
     max_chars: int = 800
     per_turn_chars: int = 240
+    # Optional TOKEN bound carved from the shared recall budget so the recent
+    # block and the semantic-recall block can never independently stack and blow
+    # up the context. 0 == OFF (char-cap only -- the back-compat default); a
+    # positive value applies an additional whole-turn token cap on top of
+    # ``max_chars`` (whichever is tighter wins), measured with the SAME
+    # estimate_tokens the recall selector uses.
+    reserve_tokens: int = 0
     user_tags: tuple[str, ...] = field(default=_USER_TAGS)
     assistant_tags: tuple[str, ...] = field(default=_ASSISTANT_TAGS)
     excluded_replies: tuple[str, ...] = field(default=_EXCLUDED_REPLIES)
@@ -86,6 +93,7 @@ class RecentContextConfig:
             max_turns=int(data.get("recent_context_turns", 6) or 6),
             max_chars=int(data.get("recent_context_max_chars", 800) or 800),
             per_turn_chars=int(data.get("recent_context_per_turn_chars", 240) or 240),
+            reserve_tokens=int(data.get("recall_recent_reserve_tokens", 0) or 0),
             reset_enabled=bool(data.get("recent_context_reset_enabled", True)),
             reset_phrases=(
                 tuple(str(p) for p in phrases)
@@ -193,8 +201,20 @@ def format_recent_block(
         return ""
     rows = [f"{role}: {text}" for role, text in turns]
     header = "=== Recent conversation (most recent last) ==="
+
+    def _over_budget(b: str) -> bool:
+        if len(b) > config.max_chars:
+            return True
+        if config.reserve_tokens > 0:
+            # Lazy import keeps conversation.py importable without the brain pkg
+            # in trivial environments; the call is cheap + stdlib-only.
+            from always_on_agent.recall import estimate_tokens
+
+            return estimate_tokens(b) > config.reserve_tokens
+        return False
+
     block = header + "\n" + "\n".join(rows)
-    while len(block) > config.max_chars and len(rows) > 1:
+    while _over_budget(block) and len(rows) > 1:
         rows.pop(0)
         block = header + "\n" + "\n".join(rows)
     return block

@@ -408,3 +408,88 @@ def test_build_block_deterministic_on_multi_item_candidate_list():
     first = build_block(list(cands), q, budget)
     second = build_block(list(cands), q, budget)
     assert first == second and first  # deterministic + non-empty
+
+
+# --- lm-7 window parity + meeting RAM-only routing (adapter) -----------------
+
+
+def test_adapter_ring_is_capped_to_working_window():
+    """lm-7: the adapter's all() ring honors working_window (not max_recent), so a
+    flood can't grow it and it matches SessionMemory/SqliteVecMemory."""
+
+    def factory(*, conninfo, min_size, max_size, kwargs):
+        return _NullPool(conninfo, min_size=min_size, max_size=max_size, kwargs=kwargs, open=True)
+
+    mem = MemoryManagerAdapter(
+        db_url="postgresql://fake",
+        enable_embeddings=False,
+        smart_save=False,
+        pool_min_size=1,
+        pool_max_size=5,
+        pool_factory=factory,
+        working_window=5,
+    )
+    try:
+        for i in range(20):
+            mem.add(f"line number {i}", tags=("user",))
+        items = mem.all()
+        assert len(items) == 5  # capped to working_window
+        assert items[-1].text == "line number 19"  # newest retained
+    finally:
+        mem.close()
+
+
+class _RecordingManager:
+    """Fake MemoryManager that records how add() routed each utterance."""
+
+    max_recent_messages = 200
+    meeting_persist = False  # legacy attr; the adapter no longer reads it
+
+    def __init__(self):
+        self.messages = []        # (role, text) from add_message
+        self.user_utterances = []  # text from queue_user_utterance
+        self.observations = []     # text from add_observation
+
+    def add_message(self, role, text):
+        self.messages.append((role, text))
+
+    def queue_user_utterance(self, text):
+        self.user_utterances.append(text)
+
+    def add_observation(self, text):
+        self.observations.append(text)
+
+    def get_context_for_llm(self, query):
+        return ""
+
+    def apply_retention(self):
+        return 0
+
+    def close(self):
+        return None
+
+
+def test_adapter_routing_meeting_is_ram_only(monkeypatch):
+    """Meeting notes are RAM-only (§9.7): present in all() but never handed to the
+    persisting manager. user->queue, assistant->add_message, vision->add_observation."""
+    rec = _RecordingManager()
+    monkeypatch.setattr("utils.memory.create_memory_manager", lambda **kw: rec)
+    mem = MemoryManagerAdapter(db_url="postgresql://fake")
+    try:
+        mem.add("private meeting note", tags=("meeting",))
+        mem.add("a user question", tags=("user",))
+        mem.add("an assistant reply", tags=("assistant_output",))
+        mem.add("screen says hello", tags=("vision",))
+
+        # Meeting text is in the RAM ring but NEVER persisted anywhere.
+        assert any("private meeting note" in i.text for i in mem.all())
+        assert "private meeting note" not in rec.user_utterances
+        assert all("private meeting note" not in t for _r, t in rec.messages)
+        assert all("private meeting note" not in t for t in rec.observations)
+
+        # The other channels route as documented.
+        assert rec.user_utterances == ["a user question"]
+        assert rec.messages == [("assistant", "an assistant reply")]
+        assert rec.observations == ["screen says hello"]
+    finally:
+        mem.close()

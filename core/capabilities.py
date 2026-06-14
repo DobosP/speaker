@@ -10,7 +10,7 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import Memory
-from always_on_agent.recall import VISION_LABEL, trim_block_to_tokens
+from always_on_agent.recall import VISION_LABEL, compress, trim_block_to_tokens
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -249,6 +249,10 @@ def attach_llm_capabilities(
     router = router or HeuristicRouter()
     recall_cfg = recall or RecallConfig()
     recent_cfg = recent_context or RecentContextConfig()
+    # lm-2 Wire 3: a process-start latch so the one-shot "Last session" recap is
+    # prepended on the FIRST one-shot answer turn only, then never again this run.
+    # Mutable dict so the per-turn closure can flip it without ``nonlocal``.
+    memory_state = {"last_session_injected": False}
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
     # Headroom-aware routing (smart-routing-2): feed the recorder's rolling
     # local TTFT into the router as a live signal that NUDGES borderline turns
@@ -355,36 +359,73 @@ def attach_llm_capabilities(
             try:
                 if not skip_user_memory:
                     memory.add(query, tags=("user",))
-                recall_block = memory.context_for_llm(query) if recall_cfg.enabled else ""
-                # §9.7: recalled PAST-session snippets get the same sensitivity
-                # float the recent-turns block and images get -- a private
-                # remembered fact ("my salary is...") surfacing into a public
-                # current query must route the WHOLE turn on the private chain,
-                # never the cheapest/public one (review finding lm-3; must hold
-                # before recall is ever enabled by default).
-                if recall_block:
+                # Episodic recall (default-OFF) brings the FULL memory context
+                # (recall + vision + profile, sharing one budget). When recall is
+                # OFF we still surface durable PROFILE facts alone (Recall-B:
+                # decoupled from recall_enabled) so the model knows WHO it's talking
+                # to without paying for episodic recall. Both return '' at their
+                # defaults (recall off + profiles off), so the opening turn stays
+                # byte-identical. ``profile_block`` is getattr-guarded so a minimal
+                # duck-typed Memory double still works.
+                if recall_cfg.enabled:
+                    recall_block = memory.context_for_llm(query)
+                else:
+                    profile_fn = getattr(memory, "profile_block", None)
+                    recall_block = profile_fn() if callable(profile_fn) else ""
+                # lm-2 Wire 3: a one-shot "Last session" recap, prepended on the
+                # FIRST one-shot answer turn since process start only (a
+                # process-start latch), ahead of recall. Empty unless
+                # cross_session_continuity seeded a prior-session head
+                # (Postgres-only) -- '' otherwise keeps the default-OFF opening turn
+                # byte-identical. The head is compressed (whole-word, never
+                # mid-word) to the recall token budget so it can't blow up TTFT.
+                last_session_block = ""
+                if not memory_state["last_session_injected"]:
+                    head_fn = getattr(memory, "last_session_summary", None)
+                    head = head_fn() if callable(head_fn) else ""
+                    if head:
+                        head = compress(head, query, recall_cfg.max_tokens)
+                        last_session_block = f"=== Last Session ===\n{head}"
+                        # Burn the one-shot latch ONLY once the recap is actually
+                        # built: a transient failure while fetching/compressing the
+                        # head then stays retryable next turn instead of silently
+                        # suppressing the recap for the whole process, and an empty
+                        # head (continuity off / no prior summary) never burns it
+                        # (every turn just recomputes head="" -> no block, so the
+                        # default-OFF opening turn stays byte-identical regardless).
+                        memory_state["last_session_injected"] = True
+                # §9.7: ALL remembered text (last-session head, recall, profile) is
+                # PRIVATE-floatable post-ASR content -- float the turn's sensitivity
+                # over the COMBINED block before any LLM call, exactly as the
+                # recent-turns block does, so a private remembered fact ("my salary
+                # is...") can never ride the cheapest/public chain (review finding
+                # lm-3; must hold before recall/continuity is enabled by default).
+                memory_blocks = [b for b in (last_session_block, recall_block) if b]
+                if memory_blocks:
+                    combined = "\n\n".join(memory_blocks)
                     context["sensitivity"] = most_sensitive(
                         str(context.get("sensitivity") or PRIVATE),
-                        classify_sensitivity(recall_block),
+                        classify_sensitivity(combined),
                     )
                     # A recalled VISUAL (screen) observation is PRIVATE by policy
                     # (§9.7) regardless of what its caption/OCR text classifies as,
                     # so a screen memory surfacing into a turn pins it to the
                     # private chain even when the words look benign.
-                    if VISION_LABEL in recall_block:
+                    if VISION_LABEL in combined:
                         context["sensitivity"] = most_sensitive(
                             str(context.get("sensitivity") or PRIVATE), PRIVATE
                         )
                 # Compose: stable system FIRST (the pre-warmed, cacheable prefix),
                 # then the volatile recent block AFTER, so the prefix cache is
-                # reused turn to turn. Recall (default-off, past sessions) keeps its
-                # historical position ahead of system so its contract is unchanged.
-                # Secondary, whole-LINE token cap (never a mid-word cut): the
-                # block already arrived budget-bounded from the memory's own
-                # RecallBudget, so this only bites if max_tokens is set tighter
-                # here. Replaces the old blunt recall_block[:max_chars] slice.
+                # reused turn to turn. Remembered blocks (last-session recap, then
+                # recall; default-off, past sessions) keep their historical position
+                # ahead of system. Secondary, whole-LINE token cap (never a mid-word
+                # cut) on the recall block: it already arrived budget-bounded from
+                # the memory's own RecallBudget, so this only bites if max_tokens is
+                # set tighter here. Replaces the old blunt recall_block[:max_chars].
                 recall_block = trim_block_to_tokens(recall_block, recall_cfg.max_tokens)
-                prefix = (recall_block + "\n\n") if recall_block else ""
+                prefix_parts = [b for b in (last_session_block, recall_block) if b]
+                prefix = ("\n\n".join(prefix_parts) + "\n\n") if prefix_parts else ""
                 suffix = ("\n\n" + recent_block) if recent_block else ""
                 system_for_call = prefix + system + suffix
             except Exception:  # noqa: BLE001 - context is best-effort, never fatal

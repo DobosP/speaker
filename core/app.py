@@ -228,6 +228,9 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
             # summary head + fall back to prior-session recent messages on a fresh
             # process so memory survives a restart on the Postgres tier.
             cross_session_continuity=bool(mem_cfg.get("cross_session_continuity", False)),
+            # lm-5: persist + recall assistant finals (default OFF) so the Postgres
+            # tier matches the in-RAM/SQLite backends.
+            persist_assistant=bool(mem_cfg.get("persist_assistant", False)),
         )
     except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
         redacted = _redact_db_url(db_url) if db_url else "(no DATABASE_URL)"

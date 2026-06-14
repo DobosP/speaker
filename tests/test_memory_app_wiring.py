@@ -143,6 +143,18 @@ def test_build_memory_forwards_cross_session_continuity(monkeypatch):
     assert _FakeAdapter.last_kwargs["cross_session_continuity"] is True
 
 
+def test_build_memory_forwards_persist_assistant(monkeypatch):
+    """lm-5: the persist_assistant flag is forwarded to the adapter; defaults OFF."""
+    _force_postgres(monkeypatch)
+    app._build_memory({"memory": {"backend": "auto"}}, _FakeFastLLM())
+    assert _FakeAdapter.last_kwargs["persist_assistant"] is False
+
+    app._build_memory(
+        {"memory": {"backend": "auto", "persist_assistant": True}}, _FakeFastLLM()
+    )
+    assert _FakeAdapter.last_kwargs["persist_assistant"] is True
+
+
 def test_config_has_no_dead_memory_knobs():
     """Regression guard (lm-4/5/6/8): the zero-reader memory knobs were deleted;
     keep them gone so they don't drift back as dead config."""
@@ -160,3 +172,65 @@ def test_config_has_no_dead_memory_knobs():
     for k in dead_top_level:
         assert k not in cfg, f"dead top-level memory knob resurfaced: {k}"
     assert "meeting_persist" not in cfg.get("memory", {}), "dead meeting_persist resurfaced"
+    # lm-8: the dormant writer-config knobs (read by nothing in the live runtime
+    # path -- _build_memory never builds a MemoryWriterConfig) were pruned.
+    pruned_writer_knobs = (
+        "save_interval_sec",
+        "min_confidence",
+        "llm_cleanup",
+        "llm_gate",
+        "cleanup_model",
+        "max_buffer_items",
+        "min_chars",
+        "dedupe_similarity",
+        "persist_user_only",
+        "save_control_phrases",
+    )
+    for k in pruned_writer_knobs:
+        assert k not in cfg.get("memory", {}), f"pruned dead writer knob resurfaced: {k}"
+
+
+def test_every_memory_config_key_is_consumed():
+    """lm-8: every (non-comment) key in config.json's ``memory`` block must be
+    wired to a consumer -- no dormant config. Comment keys (prefix ``_``) are
+    documentation. A new key has to be added to the consumer AND this allow-list
+    or the test fails, which pins the writer-config dormancy bug so it cannot
+    silently regrow. The allow-list may name optional keys not currently present
+    (they are accepted if added later); the test only fails on a PRESENT key that
+    is not allow-listed."""
+    import json
+    import os
+
+    cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config.json")))
+    mem = cfg["memory"]
+    consumed = {
+        # backend + persistent store (core.app._build_memory)
+        "backend", "sqlite_path",
+        # recall block (core.capabilities.RecallConfig.from_dict + recall_budget)
+        "recall_enabled", "recall_max_tokens", "recall_max_chars",
+        "chars_per_token", "recall_cutoff_k", "recall_dedup_ratio",
+        "recall_recent_reserve_tokens",
+        # recent-conversation context (core.conversation.RecentContextConfig.from_dict)
+        "recent_context_enabled", "recent_context_turns", "recent_context_max_chars",
+        "recent_context_per_turn_chars", "recent_context_reset_enabled",
+        "recent_context_reset_max_words", "recent_context_reset_phrases",
+        # P2/P2b memory knobs (core.app._build_memory)
+        "embeddings", "max_recent", "working_window", "profile_enabled",
+        "cross_session_continuity", "persist_assistant",
+        "episodic_ttl_days", "summary_ttl_days",
+    }
+    present = {k for k in mem if not k.startswith("_")}
+    unconsumed = present - consumed
+    assert not unconsumed, f"unconsumed memory config keys (wire them or prune): {unconsumed}"
+
+    # Real-reader check (not just allow-list membership): every PRESENT key must
+    # appear as a quoted literal in the consuming source, so a key whose reader is
+    # later deleted (the dead-knob class this slice pruned) also fails -- closing
+    # the gap that a pure allow-list would miss.
+    here = os.path.dirname(__file__)
+    readers = ""
+    for rel in ("core/app.py", "core/capabilities.py", "core/conversation.py"):
+        with open(os.path.join(here, "..", rel)) as fh:
+            readers += fh.read()
+    missing_reader = [k for k in present if f'"{k}"' not in readers and f"'{k}'" not in readers]
+    assert not missing_reader, f"memory config keys with no reader in core/: {missing_reader}"

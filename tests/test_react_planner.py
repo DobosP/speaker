@@ -19,6 +19,7 @@ from always_on_agent.react import (
     FINAL_SYSTEM,
     PlannerConfig,
     ReactPlanner,
+    _parse_step,
     attach_react_capability,
     should_escalate,
 )
@@ -282,3 +283,58 @@ def test_recent_conversation_reaches_the_real_planner_end_to_end():
     assert any("Recent conversation" in p and "Paris" in p for p in llm.prompts), (
         "recent-conversation block did not reach the real planner end-to-end"
     )
+
+
+# --- P3: robust tool-call parsing + bounded re-prompt ------------------------
+
+def test_parse_step_scans_past_preamble_and_markdown():
+    # A small model that rambles before the directive, or decorates it, still parses.
+    assert _parse_step("Let me check that.\nTOOL search.local: pgvector") == ("search.local", "pgvector")
+    assert _parse_step("- **TOOL** web.search: cats") == ("web.search", "cats")
+    assert _parse_step("`FINAL: forty two`") == ("FINAL", "forty two")
+    # genuinely no directive -> None (wrap up)
+    action, _ = _parse_step("I think the capital is Paris.")
+    assert action is None
+
+
+def test_planner_reprompts_once_on_unparseable_step():
+    # First plan reply is junk (no directive); the planner re-prompts ONCE with the
+    # strict format reminder, the model then emits a valid tool call.
+    registry = create_default_capabilities()
+    llm = ScriptLLM(["um, let me think about this...", "TOOL search.local: pipecat",
+                     "FINAL: it is a voice framework"])
+    planner = ReactPlanner(llm, registry, tools=("search.local",))
+    result = planner.run("what is pipecat", {})
+    assert result.ok
+    assert result.data["steps"] == ["search.local"]
+    # the re-prompt appended the format reminder to a plan prompt
+    assert any("EXACTLY one line" in p for p in llm.plan_prompts)
+
+
+def test_planner_reprompt_is_bounded_to_once():
+    # Two junk replies in a row: after the single re-prompt is spent, it gives up
+    # and synthesizes a FINAL rather than looping.
+    registry = create_default_capabilities()
+    llm = ScriptLLM(["rambling one", "rambling two"], final="synthesized answer")
+    planner = ReactPlanner(llm, registry, tools=("search.local",))
+    result = planner.run("q", {})
+    assert result.ok
+    assert result.text == "synthesized answer"
+
+
+def test_build_router_llm_defaults_to_fast_when_unset():
+    from core.llm_factory import build_router_llm
+
+    sentinel = object()
+    assert build_router_llm({"llm": {}}, sentinel) is sentinel
+
+
+def test_build_router_llm_builds_dedicated_local_when_set():
+    from core.llm_factory import build_router_llm
+    from core.llm import OllamaLLM
+
+    r = build_router_llm({"llm": {"router_model": "xlam2:3b", "backend": "ollama"}}, object())
+    assert isinstance(r, OllamaLLM) and r.model == "xlam2:3b"
+    # non-ollama backend falls back to the fast tier
+    sentinel = object()
+    assert build_router_llm({"llm": {"router_model": "x", "backend": "llamacpp"}}, sentinel) is sentinel

@@ -52,6 +52,12 @@ PLANNER_SYSTEM = (
     "Prefer FINAL as soon as you have enough. Never invent tools."
 )
 
+# Re-prompt appended once when a small model's step is unparseable (P3 reliability).
+_FORMAT_REMINDER = (
+    "Your previous reply was NOT in the required format. Reply with EXACTLY one "
+    "line and nothing else: either\n  TOOL <tool_name>: <input>\nor\n  FINAL: <answer>"
+)
+
 FINAL_SYSTEM = (
     "You are a local, on-device voice assistant. Answer the user's request in "
     "one or two short, natural spoken sentences. Use the findings when they are "
@@ -119,22 +125,39 @@ def _cancelled(cancel: Optional[Event]) -> bool:
     return cancel is not None and cancel.is_set()
 
 
+# Markdown / list noise a small model often wraps a step line in (e.g.
+# "- **TOOL** web.search: x", "`FINAL: ...`"). Stripped per-line before matching so
+# a well-intentioned-but-decorated tool call still parses (P3 reliability: small
+# instruct models emit malformed/decorated tool calls -- this is the lightweight,
+# backend-agnostic stand-in for grammar-constrained decoding).
+_STEP_NOISE = str.maketrans("", "", "*`#>")
+
+
 def _parse_step(text: str) -> tuple[Optional[str], str]:
     """Return ``(action, argument)``.
 
     ``action`` is a tool name, the literal ``"FINAL"``, or ``None`` when the
     model produced something unparseable (treated as "wrap up").
+
+    Scans EVERY line (not just the first) for the first TOOL/FINAL directive, after
+    stripping common markdown/bullet noise, so a small model that emits a line of
+    preamble ("Let me check...") before the directive, or wraps it in markdown,
+    still parses instead of falling through to a contextless FINAL.
     """
-    first = text.strip().splitlines()[0] if text.strip() else ""
-    if not _LINE.match(first):
-        return None, text.strip()
-    final = _FINAL_LINE.match(first)
-    if final:
-        return "FINAL", final.group(1).strip()
-    tool = _TOOL_LINE.match(first)
-    if tool:
-        return tool.group(1).strip(), tool.group(2).strip()
-    return None, text.strip()
+    stripped = text.strip()
+    if not stripped:
+        return None, ""
+    for raw in stripped.splitlines():
+        line = raw.translate(_STEP_NOISE).strip().lstrip("-").strip()
+        if not _LINE.match(line):
+            continue
+        final = _FINAL_LINE.match(line)
+        if final:
+            return "FINAL", final.group(1).strip()
+        tool = _TOOL_LINE.match(line)
+        if tool:
+            return tool.group(1).strip(), tool.group(2).strip()
+    return None, stripped
 
 
 class ReactPlanner:
@@ -244,6 +267,7 @@ class ReactPlanner:
                 pass
         observations: list[str] = []
         steps_taken: list[str] = []
+        reprompt_budget = 1  # one strict-format retry across the whole plan (P3)
 
         for _ in range(self._max_steps):
             if _cancelled(cancel):
@@ -265,6 +289,23 @@ class ReactPlanner:
                     True, "", data={"cancelled": True, "agent": True}
                 )
             action, arg = _parse_step(raw)
+
+            # P3 reliability: an unparseable step (no TOOL/FINAL directive at all)
+            # gets ONE strict-format re-prompt before we give up and synthesize a
+            # FINAL -- a small model that rambled instead of emitting a directive
+            # often complies on the reminder. Bounded to once per plan (latency).
+            if action is None and reprompt_budget > 0:
+                reprompt_budget -= 1
+                raw = self._drain(
+                    self._llm.stream(
+                        self._plan_prompt(query, observations, recent) + "\n\n" + _FORMAT_REMINDER,
+                        system=PLANNER_SYSTEM,
+                    ),
+                    cancel,
+                )
+                if _cancelled(cancel):
+                    return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
+                action, arg = _parse_step(raw)
 
             if action is None or action.upper() == "FINAL":
                 text = arg if (action and arg) else self._final(query, observations, cancel, recent)

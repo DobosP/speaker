@@ -22,6 +22,7 @@ LLM_FIRST_TOKEN = "llm_first_token"  # first token streamed from the model
 TTS_FIRST_AUDIO = "tts_first_audio"  # assistant's first audio sample played
 BARGE_IN = "barge_in"              # user spoke over playback
 BARGE_IN_STOP = "barge_in_stop"    # playback actually halted
+HANDLED_LOCAL = "handled_local"    # turn resolved with NO LLM (intent fast-path) -- never reaches first token
 
 # A new utterance begins at whichever of these we see first (speech_end leads
 # asr_final, but the real streaming engine only knows the latter).

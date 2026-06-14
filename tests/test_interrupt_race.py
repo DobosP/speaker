@@ -215,3 +215,113 @@ def test_barge_in_during_generation_suppresses_completion_reply():
         assert speak_after_stop == [], f"stale speak after stop: {speak_after_stop}"
     finally:
         runtime.stop()
+
+
+# --- 4. rc-4: queued-task cancellation / resurrection ------------------------
+
+
+def _make_task(sup):
+    from always_on_agent.models import IntentDecision, IntentKind
+
+    decision = IntentDecision(IntentKind.ASSISTANT, 0.9, "x", "test", mode=Mode.ASSISTANT)
+    return sup.tasks.create_task(decision)
+
+
+def test_cancel_all_cancels_queued_tasks():
+    """rc-4: cancel_all must cancel (not just drop) queued tasks, so a concurrent
+    _start_queued_tasks holding a reference sees them cancelled."""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    queued = _make_task(sup)
+    sup.state.queued_tasks.append(queued)
+
+    sup.cancel_all()
+
+    assert queued.cancel_event.is_set()
+    assert list(sup.state.queued_tasks) == []
+
+
+def test_start_task_drops_a_precancelled_task():
+    """rc-4: _start_task must drop a task whose cancel_event is already set --
+    never register it as active nor spawn a worker thread."""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    task = _make_task(sup)
+    task.cancel()
+
+    sup._start_task(task)  # noqa: SLF001 - exercising the guard directly
+
+    assert task.task_id not in sup.state.active_tasks
+    assert sup.tasks.active_count == 0
+
+
+def test_start_queued_drops_cancelled_task_without_calling_start_task(monkeypatch):
+    """rc-4: a queued task cancelled before the queue drains is dropped by
+    _start_queued_tasks's OWN guard -- it is never even handed to _start_task.
+    (Spying on _start_task makes this pin the drain-loop drop specifically, not
+    _start_task's separate cancel re-check.)"""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    passed_to_start: list = []
+    monkeypatch.setattr(sup, "_start_task",
+                        lambda task, **kw: passed_to_start.append(task.task_id))
+    task = _make_task(sup)
+    sup.state.queued_tasks.append(task)
+    task.cancel()
+
+    sup._start_queued_tasks()  # noqa: SLF001
+
+    assert task.task_id not in passed_to_start  # dropped before _start_task
+    assert task not in sup.state.queued_tasks
+
+
+def test_start_queued_respects_research_cap_in_one_pass(monkeypatch):
+    """rc-4 over-admission regression: a SINGLE _start_queued_tasks drain pass must
+    not admit more RESEARCH tasks than the per-mode cap. The earlier deferred-start
+    version read stale capacity counts and started all of them at once."""
+    from always_on_agent.models import IntentDecision, IntentKind
+    from always_on_agent.speech_analyzer import LiveSpeechAnalyzer, ModePolicy
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor(analyzer=LiveSpeechAnalyzer(ModePolicy(research_parallel_tasks=2)))
+    started: list = []
+    monkeypatch.setattr(sup.tasks, "start", lambda task: started.append(task.task_id))
+
+    for _ in range(3):
+        d = IntentDecision(IntentKind.RESEARCH, 0.9, "x", "test", mode=Mode.RESEARCH)
+        sup.state.queued_tasks.append(sup.tasks.create_task(d))
+
+    sup._start_queued_tasks()  # noqa: SLF001
+
+    assert len(started) == 2, f"over-admitted past the RESEARCH cap: started {len(started)}"
+    assert len(sup.state.active_tasks) == 2
+    assert len(sup.state.queued_tasks) == 1  # the 3rd stays queued
+
+
+def test_barge_in_during_drain_does_not_resurrect_queued_task(monkeypatch):
+    """rc-4 residual window: a barge-in (cancel_all) landing mid-drain -- after the
+    queue snapshot, while _should_queue runs with the lock released -- must NOT
+    start the snapshotted task; the epoch re-check in _start_task drops it."""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    started: list = []
+    monkeypatch.setattr(sup.tasks, "start", lambda task: started.append(task.task_id))
+    task = _make_task(sup)
+    sup.state.queued_tasks.append(task)
+
+    orig_should_queue = sup._should_queue
+
+    def racing_should_queue(t):
+        sup.cancel_all()  # a barge-in lands inside the drain, advancing the epoch
+        return orig_should_queue(t)
+
+    monkeypatch.setattr(sup, "_should_queue", racing_should_queue)
+
+    sup._start_queued_tasks()  # noqa: SLF001
+
+    assert started == [], "a queued task was resurrected after a mid-drain barge-in"
+    assert task.task_id not in sup.state.active_tasks

@@ -53,6 +53,7 @@ DEFAULT_RESET_PHRASES: tuple[str, ...] = (
 _EXCLUDED_REPLIES = (
     "Sorry, I don't have an answer for that.",
     "Sorry, that took too long -- let's try again.",
+    "Sorry, I ran into a problem with that -- let's try again.",
 )
 
 

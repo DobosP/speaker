@@ -36,6 +36,7 @@ from .metrics import (
     ASR_FINAL,
     BARGE_IN,
     BARGE_IN_STOP,
+    HANDLED_LOCAL,
     LLM_FIRST_TOKEN,
     MetricsRecorder,
     TTS_FIRST_AUDIO,
@@ -160,11 +161,14 @@ class StuckWatchdog:
         for i, rec in enumerate(self._recorder.records()):
             stamps = rec.stamps
             # A turn the user barged into (or stopped via a "stop" command that
-            # aborted playback) may legitimately never reach llm_first_token or
-            # tts_first_audio -- that is an interrupt, not a stall. Skip both
-            # stuck checks for it so a real barge-in isn't mis-flagged as stuck
-            # (the live run surfaced this false positive on a cancelled turn).
-            if BARGE_IN in stamps or BARGE_IN_STOP in stamps:
+            # aborted playback), or one resolved with no LLM at all
+            # (HANDLED_LOCAL: the intent fast-path), may legitimately never reach
+            # llm_first_token or tts_first_audio -- that is an interrupt or a
+            # no-LLM turn, not a stall. Skip both stuck checks so a real barge-in
+            # or a fast-path turn isn't mis-flagged as stuck (the live run
+            # surfaced this false positive on a cancelled turn; rc-5 adds the
+            # no-LLM case).
+            if BARGE_IN in stamps or BARGE_IN_STOP in stamps or HANDLED_LOCAL in stamps:
                 continue
             if ASR_FINAL in stamps and LLM_FIRST_TOKEN not in stamps:
                 elapsed = now - stamps[ASR_FINAL]

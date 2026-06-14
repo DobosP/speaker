@@ -1,0 +1,15 @@
+# gitleaks configuration (consumed by .github/workflows/gitleaks.yml and any
+# local `gitleaks detect`). Extends the upstream default ruleset and adds a
+# narrow allowlist for known-safe committed material so the CI gate only fires
+# on real secrets.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-safe committed paths"
+paths = [
+  # Android debug signing keystore: standard, PUBLIC debug credentials shipped
+  # with the SDK (documented at .github/workflows/android-apk.yml). Not a secret.
+  '''mobile/tool/debug\.keystore''',
+]

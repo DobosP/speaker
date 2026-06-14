@@ -661,12 +661,23 @@ class SherpaOnnxEngine(AudioEngine):
         self._running = threading.Event()
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
+        # Per-utterance generation counter (rc-3). Every queued sentence carries
+        # the generation current when it was enqueued; a barge-in / stop bumps it
+        # (under _gen_lock). A dequeued sentence whose generation is stale (a
+        # barge happened after it was enqueued but it slipped past the queue
+        # drain) is SKIPPED instead of played -- closing the dequeue->clear race
+        # where the shared _stop_speaking flag could be wiped before it bit. The
+        # in-flight synthesis guards also check the generation, so a barge that
+        # lands while a current sentence is mid-flight aborts it even if the
+        # clear-vs-set ordering momentarily wiped _stop_speaking.
+        self._speak_gen = 0
+        self._gen_lock = threading.Lock()
         self._speaker_gate: Optional[SpeakerGate] = None
         # Single playback sink: every utterance is queued onto one worker thread
         # so sentences play in order and never overlap (streaming TTS emits many
         # short sentences in quick succession). Bounded so a runaway producer
         # can't grow memory; oldest is dropped under backpressure to stay fresh.
-        self._play_q: "queue.Queue[tuple[Optional[str], Optional[Callable[[], None]]]]" = (
+        self._play_q: "queue.Queue[tuple[Optional[str], Optional[Callable[[], None]], int]]" = (
             queue.Queue(maxsize=64)
         )
         self._play_thread: Optional[threading.Thread] = None
@@ -1044,7 +1055,7 @@ class SherpaOnnxEngine(AudioEngine):
                     self._out_stream.close()
                 except Exception:  # noqa: BLE001 - device may be mid-teardown
                     pass
-        self._play_q.put((None, None))  # sentinel: wake the worker so it exits
+        self._play_q.put((None, None, 0))  # sentinel: wake the worker so it exits
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=1.0)
             if self._capture_thread.is_alive():
@@ -1083,6 +1094,13 @@ class SherpaOnnxEngine(AudioEngine):
         # Cut the current utterance and discard whatever is queued behind it, so
         # a barge-in flushes pending speech instead of letting it play out.
         self._stop_speaking.set()
+        # Bump the generation atomically with the stop (rc-3): every sentence
+        # enqueued before now is invalidated, so one that slips past the drain
+        # below (already dequeued at this instant) is skipped by the worker, and
+        # an in-flight current sentence aborts on the generation mismatch even if
+        # the worker's clear momentarily wipes _stop_speaking.
+        with self._gen_lock:
+            self._speak_gen += 1
         self._drain_play_q()
         # Cut the live audio by FLUSHING the playback FIFO rather than aborting
         # the stream. flush() drops every queued sample in one short lock, so the
@@ -1722,8 +1740,11 @@ class SherpaOnnxEngine(AudioEngine):
             self._cb.on_command(keyword)
 
     def _enqueue_play(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
+        # Stamp the sentence with the current generation (rc-3): if a barge bumps
+        # the generation before this sentence is dequeued, the worker drops it.
+        gen = self._speak_gen
         try:
-            self._play_q.put_nowait((text, on_done))
+            self._play_q.put_nowait((text, on_done, gen))
         except queue.Full:
             # Drop the oldest queued sentence rather than block or lag playback.
             try:
@@ -1731,7 +1752,7 @@ class SherpaOnnxEngine(AudioEngine):
             except queue.Empty:
                 pass
             try:
-                self._play_q.put_nowait((text, on_done))
+                self._play_q.put_nowait((text, on_done, gen))
             except queue.Full:
                 if on_done:
                     on_done()
@@ -1742,6 +1763,22 @@ class SherpaOnnxEngine(AudioEngine):
                 self._play_q.get_nowait()
         except queue.Empty:
             pass
+
+    def _claim_utterance(self, item_gen: int) -> Optional[int]:
+        """Claim a dequeued sentence for playback, or reject it as stale (rc-3).
+
+        Returns the utterance's generation -- and CLEARS ``_stop_speaking`` -- when
+        the sentence is current (``item_gen == self._speak_gen``). Returns ``None``
+        WITHOUT touching ``_stop_speaking`` when a barge/stop has bumped the
+        generation since the sentence was enqueued, so the pending stop is not
+        wiped and the playback worker skips the stale sentence. Factored out of
+        ``_playback_loop`` (which needs a real device) so this load-bearing
+        wipe-race guard is unit-testable.
+        """
+        if item_gen != self._speak_gen:
+            return None
+        self._stop_speaking.clear()
+        return item_gen
 
     def _audio_cb(self, outdata, frames, time_info, status) -> None:
         """PortAudio output callback -- runs on a HIGH-PRIORITY audio thread.
@@ -1819,12 +1856,22 @@ class SherpaOnnxEngine(AudioEngine):
         try:
             while self._running.is_set():
                 try:
-                    text, on_done = self._play_q.get(timeout=0.1)
+                    text, on_done, item_gen = self._play_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
                 if text is None:  # shutdown sentinel from stop()
                     break
-                self._stop_speaking.clear()
+                # rc-3: claim the sentence for playback, or skip it as stale. A
+                # barge/stop after it was enqueued bumped _speak_gen (and drained
+                # the queue); a sentence that slipped past the drain is stale and
+                # _claim_utterance returns None WITHOUT clearing _stop_speaking
+                # (so the pending barge isn't wiped). A current sentence is
+                # claimed (clearing the flag for this fresh utterance).
+                my_gen = self._claim_utterance(item_gen)
+                if my_gen is None:
+                    if on_done:
+                        on_done()
+                    continue
                 # Reset the one-barge-in-per-run latch only on the silent->
                 # speaking transition (a genuinely NEW reply), NOT per dequeued
                 # sentence: _speaking is set per sentence but clears only when the
@@ -1862,19 +1909,22 @@ class SherpaOnnxEngine(AudioEngine):
                     # whole point of the rewrite. Here we just resample to play_sr
                     # and hand the samples to the FIFO, which BLOCKS when full
                     # (backpressure that paces synthesis to real-time playback).
-                    if self._stop_speaking.is_set():
-                        return  # barged chunk: never enqueue it
+                    if self._stop_speaking.is_set() or self._speak_gen != my_gen:
+                        return  # barged / superseded chunk: never enqueue it
                     if self._play_sr != self._tts_sr:
                         samples = _resample_linear(samples, self._tts_sr, self._play_sr)
                     fifo = self._fifo
                     if fifo is not None:
                         # should_abort releases a producer blocked on a full FIFO
-                        # the instant a barge-in (_stop_speaking) or shutdown
-                        # (not _running) is requested -- no deadlock on teardown.
+                        # the instant a barge-in (_stop_speaking / a generation
+                        # bump) or shutdown (not _running) is requested -- no
+                        # deadlock on teardown.
                         fifo.write(
                             samples,
                             should_abort=lambda: (
-                                self._stop_speaking.is_set() or not self._running.is_set()
+                                self._stop_speaking.is_set()
+                                or self._speak_gen != my_gen
+                                or not self._running.is_set()
                             ),
                         )
 
@@ -1943,7 +1993,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # so the stream is normally already active here. Restart it
                         # only if something stopped it.
                         out.start()
-                    self._synthesize(text, write)
+                    self._synthesize(text, write, my_gen)
                     # (true barge-in-stop is stamped in stop_speaking() at the
                     # abort() instant -- the moment audio actually goes silent.)
                 finally:
@@ -2025,11 +2075,18 @@ class SherpaOnnxEngine(AudioEngine):
                 except Exception:  # noqa: BLE001 - may already be aborted/closed
                     pass
 
-    def _synthesize(self, text: str, write: Callable[[object], None]) -> None:
+    def _synthesize(
+        self, text: str, write: Callable[[object], None], gen: Optional[int] = None
+    ) -> None:
         """Synthesize ``text``, handing each audio chunk to ``write`` as it is
         produced. sherpa-onnx ``OfflineTts.generate`` streams via a ``callback``,
         so the first samples play before the whole sentence is synthesized; a
-        build without that param falls back to chunking the finished waveform."""
+        build without that param falls back to chunking the finished waveform.
+
+        ``gen`` is the per-utterance generation (rc-3): when set, synthesis stops
+        if a barge bumps :attr:`_speak_gen` past it, even if the worker's
+        clear-vs-set ordering momentarily wiped ``_stop_speaking``. ``None``
+        (direct callers/tests) keeps the legacy ``_stop_speaking``-only check."""
         import numpy as np
 
         tts = self._tts
@@ -2047,7 +2104,10 @@ class SherpaOnnxEngine(AudioEngine):
 
                 def on_chunk(samples, *_progress) -> int:
                     write(np.asarray(samples, dtype="float32").reshape(-1))
-                    return 0 if self._stop_speaking.is_set() else 1
+                    return 0 if (
+                        self._stop_speaking.is_set()
+                        or (gen is not None and self._speak_gen != gen)
+                    ) else 1
 
                 try:
                     tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
@@ -2067,7 +2127,7 @@ class SherpaOnnxEngine(AudioEngine):
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
-            if self._stop_speaking.is_set():
+            if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):
                 break
             write(samples[i : i + chunk])
 

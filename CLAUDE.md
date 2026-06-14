@@ -165,7 +165,9 @@ the exact fields it parses.
 - **Run logs & debugging — read [`docs/debugging.md`](docs/debugging.md) when the
   user reports a failed/stuck/slow run or attaches files.** Every run writes a
   committable bundle under `logs/runs/run-<id>.{txt,summary.json}` (+ `.wav` with
-  `--record`): the `summary.json` has `stuck_hints`, per-turn latencies, every
+  `--record`) — **committed bundles must be PII-free per §9.7** (no raw voice
+  WAVs / verbatim-PII transcripts; scrub or omit before `git add`, see
+  `docs/debugging.md`): the `summary.json` has `stuck_hints`, per-turn latencies, every
   LLM request, the conversation transcript, CPU/GPU/RAM telemetry, and errors;
   the `.txt` is the full async DEBUG trace. `./session.sh` captures everything in
   one go (`--debug` = console only; `--record` = audio). Recorded WAVs replay via

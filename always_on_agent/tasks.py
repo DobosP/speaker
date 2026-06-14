@@ -369,6 +369,12 @@ class TaskRuntime:
                     "task_id": task.task_id,
                     "mode": task.mode.value,
                     "error": error,
+                    # Carry the same speak/followup/epoch fields as
+                    # _publish_completed so the supervisor can gate + epoch-stamp
+                    # the spoken failure apology (sr-2).
+                    "speak": bool(task.metadata.get("speak", True)),
+                    "followup": bool(task.metadata.get("followup")),
+                    "epoch": task.speech_epoch,
                 },
                 priority=25,
             )

@@ -215,3 +215,60 @@ def test_barge_in_during_generation_suppresses_completion_reply():
         assert speak_after_stop == [], f"stale speak after stop: {speak_after_stop}"
     finally:
         runtime.stop()
+
+
+# --- 4. rc-4: queued-task cancellation / resurrection ------------------------
+
+
+def _make_task(sup):
+    from always_on_agent.models import IntentDecision, IntentKind
+
+    decision = IntentDecision(IntentKind.ASSISTANT, 0.9, "x", "test", mode=Mode.ASSISTANT)
+    return sup.tasks.create_task(decision)
+
+
+def test_cancel_all_cancels_queued_tasks():
+    """rc-4: cancel_all must cancel (not just drop) queued tasks, so a concurrent
+    _start_queued_tasks holding a reference sees them cancelled."""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    queued = _make_task(sup)
+    sup.state.queued_tasks.append(queued)
+
+    sup.cancel_all()
+
+    assert queued.cancel_event.is_set()
+    assert list(sup.state.queued_tasks) == []
+
+
+def test_start_task_drops_a_precancelled_task():
+    """rc-4: _start_task must drop a task whose cancel_event is already set --
+    never register it as active nor spawn a worker thread."""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    task = _make_task(sup)
+    task.cancel()
+
+    sup._start_task(task)  # noqa: SLF001 - exercising the guard directly
+
+    assert task.task_id not in sup.state.active_tasks
+    assert sup.tasks.active_count == 0
+
+
+def test_start_queued_does_not_resurrect_cancelled_task():
+    """rc-4: a queued task cancelled (e.g. by a barge-in) before the queue drains
+    is neither started nor re-queued by _start_queued_tasks."""
+    from always_on_agent.supervisor import AgentSupervisor
+
+    sup = AgentSupervisor()
+    task = _make_task(sup)
+    sup.state.queued_tasks.append(task)
+    task.cancel()
+
+    sup._start_queued_tasks()  # noqa: SLF001
+
+    assert task.task_id not in sup.state.active_tasks
+    assert task not in sup.state.queued_tasks
+    assert sup.tasks.active_count == 0

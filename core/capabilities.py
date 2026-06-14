@@ -432,7 +432,9 @@ def attach_llm_capabilities(
         tier = router.choose(query, context)
         if images:
             tier = "main"
-        model = llm if tier == "main" else fast
+        primary = llm if tier == "main" else fast
+        other = fast if tier == "main" else llm
+        other_name = "fast" if tier == "main" else "main"
         if debug_routing:
             print(
                 f"[route] {tier} sens={context.get('sensitivity')} <- {query!r}",
@@ -444,15 +446,20 @@ def attach_llm_capabilities(
         )
         emit = context.get("emit_speech")
         started = time.monotonic()
-        # Publish the per-turn context so SensitivityRouterLLM can pick the
-        # right cloud chain at stream() time. Reset on the way out so the
-        # ContextVar doesn't leak between unrelated turns.
-        ctx_token = capability_context.set(context)
-        try:
+        # Track whether any audio was emitted so a retry never double-speaks
+        # (sr-2): if the primary already streamed a sentence before erroring, we
+        # do NOT retry on the other tier.
+        emitted_any = [False]
+
+        def _emit_tracked(sentence: str) -> None:
+            emitted_any[0] = True
+            emit(sentence)  # type: ignore[misc]
+
+        def _attempt(attempt_model: LLMClient, attempt_tier: str) -> CapabilityResult:
             # Only fold this turn's first-token latency into the LOCAL TTFT EWMA
             # when the answering model is purely local; a cloud-hedge win would
             # otherwise mislabel the headroom signal (P4 low).
-            fold_local = _answers_locally(model)
+            fold_local = _answers_locally(attempt_model)
             # Dynamic hedge timing (Task 4): when live routing is on and the
             # local tier looks slow/loaded, shorten the per-call hedge delay so
             # the cloud race starts sooner. Computed from the same live signal as
@@ -465,26 +472,27 @@ def attach_llm_capabilities(
             if images:
                 stream_kwargs["images"] = list(images)
             if live_routing:
-                base_ms = _base_hedge_delay_ms(model)
+                base_ms = _base_hedge_delay_ms(attempt_model)
                 if base_ms is not None:
                     hd = dynamic_hedge_delay_ms(context.get(LIVE_CONTEXT_KEY), base_ms)
                     if hd is not None:
                         stream_kwargs["hedge_delay_ms"] = hd
             tokens = mark_first_token(
-                model.stream(query, **stream_kwargs), recorder,  # type: ignore[arg-type]
+                attempt_model.stream(query, **stream_kwargs), recorder,  # type: ignore[arg-type]
                 fold_local_ttft=fold_local,
             )
             if callable(emit):
-                text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]
+                text, cancelled = _stream_and_speak(tokens, cancel, _emit_tracked)  # type: ignore[arg-type]
                 log.info(
                     "%s tier %s in %.2fs (%d chars, streamed)",
-                    tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
+                    attempt_tier, "cancelled" if cancelled else "done",
+                    time.monotonic() - started, len(text),
                 )
                 return CapabilityResult(
                     True,
                     text or "Sorry, I don't have an answer for that.",
                     data={
-                        "route": tier,
+                        "route": attempt_tier,
                         "streamed": True,
                         "cancelled": cancelled,
                         "sensitivity": context.get("sensitivity"),
@@ -493,18 +501,41 @@ def attach_llm_capabilities(
             text, cancelled = _collect(tokens, cancel)  # type: ignore[arg-type]
             log.info(
                 "%s tier %s in %.2fs (%d chars)",
-                tier, "cancelled" if cancelled else "done", time.monotonic() - started, len(text),
+                attempt_tier, "cancelled" if cancelled else "done",
+                time.monotonic() - started, len(text),
             )
             if cancelled:
                 return CapabilityResult(
                     True, text,
-                    data={"cancelled": True, "route": tier, "sensitivity": context.get("sensitivity")},
+                    data={"cancelled": True, "route": attempt_tier, "sensitivity": context.get("sensitivity")},
                 )
             return CapabilityResult(
                 True,
                 text or "Sorry, I don't have an answer for that.",
-                data={"route": tier, "sensitivity": context.get("sensitivity")},
+                data={"route": attempt_tier, "sensitivity": context.get("sensitivity")},
             )
+
+        # Publish the per-turn context so SensitivityRouterLLM can pick the
+        # right cloud chain at stream() time. Set ONCE around both attempts so the
+        # chain choice is consistent across a retry. Reset on the way out so the
+        # ContextVar doesn't leak between unrelated turns.
+        ctx_token = capability_context.set(context)
+        try:
+            try:
+                return _attempt(primary, tier)
+            except Exception:  # noqa: BLE001 - cross-tier fallback (sr-2)
+                # If the chosen tier's backend errors (e.g. Ollama unreachable,
+                # fast-tier GGUF load failure), retry once on the OTHER tier
+                # before failing the turn -- but only when (a) the other tier is
+                # a DISTINCT model (fast = fast_llm or llm, so an un-split config
+                # has one object and a retry would just fail again), and (b) no
+                # audio was emitted yet (else the retry would double-speak).
+                if other is primary or emitted_any[0]:
+                    raise
+                log.warning(
+                    "%s tier failed; retrying on %s tier", tier, other_name, exc_info=True
+                )
+                return _attempt(other, other_name)
         finally:
             capability_context.reset(ctx_token)
 

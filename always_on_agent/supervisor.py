@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field, replace
 from threading import Lock, Timer
 from typing import Mapping
@@ -27,6 +28,11 @@ _FALLBACK_TASK_TIMEOUT = 60.0
 # isn't just dead air.
 _TIMEOUT_APOLOGY = "Sorry, that took too long -- let's try again."
 
+# Spoken when a turn FAILS outright (capability/LLM error), so a failed turn
+# isn't just dead air either (sr-2). Mirror in core/conversation.py's excluded
+# replies so it isn't ingested as conversational content.
+_FAILURE_APOLOGY = "Sorry, I ran into a problem with that -- let's try again."
+
 from .capabilities import CapabilityRegistry, create_default_capabilities
 from .continuation import (
     CONTINUE,
@@ -47,15 +53,20 @@ from .tasks import AgentTask, TaskRuntime
 class SupervisorState:
     mode: Mode = Mode.PASSIVE
     last_partial: str = ""
+    # transcript_log stays a plain list: it is SLICED (log[ln:]) by the
+    # live_session / noise_stress drivers, and deque has no slicing. The other
+    # high-churn histories are bounded deques (maxlen >> one turn's worth) so a
+    # long-running process can't grow them without bound (rc-6/aq-7); only the
+    # most recent N matter for snapshot/diagnostics/continuation.
     transcript_log: list[str] = field(default_factory=list)
-    observations: list[SpeechObservation] = field(default_factory=list)
-    decisions: list[IntentDecision] = field(default_factory=list)
+    observations: "deque[SpeechObservation]" = field(default_factory=lambda: deque(maxlen=256))
+    decisions: "deque[IntentDecision]" = field(default_factory=lambda: deque(maxlen=256))
     active_tasks: dict[str, AgentTask] = field(default_factory=dict)
     queued_tasks: list[AgentTask] = field(default_factory=list)
     pending_confirmations: dict[str, AgentTask] = field(default_factory=dict)
-    spoken_outputs: list[str] = field(default_factory=list)
-    event_log: list[AgentEvent] = field(default_factory=list)
-    failures: list[str] = field(default_factory=list)
+    spoken_outputs: "deque[str]" = field(default_factory=lambda: deque(maxlen=512))
+    event_log: "deque[AgentEvent]" = field(default_factory=lambda: deque(maxlen=1024))
+    failures: "deque[str]" = field(default_factory=lambda: deque(maxlen=128))
 
 
 class AgentSupervisor:
@@ -120,7 +131,12 @@ class AgentSupervisor:
         self.bus.publish(event)
 
     def handle_event(self, event: AgentEvent) -> None:
-        self.state.event_log.append(event)
+        # STT_PARTIAL is the highest-volume kind (one per ASR frame) and no
+        # consumer reads partials back out of the log -- keep it out so the
+        # bounded event_log isn't churned through by interim transcripts
+        # (rc-6/aq-7). The STT_PARTIAL dispatch below still runs.
+        if event.kind != EventKind.STT_PARTIAL:
+            self.state.event_log.append(event)
 
         if event.kind == EventKind.STT_PARTIAL:
             self._handle_speech(str(event.payload.get("text", "")), is_final=False)
@@ -151,8 +167,27 @@ class AgentSupervisor:
             self._start_queued_tasks()
             return
         if event.kind == EventKind.TASK_FAILED:
-            self.state.active_tasks.pop(str(event.payload.get("task_id", "")), None)
+            task_id = str(event.payload.get("task_id", ""))
+            self.state.active_tasks.pop(task_id, None)
             self.state.failures.append(str(event.payload.get("error", "")))
+            # Don't leave dead air on a failed turn -- speak an apology, but only
+            # for a turn that would have spoken (not dictation / meeting notes /
+            # a proactive follow-up). Epoch-stamped so a barge-in still
+            # suppresses it (mirrors the reap path's _TIMEOUT_APOLOGY; sr-2).
+            # Older events may lack the new payload keys -> default speak=True
+            # and fall back to the current epoch.
+            if event.payload.get("speak", True) and not event.payload.get("followup"):
+                self.state.spoken_outputs.append(_FAILURE_APOLOGY)
+                self.publish(
+                    AgentEvent(
+                        EventKind.TTS_REQUEST,
+                        {
+                            "task_id": task_id,
+                            "text": _FAILURE_APOLOGY,
+                            "epoch": event.payload.get("epoch", self.speech_epoch),
+                        },
+                    )
+                )
             self._start_queued_tasks()
 
     def drain(self) -> int:
@@ -180,6 +215,13 @@ class AgentSupervisor:
                 len(self.state.pending_confirmations),
             )
             for task in list(self.state.active_tasks.values()):
+                task.cancel()
+            # Cancel queued (not-yet-started) tasks too, BEFORE clearing the
+            # list (rc-4): a concurrent _start_queued_tasks (bus thread) may
+            # already hold a reference to one of these, so setting cancel_event
+            # ensures _start_task drops it instead of resurrecting it as active
+            # after a barge-in.
+            for task in self.state.queued_tasks:
                 task.cancel()
             self.state.queued_tasks.clear()
             self.state.pending_confirmations.clear()
@@ -339,6 +381,12 @@ class AgentSupervisor:
         # is dequeued before the trailing TTS_REQUESTs (priority 100) and has
         # already removed the task from active_tasks.
         with self._cancel_lock:
+            # Drop a task whose cancel_event was set after it was queued (e.g. a
+            # cancel_all / _cancel_one landed between the queue check and here):
+            # never register or spawn a worker for an already-cancelled turn
+            # (rc-4). The re-check under the lock is the authoritative drop.
+            if task.cancel_event.is_set():
+                return
             task.speech_epoch = self.speech_epoch
             timeout = self._timeout_for(task.mode)
             if timeout > 0:
@@ -605,13 +653,31 @@ class AgentSupervisor:
         return active_research >= self.analyzer.policy.research_parallel_tasks
 
     def _start_queued_tasks(self) -> None:
+        # Snapshot + swap the queue under the cancel lock so a concurrent
+        # cancel_all (audio thread) cannot clear queued_tasks mid-iteration and
+        # have this method reassign a stale `remaining` over the cleared list --
+        # which would resurrect a cancelled turn (rc-4). _start_task is still
+        # called OUTSIDE the lock (it re-acquires the non-reentrant lock itself
+        # and re-checks cancel_event), so a task cancelled in the window between
+        # snapshot and start is dropped there rather than resurrected.
+        with self._cancel_lock:
+            pending = list(self.state.queued_tasks)
+            self.state.queued_tasks = []
         remaining: list[AgentTask] = []
-        for task in self.state.queued_tasks:
+        to_start: list[AgentTask] = []
+        for task in pending:
+            if task.cancel_event.is_set():
+                continue  # cancelled while queued -- drop it
             if self._should_queue(task):
                 remaining.append(task)
-                continue
+            else:
+                to_start.append(task)
+        with self._cancel_lock:
+            # Re-queue the not-yet-runnable tasks AHEAD of anything appended
+            # while we were unlocked, preserving FIFO order.
+            self.state.queued_tasks = remaining + self.state.queued_tasks
+        for task in to_start:
             self._start_task(task)
-        self.state.queued_tasks = remaining
 
     def _confirm_next(self) -> None:
         if not self.state.pending_confirmations:

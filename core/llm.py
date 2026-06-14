@@ -373,6 +373,36 @@ class LlamaCppLLM:
                     yield piece
 
 
+def _redact_messages_for_egress(messages: list[dict]) -> list[dict]:
+    """Scrub high-confidence PII (cards/SSN/keys/email/phone/secrets) from outbound
+    cloud messages -- a §9.7 last-line net INDEPENDENT of the regex sensitivity
+    classifier. If a credit card / SSN / API key slips past PRIVATE classification
+    (garbled ASR, PII phrased outside the pattern set) and a turn is sent to a
+    third-party cloud, this still removes it. Conservative (``redact_pii`` only
+    touches Luhn-checked cards, SSNs, known key formats, etc.), so ordinary queries
+    are untouched. Applied ONLY to cloud egress -- never to a local model. Text-only
+    redaction; image parts (data URIs) pass through (vision egress is gated upstream
+    by sensitivity + the local-only captioning rule)."""
+    from always_on_agent.untrusted import redact_pii  # stdlib-only; core->aoa is allowed
+
+    out: list[dict] = []
+    for m in messages:
+        content = m.get("content")
+        if isinstance(content, str):
+            out.append({**m, "content": redact_pii(content)})
+        elif isinstance(content, list):
+            parts = [
+                ({**p, "text": redact_pii(p["text"])}
+                 if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)
+                 else p)
+                for p in content
+            ]
+            out.append({**m, "content": parts})
+        else:
+            out.append(m)
+    return out
+
+
 def _openai_messages(
     prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]]
 ) -> list[dict]:
@@ -495,9 +525,15 @@ class OpenAICompatLLM:
         options: Optional[dict] = None,
         profile: "ProviderProfile | str | None" = None,
         client=None,
+        redact_pii_outbound: bool = False,
     ):
         self.model = model
         self._base_url = base_url
+        # §9.7 last-line net: when True (set by the cloud-client factory), scrub
+        # high-confidence PII from the outbound prompt before it leaves the device.
+        # Default False so a LOCAL OpenAICompat endpoint (llama-server) and existing
+        # callers/tests are byte-identical; only cloud providers enable it.
+        self._redact_pii_outbound = bool(redact_pii_outbound)
         self._api_key = api_key or (os.environ.get(api_key_env) if api_key_env else None)
         # Socket/read timeout (seconds) handed to the OpenAI client. A small
         # value (BR1) reaps a losing cloud worker still blocked in the first-
@@ -534,9 +570,12 @@ class OpenAICompatLLM:
         return self._client
 
     def _create_kwargs(self, prompt, system, images, *, stream: bool) -> dict:
+        messages = _openai_messages(prompt, system, images)
+        if self._redact_pii_outbound:
+            messages = _redact_messages_for_egress(messages)
         kwargs: dict = {
             "model": self.model,
-            "messages": _openai_messages(prompt, system, images),
+            "messages": messages,
             "stream": stream,
         }
         # Merge caller-supplied options; the profile may then strip / reroute.

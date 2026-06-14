@@ -122,10 +122,10 @@
       }
     },
     "cloud_chains": {
-      "_comment": "Ordered failover chains by data-sensitivity. HedgeLLM tries the first cloud; on error/timeout it advances to the next; finally falls back to the local main LLM. US-only chains keep personal data under US legal jurisdiction; the public chain uses cheaper CN-hosted providers when the content isn't about the user.",
+      "_comment": "Ordered failover chains by data-sensitivity. HedgeLLM tries the first cloud; on error/timeout it advances to the next; finally falls back to the local main LLM. ALL default chains are US-hosted -- a CN-hosted preset (deepseek/moonshot) is NEVER in a default chain, so even with allow_prc=true a mis-classified personal turn cannot cross to a PRC endpoint by default; add a CN preset explicitly + set allow_prc to opt in. (Defense-in-depth: redact_pii_outbound scrubs high-confidence PII on every outbound cloud prompt regardless of chain.)",
       "private": ["cerebras_gpt_oss_120b", "groq_gpt_oss_120b"],
       "code":    ["cerebras_glm_4_7_coder", "groq_gpt_oss_120b"],
-      "public":  ["openrouter_gpt_oss_120b", "deepseek_v4_flash", "cerebras_gpt_oss_120b"]
+      "public":  ["openrouter_gpt_oss_120b", "cerebras_gpt_oss_120b"]
     },
     "cloud_routing": {
       "_comment": "Maps Sensitivity tag (from core/sensitivity.py) -> chain name above. default_chain is used when sensitivity is missing/unknown -- 'private' is the safe default.",

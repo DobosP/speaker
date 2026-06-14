@@ -125,23 +125,141 @@ def test_current_utterance_is_not_recalled_back():
 # --- optional pure-Python cosine path (with a fake embedder) ----------------
 
 
-def _fake_embedder(text: str):
-    """Deterministic 3-dim 'embedding': counts of three marker words. No model."""
-    t = text.lower()
-    return [float(t.count("alpha")), float(t.count("beta")), float(t.count("gamma"))]
+# A SYNONYM-axis embedder: distinct vocabularies map to the same axis, so a query
+# can match a row it shares NO literal word with -- isolating cosine from keyword
+# overlap. No model.
+_AXES = {
+    "cat": 0, "dog": 0, "pet": 0,           # axis 0: animals
+    "car": 1, "truck": 1, "vehicle": 1,      # axis 1: vehicles
+    "pizza": 2, "sushi": 2, "meal": 2,       # axis 2: food
+}
 
 
-def test_cosine_path_ranks_by_embedding_similarity():
-    mem = SqliteVecMemory(":memory:", embedder=_fake_embedder)
+def _axis_embedder(text: str):
+    v = [0.0, 0.0, 0.0]
+    for w in text.lower().split():
+        if w in _AXES:
+            v[_AXES[w]] += 1.0
+    return v
+
+
+def test_cosine_path_ranks_by_embedding_not_keyword_overlap():
+    """The query shares NO literal token with the winning row, so only cosine
+    (not keyword overlap) can pick it -- isolating the embedding path."""
+    mem = SqliteVecMemory(":memory:", embedder=_axis_embedder)
     try:
-        mem.add("the alpha alpha report", tags=("user",))   # vec ~ (2,0,0)
-        mem.add("a beta beta summary", tags=("user",))      # vec ~ (0,2,0)
-        mem.add("gamma notes here", tags=("user",))         # vec ~ (0,0,1)
-        # Query aligned with the beta axis -> the beta row ranks first, even
-        # though it shares NO keyword with the query (pure cosine, not overlap).
-        results = mem.search("beta", limit=3)
+        mem.add("my dog is friendly", tags=("user",))   # axis 0
+        mem.add("the truck is fast", tags=("user",))    # axis 1
+        mem.add("i ate sushi today", tags=("user",))    # axis 2
+        # 'vehicle' overlaps no row's words but maps to the vehicle axis.
+        results = mem.search("vehicle", limit=3)
         assert results, "cosine path returned nothing"
-        assert "beta" in results[0].text
+        assert "truck" in results[0].text
+    finally:
+        mem.close()
+    # Control: the keyword path (no embedder) finds NOTHING for 'vehicle' (zero
+    # overlap), proving the win above came from cosine, not overlap.
+    kw = SqliteVecMemory(":memory:")
+    try:
+        kw.add("the truck is fast", tags=("user",))
+        assert kw.search("vehicle") == []
+    finally:
+        kw.close()
+
+
+def test_add_time_embedder_failure_is_survived():
+    """A throwing embedder at add() must not abort the ingest: the row is still
+    stored (with no embedding) and recall over the other rows still works."""
+    def flaky(text: str):
+        if "boom" in text:
+            raise RuntimeError("embed failed")
+        return _axis_embedder(text)
+
+    mem = SqliteVecMemory(":memory:", embedder=flaky)
+    try:
+        mem.add("a boom dog row", tags=("user",))   # embed raises -> stored, emb=None
+        mem.add("the truck is fast", tags=("user",))
+        assert any("boom" in i.text for i in mem.all())   # stored despite embed failure
+        results = mem.search("vehicle", limit=3)
+        assert results and "truck" in results[0].text     # other rows still recallable
+    finally:
+        mem.close()
+
+
+def test_query_embedder_failure_degrades_to_no_recall():
+    """A throwing embedder on the QUERY degrades to empty recall, never raises."""
+    def flaky(text: str):
+        if text == "explode":
+            raise RuntimeError("query embed failed")
+        return _axis_embedder(text)
+
+    mem = SqliteVecMemory(":memory:", embedder=flaky)
+    try:
+        mem.add("the truck is fast", tags=("user",))
+        assert mem.context_for_llm("explode") == ""
+    finally:
+        mem.close()
+
+
+def test_double_close_is_idempotent():
+    """close() must be idempotent (matches SessionMemory; the runtime may
+    double-stop)."""
+    mem = SqliteVecMemory(":memory:")
+    mem.add("a fact", tags=("user",))
+    mem.close()
+    mem.close()  # must not raise
+
+
+def test_recall_parity_holds_beyond_the_working_window():
+    """Parity holds at ANY size: with a small working window, both backends
+    consider only the last `max_items` (SessionMemory evicts; SQLite scans the
+    same window), so the recall block stays byte-identical even after many adds."""
+    ram = SessionMemory(max_items=10)
+    sql = SqliteVecMemory(":memory:", max_items=10)
+    try:
+        for i in range(40):  # 4x the window
+            fact = f"note {i} about apple banana cherry topic {i % 5}"
+            ram.add(fact, tags=("user",))
+            sql.add(fact, tags=("user",))
+        q = "apple banana cherry topic 3"
+        assert sql.context_for_llm(q) == ram.context_for_llm(q)
+        assert sql.context_for_llm(q)  # non-empty (something recalled)
+    finally:
+        sql.close()
+
+
+def test_concurrent_add_and_recall_is_thread_safe(tmp_db):
+    """The shared connection + lock must tolerate concurrent writers/readers."""
+    import threading
+
+    mem = SqliteVecMemory(tmp_db)
+    errors: list = []
+
+    def writer(n):
+        try:
+            for i in range(100):
+                mem.add(f"row {n}-{i} apple", tags=("user",))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    def reader():
+        try:
+            for _ in range(100):
+                mem.context_for_llm("apple")
+                mem.all()
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(0,)),
+               threading.Thread(target=writer, args=(1,)),
+               threading.Thread(target=reader),
+               threading.Thread(target=reader)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    try:
+        assert errors == [], f"concurrent access raised: {errors[:3]}"
     finally:
         mem.close()
 

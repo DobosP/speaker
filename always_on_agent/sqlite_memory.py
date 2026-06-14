@@ -21,6 +21,7 @@ from __future__ import annotations
 import array
 import json
 import math
+import os
 import sqlite3
 import threading
 import time
@@ -29,11 +30,6 @@ from typing import Callable, Optional, Sequence
 from .memory import DEFAULT_MAX_ITEMS, MemoryItem, candidate_for_item
 from .recall import Candidate, RecallBudget, build_block
 from .text import keywords, normalize_text
-
-# How many recent rows to consider as the recall candidate pool. Bounds both the
-# keyword scan and the pure-Python cosine so a long-lived DB never makes recall
-# scan unboundedly; the shared selector then budgets/cuts within this pool.
-_RECALL_POOL = 64
 
 Embedder = Callable[[str], Sequence[float]]
 
@@ -83,9 +79,22 @@ class SqliteVecMemory:
         self._embedder = embedder
         self._ttl_days = ttl_days if (ttl_days and ttl_days > 0) else None
         self._lock = threading.Lock()
+        self._closed = False
         # check_same_thread=False + our own lock: the connection is shared across
         # the bus/worker threads, serialized by self._lock.
         self._conn = sqlite3.connect(path, check_same_thread=False)
+        # Persisted post-ASR text (and, with visual memory on, screen OCR/caption
+        # rows) is PRIVATE (§9.7). The default umask leaves a new sqlite file
+        # group/other-readable; lock the file + its dir to owner-only so a
+        # co-tenant on a multi-user host can't read it off disk. Best-effort.
+        if path != ":memory:":
+            try:
+                os.chmod(path, 0o600)
+                parent = os.path.dirname(os.path.abspath(path))
+                if parent:
+                    os.chmod(parent, 0o700)
+            except OSError:
+                pass
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS items (
@@ -123,10 +132,15 @@ class SqliteVecMemory:
             self._conn.commit()
 
     def _recent_rows(self) -> list[tuple[str, tuple[str, ...], float, Optional[bytes]]]:
+        # The recall candidate pool is the SAME window all() exposes and that the
+        # in-RAM SessionMemory effectively scans (it evicts beyond max_items, so
+        # its candidate set IS the last max_items). Tracking max_items here -- not
+        # a separate constant -- keeps recall byte-identical with SessionMemory at
+        # any DB size and consistent with all().
         with self._lock:
             cur = self._conn.execute(
                 "SELECT text, tags, ts, embedding FROM items ORDER BY id DESC LIMIT ?",
-                (_RECALL_POOL,),
+                (self._max_items,),
             )
             rows = cur.fetchall()
         out: list[tuple[str, tuple[str, ...], float, Optional[bytes]]] = []
@@ -217,7 +231,12 @@ class SqliteVecMemory:
             return cur.rowcount or 0
 
     def close(self) -> None:
+        # Idempotent (matches SessionMemory): a second close() -- or the runtime's
+        # double stop() path -- must not raise on a closed connection.
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             try:
                 self._conn.commit()
             finally:

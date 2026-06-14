@@ -466,6 +466,8 @@
     "recent_context_reset_max_words": 8,
     "embeddings": false,
     "max_recent": 20,
+    "_procedural_comment": "Procedural memory (default OFF): when on, an explicit teach directive in user speech ('from now on...', 'always...', 'never...', 'call me X') is captured as a durable behavior RULE (stored never-TTL'd) and injected as a small TRUSTED 'Standing user preferences' instruction block on every turn, so the assistant follows it going forward. Default OFF keeps the prompt byte-identical until opted in.",
+    "procedural_enabled": false,
     "profile_enabled": false,
     "_continuity_comment": "cross_session_continuity (lm-2, default OFF like recall_enabled, Postgres tier): on a fresh process seed the rolling-summary head from the newest persisted summary AND fall back to the most-recent user messages ACROSS sessions (the session_id regenerates each run), so memory survives a restart. Default OFF keeps the opening-turn context byte-identical until measured/opted-in. The SQLite backend is inherently persistent so it doesn't need this.",
     "cross_session_continuity": false,

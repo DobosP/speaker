@@ -10,8 +10,9 @@ from typing import Callable, Iterator, Mapping, Optional, Sequence
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import Memory
+from always_on_agent.procedural import extract_rule, render_rules
 from always_on_agent.recall import VISION_LABEL, compress, trim_block_to_tokens
-from always_on_agent.untrusted import wrap_untrusted
+from always_on_agent.untrusted import detect_injection, wrap_untrusted
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -106,6 +107,10 @@ class RecallConfig:
     enabled: bool = False
     max_tokens: int = 150
     max_chars: Optional[int] = None  # deprecated; derives max_tokens when set
+    # Procedural memory (user-taught behavior rules): capture explicit teach
+    # directives + inject the rule block on every turn. Default OFF (opt-in), so the
+    # capture + injection are skipped and the prompt is byte-identical until enabled.
+    procedural_enabled: bool = False
 
     def __post_init__(self) -> None:
         if self.max_chars is not None:
@@ -121,6 +126,7 @@ class RecallConfig:
         return cls(
             enabled=bool(data.get("recall_enabled", False)),
             max_tokens=max(1, int(tok)),
+            procedural_enabled=bool(data.get("procedural_enabled", False)),
         )
 
 
@@ -303,6 +309,18 @@ def attach_llm_capabilities(
         # flagged), and its folded prompt already embeds the prior context.
         meta = context.get("metadata")
         skip_user_memory = bool(meta.get("skip_user_memory")) if isinstance(meta, dict) else False
+        # Procedural capture (default-OFF): detect an explicit teach directive in the
+        # LIVE user query and store it as a durable behavior rule -- done BEFORE the
+        # escalation branch so an escalated teach utterance still registers. The rule
+        # rides every later turn. detect_injection() guards against a garbled /
+        # bystander / self-transcribed directive becoming a TRUSTED rule. Best-effort.
+        if memory is not None and not skip_user_memory and recall_cfg.procedural_enabled:
+            try:
+                rule = extract_rule(query)
+                if rule and not detect_injection(rule):
+                    memory.add(rule, tags=("procedural",))
+            except Exception:  # noqa: BLE001 - capture is best-effort, never fatal
+                log.exception("procedural rule capture failed; continuing")
         # Recent-conversation context (short-term memory): the PRIOR turns, built
         # ONCE here -- BEFORE the escalation branch and BEFORE ingesting the current
         # query -- so the model can resolve "its"/"the second one". Built up front
@@ -436,8 +454,28 @@ def attach_llm_capabilities(
                     (wrap_untrusted("\n\n".join(prefix_parts), source="memory") + "\n\n")
                     if prefix_parts else ""
                 )
+                # Procedural memory: standing user-taught behavior rules, injected on
+                # EVERY turn as a small TRUSTED instruction block (the user authored
+                # them, so -- unlike recalled/screen/web content -- they are NOT
+                # spotlighted as untrusted). Placed adjacent to the system prompt so
+                # they read as authoritative instructions. Empty (-> byte-identical)
+                # when procedural memory is off or no rules are stored.
+                procedural_prefix = ""
+                if recall_cfg.procedural_enabled:
+                    rules_fn = getattr(memory, "procedural_rules", None)
+                    rules = list(rules_fn()) if callable(rules_fn) else []
+                    block = render_rules(rules)
+                    if block:
+                        procedural_prefix = block + "\n\n"
+                        # §9.7: a rule may carry private info ("address me as <X>"),
+                        # so float the turn's sensitivity over it before any LLM call
+                        # -- a private rule must not pin the turn to a public chain.
+                        context["sensitivity"] = most_sensitive(
+                            str(context.get("sensitivity") or PRIVATE),
+                            classify_sensitivity(block),
+                        )
                 suffix = ("\n\n" + recent_block) if recent_block else ""
-                system_for_call = prefix + system + suffix
+                system_for_call = prefix + procedural_prefix + system + suffix
             except Exception:  # noqa: BLE001 - context is best-effort, never fatal
                 log.exception("conversation context / recall failed; answering without it")
         # Live headroom hint (smart-routing-2 + load follow-up): publish the

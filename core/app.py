@@ -224,6 +224,10 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
             # lm-7: size the all() ring off the SAME working_window as the other
             # backends so the addressing/cleaner recent buffer is consistent.
             working_window=working_window,
+            # lm-2: cross-session continuity (default OFF) -- seed the rolling
+            # summary head + fall back to prior-session recent messages on a fresh
+            # process so memory survives a restart on the Postgres tier.
+            cross_session_continuity=bool(mem_cfg.get("cross_session_continuity", False)),
         )
     except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
         redacted = _redact_db_url(db_url) if db_url else "(no DATABASE_URL)"

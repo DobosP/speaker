@@ -461,6 +461,8 @@
     "embeddings": false,
     "max_recent": 20,
     "profile_enabled": false,
+    "_continuity_comment": "cross_session_continuity (lm-2, default OFF like recall_enabled, Postgres tier): on a fresh process seed the rolling-summary head from the newest persisted summary AND fall back to the most-recent user messages ACROSS sessions (the session_id regenerates each run), so memory survives a restart. Default OFF keeps the opening-turn context byte-identical until measured/opted-in. The SQLite backend is inherently persistent so it doesn't need this.",
+    "cross_session_continuity": false,
     "episodic_ttl_days": 90,
     "summary_ttl_days": 365,
     "save_interval_sec": 240,

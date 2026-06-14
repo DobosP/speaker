@@ -131,6 +131,18 @@ def test_build_memory_working_window_defaults_to_200(monkeypatch):
     assert _FakeAdapter.last_kwargs["working_window"] == 200
 
 
+def test_build_memory_forwards_cross_session_continuity(monkeypatch):
+    """lm-2: the flag is forwarded to the adapter; defaults OFF."""
+    _force_postgres(monkeypatch)
+    app._build_memory({"memory": {"backend": "auto"}}, _FakeFastLLM())
+    assert _FakeAdapter.last_kwargs["cross_session_continuity"] is False
+
+    app._build_memory(
+        {"memory": {"backend": "auto", "cross_session_continuity": True}}, _FakeFastLLM()
+    )
+    assert _FakeAdapter.last_kwargs["cross_session_continuity"] is True
+
+
 def test_config_has_no_dead_memory_knobs():
     """Regression guard (lm-4/5/6/8): the zero-reader memory knobs were deleted;
     keep them gone so they don't drift back as dead config."""

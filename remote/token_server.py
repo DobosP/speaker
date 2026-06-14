@@ -218,6 +218,14 @@ def create_app(config: Optional[dict] = None):
     """Build the FastAPI app (lazy import so this module loads without fastapi)."""
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
 
+    # Make `Request` resolvable as a module global so FastAPI can evaluate the
+    # PEP 563 string annotations (`from __future__ import annotations`) on the
+    # route handlers below -- they are declared `request: Request`, but the
+    # import is local to keep this module import-safe without fastapi. Without
+    # this, FastAPI cannot resolve the forward ref and mis-binds `request` as a
+    # query param, 422-ing every /chat call before it reaches the handler.
+    globals()["Request"] = Request
+
     config = config if config is not None else _load_config()
     app = FastAPI(title="Speaker remote")
     _holder = {"llm": None}
@@ -263,8 +271,12 @@ def create_app(config: Optional[dict] = None):
         rm = sanitize_room_name(room)
         try:
             jwt = create_access_token(ident, rm)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+        except Exception:
+            # Log the real cause server-side; return a generic message so we
+            # don't leak config/secret details (e.g. a missing LIVEKIT_API_SECRET
+            # surfaces in the exception text) to the client.
+            logger.exception("token mint failed for identity=%r room=%r", ident, rm)
+            raise HTTPException(status_code=500, detail="failed to mint access token")
         return {"token": jwt, "url": os.environ.get("LIVEKIT_URL", ""), "room": rm, "identity": ident}
 
     @app.post("/chat")
@@ -289,8 +301,11 @@ def create_app(config: Optional[dict] = None):
             return {"reply": ""}
         try:
             reply = llm().generate(text)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=str(exc))
+        except Exception:
+            # Log server-side; the backend error can carry host/path detail
+            # (Ollama URL, model path), so the client gets a generic message.
+            logger.exception("chat LLM turn failed")
+            raise HTTPException(status_code=500, detail="chat backend error")
         return {"reply": (reply or "").strip()}
 
     web_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web")

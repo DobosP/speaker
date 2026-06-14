@@ -17,6 +17,18 @@ logs/runs/run-<id>.wav           session audio       (only with --record)
 global `*.wav` ignore is overridden there), so the user can push a failing run
 and we can replay it.
 
+> **Privacy — committed bundles must be PII-free (architecture §9.7).** A run
+> bundle can contain *raw voice* (`run-<id>.wav`), *verbatim transcripts*
+> (`summary.json` → `transcript[].text`), and *full prompts* (the `.txt` DEBUG
+> trace). The §9.7 invariant is "raw audio never leaves the device" — so do
+> **not** `git add`/push a bundle that carries real personal speech or
+> identifiable content. Commit a bundle only when it is PII-free: either it
+> contains no real personal info, or you have scrubbed/synthesized the
+> sensitive parts (drop the `.wav`, redact transcript text) before staging.
+> The replay/regression value lives in the *audio shape* and *timings*, not in
+> what was actually said — prefer a non-sensitive re-recording for a committed
+> fixture.
+
 ---
 
 ## How to capture a run (what the user runs)
@@ -192,7 +204,10 @@ When the assistant has misbehaved in real life and you want to debug it:
    `git add logs/runs/run-*.{txt,summary.json,wav}`, commit + push. The WAV
    becomes a deterministic replay fixture (`python -m core --engine replay
    --replay-dir logs/runs --debug`), and the `summary.json` makes the
-   failure mode searchable.
+   failure mode searchable. Before pushing, confirm the bundle is **PII-free
+   per §9.7** (see the privacy callout above): scrub or omit the `.wav` and
+   redact verbatim transcript text if the session contained real personal
+   speech.
 4. **Open `summary.json` → `stuck_hints` first.** If the list is non-empty
    the watchdog or post-hoc check has named the failure; if it's still
    empty, the watchdog deadlines may be too generous for what you saw — the

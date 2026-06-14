@@ -1,0 +1,32 @@
+name: Secret scan
+
+# Blocking secret-scan gate: runs gitleaks on every push to main and every PR
+# so a newly-committed credential (API key, token, password) is caught before
+# merge -- enforcing CREDENTIALS.md's golden rule (secrets live in the env, never
+# in the tree) in CI.
+#
+# Scope: this gate scans the *incoming* commits (the PR diff / the pushed
+# commits), NOT the full history -- it blocks NEW leaks. A one-time full-history
+# audit + purge is a separate, owner-driven pre-release step (roadmap P0/P5 and
+# .agents/backlog.md): the known historical `.env` leak must be rotated +
+# filter-repo'd out, which a CI gate cannot do. Allowlist tuning (e.g. the
+# Android debug keystore) lives in .gitleaks.toml.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

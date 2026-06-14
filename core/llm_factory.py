@@ -291,6 +291,15 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         if default_chain not in hedged_chains:
             default_chain = next(iter(hedged_chains))
         selector = build_chain_selector({"llm": llm_cfg})
+        # Visibility: cloud egress is now active (the user deliberately set
+        # enabled=true AND a key resolved). Log it WARN-level so the privacy
+        # boundary change isn't silent -- §9.7 still keeps raw audio local + scrubs
+        # outbound PII, but the user should know cloud is on.
+        log.warning(
+            "cloud LLM egress ACTIVE: %d chain(s) %s, default=%s, redact_pii_outbound=%s "
+            "(post-ASR text only; raw audio/STT/TTS stay local per §9.7)",
+            len(hedged_chains), sorted(hedged_chains), default_chain, redact_pii_outbound,
+        )
         return SensitivityRouterLLM(
             hedged_chains, selector=selector, default_chain=default_chain
         )

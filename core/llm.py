@@ -758,6 +758,11 @@ class HedgeLLM:
         self.strategy = strategy
         self.hedge_delay = max(0.0, hedge_delay_ms / 1000.0)
         self.ttft_deadline = max(0.0, ttft_deadline_ms / 1000.0)
+        # Egress receipt (provenance): which source served the LAST stream --
+        # "local" or "cloud_<i>" (the chain index), or None before any call. Lets a
+        # caller record/surface whether an answer actually came from the device or a
+        # cloud provider (HedgeLLM races, so the winner isn't knowable a priori).
+        self.last_source: Optional[str] = None
 
     @property
     def cloud(self) -> "Optional[LLMClient]":
@@ -835,6 +840,7 @@ class HedgeLLM:
             else max(0.0, hedge_delay_ms / 1000.0)
         )
         if not self._clouds:
+            self.last_source = "local"  # egress receipt: served on-device, no cloud
             yield from self.local.stream(prompt, system=system, images=images)
             return
 
@@ -998,6 +1004,7 @@ class HedgeLLM:
                     continue
                 if kind == "tok":
                     winner = tag
+                    self.last_source = tag  # egress receipt: this source served the turn
                     buffered.append(str(val))
                 else:  # this source died (error or empty stream)
                     dead.add(tag)

@@ -844,6 +844,9 @@ class HedgeLLM:
             yield from self.local.stream(prompt, system=system, images=images)
             return
 
+        # Reset the egress receipt at the START of the race so a no-winner turn
+        # (every source dead/empty) reports None rather than a stale prior source.
+        self.last_source = None
         q: "queue.Queue[tuple[str, str, object]]" = queue.Queue()
         cloud_tags = [f"cloud_{i}" for i in range(len(self._clouds))]
         stops: dict[str, threading.Event] = {

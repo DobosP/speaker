@@ -70,6 +70,15 @@ _LINE = re.compile(r"^\s*(TOOL|FINAL)\b", re.IGNORECASE)
 _TOOL_LINE = re.compile(r"^\s*TOOL\s+([\w.]+)\s*:?\s*(.*)$", re.IGNORECASE | re.DOTALL)
 _FINAL_LINE = re.compile(r"^\s*FINAL\s*:?\s*(.*)$", re.IGNORECASE | re.DOTALL)
 
+# STRICT directives for the post-line-1 / decorated-line scan: a COLON is REQUIRED
+# (right after FINAL, or after the tool name), so an ordinary prose line that merely
+# starts with "Tool ..." / "Final ..." is NOT misread as a directive. Only LEADING
+# bullet/markdown decoration is stripped (never interior chars), so a payload like
+# "C# tutorials" or a query containing * / # is preserved verbatim.
+_LEAD_NOISE = re.compile(r"^[\s>*#`\-]+")
+_TOOL_STRICT = re.compile(r"^TOOL\s+([\w.]+)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+_FINAL_STRICT = re.compile(r"^FINAL\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+
 # Heuristic markers that an ASSISTANT-mode query wants tool use / gathering
 # rather than a one-shot reply (used by the smart-mode escalation policy).
 _ESCALATE_MARKERS = (
@@ -125,36 +134,43 @@ def _cancelled(cancel: Optional[Event]) -> bool:
     return cancel is not None and cancel.is_set()
 
 
-# Markdown / list noise a small model often wraps a step line in (e.g.
-# "- **TOOL** web.search: x", "`FINAL: ...`"). Stripped per-line before matching so
-# a well-intentioned-but-decorated tool call still parses (P3 reliability: small
-# instruct models emit malformed/decorated tool calls -- this is the lightweight,
-# backend-agnostic stand-in for grammar-constrained decoding).
-_STEP_NOISE = str.maketrans("", "", "*`#>")
-
-
 def _parse_step(text: str) -> tuple[Optional[str], str]:
     """Return ``(action, argument)``.
 
     ``action`` is a tool name, the literal ``"FINAL"``, or ``None`` when the
     model produced something unparseable (treated as "wrap up").
 
-    Scans EVERY line (not just the first) for the first TOOL/FINAL directive, after
-    stripping common markdown/bullet noise, so a small model that emits a line of
-    preamble ("Let me check...") before the directive, or wraps it in markdown,
-    still parses instead of falling through to a contextless FINAL.
+    Two passes (P3 reliability for small models that decorate / preface a step):
+    1. LINE 1, lenient -- byte-identical to the original parser (the common case).
+    2. A STRICT (colon-required) scan over every line, with only LEADING bullet/
+       markdown decoration + a trailing markdown fence removed, to catch a directive
+       emitted after a preamble line or wrapped in markdown. The colon requirement
+       prevents an ordinary prose line ("Tool web.search is great...") from being
+       misread as a directive, and leading-only stripping preserves the payload
+       (e.g. "C# tutorials") verbatim.
     """
     stripped = text.strip()
     if not stripped:
         return None, ""
-    for raw in stripped.splitlines():
-        line = raw.translate(_STEP_NOISE).strip().lstrip("-").strip()
-        if not _LINE.match(line):
-            continue
-        final = _FINAL_LINE.match(line)
+    lines = stripped.splitlines()
+
+    first = lines[0]
+    if _LINE.match(first):
+        final = _FINAL_LINE.match(first)
         if final:
             return "FINAL", final.group(1).strip()
-        tool = _TOOL_LINE.match(line)
+        tool = _TOOL_LINE.match(first)
+        if tool:
+            return tool.group(1).strip(), tool.group(2).strip()
+
+    for raw in lines:
+        line = _LEAD_NOISE.sub("", raw)
+        if line.endswith("`"):
+            line = line[:-1]
+        final = _FINAL_STRICT.match(line)
+        if final:
+            return "FINAL", final.group(1).strip()
+        tool = _TOOL_STRICT.match(line)
         if tool:
             return tool.group(1).strip(), tool.group(2).strip()
     return None, stripped

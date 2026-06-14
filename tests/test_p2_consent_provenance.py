@@ -42,6 +42,17 @@ def test_last_source_cloud_when_cloud_wins():
     assert h.last_source == "cloud_0"
 
 
+def test_last_source_resets_on_no_winner():
+    # All sources empty (no winner): last_source must report None, not a stale
+    # prior source -- the receipt is reset at the start of each cloud-path stream.
+    h = HedgeLLM(local=_FakeLLM(["x"]), cloud=[_FakeLLM(["y"])], hedge_delay_ms=0)
+    "".join(h.stream("q"))  # produces a winner
+    assert h.last_source is not None
+    h2 = HedgeLLM(local=_FakeLLM([]), cloud=[_FakeLLM([])], hedge_delay_ms=0)
+    "".join(h2.stream("q"))  # nobody produced a token
+    assert h2.last_source is None
+
+
 # --- consent: no profile silently auto-enables cloud -------------------------
 
 def _config():

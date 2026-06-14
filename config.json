@@ -31,7 +31,7 @@
     "backend": "ollama",
     "main_model": "gemma3:12b",
     "fast_model": "gemma3:4b",
-    "_router_model_comment": "P3 (optional, default unset -> uses fast_model): a dedicated LOCAL model for the routing/tool-decision slot (the capability-router's one-word ACT/SIMPLE/RESEARCH classifier + the ReAct planner's tool calls). Generic small instruct models are weak at agentic routing/tool-calling; a function-calling-tuned small model (e.g. a pulled xLAM-2-3b or Qwen3-4B) does it more reliably. Stays on-device (sees the raw query, §9.7) -- never cloud-wrapped. Owner: `ollama pull <model>` then set router_model. Ollama backend only.",
+    "_router_model_comment": "P3 (optional, default unset -> uses fast_model): a dedicated LOCAL model for the CAPABILITY-ROUTER's one-word ACT/SIMPLE/RESEARCH disambiguator slot. Generic small instruct models are weak at it; a function-calling/instruction-tuned small model (e.g. a pulled xLAM-2-3b or Qwen3-4B) does it more reliably. Stays on-device (sees the raw query, §9.7) -- never cloud-wrapped. NOTE: affects only the router's disambiguator; the ReAct planner's tool calls run on the MAIN tier (a multi-step reasoner wants the bigger model). Owner: `ollama pull <model>` then set router_model. Ollama backend only.",
     "router_model": null,
     "host": null,
     "keep_alive": "30m",
@@ -206,7 +206,7 @@
       "cleanup": {"enabled": true, "max_context": 3}
     },
     "cpu_laptop": {
-      "_comment": "Mid-range Windows/Linux laptop, no dedicated GPU (8 cores, 16GB). Local gemma3:1b only -- the 4b main is too slow on pure CPU (specsim quick TTFA would be ~3.5s+). Sensitivity-routed cloud chains ENABLED with hedge_delay_ms=0 (kick cloud immediately, don't wait for local). Both gates OFF (no fast-tier headroom on CPU).",
+      "_comment": "Mid-range Windows/Linux laptop, no dedicated GPU (8 cores, 16GB). Local gemma3:1b only -- the 4b main is too slow on pure CPU (specsim quick TTFA would be ~3.5s+). Sensitivity-routed cloud chains AVAILABLE (hedge_delay_ms=0 = kick cloud immediately) but DEFAULT OFF (cloud.enabled=false) -- enable deliberately; on CPU the cloud is the practical answer tier, but it must be an explicit opt-in, not silent on key-presence. Both gates OFF (no fast-tier headroom on CPU).",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",
@@ -247,7 +247,7 @@
       }
     },
     "phone_lite": {
-      "_comment": "Low-end phone (6GB RAM, mid-range SoC): single-tier gemma3:1b GGUF Q4 only. The 4b model thrashes RAM at this tier. Cloud chains ENABLED with fallback strategy -- cloud-first (with ttft_deadline), local-only as last resort. Specsim quick TTFA on-device 5s; with cloud hedge 1-2s. Gates OFF.",
+      "_comment": "Low-end phone (6GB RAM, mid-range SoC): single-tier gemma3:1b GGUF Q4 only. The 4b model thrashes RAM at this tier. Cloud chains AVAILABLE with fallback strategy (cloud-first w/ ttft_deadline, local-only last resort) but DEFAULT OFF (cloud.enabled=false) -- enable deliberately, never silently on key-presence. Specsim quick TTFA on-device 5s; with cloud 1-2s. Gates OFF.",
       "llm": {
         "backend": "llamacpp",
         "main_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",

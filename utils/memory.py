@@ -288,6 +288,7 @@ class MemoryManager:
         episodic_ttl_days: int = 90,
         summary_ttl_days: int = 365,
         recall_budget: Optional[RecallBudget] = None,
+        cross_session_continuity: bool = False,
     ):
         """Initialize the memory manager.
 
@@ -353,6 +354,12 @@ class MemoryManager:
         # Rolling summary head: the prior summary folded into the next one so
         # the layer-2 record accumulates rather than fragmenting (R2).
         self._summary_head = ""
+        # lm-2 cross-session continuity (default OFF, like recall_enabled): when
+        # on, seed _summary_head from the newest persisted summary and let
+        # _load_recent_messages fall back across sessions, so memory survives a
+        # process restart (session_id regenerates each construction). Default-off
+        # keeps the opening-turn context byte-identical until the owner opts in.
+        self.cross_session_continuity = bool(cross_session_continuity)
 
         # In-memory recent messages (Layer 1)
         self.recent_messages: List[Message] = []
@@ -378,6 +385,8 @@ class MemoryManager:
             self._init_embeddings(embedding_model)
         else:
             print("Memory embeddings: disabled (faster smart-save mode).")
+        if self.cross_session_continuity:
+            self._seed_summary_head()  # lm-2 Wire 1
         self._load_recent_messages()
 
     # --- lifecycle ---------------------------------------------------------
@@ -507,8 +516,33 @@ class MemoryManager:
             print(f"[warn] Embedding failed: {exc}")
             return None
 
+    def _seed_summary_head(self):
+        """lm-2 Wire 1: seed the rolling-summary head from the newest persisted
+        summary so the FIRST summary of a fresh process folds the prior session's
+        accumulated head in (the session_id regenerates each construction, so
+        without this every restart starts the rolling summary from empty)."""
+        if not self._db_available:
+            return
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "SELECT summary FROM summaries ORDER BY created_at DESC LIMIT 1"
+                    )
+                    row = cur.fetchone()
+            if row and row.get("summary"):
+                with self._summary_lock:
+                    self._summary_head = str(row["summary"])
+        except Exception as e:
+            print(f"[warn] Failed to seed summary head: {e}")
+
     def _load_recent_messages(self):
-        """Load recent messages from database (Layer 1 warm start)."""
+        """Load recent messages from database (Layer 1 warm start).
+
+        With cross_session_continuity ON, a fresh process (whose new session_id
+        matches no rows) falls back to the most-recent user messages ACROSS
+        sessions so the assistant resumes with prior context (lm-2 Wire 2).
+        """
         if not self._db_available:
             return
         try:
@@ -525,6 +559,20 @@ class MemoryManager:
                         (self.session_id, self.max_recent_messages),
                     )
                     rows = cur.fetchall()
+                    if not rows and self.cross_session_continuity:
+                        # Fresh process, no current-session rows: resume from the
+                        # most-recent user messages across ALL sessions.
+                        cur.execute(
+                            """
+                            SELECT role, content, timestamp
+                            FROM messages
+                            WHERE role = 'user'
+                            ORDER BY COALESCE(saved_at, timestamp) DESC
+                            LIMIT %s
+                            """,
+                            (self.max_recent_messages,),
+                        )
+                        rows = cur.fetchall()
             self.recent_messages = [
                 Message(role=row['role'], content=row['content'], timestamp=row['timestamp'])
                 for row in reversed(rows)  # oldest first

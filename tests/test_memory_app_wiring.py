@@ -220,6 +220,8 @@ def test_every_memory_config_key_is_consumed():
         "embeddings", "max_recent", "working_window", "profile_enabled",
         "cross_session_continuity", "persist_assistant",
         "episodic_ttl_days", "summary_ttl_days",
+        # procedural memory (core.capabilities.RecallConfig.from_dict)
+        "procedural_enabled",
     }
     present = {k for k in mem if not k.startswith("_")}
     unconsumed = present - consumed

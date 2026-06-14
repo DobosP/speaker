@@ -145,6 +145,12 @@ def _build_recall_budget(mem_cfg: dict):
         chars_per_token=float(mem_cfg.get("chars_per_token", 4.0) or 4.0),
         cutoff_k=float(mem_cfg.get("recall_cutoff_k", 0.0) or 0.0),
         dedup_ratio=float(mem_cfg.get("recall_dedup_ratio", 0.0) or 0.0),
+        # Multi-signal recall scoring (recency-decay + kind-importance), default-OFF
+        # (weights 0 -> relevance-only, byte-identical). recency is single-backend
+        # by design (backends stamp different wall-clocks). See RecallBudget.
+        recency_weight=float(mem_cfg.get("recall_recency_weight", 0.0) or 0.0),
+        recency_half_life_days=float(mem_cfg.get("recall_recency_half_life_days", 7.0) or 7.0),
+        importance_weight=float(mem_cfg.get("recall_importance_weight", 0.0) or 0.0),
     )
 
 

@@ -14,6 +14,7 @@ from core.metrics import (
     ASR_FINAL,
     BARGE_IN,
     BARGE_IN_STOP,
+    HANDLED_LOCAL,
     LLM_FIRST_TOKEN,
     TTS_FIRST_AUDIO,
     MetricsRecorder,
@@ -48,6 +49,20 @@ def test_warns_when_llm_never_produces_first_token(fake_clock, caplog):
     with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
         wd.tick()
     assert "llm stuck: turn 0 had asr_final but no llm_first_token" in caplog.text
+
+
+def test_handled_local_turn_is_not_flagged_stuck(fake_clock, caplog):
+    """A turn resolved by the no-LLM intent fast-path stamps HANDLED_LOCAL; it
+    has asr_final but never reaches llm_first_token -- not a stall (rc-5)."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)
+    rec.mark(HANDLED_LOCAL)
+    t[0] = 10.0  # well past the deadline
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" not in caplog.text
+    assert "tts stuck" not in caplog.text
 
 
 def test_does_not_warn_once_llm_first_token_arrives(fake_clock, caplog):

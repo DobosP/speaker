@@ -24,12 +24,18 @@ SET LOCAL statement_timeout = 0;
 DROP INDEX IF EXISTS idx_messages_embedding;
 DROP INDEX IF EXISTS idx_summaries_embedding;
 
+-- The ``embedding`` column is the UNCONSTRAINED ``vector`` type (001 keeps it
+-- multi-dim on purpose), and pgvector refuses to build an HNSW index on a
+-- column with no declared dimension. This partial index is already scoped to a
+-- single 384-dim embedder, so cast the indexed expression to ``vector(384)`` to
+-- give the index a concrete dimension. The explicit index NAME is unchanged, so
+-- the rollback's ``DROP INDEX`` still matches.
 CREATE INDEX IF NOT EXISTS idx_messages_emb_minilm_l6
-    ON messages USING hnsw (embedding vector_cosine_ops)
+    ON messages USING hnsw ((embedding::vector(384)) vector_cosine_ops)
     WITH (m = 16, ef_construction = 64)
     WHERE embedder_id = 'all-MiniLM-L6-v2';
 
 CREATE INDEX IF NOT EXISTS idx_summaries_emb_minilm_l6
-    ON summaries USING hnsw (embedding vector_cosine_ops)
+    ON summaries USING hnsw ((embedding::vector(384)) vector_cosine_ops)
     WITH (m = 16, ef_construction = 64)
     WHERE embedder_id = 'all-MiniLM-L6-v2';

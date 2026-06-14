@@ -1,0 +1,61 @@
+name: Migrations
+
+# Applies migrations/*.sql against a real Postgres+pgvector via
+# `tools/migrate.py apply`. The pytest suite builds schema from the demo SQL in
+# utils/memory.py, NOT the migration files, so only this job catches a broken
+# .sql migration (e.g. an invalid ADD CONSTRAINT). Applies twice to prove the
+# migrations are idempotent (a re-run must be a no-op).
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'migrations/**'
+      - 'tools/migrate.py'
+      - '.github/workflows/migrations.yml'
+  pull_request:
+    paths:
+      - 'migrations/**'
+      - 'tools/migrate.py'
+      - '.github/workflows/migrations.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # pgvector image ships the `vector` extension that 001_init.sql needs;
+        # plain postgres:16 would fail the CREATE EXTENSION.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: voice_assistant
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/voice_assistant
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install migration deps
+        run: pip install "yoyo-migrations>=8" "psycopg[binary]>=3.2"
+
+      - name: Show migration status
+        run: python tools/migrate.py status
+
+      - name: Apply all migrations
+        run: python tools/migrate.py apply
+
+      - name: Re-apply (idempotency check)
+        run: python tools/migrate.py apply   # must print "Nothing to apply"

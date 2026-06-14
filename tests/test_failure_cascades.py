@@ -62,12 +62,16 @@ class _RaiseBeforeTokenLLM:
     """Streaming fake that raises on the very first ``next()`` -- the LLM (or
     the whole answering capability) blew up before producing anything."""
 
+    def __init__(self) -> None:
+        self.stream_calls = 0
+
     def generate(self, prompt: str, *, system: Optional[str] = None,
                  images: Optional[Sequence[object]] = None) -> str:  # pragma: no cover
         raise RuntimeError("generate exploded")
 
     def stream(self, prompt: str, *, system: Optional[str] = None,
                images: Optional[Sequence[object]] = None) -> Iterator[str]:
+        self.stream_calls += 1
         raise RuntimeError("stream exploded before first token")
         yield ""  # pragma: no cover - unreachable, marks this a generator
 
@@ -146,39 +150,39 @@ def test_llm_stream_raising_mid_token_does_not_wedge_the_runtime():
         runtime.stop()
 
 
-def test_runtime_recovers_a_normal_turn_after_an_llm_crash():
-    """The headline anti-wedge proof: after a turn whose LLM raised, a fresh
-    turn on a HEALTHY model is answered normally.
+def test_fast_tier_crash_is_rescued_by_cross_tier_retry():
+    """sr-2 cross-tier retry: when the chosen (fast) tier's LLM raises before any
+    audio is emitted, the turn is transparently retried on the healthy MAIN tier
+    IN-TURN -- so an Ollama/GGUF backend error no longer mutes the assistant.
 
     Wiring exploits the real two-model split (core/capabilities.py): ASSISTANT
-    turns answer on ``fast_llm`` (here, the bomb), while a RESEARCH turn runs
-    ``research.local`` on the main ``llm`` (here, healthy). One immutable runtime
-    thus yields one crashed turn followed by one clean turn -- and the second can
-    only succeed if the crash released the controller back to idle."""
+    turns answer on ``fast_llm`` (here, the bomb), and the cross-tier fallback
+    re-runs the SAME turn on the main ``llm`` (here, healthy)."""
     engine = ScriptedEngine()
     healthy = EchoLLM(reply="All good now.")
     bomb = _RaiseBeforeTokenLLM()
     runtime = VoiceRuntime(engine, healthy, fast_llm=bomb, start_mode=Mode.ASSISTANT)
     runtime.start(run_bus=False)
     try:
-        # ASSISTANT turn -> fast tier (the bomb) -> raises before first token.
+        # ASSISTANT turn -> fast tier (the bomb) raises before first token ->
+        # cross-tier retry falls back to the healthy main tier, in-turn.
         engine.final("what is two plus two")
         assert runtime.wait_idle(timeout=WAIT), "runtime wedged on a pre-token LLM crash"
         assert runtime.supervisor.state.active_tasks == {}
-        failures_after_crash = len(runtime.supervisor.state.failures)
-        assert failures_after_crash >= 1, "the LLM crash was not surfaced as a failure"
-        assert engine.spoken == [], "a crashed turn must not fabricate speech"
+        # The retry rescued the turn: answered on main, NO failure, NO dead air.
+        assert len(runtime.supervisor.state.failures) == 0, \
+            f"the fast crash should have been rescued; failures={runtime.supervisor.state.failures}"
+        assert engine.spoken == ["All good now."], \
+            f"cross-tier retry should answer on the healthy main tier; got {engine.spoken!r}"
+        assert bomb.stream_calls == 1, "the fast tier should have been tried once before fallback"
 
-        # Recovery: a RESEARCH turn runs research.local on the MAIN (healthy)
-        # llm, so it must complete and speak -- proving the controller is live
-        # and unwedged after the crash.
+        # The runtime is still live afterward: a RESEARCH turn (research.local on
+        # the main llm) also completes -- proving the controller is unwedged.
         engine.final("research the weather on mars")
-        assert runtime.wait_idle(timeout=WAIT), "controller wedged; recovery turn never ran"
+        assert runtime.wait_idle(timeout=WAIT), "controller wedged; later turn never ran"
         assert runtime.supervisor.state.active_tasks == {}
-        assert engine.spoken, "no recovery turn was answered -- the runtime wedged"
-        # No NEW failure was recorded for the healthy recovery turn.
-        assert len(runtime.supervisor.state.failures) == failures_after_crash, \
-            "the healthy recovery turn unexpectedly failed"
+        assert len(engine.spoken) >= 2, "the later turn was not answered -- the runtime wedged"
+        assert len(runtime.supervisor.state.failures) == 0, "a healthy turn unexpectedly failed"
     finally:
         runtime.stop()
 
@@ -206,7 +210,10 @@ def test_capability_raising_fails_the_turn_then_runtime_serves_the_next():
         assert any("blew up" in f or "ValueError" in f
                    for f in runtime.supervisor.state.failures), \
             runtime.supervisor.state.failures
-        assert engine.spoken == [], "a failed capability must not speak"
+        # A failed turn now speaks an apology instead of dead air (sr-2).
+        from always_on_agent.supervisor import _FAILURE_APOLOGY
+        assert engine.spoken == [_FAILURE_APOLOGY], \
+            f"a failed turn should speak the failure apology; got {engine.spoken!r}"
 
         # Repair the capability and prove the controller still serves a turn.
         def _ok(query, context):
@@ -246,7 +253,7 @@ def test_memory_recall_raising_still_answers_the_turn():
         # graceful fallback, not a turn-killer.
         assert engine.spoken == ["Answer despite dead memory."], engine.spoken
         # No task failure was recorded: a memory error is swallowed, not fatal.
-        assert runtime.supervisor.state.failures == [], runtime.supervisor.state.failures
+        assert list(runtime.supervisor.state.failures) == [], runtime.supervisor.state.failures
         # The recall path was genuinely exercised (the capability tried to read
         # memory, which detonated) -- not silently skipped.
         assert dead_memory.add_attempts >= 1, "the recall path was never hit"

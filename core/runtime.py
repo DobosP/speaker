@@ -26,7 +26,7 @@ from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
-from .metrics import ASR_FINAL, BARGE_IN, LLM_FIRST_TOKEN, MetricsRecorder
+from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
 from .resume import ResumeConfig, ResumeTracker
 from .routing import Router
@@ -589,6 +589,11 @@ class VoiceRuntime:
         # Try the no-LLM fast-path next; only fall through to the brain on a miss.
         if self._intents is not None and self._intents.handle(final_text):
             log.debug("handled by intent fast-path: %r", final_text)
+            # Stamp the turn as resolved WITHOUT the LLM so the watchdog skips
+            # it -- this turn has an asr_final but will never reach
+            # llm_first_token, which would otherwise read as a false "llm stuck"
+            # (rc-5). Same intent as the BARGE_IN skip in core/watchdog.py.
+            self.metrics.mark(HANDLED_LOCAL)
             return
         # Newest-input-wins (owner, live round 3): a NEW final arriving while a
         # prior turn is still generating/queued SUPERSEDES it -- the user has

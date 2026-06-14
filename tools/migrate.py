@@ -53,6 +53,39 @@ def _read_migrations(directory: Path):
     return read_migrations(str(directory))
 
 
+def _redact_db_url(db_url: str) -> str:
+    """Mask any password in a DATABASE_URL for safe logging/printing.
+
+    Self-contained on purpose: it must NOT import ``setup_database`` (that module
+    runs ``sys.exit(1)`` at import time when psycopg is absent -- a SystemExit,
+    not an Exception, so it would crash this redaction on a psycopg-less box /
+    CI). Masks both the userinfo password (``user:pass@host``) and a libpq
+    query-param password (``?password=...`` / ``?sslpassword=...``). Redaction
+    must never itself raise or leak.
+    """
+    try:
+        import re
+        from urllib.parse import urlsplit
+        out = db_url
+        parts = urlsplit(db_url)
+        # Mask the userinfo password (user:pass@host) via a targeted replace so
+        # the rest of the DSN (scheme, ///, path, query) is preserved exactly.
+        if parts.password is not None and parts.netloc:
+            user = parts.username or ""
+            host = parts.hostname or ""
+            masked = f"{user}:***@{host}" if user else f"***@{host}"
+            if parts.port:
+                masked = f"{masked}:{parts.port}"
+            out = out.replace(parts.netloc, masked, 1)
+        # Mask a libpq query-param password (?password=... / ?sslpassword=...).
+        out = re.sub(
+            r"((?:password|sslpassword)=)[^&\s]*", r"\1***", out, flags=re.IGNORECASE
+        )
+        return out
+    except Exception:  # noqa: BLE001 - redaction must never raise / leak
+        return db_url.split("@")[-1] if "@" in db_url else db_url
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     backend = _backend(args.database_url)
     all_migrations = _read_migrations(_migrations_dir())
@@ -60,7 +93,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         applied = backend.to_apply(all_migrations)  # the ones still pending
     pending_ids = {m.id for m in applied}
     print(f"Migrations directory: {_migrations_dir()}")
-    print(f"Database:             {args.database_url}")
+    print(f"Database:             {_redact_db_url(args.database_url)}")
     print()
     print(f"{'STATUS':<10} {'ID'}")
     for m in all_migrations:

@@ -111,6 +111,92 @@ def test_enqueue_drops_oldest_under_backpressure():
     assert queued == ["b", "c"]
 
 
+# --- rc-3: per-utterance generation counter (stale-utterance suppression) ---
+# A barge-in / stop bumps the generation; a sentence enqueued BEFORE the bump is
+# stale and the playback worker skips it instead of clearing _stop_speaking (the
+# wipe race) and speaking it. A sentence enqueued AFTER the bump is current and
+# plays -- so a fresh reply after a barge is never muted.
+
+
+def test_speak_gen_bumps_on_each_stop():
+    eng = _engine(_StreamingTts())
+    g0 = eng._speak_gen
+    eng.stop_speaking()
+    assert eng._speak_gen == g0 + 1
+    eng.stop_speaking()
+    assert eng._speak_gen == g0 + 2
+
+
+def test_enqueue_stamps_current_generation_and_barge_makes_it_stale():
+    eng = _engine(_StreamingTts())
+    eng.speak("two")
+    item = eng._play_q.get_nowait()  # take it out as the worker would, pre-barge
+    assert item[0] == "two"
+    assert item[2] == eng._speak_gen  # stamped with the generation at enqueue
+    eng.stop_speaking()  # barge: bumps the generation (and drains the queue)
+    # The sentence we hold was enqueued before the barge -> now stale, so the
+    # worker's `item_gen != self._speak_gen` check skips it.
+    assert item[2] != eng._speak_gen
+
+
+def test_new_reply_after_barge_is_current_generation():
+    """Mute-bug guard: a sentence enqueued AFTER a barge carries the new
+    generation, so the worker plays it (it is NOT treated as stale)."""
+    eng = _engine(_StreamingTts())
+    eng.speak("old reply")        # generation G
+    eng.stop_speaking()           # barge: bump to G+1, drain the queue
+    assert eng._play_q.empty()    # the old reply was drained
+    eng.speak("brand new reply")  # enqueued at G+1
+    item = eng._play_q.get_nowait()
+    assert item[0] == "brand new reply"
+    assert item[2] == eng._speak_gen  # current generation -> the worker plays it
+
+
+def test_claim_utterance_skips_stale_without_clearing_stop():
+    """The load-bearing rc-3 guard: a stale dequeued sentence is rejected (None)
+    and _stop_speaking is NOT wiped, so a pending barge survives."""
+    eng = _engine(_StreamingTts())
+    eng.speak("x")        # enqueued at generation G
+    eng.stop_speaking()   # barge: bumps to G+1, sets _stop_speaking
+    assert eng._stop_speaking.is_set()
+    assert eng._claim_utterance(0) is None     # the old-generation sentence is stale
+    assert eng._stop_speaking.is_set()         # and the barge flag was NOT wiped
+
+
+def test_claim_utterance_accepts_current_and_clears_stop():
+    eng = _engine(_StreamingTts())
+    eng._stop_speaking.set()  # a prior barge left the flag set
+    g = eng._speak_gen
+    assert eng._claim_utterance(g) == g        # current generation -> claimed
+    assert not eng._stop_speaking.is_set()     # cleared for this fresh utterance
+
+
+def test_synthesize_streaming_aborts_on_generation_mismatch():
+    eng = _engine(_StreamingTts())
+    eng._speak_gen = 7
+    written: list = []
+    eng._synthesize("hi", written.append, gen=7)  # current gen -> full synthesis
+    assert len(written) == 2
+    written.clear()
+    eng._speak_gen = 8  # a barge bumped the generation past this utterance's gen
+    eng._synthesize("hi", written.append, gen=7)
+    # First chunk is handed over, then on_chunk returns 0 and synthesis stops --
+    # same shape as the _stop_speaking interrupt path.
+    assert len(written) == 1
+
+
+def test_synthesize_nonstreaming_aborts_before_write_on_generation_mismatch():
+    eng = _engine(_NonStreamingTts())
+    eng._speak_gen = 8
+    written: list = []
+    eng._synthesize("hi", written.append, gen=7)  # stale -> loop breaks first
+    assert written == []
+    # A matching generation synthesizes normally.
+    eng._speak_gen = 7
+    eng._synthesize("hi", written.append, gen=7)
+    assert written  # chunks were written
+
+
 # --- barge-in + shutdown now go through the playback FIFO ---
 # The callback-OutputStream rewrite means barge-in no longer abort()s the stream;
 # it FLUSHES the playback FIFO (the next PortAudio callback emits silence) while

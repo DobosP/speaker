@@ -8,7 +8,10 @@ canonical 'Screen:' label while staying OUT of the recent-conversation block.
 """
 from __future__ import annotations
 
+import io
 import time
+
+import pytest
 
 from always_on_agent.memory import SessionMemory
 from always_on_agent.recall import VISION_LABEL, Candidate, RecallBudget, build_block
@@ -80,6 +83,57 @@ def test_observe_skips_duplicate_frame_on_change():
     assert m._q.qsize() == 1
     m.observe(b"BBBB")  # changed -> enqueued
     assert m._q.qsize() == 2
+
+
+def test_observe_perceptual_near_dup_gate():
+    """dHash near-dup gate: a visually ~identical frame (different bytes) is skipped,
+    a different one is stored. Needs Pillow (the shared OCR dep); self-skips without
+    it (then observe() falls back to exact-SHA1, pinned above)."""
+    pytest.importorskip("PIL")
+    from PIL import Image
+
+    from core.visual_memory import _dhash, _hamming
+
+    def png(pixels) -> bytes:
+        img = Image.new("L", (64, 64))
+        img.putdata(pixels)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    base = [(i * 73 + (i // 64) * 131) % 256 for i in range(64 * 64)]
+    near = list(base)
+    near[20 * 64 + 20] = (near[20 * 64 + 20] + 17) % 256  # one-pixel change
+    inverted = [255 - v for v in base]  # every adjacent comparison flips -> max Hamming
+    A, A2, B = png(base), png(near), png(inverted)
+
+    cfg = VisualMemoryConfig(enabled=True, min_interval_sec=0.0, on_change=True)
+    # The hash reflects perceptual closeness (sanity, decoupled from the gate).
+    assert _hamming(_dhash(A), _dhash(A2)) <= cfg.phash_threshold
+    assert _hamming(_dhash(A), _dhash(B)) > cfg.phash_threshold
+
+    m = VisualMemorizer(ingest=lambda _t: None, caption_fn=lambda _f: "x", ocr_fn=None, config=cfg)
+    m.observe(A)
+    assert m._q.qsize() == 1
+    m.observe(A2)  # near-dup -> skipped despite different bytes
+    assert m._q.qsize() == 1
+    m.observe(B)  # visually different -> enqueued
+    assert m._q.qsize() == 2
+    # An undecodable frame stored next must RESET _last_phash (not keep a stale hash
+    # from B), so a later decodable frame compares against the right baseline. Proof
+    # it was STORED (not skipped): _last_fp advances to it AND _last_phash is None.
+    import hashlib
+
+    undecodable = b"not a decodable image"
+    m.observe(undecodable)
+    assert m._last_fp == hashlib.sha1(undecodable).hexdigest()
+    assert m._last_phash is None
+
+
+def test_config_reads_phash_threshold():
+    cfg = VisualMemoryConfig.from_dict({"memorize": True, "memorize_phash_threshold": 7})
+    assert cfg.phash_threshold == 7
+    assert VisualMemoryConfig.from_dict({}).phash_threshold == 4  # default
 
 
 def test_observe_throttles_by_min_interval():

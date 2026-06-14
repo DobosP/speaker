@@ -315,7 +315,7 @@ class TaskRuntime:
         # treated as not-owner-verified / unknown origin, so a side-effecting
         # capability (command.stage) refuses unless the turn was owner-verified.
         context["owner_verified"] = bool(task.metadata.get("owner_verified", False))
-        context["origin"] = task.metadata.get("origin", "unknown")
+        context["origin"] = str(task.metadata.get("origin", "unknown"))
         if extra_context:
             context.update(extra_context)
         return self._capabilities.invoke(

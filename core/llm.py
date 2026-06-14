@@ -382,7 +382,9 @@ def _redact_messages_for_egress(messages: list[dict]) -> list[dict]:
     touches Luhn-checked cards, SSNs, known key formats, etc.), so ordinary queries
     are untouched. Applied ONLY to cloud egress -- never to a local model. Text-only
     redaction; image parts (data URIs) pass through (vision egress is gated upstream
-    by sensitivity + the local-only captioning rule)."""
+    by sensitivity + the local-only captioning rule). Applied to every cloud-chain
+    member (OpenAICompatLLM with the flag set); the HedgeLLM local safety-net member
+    (Ollama / llama.cpp) is never redacted."""
     from always_on_agent.untrusted import redact_pii  # stdlib-only; core->aoa is allowed
 
     out: list[dict] = []

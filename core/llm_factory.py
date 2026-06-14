@@ -112,6 +112,34 @@ def _preset_host(preset: dict) -> Optional[str]:
     return str(host).upper() if host else None
 
 
+def build_router_llm(config: dict, fast_llm: "LLMClient | None") -> "LLMClient | None":
+    """Optional dedicated model for the routing/tool-decision slot (P3).
+
+    Small generic instruct models are weak at agentic routing/tool-calling; a
+    function-calling-tuned small model (e.g. xLAM-2-3b, Qwen3-4B) does the router's
+    one-word ACT/SIMPLE/RESEARCH classification + the planner's tool calls more
+    reliably. When ``llm.router_model`` is set this builds a dedicated LOCAL client
+    for it (the router sees the raw query -- it MUST stay on-device, §9.7, so it is
+    never cloud-wrapped); otherwise returns ``fast_llm`` unchanged (default ->
+    byte-identical). Ollama backend only; other backends fall back to ``fast_llm``.
+    The owner pulls the model (e.g. ``ollama pull ...``) before setting the knob."""
+    llm_cfg = config.get("llm", {}) or {}
+    router_model = llm_cfg.get("router_model")
+    if not router_model:
+        return fast_llm
+    if str(llm_cfg.get("backend", "ollama")).lower() != "ollama":
+        log.info("llm.router_model set but backend != ollama; using the fast tier for routing")
+        return fast_llm
+    from core.llm import OllamaLLM  # local import: keep top-level light
+
+    return OllamaLLM(
+        model=str(router_model),
+        host=llm_cfg.get("host"),
+        keep_alive=llm_cfg.get("keep_alive"),
+        think=llm_cfg.get("think", False),  # a one-word/tool-call decision needs no CoT
+    )
+
+
 def _build_cloud_client(
     preset_name: str,
     preset: dict,

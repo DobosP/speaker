@@ -22,6 +22,7 @@ from .llm_factory import (
     _preset_host,
     _wrap_cloud,
     build_llms,
+    build_router_llm,
 )
 from .routing import build_router
 from .capability_router import build_capability_router
@@ -434,10 +435,13 @@ def build_runtime(
     # decisions with one coherent module. Reuses the tier router built above and
     # the fast tier for optional LLM disambiguation of ambiguous turns, and the
     # configured command phrases so it recognizes the same control words.
+    # P3: an optional dedicated (function-calling-tuned) LOCAL model for the routing
+    # slot; defaults to the fast tier (byte-identical) when llm.router_model is unset.
+    router_llm = build_router_llm(config, fast_llm)
     capability_router = build_capability_router(
         config,
         tier_router=router,
-        fast_llm=fast_llm,
+        fast_llm=router_llm,
         command_phrases=(config.get("commands") or {}).keys(),
     )
 

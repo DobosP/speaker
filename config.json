@@ -31,6 +31,8 @@
     "backend": "ollama",
     "main_model": "gemma3:12b",
     "fast_model": "gemma3:4b",
+    "_router_model_comment": "P3 (optional, default unset -> uses fast_model): a dedicated LOCAL model for the routing/tool-decision slot (the capability-router's one-word ACT/SIMPLE/RESEARCH classifier + the ReAct planner's tool calls). Generic small instruct models are weak at agentic routing/tool-calling; a function-calling-tuned small model (e.g. a pulled xLAM-2-3b or Qwen3-4B) does it more reliably. Stays on-device (sees the raw query, §9.7) -- never cloud-wrapped. Owner: `ollama pull <model>` then set router_model. Ollama backend only.",
+    "router_model": null,
     "host": null,
     "keep_alive": "30m",
     "_think_comment": "false (default): skip a reasoning model's silent chain-of-thought on the voice path. gemma4 streams 'thinking' into a separate field BEFORE any spoken content; measured ~9s of dead air before the first word of a story on gemma4:12b (vs ~1.9s with think off). Set true to opt back in (e.g. for a deliberate, non-real-time research tier).",

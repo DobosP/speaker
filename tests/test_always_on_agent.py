@@ -29,6 +29,37 @@ def _drain_until_idle(supervisor: AgentSupervisor, timeout: float = 1.0) -> None
     supervisor.drain()
 
 
+def test_event_log_excludes_partials_and_is_bounded():
+    """rc-6/aq-7: STT_PARTIAL (highest-volume kind) is kept out of event_log,
+    non-partials are retained, and the high-churn histories are bounded deques."""
+    supervisor = AgentSupervisor()
+    supervisor.publish(AgentEvent.partial("hel"))
+    supervisor.publish(AgentEvent.partial("hello"))
+    supervisor.publish(AgentEvent.final("hello world"))
+    _drain_until_idle(supervisor)
+
+    log = supervisor.state.event_log
+    assert not any(e.kind == EventKind.STT_PARTIAL for e in log)
+    assert any(e.kind == EventKind.STT_FINAL for e in log)  # positive control
+
+    # Bounded histories (won't grow without limit over a long session).
+    assert supervisor.state.event_log.maxlen == 1024
+    assert supervisor.state.observations.maxlen == 256
+    assert supervisor.state.decisions.maxlen == 256
+    assert supervisor.state.spoken_outputs.maxlen == 512
+    assert supervisor.state.failures.maxlen == 128
+    # transcript_log stays an unbounded list (it is sliced by the drivers).
+    assert isinstance(supervisor.state.transcript_log, list)
+
+
+def test_event_log_evicts_oldest_past_maxlen():
+    """A flood of finals keeps event_log at its cap (drops the oldest)."""
+    supervisor = AgentSupervisor()
+    for i in range(1100):
+        supervisor.state.event_log.append(AgentEvent.final(f"m{i}"))
+    assert len(supervisor.state.event_log) == 1024
+
+
 def test_mode_switch_then_assistant_task_emits_tts_request():
     supervisor = AgentSupervisor()
 
@@ -50,7 +81,7 @@ def test_passive_mode_ignores_unprefixed_final_text():
 
     assert supervisor.state.mode == Mode.PASSIVE
     assert supervisor.state.transcript_log == ["this should only be logged"]
-    assert supervisor.state.spoken_outputs == []
+    assert list(supervisor.state.spoken_outputs) == []
 
 
 def test_search_prefix_runs_even_from_passive_mode():
@@ -125,7 +156,7 @@ def test_dictation_mode_stores_transcript_without_speaking():
 
     assert supervisor.state.mode == Mode.DICTATION
     assert supervisor.state.transcript_log[-1] == "this is a clean note"
-    assert supervisor.state.spoken_outputs == ["Mode: dictation"]
+    assert list(supervisor.state.spoken_outputs) == ["Mode: dictation"]
 
 
 def test_replay_records_and_diagnostics_summary():

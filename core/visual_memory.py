@@ -34,11 +34,50 @@ CaptionFn = Callable[[bytes], str]
 OcrFn = Callable[[bytes], str]
 IngestFn = Callable[[str], None]
 
-# Kept short + directive so a small local multimodal model returns one usable line.
+# Structured-ish, entity-rich one-liner: naming the app + the activity + key visible
+# items makes the stored caption match far better on recall (keyword overlap +
+# embeddings) than bare prose, and gives the PII redactor more to catch. Still one
+# line + directive so a small local multimodal model returns something usable.
 _CAPTION_PROMPT = (
-    "In one short sentence, describe what is on this screen "
-    "(the app, page, or task). No preamble."
+    "Describe this screen in ONE short line, as: <app or website> -- <what the user "
+    "is doing> -- <key visible items or names>. Be specific and concise. No preamble."
 )
+
+
+def _dhash(frame: bytes, size: int = 8) -> Optional[int]:
+    """64-bit perceptual difference-hash of a frame, or ``None`` if Pillow is
+    absent / the bytes don't decode.
+
+    Decode -> grayscale -> resize to ``(size+1) x size`` -> compare each pixel to
+    its right neighbour (row-major) -> one bit each = ``size*size`` bits. Tiny
+    visual changes (cursor blink, clock tick, 1px scroll) leave the gradient almost
+    unchanged, so near-identical frames hash to a small Hamming distance -- unlike
+    the exact SHA1, which any single changed byte defeats. Stdlib + optional Pillow
+    (already the OCR dep); degrades to ``None`` -> the caller falls back to SHA1."""
+    try:
+        import io  # noqa: PLC0415
+
+        from PIL import Image  # noqa: PLC0415 - optional dep (shared with OCR)
+
+        # Area-averaging downscale (LANCZOS) so each of the tiny output pixels
+        # reflects its source block -- more stable on text-heavy screens than the
+        # BICUBIC default for an extreme >100x downscale. Falls back to the default
+        # filter on a very old Pillow without the enum.
+        resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", None)
+        img = Image.open(io.BytesIO(frame)).convert("L").resize((size + 1, size), resample)
+    except Exception:  # noqa: BLE001 - missing dep / undecodable frame -> no phash
+        return None
+    px = list(img.getdata())
+    bits = 0
+    for row in range(size):
+        base = row * (size + 1)
+        for col in range(size):
+            bits = (bits << 1) | (1 if px[base + col] > px[base + col + 1] else 0)
+    return bits
+
+
+def _hamming(a: int, b: int) -> int:
+    return bin(a ^ b).count("1")
 
 
 @dataclass
@@ -58,6 +97,7 @@ class VisualMemoryConfig:
     max_chars: int = 280
     ocr_max_chars: int = 200
     redact_pii: bool = True
+    phash_threshold: int = 4
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "VisualMemoryConfig":
@@ -73,6 +113,10 @@ class VisualMemoryConfig:
             # §9.7 image-security: scrub cards/SSN/keys/email/phone from OCR'd screen
             # text BEFORE it becomes a durable 'vision' memory. Default ON.
             redact_pii=bool(data.get("memorize_redact_pii", True)),
+            # on_change near-dup gate: skip a frame within this Hamming distance of
+            # the last stored one's perceptual hash (0 = require an exact perceptual
+            # match; larger = more aggressive dedup). Only used when Pillow is present.
+            phash_threshold=max(0, int(data.get("memorize_phash_threshold", 4) or 0)),
         )
 
 
@@ -140,6 +184,7 @@ class VisualMemorizer:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._last_fp: Optional[str] = None
+        self._last_phash: Optional[int] = None
         self._last_at = 0.0
 
     @property
@@ -151,13 +196,37 @@ class VisualMemorizer:
         if not frame or self._stop.is_set():
             return
         now = time.monotonic()
+        # Cheap throttle pre-check (atomic float read, no lock): a frame inside the
+        # min_interval is discarded regardless, so don't pay the perceptual decode
+        # for it. The authoritative throttle check below (under the lock) still
+        # decides; this only avoids wasted work on the common throttled frame.
+        last_at = self._last_at
+        if last_at and (now - last_at) < self._cfg.min_interval_sec:
+            return
         fp = hashlib.sha1(frame).hexdigest()
+        # Perceptual hash for the near-dup gate (None when Pillow is absent /
+        # undecodable -> the exact-SHA1 path is used instead). A full-frame decode
+        # (~tens of ms at 1280px) -- fine on the seconds-cadence screen-feed thread,
+        # off the real-time ASR/TTS path.
+        phash = _dhash(frame) if self._cfg.on_change else None
         with self._lock:
-            if self._cfg.on_change and fp == self._last_fp:
-                return
             if self._last_at and (now - self._last_at) < self._cfg.min_interval_sec:
                 return
+            if self._cfg.on_change:
+                # Skip a frame that is VISUALLY ~identical to the last STORED one
+                # (cursor blink, clock tick, 1px scroll) so we don't burn a caption
+                # call + a memory row on noise. Perceptual when available, else the
+                # original exact-SHA1 behaviour.
+                if phash is not None and self._last_phash is not None:
+                    if _hamming(phash, self._last_phash) <= self._cfg.phash_threshold:
+                        return
+                elif phash is None and fp == self._last_fp:
+                    return
             self._last_fp = fp
+            # Track the phash of the LAST STORED frame unconditionally (None for an
+            # undecodable/no-Pillow frame), so a stale hash from an earlier frame can
+            # never mis-gate a later one -- it stays consistent with _last_fp.
+            self._last_phash = phash
             self._last_at = now
         # Bounded, drop-oldest: a slow worker must never stall the capture loop.
         try:

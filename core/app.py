@@ -221,6 +221,9 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
             enable_embeddings=bool(mem_cfg.get("embeddings", False)),
             max_recent_messages=int(mem_cfg.get("max_recent", 20) or 20),
             recall_budget=recall_budget,
+            # lm-7: size the all() ring off the SAME working_window as the other
+            # backends so the addressing/cleaner recent buffer is consistent.
+            working_window=working_window,
         )
     except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
         redacted = _redact_db_url(db_url) if db_url else "(no DATABASE_URL)"

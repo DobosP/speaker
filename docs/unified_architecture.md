@@ -537,7 +537,8 @@ Three injection seams type against `Memory`: `always_on_agent.supervisor` (inges
 **Tag-routed add():**
 - User/ingested queries → `MemoryManager.queue_user_utterance()` (debounced, cleaned, persisted)
 - Assistant output → `MemoryManager.add_message("assistant")` (RAM-only context)
-- Meeting notes (R7) → in-RAM ring buffer only unless `meeting_persist=True`
+- Meeting notes (R7) → in-RAM ring buffer ONLY (never persisted; the old
+  `meeting_persist` toggle was never wired and is removed -- RAM-only is a hard §9.7 guarantee)
 
 **In-RAM ring buffer (R3):** The adapter keeps its own small `_ring` of raw `(text, tags)` handed to `add()`, so `all()` returns that instead of `MemoryManager.recent_messages` (which drops tags). This ensures tag fidelity: both SessionMemory and MemoryManagerAdapter pass `test_addressing`'s `("ingested",)` tag assertion identically.
 
@@ -589,7 +590,6 @@ Single-level keys in `config.json` → `memory` so device-profile overrides surv
     "embeddings": false,                  // Enable pgvector
     "max_recent": 20,                     // recent_messages cap
     "profile_enabled": false,             // R8 default OFF, Postgres-only
-    "meeting_persist": false,             // R7: meeting notes RAM-only by default
     "episodic_ttl_days": 90,              // Age-TTL for messages
     "summary_ttl_days": 365,              // Age-TTL for summaries
     "save_interval_sec": 240,             // MemoryWriter flush interval
@@ -639,7 +639,7 @@ Rolling summary and user profile run **off the bus thread** (never inside `add_m
 **Privacy (§9.7 boundary):**
 - Text-only persistence (no audio blobs).
 - `persist_roles=("user",)` by default (skip assistant TTS/echoes).
-- Meeting notes (R7): routed to in-RAM ring buffer unless `meeting_persist=True` (personal conversations stay local).
+- Meeting notes (R7): always routed to the in-RAM ring buffer, NEVER persisted (personal conversations stay local; the unwired `meeting_persist` toggle was removed).
 - Never log `DATABASE_URL` (R12: use `_redact_db_url` on error messages).
 - Continuation turns skip user-memory ingest to avoid double-ingesting the merged prompt.
 

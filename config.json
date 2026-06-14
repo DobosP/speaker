@@ -440,11 +440,6 @@
     "yes do it": "confirm",
     "never mind": "deny"
   },
-  "memory_smart_save": true,
-  "memory_flush_interval_sec": 240,
-  "memory_enable_embeddings": false,
-  "memory_persist_assistant": false,
-  "memory_llm_clean": true,
   "memory": {
     "_comment": "FLAT P2 memory seam config (R10) -- single-level so a device-profile override survives the shallow merge. backend: auto|inmemory|postgres|sqlite (auto picks Postgres only when $DATABASE_URL is set; sqlite = the persistent on-device store at sqlite_path, default ~/.speaker/memory.db, for desktop-without-Postgres continuity across restarts -- same protocol + recall as in-RAM, rows just survive). recall_enabled is OFF by default: recall must be measured (tools.bench) before enabling. P2b (live, Postgres-only): profile_enabled gates the default-OFF user-profile producer (deterministic regex at ingest + optional fast-LLM pass on the writer thread); episodic_ttl_days/summary_ttl_days are the age TTLs apply_retention() enforces at close-time -- episodic 'messages' are summarized-then-evicted past episodic_ttl_days, 'summaries' dropped past summary_ttl_days, user_profile never TTL'd. The rolling summary uses the fast LLM off the bus thread.",
     "backend": "auto",
@@ -466,7 +461,6 @@
     "embeddings": false,
     "max_recent": 20,
     "profile_enabled": false,
-    "meeting_persist": false,
     "episodic_ttl_days": 90,
     "summary_ttl_days": 365,
     "save_interval_sec": 240,

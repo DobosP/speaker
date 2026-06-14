@@ -18,7 +18,7 @@ Short-term **in-session** history still includes assistant turns for the current
 ## Scheduling
 
 - Buffer fills on each final user transcript.
-- Auto-flush after `memory.save_interval_sec` (default **240s**, overridable via `memory_flush_interval_sec` in config/CLI).
+- Auto-flush after `memory.save_interval_sec` (default **240s**).
 - Force flush when the buffer hits `memory.max_buffer_items` (default **32**).
 - Flush on shutdown (`MemoryManager.close()`).
 
@@ -92,10 +92,7 @@ Add a `memory` block to `config.json` (see below). CLI flags override file defau
 | `memory.llm_gate` | true | Skip non-substantive lines |
 | `memory.cleanup_model` | `gemma3:1b` | Ollama model for cleanup |
 | `memory.max_buffer_items` | 32 | Max buffer before forced flush |
-| `memory_smart_save` / `--memory-no-smart-save` | on | Enable buffered writer |
-| `memory_enable_embeddings` | off | pgvector semantic search |
-| `memory_persist_assistant` | off | Also save assistant to DB |
-| `memory_llm_clean` / `--memory-no-llm-clean` | on | Use main LLM cleaner hook |
+| `memory.embeddings` | off | pgvector semantic search |
 
 Environment:
 
@@ -106,10 +103,6 @@ Environment:
 
 ```json
 {
-  "memory_smart_save": true,
-  "memory_flush_interval_sec": 240,
-  "memory_enable_embeddings": false,
-  "memory_llm_clean": true,
   "memory": {
     "save_interval_sec": 240,
     "min_confidence": 0.55,

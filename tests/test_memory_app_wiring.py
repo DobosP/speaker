@@ -110,3 +110,41 @@ def test_build_memory_inmemory_when_no_db(monkeypatch):
 
     mem = app._build_memory({"memory": {"backend": "auto"}}, _FakeFastLLM())
     assert isinstance(mem, SessionMemory)
+
+
+def test_build_memory_forwards_working_window_to_adapter(monkeypatch):
+    """lm-7: the adapter's all() ring is sized off working_window (not max_recent)
+    so it matches SessionMemory / SqliteVecMemory."""
+    _force_postgres(monkeypatch)
+    config = {"memory": {"backend": "auto", "working_window": 137, "max_recent": 20}}
+
+    mem = app._build_memory(config, _FakeFastLLM())
+
+    assert isinstance(mem, _FakeAdapter)
+    assert _FakeAdapter.last_kwargs["working_window"] == 137
+
+
+def test_build_memory_working_window_defaults_to_200(monkeypatch):
+    _force_postgres(monkeypatch)
+    mem = app._build_memory({"memory": {"backend": "auto"}}, _FakeFastLLM())
+    assert isinstance(mem, _FakeAdapter)
+    assert _FakeAdapter.last_kwargs["working_window"] == 200
+
+
+def test_config_has_no_dead_memory_knobs():
+    """Regression guard (lm-4/5/6/8): the zero-reader memory knobs were deleted;
+    keep them gone so they don't drift back as dead config."""
+    import json
+    import os
+
+    cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config.json")))
+    dead_top_level = (
+        "memory_smart_save",
+        "memory_flush_interval_sec",
+        "memory_enable_embeddings",
+        "memory_persist_assistant",
+        "memory_llm_clean",
+    )
+    for k in dead_top_level:
+        assert k not in cfg, f"dead top-level memory knob resurfaced: {k}"
+    assert "meeting_persist" not in cfg.get("memory", {}), "dead meeting_persist resurfaced"

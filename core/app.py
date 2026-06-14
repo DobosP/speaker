@@ -319,6 +319,7 @@ def build_runtime(
     router,
     start_mode: Mode,
     agent_on: bool = False,
+    gui_actions_on: bool = False,
     force_planner: bool = False,
     force_stream_tts: bool = False,
     load_fraction=None,
@@ -334,6 +335,14 @@ def build_runtime(
         from .agent import AgentBrainConfig
 
         agent_config = AgentBrainConfig.from_dict(config.get("agent_brain"))
+
+    # Computer-use (read-only screen.identify) -- default OFF, separate opt-in from
+    # the action brain. Enabled by the gui_actions config block OR the --gui-actions
+    # flag; the runtime only registers the read-only capability (no actuator).
+    gui_cfg = dict(config.get("gui_actions", {}) or {})
+    computer_use_config = gui_cfg if (gui_cfg.get("enabled") or gui_actions_on) else None
+    if computer_use_config is not None:
+        computer_use_config["enabled"] = True
 
     planner_config = PlannerConfig.from_dict(
         (config.get("agent", {}) or {}).get("planner")
@@ -442,6 +451,7 @@ def build_runtime(
         web_search_config=web_search_config,
         start_mode=start_mode,
         agent_config=agent_config,
+        computer_use_config=computer_use_config,
         router=router,
         capability_router=capability_router,
         planner_config=planner_config,
@@ -516,6 +526,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="enable the Open Interpreter action brain for command-mode "
         "(voice -> machine control); reads the 'agent_brain' config block",
+    )
+    parser.add_argument(
+        "--gui-actions",
+        action="store_true",
+        help="enable READ-ONLY computer-use (screen.identify: locate on-screen UI "
+        "elements by voice; never clicks/types); reads the 'gui_actions' config block",
     )
     parser.add_argument(
         "--planner",
@@ -665,6 +681,7 @@ def main(argv: list[str] | None = None) -> int:
         router=router,
         start_mode=Mode(args.mode),
         agent_on=bool(args.agent),
+        gui_actions_on=bool(getattr(args, "gui_actions", False)),
         force_planner=bool(args.planner),
         force_stream_tts=bool(args.stream_tts),
         load_fraction=monitor.load_fraction,

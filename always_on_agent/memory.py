@@ -163,6 +163,7 @@ class MemoryManagerAdapter:
         summary_ttl_days: int = 365,
         recall_budget: Optional[RecallBudget] = None,
         working_window: Optional[int] = None,
+        cross_session_continuity: bool = False,
         **manager_kwargs,
     ):
         from utils.memory import create_memory_manager  # lazy: keep the brain DB-free
@@ -179,6 +180,7 @@ class MemoryManagerAdapter:
             episodic_ttl_days=episodic_ttl_days,
             summary_ttl_days=summary_ttl_days,
             recall_budget=recall_budget,
+            cross_session_continuity=cross_session_continuity,
             **manager_kwargs,
         )
         # Our own small in-RAM ring buffer of the raw (text, tags) handed to

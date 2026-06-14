@@ -119,6 +119,7 @@ def _build_cloud_client(
     allow_prc: bool = False,
     timeout_s: float = 30.0,
     max_tokens: Optional[int] = None,
+    redact_pii_outbound: bool = True,
 ) -> Optional[OpenAICompatLLM]:
     """Build one :class:`OpenAICompatLLM` from a ``cloud_providers`` entry.
 
@@ -169,6 +170,7 @@ def _build_cloud_client(
         max_tokens=max_tokens,
         options=preset.get("options"),
         profile=preset.get("profile"),
+        redact_pii_outbound=redact_pii_outbound,
     )
 
 
@@ -230,6 +232,10 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
     # metadata before the HedgeLLM is built (core.routing.order_presets_by_cost
     # is fail-safe: same multiset, original order on any malformed input).
     cost_order = bool(cloud_cfg.get("cost_order", False))
+    # §9.7 last-line net (default ON): scrub high-confidence PII from the outbound
+    # cloud prompt, independent of the regex sensitivity classifier. Local models
+    # are never touched. Off restores byte-identical prior behavior.
+    redact_pii_outbound = bool(cloud_cfg.get("redact_pii_outbound", True))
 
     hedge_kwargs = dict(
         strategy=strategy,
@@ -248,6 +254,7 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
             client = _build_cloud_client(
                 name, preset,
                 allow_prc=allow_prc, timeout_s=timeout_s, max_tokens=max_tokens,
+                redact_pii_outbound=redact_pii_outbound,
             )
             if client is not None:
                 resolved[name] = client

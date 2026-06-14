@@ -171,6 +171,33 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
     recall_budget = _build_recall_budget(mem_cfg)
     backend = str(mem_cfg.get("backend", "auto") or "auto").lower()
     db_url = os.environ.get("DATABASE_URL")
+
+    # Persistent on-device SQLite backend (Decision D6): desktop-without-Postgres
+    # continuity across restarts. Same Memory protocol + shared recall selection
+    # as the in-RAM store; rows just survive the process. Degrades to in-RAM on
+    # any error rather than crashing.
+    if backend == "sqlite":
+        try:
+            from always_on_agent.sqlite_memory import SqliteVecMemory
+
+            sqlite_path = os.path.expanduser(
+                str(mem_cfg.get("sqlite_path") or "~/.speaker/memory.db")
+            )
+            if sqlite_path != ":memory:":
+                os.makedirs(os.path.dirname(sqlite_path) or ".", exist_ok=True)
+            return SqliteVecMemory(
+                sqlite_path,
+                max_items=working_window,
+                budget=recall_budget,
+                ttl_days=int(mem_cfg.get("episodic_ttl_days", 90) or 90),
+            )
+        except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
+            print(
+                f"[memory] SQLite backend unavailable ({type(exc).__name__}); "
+                "falling back to in-RAM."
+            )
+            return SessionMemory(max_items=working_window, budget=recall_budget)
+
     want_postgres = backend == "postgres" or (backend in ("auto", "") and bool(db_url))
     if not want_postgres:
         return SessionMemory(max_items=working_window, budget=recall_budget)

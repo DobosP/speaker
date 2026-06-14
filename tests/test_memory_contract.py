@@ -119,8 +119,19 @@ def _make_adapter() -> MemoryManagerAdapter:
     )
 
 
-def _backends() -> list[Memory]:
-    return [SessionMemory(), _make_adapter()]
+def _backend_factories():
+    """FACTORIES (not instances) so every parametrized test gets a FRESH backend.
+
+    Required now that SqliteVecMemory is in the set: its close() shuts the sqlite
+    connection, so a shared instance reused across tests would hit a closed DB.
+    Each factory is id'd by backend class name for readable test ids."""
+    from always_on_agent.sqlite_memory import SqliteVecMemory
+
+    return [
+        pytest.param(SessionMemory, id="SessionMemory"),
+        pytest.param(_make_adapter, id="MemoryManagerAdapter"),
+        pytest.param(lambda: SqliteVecMemory(":memory:"), id="SqliteVecMemory"),
+    ]
 
 
 # --- a recording fake LLM ---------------------------------------------------
@@ -146,8 +157,9 @@ class _RecordingLLM:
 # --- Protocol conformance ---------------------------------------------------
 
 
-@pytest.mark.parametrize("mem", _backends())
-def test_isinstance_memory(mem: Memory):
+@pytest.mark.parametrize("make_mem", _backend_factories())
+def test_isinstance_memory(make_mem):
+    mem: Memory = make_mem()
     assert isinstance(mem, Memory)
     try:
         # Every verb is present and callable on both backends.
@@ -160,12 +172,13 @@ def test_isinstance_memory(mem: Memory):
         mem.close()
 
 
-@pytest.mark.parametrize("mem", _backends())
-def test_all_preserves_tags(mem: Memory):
-    """R3: ``all()`` returns the raw (text, tags) handed to ``add()`` on BOTH
-    backends -- the adapter from its own ring buffer, not ``recent_messages``
+@pytest.mark.parametrize("make_mem", _backend_factories())
+def test_all_preserves_tags(make_mem):
+    """R3: ``all()`` returns the raw (text, tags) handed to ``add()`` on every
+    backend -- the adapter from its own ring buffer, not ``recent_messages``
     (which keeps only role + junk-filters and would drop the 'ingested' tag
     that ``test_addressing`` relies on)."""
+    mem: Memory = make_mem()
     try:
         mem.add("HE MURMURED HIS MURDERING", tags=("ingested",))
         items = mem.all()
@@ -179,9 +192,10 @@ def test_all_preserves_tags(mem: Memory):
         mem.close()
 
 
-@pytest.mark.parametrize("mem", _backends())
-def test_close_is_idempotent_enough(mem: Memory):
-    # close() must not raise on either backend (flush + release).
+@pytest.mark.parametrize("make_mem", _backend_factories())
+def test_close_is_idempotent_enough(make_mem):
+    # close() must not raise on any backend (flush + release).
+    mem: Memory = make_mem()
     mem.add("something to flush here", tags=("user",))
     mem.close()
 
@@ -255,13 +269,14 @@ def test_adapter_recall_degrades_to_empty_without_db():
 # --- default-off neutrality -------------------------------------------------
 
 
-@pytest.mark.parametrize("mem", _backends())
-def test_recall_default_off_is_byte_identical(mem: Memory):
+@pytest.mark.parametrize("make_mem", _backend_factories())
+def test_recall_default_off_is_byte_identical(make_mem):
     """With ``recall_enabled=false`` (the default), the assistant capability
     must call ``model.stream`` with a ``system`` byte-identical to the DEFAULT
     -- the config gate short-circuits before any recall block is built, so the
     prompt is provably unchanged even when memory already holds related facts.
     """
+    mem: Memory = make_mem()
     registry = CapabilityRegistry()
     llm = _RecordingLLM()
     # Default RecallConfig() is OFF.

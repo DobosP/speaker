@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
+from always_on_agent.origin import Origin, should_block_action
 
 
 @dataclass
@@ -46,6 +47,13 @@ class AgentBrainConfig:
     allowlist: tuple[str, ...] = ()
     denylist: tuple[str, ...] = ()
     max_output_chars: int = 2000
+    # SECURITY (default ON): refuse to take ANY action unless the turn is
+    # owner-verified live audio (always_on_agent.origin chokepoint). Fail-closed:
+    # with no owner-verified signal on the turn the whole action capability is
+    # blocked -- so command-mode machine control cannot be driven by ambient/leaked
+    # audio or by recalled/web/screen text. Set False to restore the legacy
+    # (unverified) behavior, knowingly.
+    require_owner_verified: bool = True
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "AgentBrainConfig":
@@ -81,6 +89,26 @@ class AgentBrainEvent:
 SAFE = "safe"
 NEEDS_CONFIRM = "needs_confirm"
 BLOCKED = "blocked"
+
+# Built-in, NON-overridable patterns that can NEVER be auto-SAFE (no-confirm),
+# even if a misconfigured allowlist matches them -- they downgrade an allowlist hit
+# to NEEDS_CONFIRM (so in auto_safe mode they don't run, and in always_ask mode the
+# human must approve). This is the defense-in-depth that closes the
+# allowlist-auto-RCE bypass: arbitrary code execution (interpreter inline -c/-e,
+# eval/exec/system/subprocess), shell chaining/substitution, redirection, AND any
+# command carrying a newline/control char (a one-line status command never does --
+# a multi-line payload is a chained second command) can never silently run. The
+# configurable denylist (-> BLOCKED) still takes precedence.
+_NEVER_AUTO_SAFE = [
+    re.compile(p, re.I) for p in (
+        r"\bpython[0-9.]*\b\s+.*-c\b", r"\b(?:node|ruby|perl|php|deno|bun)\b.*\s-e\b",
+        r"\b(?:bash|sh|zsh|fish|pwsh|powershell)\b.*\s-c\b", r"-c\s*['\"]",
+        r"\beval\b", r"\bexec\b", r"os\.system", r"\bsubprocess\b", r"__import__",
+        r"\bcompile\s*\(", r"\bpickle\b", r"\bsource\b", r"\bxargs\b",
+        r"[;&|]", r"\$\(", r"`", r"[<>]",            # shell chaining / substitution / redirect
+        r"[\n\r\f\v\x00]",                            # newline/control-char command chaining
+    )
+]
 
 # affirmative answers fed to Open Interpreter's execution prompt
 _OI_YES = "y"
@@ -180,8 +208,15 @@ class AgentBrain:
         for rx in self._deny_res:
             if rx.search(text):
                 return BLOCKED
+        # An allowlist hit can ONLY be auto-SAFE if it also clears the built-in
+        # never-auto-safe set -- so e.g. `python -c "<anything>"`, `ls; rm ...`,
+        # `cat x > y`, a newline-chained second command, or an eval/exec/subprocess
+        # payload never auto-runs even if a broad allowlist pattern matches it
+        # (closes the auto-RCE bypass).
         for rx in self._allow_res:
             if rx.search(text):
+                if any(bad.search(text) for bad in _NEVER_AUTO_SAFE):
+                    return NEEDS_CONFIRM
                 return SAFE
         return NEEDS_CONFIRM
 
@@ -328,6 +363,22 @@ def attach_agent_capability(
         instruction = (query or "").strip()
         if not instruction:
             return CapabilityResult(False, "", error="empty instruction")
+
+        # SECURITY chokepoint (always_on_agent.origin): machine control may run ONLY
+        # from owner-verified live audio. Fail-closed -- without an explicit
+        # owner-verified signal on the turn the action is refused, so ambient/leaked
+        # audio or recalled/web/screen-derived text can never drive a real action.
+        # The runtime supplies context['origin'] + context['owner_verified'] from
+        # the speaker-ID gate; disable knowingly via agent_brain.require_owner_verified.
+        if config.require_owner_verified:
+            origin = context.get("origin", Origin.UNKNOWN)
+            owner_verified = context.get("owner_verified", False)
+            if should_block_action(origin, owner_verified=owner_verified):
+                return CapabilityResult(
+                    True,
+                    "I can't take that action without verified-owner authorization.",
+                    data={"executed": False, "blocked": "owner_verification"},
+                )
 
         cancel = context.get("cancel_event")
         should_cancel = (lambda: cancel.is_set()) if cancel is not None else None  # type: ignore[union-attr]

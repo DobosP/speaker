@@ -7,6 +7,7 @@ manually on a machine, per the plan.
 from threading import Event
 
 from always_on_agent.capabilities import CapabilityRegistry
+from always_on_agent.origin import Origin
 
 from core.agent import (
     SAFE,
@@ -18,6 +19,11 @@ from core.agent import (
     attach_agent_capability,
 )
 from core.agent_os import detect_display_server, os_mode_preflight
+
+# An owner-verified live-audio turn -- the only origin allowed to drive an action
+# (security chokepoint). Capability tests that exercise the BRAIN pass this so the
+# action gate admits them; the gate itself is tested separately below.
+_OWNER_CTX = {"owner_verified": True, "origin": Origin.LIVE_AUDIO}
 
 
 class FakeInterpreter:
@@ -142,7 +148,7 @@ def test_capability_registers_under_command_stage():
 
 def test_capability_returns_spoken_text():
     registry = _registry([_msg("Done listing."), _msg("", end=True), _console("a.txt")])
-    result = registry.invoke("command.stage", "list files", {"cancel_event": Event()})
+    result = registry.invoke("command.stage", "list files", {"cancel_event": Event(), **_OWNER_CTX})
     assert result.ok
     assert result.data.get("executed") is True
     assert "Done listing." in result.text and "a.txt" in result.text
@@ -159,9 +165,62 @@ def test_capability_cancellation_stops_stream():
     registry = _registry([_msg("part one.", end=True), _msg("part two", end=True)])
     cancel = Event()
     cancel.set()  # cancelled before it starts
-    result = registry.invoke("command.stage", "talk", {"cancel_event": cancel})
+    result = registry.invoke("command.stage", "talk", {"cancel_event": cancel, **_OWNER_CTX})
     assert result.ok
     assert result.text == "Done."  # nothing spoken because cancelled immediately
+
+
+# -- P0 security: the action-trust chokepoint + classify hardening -------------
+
+def test_capability_blocked_without_owner_verification():
+    # Default require_owner_verified=True: a turn with no owner-verified signal
+    # (ambient/leaked audio, recalled/web/screen text) is REFUSED -- the brain never
+    # runs. Fail-closed.
+    registry = _registry([_msg("Done.", end=True)])
+    result = registry.invoke("command.stage", "delete my files", {"cancel_event": Event()})
+    assert result.ok
+    assert result.data.get("executed") is False
+    assert result.data.get("blocked") == "owner_verification"
+
+
+def test_capability_blocked_for_untrusted_origin_even_if_verified():
+    # An action whose lineage touched screen/web/memory is blocked regardless.
+    registry = _registry([_msg("Done.", end=True)])
+    ctx = {"cancel_event": Event(), "owner_verified": True, "origin": Origin.SCREEN}
+    result = registry.invoke("command.stage", "click delete", ctx)
+    assert result.data.get("blocked") == "owner_verification"
+
+
+def test_capability_opt_out_runs_without_verification():
+    # require_owner_verified=False restores the legacy (unverified) behavior knowingly.
+    registry = _registry([_msg("ran.", end=True)], require_owner_verified=False)
+    result = registry.invoke("command.stage", "do it", {"cancel_event": Event()})
+    assert result.ok and result.data.get("executed") is True
+
+
+def test_classify_never_auto_safe_blocks_allowlisted_code_exec():
+    # The auto-RCE bypass: a broad allowlist that matches `python -c` must NOT
+    # auto-run it -- the built-in never-auto-safe set downgrades it to needs-confirm.
+    brain = _brain([], allowlist=("^python3?\\s+-c\\b", "^ls"), denylist=("rm -rf",))
+    assert brain.classify('python -c "import shutil; shutil.rmtree(\'/x\')"') == NEEDS_CONFIRM
+    assert brain.classify("ls; python -c 'x'") == NEEDS_CONFIRM   # chaining
+    assert brain.classify("ls -la > /tmp/x") == NEEDS_CONFIRM     # redirect
+    assert brain.classify("ls\nchmod 777 /etc/passwd") == NEEDS_CONFIRM  # newline chaining
+    assert brain.classify("ls -la") == SAFE                       # still auto-safe
+    assert brain.classify("rm -rf ~") == BLOCKED                  # denylist precedence
+
+
+def test_config_allowlist_has_no_arbitrary_code_or_file_read():
+    # Regression guard: the shipped agent_brain allowlist must never re-add a code-exec
+    # or arbitrary-file-read entry to the auto-SAFE (no-confirm) tier.
+    import json
+    import os
+
+    cfg = json.load(open(os.path.join(os.path.dirname(__file__), "..", "config.json")))
+    allow = cfg.get("agent_brain", {}).get("allowlist", [])
+    banned = ("python", " -c", "cat", "head", "tail", "echo", "eval", "exec")
+    for entry in allow:
+        assert not any(b in entry for b in banned), f"dangerous auto-SAFE allowlist entry: {entry}"
 
 
 # -- config + os preflight ----------------------------------------------------

@@ -162,6 +162,7 @@ class MemoryManagerAdapter:
         episodic_ttl_days: int = 90,
         summary_ttl_days: int = 365,
         recall_budget: Optional[RecallBudget] = None,
+        working_window: Optional[int] = None,
         **manager_kwargs,
     ):
         from utils.memory import create_memory_manager  # lazy: keep the brain DB-free
@@ -186,7 +187,14 @@ class MemoryManagerAdapter:
         # both backends then behave identically (test_addressing relies on the
         # 'ingested' tag surviving).
         self._ring: list[MemoryItem] = []
-        self._max_items = int(getattr(self._manager, "max_recent_messages", 0)) or DEFAULT_MAX_ITEMS
+        # lm-7 window parity: size the all() ring off working_window so it matches
+        # SessionMemory and SqliteVecMemory (which both use working_window). Falls
+        # back to the manager's max_recent_messages, then DEFAULT_MAX_ITEMS, so a
+        # caller that doesn't pass working_window keeps the prior behavior.
+        self._max_items = (
+            int(working_window) if working_window
+            else (int(getattr(self._manager, "max_recent_messages", 0)) or DEFAULT_MAX_ITEMS)
+        )
 
     def add(self, text: str, tags: tuple[str, ...] = ()) -> None:
         cleaned = text.strip()
@@ -197,9 +205,10 @@ class MemoryManagerAdapter:
         self._ring.append(MemoryItem(cleaned, tags or keywords(cleaned)))
         if len(self._ring) > self._max_items:
             self._ring = self._ring[-self._max_items:]
-        # Meeting notes are RAM-only by default (R7, §9.7 privacy): never hand
-        # them to the persisting manager unless meeting_persist is enabled.
-        if "meeting" in tags and not getattr(self._manager, "meeting_persist", False):
+        # Meeting notes are RAM-only (R7, §9.7 privacy): never hand them to the
+        # persisting manager. (The old meeting_persist toggle was never wired --
+        # the getattr always read False -- so RAM-only is now a hard guarantee.)
+        if "meeting" in tags:
             return
         # Tag-routed: assistant output is RAM-only context; a VISUAL (screen)
         # observation persists via the dedicated add_observation path -- NOT

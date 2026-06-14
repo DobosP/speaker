@@ -15,6 +15,36 @@ class MemoryItem:
     timestamp: float = field(default_factory=time.time)
 
 
+def candidate_for_item(item: "MemoryItem", q_words: set[str], q_norm: str) -> "Candidate | None":
+    """Build a recall :class:`Candidate` from a stored item under keyword scoring.
+
+    The SINGLE source of truth shared by every keyword-overlap backend
+    (:class:`SessionMemory` and the persistent :class:`SqliteVecMemory`) so they
+    produce byte-identical candidates -- and therefore byte-identical recall
+    blocks via :func:`build_block` -- for the same stored data. Score is the
+    integer overlap between the query words and the item's words *plus its tags*.
+    The current utterance is EXCLUDED (it was just ingested by the answer path;
+    echoing the live query back is noise that also distorts the adaptive cutoff).
+    Returns ``None`` for the current utterance or a zero-overlap item.
+    """
+    if normalize_text(item.text) == q_norm:
+        return None  # the current utterance itself -- never recall it back
+    words = set(normalize_text(item.text).split())
+    score = len(q_words & (words | set(item.tags)))
+    if not score:
+        return None
+    role = "user" if "user" in item.tags else ("assistant" if "assistant_output" in item.tags else None)
+    if "vision" in item.tags:
+        kind = "vision"
+    elif "summary" in item.tags:
+        kind = "summary"
+    else:
+        kind = "message"
+    return Candidate(
+        item.text, float(score), kind=kind, role=role, timestamp=item.timestamp, tags=item.tags
+    )
+
+
 @runtime_checkable
 class Memory(Protocol):
     """The one backend-neutral memory seam.
@@ -86,34 +116,18 @@ class SessionMemory:
         return list(self._items)
 
     def _candidates(self, query: str) -> list[Candidate]:
-        """Keyword-overlap candidates for the shared selector.
-
-        Score is the integer overlap count between the query words and the
-        item's words *plus its tags* (the tags were already in ``search()``'s
-        haystack at :meth:`search`; including them here too removes a long-
-        standing inconsistency). The current utterance is EXCLUDED -- it was just
-        ingested by the answer path, and echoing the live query back at the model
-        is noise that would also distort the adaptive cutoff."""
+        """Keyword-overlap candidates via the shared :func:`candidate_for_item`
+        (the single source of truth that keeps the RAM and SQLite backends
+        byte-identical at the seam)."""
         q_norm = normalize_text(query)
         q_words = set(q_norm.split())
         if not q_words:
             return []
         out: list[Candidate] = []
         for item in self._items:
-            if normalize_text(item.text) == q_norm:
-                continue  # the current utterance itself -- never recall it back
-            words = set(normalize_text(item.text).split())
-            score = len(q_words & (words | set(item.tags)))
-            if not score:
-                continue
-            role = "user" if "user" in item.tags else ("assistant" if "assistant_output" in item.tags else None)
-            if "vision" in item.tags:
-                kind = "vision"
-            elif "summary" in item.tags:
-                kind = "summary"
-            else:
-                kind = "message"
-            out.append(Candidate(item.text, float(score), kind=kind, role=role, timestamp=item.timestamp, tags=item.tags))
+            cand = candidate_for_item(item, q_words, q_norm)
+            if cand is not None:
+                out.append(cand)
         return out
 
     def context_for_llm(self, query: str) -> str:

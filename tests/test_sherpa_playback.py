@@ -152,6 +152,25 @@ def test_new_reply_after_barge_is_current_generation():
     assert item[2] == eng._speak_gen  # current generation -> the worker plays it
 
 
+def test_claim_utterance_skips_stale_without_clearing_stop():
+    """The load-bearing rc-3 guard: a stale dequeued sentence is rejected (None)
+    and _stop_speaking is NOT wiped, so a pending barge survives."""
+    eng = _engine(_StreamingTts())
+    eng.speak("x")        # enqueued at generation G
+    eng.stop_speaking()   # barge: bumps to G+1, sets _stop_speaking
+    assert eng._stop_speaking.is_set()
+    assert eng._claim_utterance(0) is None     # the old-generation sentence is stale
+    assert eng._stop_speaking.is_set()         # and the barge flag was NOT wiped
+
+
+def test_claim_utterance_accepts_current_and_clears_stop():
+    eng = _engine(_StreamingTts())
+    eng._stop_speaking.set()  # a prior barge left the flag set
+    g = eng._speak_gen
+    assert eng._claim_utterance(g) == g        # current generation -> claimed
+    assert not eng._stop_speaking.is_set()     # cleared for this fresh utterance
+
+
 def test_synthesize_streaming_aborts_on_generation_mismatch():
     eng = _engine(_StreamingTts())
     eng._speak_gen = 7

@@ -1764,6 +1764,22 @@ class SherpaOnnxEngine(AudioEngine):
         except queue.Empty:
             pass
 
+    def _claim_utterance(self, item_gen: int) -> Optional[int]:
+        """Claim a dequeued sentence for playback, or reject it as stale (rc-3).
+
+        Returns the utterance's generation -- and CLEARS ``_stop_speaking`` -- when
+        the sentence is current (``item_gen == self._speak_gen``). Returns ``None``
+        WITHOUT touching ``_stop_speaking`` when a barge/stop has bumped the
+        generation since the sentence was enqueued, so the pending stop is not
+        wiped and the playback worker skips the stale sentence. Factored out of
+        ``_playback_loop`` (which needs a real device) so this load-bearing
+        wipe-race guard is unit-testable.
+        """
+        if item_gen != self._speak_gen:
+            return None
+        self._stop_speaking.clear()
+        return item_gen
+
     def _audio_cb(self, outdata, frames, time_info, status) -> None:
         """PortAudio output callback -- runs on a HIGH-PRIORITY audio thread.
 
@@ -1845,18 +1861,17 @@ class SherpaOnnxEngine(AudioEngine):
                     continue
                 if text is None:  # shutdown sentinel from stop()
                     break
-                # rc-3: a barge/stop after this sentence was enqueued bumped
-                # _speak_gen and drained the queue; a sentence that slipped past
-                # the drain (already dequeued at the barge instant) is stale ->
-                # skip it WITHOUT clearing _stop_speaking (which would wipe the
-                # barge) and without speaking it. A current-generation sentence
-                # falls through and clears the flag as before.
-                if item_gen != self._speak_gen:
+                # rc-3: claim the sentence for playback, or skip it as stale. A
+                # barge/stop after it was enqueued bumped _speak_gen (and drained
+                # the queue); a sentence that slipped past the drain is stale and
+                # _claim_utterance returns None WITHOUT clearing _stop_speaking
+                # (so the pending barge isn't wiped). A current sentence is
+                # claimed (clearing the flag for this fresh utterance).
+                my_gen = self._claim_utterance(item_gen)
+                if my_gen is None:
                     if on_done:
                         on_done()
                     continue
-                my_gen = item_gen
-                self._stop_speaking.clear()
                 # Reset the one-barge-in-per-run latch only on the silent->
                 # speaking transition (a genuinely NEW reply), NOT per dequeued
                 # sentence: _speaking is set per sentence but clears only when the

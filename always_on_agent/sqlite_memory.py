@@ -179,6 +179,8 @@ class SqliteVecMemory:
         for text, tags, ts, emb in rows:
             if normalize_text(text) == q_norm:
                 continue  # never recall the current utterance back
+            if "procedural" in tags:
+                continue  # behavior rules ride their own always-on block, not recall
             if emb is None:
                 continue
             score = _cosine(qvec, _unpack(emb))
@@ -230,6 +232,27 @@ class SqliteVecMemory:
         # Postgres-only catch-up for its session-scoped warm start).
         return ""
 
+    def procedural_rules(self) -> list[str]:
+        # User-taught behavior rules (tag 'procedural'), most-recent first.
+        # Durable: scans the WHOLE table for procedural rows (NOT the working-window
+        # recent pool), so a rule is never windowed out by episodic chatter. The
+        # ``LIKE`` is a cheap pre-filter; the JSON tag is verified in Python so it
+        # stays backend-neutral with SessionMemory (rules are few).
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT text, tags FROM items WHERE tags LIKE ? ORDER BY id DESC",
+                ('%"procedural"%',),
+            ).fetchall()
+        out: list[str] = []
+        for text, tags_json in rows:
+            try:
+                tags = json.loads(tags_json)
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+            if "procedural" in tags:
+                out.append(text)
+        return out
+
     def prune(self) -> int:
         """Age-TTL retention: drop rows older than ``ttl_days``. Returns rows
         removed (0 when no TTL is configured)."""
@@ -237,7 +260,12 @@ class SqliteVecMemory:
             return 0
         cutoff = time.time() - self._ttl_days * 86400
         with self._lock:
-            cur = self._conn.execute("DELETE FROM items WHERE ts < ?", (cutoff,))
+            # Procedural rules are durable (never TTL'd), matching the Postgres
+            # contract -- exclude them from age eviction.
+            cur = self._conn.execute(
+                "DELETE FROM items WHERE ts < ? AND tags NOT LIKE ?",
+                (cutoff, '%"procedural"%'),
+            )
             self._conn.commit()
             return cur.rowcount or 0
 

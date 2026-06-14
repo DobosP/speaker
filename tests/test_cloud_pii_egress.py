@@ -65,6 +65,24 @@ def test_build_cloud_client_enables_redaction_by_default(monkeypatch):
     assert client2._redact_pii_outbound is False
 
 
+def test_single_cloud_backcompat_enables_redaction(monkeypatch):
+    # The single-cloud (llm.cloud only, no providers/chains) path must ALSO enable
+    # the outbound PII scrub by default -- it previously omitted the kwarg.
+    from core.app import _wrap_cloud
+    from core.llm import HedgeLLM, LLMClient
+
+    class _Local(LLMClient):
+        def generate(self, prompt, *, system=None, images=None): return "x"
+        def stream(self, prompt, *, system=None, images=None): yield "x"
+
+    monkeypatch.setenv("FAKE_KEY", "x")
+    llm_cfg = {"cloud": {"enabled": True, "model": "m", "base_url": "https://api.example.com/v1",
+                         "api_key_env": "FAKE_KEY"}}
+    wrapped = _wrap_cloud(_Local(), llm_cfg)
+    assert isinstance(wrapped, HedgeLLM)
+    assert wrapped.clouds[0]._redact_pii_outbound is True
+
+
 def test_default_cloud_chains_have_no_cn_provider():
     # Regression guard: no default failover chain may list a CN-hosted preset, so a
     # mis-classified personal turn cannot cross to a PRC endpoint even with allow_prc.

@@ -308,6 +308,11 @@ class AgentSupervisor:
         )
         task = self._create_task(decision)
         task.metadata["followup"] = True
+        # A proactive follow-up is assistant-initiated (a synthetic "[silent]"
+        # marker the owner never spoke), so it must NEVER carry the prior turn's
+        # owner-verified trust -- fail-close it so it can't drive an action.
+        task.metadata["owner_verified"] = False
+        task.metadata["origin"] = "system"
         self._start_task(task)
 
     def _handle_speech(
@@ -621,6 +626,15 @@ class AgentSupervisor:
             pending.input_text = cfg.continue_template.format(
                 prev=p_origin, addon=self._render_addons(p_addons)
             )
+            # FOLD is the one task-mutation site that bypasses _create_task, so it
+            # must re-stamp trust too -- DEMOTE-only: an UNVERIFIED add-on folded
+            # into an owner-verified pending revokes that pending's owner trust
+            # (an unverified utterance can't keep authorizing an action it is now
+            # changing). Trust survives only if BOTH the pending and the add-on are
+            # owner-verified.
+            if not self.state.turn_owner_verified:
+                pending.metadata["owner_verified"] = False
+                pending.metadata["origin"] = self.state.turn_origin
             self._record_addon(addon)
             log.info("continuation FOLD: add-on merged into queued %s", pending.task_id)
             return True
@@ -744,7 +758,10 @@ class AgentSupervisor:
         # legacy / pre-enrollment) confirms as before; its execution is still
         # refused by the capability chokepoint if it isn't owner-verified.
         task_id, task = next(iter(self.state.pending_confirmations.items()))
-        if bool(task.metadata.get("owner_verified", False)) and not owner_verified:
+        # Strict `is True` (mirrors origin.is_action_allowed): a truthy non-bool
+        # never counts as owner-verified, so the confirm boundary fails closed
+        # identically to the action chokepoint regardless of caller coercion.
+        if bool(task.metadata.get("owner_verified", False)) and owner_verified is not True:
             self.state.spoken_outputs.append(
                 f"I can't confirm '{task.input_text}' without verified-owner authorization."
             )

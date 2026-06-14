@@ -137,3 +137,74 @@ def test_confirm_event_carries_owner_verified_through_handler():
     assert task.task_id in sup.state.pending_confirmations
     sup.handle_event(AgentEvent.confirm(owner_verified=True))
     assert task.task_id not in sup.state.pending_confirmations
+
+
+# --- review fixes: trust-laundering paths ------------------------------------
+
+def test_partial_yes_cannot_launder_prior_turn_trust():
+    # BLOCKER fix: a CONFIRM from a PARTIAL would carry the prior final's trust.
+    # The analyzer must NOT emit CONFIRM/DENY on a partial.
+    from always_on_agent.speech_analyzer import LiveSpeechAnalyzer
+    from always_on_agent.events import Mode
+
+    an = LiveSpeechAnalyzer()
+    partial = an.observe("yes", is_final=False)
+    d_partial = an.decide(partial, Mode.ASSISTANT, has_pending_confirmation=True)
+    assert d_partial.kind != IntentKind.CONFIRM  # partial "yes" does NOT confirm
+    final = an.observe("yes", is_final=True)
+    d_final = an.decide(final, Mode.ASSISTANT, has_pending_confirmation=True)
+    assert d_final.kind == IntentKind.CONFIRM  # the final does
+
+
+def test_followup_task_is_fail_closed_not_owner_verified():
+    # A proactive followup (assistant-initiated) must never inherit the prior turn's
+    # owner trust. Drive the REAL _emit_followup with followups enabled.
+    from always_on_agent.followups import FollowupConfig
+
+    sup = AgentSupervisor(followup_config=FollowupConfig(enabled=True))
+    sup.state.turn_owner_verified = True  # prior turn was owner-verified
+    sup.state.turn_origin = "live_audio"
+    captured = {}
+    sup._start_task = lambda task, *a, **k: captured.update(  # type: ignore[assignment]
+        owner_verified=task.metadata.get("owner_verified"), origin=task.metadata.get("origin")
+    )
+    sup._emit_followup()
+    assert captured.get("owner_verified") is False
+    assert captured.get("origin") == "system"
+
+
+def test_fold_continuation_demotes_unverified_addon():
+    # FOLD must DEMOTE: an unverified add-on folded into an owner-verified queued
+    # continuation revokes its owner trust (real _maybe_continue FOLD branch).
+    from always_on_agent.continuation import CONTINUE, ContinuationConfig
+    from always_on_agent.events import Mode
+
+    class _AlwaysContinue:
+        def classify(self, *a, **k):
+            return CONTINUE
+
+    sup = AgentSupervisor(
+        continuation_config=ContinuationConfig(enabled=True),
+        continuation=_AlwaysContinue(),
+    )
+    # A victim task that is already "speaking" (after first audio) with a queued
+    # owner-verified continuation behind it.
+    victim = sup.tasks.create_task(
+        IntentDecision(kind=IntentKind.ASSISTANT, confidence=1.0, text="tell a story", reason="t", mode=Mode.ASSISTANT)
+    )
+    victim.started_speaking = True  # after first audio -> FOLD/queue path, not MERGE
+    sup.state.active_tasks[victim.task_id] = victim
+    queued = sup.tasks.create_task(
+        IntentDecision(kind=IntentKind.ASSISTANT, confidence=1.0, text="make it longer", reason="t", mode=Mode.ASSISTANT)
+    )
+    queued.metadata["owner_verified"] = True
+    queued.metadata["origin"] = "live_audio"
+    queued.metadata["continue_after"] = victim.task_id  # marker _pending_continuation_behind matches
+    sup.state.queued_tasks.append(queued)
+    # An UNVERIFIED add-on turn folds into the queued continuation.
+    sup.state.turn_owner_verified = False
+    sup.state.turn_origin = "unknown"
+    decision = IntentDecision(kind=IntentKind.ASSISTANT, confidence=1.0, text="and funnier", reason="t", mode=Mode.ASSISTANT)
+    handled = sup._maybe_continue(decision)
+    assert handled is True
+    assert queued.metadata["owner_verified"] is False  # demoted

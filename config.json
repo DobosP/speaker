@@ -184,7 +184,7 @@
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "macbook_m_series": {
-      "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. Sensitivity-routed cloud chains ENABLED (hedge strategy): private turns -> Cerebras+Groq (US); code turns -> Cerebras Coder+Kimi; public turns -> DeepSeek-Flash (CN, cheap). Provide the four API keys via env to activate; missing keys disable that chain individually.",
+      "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. Sensitivity-routed cloud chains (hedge strategy): private turns -> Cerebras+Groq (US); code turns -> Cerebras Coder+Kimi; public turns -> OpenRouter+Cerebras (US-only, no CN by default). Provide the US-provider API keys via env to activate; missing keys disable that chain individually. (A CN preset is opt-in only: add it to a chain AND set allow_prc.)",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",

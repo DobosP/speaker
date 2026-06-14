@@ -97,7 +97,14 @@ class LiveSpeechAnalyzer:
         # and the turn was silently dropped. With nothing pending it falls through
         # to the normal conversational path below and is answered (with recent
         # context resolving the antecedent).
-        if has_pending_confirmation:
+        # SECURITY: only a FINAL may confirm/deny a staged action. A CONFIRM/DENY
+        # derived from a PARTIAL would carry the PRIOR turn's speaker-ID trust
+        # (state.turn_owner_verified is only updated on finals), so an ambient
+        # partial "yes" could launder the owner's trust onto a staged owner-verified
+        # action (the ambient-yes race). Partials fall through to IGNORE below; the
+        # FINAL "yes"/"no" acts. (STOP above stays partial-allowed for instant
+        # barge-in -- cancelling is always fail-safe.)
+        if has_pending_confirmation and observation.is_final:
             if text in _CONFIRM_PHRASES:
                 return IntentDecision(IntentKind.CONFIRM, 0.98, observation.text, "confirm_phrase")
             if text in _DENY_PHRASES:

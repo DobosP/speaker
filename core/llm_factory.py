@@ -307,6 +307,7 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         timeout=timeout_s,
         max_tokens=max_tokens,
         options=cloud_cfg.get("options"),
+        redact_pii_outbound=redact_pii_outbound,  # BR9: both sites honor the §9.7 scrub
     )
     return HedgeLLM(local=local_main, cloud=cloud, **hedge_kwargs)
 

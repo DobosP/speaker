@@ -29,6 +29,8 @@ def candidate_for_item(item: "MemoryItem", q_words: set[str], q_norm: str) -> "C
     """
     if normalize_text(item.text) == q_norm:
         return None  # the current utterance itself -- never recall it back
+    if "procedural" in item.tags:
+        return None  # standing behavior rules ride their OWN always-on block, not recall
     words = set(normalize_text(item.text).split())
     score = len(q_words & (words | set(item.tags)))
     if not score:
@@ -67,6 +69,8 @@ class Memory(Protocol):
 
     def last_session_summary(self) -> str: ...                              # one-shot prior-session head, or '' (lm-2 Wire 3)
 
+    def procedural_rules(self) -> Sequence[str]: ...                        # user-taught behavior rules, most-recent first
+
     def prune(self) -> int: ...                                              # retention/eviction
 
     def close(self) -> None: ...                                             # flush + release
@@ -75,6 +79,10 @@ class Memory(Protocol):
 # Default working-window cap (Layer-1 RAM). Keeps the in-RAM store from growing
 # unbounded over a long session; the oldest items fall off the front.
 DEFAULT_MAX_ITEMS = 200
+
+# Cap on stored standing behavior rules (procedural memory). Rules are few by
+# nature; the most-recent are kept if a user somehow teaches more.
+_MAX_PROCEDURAL_RULES = 64
 
 
 class SessionMemory:
@@ -95,15 +103,25 @@ class SessionMemory:
         self._items: list[MemoryItem] = []
         self._max_items = max(1, int(max_items))
         self._budget = budget or RecallBudget()
+        # Standing behavior rules live in their OWN bounded list, exempt from the
+        # episodic working-window cap so chatter can't evict a taught rule (and they
+        # never pollute episodic recall / the recent window).
+        self._procedural: list[str] = []
 
     def add(self, text: str, tags: tuple[str, ...] = ()) -> None:
         cleaned = text.strip()
-        if cleaned:
-            self._items.append(MemoryItem(cleaned, tags or keywords(cleaned)))
-            # Working-window cap: drop the oldest once over the limit so a long
-            # session can't grow RAM without bound.
-            if len(self._items) > self._max_items:
-                self._items = self._items[-self._max_items:]
+        if not cleaned:
+            return
+        if "procedural" in tags:
+            self._procedural.append(cleaned)
+            if len(self._procedural) > _MAX_PROCEDURAL_RULES:
+                self._procedural = self._procedural[-_MAX_PROCEDURAL_RULES:]
+            return
+        self._items.append(MemoryItem(cleaned, tags or keywords(cleaned)))
+        # Working-window cap: drop the oldest once over the limit so a long
+        # session can't grow RAM without bound.
+        if len(self._items) > self._max_items:
+            self._items = self._items[-self._max_items:]
 
     def search(self, query: str, limit: int = 5) -> list[MemoryItem]:
         q_words = set(normalize_text(query).split())
@@ -148,6 +166,12 @@ class SessionMemory:
         # No rolling-summary head in the in-RAM store; the one-shot "Last session"
         # block is Postgres-only (lm-2 Wire 3).
         return ""
+
+    def procedural_rules(self) -> list[str]:
+        # User-taught behavior rules, most-recent first. In-RAM so lost on restart
+        # (the SQLite/Postgres tiers persist them); held in a dedicated list exempt
+        # from the working-window cap so chatter can't evict a rule.
+        return list(reversed(self._procedural))
 
     def prune(self) -> int:
         # Age-TTL retention is P2b; the working-window cap in add() is the only
@@ -222,6 +246,15 @@ class MemoryManagerAdapter:
         cleaned = text.strip()
         if not cleaned:
             return
+        # Procedural memory: a user-taught behavior rule persists durably (never
+        # TTL'd) via the manager, NOT as an episodic message -- so it survives
+        # restart, never appears in episodic recall, and (handled BEFORE the ring
+        # append) never enters the all() recent window / addressing+cleaner context.
+        if "procedural" in tags:
+            add_rule = getattr(self._manager, "add_procedural_rule", None)
+            if callable(add_rule):
+                add_rule(cleaned)
+            return
         # Keep the raw (text, tags) regardless of how it is routed/persisted so
         # all() stays tag-faithful.
         self._ring.append(MemoryItem(cleaned, tags or keywords(cleaned)))
@@ -273,6 +306,12 @@ class MemoryManagerAdapter:
         # lm-2 Wire 3: the prior-session head seeded at process start, or '' when
         # cross_session_continuity is OFF / there was no prior summary.
         return self._manager.last_session_summary()
+
+    def procedural_rules(self) -> list[str]:
+        # Durable user-taught behavior rules from the manager (Postgres), or []
+        # for a no-DB / older manager.
+        get = getattr(self._manager, "get_procedural_rules", None)
+        return list(get()) if callable(get) else []
 
     def prune(self) -> int:
         # Age-TTL retention (P2b): episodic messages older than

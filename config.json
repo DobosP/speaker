@@ -494,13 +494,11 @@
     "screenshot_dir": null,
     "auto_run": false,
     "confirm_mode": "auto_safe",
+    "require_owner_verified": true,
+    "_allowlist_comment": "AUTO-SAFE (no-confirm) commands ONLY. SECURITY: this tier must contain NOTHING that can execute arbitrary code, read arbitrary FILE CONTENT (exfiltration), or write/modify. So no `python -c`/interpreter inline-eval, no cat/head/tail (arbitrary file read), no echo (redirect). Only no-effect status commands. Defense-in-depth: core/agent.py _NEVER_AUTO_SAFE downgrades any code-exec/chaining/redirect/newline to needs-confirm even if a pattern here matches, and require_owner_verified gates the whole capability on owner-verified live audio.",
     "allowlist": [
       "^ls\\b",
       "^pwd\\b",
-      "^cat\\b",
-      "^head\\b",
-      "^tail\\b",
-      "^echo\\b",
       "^date\\b",
       "^whoami\\b",
       "^df\\b",
@@ -508,8 +506,7 @@
       "^uname\\b",
       "^uptime\\b",
       "^git status\\b",
-      "^git log\\b",
-      "^python3?\\s+-c\\b"
+      "^git log\\b"
     ],
     "denylist": [
       "rm\\s+-rf",

@@ -373,7 +373,7 @@ class AgentSupervisor:
             return
         self._start_task(task)
 
-    def _start_task(self, task: AgentTask, expected_epoch: Optional[int] = None) -> None:
+    def _start_task(self, task: AgentTask, expected_epoch: int | None = None) -> None:
         # Capture the current speech epoch and register the task atomically with
         # respect to cancel_all (realtime-concurrency-1): the streaming sentences
         # this task emits are stamped with this epoch, so a barge-in that

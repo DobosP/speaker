@@ -59,6 +59,12 @@ from always_on_agent.recall import Candidate, RecallBudget, build_block, estimat
 # floor, deliberately not used as a recall score.)
 _PROFILE_RECALL_SCORE = 1.0
 
+# Procedural memory (user-taught behavior rules) is stored in the user_profile
+# table under this reserved key prefix so it is durable + never TTL'd, yet is kept
+# OUT of the semantic-profile recall block (get_user_profile filters it) and read
+# back via get_procedural_rules().
+_PROCEDURAL_KEY_PREFIX = "rule::"
+
 
 def _finite(value, default: float = 0.0) -> float:
     """Coerce a similarity to a finite float (NaN/inf/garbage -> ``default``).
@@ -1314,19 +1320,54 @@ class MemoryManager:
         # cycle.
 
     def get_user_profile(self) -> Dict[str, str]:
-        """Get all user profile entries."""
+        """Get all user profile (semantic) entries.
+
+        EXCLUDES procedural-rule rows (key prefix ``_PROCEDURAL_KEY_PREFIX``), which
+        are stored in the same table but are a separate memory class surfaced via
+        :meth:`get_procedural_rules` -- so a behavior rule never leaks into the
+        profile recall block."""
         if not self._db_available:
             return {}
         try:
             with self._pool.connection() as conn:
                 with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute(
-                        "SELECT key, value FROM user_profile ORDER BY confidence DESC"
+                        "SELECT key, value FROM user_profile "
+                        "WHERE key NOT LIKE %s ORDER BY confidence DESC",
+                        (_PROCEDURAL_KEY_PREFIX + "%",),
                     )
                     return {row['key']: row['value'] for row in cur.fetchall()}
         except Exception as e:
             print(f"[warn] Failed to get profile: {e}")
             return {}
+
+    def add_procedural_rule(self, text: str) -> None:
+        """Persist a user-taught behavior rule (procedural memory), durable + never
+        TTL'd. Stored in ``user_profile`` under a reserved key prefix (a stable hash
+        of the normalized rule, so re-teaching the same rule upserts rather than
+        duplicating) and EXCLUDED from :meth:`get_user_profile`."""
+        rule = " ".join((text or "").split()).strip()
+        if not rule:
+            return
+        digest = hashlib.sha1(rule.lower().encode("utf-8")).hexdigest()[:12]
+        self.update_user_profile(f"{_PROCEDURAL_KEY_PREFIX}{digest}", rule, confidence=1.0)
+
+    def get_procedural_rules(self) -> List[str]:
+        """Durable user-taught behavior rules, most-recently-updated first."""
+        if not self._db_available:
+            return []
+        try:
+            with self._pool.connection() as conn:
+                with conn.cursor(row_factory=dict_row) as cur:
+                    cur.execute(
+                        "SELECT value FROM user_profile WHERE key LIKE %s "
+                        "ORDER BY updated_at DESC",
+                        (_PROCEDURAL_KEY_PREFIX + "%",),
+                    )
+                    return [row['value'] for row in cur.fetchall()]
+        except Exception as e:
+            print(f"[warn] Failed to get procedural rules: {e}")
+            return []
 
     def get_conversation_stats(self) -> Dict[str, Any]:
         """Get statistics about stored conversations."""

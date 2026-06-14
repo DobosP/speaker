@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from typing import Optional, Sequence
@@ -99,6 +100,20 @@ class RecallBudget:
     cutoff_k: float = 0.0  # 0 == pure adaptive gap; >0 also requires score >= mean + k*std
     dedup_ratio: float = 0.0  # 0 == _DEFAULT_DEDUP_RATIO; >0 pins a SequenceMatcher ratio
     header: str = "=== Past Conversations ==="
+    # Multi-signal recall scoring (Generative-Agents: relevance + recency +
+    # importance), ALL default-OFF so the relevance-only block stays byte-identical
+    # until opted in. When >0, the native relevance score is scaled by a convex blend
+    # of a recency-decay factor and a kind-importance weight, applied multiplicatively
+    # so the backend-native score scale (cosine on PG, overlap on RAM) is preserved and
+    # adaptive_cutoff stays scale-invariant. The blend is clamped to a true convex
+    # [0, 1] (so it only DOWN-weights, never boosts above native, even if the weights
+    # sum past 1), and a negative native score (off-topic PG cosine) is left unchanged
+    # so it can't be ranked up. NOTE: when recency is on, blocks are NOT byte-identical
+    # ACROSS backends (each stamps a different wall-clock for the same logical add), so
+    # recency-ranked recall is single-backend by design.
+    recency_weight: float = 0.0       # 0 == OFF; weight on the recency-decay factor
+    recency_half_life_days: float = 7.0  # age at which the recency factor halves
+    importance_weight: float = 0.0    # 0 == OFF; weight on the kind-importance factor
 
 
 # --- token accounting -------------------------------------------------------
@@ -117,6 +132,62 @@ def estimate_tokens(text: str, cpt: float = 4.0) -> int:
     words = len(text.split())
     chars = math.ceil(len(text) / max(cpt, 1.0))
     return max(words, chars, 1)
+
+
+# --- multi-signal scoring (recency + importance), default-OFF ---------------
+
+# Kind-importance prior (Generative-Agents "poignancy", deterministic + backend-
+# neutral so it stays parity-safe): durable profile facts outrank rolling
+# summaries, which outrank raw turns; ambient screen memories rank lowest.
+_KIND_IMPORTANCE = {"profile": 1.0, "summary": 0.85, "message": 0.6, "vision": 0.5}
+
+
+def _importance(c: "Candidate") -> float:
+    return _KIND_IMPORTANCE.get(c.kind, 0.6)
+
+
+def _apply_signals(
+    cands: Sequence["Candidate"], budget: "RecallBudget", now: Optional[float]
+) -> list["Candidate"]:
+    """Scale each candidate's native relevance score by a convex blend of recency
+    decay + kind importance (Generative-Agents score). No-op (returns the list
+    unchanged, byte-identical) when both weights are 0 -- the default -- so the
+    relevance-only contract holds until the owner opts in.
+
+    The blend is a true CONVEX factor in ``[0, 1]`` applied MULTIPLICATIVELY to the
+    native score (cosine on Postgres, integer overlap on RAM/SQLite), so it only
+    ever DOWN-weights a stale/unimportant item (never boosts above native) and the
+    per-list score scale is preserved -- :func:`adaptive_cutoff` stays
+    scale-invariant and the two score semantics are never mixed into one additive
+    sum (the module-docstring invariant).
+
+    A NEGATIVE native score (Postgres cosine can be ``< 0`` for an off-topic
+    embedding) is left UNCHANGED: multiplying it by a ``< 1`` factor would move it
+    toward zero, i.e. RANK IT UP -- the opposite of down-weighting. Leaving it keeps
+    every off-topic item strictly below every on-topic one and preserves their
+    relative order."""
+    rw = max(0.0, budget.recency_weight)
+    iw = max(0.0, budget.importance_weight)
+    if rw <= 0.0 and iw <= 0.0:
+        return list(cands)
+    if now is None:
+        now = time.time()
+    hl = budget.recency_half_life_days
+    base = 1.0 - rw - iw
+    out: list[Candidate] = []
+    for c in cands:
+        if c.score <= 0.0:
+            out.append(c)  # never lift an off-topic (negative/zero) score
+            continue
+        recency = 1.0
+        if rw > 0.0 and hl > 0.0 and c.timestamp:
+            age_days = max(0.0, (now - c.timestamp) / 86400.0)
+            recency = 0.5 ** (age_days / hl)
+        imp = _importance(c) if iw > 0.0 else 0.0
+        # Clamp to [0, 1]: a true convex blend even when the weights sum past 1.
+        blend = max(0.0, min(1.0, base + rw * recency + iw * imp))
+        out.append(replace(c, score=c.score * blend))
+    return out
 
 
 # --- adaptive relevance cutoff (no fixed threshold) -------------------------
@@ -338,17 +409,24 @@ def compress(text: str, query: str, token_room: int, cpt: float = 4.0) -> str:
 # --- the entrypoint ---------------------------------------------------------
 
 
-def build_block(cands: Sequence[Candidate], query: str, budget: RecallBudget) -> str:
+def build_block(
+    cands: Sequence[Candidate], query: str, budget: RecallBudget, *, now: Optional[float] = None
+) -> str:
     """Turn a backend's candidate list into the bounded recall block (or ``''``).
 
-    Pipeline: adaptive relevance cutoff -> redundancy collapse -> value-density
-    pack -> compress the overflow item into the leftover room -> render. The
-    returned block is guaranteed ``estimate_tokens(block) <= max_tokens`` except
-    in the pathological case where a single indivisible word exceeds the whole
-    budget (then the minimum viable content is emitted)."""
+    Pipeline: multi-signal re-score (recency + importance, no-op by default) ->
+    adaptive relevance cutoff -> redundancy collapse -> value-density pack ->
+    compress the overflow item into the leftover room -> render. The returned block
+    is guaranteed ``estimate_tokens(block) <= max_tokens`` except in the
+    pathological case where a single indivisible word exceeds the whole budget
+    (then the minimum viable content is emitted). ``now`` (epoch seconds) is only
+    used for recency decay (injectable for deterministic tests); ``None`` ->
+    ``time.time()`` when recency is on, ignored when it is off."""
     cands = list(cands)
     if not cands:
         return ""
+    # Default-OFF + byte-identical when both signal weights are 0 (returns cands as-is).
+    cands = _apply_signals(cands, budget, now)
     cpt = budget.chars_per_token
 
     floor = adaptive_cutoff([c.score for c in cands], budget.cutoff_k)

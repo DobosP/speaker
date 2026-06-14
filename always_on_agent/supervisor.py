@@ -64,6 +64,12 @@ class SupervisorState:
     active_tasks: dict[str, AgentTask] = field(default_factory=dict)
     queued_tasks: list[AgentTask] = field(default_factory=list)
     pending_confirmations: dict[str, AgentTask] = field(default_factory=dict)
+    # Speaker-ID trust of the CURRENT turn's utterance (action chokepoint). Set per
+    # final from the event payload; stamped onto each task created for the turn so
+    # the capability layer can refuse a side-effecting action that isn't
+    # owner-verified live audio. Default FAIL-CLOSED.
+    turn_owner_verified: bool = False
+    turn_origin: str = "unknown"
     spoken_outputs: "deque[str]" = field(default_factory=lambda: deque(maxlen=512))
     event_log: "deque[AgentEvent]" = field(default_factory=lambda: deque(maxlen=1024))
     failures: "deque[str]" = field(default_factory=lambda: deque(maxlen=128))
@@ -142,7 +148,12 @@ class AgentSupervisor:
             self._handle_speech(str(event.payload.get("text", "")), is_final=False)
             return
         if event.kind == EventKind.STT_FINAL:
-            self._handle_speech(str(event.payload.get("text", "")), is_final=True)
+            self._handle_speech(
+                str(event.payload.get("text", "")),
+                is_final=True,
+                owner_verified=bool(event.payload.get("owner_verified", False)),
+                origin=str(event.payload.get("origin", "unknown")),
+            )
             return
         if event.kind == EventKind.FOLLOWUP_TICK:
             self._emit_followup()
@@ -154,7 +165,7 @@ class AgentSupervisor:
             self._set_mode(str(event.payload.get("mode", "")))
             return
         if event.kind == EventKind.CONTROL_CONFIRM:
-            self._confirm_next()
+            self._confirm_next(owner_verified=bool(event.payload.get("owner_verified", False)))
             return
         if event.kind == EventKind.CONTROL_DENY:
             self._deny_all()
@@ -295,11 +306,21 @@ class AgentSupervisor:
             mode=Mode.ASSISTANT,
             speak=True,
         )
-        task = self.tasks.create_task(decision)
+        task = self._create_task(decision)
         task.metadata["followup"] = True
         self._start_task(task)
 
-    def _handle_speech(self, text: str, *, is_final: bool) -> None:
+    def _handle_speech(
+        self, text: str, *, is_final: bool,
+        owner_verified: bool = False, origin: str = "unknown",
+    ) -> None:
+        # Record the current turn's speaker-ID trust (fail-closed) so tasks created
+        # from this utterance carry it to the action chokepoint. Set on every final
+        # (partials don't create tasks) -- a new turn always re-establishes trust,
+        # never inherits a prior turn's.
+        if is_final:
+            self.state.turn_owner_verified = bool(owner_verified)
+            self.state.turn_origin = str(origin)
         observation = self.analyzer.observe(text, is_final=is_final)
         self.state.observations.append(observation)
         if not observation.normalized:
@@ -337,6 +358,15 @@ class AgentSupervisor:
         )
         self._execute_decision(decision)
 
+    def _create_task(self, decision: IntentDecision) -> AgentTask:
+        """Create a task and stamp it with the current turn's speaker-ID trust, so
+        the capability layer's action chokepoint (always_on_agent.origin) sees
+        owner_verified/origin. Fail-closed: defaults to the not-verified turn trust."""
+        task = self.tasks.create_task(decision)
+        task.metadata["owner_verified"] = bool(self.state.turn_owner_verified)
+        task.metadata["origin"] = str(self.state.turn_origin)
+        return task
+
     def _execute_decision(self, decision: IntentDecision) -> None:
         if decision.kind == IntentKind.IGNORE:
             return
@@ -344,7 +374,9 @@ class AgentSupervisor:
             self.publish(AgentEvent.stop(decision.reason))
             return
         if decision.kind == IntentKind.CONFIRM:
-            self.publish(AgentEvent.confirm())
+            # Carry the speaker-ID trust of THIS "yes" so an owner-verified staged
+            # action can only be approved by an owner-verified confirm.
+            self.publish(AgentEvent.confirm(owner_verified=self.state.turn_owner_verified))
             return
         if decision.kind == IntentKind.DENY:
             self.publish(AgentEvent.deny())
@@ -362,7 +394,7 @@ class AgentSupervisor:
         # the follow-up; otherwise we fall through to the normal start path.
         if self._maybe_continue(decision):
             return
-        task = self.tasks.create_task(decision)
+        task = self._create_task(decision)
         if task.metadata.get("requires_confirmation"):
             self.state.pending_confirmations[task.task_id] = task
             self.state.spoken_outputs.append(f"Confirm command: {task.input_text}")
@@ -555,7 +587,7 @@ class AgentSupervisor:
             # sentence the victim races out before it exits goes stale and drops.
             merged = cfg.merge_template.format(prev=origin, addon=self._render_addons(addons))
             self._cancel_one(victim)
-            task = self.tasks.create_task(replace(decision, text=merged))
+            task = self._create_task(replace(decision, text=merged))
             task.metadata["continuation_of"] = victim.task_id
             task.metadata["continuation_origin"] = origin
             task.metadata["continuation_addons"] = addons
@@ -593,7 +625,7 @@ class AgentSupervisor:
             log.info("continuation FOLD: add-on merged into queued %s", pending.task_id)
             return True
         cont_text = cfg.continue_template.format(prev=origin, addon=self._render_addons(addons))
-        task = self.tasks.create_task(replace(decision, text=cont_text))
+        task = self._create_task(replace(decision, text=cont_text))
         task.metadata["continuation_of"] = victim.task_id
         task.metadata["continue_after"] = victim.task_id
         task.metadata["continuation_origin"] = origin
@@ -700,12 +732,25 @@ class AgentSupervisor:
             # while we were unlocked, preserving FIFO order.
             self.state.queued_tasks = remaining + self.state.queued_tasks
 
-    def _confirm_next(self) -> None:
+    def _confirm_next(self, owner_verified: bool = False) -> None:
         if not self.state.pending_confirmations:
             self.state.spoken_outputs.append("Nothing to confirm.")
             return
+        # Bind the confirm to the specific staged action (oldest pending) and read it
+        # back, instead of a blind "yes confirms whatever". If that action was staged
+        # from an OWNER-VERIFIED command, the confirm must ALSO be owner-verified --
+        # so an ambient/leaked "yes" can't approve the owner's pending destructive
+        # action (the spoofable-confirm race). A non-owner-gated staged task (e.g.
+        # legacy / pre-enrollment) confirms as before; its execution is still
+        # refused by the capability chokepoint if it isn't owner-verified.
         task_id, task = next(iter(self.state.pending_confirmations.items()))
+        if bool(task.metadata.get("owner_verified", False)) and not owner_verified:
+            self.state.spoken_outputs.append(
+                f"I can't confirm '{task.input_text}' without verified-owner authorization."
+            )
+            return
         self.state.pending_confirmations.pop(task_id, None)
+        self.state.spoken_outputs.append(f"Confirmed: {task.input_text}")
         self._start_task(task)
 
     def _deny_all(self) -> None:

@@ -52,8 +52,17 @@ class AgentEvent:
         return cls(EventKind.STT_PARTIAL, {"text": text, "is_final": False}, priority=90)
 
     @classmethod
-    def final(cls, text: str) -> "AgentEvent":
-        return cls(EventKind.STT_FINAL, {"text": text, "is_final": True}, priority=50)
+    def final(cls, text: str, *, owner_verified: bool = False, origin: str = "unknown") -> "AgentEvent":
+        # owner_verified/origin carry the speaker-ID trust of this utterance for the
+        # action chokepoint (always_on_agent.origin). Default FAIL-CLOSED (not the
+        # owner, unknown origin) so a final published without a verdict can never
+        # authorize a real action -- only an explicit owner-verified live-audio final
+        # may. Set by the runtime from the SpeakerGate.
+        return cls(
+            EventKind.STT_FINAL,
+            {"text": text, "is_final": True, "owner_verified": bool(owner_verified), "origin": origin},
+            priority=50,
+        )
 
     @classmethod
     def stop(cls, reason: str = "voice") -> "AgentEvent":
@@ -68,8 +77,15 @@ class AgentEvent:
         )
 
     @classmethod
-    def confirm(cls, source: str = "voice") -> "AgentEvent":
-        return cls(EventKind.CONTROL_CONFIRM, {"source": source}, priority=5)
+    def confirm(cls, source: str = "voice", *, owner_verified: bool = False) -> "AgentEvent":
+        # A confirmation is itself a consequential action -- approving a staged
+        # command. owner_verified defaults FAIL-CLOSED so an ambient/leaked "yes"
+        # cannot approve a side-effecting task; only an owner-verified confirm can.
+        return cls(
+            EventKind.CONTROL_CONFIRM,
+            {"source": source, "owner_verified": bool(owner_verified)},
+            priority=5,
+        )
 
     @classmethod
     def deny(cls, source: str = "voice") -> "AgentEvent":

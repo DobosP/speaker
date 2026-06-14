@@ -327,13 +327,20 @@ def test_recall_block_is_token_bounded():
     llm.systems.clear()
     registry.invoke("assistant.answer", "tell me about the alpha beta gamma milestone", {})
 
+    from always_on_agent.untrusted import _BEGIN, _END
+
     system_used = llm.systems[-1]
     assert system_used.endswith(DEFAULT_SYSTEM)
-    recall_block = system_used[: -len(DEFAULT_SYSTEM)].rstrip("\n")
-    assert recall_block.startswith("=== Past Conversations ===")  # something recalled
-    assert estimate_tokens(recall_block) <= 30  # token-bounded, not char-sliced
+    # The recall block now rides inside an untrusted-data envelope (prompt-injection
+    # spotlighting). The recall TOKEN budget bounds the recalled CONTENT; the fixed
+    # security directive is separate, bounded overhead -- so measure the content
+    # INSIDE the fences against the budget.
+    recall_content = system_used.split(_BEGIN, 1)[1].split(_END, 1)[0]
+    recall_content = recall_content.split("\n", 1)[1].strip()  # drop the "[untrusted memory]" header
+    assert recall_content.startswith("=== Past Conversations ===")  # something recalled
+    assert estimate_tokens(recall_content) <= 30  # token-bounded, not char-sliced
     # Whole-word guarantee: every rendered word is a complete word (no mid-cut).
-    for line in recall_block.split("\n")[1:]:
+    for line in recall_content.split("\n")[1:]:
         assert not line.endswith("alph") and not line.endswith("gam")
 
 

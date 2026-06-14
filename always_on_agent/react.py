@@ -20,6 +20,7 @@ from threading import Event
 from typing import Callable, Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from .capabilities import CapabilityRegistry, CapabilityResult, CapabilitySpec
+from .untrusted import wrap_untrusted
 
 
 @runtime_checkable
@@ -281,7 +282,15 @@ class ReactPlanner:
             result = self._registry.invoke(action, arg or query, dict(context))
             steps_taken.append(action)
             if result.ok:
-                observations.append(f"{action}: {result.text}".strip())
+                # Prompt-injection hardening (OWASP LLM01): web/external (egress)
+                # tool output is attacker-controllable webpage text -- fence it as
+                # UNTRUSTED data so an instruction smuggled into a fetched page
+                # can't steer the planner's next TOOL/FINAL step. Local tool output
+                # (no egress) is left as-is, byte-identical.
+                obs_text = result.text
+                if (result.data or {}).get("egress"):
+                    obs_text = wrap_untrusted(obs_text, source="web")
+                observations.append(f"{action}: {obs_text}".strip())
             else:
                 # Recovery phase: surface the failure so the model can replan.
                 observations.append(f"{action} failed: {result.error}")

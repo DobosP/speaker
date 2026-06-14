@@ -56,28 +56,34 @@ def _read_migrations(directory: Path):
 def _redact_db_url(db_url: str) -> str:
     """Mask any password in a DATABASE_URL for safe logging/printing.
 
-    Reuses ``setup_database._redact_db_url`` when importable (repo root is on
-    sys.path for ``python -m tools.migrate`` / ``python tools/migrate.py``);
-    otherwise falls back to an inline urlsplit mask so we never print a raw DSN.
-    Redaction must never itself raise or leak.
+    Self-contained on purpose: it must NOT import ``setup_database`` (that module
+    runs ``sys.exit(1)`` at import time when psycopg is absent -- a SystemExit,
+    not an Exception, so it would crash this redaction on a psycopg-less box /
+    CI). Masks both the userinfo password (``user:pass@host``) and a libpq
+    query-param password (``?password=...`` / ``?sslpassword=...``). Redaction
+    must never itself raise or leak.
     """
     try:
-        from setup_database import _redact_db_url as _redact  # type: ignore
-        return _redact(db_url)
-    except Exception:  # noqa: BLE001 - redaction must never raise / leak
-        from urllib.parse import urlsplit, urlunsplit
-        try:
-            parts = urlsplit(db_url)
-            if parts.password is None:
-                return db_url
+        import re
+        from urllib.parse import urlsplit
+        out = db_url
+        parts = urlsplit(db_url)
+        # Mask the userinfo password (user:pass@host) via a targeted replace so
+        # the rest of the DSN (scheme, ///, path, query) is preserved exactly.
+        if parts.password is not None and parts.netloc:
             user = parts.username or ""
             host = parts.hostname or ""
-            netloc = f"{user}:***@{host}" if user else f"***@{host}"
+            masked = f"{user}:***@{host}" if user else f"***@{host}"
             if parts.port:
-                netloc = f"{netloc}:{parts.port}"
-            return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
-        except Exception:  # noqa: BLE001
-            return db_url.split("@")[-1] if "@" in db_url else db_url
+                masked = f"{masked}:{parts.port}"
+            out = out.replace(parts.netloc, masked, 1)
+        # Mask a libpq query-param password (?password=... / ?sslpassword=...).
+        out = re.sub(
+            r"((?:password|sslpassword)=)[^&\s]*", r"\1***", out, flags=re.IGNORECASE
+        )
+        return out
+    except Exception:  # noqa: BLE001 - redaction must never raise / leak
+        return db_url.split("@")[-1] if "@" in db_url else db_url
 
 
 def _cmd_status(args: argparse.Namespace) -> int:

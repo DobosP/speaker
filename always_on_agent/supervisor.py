@@ -373,7 +373,7 @@ class AgentSupervisor:
             return
         self._start_task(task)
 
-    def _start_task(self, task: AgentTask) -> None:
+    def _start_task(self, task: AgentTask, expected_epoch: Optional[int] = None) -> None:
         # Capture the current speech epoch and register the task atomically with
         # respect to cancel_all (realtime-concurrency-1): the streaming sentences
         # this task emits are stamped with this epoch, so a barge-in that
@@ -386,6 +386,14 @@ class AgentSupervisor:
             # never register or spawn a worker for an already-cancelled turn
             # (rc-4). The re-check under the lock is the authoritative drop.
             if task.cancel_event.is_set():
+                return
+            # rc-4 residual window: a task snapshotted by _start_queued_tasks is
+            # invisible to cancel_all (it's neither in active_tasks nor
+            # queued_tasks during the drain), so cancel_all can't set its
+            # cancel_event. Re-check the epoch under the lock too: if a barge-in /
+            # supersede advanced it since the drain started, drop the task rather
+            # than resurrect a turn the user moved past.
+            if expected_epoch is not None and self.speech_epoch != expected_epoch:
                 return
             task.speech_epoch = self.speech_epoch
             timeout = self._timeout_for(task.mode)
@@ -656,28 +664,41 @@ class AgentSupervisor:
         # Snapshot + swap the queue under the cancel lock so a concurrent
         # cancel_all (audio thread) cannot clear queued_tasks mid-iteration and
         # have this method reassign a stale `remaining` over the cleared list --
-        # which would resurrect a cancelled turn (rc-4). _start_task is still
-        # called OUTSIDE the lock (it re-acquires the non-reentrant lock itself
-        # and re-checks cancel_event), so a task cancelled in the window between
-        # snapshot and start is dropped there rather than resurrected.
+        # which would resurrect a cancelled turn (rc-4). Capture the epoch too:
+        # if a barge-in / supersede advances it during the drain, the snapshot is
+        # stale and the rest of the pass is dropped (newest-input-wins).
         with self._cancel_lock:
+            start_epoch = self.speech_epoch
             pending = list(self.state.queued_tasks)
             self.state.queued_tasks = []
         remaining: list[AgentTask] = []
-        to_start: list[AgentTask] = []
         for task in pending:
+            # A barge-in/stop landed mid-drain (cancel_all/_cancel_one bumped the
+            # epoch and already cleared the live queue + cancelled active work):
+            # drop the rest of this stale pass instead of starting/re-queuing it.
+            if self.speech_epoch != start_epoch:
+                return
             if task.cancel_event.is_set():
                 continue  # cancelled while queued -- drop it
             if self._should_queue(task):
                 remaining.append(task)
-            else:
-                to_start.append(task)
+                continue
+            # Start INLINE (outside the lock; _start_task re-acquires it). Doing
+            # it here -- not in a deferred second pass -- means each start updates
+            # active_tasks / the thread registry BEFORE the next _should_queue
+            # check, so a single drain pass cannot over-admit past the per-mode
+            # RESEARCH cap or the global thread ceiling. _start_task drops the
+            # task if it was cancelled or the epoch advanced in the meantime.
+            self._start_task(task, expected_epoch=start_epoch)
         with self._cancel_lock:
+            # A barge landing after the loop but before this re-queue would
+            # otherwise strand `remaining` back onto a queue the user moved past;
+            # re-check the epoch atomically with the re-queue and drop if stale.
+            if self.speech_epoch != start_epoch:
+                return
             # Re-queue the not-yet-runnable tasks AHEAD of anything appended
             # while we were unlocked, preserving FIFO order.
             self.state.queued_tasks = remaining + self.state.queued_tasks
-        for task in to_start:
-            self._start_task(task)
 
     def _confirm_next(self) -> None:
         if not self.state.pending_confirmations:

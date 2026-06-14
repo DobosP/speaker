@@ -55,10 +55,13 @@ Out of scope (report upstream, not here):
 
 ### Known exposure: the remote token server
 
-`remote/token_server.py` mints a LiveKit token for **any** identity/room as
-written. **Put real authentication in front of `/token` before exposing it to a
-network.** This is documented in [`CREDENTIALS.md`](CREDENTIALS.md) and is a
-deployment responsibility, not a reportable bug in the default local config.
+`remote/token_server.py` gates `/token` and `/chat` behind a bearer token
+(`SPEAKER_REMOTE_TOKEN`), **deny-by-default when it is unset**. That single
+shared token does **not** scope identity or room, so any authenticated caller can
+mint a LiveKit token for *any* identity/room. **Add per-user authorization
+upstream before exposing the server to a network.** This is documented in
+[`CREDENTIALS.md`](CREDENTIALS.md) and is a deployment responsibility, not a
+reportable bug in the default local config.
 
 ## Security & privacy invariants
 

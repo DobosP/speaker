@@ -29,6 +29,14 @@ def test_redact_passthrough_when_no_password():
     assert migrate._redact_db_url(url) == url
 
 
+def test_redact_masks_query_param_password():
+    # libpq also accepts the password as a query parameter.
+    out = migrate._redact_db_url("postgresql://dobo@localhost/db?password=s3cret&sslmode=require")
+    assert "s3cret" not in out
+    assert "***" in out
+    assert "sslmode=require" in out
+
+
 def test_redact_never_raises_on_garbage():
     # Redaction must never throw -- a malformed DSN should degrade, not crash.
     assert isinstance(migrate._redact_db_url("not a url"), str)

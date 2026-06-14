@@ -63,6 +63,10 @@ class Memory(Protocol):
 
     def context_for_llm(self, query: str) -> str: ...                        # ready-to-prepend block or ''
 
+    def profile_block(self) -> str: ...                                      # durable profile facts alone, or '' (Recall-B)
+
+    def last_session_summary(self) -> str: ...                              # one-shot prior-session head, or '' (lm-2 Wire 3)
+
     def prune(self) -> int: ...                                              # retention/eviction
 
     def close(self) -> None: ...                                             # flush + release
@@ -134,6 +138,17 @@ class SessionMemory:
         """Token-budgeted recall block, or ``''`` on no hit. See class docstring."""
         return build_block(self._candidates(query), query, self._budget)
 
+    def profile_block(self) -> str:
+        # The in-RAM store has no durable user-profile tier (that is a
+        # Postgres-only producer), so the decoupled profile-injection path is a
+        # no-op here -- byte-identical to today.
+        return ""
+
+    def last_session_summary(self) -> str:
+        # No rolling-summary head in the in-RAM store; the one-shot "Last session"
+        # block is Postgres-only (lm-2 Wire 3).
+        return ""
+
     def prune(self) -> int:
         # Age-TTL retention is P2b; the working-window cap in add() is the only
         # eviction this cycle. Nothing to do at close-time.
@@ -164,6 +179,7 @@ class MemoryManagerAdapter:
         recall_budget: Optional[RecallBudget] = None,
         working_window: Optional[int] = None,
         cross_session_continuity: bool = False,
+        persist_assistant: bool = False,
         **manager_kwargs,
     ):
         from utils.memory import create_memory_manager  # lazy: keep the brain DB-free
@@ -181,6 +197,10 @@ class MemoryManagerAdapter:
             summary_ttl_days=summary_ttl_days,
             recall_budget=recall_budget,
             cross_session_continuity=cross_session_continuity,
+            # lm-5: persist + recall assistant finals (default OFF) so the Postgres
+            # tier matches the in-RAM/SQLite backends, which already store and
+            # recall assistant_output items.
+            persist_assistant=persist_assistant,
             **manager_kwargs,
         )
         # Our own small in-RAM ring buffer of the raw (text, tags) handed to
@@ -243,6 +263,16 @@ class MemoryManagerAdapter:
 
     def context_for_llm(self, query: str) -> str:
         return self._manager.get_context_for_llm(query)
+
+    def profile_block(self) -> str:
+        # Recall-B: durable profile facts alone, so they inject even when episodic
+        # recall is OFF. '' unless the manager has profile_enabled + facts.
+        return self._manager.get_profile_context()
+
+    def last_session_summary(self) -> str:
+        # lm-2 Wire 3: the prior-session head seeded at process start, or '' when
+        # cross_session_continuity is OFF / there was no prior summary.
+        return self._manager.last_session_summary()
 
     def prune(self) -> int:
         # Age-TTL retention (P2b): episodic messages older than

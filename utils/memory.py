@@ -289,6 +289,7 @@ class MemoryManager:
         summary_ttl_days: int = 365,
         recall_budget: Optional[RecallBudget] = None,
         cross_session_continuity: bool = False,
+        persist_assistant: bool = False,
     ):
         """Initialize the memory manager.
 
@@ -325,6 +326,13 @@ class MemoryManager:
         self.enable_embeddings = enable_embeddings
         self.smart_save = smart_save
         self.persist_roles = tuple(persist_roles)
+        # lm-5 episodic (default OFF): when persist_assistant is on, the assistant's
+        # finals are persisted as recallable rows (role='assistant') and admitted
+        # to search_memory -- catching the Postgres tier up to the in-RAM /SQLite
+        # backends, which already store + recall assistant_output items. Folded into
+        # persist_roles so the existing role-gated paths reuse it.
+        if persist_assistant and "assistant" not in self.persist_roles:
+            self.persist_roles = self.persist_roles + ("assistant",)
         self.min_user_words = max(1, int(min_user_words))
         self._writer_config = memory_writer_config or config_from_dict(memory_config)
         if flush_interval_sec is not None:
@@ -354,6 +362,12 @@ class MemoryManager:
         # Rolling summary head: the prior summary folded into the next one so
         # the layer-2 record accumulates rather than fragmenting (R2).
         self._summary_head = ""
+        # lm-2 Wire 3: a SEPARATE snapshot of the seeded prior-session head, set
+        # once in _seed_summary_head and never mutated by later rolling-summary
+        # writes (which overwrite _summary_head). last_session_summary() reads this
+        # so the one-shot "Last session" prompt block reflects the head as it was at
+        # process start, not whatever the rolling summary has since become.
+        self._last_session_head = ""
         # lm-2 cross-session continuity (default OFF, like recall_enabled): when
         # on, seed _summary_head from the newest persisted summary and let
         # _load_recent_messages fall back across sessions, so memory survives a
@@ -533,8 +547,23 @@ class MemoryManager:
             if row and row.get("summary"):
                 with self._summary_lock:
                     self._summary_head = str(row["summary"])
+                # lm-2 Wire 3: snapshot the seeded head separately so a one-shot
+                # "Last session" block can surface it even after the rolling
+                # summary overwrites _summary_head mid-session.
+                self._last_session_head = str(row["summary"])
         except Exception as e:
             print(f"[warn] Failed to seed summary head: {e}")
+
+    def last_session_summary(self) -> str:
+        """lm-2 Wire 3: the prior-session rolling-summary head seeded at process
+        start (cross_session_continuity ON, Postgres tier), or ``''``.
+
+        Returns ``''`` when continuity is off (the seed never ran), there was no
+        prior summary, or the backend has no summary tier -- so a one-shot
+        "Last session" prompt block stays empty by default (byte-identical opening
+        turn). The value is the SEEDED snapshot, immune to later rolling-summary
+        mutation."""
+        return self._last_session_head
 
     def _load_recent_messages(self):
         """Load recent messages from database (Layer 1 warm start).
@@ -600,6 +629,21 @@ class MemoryManager:
 
         if role == "assistant":
             self._last_assistant_text = cleaned
+            # lm-5 episodic (default OFF via persist_assistant -> persist_roles):
+            # persist the assistant final as a recallable row so the Postgres tier
+            # matches the in-RAM/SQLite backends. Scheduled OFF the bus thread (the
+            # answer is already generated + spoken by the time this fires, so the
+            # DB write + embedding never touch TTFT). source='assistant_final'
+            # distinguishes it from user rows; search_memory admits it (gated on
+            # the same persist_roles membership).
+            if persist and self._db_available and "assistant" in self.persist_roles:
+                saved = message
+
+                def _persist_assistant() -> None:
+                    emb = self._get_embedding(saved.content) if self._embeddings_available else None
+                    self._save_message_to_db(saved, emb, source="assistant_final")
+
+                self._schedule_background(_persist_assistant)
         elif (
             persist
             and role == "user"
@@ -775,6 +819,12 @@ class MemoryManager:
         source: str = "user_final", confidence: float = 1.0,
     ):
         """Save a single message via a short-lived pool connection."""
+        if self._pool is None:
+            # A background producer (summary / profile / lm-5 assistant-final) can
+            # fire after close() has torn the pool down (close() does not join the
+            # daemon writer threads). Skip cleanly rather than raising an
+            # AttributeError that would only be swallowed + logged downstream.
+            return
         self._check_embedding_dim(embedding)
         saved_at = datetime.now()
         content = cleaned_text or message.content
@@ -983,6 +1033,14 @@ class MemoryManager:
             return []
         self._check_embedding_dim(query_embedding)
 
+        # lm-5: which roles are recallable. 'user' always; 'assistant' only when
+        # persist_assistant folded it into persist_roles, so disabling the knob
+        # leaves recall output byte-identical (no assistant rows are written OR
+        # read). Parameterized (role = ANY) -- never string-interpolated.
+        recall_roles = ["user"]
+        if "assistant" in self.persist_roles:
+            recall_roles.append("assistant")
+
         results: list[dict] = []
         try:
             with self._pool.connection() as conn:
@@ -997,13 +1055,14 @@ class MemoryManager:
                         WHERE embedding IS NOT NULL
                           AND embedder_id = %s
                           AND embedding_dim = %s
-                          AND role = 'user'
+                          AND role = ANY(%s)
                         ORDER BY embedding <=> %s::vector
                         LIMIT %s
                         """,
                         (
                             query_embedding.tolist(),
                             self.embedder_id, int(query_embedding.shape[-1]),
+                            recall_roles,
                             query_embedding.tolist(), limit,
                         ),
                     )
@@ -1169,6 +1228,31 @@ class MemoryManager:
             _emit(prof_cands, max(total - used, 0), header="=== User Profile ===")
 
         return "\n\n".join(parts)
+
+    def get_profile_context(self) -> str:
+        """Recall-B: the durable user-profile block ALONE, independent of episodic
+        recall.
+
+        Returns ``''`` unless ``profile_enabled`` and there are profile facts.
+        Same render (``=== User Profile ===`` + ``- key: value`` lines via the
+        shared :func:`build_block`) as the profile sub-pass inside
+        :meth:`get_context_for_llm`, so the two paths agree for identical facts --
+        the difference is only the budget (here the profile claims the whole
+        ``max_tokens`` since it is the sole block, vs. the leftover floor when it
+        rides alongside recall/vision). This lets the answering path surface who
+        the user is even when ``recall_enabled`` is OFF, while staying empty (and
+        thus byte-identical) when profiles are disabled."""
+        if not self.profile_enabled:
+            return ""
+        profile = self.get_user_profile()
+        if not profile:
+            return ""
+        prof_cands = [
+            Candidate(f"{k}: {v}", _PROFILE_RECALL_SCORE, kind='profile')
+            for k, v in profile.items()
+        ]
+        b = _dc_replace(self._recall_budget, header="=== User Profile ===")
+        return build_block(prof_cands, "", b)
 
     def get_chat_history(self) -> List[Dict[str, str]]:
         """Get recent messages as list of dicts for LLM."""

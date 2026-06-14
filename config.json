@@ -19,7 +19,8 @@
     "memorize_ocr": true,
     "memorize_max_chars": 280,
     "memorize_ocr_max_chars": 200,
-    "memorize_redact_pii": true
+    "memorize_redact_pii": true,
+    "memorize_phash_threshold": 4
   },
   "llm": {
     "backend": "ollama",

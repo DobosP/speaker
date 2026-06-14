@@ -18,7 +18,8 @@
     "memorize_caption": true,
     "memorize_ocr": true,
     "memorize_max_chars": 280,
-    "memorize_ocr_max_chars": 200
+    "memorize_ocr_max_chars": 200,
+    "memorize_redact_pii": true
   },
   "llm": {
     "backend": "ollama",

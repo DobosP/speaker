@@ -11,6 +11,7 @@ from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import Memory
 from always_on_agent.recall import VISION_LABEL, compress, trim_block_to_tokens
+from always_on_agent.untrusted import wrap_untrusted
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -425,7 +426,16 @@ def attach_llm_capabilities(
                 # set tighter here. Replaces the old blunt recall_block[:max_chars].
                 recall_block = trim_block_to_tokens(recall_block, recall_cfg.max_tokens)
                 prefix_parts = [b for b in (last_session_block, recall_block) if b]
-                prefix = ("\n\n".join(prefix_parts) + "\n\n") if prefix_parts else ""
+                # Prompt-injection hardening (OWASP LLM01): the recalled/last-session
+                # blocks carry content the assistant did NOT author -- prior-session
+                # messages AND 'Screen:' OCR/caption lines (a prime indirect-injection
+                # vector). Spotlight them as UNTRUSTED data with a never-obey directive
+                # so an instruction smuggled into a recalled line / on-screen text
+                # can't hijack the turn. No-op + byte-identical when nothing recalls.
+                prefix = (
+                    (wrap_untrusted("\n\n".join(prefix_parts), source="memory") + "\n\n")
+                    if prefix_parts else ""
+                )
                 suffix = ("\n\n" + recent_block) if recent_block else ""
                 system_for_call = prefix + system + suffix
             except Exception:  # noqa: BLE001 - context is best-effort, never fatal
@@ -582,11 +592,21 @@ def attach_llm_capabilities(
 
     def research_synth(query: str, context: dict[str, object]) -> CapabilityResult:
         previous = context.get("previous_steps", [])
-        gathered = " ".join(
-            str(step.get("text", ""))
-            for step in previous
-            if isinstance(step, dict) and step.get("text")
-        )
+        gathered_parts: list[str] = []
+        for step in previous:
+            if not (isinstance(step, dict) and step.get("text")):
+                continue
+            text = str(step["text"])
+            # Prompt-injection hardening (OWASP LLM01), RESEARCH plan path: a gathered
+            # step that egressed (web.search) carries attacker-controllable webpage
+            # text -- fence it as UNTRUSTED before folding it into the synthesis
+            # prompt (same defense as the ReAct path) so an injected page can't steer
+            # the summary. Local steps are left as-is, byte-identical.
+            data = step.get("data")
+            if isinstance(data, dict) and data.get("egress"):
+                text = wrap_untrusted(text, source="web")
+            gathered_parts.append(text)
+        gathered = " ".join(gathered_parts)
         prompt = (
             f"Question: {query}\n"
             f"Local findings: {gathered or '(none)'}\n"

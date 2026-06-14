@@ -26,6 +26,8 @@ from dataclasses import dataclass
 from queue import Empty, Full, Queue
 from typing import Callable, Optional
 
+from always_on_agent.untrusted import redact_pii
+
 log = logging.getLogger("speaker.visual_memory")
 
 CaptionFn = Callable[[bytes], str]
@@ -55,6 +57,7 @@ class VisualMemoryConfig:
     ocr: bool = True
     max_chars: int = 280
     ocr_max_chars: int = 200
+    redact_pii: bool = True
 
     @classmethod
     def from_dict(cls, data: Optional[dict]) -> "VisualMemoryConfig":
@@ -67,6 +70,9 @@ class VisualMemoryConfig:
             ocr=bool(data.get("memorize_ocr", True)),
             max_chars=int(data.get("memorize_max_chars", 280) or 280),
             ocr_max_chars=int(data.get("memorize_ocr_max_chars", 200) or 200),
+            # §9.7 image-security: scrub cards/SSN/keys/email/phone from OCR'd screen
+            # text BEFORE it becomes a durable 'vision' memory. Default ON.
+            redact_pii=bool(data.get("memorize_redact_pii", True)),
         )
 
 
@@ -181,7 +187,19 @@ class VisualMemorizer:
         Each component is guarded independently: if captioning fails, the OCR
         snippet still carries (and vice versa)."""
         caption = self._safe(self._caption_fn, frame) if self._cfg.caption else ""
-        ocr = self._safe(self._ocr_fn, frame)[: self._cfg.ocr_max_chars].strip() if self._cfg.ocr else ""
+        ocr_raw = self._safe(self._ocr_fn, frame) if self._cfg.ocr else ""
+        # §9.7 image-security: scrub PII (cards/SSN/keys/email/phone) from BOTH the
+        # caption AND the OCR before any trim/persist. The multimodal caption can
+        # transcribe a visible secret just as the OCR can ("a form showing card
+        # 4111..."), so both screen-pixels->record paths must be redacted; doing it
+        # on the FULL text before the trims means a number split by a trim can't
+        # survive half-redacted.
+        if self._cfg.redact_pii:
+            if caption:
+                caption = redact_pii(caption)
+            if ocr_raw:
+                ocr_raw = redact_pii(ocr_raw)
+        ocr = ocr_raw[: self._cfg.ocr_max_chars].strip() if self._cfg.ocr else ""
         parts = []
         if caption:
             parts.append(caption)

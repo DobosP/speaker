@@ -219,6 +219,17 @@ class SqliteVecMemory:
     def context_for_llm(self, query: str) -> str:
         return build_block(self._candidates(query), query, self._budget)
 
+    def profile_block(self) -> str:
+        # No durable user-profile tier in the SQLite store (Postgres-only
+        # producer), so the decoupled profile-injection path is a no-op here.
+        return ""
+
+    def last_session_summary(self) -> str:
+        # The persistent SQLite store keeps all rows across restarts, so there is
+        # no rolling-summary "last session" head to surface (lm-2 Wire 3 is the
+        # Postgres-only catch-up for its session-scoped warm start).
+        return ""
+
     def prune(self) -> int:
         """Age-TTL retention: drop rows older than ``ttl_days``. Returns rows
         removed (0 when no TTL is configured)."""

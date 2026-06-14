@@ -53,6 +53,33 @@ def _read_migrations(directory: Path):
     return read_migrations(str(directory))
 
 
+def _redact_db_url(db_url: str) -> str:
+    """Mask any password in a DATABASE_URL for safe logging/printing.
+
+    Reuses ``setup_database._redact_db_url`` when importable (repo root is on
+    sys.path for ``python -m tools.migrate`` / ``python tools/migrate.py``);
+    otherwise falls back to an inline urlsplit mask so we never print a raw DSN.
+    Redaction must never itself raise or leak.
+    """
+    try:
+        from setup_database import _redact_db_url as _redact  # type: ignore
+        return _redact(db_url)
+    except Exception:  # noqa: BLE001 - redaction must never raise / leak
+        from urllib.parse import urlsplit, urlunsplit
+        try:
+            parts = urlsplit(db_url)
+            if parts.password is None:
+                return db_url
+            user = parts.username or ""
+            host = parts.hostname or ""
+            netloc = f"{user}:***@{host}" if user else f"***@{host}"
+            if parts.port:
+                netloc = f"{netloc}:{parts.port}"
+            return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        except Exception:  # noqa: BLE001
+            return db_url.split("@")[-1] if "@" in db_url else db_url
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     backend = _backend(args.database_url)
     all_migrations = _read_migrations(_migrations_dir())
@@ -60,7 +87,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
         applied = backend.to_apply(all_migrations)  # the ones still pending
     pending_ids = {m.id for m in applied}
     print(f"Migrations directory: {_migrations_dir()}")
-    print(f"Database:             {args.database_url}")
+    print(f"Database:             {_redact_db_url(args.database_url)}")
     print()
     print(f"{'STATUS':<10} {'ID'}")
     for m in all_migrations:

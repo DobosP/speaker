@@ -22,6 +22,11 @@
     "memorize_redact_pii": true,
     "memorize_phash_threshold": 4
   },
+  "_gui_actions_comment": "Computer-use, READ-ONLY tier (default OFF, separate opt-in from --agent). When enabled (config or --gui-actions), registers screen.identify -- a read-only capability that captures the screen, OCRs/locates UI elements, and reports what is on screen + where (e.g. 'where is the Save button'). It NEVER moves the cursor, clicks, or types. On-screen text is treated as UNTRUSTED (PII-redacted + fenced + Origin.SCREEN) so it can never originate an action. The ACTUATING tier (click/type/press) is intentionally NOT here: it requires owner speaker-ID verification + the always_on_agent/origin action chokepoint + live validation, and is a separate gated slice. Needs mss (capture) + pytesseract/Pillow/tesseract (OCR); degrades gracefully if absent.",
+  "gui_actions": {
+    "enabled": false,
+    "monitor": 1
+  },
   "llm": {
     "backend": "ollama",
     "main_model": "gemma3:12b",

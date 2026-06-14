@@ -63,6 +63,7 @@ class VoiceRuntime:
         web_search_config: Optional[WebSearchConfig] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
+        computer_use_config=None,
         router: Optional[Router] = None,
         capability_router: Optional[CapabilityRouter] = None,
         planner_config: Optional[PlannerConfig] = None,
@@ -180,6 +181,18 @@ class VoiceRuntime:
             from .agent import attach_agent_capability
 
             attach_agent_capability(registry, agent_config)
+        if computer_use_config is not None and computer_use_config.get("enabled"):
+            # Opt-in (default OFF, separate from --agent): the READ-ONLY
+            # screen.identify capability. NO actuating gui.* is registered here --
+            # input control is a separately-gated slice (owner speaker-ID + the
+            # always_on_agent.origin action chokepoint).
+            from .ui_grounding import attach_computer_use_capability
+
+            attach_computer_use_capability(
+                registry,
+                enabled=True,
+                monitor=int(computer_use_config.get("monitor", 1) or 1),
+            )
         # Startup reconciliation: log the capability manifest once and warn if the
         # planner is configured with a tool that isn't actually registered (the
         # drift the manifest is meant to prevent).

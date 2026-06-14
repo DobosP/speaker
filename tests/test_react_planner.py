@@ -288,13 +288,35 @@ def test_recent_conversation_reaches_the_real_planner_end_to_end():
 # --- P3: robust tool-call parsing + bounded re-prompt ------------------------
 
 def test_parse_step_scans_past_preamble_and_markdown():
-    # A small model that rambles before the directive, or decorates it, still parses.
+    # A small model that rambles before the directive, or wraps it in a bullet/fence,
+    # still parses (line-1 lenient; then a strict colon-required scan).
     assert _parse_step("Let me check that.\nTOOL search.local: pgvector") == ("search.local", "pgvector")
-    assert _parse_step("- **TOOL** web.search: cats") == ("web.search", "cats")
+    assert _parse_step("- TOOL web.search: cats") == ("web.search", "cats")
     assert _parse_step("`FINAL: forty two`") == ("FINAL", "forty two")
+    assert _parse_step("FINAL: The capital is Paris.") == ("FINAL", "The capital is Paris.")
     # genuinely no directive -> None (wrap up)
     action, _ = _parse_step("I think the capital is Paris.")
     assert action is None
+
+
+def test_parse_step_does_not_misread_prose_as_directive():
+    # Review regression (P3): a benign line that merely STARTS with "Tool"/"Final"
+    # (no colon after the keyword/name) must NOT be parsed as a directive.
+    for prose in (
+        "I will help.\nTool choice depends on your needs.",
+        "Sure.\nTool web.search is great for code.",
+        "Here is my reasoning.\nFinal answer: 42.",
+        "Let me summarize.\nFinal note: I think the answer is yes.",
+        "The best tool for the job is a hammer.",
+    ):
+        assert _parse_step(prose)[0] is None, prose
+
+
+def test_parse_step_preserves_payload_punctuation():
+    # Review regression (P3): interior * ` # > must NOT be stripped from the arg.
+    assert _parse_step("TOOL web.search: C# tutorials") == ("web.search", "C# tutorials")
+    assert _parse_step("looking...\nTOOL web.search: C# tips & #hashtags") == (
+        "web.search", "C# tips & #hashtags")
 
 
 def test_planner_reprompts_once_on_unparseable_step():
@@ -331,10 +353,12 @@ def test_build_router_llm_defaults_to_fast_when_unset():
 
 def test_build_router_llm_builds_dedicated_local_when_set():
     from core.llm_factory import build_router_llm
-    from core.llm import OllamaLLM
+    from core.llm import HedgeLLM, OllamaLLM, SensitivityRouterLLM
 
     r = build_router_llm({"llm": {"router_model": "xlam2:3b", "backend": "ollama"}}, object())
     assert isinstance(r, OllamaLLM) and r.model == "xlam2:3b"
+    # §9.7: the router sees the raw query, so it must NEVER be cloud-wrapped.
+    assert not isinstance(r, (HedgeLLM, SensitivityRouterLLM))
     # non-ollama backend falls back to the fast tier
     sentinel = object()
     assert build_router_llm({"llm": {"router_model": "x", "backend": "llamacpp"}}, sentinel) is sentinel

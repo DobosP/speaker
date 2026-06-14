@@ -14,6 +14,8 @@ import random
 from always_on_agent.recall import (
     Candidate,
     RecallBudget,
+    _apply_signals,
+    _importance,
     adaptive_cutoff,
     build_block,
     collapse,
@@ -326,3 +328,98 @@ def test_trim_block_header_only_returns_empty():
     block = "=== Past Conversations ===\nUser: " + "word " * 50
     # Budget big enough for the header but not one content line -> drop to ''.
     assert trim_block_to_tokens(block, max_tokens=estimate_tokens("=== Past Conversations ===")) == ""
+
+
+# --- multi-signal scoring (recency + importance), default-OFF ----------------
+
+
+def test_signals_off_by_default_is_byte_identical():
+    cands = [
+        Candidate("a relevant fact", 0.9, kind="message", timestamp=1000.0),
+        Candidate("a stale aside", 0.5, kind="message", timestamp=2000.0),
+    ]
+    b = RecallBudget()  # weights default to 0 -> relevance-only
+    # _apply_signals is a no-op (same scores) regardless of now.
+    assert _apply_signals(cands, b, now=9.9e9) == cands
+    # build_block output is identical with or without a now, and unchanged from
+    # the pre-scoring contract.
+    assert build_block(cands, "relevant fact", b, now=9.9e9) == build_block(cands, "relevant fact", b)
+
+
+def test_recency_decay_boosts_fresher_candidate():
+    b = RecallBudget(recency_weight=1.0, recency_half_life_days=1.0)
+    now = 10 * 86400.0
+    fresh = Candidate("fresh note", 0.5, kind="message", timestamp=now)
+    stale = Candidate("stale note", 0.5, kind="message", timestamp=now - 5 * 86400)
+    scored = {c.text: c.score for c in _apply_signals([fresh, stale], b, now=now)}
+    assert scored["fresh note"] > scored["stale note"]
+    assert math.isclose(scored["fresh note"], 0.5 * 1.0, rel_tol=1e-9)         # age 0 -> factor 1
+    assert math.isclose(scored["stale note"], 0.5 * (0.5 ** 5), rel_tol=1e-9)  # 5 half-lives
+
+
+def test_importance_boosts_durable_kinds():
+    b = RecallBudget(importance_weight=1.0)
+    prof = Candidate("name: Alice", 0.5, kind="profile", timestamp=0.0)
+    msg = Candidate("a passing remark", 0.5, kind="message", timestamp=0.0)
+    scored = {c.text: c.score for c in _apply_signals([prof, msg], b, now=0.0)}
+    assert scored["name: Alice"] > scored["a passing remark"]
+    assert math.isclose(scored["name: Alice"], 0.5 * _importance(prof))
+    assert math.isclose(scored["a passing remark"], 0.5 * _importance(msg))
+
+
+def test_signals_keep_scores_non_negative():
+    b = RecallBudget(recency_weight=0.8, importance_weight=0.8, recency_half_life_days=1.0)
+    now = 100 * 86400.0
+    old = Candidate("ancient", 0.9, kind="vision", timestamp=now - 1000 * 86400)
+    [scored] = _apply_signals([old], b, now=now)
+    assert scored.score >= 0.0
+
+
+def test_blend_is_convex_never_boosts_above_native():
+    # Even with weights summing past 1, a fresh+important item is at most its native
+    # score (the blend is clamped to <= 1), so scoring only down-weights.
+    b = RecallBudget(recency_weight=0.9, importance_weight=0.9, recency_half_life_days=1.0)
+    now = 5 * 86400.0
+    fresh = Candidate("name: Alice", 0.7, kind="profile", timestamp=now)  # recency 1, importance 1
+    [scored] = _apply_signals([fresh], b, now=now)
+    assert scored.score <= 0.7 + 1e-12
+
+
+def test_negative_cosine_score_is_not_ranked_up():
+    # Postgres cosine can be negative for an off-topic hit; the multiplicative
+    # down-weight must NOT move it toward zero (which would rank it ABOVE a
+    # down-weighted positive). A negative score is left unchanged and stays last.
+    b = RecallBudget(recency_weight=1.0, recency_half_life_days=1.0)
+    now = 10 * 86400.0
+    off_topic = Candidate("off topic", -0.2, kind="message", timestamp=now)        # fresh but negative
+    on_topic_stale = Candidate("on topic", 0.3, kind="message", timestamp=now - 3 * 86400)
+    scored = {c.text: c.score for c in _apply_signals([off_topic, on_topic_stale], b, now=now)}
+    assert scored["off topic"] == -0.2                  # untouched, not lifted toward 0
+    assert scored["on topic"] > scored["off topic"]     # on-topic (even decayed) ranks above off-topic
+
+
+def test_recency_changes_render_order_in_build_block():
+    b = RecallBudget(recency_weight=1.0, recency_half_life_days=1.0, max_tokens=200)
+    now = 10 * 86400.0
+    cands = [
+        Candidate("the older one about cats", 0.6, kind="message", timestamp=now - 6 * 86400),
+        Candidate("the newer one about cats", 0.6, kind="message", timestamp=now),
+    ]
+    block = build_block(cands, "cats", b, now=now)
+    assert block.index("newer") < block.index("older")  # render is effective-score descending
+
+
+def test_build_recall_budget_reads_scoring_knobs():
+    from core.app import _build_recall_budget
+
+    b = _build_recall_budget({
+        "recall_recency_weight": 0.3,
+        "recall_recency_half_life_days": 3.0,
+        "recall_importance_weight": 0.2,
+    })
+    assert b.recency_weight == 0.3
+    assert b.recency_half_life_days == 3.0
+    assert b.importance_weight == 0.2
+    # defaults stay OFF
+    d = _build_recall_budget({})
+    assert d.recency_weight == 0.0 and d.importance_weight == 0.0

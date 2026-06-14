@@ -210,6 +210,8 @@ def test_every_memory_config_key_is_consumed():
         "recall_enabled", "recall_max_tokens", "recall_max_chars",
         "chars_per_token", "recall_cutoff_k", "recall_dedup_ratio",
         "recall_recent_reserve_tokens",
+        # multi-signal recall scoring (core.app._build_recall_budget)
+        "recall_recency_weight", "recall_recency_half_life_days", "recall_importance_weight",
         # recent-conversation context (core.conversation.RecentContextConfig.from_dict)
         "recent_context_enabled", "recent_context_turns", "recent_context_max_chars",
         "recent_context_per_turn_chars", "recent_context_reset_enabled",

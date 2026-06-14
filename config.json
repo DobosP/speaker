@@ -465,16 +465,8 @@
     "cross_session_continuity": false,
     "episodic_ttl_days": 90,
     "summary_ttl_days": 365,
-    "save_interval_sec": 240,
-    "min_confidence": 0.55,
-    "llm_cleanup": true,
-    "llm_gate": true,
-    "cleanup_model": "gemma3:4b",
-    "max_buffer_items": 32,
-    "min_chars": 3,
-    "dedupe_similarity": 0.92,
-    "persist_user_only": true,
-    "save_control_phrases": false
+    "_persist_assistant_comment": "persist_assistant (lm-5, default OFF, Postgres tier): persist the assistant's finals as recallable rows (role='assistant', off the bus thread) AND admit them to search_memory, so the Postgres tier matches the in-RAM/SQLite backends, which already store + recall assistant_output items. Default OFF keeps recall output byte-identical (no assistant rows are written OR read). lm-3 (the §9.7 sensitivity float over the recall block) is the precondition and is already in place.",
+    "persist_assistant": false
   },
   "agent_brain": {
     "model": "ollama/gemma3:12b",

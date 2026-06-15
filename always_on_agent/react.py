@@ -66,18 +66,18 @@ FINAL_SYSTEM = (
     "No markdown or preambles."
 )
 
-_LINE = re.compile(r"^\s*(TOOL|FINAL)\b", re.IGNORECASE)
-_TOOL_LINE = re.compile(r"^\s*TOOL\s+([\w.]+)\s*:?\s*(.*)$", re.IGNORECASE | re.DOTALL)
-_FINAL_LINE = re.compile(r"^\s*FINAL\s*:?\s*(.*)$", re.IGNORECASE | re.DOTALL)
-
-# STRICT directives for the post-line-1 / decorated-line scan: a COLON is REQUIRED
-# (right after FINAL, or after the tool name), so an ordinary prose line that merely
-# starts with "Tool ..." / "Final ..." is NOT misread as a directive. Only LEADING
-# bullet/markdown decoration is stripped (never interior chars), so a payload like
-# "C# tutorials" or a query containing * / # is preserved verbatim.
+# STRICT directives, applied to EVERY scanned line (line 1 included): a COLON is
+# REQUIRED (right after FINAL, or after the tool name) -- exactly the format the
+# model is told to emit (PLANNER_SYSTEM: "TOOL <name>: <input>" / "FINAL: <answer>").
+# Requiring the colon everywhere is what stops an ordinary prose line that merely
+# starts with "Tool ..." / "Final ..." (e.g. "Tool web.search is great for code.")
+# from being misread as a directive -- including when it is the model's only line.
+# Only LEADING bullet/markdown decoration is stripped (never interior chars), so a
+# payload like "C# tutorials" or a query containing * / # is preserved verbatim.
 _LEAD_NOISE = re.compile(r"^[\s>*#`\-]+")
 _TOOL_STRICT = re.compile(r"^TOOL\s+([\w.]+)\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
 _FINAL_STRICT = re.compile(r"^FINAL\s*:\s*(.*)$", re.IGNORECASE | re.DOTALL)
+_FENCE = re.compile(r"^\s*```")
 
 # Heuristic markers that an ASSISTANT-mode query wants tool use / gathering
 # rather than a one-shot reply (used by the smart-mode escalation policy).
@@ -140,30 +140,27 @@ def _parse_step(text: str) -> tuple[Optional[str], str]:
     ``action`` is a tool name, the literal ``"FINAL"``, or ``None`` when the
     model produced something unparseable (treated as "wrap up").
 
-    Two passes (P3 reliability for small models that decorate / preface a step):
-    1. LINE 1, lenient -- byte-identical to the original parser (the common case).
-    2. A STRICT (colon-required) scan over every line, with only LEADING bullet/
-       markdown decoration + a trailing markdown fence removed, to catch a directive
-       emitted after a preamble line or wrapped in markdown. The colon requirement
-       prevents an ordinary prose line ("Tool web.search is great...") from being
-       misread as a directive, and leading-only stripping preserves the payload
-       (e.g. "C# tutorials") verbatim.
+    A single STRICT (colon-required) scan over every line (P3 reliability for small
+    models that decorate / preface a step). Only LEADING bullet/markdown decoration
+    + a trailing markdown fence are removed (never interior chars), so a directive
+    emitted after a preamble line or wrapped in a bullet still parses while a payload
+    like "C# tutorials" is preserved verbatim. The colon requirement applies to the
+    FIRST line too, so an ordinary prose line that merely starts with "Tool ..." /
+    "Final ..." is never misread as a directive -- even as the model's only line.
+    Lines inside a fenced ``` code block are skipped, so an *example* directive the
+    model quotes (rather than intends to run) cannot fire a real tool call / egress.
     """
     stripped = text.strip()
     if not stripped:
         return None, ""
-    lines = stripped.splitlines()
 
-    first = lines[0]
-    if _LINE.match(first):
-        final = _FINAL_LINE.match(first)
-        if final:
-            return "FINAL", final.group(1).strip()
-        tool = _TOOL_LINE.match(first)
-        if tool:
-            return tool.group(1).strip(), tool.group(2).strip()
-
-    for raw in lines:
+    in_fence = False
+    for raw in stripped.splitlines():
+        if _FENCE.match(raw):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
         line = _LEAD_NOISE.sub("", raw)
         if line.endswith("`"):
             line = line[:-1]

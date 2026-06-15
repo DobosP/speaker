@@ -180,16 +180,20 @@ def _luhn(text: str) -> bool:
     return checksum % 10 == 0
 
 
-def redact_pii(text: str, *, enabled: bool = True) -> str:
+def redact_pii(text: str, *, enabled: bool = True, force: bool = False) -> str:
     """Redact cards (Luhn) / SSN / email / phone / API-keys from ``text`` before it
     becomes a durable record.
 
     Conservative by design (placeholder tokens, not blanket digit-nuking, Luhn-
     gated cards, separator-gated phones) so useful screen context survives. No-op
-    when ``text`` is empty, ``enabled`` is False, or ``SPEAKER_DISABLE_REDACT`` is
-    set. Key/secret patterns run first so a token isn't half-eaten by the card or
-    phone passes."""
-    if not text or not enabled or _disabled("SPEAKER_DISABLE_REDACT"):
+    when ``text`` is empty or ``enabled`` is False. ``SPEAKER_DISABLE_REDACT`` is an
+    operator opt-out for the *durable-record* redaction only; ``force=True`` (used by
+    the §9.7 cloud-egress net) ignores it, so disabling local-record scrubbing can
+    never silently send PII to a third-party cloud. Key/secret patterns run first so
+    a token isn't half-eaten by the card or phone passes."""
+    if not text or not enabled:
+        return text
+    if not force and _disabled("SPEAKER_DISABLE_REDACT"):
         return text
     out = _KEY_RE.sub("[REDACTED_KEY]", text)
     out = _BEARER_RE.sub("[REDACTED_SECRET]", out)

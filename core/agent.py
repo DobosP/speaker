@@ -93,19 +93,34 @@ BLOCKED = "blocked"
 # Built-in, NON-overridable patterns that can NEVER be auto-SAFE (no-confirm),
 # even if a misconfigured allowlist matches them -- they downgrade an allowlist hit
 # to NEEDS_CONFIRM (so in auto_safe mode they don't run, and in always_ask mode the
-# human must approve). This is the defense-in-depth that closes the
-# allowlist-auto-RCE bypass: arbitrary code execution (interpreter inline -c/-e,
-# eval/exec/system/subprocess), shell chaining/substitution, redirection, AND any
-# command carrying a newline/control char (a one-line status command never does --
-# a multi-line payload is a chained second command) can never silently run. The
-# configurable denylist (-> BLOCKED) still takes precedence.
+# human must approve). This is the defense-in-depth layer behind the PRIMARY control
+# (the curated read-only allowlist + the owner-verified action chokepoint): it
+# downgrades a curated set of dangerous primitives -- shell chaining/substitution/
+# redirection, inline interpreter exec (`-c`/`-e`), newline/control-char chaining, a
+# set of dangerous Python stdlib calls (process/eval, file destruction/IO, network
+# exfil), `find -exec`, network-exfil CLIs (curl/wget/nc/scp/sftp/telnet), and
+# file-writing CLI flags (`--output`) -- so the common allowlist-auto-RCE/exfil shapes
+# can't silently run even under a broad allowlist. It is NOT a complete sandbox: it
+# matches known-dangerous tokens, not every code path (e.g. a bare `bash script.sh`
+# under a wildcard allowlist is not caught), so a truly arbitrary allowlist remains
+# the operator's risk -- the shipped allowlist is anchored read-only status commands
+# precisely so this layer never has to be the only thing standing. The configurable
+# denylist (-> BLOCKED) still takes precedence.
 _NEVER_AUTO_SAFE = [
     re.compile(p, re.I) for p in (
         r"\bpython[0-9.]*\b\s+.*-c\b", r"\b(?:node|ruby|perl|php|deno|bun)\b.*\s-e\b",
         r"\b(?:bash|sh|zsh|fish|pwsh|powershell)\b.*\s-c\b", r"-c\s*['\"]",
-        r"\beval\b", r"\bexec\b", r"os\.system", r"\bsubprocess\b", r"__import__",
-        r"\bcompile\s*\(", r"\bpickle\b", r"\bsource\b", r"\bxargs\b",
+        r"\beval\b", r"\bexec\b", r"os\.system", r"os\.popen", r"os\.exec", r"os\.spawn",
+        r"\bsubprocess\b", r"__import__", r"\bcompile\s*\(", r"\bpickle\b", r"\bsource\b",
+        r"\bxargs\b", r"\bfind\b[^\n]*\s-exec\b", r"\bpty\b",
+        # dangerous file IO / destruction (Python stdlib) -- exfil/overwrite/erase
+        r"\bshutil\.", r"\bos\.(?:remove|unlink|rmdir|removedirs|rename|replace|truncate|chmod|chown)\b",
+        r"\bopen\s*\(", r"\bPath\s*\(", r"\bos\.open\b",
+        # network exfil (stdlib + common CLIs)
+        r"\b(?:urllib|httplib|smtplib|ftplib|socket|socketserver|paramiko)\b", r"\brequests\.",
+        r"\bhttp\.client\b", r"\b(?:curl|wget|nc|ncat|netcat|scp|sftp|telnet)\b",
         r"[;&|]", r"\$\(", r"`", r"[<>]",            # shell chaining / substitution / redirect
+        r"--output\b", r"--out-file\b",              # file-writing flags (e.g. git log --output=)
         r"[\n\r\f\v\x00]",                            # newline/control-char command chaining
     )
 ]
@@ -210,9 +225,11 @@ class AgentBrain:
                 return BLOCKED
         # An allowlist hit can ONLY be auto-SAFE if it also clears the built-in
         # never-auto-safe set -- so e.g. `python -c "<anything>"`, `ls; rm ...`,
-        # `cat x > y`, a newline-chained second command, or an eval/exec/subprocess
-        # payload never auto-runs even if a broad allowlist pattern matches it
-        # (closes the auto-RCE bypass).
+        # `cat x > y`, a newline-chained second command, `shutil.rmtree(...)`, an
+        # `open(...)`/`urllib` exfil payload, or `git log --output=...` never auto-runs
+        # even if a broad allowlist pattern matches it (defense-in-depth against the
+        # common allowlist-auto-RCE/exfil shapes; see _NEVER_AUTO_SAFE for the scope
+        # and its limits -- the curated read-only allowlist is the primary control).
         for rx in self._allow_res:
             if rx.search(text):
                 if any(bad.search(text) for bad in _NEVER_AUTO_SAFE):

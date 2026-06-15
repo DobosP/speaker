@@ -387,14 +387,18 @@ def _redact_messages_for_egress(messages: list[dict]) -> list[dict]:
     (Ollama / llama.cpp) is never redacted."""
     from always_on_agent.untrusted import redact_pii  # stdlib-only; core->aoa is allowed
 
+    # force=True: the §9.7 outbound-cloud net is mandatory and must NOT share the
+    # SPEAKER_DISABLE_REDACT kill-switch with the durable-record redactor -- an
+    # operator disabling local-record scrubbing must never silently send PII to a
+    # third-party cloud.
     out: list[dict] = []
     for m in messages:
         content = m.get("content")
         if isinstance(content, str):
-            out.append({**m, "content": redact_pii(content)})
+            out.append({**m, "content": redact_pii(content, force=True)})
         elif isinstance(content, list):
             parts = [
-                ({**p, "text": redact_pii(p["text"])}
+                ({**p, "text": redact_pii(p["text"], force=True)}
                  if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str)
                  else p)
                 for p in content

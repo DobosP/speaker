@@ -351,6 +351,14 @@ def _wrap_cloud(local_main: LLMClient, llm_cfg: dict) -> LLMClient:
         options=cloud_cfg.get("options"),
         redact_pii_outbound=redact_pii_outbound,  # BR9: both sites honor the §9.7 scrub
     )
+    # Visibility: same WARN as the multi-chain branch -- cloud egress is now active
+    # (the user deliberately set enabled=true AND a model is configured), so the
+    # privacy-boundary change is never silent on EITHER path (§9.7).
+    log.warning(
+        "cloud LLM egress ACTIVE: single-cloud model=%s, redact_pii_outbound=%s "
+        "(post-ASR text only; raw audio/STT/TTS stay local per §9.7)",
+        model, redact_pii_outbound,
+    )
     return HedgeLLM(local=local_main, cloud=cloud, **hedge_kwargs)
 
 

@@ -310,14 +310,16 @@ class TaskRuntime:
         # choice -- e.g. RESEARCH -> main tier, COMMAND -> private chain.
         if task.intent is not None:
             context["intent_kind"] = task.intent.value
+        if extra_context:
+            context.update(extra_context)
         # Forward the turn's speaker-ID trust to the capability's action chokepoint
         # (always_on_agent.origin). Fail-closed: a task without a stamped verdict is
         # treated as not-owner-verified / unknown origin, so a side-effecting
         # capability (command.stage) refuses unless the turn was owner-verified.
+        # Stamped AFTER extra_context so a caller's extra_context can never override
+        # the trust verdict (defense-in-depth: the trust seam stays authoritative).
         context["owner_verified"] = bool(task.metadata.get("owner_verified", False))
         context["origin"] = str(task.metadata.get("origin", "unknown"))
-        if extra_context:
-            context.update(extra_context)
         return self._capabilities.invoke(
             capability,
             task.input_text,

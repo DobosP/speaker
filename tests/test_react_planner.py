@@ -288,8 +288,8 @@ def test_recent_conversation_reaches_the_real_planner_end_to_end():
 # --- P3: robust tool-call parsing + bounded re-prompt ------------------------
 
 def test_parse_step_scans_past_preamble_and_markdown():
-    # A small model that rambles before the directive, or wraps it in a bullet/fence,
-    # still parses (line-1 lenient; then a strict colon-required scan).
+    # A small model that rambles before the directive, or wraps it in a bullet,
+    # still parses (a strict colon-required scan over every line).
     assert _parse_step("Let me check that.\nTOOL search.local: pgvector") == ("search.local", "pgvector")
     assert _parse_step("- TOOL web.search: cats") == ("web.search", "cats")
     assert _parse_step("`FINAL: forty two`") == ("FINAL", "forty two")
@@ -301,15 +301,33 @@ def test_parse_step_scans_past_preamble_and_markdown():
 
 def test_parse_step_does_not_misread_prose_as_directive():
     # Review regression (P3): a benign line that merely STARTS with "Tool"/"Final"
-    # (no colon after the keyword/name) must NOT be parsed as a directive.
+    # (no colon after the keyword/name) must NOT be parsed as a directive -- whether
+    # it follows a preamble line OR is the model's ONLY line (the bare-prose form the
+    # earlier line-1-lenient parser still misread into a spurious web.search egress).
     for prose in (
         "I will help.\nTool choice depends on your needs.",
         "Sure.\nTool web.search is great for code.",
         "Here is my reasoning.\nFinal answer: 42.",
         "Let me summarize.\nFinal note: I think the answer is yes.",
         "The best tool for the job is a hammer.",
+        # bare single-line prose (no benign first line in front of it)
+        "Tool web.search is great for code.",
+        "Tool choice depends on your needs.",
+        "Final answer is probably forty two.",
+        "Finally, I should mention the weather.",
     ):
         assert _parse_step(prose)[0] is None, prose
+
+
+def test_parse_step_skips_directives_inside_code_fences():
+    # Review regression (P3): an EXAMPLE directive the model quotes inside a fenced
+    # code block must NOT fire a real tool call / outbound egress.
+    fenced_tool = "Here is the format:\n```\nTOOL web.search: example query\n```\nFINAL: done"
+    assert _parse_step(fenced_tool) == ("FINAL", "done")
+    fenced_only = "```\nTOOL search.local: not a real call\n```"
+    assert _parse_step(fenced_only)[0] is None
+    # a real directive after the fence still parses
+    assert _parse_step("```\nsome example\n```\nTOOL web.search: cats") == ("web.search", "cats")
 
 
 def test_parse_step_preserves_payload_punctuation():

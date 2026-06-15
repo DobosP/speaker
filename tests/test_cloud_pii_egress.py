@@ -38,6 +38,18 @@ def test_redact_leaves_ordinary_prose_unchanged():
     assert _redact_messages_for_egress(msgs) == msgs
 
 
+def test_egress_redaction_ignores_disable_kill_switch(monkeypatch):
+    # Review hardening (XC1): SPEAKER_DISABLE_REDACT is an operator opt-out for the
+    # *durable-record* redactor only. The §9.7 cloud-egress net is mandatory and must
+    # still scrub PII even when that env var is set -- disabling local-record
+    # scrubbing must never silently send a card/SSN to a third-party cloud.
+    monkeypatch.setenv("SPEAKER_DISABLE_REDACT", "1")
+    msgs = [{"role": "user", "content": "my ssn is 123-45-6789 card 4111 1111 1111 1111"}]
+    out = _redact_messages_for_egress(msgs)
+    assert "123-45-6789" not in out[0]["content"] and "[REDACTED_SSN]" in out[0]["content"]
+    assert "4111" not in out[0]["content"]
+
+
 # --- per-instance flag (cloud-only; local endpoint unaffected) ---------------
 
 def test_outbound_redaction_off_by_default_is_byte_identical():

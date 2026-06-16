@@ -27,6 +27,14 @@
     "enabled": false,
     "monitor": 1
   },
+  "_watch_comment": "Default OFF + DEFAULT-DENY. The watch/monitor capability lets the owner have the assistant watch a SPECIFIC granted application window for a described event (observe + speak only -- never actuates). Grants (the per-app allowlist) live ONLY in machine-local config.local.json (gitignored) so they never travel between machines or leak which apps the owner watches; this committed file ships an empty allowlist. Granting and starting a watch are owner-verified actions (speaker-ID, via always_on_agent.origin) and are never exposed to the LLM planner. Capture is scoped to the granted window (never full-screen) and X11-only in v1 (Wayland/headless/macOS/Windows degrade to unavailable). min_poll_sec floors the poll cadence; max_active caps simultaneous watches.",
+  "watch": {
+    "enabled": false,
+    "min_poll_sec": 5.0,
+    "default_poll_sec": 15.0,
+    "max_active": 2,
+    "grants": []
+  },
   "llm": {
     "backend": "ollama",
     "main_model": "gemma3:12b",

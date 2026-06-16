@@ -1,0 +1,50 @@
+{
+  "_about": "Phase-0 barge-in baseline (deterministic trace replay of the real shipped chain). Regenerate with SPEAKER_REFRESH_BARGE_BASELINE=1 pytest tests/test_barge_scorecard.py. Does NOT replace the live open-speaker A/B.",
+  "traces": {
+    "run-20260609-203236": {
+      "frames": 204,
+      "dtd_fire_count": 122,
+      "cuts_total": 3,
+      "talkover_bursts": {
+        "turn2_normal": {
+          "cut": true,
+          "fire_idx": 11,
+          "latency_sec": 0.007
+        },
+        "turn3_shout": {
+          "cut": true,
+          "fire_idx": 189,
+          "latency_sec": 0.407
+        }
+      },
+      "talkovers_total": 2,
+      "talkovers_cut": 2,
+      "missed_barges": 0,
+      "self_interrupt_cuts": 0,
+      "self_interrupt_fire_idxs": [],
+      "echo_frames": 184,
+      "self_interrupt_rate": 0.0
+    },
+    "run-20260609-234435": {
+      "frames": 28,
+      "dtd_fire_count": 3,
+      "self_interrupt_cuts": 0,
+      "self_interrupt_fire_idxs": [],
+      "echo_frames": 28,
+      "self_interrupt_rate": 0.0
+    }
+  },
+  "summary": {
+    "self_interrupt_cuts": 0,
+    "missed_barges": 0,
+    "talkovers_total": 2,
+    "talkovers_cut": 2,
+    "cut_latencies_sec": [
+      0.007,
+      0.407
+    ],
+    "max_cut_latency_sec": 0.407,
+    "latency_bound_sec": 0.5,
+    "meets_requirement": true
+  }
+}

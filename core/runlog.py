@@ -206,17 +206,47 @@ class RunLog:
                 pass
 
 
-def prune_old_runs(log_dir: str, keep: int) -> int:
-    """Keep only the newest ``keep`` run bundles in ``log_dir`` so it doesn't
-    grow without bound. A bundle is all files sharing a ``run-<id>`` stem
-    (.txt/.summary.json/.wav). Run ids are timestamps, so a name sort is
-    chronological. Returns how many bundles were removed."""
+def _git_tracked_run_stems(log_dir: str) -> set:
+    """Run stems under ``log_dir`` that are COMMITTED to git -- the curated
+    regression / dev corpus the owner deliberately keeps (e.g. the barge-in
+    replay WAVs). These must never be auto-pruned. Returns an empty set when not
+    in a git repo or git is unavailable, so non-git deployments fall back to
+    plain size-capping (where there is no committed corpus to protect anyway)."""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", log_dir],
+            capture_output=True, timeout=5,
+        )
+        if out.returncode != 0:
+            return set()
+        names = out.stdout.decode("utf-8", "replace").split("\0")
+        return {Path(n).name.split(".", 1)[0] for n in names if n.strip()}
+    except Exception:  # noqa: BLE001 -- git missing / not a repo / timeout
+        return set()
+
+
+def prune_old_runs(log_dir: str, keep: int, *, protected: "Optional[set]" = None) -> int:
+    """Keep only the newest ``keep`` EPHEMERAL run bundles in ``log_dir`` so it
+    doesn't grow without bound. A bundle is all files sharing a ``run-<id>``
+    stem (.txt/.summary.json/.wav). Run ids are timestamps, so a name sort is
+    chronological. Returns how many bundles were removed.
+
+    Git-tracked bundles are a curated corpus the owner committed on purpose (the
+    barge-in replay WAVs, kept debugging runs) and are NEVER auto-pruned -- only
+    ephemeral (untracked) local runs count toward ``keep``. This is what lets the
+    committed regression corpus survive the per-startup prune. Pass ``protected``
+    to override the tracked-stem lookup (tests)."""
     if keep <= 0:
         return 0
     d = Path(log_dir)
+    if protected is None:
+        protected = _git_tracked_run_stems(log_dir)
     stems = sorted({p.name.split(".", 1)[0] for p in d.glob("run-*.*")}, reverse=True)
+    prunable = [s for s in stems if s not in protected]
     removed = 0
-    for stem in stems[keep:]:
+    for stem in prunable[keep:]:
         for f in d.glob(stem + ".*"):
             try:
                 f.unlink()

@@ -123,6 +123,33 @@ def test_prune_keep_zero_is_noop(tmp_path):
     assert (tmp_path / "run-x.txt").exists()
 
 
+def test_prune_never_deletes_protected_tracked_bundles(tmp_path):
+    """Committed (git-tracked) bundles are a curated corpus and must survive the
+    per-startup prune regardless of age -- only ephemeral runs count toward keep.
+    This is what protects the barge-in replay WAVs the owner keeps for dev."""
+    from core.runlog import prune_old_runs
+
+    # 4 ephemeral (untracked) runs ...
+    for i in range(4):
+        (tmp_path / f"run-2026020{i}-000000.txt").write_text("x", encoding="utf-8")
+    # ... and 2 OLDER "tracked" bundles (with WAVs) that must never be pruned.
+    protected = {"run-20260101-000000", "run-20260102-000000"}
+    for stem in protected:
+        (tmp_path / f"{stem}.txt").write_text("keep", encoding="utf-8")
+        (tmp_path / f"{stem}.wav").write_bytes(b"RIFF")
+
+    removed = prune_old_runs(str(tmp_path), keep=2, protected=protected)
+
+    # Only the 4 ephemeral runs count toward keep=2 -> 2 oldest ephemeral pruned.
+    assert removed == 2
+    # Both protected bundles survive (incl. their WAVs) despite being the oldest.
+    assert (tmp_path / "run-20260101-000000.wav").exists()
+    assert (tmp_path / "run-20260102-000000.wav").exists()
+    remaining = {p.name.split(".", 1)[0] for p in tmp_path.glob("run-*.*")}
+    assert "run-20260203-000000" in remaining  # newest ephemeral kept
+    assert "run-20260200-000000" not in remaining  # oldest ephemeral pruned
+
+
 def test_finalize_is_idempotent(tmp_path):
     runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="idem", console=False)
     runlog.finalize()

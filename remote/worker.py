@@ -54,13 +54,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = _parse(argv)
 
     from core.app import main as app_main
-    from core.config import apply_device_profile, load_config
+    from core.config import apply_device_profile, load_config, resolve_device
 
     from .token_server import create_access_token
 
     config = load_config()
-    device = args.device or config.get("device", "desktop")
-    config = apply_device_profile(config, device)
+    # device-adapt-1 / cross-platform-8: 'auto' (default) auto-detects the profile;
+    # an unknown explicit --device fails fast (strict) instead of silently running
+    # the heavy base config.
+    requested_device = args.device or config.get("device", "auto")
+    device, rationale = resolve_device(config, requested_device)
+    if rationale:
+        print(f"[device] auto-selected profile: {device} ({rationale})", file=sys.stderr)
+    try:
+        config = apply_device_profile(config, device, strict=True)
+    except ValueError as exc:
+        raise SystemExit(f"[device] {exc}")
     remote_cfg = config.get("remote", {}) or {}
     room = args.room or remote_cfg.get("room", "assistant")
     identity = args.identity or remote_cfg.get("agent_identity", "assistant-agent")
@@ -80,8 +89,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         forwarded += ["--model", args.model]
     if args.fast_model:
         forwarded += ["--fast-model", args.fast_model]
-    if args.device:
-        forwarded += ["--device", args.device]
+    # Forward the RESOLVED concrete profile (not args.device) so the child runs
+    # the exact tier the worker picked instead of re-probing / defaulting.
+    forwarded += ["--device", device]
     if args.agent:
         forwarded += ["--agent"]
 

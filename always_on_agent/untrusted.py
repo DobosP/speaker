@@ -180,6 +180,38 @@ def _luhn(text: str) -> bool:
     return checksum % 10 == 0
 
 
+def _redact_card_span(span: str) -> str:
+    """Redact the Luhn-valid card(s) inside one ``_CARD_RE`` match.
+
+    The greedy ``_CARD_RE`` can over-consume a card into an abutting digit run -- e.g.
+    a card immediately followed by an SSN, ``"4111 1111 1111 1111 123-45-6789"``,
+    matches ``"4111 1111 1111 1111 123"`` (19 digits) which FAILS Luhn, so the naive
+    "redact only if the whole match passes Luhn" rule leaked the card. Here, when the
+    full span isn't itself a card, we look for the leftmost-longest digit-GROUP-aligned
+    window that IS Luhn-valid, redact it, and recurse on the remainder -- so the card
+    is scrubbed while trailing digits survive for the SSN/phone passes that run after.
+
+    Group-aligned (windows start/end at a separator, not mid-group) keeps the output
+    clean and card-shaped. This favours RECALL over precision: a long non-card digit
+    run that happens to contain a Luhn-valid card-length window may be partly redacted.
+    For a §9.7 PII safety net (durable records + cloud egress) that is the correct
+    direction -- leaking a real card is far worse than over-redacting an order id."""
+    if _luhn(span):
+        return "[REDACTED_CARD]"
+    n = len(span)
+    for i in range(n):
+        if not span[i].isdigit() or (i and span[i - 1].isdigit()):
+            continue                                     # window must start at a group boundary
+        for j in range(n, i, -1):                        # longest window at this start first
+            if not span[j - 1].isdigit() or (j < n and span[j].isdigit()):
+                continue                                 # ...and end at a group boundary
+            window = span[i:j]
+            ndigits = sum(c.isdigit() for c in window)
+            if 13 <= ndigits <= 19 and _luhn(window):
+                return span[:i] + "[REDACTED_CARD]" + _redact_card_span(span[j:])
+    return span                                          # no card inside -> leave verbatim
+
+
 def redact_pii(text: str, *, enabled: bool = True, force: bool = False) -> str:
     """Redact cards (Luhn) / SSN / email / phone / API-keys from ``text`` before it
     becomes a durable record.
@@ -200,7 +232,7 @@ def redact_pii(text: str, *, enabled: bool = True, force: bool = False) -> str:
     # Cards BEFORE the key:value pass so a space/dash-grouped card in a
     # ``token=4111 1111 1111 1111`` value is matched + Luhn-redacted whole, instead
     # of the KV pass eating only its first group.
-    out = _CARD_RE.sub(lambda m: "[REDACTED_CARD]" if _luhn(m.group(0)) else m.group(0), out)
+    out = _CARD_RE.sub(lambda m: _redact_card_span(m.group(0)), out)
     out = _SECRET_KV_RE.sub(lambda m: f"{m.group(1)}: [REDACTED_SECRET]", out)
     out = _SSN_RE.sub("[REDACTED_SSN]", out)
     out = _EMAIL_RE.sub("[REDACTED_EMAIL]", out)

@@ -342,6 +342,9 @@ def build_runtime(
     # flag; the runtime only registers the read-only capability (no actuator).
     gui_cfg = dict(config.get("gui_actions", {}) or {})
     computer_use_config = gui_cfg if (gui_cfg.get("enabled") or gui_actions_on) else None
+    # Watch/monitor capability (default OFF). Grants live machine-locally in
+    # config.local.json; base config.json ships enabled:false + grants:[].
+    watch_cfg = dict(config.get("watch", {}) or {})
     if computer_use_config is not None:
         computer_use_config["enabled"] = True
 
@@ -456,6 +459,7 @@ def build_runtime(
         start_mode=start_mode,
         agent_config=agent_config,
         computer_use_config=computer_use_config,
+        watch_config=watch_cfg,
         router=router,
         capability_router=capability_router,
         planner_config=planner_config,

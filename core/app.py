@@ -13,7 +13,13 @@ from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.react import PlannerConfig
 
 from .capabilities import RecallConfig
-from .config import _apply_device_profile, _load_config, apply_device_profile, load_config
+from .config import (
+    _apply_device_profile,
+    _load_config,
+    apply_device_profile,
+    load_config,
+    resolve_device,
+)
 from .engine import AudioEngine
 from .llm import LLMClient
 from .llm_factory import (
@@ -628,12 +634,26 @@ def main(argv: list[str] | None = None) -> int:
     monitor.start()  # baseline compute reading before anything heavy loads
 
     config = _load_config()
-    device = args.device or config.get("device", "desktop")
+    # device-adapt-1: 'auto' (the shipped default) probes the host and picks the
+    # matching profile, so an unconfigured low-spec box stops silently running the
+    # heavy desktop tier. An explicit --device / config.device still wins.
+    requested_device = args.device or config.get("device", "auto")
+    device, rationale = resolve_device(config, requested_device)
+    if rationale:
+        msg = f"device profile auto-selected: {device} ({rationale})"
+        runlog.logger.info(msg)
+        print(f"[device] {msg}", file=sys.stderr)
     runlog.summary.note(
         engine=args.engine, llm=args.llm, device=device, mode=args.mode,
         model=args.model, fast_model=args.fast_model,
     )
-    config = _apply_device_profile(config, device)
+    # cross-platform-8: strict -> a mistyped --device fails fast (lists valid
+    # names) instead of silently no-opping to the heavy base config.
+    try:
+        config = _apply_device_profile(config, device, strict=True)
+    except ValueError as exc:
+        print(f"[device] {exc}", file=sys.stderr)
+        return 2
     # CLI audio overrides win over config.json's sherpa block.
     sherpa_overrides = {
         "input_device": args.input_device,

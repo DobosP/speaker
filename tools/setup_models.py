@@ -9,9 +9,13 @@ Run once, then start the assistant:
 
 Reuses the shared model manifest (tools/bench/models.py) so the coordinates live
 in one place (override with the SPEAKER_BENCH_*_REPO / _FILE env vars). Models
-land in pretrained_models/sherpa/ with flat, predictable filenames. The LLM is
-served by Ollama, so no GGUF is fetched here. Idempotent: re-running only fills
-missing files unless you pass --force.
+land in pretrained_models/sherpa/ with flat, predictable filenames. The desktop
+default serves the LLM via Ollama, so no GGUF is fetched by default; pass
+``--gguf`` to also fetch the on-device Gemma GGUF weights (the llamacpp backend
+used by the phone / phone_lite device profiles) into ``models/``. Idempotent:
+re-running only fills missing files unless you pass --force.
+
+    python -m tools.setup_models --gguf   # + on-device LLM weights (phone tier)
 """
 from __future__ import annotations
 
@@ -22,6 +26,10 @@ import sys
 from typing import Callable
 
 DEST = os.path.join("pretrained_models", "sherpa")
+# On-device LLM weights (llamacpp backend) live here; the phone/phone_lite device
+# profiles already point llm.main_model_path / fast_model_path at models/<file>.
+GGUF_DIR = "models"
+GGUF_KEYS = ("main_gguf", "fast_gguf")
 # Machine-local overrides (gitignored), merged over config.json at load time.
 # Model paths are machine-specific, so they belong here, not in the committed
 # config.json template.
@@ -206,6 +214,39 @@ def wire_sherpa_paths(
     return config
 
 
+def fetch_gguf_models(
+    manifest: dict,
+    gguf_dir: str = GGUF_DIR,
+    *,
+    token: "str | None" = None,
+    force: bool = False,
+    download: "Callable | None" = None,
+) -> dict:
+    """Fetch the on-device Gemma GGUF weights (llamacpp backend) into ``gguf_dir``.
+
+    Returns ``{key: local_path}`` for each of ``GGUF_KEYS``. Coordinates come
+    from the shared bench manifest (one source of truth); the phone / phone_lite
+    device profiles already point ``llm.main_model_path`` / ``fast_model_path``
+    at ``gguf_dir/<file>``, so a successful fetch makes those profiles runnable
+    with no config rewrite. ``download`` defaults to ``huggingface_hub``'s
+    ``hf_hub_download`` (injected in tests)."""
+    if download is None:
+        from huggingface_hub import hf_hub_download as download  # gated -> needs token
+    os.makedirs(gguf_dir, exist_ok=True)
+    resolved: dict = {}
+    for key in GGUF_KEYS:
+        coords = manifest[key]
+        print(f"[models] fetching {key}: {coords['repo']}/{coords['file']} -> {gguf_dir}")
+        resolved[key] = download(
+            repo_id=coords["repo"],
+            filename=coords["file"],
+            local_dir=gguf_dir,
+            token=token,
+            force_download=force,
+        )
+    return resolved
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Fetch sherpa models + wire config.json")
     parser.add_argument("--force", action="store_true", help="re-download even if files exist")
@@ -308,6 +349,18 @@ def main(argv: list[str] | None = None) -> int:
         choices=["128", "256", "512"],
         default="512",
         help="DTLN-aec model size: 512 = best quality (~10.4M), 256/128 lighter (phone)",
+    )
+    parser.add_argument(
+        "--gguf",
+        action="store_true",
+        help="also fetch the on-device Gemma GGUF weights (llamacpp backend; "
+             "phone/phone_lite profiles) into --gguf-dir",
+    )
+    parser.add_argument(
+        "--gguf-dir",
+        dest="gguf_dir",
+        default=GGUF_DIR,
+        help=f"dir for the on-device GGUF weights (default: {GGUF_DIR})",
     )
     args = parser.parse_args(argv)
 
@@ -472,6 +525,32 @@ def main(argv: list[str] | None = None) -> int:
                 f"[models] DTLN-aec model not prepared ({exc}); continuing without it. "
                 "The 'dtln' AEC tier needs tf2onnx + tensorflow-cpu "
                 "(pip install tf2onnx tensorflow-cpu); the 'nlms' backend needs nothing.",
+                file=sys.stderr,
+            )
+
+    # On-device LLM weights (optional, opt-in): the Gemma GGUFs for the llamacpp
+    # backend (phone / phone_lite profiles). The desktop default uses Ollama and
+    # needs none. Same non-fatal contract: a failed fetch leaves the llamacpp
+    # backend unrunnable until you re-run, but never blocks the sherpa setup.
+    if args.gguf:
+        try:
+            gguf_paths = fetch_gguf_models(
+                manifest, args.gguf_dir, token=token, force=args.force
+            )
+            print(
+                "\nOn-device LLM weights ready:\n"
+                f"  main: {gguf_paths['main_gguf']}\n"
+                f"  fast: {gguf_paths['fast_gguf']}\n"
+                "The phone / phone_lite device profiles already point "
+                "llm.main_model_path / fast_model_path at these. Install the runtime "
+                "with `pip install -r requirements-ondevice.txt`, then run:  "
+                "python -m core --engine sherpa --device phone"
+            )
+        except Exception as exc:  # noqa: BLE001 - optional, non-fatal
+            print(
+                f"[models] GGUF weights not fetched ({exc}); the llamacpp backend "
+                "(phone profiles) stays unrunnable until you re-run with --gguf. "
+                "The gated Gemma repo needs $HUGGINGFACE_TOKEN.",
                 file=sys.stderr,
             )
 

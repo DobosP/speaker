@@ -99,7 +99,14 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
         main_path = args.model or llm_cfg.get("main_model_path")
         fast_path = args.fast_model or llm_cfg.get("fast_model_path")
         if not main_path:
-            raise SystemExit("llamacpp backend needs llm.main_model_path (a GGUF file).")
+            raise SystemExit(
+                "llamacpp backend needs llm.main_model_path (a GGUF file), but none "
+                "is set. Provision the on-device weights (llm-inference-5):\n"
+                "  pip install -r requirements-ondevice.txt\n"
+                "  python -m tools.setup_models --gguf   "
+                "# fetch Gemma GGUF into models/ ($HUGGINGFACE_TOKEN for the gated repo)\n"
+                "or pass --model <path/to/model.gguf>."
+            )
         main = LlamaCppLLM(main_path, **common)
         fast = LlamaCppLLM(fast_path, **common) if fast_path else None
         return _tag_local_main(_wrap_cloud(main, llm_cfg), main), fast

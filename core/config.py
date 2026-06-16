@@ -23,10 +23,12 @@ from __future__ import annotations
 
 import json
 import os
+from typing import Optional, Tuple
 
 __all__ = [
     "deep_merge",
     "load_config",
+    "resolve_device",
     "apply_device_profile",
     "_load_config",
     "_apply_device_profile",
@@ -94,7 +96,31 @@ def load_config(path: str = "config.json", *, local: str = "config.local.json") 
     return config
 
 
-def apply_device_profile(config: dict, device: str) -> dict:
+def resolve_device(config: dict, device) -> Tuple[str, Optional[str]]:
+    """Resolve a device selector to a concrete ``device_profiles`` name.
+
+    ``device`` may be a concrete profile name, or one of ``None`` / ``""`` /
+    ``"auto"`` to PROBE the host hardware (cores / RAM / GPU / mobile) and pick
+    the matching profile (device-adapt-1). Returns ``(profile_name,
+    rationale_or_None)`` -- ``rationale`` is non-``None`` only when auto-detection
+    actually ran, so the caller can surface "auto-selected X because Y".
+
+    The probe (``tools.recommend_profile``) is stdlib-only and reads ONLY local
+    hardware counters: no audio, no transcripts, no network, no cloud. Auto
+    selection can never enable cloud or relax an owner gate -- every shipped
+    profile keeps ``local_only``/cloud-off and the actuator/speaker-ID gates
+    closed (enforced by ``tests/test_device_profile_invariants.py``)."""
+    if device in (None, "", "auto"):
+        # Lazy import: keeps the hardware probe (and the core->tools edge) out of
+        # the hot path; only paid when a caller actually asks to auto-detect.
+        from tools.recommend_profile import probe, recommend
+
+        name, rationale = recommend(probe())
+        return name, rationale
+    return device, None
+
+
+def apply_device_profile(config: dict, device, *, strict: bool = False) -> dict:
     """Layer ``device_profiles[device]`` over the base config.
 
     A profile holds per-section overrides (``llm``, ``sherpa``); each is deep-
@@ -102,9 +128,25 @@ def apply_device_profile(config: dict, device: str) -> dict:
     retune CPU threads without restating every field -- and so a profile that
     overrides only a nested key (e.g. ``llm.cloud.enabled``) keeps the base's
     siblings (``cloud_providers`` / ``cloud_chains``) instead of stranding them
-    (cross-platform-2). Unknown device -> no-op (returns the input unchanged)."""
-    profile = config.get("device_profiles", {}).get(device)
+    (cross-platform-2).
+
+    ``device`` may be ``"auto"`` (or ``None`` / ``""``) to auto-detect the
+    profile from the host hardware via :func:`resolve_device`.
+
+    Unknown device -> no-op (returns the input unchanged) UNLESS ``strict``, in
+    which case it raises ``ValueError`` listing the valid names. The CLI and the
+    remote worker pass ``strict=True`` so a mistyped ``--device`` fails fast
+    instead of silently running the heavy base config on exactly the low-spec
+    box that needed a profile (cross-platform-8)."""
+    device, _ = resolve_device(config, device)
+    profiles = config.get("device_profiles", {})
+    profile = profiles.get(device)
     if not profile:
+        if strict:
+            valid = ", ".join(sorted(profiles)) or "(none defined)"
+            raise ValueError(
+                f"unknown --device {device!r}; valid profiles: {valid} (or 'auto')"
+            )
         return config
     return deep_merge(config, profile)
 

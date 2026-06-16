@@ -6,12 +6,20 @@ import os
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
 
 log = logging.getLogger("speaker.sherpa")
+
+# audio-bargein-8: max played-reference blocks the audio callback may queue for
+# the capture thread to ingest into the coherence detector. Generous (the
+# capture thread drains it every ~0.1 s block); a bound only matters if the
+# capture thread stalls, where dropping the oldest played blocks is the safe
+# degradation (the coherence ring is a rolling window anyway).
+_COH_REF_Q_MAX = 256
 
 
 def _auto_threads() -> int:
@@ -653,6 +661,11 @@ class SherpaOnnxEngine(AudioEngine):
         self._denoiser = None
         self._aec = None
         self._far_ref = None
+        # audio-bargein-8: lock-free SPSC hand-off of played reference blocks from
+        # the real-time audio callback to the capture thread, which feeds them to
+        # the coherence detector's note_playback (keeping that lock off the audio
+        # thread). None until the coherence detector is built.
+        self._coh_ref_q: "Optional[deque]" = None
         self._aec_ref_delay = 0
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
@@ -802,6 +815,9 @@ class SherpaOnnxEngine(AudioEngine):
             )
             if det.available:
                 self._echo_coherence = det
+                # audio-bargein-8: the played-reference hand-off queue lives as
+                # long as the detector.
+                self._coh_ref_q = deque(maxlen=_COH_REF_Q_MAX)
                 log.info(
                     "coherence barge-in ACTIVE (scale-invariant, no enrollment; "
                     "band %s Hz, margin delta %.2f, confirm %d frames)",
@@ -1139,6 +1155,8 @@ class SherpaOnnxEngine(AudioEngine):
         self._last_speaking_end = time.monotonic()  # arm the L2 post-speaking refractory
         if self._echo_coherence is not None:
             self._echo_coherence.reset()
+            if self._coh_ref_q is not None:
+                self._coh_ref_q.clear()  # audio-bargein-8: drop un-ingested played blocks
         if self._dtd is not None:
             self._dtd.new_run()  # charts persist (2026-06-10); only the candidate run clears
         if self._far_ref is not None:
@@ -1479,6 +1497,22 @@ class SherpaOnnxEngine(AudioEngine):
                 # ``barge_in_enabled`` -- off until AEC, so the loud TTS leaking
                 # into an open-speaker mic can't self-interrupt.
                 if self._speaking.is_set():
+                    # audio-bargein-8: ingest the played reference blocks the audio
+                    # callback queued (off its real-time thread) into the coherence
+                    # detector HERE, on the capture thread -- so note_playback's lock
+                    # (held by decide() while it concatenates the whole ring) never
+                    # contends with the real-time callback. Drains FIFO-ordered;
+                    # note_playback resamples play_sr->16k exactly as the old inline
+                    # call did, so the reference content is unchanged.
+                    if self._coh_ref_q is not None and self._echo_coherence is not None:
+                        _q = self._coh_ref_q
+                        _play_sr = self._play_sr
+                        while _play_sr:
+                            try:
+                                _blk = _q.popleft()
+                            except IndexError:
+                                break
+                            self._echo_coherence.note_playback(_blk, _play_sr)
                     # Consume the silent->speaking re-arm signalled by the playback
                     # loop: clear the BargeSustain window so the prior reply's fires
                     # can't carry into this reply's onset (2026-06-10 self-interrupt
@@ -1801,17 +1835,16 @@ class SherpaOnnxEngine(AudioEngine):
 
         Locks taken here are all short copy locks: the FIFO's own (+ a
         non-blocking notify) and ``FarEndRing``'s (a microsecond slice copy,
-        shared with the capture thread's cheap ring read). The ONE real-time
-        caveat is ``EchoCoherenceDetector``'s lock, taken via
-        :meth:`note_playback`: the capture thread also briefly holds it while
-        ``decide`` concatenates the reference ring. That concat is bounded by
-        ``coherence_ring_ms`` (~38 KB / sub-100us at the default), so the
-        worst-case audio-thread stall is well inside one low-latency callback
-        period today -- but it is the only contended lock on this thread, and it
-        would need to move OFF it (feed coherence from a lock-free SPSC stage,
-        like the far ring) before ``coherence_ring_ms`` is raised materially.
-        Allocation-light but not alloc-free: two small play_sr->16k resamples per
-        block (one inside ``note_playback``, one for the far ring), sub-100us."""
+        shared with the capture thread's cheap ring read). The coherence
+        reference is NO LONGER ingested here (audio-bargein-8): instead of calling
+        ``EchoCoherenceDetector.note_playback`` -- whose lock the capture thread
+        holds while ``decide`` concatenates the whole reference ring -- the played
+        block is handed to the capture thread via a lock-free SPSC deque
+        (``_coh_ref_q``) and ingested there. That removes the only contended lock
+        from this real-time thread, so ``coherence_ring_ms`` can be raised (e.g.
+        per-profile audio tuning) without risking an audio-callback stall.
+        Allocation-light but not alloc-free: one small play_sr->16k resample for
+        the far ring + one block copy for the coherence hand-off, sub-100us."""
         view = outdata[:, 0]
         try:
             fifo = self._fifo
@@ -1828,8 +1861,15 @@ class SherpaOnnxEngine(AudioEngine):
                 # by ACTUAL playback: the level EWMA (barge-in reference), the
                 # coherence echo reference, and the AEC far-end ring.
                 self._note_playback_level(played)
-                if self._echo_coherence is not None and self._play_sr:
-                    self._echo_coherence.note_playback(played, self._play_sr)
+                # audio-bargein-8: hand the played block to the capture thread via
+                # a lock-free deque instead of calling note_playback HERE -- that
+                # takes the coherence lock (and the capture thread holds it while
+                # concatenating the whole reference ring in decide()), the one
+                # contended lock on this real-time audio thread. COPY: `played` is
+                # a view into the device buffer PortAudio reuses, so it must be
+                # snapshotted before it leaves this callback.
+                if self._coh_ref_q is not None and self._play_sr:
+                    self._coh_ref_q.append(np.array(played, dtype=np.float32, copy=True))
                 if self._far_ref is not None:
                     # Tee the just-played block into the AEC far ring at 16 kHz.
                     # The ring write head now == the true playback position, which
@@ -2024,6 +2064,8 @@ class SherpaOnnxEngine(AudioEngine):
                         self._last_speaking_end = time.monotonic()  # arm the L2 refractory
                         if self._echo_coherence is not None:
                             self._echo_coherence.reset()  # drop the stale reference
+                            if self._coh_ref_q is not None:
+                                self._coh_ref_q.clear()  # audio-bargein-8: + un-ingested blocks
                         if self._dtd is not None:
                             # Run boundary, NOT a full reset: the learned echo charts
                             # persist across replies (2026-06-10 contamination fix --

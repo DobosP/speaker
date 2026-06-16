@@ -770,6 +770,18 @@ The assistant knows what it is and what skills it has, driven by a single **capa
 
 `tests/test_capability_catalog.py` covers manifest/spec persistence, ReAct-catalog derivation without drift, skill enumeration, §9.7 web gating (unit + e2e runtime), side-effects in the manifest but not advertised, persona identity, `DEFAULT_SYSTEM` byte-identity, and `PersonaConfig.from_dict` robustness.
 
+### Watch / monitor capability (owner-armed window observation)
+
+`core/watch.py` + `core/watch_source.py` add the one net-new **screen-observing** capability: the owner can ask the assistant to *watch a single granted application window* for a described event (e.g. "tell me when the build finishes"), and a single shared poller scopes-captures only that window, checks a local text condition, and — on the false→true edge — speaks **one** heads-up. It is **observe-and-speak-only**: a watch can never actuate (no keyboard/mouse/code), it is the read-only sibling of any future computer-use actuator, and it is wired alongside `screen.identify`-style grounding behind the same §9.7 boundary (only locally-extracted, redacted text ever reaches the spoken alert; frames never leave the device). Default-deny: nothing is watchable until the owner grants, and `watch.{grant,start,stop,list}` register only when `config.watch.enabled` (default off). Invariants:
+
+- **Default-deny, machine-local allowlist.** The per-app grant list lives ONLY in gitignored `config.local.json` (never the committed `config.json`), so it never travels between machines or leaks which apps the owner watches; the committed file ships an empty allowlist.
+- **Owner-verified, planner-isolated control.** `watch.grant`/`start`/`stop` route through the `always_on_agent.origin` chokepoint (owner-verified **`LIVE_AUDIO`** only; strict `is True`), the same gate the actuator uses. All four are `planner_tool=False` + `user_facing=False`, so the LLM/ReAct planner can never arm, list, or egress a watcher (`registry.planner_tools()` excludes every one).
+- **Window-scoped, ephemeral, X11-only (v1).** Capture is one resolved window rect — never full-screen; an unresolvable/ambiguous window yields a benign `None`, never a wide grab; non-X11 servers degrade to an unavailable source. Captured frames + OCR text stay inside one `tick` and are never persisted.
+- **Local-only condition, fenced egress.** v1 condition-checking is a pure `TextMatchEvaluator` (substring / `/regex/`, no LLM, no network); any matched evidence that reaches a spoken alert is `redact_pii(force=True)` + spotlight-fenced as untrusted screen DATA, and the alert is system-origin (`Origin.SCREEN`, epoch-stamped, **not** owner-trusted) so watched text can shape a heads-up but never originate an action.
+- **Bounded.** A single shared poller (N watches → one thread) with a hard `max_active` cap and an interval clamped *up* to `max(min_poll_sec, grant.min_poll_sec, requested)` — no tight loop.
+
+Tier-0 tests (no real screen/mss/Xlib/tesseract/model; tmp `config.local.json`): `tests/test_watch_source.py` (scoped-capture INV-2), `tests/test_watch_observe.py` (poll loop / ephemerality / revoke recheck / bounds), `tests/test_watch_grant_gate.py` (owner-verify + machine-local persistence), `tests/test_watch_egress.py` (redaction + spotlight-fence), and `tests/test_watch_api.py` (evaluator grammar, `GrantStore` CRUD/persistence, stop-all, and the read-only `watch.list` / planner-isolation contract).
+
 ---
 
 ## §9 — Optional & experimental tiers (gate inventory)

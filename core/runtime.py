@@ -64,6 +64,7 @@ class VoiceRuntime:
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         computer_use_config=None,
+        watch_config=None,
         router: Optional[Router] = None,
         capability_router: Optional[CapabilityRouter] = None,
         planner_config: Optional[PlannerConfig] = None,
@@ -193,6 +194,27 @@ class VoiceRuntime:
                 enabled=True,
                 monitor=int(computer_use_config.get("monitor", 1) or 1),
             )
+        # Watch/monitor capability (default OFF, separate gate from --agent and
+        # computer-use). Owner-verified grants let the assistant watch SPECIFIC
+        # granted app windows for a described event; it observes + speaks only,
+        # never actuates, and the model can never arm one (planner_tool=False).
+        # Grants are machine-local; capture is window-scoped (never full screen).
+        self._watch_manager = None
+        if watch_config and watch_config.get("enabled"):
+            from .watch import GrantStore, WatchManager, attach_watch_capability
+            from .watch_source import make_watch_source
+
+            self._watch_manager = WatchManager(
+                GrantStore(list(watch_config.get("grants") or [])),
+                make_watch_source(),
+                publish=self.bus.publish,
+                # Lazily read the supervisor's epoch at fire time (it is constructed
+                # just below); a watch alert is epoch-stamped so barge-in can silence it.
+                current_epoch=lambda: self.supervisor.speech_epoch,
+                max_active=int(watch_config.get("max_active", 2) or 2),
+                min_poll_sec=float(watch_config.get("min_poll_sec", 5.0) or 5.0),
+            )
+            attach_watch_capability(registry, watch_config, manager=self._watch_manager)
         # Startup reconciliation: log the capability manifest once and warn if the
         # planner is configured with a tool that isn't actually registered (the
         # drift the manifest is meant to prevent).
@@ -439,6 +461,11 @@ class VoiceRuntime:
             self._watchdog.stop()
         except Exception:  # noqa: BLE001
             log.exception("watchdog stop failed")
+        if self._watch_manager is not None:
+            try:
+                self._watch_manager.shutdown()
+            except Exception:  # noqa: BLE001
+                log.exception("watch manager shutdown failed")
         try:
             self.supervisor.shutdown()
         except Exception:  # noqa: BLE001

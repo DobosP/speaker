@@ -128,6 +128,20 @@ def test_redact_pii_card_ocr_separators():
     assert "4111" not in redact_pii("4111 1111\n1111 1111")
 
 
+def test_redact_pii_card_abutting_digit_run():
+    # Regression: a card immediately followed by another digit-run (an SSN/phone on
+    # the same OCR row) made the greedy _CARD_RE over-consume into a non-Luhn span,
+    # leaking the raw card. The card window must still be recovered + redacted while
+    # the trailing digits survive for the SSN pass -- in BOTH orderings.
+    out = redact_pii("Payment 4111 1111 1111 1111 123-45-6789")
+    assert "4111" not in out and "[REDACTED_CARD]" in out and "[REDACTED_SSN]" in out
+    out = redact_pii("ssn 123-45-6789 card 4111 1111 1111 1111")
+    assert "4111" not in out and "[REDACTED_CARD]" in out and "[REDACTED_SSN]" in out
+    # And a benign 16-digit non-card abutting digits must still NOT redact (no Luhn
+    # window of card length exists inside it).
+    assert "REDACTED" not in redact_pii("order 1234 5678 9012 3456 zone 7")
+
+
 def test_redact_pii_preserves_benign_numbers():
     benign = "the meeting is at 3 and there are 42 items in room 1024"
     assert redact_pii(benign) == benign

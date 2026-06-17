@@ -246,7 +246,9 @@
           "threshold": 0.55
         },
         "options": {
-          "temperature": 0.7
+          "temperature": 0.7,
+          "_num_predict_comment": "llm-inference-3: cap on-device output. LlamaCppLLM translates num_predict -> llama.cpp's max_tokens; without it the cap was ignored and the model generated to n_ctx on CPU. A voice reply rarely needs more than this.",
+          "num_predict": 384
         }
       },
       "sherpa": {
@@ -264,7 +266,9 @@
         "n_ctx": 1536,
         "n_gpu_layers": 0,
         "options": {
-          "temperature": 0.7
+          "temperature": 0.7,
+          "_num_predict_comment": "llm-inference-3: cap on-device output (translated to llama.cpp max_tokens). Tightest tier -> tightest cap.",
+          "num_predict": 256
         },
         "cloud": {"enabled": false, "strategy": "fallback", "ttft_deadline_ms": 1500, "_consent": "SECURITY: default OFF -- enable deliberately, never silently on API-key presence."}
       },

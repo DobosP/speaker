@@ -67,6 +67,14 @@ def test_profile_never_enables_cloud_or_relaxes_owner_gates(name):
     assert (merged.get("web_search", {}) or {}).get("enabled", False) is not True, (
         f"{name} enables web_search egress"
     )
+    # The voice-identity gate and the owner-verified brain gate stay closed: a
+    # profile retunes models/threads, it must never widen WHO the assistant obeys.
+    assert (merged.get("sherpa", {}) or {}).get("speaker_gate_input", True) is not False, (
+        f"{name} disables speaker_gate_input (the voice-identity gate)"
+    )
+    assert (merged.get("agent_brain", {}) or {}).get("require_owner_verified", True) is not False, (
+        f"{name} disables agent_brain.require_owner_verified"
+    )
 
 
 def test_profiles_do_not_touch_cloud_routing_blocks():

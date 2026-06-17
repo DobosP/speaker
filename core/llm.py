@@ -264,6 +264,42 @@ class OllamaLLM:
             )
 
 
+def _normalize_llamacpp_options(options: Optional[dict]) -> dict:
+    """Translate Ollama-vocabulary generation options to llama.cpp's request API.
+
+    A device_profile's ``llm.options`` is written in Ollama's names (``num_ctx`` /
+    ``num_predict``), but llama.cpp's ``create_chat_completion`` takes the OUTPUT
+    cap as ``max_tokens`` and the context size at CONSTRUCTION (``n_ctx``), not per
+    request. Passed through verbatim, ``num_predict`` was silently ignored -> the
+    on-device model generated to the context limit on exactly the weakest hardware
+    (llm-inference-3), and ``num_ctx`` is not a valid per-request kwarg. So:
+
+    - ``num_predict`` -> ``max_tokens`` (the real on-device output cap), unless an
+      explicit ``max_tokens`` is already present (that wins);
+    - ``num_ctx`` / ``keep_alive`` are dropped (constructor- / daemon-only);
+    - ``_``-prefixed keys are dropped (config.json's human-comment convention --
+      llama.cpp's ``create_chat_completion`` has a strict signature and would
+      ``TypeError`` on a stray ``_num_predict_comment``);
+    - everything else (``temperature``, ``top_p``, ...) passes through unchanged.
+    """
+    if not options:
+        return {}
+    out: dict = {}
+    num_predict = None
+    for key, value in options.items():
+        if key.startswith("_") or key in ("num_ctx", "keep_alive"):
+            continue
+        if key == "num_predict":
+            num_predict = value
+            continue
+        out[key] = value
+    if num_predict is not None and "max_tokens" not in out:
+        # float() first so a numeric string / float config ("384", 384.0) still
+        # bounds output instead of crashing model construction.
+        out["max_tokens"] = int(float(num_predict))
+    return out
+
+
 class LlamaCppLLM:
     """On-device LLM via llama.cpp (the mobile/no-Ollama path).
 
@@ -296,7 +332,9 @@ class LlamaCppLLM:
         self.n_threads = n_threads
         self.n_gpu_layers = n_gpu_layers
         self.chat_format = chat_format
-        self._options = dict(options) if options else {}
+        # Options are translated to llama.cpp's request vocabulary ONCE here, so
+        # an Ollama-shaped profile still bounds on-device output (llm-inference-3).
+        self._options = _normalize_llamacpp_options(options)
         self._client = client
         # A single llama.cpp context can't run two inferences at once, and the
         # lazy build must not double-construct. This serializes both: the startup

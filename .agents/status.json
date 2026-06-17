@@ -10,7 +10,7 @@
     "target_profile": "desktop_gpu_4090"
   },
   "last_verdict": {
-    "tests": "1923 passed, 25 skipped (.venv/bin/python -m pytest tests -q). asr-tts-2 (async second-pass ASR) + asr-tts-1 (per-tier ASR policy) landed; +16 over the pt2 baseline of 1907. Adversarial multi-lens review = SHIP-WITH-NITS (no correctness/concurrency defects; design verified sound); addressed the 2 cheap follow-ups (extracted+tested async gate; overflow-drop metric). real_model SenseVoice worker smoke RAN+passed here (self-skips in CI).",
+    "tests": "1937 passed, 25 skipped (.venv/bin/python -m pytest tests -q). TWO waves landed this session. Wave 1: asr-tts-2 (async second-pass ASR) + asr-tts-1 (per-tier ASR policy). Wave 2 (headless, no live test): llm-inference-3 (LlamaCppLLM num_predict->max_tokens cap translation + phone/phone_lite caps) + rc-5 (SUPERSEDED metric so newest-input-wins-preempted turns don't false-flag 'llm stuck') + invariant hardening (no profile may disable speaker_gate_input / agent_brain.require_owner_verified). Both waves adversarially reviewed; wave-2 review CAUGHT A BLOCKER (a config _comment key leaking into llama.cpp's strict create_chat_completion signature) -> fixed by dropping _-prefixed option keys + a strict-signature regression test. Scouted Phase-1 first: device-adapt-1/cross-platform-8/cloud-invariant were already done.",
     "when": "2026-06-17",
     "machine": "i9-13980HX"
   },

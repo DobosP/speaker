@@ -19,6 +19,7 @@ capability_context: ContextVar[Mapping[str, object]] = ContextVar(
 
 _ollama_log = logging.getLogger("speaker.llm.ollama")
 _hedge_log = logging.getLogger("speaker.llm.hedge")
+_llamacpp_log = logging.getLogger("speaker.llm.llamacpp")
 
 
 def _log_llm_request(
@@ -300,6 +301,28 @@ def _normalize_llamacpp_options(options: Optional[dict]) -> dict:
     return out
 
 
+# ggml type enum values (serialization constants in ggml.h -- STABLE across
+# llama.cpp versions, since they are part of the on-disk/KV format). Maps the
+# friendly KV-cache-quant names a device_profile uses to the int llama.cpp wants.
+_KV_CACHE_GGML_TYPES = {
+    "f32": 0, "f16": 1, "q8_0": 8, "q5_1": 7, "q5_0": 6, "q4_1": 3, "q4_0": 2,
+}
+
+
+def _resolve_kv_cache_type(value):
+    """Resolve a KV-cache dtype (llm-inference-9) to the ggml int llama.cpp wants.
+
+    Accepts a friendly name (``"q8_0"`` -> 8) or a raw int (passed through). An
+    unknown string or ``None`` returns ``None`` (-> use llama.cpp's default,
+    typically f16), so a typo silently keeps the safe default instead of crashing
+    model construction."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    return _KV_CACHE_GGML_TYPES.get(str(value).strip().lower())
+
+
 class LlamaCppLLM:
     """On-device LLM via llama.cpp (the mobile/no-Ollama path).
 
@@ -325,6 +348,8 @@ class LlamaCppLLM:
         n_gpu_layers: int = 0,
         chat_format: Optional[str] = None,
         options: Optional[dict] = None,
+        type_k=None,
+        type_v=None,
         client=None,
     ):
         self.model_path = model_path
@@ -332,6 +357,12 @@ class LlamaCppLLM:
         self.n_threads = n_threads
         self.n_gpu_layers = n_gpu_layers
         self.chat_format = chat_format
+        # KV-cache quantization (llm-inference-9): q8_0 roughly halves the KV
+        # memory vs the f16 default at near-lossless quality, so a longer context
+        # fits in a phone's RAM budget. None -> llama.cpp's default. n_ctx (above)
+        # already bounds the context per profile.
+        self.type_k = _resolve_kv_cache_type(type_k)
+        self.type_v = _resolve_kv_cache_type(type_v)
         # Options are translated to llama.cpp's request vocabulary ONCE here, so
         # an Ollama-shaped profile still bounds on-device output (llm-inference-3).
         self._options = _normalize_llamacpp_options(options)
@@ -358,7 +389,26 @@ class LlamaCppLLM:
                         kwargs["n_threads"] = self.n_threads
                     if self.chat_format:
                         kwargs["chat_format"] = self.chat_format
-                    self._client = Llama(**kwargs)
+                    if self.type_k is not None:
+                        kwargs["type_k"] = self.type_k
+                    if self.type_v is not None:
+                        kwargs["type_v"] = self.type_v
+                    try:
+                        self._client = Llama(**kwargs)
+                    except TypeError:
+                        # An old llama-cpp-python without the type_k/type_v kwargs
+                        # would hard-crash the first on-device turn. Degrade to the
+                        # f16 KV default instead (matches _resolve_kv_cache_type's
+                        # fail-soft intent). Only rescues the KV-quant case -- any
+                        # other TypeError re-raises on the retry.
+                        if "type_k" not in kwargs and "type_v" not in kwargs:
+                            raise
+                        kwargs.pop("type_k", None)
+                        kwargs.pop("type_v", None)
+                        _llamacpp_log.warning(
+                            "llama.cpp build lacks KV-cache-quant kwargs; using the f16 default"
+                        )
+                        self._client = Llama(**kwargs)
         return self._client
 
     def _messages(

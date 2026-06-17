@@ -481,6 +481,9 @@ def build_runtime(
         cleaner=cleaner,
         live_routing=live_routing,
         load_snapshot=load_fraction if live_routing else None,
+        # control-plane-2: ungated load reader for load-elastic task admission
+        # (separate from the live_routing-gated load_snapshot above).
+        admission_load=load_fraction,
         # Pre-warm the LLM tiers at startup so turn 1 doesn't pay the ~3s model
         # cold-load on the user's first utterance (lat-2). On by default; set
         # config.warm_on_start=false to skip (e.g. to measure cold start).

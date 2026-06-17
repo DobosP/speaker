@@ -95,6 +95,9 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
             n_gpu_layers=llm_cfg.get("n_gpu_layers", 0),
             chat_format=llm_cfg.get("chat_format"),
             options=options,
+            # KV-cache quantization (llm-inference-9): optional per-profile.
+            type_k=llm_cfg.get("type_k"),
+            type_v=llm_cfg.get("type_v"),
         )
         main_path = args.model or llm_cfg.get("main_model_path")
         fast_path = args.fast_model or llm_cfg.get("fast_model_path")

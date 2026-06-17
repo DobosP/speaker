@@ -83,6 +83,7 @@ class VoiceRuntime:
         warm_on_start: bool = False,
         persona: Optional[PersonaConfig] = None,
         task_timeouts: Optional[Mapping[str, float]] = None,
+        admission_load: Optional[Callable[[], Optional[float]]] = None,
     ):
         self.engine = engine
         # Optional deterministic speech-to-intent fast-path. When present it
@@ -227,6 +228,10 @@ class VoiceRuntime:
             followup_config=followup_config,
             continuation_config=continuation_config,
             task_timeouts=task_timeouts,
+            # control-plane-2: load-elastic admission. Ungated (unlike the
+            # routing-only load_snapshot, which is live_routing-gated), since
+            # tightening the concurrency ceiling under load is always safe.
+            load_fraction=admission_load,
         )
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)

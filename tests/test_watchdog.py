@@ -16,6 +16,7 @@ from core.metrics import (
     BARGE_IN_STOP,
     HANDLED_LOCAL,
     LLM_FIRST_TOKEN,
+    SUPERSEDED,
     TTS_FIRST_AUDIO,
     MetricsRecorder,
 )
@@ -63,6 +64,27 @@ def test_handled_local_turn_is_not_flagged_stuck(fake_clock, caplog):
         wd.tick()
     assert "llm stuck" not in caplog.text
     assert "tts stuck" not in caplog.text
+
+
+def test_superseded_turn_is_not_flagged_stuck(fake_clock, caplog):
+    """A turn preempted by a newer final (newest-input-wins) is cancelled
+    pre-answer: it has asr_final but never reaches llm_first_token. The runtime
+    stamps SUPERSEDED on it (via mark_superseded_turn) so the watchdog skips it
+    instead of mis-reading the gap as a stalled LLM (rc-5). Mirrors the real
+    sequence: new final's ASR_FINAL banks the old turn, then it's marked."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    wd.TTS_FIRST_AUDIO_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)          # turn 0 (will be superseded)
+    t[0] = 0.2
+    rec.mark(ASR_FINAL)          # turn 1's final arrives -> banks turn 0
+    rec.mark_superseded_turn()   # stamp the just-banked turn 0
+    rec.mark(LLM_FIRST_TOKEN)    # turn 1 proceeds normally...
+    rec.mark(TTS_FIRST_AUDIO)    # ...to completion
+    t[0] = 10.0                  # well past both deadlines
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "stuck" not in caplog.text  # neither the superseded nor the done turn flags
 
 
 def test_does_not_warn_once_llm_first_token_arrives(fake_clock, caplog):

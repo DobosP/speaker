@@ -653,6 +653,11 @@ class VoiceRuntime:
         ):
             log.info("newest input supersedes the in-flight turn: %r", final_text)
             self.supervisor.cancel_all()
+            # Mark the preempted turn so the watchdog doesn't read its missing
+            # llm_first_token as a stalled LLM (rc-5). The new final's turn-start
+            # mark (SPEECH_END on the sherpa engine, else ASR_FINAL) already
+            # banked that turn, so it's the last completed one.
+            self.metrics.mark_superseded_turn()
         # A NEW turn for the resume tracker (resets the spoken-text window; a
         # resume turn deliberately bypasses this above and keeps accumulating).
         self._resume.note_query(final_text)

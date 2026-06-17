@@ -257,6 +257,24 @@ def test_desktop_keeps_beam_and_sense_voice():
         assert config["sherpa"]["asr_decoding_method"] == "modified_beam_search"
 
 
+# --- llm-inference-3: on-device output is capped ----------------------------
+
+
+def test_on_device_profiles_cap_output_and_reach_llamacpp_as_max_tokens():
+    # The llamacpp tiers must bound generation (num_predict in config) AND that
+    # cap must survive translation into llama.cpp's max_tokens when the client
+    # is built -- else the model generates to the context limit on weak CPUs.
+    from core.llm import _normalize_llamacpp_options
+
+    base = _load_config()
+    for tier in ("phone", "phone_lite"):
+        opts = _apply_device_profile(base, tier)["llm"]["options"]
+        assert opts.get("num_predict"), f"{tier} sets no on-device output cap"
+        translated = _normalize_llamacpp_options(opts)
+        assert translated["max_tokens"] == opts["num_predict"]
+        assert "num_predict" not in translated
+
+
 # --- backend selection in _build_llms ---------------------------------------
 
 

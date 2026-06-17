@@ -65,31 +65,9 @@ def test_latch_still_wins_over_grace():
     assert eng._barge_in_fire_eligible(_BLK, _BLK) is False
 
 
-class _Fifo:
-    def __init__(self, n: int):
-        self.n = n
-
-    def read_into(self, view) -> int:
-        view[: self.n] = 0.1
-        view[self.n :] = 0.0
-        return self.n
-
-
-def test_multi_sentence_reply_does_not_reopen_the_grace():
-    # _first_audio_pending re-arms per sentence; the onset stamp must move ONLY on
-    # the reply's first audio (reset happens on silent->speaking), so a later
-    # sentence cannot re-open the grace mid-reply.
-    eng = SherpaOnnxEngine(SherpaConfig())
-    eng._speaking.set()
-    eng._fifo = _Fifo(64)
-    out = np.zeros((64, 1), dtype="float32")
-
-    eng._first_audio_pending = True
-    eng._audio_cb(out, 64, None, None)
-    first = eng._playback_onset_at
-    assert first > 0.0
-
-    time.sleep(0.01)
-    eng._first_audio_pending = True                    # next sentence re-arms it
-    eng._audio_cb(out, 64, None, None)
-    assert eng._playback_onset_at == first             # stamp did NOT move
+def test_window_covers_the_synth_leadin():
+    # The live self-interrupts fire 0.04-0.24s after synth-start (before audio).
+    # Anchored at synth-start, the 0.40s default window covers that whole span.
+    eng = _engine(0.40)
+    eng._playback_onset_at = time.monotonic() - 0.24   # mid synth lead-in
+    assert eng._barge_in_fire_eligible(_BLK, _BLK) is False

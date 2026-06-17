@@ -121,12 +121,22 @@ def agreement_guard(
         return streaming_final
     if not streaming_final or not streaming_final.strip():
         return second_pass
+    # A 2nd pass that collapses to NO content tokens -- just punctuation / single
+    # letters ("H.", "I.", "O.") -- while the streaming final HAS real words is a
+    # hallucination on garbled/echoey audio, not a correction. Never let it
+    # override real words, even on a LONG clip (the open-speaker live failure
+    # run-20260617-225622: a >1.2s clip the streaming pass heard as 'MANY OWN'
+    # / 'IT IS' the 2nd pass invented into 'H.' / 'I.', which the length gate
+    # below would otherwise have trusted unconditionally).
+    st_tokens = _content_tokens(streaming_final)
+    if st_tokens and not _content_tokens(second_pass):
+        return streaming_final
     if segment_sec is not None:
         short = segment_sec < short_sec
     else:
         short = len(streaming_final.split()) <= short_words
     if not short:
         return second_pass
-    if _content_tokens(streaming_final) & _content_tokens(second_pass):
+    if st_tokens & _content_tokens(second_pass):
         return second_pass
     return streaming_final

@@ -8,11 +8,31 @@ from core.metrics import (
     BARGE_IN_STOP,
     LLM_FIRST_TOKEN,
     SPEECH_END,
+    SUPERSEDED,
     TTS_FIRST_AUDIO,
     MetricsRecorder,
     TurnRecord,
     mark_first_token,
 )
+
+
+def test_mark_superseded_turn_stamps_the_just_banked_turn():
+    # Mirrors newest-input-wins: turn 1's ASR_FINAL banks turn 0, then turn 0
+    # (now _completed[-1]) is marked superseded -- NOT the open turn 1 (rc-5).
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)          # turn 0
+    rec.mark(ASR_FINAL)          # turn 1 -> banks turn 0
+    rec.mark_superseded_turn()
+    records = rec.records()
+    assert SUPERSEDED in records[0].stamps      # the preempted turn
+    assert SUPERSEDED not in records[1].stamps  # the new (open) turn untouched
+
+
+def test_mark_superseded_turn_is_a_noop_with_nothing_banked():
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark_superseded_turn()   # no completed turn yet -> no crash, no stamp
+    rec.mark(ASR_FINAL)
+    assert SUPERSEDED not in rec.records()[0].stamps
 
 
 class FakeClock:

@@ -131,3 +131,35 @@ def test_mark_first_token_stamps_only_first():
 
 def test_mark_first_token_passes_through_without_recorder():
     assert list(mark_first_token(iter(["a", "b"]), None)) == ["a", "b"]
+
+
+# --- control-plane-3: the TTS first-audio EWMA the watchdog scales off ---------
+
+
+def test_recent_tts_ms_folds_first_token_to_audio():
+    clock = FakeClock()
+    rec = MetricsRecorder(clock=clock)
+    assert rec.recent_tts_ms() is None            # cold: no sample yet
+    rec.mark(ASR_FINAL)
+    rec.mark(LLM_FIRST_TOKEN)
+    clock.tick(0.4)                                # 400ms of TTS synth for sentence 1
+    rec.mark(TTS_FIRST_AUDIO)
+    assert rec.recent_tts_ms() == approx(400.0, abs=1.0)
+
+
+def test_recent_tts_ms_none_without_a_first_token_anchor():
+    clock = FakeClock()
+    rec = MetricsRecorder(clock=clock)
+    rec.mark(ASR_FINAL)
+    clock.tick(0.4)
+    rec.mark(TTS_FIRST_AUDIO)   # no LLM_FIRST_TOKEN -> nothing to measure against
+    assert rec.recent_tts_ms() is None
+
+
+def test_reset_clears_the_tts_ewma():
+    clock = FakeClock()
+    rec = MetricsRecorder(clock=clock)
+    rec.mark(ASR_FINAL); rec.mark(LLM_FIRST_TOKEN); clock.tick(0.3); rec.mark(TTS_FIRST_AUDIO)
+    assert rec.recent_tts_ms() is not None
+    rec.reset()
+    assert rec.recent_tts_ms() is None

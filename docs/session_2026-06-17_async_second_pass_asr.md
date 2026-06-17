@@ -138,6 +138,41 @@ strict-signature regression test. Also applied the review's comment-accuracy fix
 (on the sherpa engine `SPEECH_END`, not `ASR_FINAL`, is the turn-banker) and
 float-coerced the cap.
 
+## Wave 3 — control-plane-3: EWMA-scaled adaptive watchdog deadlines (headless)
+
+Scouted the control-plane/routing cluster first; most candidates were done or
+not-headless (`routing-cascade-7` already shipped; `routing-cascade-6`'s costly
+redundancy is already killed by `LLMCapabilityRouter`'s built-in cache;
+`routing-cascade-4` embedding-router + `asr-tts-3` RTF-guard need real
+models/audio; `routing-cascade-1` live-routing is a deferred policy call). The one
+clean, fully-headless win — and a direct extension of the rc-5 work — was
+**control-plane-3**:
+
+- `core/metrics.py`: the recorder now folds a **second** rolling EWMA — the TTS
+  first-audio latency (`llm_first_token → tts_first_audio`), mirroring the existing
+  TTFT EWMA. New `recent_tts_ms()`; folded in `mark()` on `TTS_FIRST_AUDIO`.
+- `core/watchdog.py`: the "llm stuck" / "tts stuck" deadlines are no longer fixed —
+  `_adaptive_deadline(recent_ms, base, mult, floor, ceil) = clamp(mult·recent,
+  floor, ceil)`, falling back to the static base (LLM 10s / TTS 5s) at cold start.
+  So a snappy desktop (TTFT ~0.3s) surfaces a real stall at the 4s floor instead of
+  waiting 10s, and a slow phone (TTFT ~8s) stops false-flagging an honest 12s turn
+  (deadline rises to the 30s ceil). The watchdog still only *diagnoses* (warnings →
+  bundle); task reaping is separate. The `stuck_hints` substring matcher
+  (`core/runlog.py`) is intact (messages still start `llm stuck:` / `tts stuck:`).
+
+Tests: `test_metrics.py` (TTS-EWMA fold + reset) + `test_watchdog.py` (clamp helper;
+deadline tightens on a fast device, loosens on a slow one; TTS path; toggle pin).
+Suite **1945**.
+
+Adversarial review (correctness + design lenses, verified) = **0 refuted, all nits
++ 1 LOW, no blocker**. Applied the worthwhile findings: the LLM floor is **6s** (not
+4s) because the TTFT EWMA *blends* fast/main tiers — a fast-tier-dominated average
+must not false-flag an honest occasional heavy-tier turn; added an
+`ADAPTIVE_DEADLINES` toggle to pin the legacy fixed deadlines; switched the EWMA
+guards to `math.isfinite` (reject `+inf`); and documented that the supervisor
+**task-reap** (not this warning) is the real hang safety-bound, so a looser
+slow-device deadline only delays the *log line*, never the cancellation.
+
 ## Environment (i9-13980HX, `.venv` ACTIVATED in the owner's shell)
 Anything touching models/audio/LLM must use `.venv/bin/python` (a fresh shell's
 `python3` is bare). Models present (sherpa ASR/VAD/TTS + CAM++ speaker-ID +

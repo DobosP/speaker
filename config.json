@@ -242,6 +242,8 @@
         "fast_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
         "n_ctx": 2048,
         "n_gpu_layers": 0,
+        "_kv_cache_comment": "llm-inference-9: q8_0 on the K cache (V left at f16) ~halves the K-cache memory at near-lossless quality WITHOUT needing flash-attention (V-cache quant does, which isn't validated on this hardware). Validate on-device before trusting absolutes.",
+        "type_k": "q8_0",
         "router": {
           "threshold": 0.55
         },
@@ -265,6 +267,7 @@
         "fast_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
         "n_ctx": 1536,
         "n_gpu_layers": 0,
+        "type_k": "q8_0",
         "options": {
           "temperature": 0.7,
           "_num_predict_comment": "llm-inference-3: cap on-device output (translated to llama.cpp max_tokens). Tightest tier -> tightest cap.",

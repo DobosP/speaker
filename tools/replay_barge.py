@@ -110,13 +110,17 @@ def main(argv=None) -> int:
                 det.reset()                 # mirror the engine's per-reply reset
             det.note_playback(rblk, sr)
             verdict = det.decide(mblk)
-            if verdict is True:             # detector says "user barge" -- but it's the echo
+            # A self-interrupt on an open speaker (AEC off) is EITHER coherence
+            # false-firing (True) OR coherence abstaining (None) -> the loud-mic
+            # LEVEL GATE fires. Both cut the assistant's own reply.
+            if verdict is True or verdict is None:
                 self_int_raw += 1
+                why = "coherence=True" if verdict is True else "coherence=None->level-gate"
                 if grace > 0.0 and t < onset_t + grace:
                     grace_saved += 1
                 else:
                     self_int_after_grace += 1
-                    print(f"  t={t:5.1f}s SELF-INTERRUPT (frac={det.last_incoherent_fraction:.2f} "
+                    print(f"  t={t:5.1f}s SELF-INTERRUPT ({why}, frac={det.last_incoherent_fraction:.2f} "
                           f"baseline={det.last_baseline:.2f} {t-onset_t:.2f}s into reply)")
         else:
             playing = False

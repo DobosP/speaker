@@ -91,6 +91,49 @@ def normalize_rms(samples, target_rms: float, *, max_gain: float = 20.0):
     return apply_gain_soft_limit(x, gain)
 
 
+class InputAGC:
+    """Stateful automatic gain control for the capture path.
+
+    Lets the user run a deliberately LOW (never-clipping) OS mic gain: the AGC
+    boosts a clean-but-quiet block toward ``target_rms`` so the recognizer hears
+    a healthy level -- instead of forcing the user to find the one OS gain that
+    is neither clipping (too loud) nor inaudible (too quiet). It is BOOST-ONLY
+    (gain >= 1.0): software cannot un-clip a hardware-saturated signal, so it
+    never attenuates -- the user lowers the OS gain below the ADC clip point and
+    the AGC carries the rest.
+
+    The smoothed gain RISES slowly (``rise``) so the noise floor between words is
+    not pumped up, and FALLS fast (``fall``) so a sudden loud phrase is reined in
+    before the soft-knee limiter has to work. Blocks below ``noise_floor_rms``
+    HOLD the gain rather than amplifying hiss. Applied via
+    :func:`apply_gain_soft_limit` so any residual peak saturates smoothly instead
+    of hard-clipping. ``gain`` starts at 1.0, so the first blocks are a passthrough.
+    """
+
+    def __init__(self, *, target_rms: float = 0.12, max_gain: float = 12.0,
+                 noise_floor_rms: float = 0.004, rise: float = 0.08, fall: float = 0.4):
+        self.target_rms = float(target_rms)
+        self.max_gain = float(max_gain)
+        self.noise_floor_rms = float(noise_floor_rms)
+        self.rise = float(rise)
+        self.fall = float(fall)
+        self.gain = 1.0
+
+    def process(self, samples):
+        import numpy as np
+
+        x = np.asarray(samples, dtype="float32").reshape(-1)
+        if x.size:
+            r = float(np.sqrt(np.mean(x.astype("float64") ** 2)))
+            if r > self.noise_floor_rms:                 # real signal (not silence/hiss)
+                desired = min(self.max_gain, max(1.0, self.target_rms / r))
+                # rise slow / fall fast, so the gain doesn't pump the noise floor
+                # up between words yet still backs off quickly on a loud phrase.
+                rate = self.rise if desired > self.gain else self.fall
+                self.gain += rate * (desired - self.gain)
+        return apply_gain_soft_limit(x, self.gain)
+
+
 class AudioResampler:
     """Stateful anti-aliased downsampler for the capture hot path.
 

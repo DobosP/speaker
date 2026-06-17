@@ -561,6 +561,14 @@ class SherpaConfig:
     # Software gain applied to captured audio before ASR -- a quick boost for a
     # quiet mic (1.0 = off). Prefer raising the OS mic level; this is a stopgap.
     input_gain: float = 1.0
+    # When recording (--record), ALSO write the assistant's played-back reference
+    # (the far-end TTS the open mic hears) to ``run-<id>.ref.wav`` at 16 kHz,
+    # FRAME-ALIGNED with the mic WAV. This is what makes an open-speaker barge /
+    # self-interrupt run faithfully REPLAYABLE headlessly: a replay can feed the
+    # mic to decide() and the reference to note_playback() and reproduce the exact
+    # coherence comparison (the mic-only recording can't, since the reference is
+    # the engine's own playback). Off by default (no extra file).
+    record_playback_reference: bool = False
     # Input AGC (automatic gain control): normalize the captured level toward
     # ``input_agc_target_rms`` so a deliberately-LOW (never-clipping) OS mic gain
     # still reaches the recognizer at a healthy level -- no manual ``input_gain``
@@ -697,6 +705,12 @@ class SherpaOnnxEngine(AudioEngine):
         # written to WAV so the run can be replayed and frozen into a test).
         self._record_path: Optional[str] = None
         self._recorder = None
+        # Optional second recorder: the played-back reference (far-end TTS),
+        # frame-aligned with the mic recording via a small 16 kHz accumulator so a
+        # replay can reproduce the open-speaker barge comparison (see
+        # record_playback_reference). None unless recording + the flag is on.
+        self._ref_recorder = None
+        self._ref_accum = None  # np.float32 ring of pending reference samples
         # Actual mic capture rate (may differ from config.sample_rate when the
         # device won't open at 16 kHz); captured audio is resampled to 16 kHz.
         self._capture_sr = config.sample_rate
@@ -871,6 +885,42 @@ class SherpaOnnxEngine(AudioEngine):
     def set_record_path(self, path: Optional[str]) -> None:
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
         self._record_path = path
+
+    def _accumulate_reference(self, blk, sr: int) -> None:
+        """Append one played reference block (resampled to 16 kHz) to the
+        frame-aligned reference accumulator. Cheap; only while speaking + the
+        reference recorder is on (record_playback_reference)."""
+        import numpy as np
+
+        if self._ref_accum is None:
+            return
+        ref16 = (
+            _resample_linear(blk, sr, self.config.sample_rate)
+            if sr != self.config.sample_rate
+            else np.asarray(blk, dtype="float32").reshape(-1)
+        )
+        self._ref_accum = np.concatenate(
+            [self._ref_accum, np.asarray(ref16, dtype="float32").reshape(-1)]
+        )
+        # Defensive: push~=pop in balance, but never grow unbounded on a stall.
+        cap = self.config.sample_rate * 5
+        if self._ref_accum.shape[0] > cap:
+            self._ref_accum = self._ref_accum[-cap:]
+
+    def _write_reference_frame(self, n: int) -> None:
+        """Pop exactly ``n`` reference samples (silence-padded when the assistant
+        isn't playing) and write them to the reference recorder, so it stays
+        FRAME-ALIGNED with the mic recording for replay."""
+        import numpy as np
+
+        if self._ref_recorder is None or self._ref_accum is None:
+            return
+        if self._ref_accum.shape[0] >= n:
+            out, self._ref_accum = self._ref_accum[:n], self._ref_accum[n:]
+        else:
+            pad = np.zeros(n - self._ref_accum.shape[0], dtype="float32")
+            out, self._ref_accum = np.concatenate([self._ref_accum, pad]), np.zeros(0, dtype="float32")
+        self._ref_recorder.write(out)
 
     # --- lazy model construction ---
     def _build(self) -> None:
@@ -1130,6 +1180,17 @@ class SherpaOnnxEngine(AudioEngine):
 
             self._recorder = WavRecorder(self._record_path, self.config.sample_rate)
             log.info("recording session audio -> %s", self._record_path)
+            if self.config.record_playback_reference:
+                import numpy as np
+
+                ref_path = (
+                    self._record_path[:-4] + ".ref.wav"
+                    if self._record_path.endswith(".wav")
+                    else self._record_path + ".ref.wav"
+                )
+                self._ref_recorder = WavRecorder(ref_path, self.config.sample_rate)
+                self._ref_accum = np.zeros(0, dtype="float32")
+                log.info("recording playback reference (replay) -> %s", ref_path)
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
@@ -1199,6 +1260,11 @@ class SherpaOnnxEngine(AudioEngine):
                      self._recorder.seconds, self._recorder.path)
             self._recorder.close()
             self._recorder = None
+        if self._ref_recorder is not None:
+            log.info("recorded playback reference -> %s", self._ref_recorder.path)
+            self._ref_recorder.close()
+            self._ref_recorder = None
+            self._ref_accum = None
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
         # Non-blocking: hand the utterance to the single playback worker. Keeping
@@ -1647,6 +1713,10 @@ class SherpaOnnxEngine(AudioEngine):
 
                 if self._recorder is not None:
                     self._recorder.write(samples)
+                    # Frame-aligned reference: one ref frame per mic frame (silence
+                    # when not playing), so the .ref.wav indexes 1:1 with the mic.
+                    if self._ref_recorder is not None:
+                        self._write_reference_frame(samples.shape[0])
 
                 total_blocks += 1
                 beat_blocks += 1
@@ -1731,6 +1801,9 @@ class SherpaOnnxEngine(AudioEngine):
                             except IndexError:
                                 break
                             self._echo_coherence.note_playback(_blk, _play_sr)
+                            # Tee the same played reference into the replay recorder.
+                            if self._ref_recorder is not None:
+                                self._accumulate_reference(_blk, _play_sr)
                     # Consume the silent->speaking re-arm signalled by the playback
                     # loop: clear the BargeSustain window so the prior reply's fires
                     # can't carry into this reply's onset (2026-06-10 self-interrupt

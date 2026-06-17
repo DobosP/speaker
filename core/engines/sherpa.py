@@ -161,6 +161,19 @@ class SherpaConfig:
     # Skip the second pass on utterances shorter than this (a tiny "yes"/"stop"
     # the streaming model already nails) to save the offline-decode latency.
     asr_final_min_sec: float = 0.0
+    # Run the offline second pass (+ the L1 echo-floor and speaker-ID gates) on a
+    # DEDICATED worker thread instead of inline on the capture loop. Default ON:
+    # the synchronous decode (~150ms, longer on weak CPU) stalls the one thread
+    # that also reads the mic and services barge-in -- measured in
+    # run-20260617-103630 to starve TTS playback (white-noise output) and
+    # time-misalign the mic/echo-reference rings on resume (false-barge
+    # self-interrupts). The worker dispatches the SINGLE upgraded final in capture
+    # order (the runtime is one-final-per-utterance: newest-input-wins is a
+    # cancel, not an upgrade, so streaming-first-then-correct would speak garbage
+    # then supersede it). Only engages when a second-pass recognizer is actually
+    # built; off = the legacy inline path (kept for A/B + as the queue-full
+    # fallback). asr-tts-2.
+    asr_final_async: bool = True
     # ASR decoding method: "modified_beam_search" (more accurate, the default)
     # or "greedy_search" (slightly faster, lower accuracy). Beam search also
     # enables contextual biasing via ``asr_hotwords``.
@@ -681,6 +694,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts_sr = 0
         self._play_sr = 0
         self._capture_thread: Optional[threading.Thread] = None
+        # asr-tts-2: dedicated second-pass worker. The queue (work items
+        # ``(seg, raw_final, speech_end_ts)``) + thread are created in ``_build``
+        # ONLY when a second-pass recognizer is built and ``asr_final_async`` is
+        # on; left None otherwise so the finalize path runs inline (byte-identical
+        # to the legacy behaviour). A small bound is plenty -- utterances arrive
+        # seconds apart and a decode is ~150ms -- and on the rare overflow the
+        # capture loop finalizes inline rather than blocking real-time.
+        self._final_q: "Optional[queue.Queue[Optional[tuple]]]" = None
+        self._final_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
@@ -805,6 +827,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._final_recognizer = build_final_recognizer(c)
         if self._final_recognizer is not None:
             log.info("second-pass final ASR: %s (%s)", c.asr_final_backend, c.asr_final_model)
+        self._maybe_setup_async_final()
         self._vad = build_vad(c)
         # Scale-invariant reference-coherence barge-in detector (volume-
         # independent, zero-enrollment). Fails open to the level gate if scipy
@@ -1058,6 +1081,11 @@ class SherpaOnnxEngine(AudioEngine):
         self._capture_thread.start()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._play_thread.start()
+        # asr-tts-2: the second-pass worker (only when async + a recognizer were
+        # wired in _build). Keeps the slow offline decode off the capture loop.
+        if self._final_q is not None:
+            self._final_thread = threading.Thread(target=self._final_worker, daemon=True)
+            self._final_thread.start()
 
     def stop(self) -> None:
         self._running.clear()
@@ -1083,6 +1111,14 @@ class SherpaOnnxEngine(AudioEngine):
                 except Exception:  # noqa: BLE001 - device may be mid-teardown
                     pass
         self._play_q.put((None, None, 0))  # sentinel: wake the worker so it exits
+        if self._final_q is not None:
+            # Any finals still queued here are intentionally dropped on shutdown
+            # (like _play_q) -- dispatching a final into a tearing-down runtime is
+            # wrong, and the window is sub-second.
+            try:
+                self._final_q.put_nowait(None)  # sentinel: wake the second-pass worker
+            except queue.Full:
+                pass  # _running is already clear; it exits on its own next loop
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=1.0)
             if self._capture_thread.is_alive():
@@ -1093,6 +1129,10 @@ class SherpaOnnxEngine(AudioEngine):
             self._play_thread.join(timeout=1.0)
             if self._play_thread.is_alive():
                 log.warning("playback thread did not exit within 1.0s; proceeding")
+        if self._final_thread is not None:
+            self._final_thread.join(timeout=1.0)
+            if self._final_thread.is_alive():
+                log.warning("second-pass thread did not exit within 1.0s; proceeding")
         if self._stream_in is not None:
             # The recovering wrapper handles its own internal close-best-effort;
             # we just need to release its handle so the engine can be GC'd.
@@ -1295,6 +1335,99 @@ class SherpaOnnxEngine(AudioEngine):
                 except Exception:  # noqa: BLE001 - fall back to the streaming final
                     log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
         return self._postprocess_final(raw_final)
+
+    def _finalize_and_dispatch(self, seg, raw_final: str, speech_end_ts) -> None:
+        """Produce the FINAL transcript and deliver it (or its drop metric).
+
+        Pulled out of the capture loop so the SAME logic can run either inline
+        (no second pass, or ``asr_final_async`` off) or on the dedicated
+        second-pass worker (:meth:`_final_worker`). It does the three heavy,
+        capture-thread-hostile steps -- the offline second-pass decode
+        (``_final_transcribe``), the L1 echo-floor gate, and the speaker-ID gate
+        (CAM++ embedding) -- then dispatches at most one final per utterance.
+        Every input is owned by the work item (``seg`` is an already-concatenated
+        copy; ``speech_end_ts`` a captured ``perf_counter`` so SPEECH_END stays
+        correctly backdated however late this runs), so it is safe off-thread."""
+        final_text = self._final_transcribe(seg, raw_final)
+        log.info("asr final: %r (raw %r)", final_text, raw_final)
+        if not self._final_above_floor(seg):
+            # L1: at/near the device's learned echo/quiet floor -- the assistant's
+            # own residual echo or ambient noise transcribed into words. Drop it
+            # (this is what breaks the open-speaker echo-final self-interrupt
+            # cascade).
+            log.info(
+                "dropping final %r -- at/near the learned echo/quiet floor "
+                "(echo/ambient, not speech)", final_text,
+            )
+            self._cb.on_metric("echo_floor_rejected_final")
+        elif self._should_act_on_final(seg):
+            self._cb.on_metric(SPEECH_END, at=speech_end_ts)
+            self._cb.on_final(final_text)
+        else:
+            log.info("dropping final %r -- speaker is not the enrolled user", final_text)
+            self._cb.on_metric("speaker_rejected_final")
+
+    def _maybe_setup_async_final(self) -> None:
+        """Create the second-pass worker queue iff a 2nd-pass recognizer was built
+        AND ``asr_final_async`` is on. Split out of ``_build`` so the gate -- the
+        thing that decides "async worker vs byte-identical inline" -- is unit-
+        testable without standing up every model. ``_final_q`` left None otherwise
+        (the capture loop then finalizes inline). asr-tts-2."""
+        if self._final_recognizer is not None and self.config.asr_final_async:
+            self._final_q = queue.Queue(maxsize=8)
+            log.info("second-pass final ASR runs ASYNC (off the capture thread)")
+
+    def _enqueue_final(self, seg, raw_final: str, speech_end_ts) -> None:
+        """Hand an endpointed utterance to the second-pass worker WITHOUT ever
+        blocking the capture loop. On overflow (the worker is wedged/very slow --
+        normally the queue sits near-empty), drop the OLDEST queued utterance to
+        make room for this newer one, mirroring ``_play_q``'s drop-oldest
+        backpressure. This preserves capture-order dispatch, which matters: the
+        runtime's supersede is newest-ARRIVAL-wins, so a stale final arriving
+        after a newer one would wrongly cancel the newer turn. Single producer
+        (this capture thread), so after one ``get_nowait`` a slot is free."""
+        try:
+            self._final_q.put_nowait((seg, raw_final, speech_end_ts))
+            return
+        except queue.Full:
+            pass
+        log.warning("second-pass queue full; dropping the oldest pending final")
+        try:
+            self._final_q.get_nowait()
+            # Make the drop visible in the run bundle, like the floor/speaker
+            # drop paths -- otherwise a wedged worker silently eats turns.
+            self._cb.on_metric("second_pass_queue_overflow_dropped_final")
+        except queue.Empty:
+            pass  # the worker just drained one; a slot is free now
+        try:
+            self._final_q.put_nowait((seg, raw_final, speech_end_ts))
+        except queue.Full:
+            # Only reachable if a sentinel raced in; never block capture.
+            log.warning("second-pass queue still full; finalizing inline")
+            self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+
+    def _final_worker(self) -> None:
+        """Drain the second-pass work queue, finalizing one utterance at a time.
+
+        Single consumer -> finals dispatch in capture order even though the
+        offline decode is slow; running off the capture thread is the whole point
+        (asr-tts-2): the real-time loop keeps reading the mic, updating the echo
+        reference, and servicing barge-in while this decodes. A broad guard keeps
+        the worker alive across a bad turn -- a finalize failure drops that one
+        turn, it never wedges the queue."""
+        assert self._final_q is not None
+        while self._running.is_set():
+            try:
+                item = self._final_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is None:  # shutdown sentinel
+                break
+            seg, raw_final, speech_end_ts = item
+            try:
+                self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+            except Exception:  # noqa: BLE001 - never let the worker die on one turn
+                log.exception("second-pass finalize failed; dropping this turn")
 
     @staticmethod
     def _build_turn_detector(config):
@@ -1686,30 +1819,16 @@ class SherpaOnnxEngine(AudioEngine):
                         utterance, utterance_len = [], 0
                         if raw_final.strip():
                             finals += 1
-                            # Second-pass offline re-transcription (when configured)
-                            # turns the streaming final into a robust, punctuated one;
-                            # else this is the streaming final + post-processing.
-                            final_text = self._final_transcribe(seg, raw_final)
-                            log.info("asr final: %r (raw %r)", final_text, raw_final)
-                            if not self._final_above_floor(seg):
-                                # L1: at/near the device's learned echo/quiet floor --
-                                # the assistant's own residual echo or ambient noise
-                                # transcribed into words. Drop it (this is what breaks
-                                # the open-speaker echo-final self-interrupt cascade).
-                                log.info(
-                                    "dropping final %r -- at/near the learned echo/quiet "
-                                    "floor (echo/ambient, not speech)", final_text,
-                                )
-                                self._cb.on_metric("echo_floor_rejected_final")
-                            elif self._should_act_on_final(seg):
-                                self._cb.on_metric(SPEECH_END, at=speech_end_ts)
-                                self._cb.on_final(final_text)
+                            # Finalize (second-pass re-transcription, when
+                            # configured, + the echo-floor/speaker gates) and
+                            # dispatch the single final. asr-tts-2: when the async
+                            # worker is live, hand it the segment so the heavy
+                            # offline decode never stalls this real-time loop;
+                            # otherwise finalize inline (legacy, byte-identical).
+                            if self._final_q is not None:
+                                self._enqueue_final(seg, raw_final, speech_end_ts)
                             else:
-                                log.info(
-                                    "dropping final %r -- speaker is not the enrolled user",
-                                    final_text,
-                                )
-                                self._cb.on_metric("speaker_rejected_final")
+                                self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
                     asr_errors = 0
                 except Exception:
                     # Recover from a transient decode error by resetting the

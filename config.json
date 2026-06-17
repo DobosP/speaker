@@ -271,7 +271,10 @@
       "sherpa": {
         "num_threads": 2,
         "asr_num_threads": 1,
-        "tts_num_threads": 1
+        "tts_num_threads": 1,
+        "_asr_comment": "asr-tts-1: per-tier ASR policy. On the weakest tier drop the offline second pass (streaming finals only) and use greedy decode -- the offline SenseVoice re-transcribe + beam search are desktop luxuries that cost real-time headroom on a mid-range SoC, where the streaming zipformer final is good enough. Desktop/4090 keep beam + SenseVoice (base defaults).",
+        "asr_final_backend": "",
+        "asr_decoding_method": "greedy_search"
       },
       "input_gate": {"enabled": false, "unsure_acts": true, "max_context": 4},
       "cleanup": {"enabled": false, "max_context": 3}

@@ -234,6 +234,29 @@ def test_shipped_config_desktop_stays_on_ollama():
     assert config["llm"]["main_model"] == "gemma3:12b"
 
 
+# --- asr-tts-1: per-tier ASR policy -----------------------------------------
+
+
+def test_phone_lite_uses_streaming_only_greedy_asr():
+    # The weakest tier drops the offline second pass + beam search (desktop
+    # luxuries that cost real-time headroom on a mid-range SoC). The deep-merge
+    # must override the base sherpa block's heavy defaults.
+    config = _apply_device_profile(_load_config(), "phone_lite")
+    assert config["sherpa"]["asr_final_backend"] == ""        # streaming finals only
+    assert config["sherpa"]["asr_decoding_method"] == "greedy_search"
+
+
+def test_desktop_keeps_beam_and_sense_voice():
+    # asr-tts-1 must NOT regress the desktop tier: it keeps the accurate path.
+    base = _load_config()
+    assert base["sherpa"]["asr_final_backend"] == "sense_voice"
+    assert base["sherpa"]["asr_decoding_method"] == "modified_beam_search"
+    for tier in ("desktop", "desktop_gpu_4090"):
+        config = _apply_device_profile(base, tier)
+        assert config["sherpa"]["asr_final_backend"] == "sense_voice"
+        assert config["sherpa"]["asr_decoding_method"] == "modified_beam_search"
+
+
 # --- backend selection in _build_llms ---------------------------------------
 
 

@@ -5,7 +5,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from threading import Lock, Timer
-from typing import Mapping
+from typing import Callable, Mapping, Optional
 
 log = logging.getLogger("speaker.supervisor")
 
@@ -89,6 +89,8 @@ class AgentSupervisor:
         continuation_config: ContinuationConfig | None = None,
         continuation: ContinuationClassifier | None = None,
         task_timeouts: Mapping[str, float] | None = None,
+        load_fraction: Optional[Callable[[], Optional[float]]] = None,
+        admission_load_ceiling: float = 0.85,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -111,6 +113,13 @@ class AgentSupervisor:
         # Per-mode wall-clock task deadlines (the never-stuck backstop). Defaults
         # are merged with any config override; a hung task past its deadline is
         # reaped by reap_overdue_tasks (driven off the watchdog tick).
+        # Load-elastic admission (control-plane-2): a cheap () -> Optional[float]
+        # system-load reader (core.sysinfo.SystemMonitor.load_fraction). Under
+        # sustained load the concurrent-task ceiling tightens to 1 so a second
+        # turn can't thrash an already-saturated CPU/GPU. None (default) -> inert,
+        # so a supervisor built without it behaves exactly as before.
+        self._load_fraction = load_fraction
+        self._admission_load_ceiling = float(admission_load_ceiling)
         self._task_timeouts = dict(DEFAULT_TASK_TIMEOUTS)
         if isinstance(task_timeouts, Mapping):
             for key, value in task_timeouts.items():
@@ -697,6 +706,19 @@ class AgentSupervisor:
         # existing _start_queued_tasks drains it as threads free up.
         if self.tasks.at_capacity():
             return True
+        # Load-elastic admission (control-plane-2): under sustained system load,
+        # drop the effective ceiling to 1 -- a second concurrent turn would only
+        # thrash an already-saturated CPU/GPU (worst on the weak on-device tiers).
+        # Queue (never drop); the queue drains EVENT-driven as the active task
+        # completes/cancels (_start_queued_tasks runs on TASK_COMPLETED), not on a
+        # load edge -- and a hung active task is reaped on its wall-clock deadline,
+        # so a queued turn can never starve permanently. The first turn always
+        # admits (no active task to be the "1"); inert without a load reader or
+        # below the ceiling, so default behaviour is unchanged.
+        if self._load_fraction is not None and self.state.active_tasks:
+            load = self._load_fraction()
+            if load is not None and load >= self._admission_load_ceiling:
+                return True
         if task.mode != Mode.RESEARCH:
             return False
         # Snapshot: the reap (watchdog thread) can pop mid-iteration, which would

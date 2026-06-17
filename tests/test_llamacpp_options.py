@@ -9,7 +9,7 @@ translation (no models -- the llama_cpp import is lazy; a fake client records th
 request kwargs)."""
 from __future__ import annotations
 
-from core.llm import LlamaCppLLM, _normalize_llamacpp_options
+from core.llm import LlamaCppLLM, _normalize_llamacpp_options, _resolve_kv_cache_type
 
 
 # --- the pure translation -----------------------------------------------------
@@ -103,6 +103,69 @@ class _StrictClient:
         if stream:
             return iter([{"choices": [{"delta": {"content": "hi"}}]}])
         return {"choices": [{"message": {"content": "hi"}}]}
+
+
+# --- llm-inference-9: KV-cache quantization plumbing --------------------------
+
+
+def test_resolve_kv_cache_type():
+    assert _resolve_kv_cache_type("q8_0") == 8       # friendly name -> ggml int
+    assert _resolve_kv_cache_type("f16") == 1
+    assert _resolve_kv_cache_type(8) == 8            # raw int passes through
+    assert _resolve_kv_cache_type("nonsense") is None  # typo -> default (None)
+    assert _resolve_kv_cache_type(None) is None
+
+
+def test_kv_cache_types_resolved_at_construction():
+    llm = LlamaCppLLM("/x.gguf", type_k="q8_0", type_v="q8_0", client=object())
+    assert llm.type_k == 8 and llm.type_v == 8
+    plain = LlamaCppLLM("/x.gguf", client=object())
+    assert plain.type_k is None and plain.type_v is None
+
+
+def test_ensure_forwards_kv_cache_types_to_llama(monkeypatch):
+    import sys
+    import types
+
+    captured: dict = {}
+
+    class _FakeLlama:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    fake_mod = types.ModuleType("llama_cpp")
+    fake_mod.Llama = _FakeLlama
+    monkeypatch.setitem(sys.modules, "llama_cpp", fake_mod)
+
+    LlamaCppLLM("/x.gguf", type_k="q8_0", type_v="q8_0")._ensure()  # no client -> builds
+    assert captured["type_k"] == 8 and captured["type_v"] == 8
+    assert captured["model_path"] == "/x.gguf"
+
+    captured.clear()
+    LlamaCppLLM("/x.gguf")._ensure()
+    assert "type_k" not in captured and "type_v" not in captured  # default: not forwarded
+
+
+def test_ensure_degrades_when_llama_lacks_kv_quant_kwargs(monkeypatch):
+    import sys
+    import types
+
+    seen: list = []
+
+    class _OldLlama:
+        def __init__(self, **kwargs):
+            seen.append(kwargs)
+            if "type_k" in kwargs or "type_v" in kwargs:
+                raise TypeError("__init__() got an unexpected keyword argument 'type_k'")
+
+    fake_mod = types.ModuleType("llama_cpp")
+    fake_mod.Llama = _OldLlama
+    monkeypatch.setitem(sys.modules, "llama_cpp", fake_mod)
+
+    # An old lib must NOT crash the first turn -- it degrades to the f16 default.
+    LlamaCppLLM("/x.gguf", type_k="q8_0", type_v="q8_0")._ensure()
+    assert len(seen) == 2                                   # first attempt + the retry
+    assert "type_k" not in seen[-1] and "type_v" not in seen[-1]  # retried without KV-quant
 
 
 def test_shipped_on_device_profiles_drive_a_strict_client_without_typeerror():

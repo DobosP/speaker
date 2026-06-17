@@ -173,6 +173,47 @@ guards to `math.isfinite` (reject `+inf`); and documented that the supervisor
 **task-reap** (not this warning) is the real hang safety-bound, so a looser
 slow-device deadline only delays the *log line*, never the cancellation.
 
+## Wave 4 — low-value headless cleanup: llm-inference-9 + control-plane-2
+
+Scouted the remaining headless backlog; landed the two that are clean AND
+fully testable, and deferred two with precise blockers.
+
+- **llm-inference-9 (KV-cache quantization):** `LlamaCppLLM` never passed
+  `type_k`/`type_v`, so the on-device KV cache used the f16 default. Added
+  `_resolve_kv_cache_type` (friendly name → ggml int; `q8_0`→8) + plumbed
+  `type_k`/`type_v` through `llm_factory` from config. `phone`/`phone_lite` quantize
+  the **K cache only** to `q8_0` (V left at f16) — the review flagged that V-cache
+  quant requires flash-attention (not validated on this hardware), so K-only is the
+  safe headless win (~halves the K-cache memory, no flash-attn dependency). The
+  `Llama()` forwarding **fails soft** (an old lib lacking the kwargs degrades to f16
+  instead of crashing the first turn). `n_ctx` bounding was already per-profile.
+  Tests: resolver, constructor forwarding + the fail-soft path (fake `llama_cpp`),
+  config→factory wiring (`type_k==8`, `type_v` None).
+- **control-plane-2 (load-elastic admission):** under sustained system load the
+  supervisor now tightens its concurrent-task ceiling to 1 (a 2nd turn queues
+  rather than thrash a saturated CPU/GPU); the first turn always admits, and it's
+  inert without a load reader. Threaded an **ungated** `load_fraction` reader
+  app→runtime→supervisor (deliberately separate from the `live_routing`-gated
+  `load_snapshot`, so it can't enable the deferred routing nudge). Fully mockable
+  test (`test_load_elastic_admission.py`).
+
+**Deferred (with reasons, recorded in memory):**
+- **llm-inference-6** (in-process llama.cpp reap timeout): a per-call timeout would
+  let the *current* turn give up but `LlamaCppLLM` holds a single-context lock
+  across the blocking native call, so every subsequent turn would then block on
+  lock acquisition unbounded. A correct fix needs a context-pool / lock-release
+  refactor — disproportionate for a low-value item the supervisor's 25s task-reap
+  already backstops.
+- **llm-inference-7** (Q3/Q4 K-quant ladder): the real value is flipping
+  `phone_lite` to a Q3 GGUF, a model-quality change (1B models are
+  quant-sensitive) that needs on-device validation — not headless-safe to ship.
+
+Suite after Wave 4: **1956**. Adversarially reviewed (1 refuted, 8 nits + 1 LOW,
+no blocker): applied the LOW (K-only KV quant, above), the fail-soft constructor
+guard, and a cp2 comment/test fix (the queue drains event-driven on task
+completion + a no-starvation test); the cp2 correctness findings all verified
+"correct as written".
+
 ## Environment (i9-13980HX, `.venv` ACTIVATED in the owner's shell)
 Anything touching models/audio/LLM must use `.venv/bin/python` (a fresh shell's
 `python3` is bare). Models present (sherpa ASR/VAD/TTS + CAM++ speaker-ID +

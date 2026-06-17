@@ -287,6 +287,16 @@ def test_build_llms_phone_profile_builds_llamacpp_clients():
     assert main.n_ctx == 2048 and main.n_gpu_layers == 0
 
 
+def test_on_device_profiles_quantize_the_k_cache():
+    # llm-inference-9: phone/phone_lite quantize the K cache to q8_0 (ggml int 8),
+    # leaving V at the f16 default (V-cache quant needs flash-attn -> not shipped).
+    for tier in ("phone", "phone_lite"):
+        config = _apply_device_profile(_load_config(), tier)
+        main, _ = _build_llms(_args(), config)
+        assert main.type_k == 8, f"{tier} K cache not q8_0"
+        assert main.type_v is None, f"{tier} should leave V cache at the f16 default"
+
+
 def test_build_llms_desktop_profile_builds_ollama_clients():
     config = _apply_device_profile(_load_config(), "desktop")
     main, fast = _build_llms(_args(), config)

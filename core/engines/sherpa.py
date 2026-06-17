@@ -135,6 +135,12 @@ def _capture_attempts(
 @dataclass
 class SherpaConfig:
     sample_rate: int = 16000
+    # audio-bargein-1: capture block size (seconds). The single real-time
+    # granularity for the device read, the barge windowed-sustain, and the
+    # coherence/FFT work. Per-profile-overridable (device_profiles[*].sherpa) so a
+    # weak phone tier can shrink per-block work inside this budget; the 0.1s
+    # default keeps current behaviour byte-identical until a profile overrides it.
+    block_sec: float = 0.1
     # Streaming transducer model dir (zipformer). Required for ASR.
     asr_tokens: str = ""
     asr_encoder: str = ""
@@ -460,6 +466,10 @@ class SherpaConfig:
     # Echo reference ring length / max mic<->playback delay searched (ms).
     coherence_ring_ms: float = 600.0
     coherence_max_delay_ms: float = 400.0
+    # audio-bargein-1: FFT segment for the coherence/Welch estimate. Smaller =
+    # less per-block CPU (a phone tier can drop to 128) at coarser frequency
+    # resolution; 256 keeps the detector's current default unchanged.
+    coherence_nperseg: int = 256
     # After a barge-in fires (or a watchdog storm is reported) ignore further
     # barge-in triggers for this long. Debounces a flapping VAD gate / TTS-echo
     # storm into a single interrupt instead of a rapid-fire string of them.
@@ -805,6 +815,7 @@ class SherpaOnnxEngine(AudioEngine):
                 voiced_band=tuple(c.coherence_voiced_band_hz),
                 ring_ms=c.coherence_ring_ms,
                 max_delay_ms=c.coherence_max_delay_ms,
+                nperseg=c.coherence_nperseg,
                 margin_delta=c.coherence_margin_delta,
                 confirm_frames=c.coherence_confirm_frames,
                 warmup_frames=c.coherence_warmup_frames,
@@ -1020,7 +1031,7 @@ class SherpaOnnxEngine(AudioEngine):
             opener=_open,
             on_state=self._on_capture_state,
             channels=1,
-            block_seconds=0.1,
+            block_seconds=self.config.block_sec,
         )
         self._stream_in.open()
         self._capture_sr = self._stream_in.actual_samplerate
@@ -1370,7 +1381,7 @@ class SherpaOnnxEngine(AudioEngine):
         # visible in the run bundle instead of being silently dropped.
         rejected_run = 0.0
         rejected_flagged = False
-        block_sec = 0.1
+        block_sec = self.config.block_sec
         # Temporal confirmation for barge-in: a windowed sustain over the per-frame
         # DTD/gate eligibility (replaces the old leaky `voiced_run` accumulator that
         # intermittent fires starved -- see core/engines/_dtd.BargeSustain).

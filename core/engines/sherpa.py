@@ -36,6 +36,7 @@ from ..asr_text import agreement_guard, restore_casing
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
     AudioResampler,
+    InputAGC,
     apply_gain_soft_limit,
     normalize_rms,
 )
@@ -549,6 +550,19 @@ class SherpaConfig:
     # Software gain applied to captured audio before ASR -- a quick boost for a
     # quiet mic (1.0 = off). Prefer raising the OS mic level; this is a stopgap.
     input_gain: float = 1.0
+    # Input AGC (automatic gain control): normalize the captured level toward
+    # ``input_agc_target_rms`` so a deliberately-LOW (never-clipping) OS mic gain
+    # still reaches the recognizer at a healthy level -- no manual ``input_gain``
+    # tuning. BOOST-ONLY (can't un-clip a hardware-saturated mic, so set the OS
+    # gain below the ADC clip point and let the AGC carry the rest). Off by
+    # default (then ``input_gain`` is the static path). Takes precedence over
+    # ``input_gain`` when on. See :class:`core.audio_frontend.InputAGC`.
+    input_agc: bool = False
+    input_agc_target_rms: float = 0.12
+    input_agc_max_gain: float = 12.0
+    input_agc_noise_floor_rms: float = 0.004
+    input_agc_rise: float = 0.08
+    input_agc_fall: float = 0.4
     # PIN the mic capture sample rate (0 = auto: probe 16k, then a clean
     # integer-ratio rate, then the device native rate). Set this to the device's
     # NATIVE rate for a USB mic that self-mutes when ALSA reconfigures it to a
@@ -756,6 +770,19 @@ class SherpaOnnxEngine(AudioEngine):
         # ADC rails shreds the waveform -> garbled STT. Detected in the capture
         # heartbeat from the per-block clipped-sample fraction.
         self._clip_warned: bool = False
+        # Optional input AGC: lets the user run a low (non-clipping) OS mic and
+        # have the captured level normalized to the recognizer's sweet spot.
+        c = self.config
+        self._input_agc = (
+            InputAGC(
+                target_rms=c.input_agc_target_rms,
+                max_gain=c.input_agc_max_gain,
+                noise_floor_rms=c.input_agc_noise_floor_rms,
+                rise=c.input_agc_rise,
+                fall=c.input_agc_fall,
+            )
+            if c.input_agc else None
+        )
         # Serializes access to the single TTS model so the startup warm pass and a
         # live synthesis can never call ``tts.generate`` concurrently (sherpa's
         # OfflineTts is not safe for concurrent generation). Contended only at
@@ -1556,8 +1583,11 @@ class SherpaOnnxEngine(AudioEngine):
                 samples = np.asarray(audio, dtype="float32").reshape(-1)
                 # Gain BEFORE resample (soft-knee limiter, not a hard clip) so the
                 # anti-alias FIR filters any saturation harmonics above 8 kHz out
-                # before the recognizer sees them.
-                if self.config.input_gain != 1.0:
+                # before the recognizer sees them. AGC (when on) normalizes the
+                # level dynamically and takes precedence over the static gain.
+                if self._input_agc is not None:
+                    samples = self._input_agc.process(samples)
+                elif self.config.input_gain != 1.0:
                     samples = apply_gain_soft_limit(samples, self.config.input_gain)
                 if self._resampler is not None:
                     samples = self._resampler.process(samples)

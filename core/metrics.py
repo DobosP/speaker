@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass, field
@@ -110,6 +111,10 @@ class MetricsRecorder:
         # anchor. ``None`` until the first measurable turn -- the router treats
         # an unknown signal as "no nudge" so a cold start can never bias it.
         self._ttft_ewma_ms: Optional[float] = None
+        # Rolling local TTS first-audio EWMA (ms): first_token -> tts_first_audio,
+        # i.e. the synth latency of the turn's first sentence. Feeds the watchdog's
+        # adaptive "tts stuck" deadline (control-plane-3). None until first sample.
+        self._tts_ewma_ms: Optional[float] = None
 
     def mark(self, stage: str, *, fold_local_ttft: bool = True, at: Optional[float] = None) -> None:
         """Stamp ``stage`` on the open turn.
@@ -156,6 +161,15 @@ class MetricsRecorder:
                         anchor = self._current.stamps.get(ASR_FINAL)
                         if fold_local_ttft and anchor is not None:
                             self._observe_ttft_ms((now - anchor) * 1000.0)
+                    elif stage == TTS_FIRST_AUDIO and stage not in self._current.stamps:
+                        # First audio just landed: fold the first-token -> audio
+                        # delta (the TTS synth latency of sentence 1) into its own
+                        # rolling EWMA. TTS is always local, so no cloud gate. The
+                        # watchdog scales its "tts stuck" deadline off this so a
+                        # slow device isn't false-flagged (control-plane-3).
+                        anchor = self._current.stamps.get(LLM_FIRST_TOKEN)
+                        if anchor is not None:
+                            self._observe_tts_ms((now - anchor) * 1000.0)
                     self._current.stamps.setdefault(stage, now)
 
     def _observe_ttft_ms(self, ttft_ms: float) -> None:
@@ -163,7 +177,7 @@ class MetricsRecorder:
 
         Must be called under ``self._lock``. Ignores non-finite/negative
         samples so a clock glitch can never poison the estimate."""
-        if not (ttft_ms >= 0.0):  # also rejects NaN
+        if not math.isfinite(ttft_ms) or ttft_ms < 0.0:  # rejects NaN and +inf
             return
         if self._ttft_ewma_ms is None:
             self._ttft_ewma_ms = ttft_ms
@@ -183,6 +197,27 @@ class MetricsRecorder:
         per-profile decision untouched (it can never starve the local tier)."""
         with self._lock:
             return self._ttft_ewma_ms
+
+    def _observe_tts_ms(self, tts_ms: float) -> None:
+        """Fold one observed local first-token -> first-audio delta (ms) into the
+        rolling TTS EWMA. Must be called under ``self._lock``; ignores
+        non-finite/negative samples (mirrors :meth:`_observe_ttft_ms`)."""
+        if not math.isfinite(tts_ms) or tts_ms < 0.0:  # rejects NaN and +inf
+            return
+        if self._tts_ewma_ms is None:
+            self._tts_ewma_ms = tts_ms
+        else:
+            self._tts_ewma_ms = (
+                _TTFT_EWMA_ALPHA * tts_ms
+                + (1.0 - _TTFT_EWMA_ALPHA) * self._tts_ewma_ms
+            )
+
+    def recent_tts_ms(self) -> Optional[float]:
+        """Cheap read of the rolling local TTS first-audio EWMA (ms). ``None``
+        until a turn has produced a measurable first-token -> first-audio delta.
+        The watchdog scales its "tts stuck" deadline off this (control-plane-3)."""
+        with self._lock:
+            return self._tts_ewma_ms
 
     def mark_superseded_turn(self) -> None:
         """Stamp ``SUPERSEDED`` on the most-recently-banked turn (rc-5).
@@ -218,6 +253,7 @@ class MetricsRecorder:
             self._current = None
             self._completed = []
             self._ttft_ewma_ms = None
+            self._tts_ewma_ms = None
 
 
 def mark_first_token(

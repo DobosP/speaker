@@ -87,6 +87,78 @@ def test_superseded_turn_is_not_flagged_stuck(fake_clock, caplog):
     assert "stuck" not in caplog.text  # neither the superseded nor the done turn flags
 
 
+# --- control-plane-3: EWMA-scaled adaptive deadlines -------------------------
+
+
+def test_adaptive_deadline_clamps_to_band_and_falls_back_cold():
+    f = StuckWatchdog._adaptive_deadline
+    assert f(None, 10.0, 4.0, 4.0, 30.0) == 10.0     # cold start -> static base
+    assert f(0.0, 10.0, 4.0, 4.0, 30.0) == 10.0      # 0 ms sample -> base
+    assert f(300.0, 10.0, 4.0, 4.0, 30.0) == 4.0     # fast device -> clamped to floor
+    assert f(2000.0, 10.0, 4.0, 4.0, 30.0) == 8.0    # 4 * 2.0s, within band
+    assert f(8000.0, 10.0, 4.0, 4.0, 30.0) == 30.0   # slow device -> clamped to ceil
+
+
+def test_llm_deadline_tightens_on_a_fast_device(fake_clock, caplog):
+    # A snappy device (TTFT ~0.3s) should surface a real stall at the FLOOR (6s --
+    # set above a normal heavy-tier first-token so the blended EWMA can't
+    # false-flag an honest main-tier turn), not wait the static 10s.
+    t, rec, wd = _make(fake_clock)
+    rec.mark(ASR_FINAL); t[0] = 0.3; rec.mark(LLM_FIRST_TOKEN); rec.mark(TTS_FIRST_AUDIO)
+    t[0] = 1.0
+    rec.mark(ASR_FINAL)          # turn 1: will stall (banks turn 0)
+    t[0] = 6.5                   # elapsed 5.5s -- under the 6s adaptive floor
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" not in caplog.text
+    t[0] = 7.3                   # elapsed 6.3s -- past the 6s floor (static 10s wouldn't fire)
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck: turn 1" in caplog.text
+
+
+def test_adaptive_deadlines_toggle_pins_the_legacy_fixed_value(fake_clock, caplog):
+    # ADAPTIVE_DEADLINES=False restores the static deadline regardless of EWMA.
+    t, rec, wd = _make(fake_clock)
+    wd.ADAPTIVE_DEADLINES = False
+    rec.mark(ASR_FINAL); t[0] = 0.3; rec.mark(LLM_FIRST_TOKEN); rec.mark(TTS_FIRST_AUDIO)
+    t[0] = 1.0
+    rec.mark(ASR_FINAL)          # turn 1 stalls
+    t[0] = 8.0                   # elapsed 7s -- past the 6s adaptive floor, under static 10s
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" not in caplog.text   # pinned to the static 10s, so no warn yet
+    t[0] = 11.5                  # elapsed 10.5s -- past the static 10s
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck: turn 1" in caplog.text
+
+
+def test_llm_deadline_loosens_on_a_slow_device(fake_clock, caplog):
+    # A slow phone (TTFT ~8s) must NOT false-flag an honest 12s turn that the
+    # static 10s deadline would have wrongly called "stuck".
+    t, rec, wd = _make(fake_clock)
+    rec.mark(ASR_FINAL); t[0] = 8.0; rec.mark(LLM_FIRST_TOKEN); rec.mark(TTS_FIRST_AUDIO)
+    t[0] = 10.0
+    rec.mark(ASR_FINAL)          # turn 1 (banks turn 0)
+    t[0] = 22.0                  # elapsed 12s: past static 10s, under adaptive ceil (30s)
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" not in caplog.text
+
+
+def test_tts_deadline_tightens_on_a_fast_device(fake_clock, caplog):
+    # Same idea for the "tts stuck" check, scaled off the TTS EWMA (floor 3s).
+    t, rec, wd = _make(fake_clock)
+    rec.mark(ASR_FINAL); rec.mark(LLM_FIRST_TOKEN); t[0] = 0.2; rec.mark(TTS_FIRST_AUDIO)
+    t[0] = 1.0
+    rec.mark(ASR_FINAL); rec.mark(LLM_FIRST_TOKEN)   # turn 1: TTS will stall
+    t[0] = 4.5                   # elapsed 3.5s -- past the 3s TTS floor (static 5s wouldn't fire)
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "tts stuck: turn 1" in caplog.text
+
+
 def test_does_not_warn_once_llm_first_token_arrives(fake_clock, caplog):
     t, rec, wd = _make(fake_clock)
     wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5

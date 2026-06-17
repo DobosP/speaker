@@ -495,6 +495,16 @@ class SherpaConfig:
     # fixed CLEARANCE window (a time, not an energy threshold -- mirrors
     # barge_in_suppress_sec); 0 disables (byte-identical parity).
     barge_in_refractory_sec: float = 0.5
+    # L3 playback-ONSET grace: for this long after the assistant's FIRST audible
+    # TTS sample of a NEW reply, suppress barge-in. Anchored to TRUE first-audio
+    # (not _speaking.set()), so synth/FIFO latency doesn't eat the window. At
+    # onset the echo-coherence reference ring is still filling, so its Welch
+    # estimate is unstable on a sparse reference and reads the assistant's OWN
+    # echo as "incoherent" -> a self-interrupt clustered 0.04-0.24s after speaking
+    # starts (live run-20260617-231807). The grace blinds only that onset window;
+    # a real talk-over PAST it still cuts (worst case <= grace later, never lost).
+    # 0 disables (byte-identical parity).
+    barge_in_playback_onset_grace_sec: float = 0.30
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -759,6 +769,10 @@ class SherpaOnnxEngine(AudioEngine):
         # audio to stamp TTS_FIRST_AUDIO at the TRUE first-played instant (a
         # flushed/stopped utterance that never plays audio thus never stamps it).
         self._first_audio_pending: bool = False
+        # monotonic stamp of THIS reply's first audible TTS sample (0 = none yet).
+        # The playback-onset barge grace is measured from here; reset on the
+        # silent->speaking transition, stamped once at true first-audio.
+        self._playback_onset_at: float = 0.0
         # Output-underrun diagnostics (acoustic-artifact hunt): the hard-real-time
         # _audio_cb cannot log, so it just COUNTS blocks where the FIFO ran dry
         # mid-block while speaking -- a gap PortAudio zero-fills, i.e. the audible
@@ -2080,6 +2094,11 @@ class SherpaOnnxEngine(AudioEngine):
                 # a flushed/stopped utterance that never plays never stamps it).
                 if self._first_audio_pending:
                     self._first_audio_pending = False
+                    # Anchor the onset grace to the reply's FIRST audible sample.
+                    # Only when unset, so a multi-sentence reply does not re-open
+                    # the grace each sentence (reset happens on silent->speaking).
+                    if self._playback_onset_at == 0.0:
+                        self._playback_onset_at = time.monotonic()
                     self._cb.on_metric(TTS_FIRST_AUDIO)
         except Exception:  # noqa: BLE001 - a transient must never kill the audio thread
             pass
@@ -2118,6 +2137,9 @@ class SherpaOnnxEngine(AudioEngine):
                 if not was_speaking:
                     self._barge_in_fired_this_run = False
                     self._underrun_at_reply_start = self._underrun_blocks
+                    # Re-arm the playback-onset grace for this new reply; the next
+                    # first-audio sample (in _audio_cb) stamps _playback_onset_at.
+                    self._playback_onset_at = 0.0
                     # Re-arm the per-reply barge state on the silent->speaking
                     # transition (2026-06-10 self-interrupt fix). Clearing the
                     # BargeSustain window (via the cross-thread flag) means the
@@ -2614,6 +2636,18 @@ class SherpaOnnxEngine(AudioEngine):
         silent->speaking transition in ``_playback_loop`` so a genuinely new
         interruption still fires."""
         if self._barge_in_fired_this_run:
+            return False
+        # L3 playback-onset grace: while within the grace window of this reply's
+        # first audible sample, the echo-coherence reference ring is still filling
+        # and reads the assistant's OWN echo as a barge. Suppress here -- the one
+        # chokepoint every fire path crosses -- WITHOUT stopping reference ingest /
+        # chart learning (those run earlier), so the detector is calibrated the
+        # instant the window lifts. A real talk-over past the window still fires.
+        grace = self.config.barge_in_playback_onset_grace_sec
+        # getattr default: barge fixtures build the engine bypassing __init__, so a
+        # missing stamp reads as 0.0 -> grace inert (the correct partial-build state).
+        onset = getattr(self, "_playback_onset_at", 0.0)
+        if grace > 0.0 and onset > 0.0 and time.monotonic() < onset + grace:
             return False
         if self._vad is None or not self._vad.is_speech_detected():
             return False

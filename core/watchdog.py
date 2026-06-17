@@ -61,6 +61,28 @@ class StuckWatchdog:
     CAPTURE_SILENT_DEADLINE_SEC = 5.0
     BARGE_IN_STORM_WINDOW_SEC = 1.5
     BARGE_IN_STORM_THRESHOLD = 3
+    # Adaptive deadlines (control-plane-3): the fixed deadlines above are the
+    # cold-start fallback; once the recorder has a rolling EWMA, the "stuck"
+    # deadline tracks the device's OWN measured latency -- a snappy desktop
+    # surfaces a real stall sooner than the static 10s, and a slow phone whose
+    # honest turns take ~8s stops being false-flagged. deadline =
+    # clamp(MULT * recent_ewma, FLOOR, CEIL); clamp keeps it sane at both ends.
+    # This is DIAGNOSIS only: the real safety bound on a genuinely hung task is
+    # the supervisor's per-mode wall-clock task-reap (reap_overdue_tasks, driven
+    # off this same tick), NOT this warning -- so a looser slow-device deadline
+    # only delays the *log line*, never the cancellation. The LLM FLOOR is set
+    # ABOVE a normal heavy/main-tier first-token: the TTFT EWMA BLENDS fast- and
+    # main-tier turns, so a fast-tier-dominated average must not flag an honest
+    # (occasional) heavy-tier turn as stuck. Constants are heuristic -- calibrate
+    # against real recent_ttft/recent_tts from logs/runs before trusting absolutes.
+    # ADAPTIVE_DEADLINES=False pins the legacy fixed deadlines.
+    ADAPTIVE_DEADLINES = True
+    DEADLINE_TTFT_MULT = 4.0
+    LLM_DEADLINE_FLOOR_SEC = 6.0
+    LLM_DEADLINE_CEIL_SEC = 30.0
+    DEADLINE_TTS_MULT = 4.0
+    TTS_DEADLINE_FLOOR_SEC = 3.0
+    TTS_DEADLINE_CEIL_SEC = 20.0
 
     def __init__(
         self,
@@ -177,20 +199,60 @@ class StuckWatchdog:
                 continue
             if ASR_FINAL in stamps and LLM_FIRST_TOKEN not in stamps:
                 elapsed = now - stamps[ASR_FINAL]
-                if elapsed >= self.LLM_FIRST_TOKEN_DEADLINE_SEC:
+                deadline = self._deadline(
+                    self._recorder.recent_ttft_ms(),
+                    self.LLM_FIRST_TOKEN_DEADLINE_SEC,
+                    self.DEADLINE_TTFT_MULT,
+                    self.LLM_DEADLINE_FLOOR_SEC,
+                    self.LLM_DEADLINE_CEIL_SEC,
+                )
+                if elapsed >= deadline:
                     self._warn_once(
                         i, "llm_first_token",
-                        "llm stuck: turn %d had asr_final but no llm_first_token after %.1fs"
-                        % (i, elapsed),
+                        "llm stuck: turn %d had asr_final but no llm_first_token after %.1fs (deadline %.1fs)"
+                        % (i, elapsed, deadline),
                     )
             if LLM_FIRST_TOKEN in stamps and TTS_FIRST_AUDIO not in stamps:
                 elapsed = now - stamps[LLM_FIRST_TOKEN]
-                if elapsed >= self.TTS_FIRST_AUDIO_DEADLINE_SEC:
+                deadline = self._deadline(
+                    self._recorder.recent_tts_ms(),
+                    self.TTS_FIRST_AUDIO_DEADLINE_SEC,
+                    self.DEADLINE_TTS_MULT,
+                    self.TTS_DEADLINE_FLOOR_SEC,
+                    self.TTS_DEADLINE_CEIL_SEC,
+                )
+                if elapsed >= deadline:
                     self._warn_once(
                         i, "tts_first_audio",
-                        "tts stuck: turn %d had llm_first_token but no tts_first_audio after %.1fs"
-                        % (i, elapsed),
+                        "tts stuck: turn %d had llm_first_token but no tts_first_audio after %.1fs (deadline %.1fs)"
+                        % (i, elapsed, deadline),
                     )
+
+    def _deadline(
+        self, recent_ms: Optional[float], base_sec: float,
+        mult: float, floor_sec: float, ceil_sec: float,
+    ) -> float:
+        """The stuck deadline for one stage: the legacy fixed ``base_sec`` when
+        ``ADAPTIVE_DEADLINES`` is off, else the EWMA-scaled adaptive value."""
+        if not self.ADAPTIVE_DEADLINES:
+            return base_sec
+        return self._adaptive_deadline(recent_ms, base_sec, mult, floor_sec, ceil_sec)
+
+    @staticmethod
+    def _adaptive_deadline(
+        recent_ms: Optional[float], base_sec: float,
+        mult: float, floor_sec: float, ceil_sec: float,
+    ) -> float:
+        """Device-adaptive stuck deadline (control-plane-3).
+
+        Cold start (no EWMA yet) -> the static ``base_sec`` (legacy behaviour).
+        Once a rolling EWMA exists, scale it by ``mult`` and clamp to
+        ``[floor_sec, ceil_sec]`` so a fast device surfaces a real stall sooner
+        and a slow one isn't false-flagged on an honest long turn. A
+        non-positive EWMA (e.g. a 0 ms sample) also falls back to ``base_sec``."""
+        if recent_ms is None or recent_ms <= 0.0:
+            return base_sec
+        return min(ceil_sec, max(floor_sec, mult * recent_ms / 1000.0))
 
     def _check_heartbeat(self, now: float) -> None:
         if self._last_heartbeat is None:

@@ -232,8 +232,17 @@ class EchoCoherenceDetector:
             return None
         ref = self._snapshot_ref()
         if ref.size < x.size + self.max_delay:
-            self.last_decided = None
-            return None  # not enough reference history yet (session start)
+            # Reference ring still BUILDING. With SOME played reference present
+            # (ref.size > 0) this is the reply's echo onset/fill window -- return
+            # echo-only (False), NOT None, so on an open speaker with no AEC it
+            # cannot fall through to the loud-mic LEVEL GATE and self-interrupt
+            # during the ~0.5s ref-fill (the documented intent: "while building,
+            # decide() returns False, never None"; live run-20260618-004500 showed
+            # it returning None here -> the post-grace self-interrupt at 0.4-0.64s).
+            # Only a genuinely EMPTY ring (no playback at all) returns None, so a
+            # real talk-over during true TTS silence still uses the gate.
+            self.last_decided = False if ref.size > 0 else None
+            return self.last_decided
         win = ref[-(x.size + self.max_delay):]
         raw_delay = self._estimate_delay(x, win)
         if raw_delay is None:

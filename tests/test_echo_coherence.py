@@ -282,3 +282,17 @@ def test_reset_re_arms_warmup(monkeypatch):
 def test_warmup_frames_param_is_stored_and_configurable():
     assert EchoCoherenceDetector(SR)._warmup_frames == 5  # default
     assert EchoCoherenceDetector(SR, warmup_frames=0)._warmup_frames == 0  # disable
+
+
+def test_building_ref_returns_false_not_none():
+    """While the reference ring is BUILDING (some played audio, but < the minimum
+    for a confident compare) decide() must return False (echo-only), NEVER None --
+    else on an open speaker with no AEC the None falls through to the loud-mic
+    level gate and self-interrupts (live run-20260618-004500: post-grace cuts at
+    0.4-0.64s). A genuinely EMPTY ring (no playback) still returns None so a real
+    talk-over during true TTS silence keeps the level-gate fallback."""
+    det = EchoCoherenceDetector(SR)
+    mic = np.zeros(BLOCK, dtype="float32")
+    assert det.decide(mic) is None                       # empty ring -> None (gate)
+    det.note_playback(_make_reference(0.1, seed=7), SR)  # SOME played ref (< 0.5s)
+    assert det.decide(mic) is False                      # building -> echo-only, NOT None

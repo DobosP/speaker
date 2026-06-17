@@ -745,6 +745,17 @@ class SherpaOnnxEngine(AudioEngine):
         # audio to stamp TTS_FIRST_AUDIO at the TRUE first-played instant (a
         # flushed/stopped utterance that never plays audio thus never stamps it).
         self._first_audio_pending: bool = False
+        # Output-underrun diagnostics (acoustic-artifact hunt): the hard-real-time
+        # _audio_cb cannot log, so it just COUNTS blocks where the FIFO ran dry
+        # mid-block while speaking -- a gap PortAudio zero-fills, i.e. the audible
+        # buzzy/glitchy artifact. The playback loop reports the per-reply delta
+        # off-thread. Plain ints -> GIL-atomic, alloc-free, real-time safe.
+        self._underrun_blocks: int = 0
+        self._underrun_at_reply_start: int = 0
+        # Input-clipping diagnostic (one-shot WARNING): a mic gain so hot that the
+        # ADC rails shreds the waveform -> garbled STT. Detected in the capture
+        # heartbeat from the per-block clipped-sample fraction.
+        self._clip_warned: bool = False
         # Serializes access to the single TTS model so the startup warm pass and a
         # live synthesis can never call ``tts.generate`` concurrently (sherpa's
         # OfflineTts is not safe for concurrent generation). Contended only at
@@ -1534,6 +1545,7 @@ class SherpaOnnxEngine(AudioEngine):
         total_blocks = partials = finals = 0
         beat_blocks = 0
         beat_level = 0.0
+        beat_clip = 0.0
         asr_errors = 0
         last_beat = time.monotonic()
         log.info("capture loop started (capture_sr=%d -> asr_sr=%d)",
@@ -1595,20 +1607,37 @@ class SherpaOnnxEngine(AudioEngine):
                 beat_blocks += 1
                 if samples.size:
                     beat_level += float(np.sqrt(np.mean(samples * samples)))
+                    # Clipped-sample fraction this block (rail-pinned input).
+                    beat_clip += float(np.mean(np.abs(samples) >= 0.98))
                 now = time.monotonic()
                 if now - last_beat >= 2.0:
                     avg = beat_level / max(beat_blocks, 1)
+                    avg_clip = beat_clip / max(beat_blocks, 1)
                     log.debug(
-                        "capture heartbeat: blocks=%d avg_rms=%.4f partials=%d finals=%d speaking=%s",
-                        total_blocks, avg, partials, finals, self._speaking.is_set(),
+                        "capture heartbeat: blocks=%d avg_rms=%.4f clip=%.1f%% underruns=%d "
+                        "partials=%d finals=%d speaking=%s",
+                        total_blocks, avg, avg_clip * 100.0, self._underrun_blocks,
+                        partials, finals, self._speaking.is_set(),
                     )
                     if avg < 1e-4:
                         log.warning(
                             "input is ~silent (avg_rms=%.6f) -- wrong mic, muted, or no "
                             "permission? run `python -m sounddevice` to list devices", avg,
                         )
+                    # Input-clipping diagnostic: sustained rail-pinning (>2% of
+                    # samples on average) shreds the waveform -> garbled STT. Warn
+                    # once so a hot OS mic gain is diagnosed up front, not silently
+                    # transcribed as nonsense.
+                    if avg_clip > 0.02 and not self._clip_warned:
+                        self._clip_warned = True
+                        log.warning(
+                            "input is CLIPPING (%.1f%% of samples railed, avg_rms=%.3f) -- mic "
+                            "gain too HOT; the recognizer is fed a shredded waveform. Lower the "
+                            "OS mic input level / disable 'mic boost' (target rms ~0.1-0.2).",
+                            avg_clip * 100.0, avg,
+                        )
                     self._cb.on_heartbeat()
-                    last_beat, beat_blocks, beat_level = now, 0, 0.0
+                    last_beat, beat_blocks, beat_level, beat_clip = now, 0, 0.0, 0.0
 
                 # Command fast-path: keyword spotting runs every block, including
                 # during playback, so phrases like "stop" act with the lowest
@@ -1985,6 +2014,12 @@ class SherpaOnnxEngine(AudioEngine):
             # and learn how many of those samples are REAL audio (vs zero-fill) so
             # we tee only the played audio into the echo refs.
             n = fifo.read_into(view)
+            # Underrun diagnostic: the FIFO ran dry PARTWAY through this block while
+            # still speaking -> PortAudio plays the zero-filled tail as a gap (the
+            # buzzy/glitchy artifact). Count only -- no logging on this thread. A
+            # full empty read (n == 0) is the normal end-of-utterance, not a glitch.
+            if 0 < n < frames and self._speaking.is_set():
+                self._underrun_blocks += 1
             if n > 0:
                 played = view[:n]
                 # Mirror the producer's old per-chunk bookkeeping, but now driven
@@ -2052,6 +2087,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self._speaking.set()
                 if not was_speaking:
                     self._barge_in_fired_this_run = False
+                    self._underrun_at_reply_start = self._underrun_blocks
                     # Re-arm the per-reply barge state on the silent->speaking
                     # transition (2026-06-10 self-interrupt fix). Clearing the
                     # BargeSustain window (via the cross-thread flag) means the
@@ -2190,6 +2226,18 @@ class SherpaOnnxEngine(AudioEngine):
                         ):
                             time.sleep(0.01)
                         self._speaking.clear()
+                        # Acoustic-artifact diagnostic (off the real-time thread):
+                        # if the FIFO underran during this reply the listener heard
+                        # gaps/static. Surface it so a glitchy reply is visible in
+                        # the bundle instead of silently zero-filled.
+                        _ur = self._underrun_blocks - self._underrun_at_reply_start
+                        if _ur > 2:
+                            log.warning(
+                                "playback underran %d blocks this reply -- TTS synth not "
+                                "keeping the output buffer full (CPU contention from the "
+                                "ASR/second-pass worker?); raises buzzy/glitchy artifacts", _ur,
+                            )
+                            self._cb.on_metric("playback_underrun")
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         self._last_speaking_end = time.monotonic()  # arm the L2 refractory
                         if self._echo_coherence is not None:

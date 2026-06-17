@@ -214,6 +214,52 @@ guard, and a cp2 comment/test fix (the queue drains event-driven on task
 completion + a no-starvation test); the cp2 correctness findings all verified
 "correct as written".
 
+## Wave 5 — LIVE test of asr-tts-2 + new audio diagnostics
+
+First live run of the async second pass (`config.local.json`: SenseVoice on,
+`asr_final_async=true`, AEC off, speaker-gate off; `./session.sh --llm echo`,
+bundles `logs/runs/run-20260617-2231/2232/2233`).
+
+**asr-tts-2 async VALIDATED at the seam:** the worker engaged (`second-pass final
+ASR runs ASYNC`), and across all 3 runs there were **zero PortAudio
+underflows/overflows, zero exceptions, no crash, no self-interrupt**; barge-in cut
+real talk-overs (coherence detector → `cancel_all`) and correctly *rejected* a 0.2s
+blip. (No `summary.json` — the `!`-launched process was hard-killed on Ctrl-C
+before the summary flushed; the `.txt`/`.wav` bundles are intact.)
+
+**But two real problems surfaced:**
+1. **Mic CLIPPING (root cause of "doesn't pick up correctly").** Measured on the
+   recorded WAVs: peak pinned at 1.000, rms ~0.5, and **36% → 48% → 65%** of 100ms
+   blocks clipped at the rail. `input_gain=1.0` in config → this is **OS/hardware
+   mic gain**, not code. Clipped audio shreds the recognizer (`'AH YOU HAVE ART
+   FACT'` for "do you have artifact"; SenseVoice hallucinated `'I.'`). **Owner
+   action:** lower the OS mic input level / disable "mic boost" (target rms
+   ~0.1–0.2); nudge speaker volume down too (the open-speaker TTS echo is part of
+   what saturates the ADC).
+2. **Real acoustic OUTPUT artifacts (owner confirmed "a": buzzy/glitchy TTS voice,
+   not just garbled words).** This is the `run-103630` white-noise still partly
+   present. Mechanism: `_audio_cb` (sherpa.py) zero-fills FIFO underruns and the
+   hard-real-time rules forbid logging them, so they were **invisible**.
+
+**Diagnostics added (this wave, headless, real-time-safe):**
+- **Input-clipping warning** — the capture heartbeat accumulates a per-block
+  clipped-sample fraction and logs a one-shot WARNING when sustained >2% (+ the
+  heartbeat now prints `clip=%`).
+- **Output-underrun counter** — `_audio_cb` counts blocks where the FIFO ran dry
+  mid-block while speaking (a plain GIL-atomic int, no logging/alloc on the
+  real-time thread); the playback loop reports the per-reply delta as a WARNING +
+  `playback_underrun` metric, and the heartbeat prints cumulative `underruns=N`.
+  Tests in `tests/test_sherpa_diagnostics.py`. Suite **1958**.
+
+**Next (the re-run will tell us):** owner lowers the mic gain and re-runs — the new
+`clip=%` should drop to ~0 (STT should jump), and `underruns=N` / the
+`playback_underrun` warnings will confirm whether the buzzy artifacts are FIFO
+underruns from CPU contention (the async SenseVoice worker + TTS synth competing
+on the CPU `desktop` tier). If so, the fix is per-tier TTS/worker thread budgeting
+(or gating the second pass on the answering tier). NB the run auto-selected the
+`desktop` profile, not `desktop_gpu_4090` (the probe reads 16376MB < the 16GB
+threshold — a recommend_profile off-by-rounding worth fixing).
+
 ## Environment (i9-13980HX, `.venv` ACTIVATED in the owner's shell)
 Anything touching models/audio/LLM must use `.venv/bin/python` (a fresh shell's
 `python3` is bare). Models present (sherpa ASR/VAD/TTS + CAM++ speaker-ID +

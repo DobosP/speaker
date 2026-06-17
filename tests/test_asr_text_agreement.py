@@ -59,6 +59,27 @@ def test_long_correction_full_sentence_accepted():
     )
 
 
+# --- LONG clip but the 2nd pass collapses to no real words -> hallucination ----
+
+
+def test_long_clip_single_letter_hallucination_rejected():
+    # The open-speaker live failure (run-20260617-225622): a >1.2s clip the
+    # streaming pass heard as real words, the 2nd pass invented into a bare letter.
+    # No content tokens in the 2nd pass + real words in the streaming -> keep the
+    # streaming final, even though the clip is "not short".
+    assert agreement_guard("MANY OWN", "H.", segment_sec=1.8) == "MANY OWN"
+    assert agreement_guard("IT IS", "I.", segment_sec=1.5) == "IT IS"
+
+
+def test_long_clip_real_correction_still_accepted_over_the_new_rule():
+    # The new no-content-token rule must NOT block a legit correction that HAS
+    # real words (it only bites when the 2nd pass collapses to punctuation).
+    assert (
+        agreement_guard("Ario der", "are you there", segment_sec=2.0)
+        == "are you there"
+    )
+
+
 # --- short clip but the 2nd pass agrees -> accept the (cleaner) 2nd pass ------
 
 def test_short_agreeing_pair_accepted():
@@ -135,9 +156,13 @@ def test_single_char_2nd_pass_never_agrees_on_short_clip():
 # --- short_sec / short_words are tunable on the signature ---------------------
 
 def test_short_sec_override_makes_clip_long():
-    # With a stricter short_sec, a 0.5s clip is no longer "short" -> 2nd pass trusted.
+    # With a stricter short_sec, a 0.5s clip is no longer "short" -> a 2nd pass
+    # with REAL WORDS is trusted. (A bare-letter 2nd pass like "I." is now always
+    # rejected by the no-content-token rule, regardless of length, so this uses a
+    # content-bearing correction to isolate the length gate.)
     assert (
-        agreement_guard("BEING", "I.", segment_sec=0.5, short_sec=0.4) == "I."
+        agreement_guard("Ario der", "are you there", segment_sec=0.5, short_sec=0.4)
+        == "are you there"
     )
 
 

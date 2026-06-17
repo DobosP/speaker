@@ -23,6 +23,7 @@ TTS_FIRST_AUDIO = "tts_first_audio"  # assistant's first audio sample played
 BARGE_IN = "barge_in"              # user spoke over playback
 BARGE_IN_STOP = "barge_in_stop"    # playback actually halted
 HANDLED_LOCAL = "handled_local"    # turn resolved with NO LLM (intent fast-path) -- never reaches first token
+SUPERSEDED = "superseded"          # turn preempted by a newer final (newest-input-wins) -- cancelled pre-answer
 
 # A new utterance begins at whichever of these we see first (speech_end leads
 # asr_final, but the real streaming engine only knows the latter).
@@ -182,6 +183,21 @@ class MetricsRecorder:
         per-profile decision untouched (it can never starve the local tier)."""
         with self._lock:
             return self._ttft_ewma_ms
+
+    def mark_superseded_turn(self) -> None:
+        """Stamp ``SUPERSEDED`` on the most-recently-banked turn (rc-5).
+
+        Newest-input-wins (``core/runtime.py``) processes the NEW final, whose
+        turn-start mark (``SPEECH_END`` on the sherpa engine, else ``ASR_FINAL``
+        in tests) banks the in-flight turn into ``_completed``, and only THEN
+        cancels it. So the turn being preempted is ``_completed[-1]`` (not the
+        open ``_current``) by the time this runs. Marking it lets the watchdog
+        skip it instead of mis-reading its missing ``llm_first_token`` as a
+        stalled LLM. No-op if nothing has been banked yet (the supersede guard
+        implies an in-flight turn, so this is belt-and-braces)."""
+        with self._lock:
+            if self._completed:
+                self._completed[-1].stamps.setdefault(SUPERSEDED, self._clock())
 
     def close_turn(self) -> None:
         """Bank the open turn (call once a replayed utterance has settled)."""

@@ -102,6 +102,42 @@ measurement (not yet done).
 5. **asr-tts-1 follow-on:** once the Phase-0 low-spec latency scorecard exists,
    decide the ASR policy for `phone`/`cpu_laptop` (greedy? keep SenseVoice?).
 
+## Wave 2 — additional headless items (no live test needed)
+
+Scouted the Phase-1/3 roadmap before touching code; several items were already
+done (device-adapt-1 / cross-platform-8 auto-profile + fail-fast are fully wired
+in `core/app.py` + `remote/worker.py`; the cloud/gate invariant test already
+exists; the `config.local.json` write-allowlist is moot — no risky writer). The
+genuinely-open, confirmed, headless items landed:
+
+- **llm-inference-3 (on-device output cap):** `LlamaCppLLM` fed its options
+  straight to llama.cpp's `create_chat_completion`, but that API's output cap is
+  `max_tokens` — Ollama's `num_predict` was silently ignored and `num_ctx` isn't a
+  request param, so on-device generation ran to the context limit on the weakest
+  CPU. New `_normalize_llamacpp_options` translates `num_predict`→`max_tokens`
+  (explicit `max_tokens` wins) and drops `num_ctx`/`keep_alive`. `phone`/`phone_lite`
+  now set an auditable `options.num_predict` (384/256). Desktop Ollama path
+  unchanged. Tests: `tests/test_llamacpp_options.py` + a profile-cap assertion.
+- **rc-5 (watchdog false "stuck"):** a turn preempted by newest-input-wins had
+  `asr_final` but no `llm_first_token` and no skip-stamp → false "llm stuck" in
+  every bundle (the `stuck:1` noise). NB the held/merged theory was wrong —
+  `ASR_FINAL` is stamped at *dispatch* (post-hold). New `SUPERSEDED` metric +
+  `MetricsRecorder.mark_superseded_turn()` (stamps `_completed[-1]`, the turn the
+  new final's `ASR_FINAL` just banked) called right after `cancel_all()`; the
+  watchdog skips `SUPERSEDED` turns. Tests in `test_metrics.py` + `test_watchdog.py`.
+- **Invariant hardening:** the per-profile guardrail now also forbids a profile
+  disabling `sherpa.speaker_gate_input` or `agent_brain.require_owner_verified`.
+
+Suite after Wave 2: **1937 passed, 25 skipped**. The adversarial review **caught a
+real blocker**: the `_num_predict_comment` I put inside `llm.options` would have
+leaked through the normalizer into llama.cpp's strict-signature
+`create_chat_completion` → `TypeError` on the first on-device turn (the lenient
+`**kwargs` test fakes hid it). Fixed by dropping `_`-prefixed keys in
+`_normalize_llamacpp_options` (config.json's comment convention) + a
+strict-signature regression test. Also applied the review's comment-accuracy fix
+(on the sherpa engine `SPEECH_END`, not `ASR_FINAL`, is the turn-banker) and
+float-coerced the cap.
+
 ## Environment (i9-13980HX, `.venv` ACTIVATED in the owner's shell)
 Anything touching models/audio/LLM must use `.venv/bin/python` (a fresh shell's
 `python3` is bare). Models present (sherpa ASR/VAD/TTS + CAM++ speaker-ID +

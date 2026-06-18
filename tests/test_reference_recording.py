@@ -71,3 +71,29 @@ def test_config_field_parses_and_defaults_off():
     assert SherpaConfig().record_playback_reference is False
     assert SherpaConfig.from_dict({"record_playback_reference": True}).record_playback_reference is True
     assert SherpaOnnxEngine(SherpaConfig())._ref_recorder is None   # off until start()+flag
+
+
+def test_far_ref_path_records_the_aec_reference():
+    # AEC on: the reference recorder reads the FarEndRing (true-playback-aligned,
+    # delay 0) -- the exact far-end the canceller reads -- so a replay can recover
+    # the LIVE aec_ref_delay_ms.
+    from core.engines._aec import FarEndRing
+
+    eng = SherpaOnnxEngine(SherpaConfig())
+    eng._ref_recorder = _RecRec()
+    eng._far_ref = FarEndRing()
+    eng._far_ref.push(np.full(1600, 0.3, dtype="float32"))   # 0.1s of played far-end
+    eng._write_reference_frame(1600)
+    f = eng._ref_recorder.frames[-1]
+    assert f.shape[0] == 1600 and np.allclose(f, 0.3)        # most-recent played (delay 0)
+
+
+def test_far_ref_silence_when_nothing_played():
+    from core.engines._aec import FarEndRing
+
+    eng = SherpaOnnxEngine(SherpaConfig())
+    eng._ref_recorder = _RecRec()
+    eng._far_ref = FarEndRing()                              # empty ring -> zeros
+    eng._write_reference_frame(1600)
+    f = eng._ref_recorder.frames[-1]
+    assert f.shape[0] == 1600 and np.all(f == 0.0)

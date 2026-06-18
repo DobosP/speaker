@@ -889,10 +889,12 @@ class SherpaOnnxEngine(AudioEngine):
     def _accumulate_reference(self, blk, sr: int) -> None:
         """Append one played reference block (resampled to 16 kHz) to the
         frame-aligned reference accumulator. Cheap; only while speaking + the
-        reference recorder is on (record_playback_reference)."""
+        reference recorder is on (record_playback_reference). Unused when the
+        FarEndRing is available (AEC on) -- _write_reference_frame reads that
+        directly, so skip to keep the accumulator from growing."""
         import numpy as np
 
-        if self._ref_accum is None:
+        if self._ref_accum is None or self._far_ref is not None:
             return
         ref16 = (
             _resample_linear(blk, sr, self.config.sample_rate)
@@ -908,12 +910,25 @@ class SherpaOnnxEngine(AudioEngine):
             self._ref_accum = self._ref_accum[-cap:]
 
     def _write_reference_frame(self, n: int) -> None:
-        """Pop exactly ``n`` reference samples (silence-padded when the assistant
-        isn't playing) and write them to the reference recorder, so it stays
-        FRAME-ALIGNED with the mic recording for replay."""
+        """Write exactly ``n`` reference samples (silence when the assistant isn't
+        playing) to the reference recorder, FRAME-ALIGNED with the mic recording.
+
+        When AEC is on the FarEndRing exists: read it at delay 0 -- the EXACT
+        true-playback-aligned far-end the canceller reads -- so a replay can sweep
+        the delay and recover the LIVE ``aec_ref_delay_ms`` (calibratable headless;
+        the coherence-queue accumulator's timeline can't). Without AEC, fall back
+        to the accumulator (the coherence reference, for barge replay)."""
         import numpy as np
 
-        if self._ref_recorder is None or self._ref_accum is None:
+        if self._ref_recorder is None:
+            return
+        if self._far_ref is not None:
+            out = np.asarray(self._far_ref.read(n, 0), dtype="float32").reshape(-1)
+            if out.shape[0] < n:
+                out = np.concatenate([out, np.zeros(n - out.shape[0], dtype="float32")])
+            self._ref_recorder.write(out[:n])
+            return
+        if self._ref_accum is None:
             return
         if self._ref_accum.shape[0] >= n:
             out, self._ref_accum = self._ref_accum[:n], self._ref_accum[n:]

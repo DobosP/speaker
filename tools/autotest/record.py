@@ -202,6 +202,41 @@ def _banner(i: int, total: int, line: Line) -> None:
     print()
 
 
+# --- mic level check ------------------------------------------------------- #
+def mic_check(device=None, samplerate: int = 16000) -> None:
+    """Record a test sentence and report hot / quiet / good, looping so you can
+    tune the gain before recording the real clips. A hot mic clips the ADC and
+    garbles STT -- no software un-clips it, so fix it here first."""
+    print("\n  Mic check — say a normal test sentence after GO.")
+    print("  Goal: clip ~0%, peak < 0.99, rms ~0.05–0.2.   Ctrl-C or 'q' to stop.\n")
+    while True:
+        _countdown(3)
+        samples = _record_vad(samplerate, device, max_s=6.0)
+        if samples.size == 0:
+            print("  (nothing recorded — try again)")
+        else:
+            rms = float(np.sqrt(np.mean(samples ** 2)))
+            peak = float(np.max(np.abs(samples)))
+            clip = float(np.mean(np.abs(samples) > 0.98)) * 100
+            if clip > 1.0 or peak >= 0.99:
+                verdict, hint = ("\033[91mTOO HOT — clipping\033[0m",
+                                 "lower gain:  amixer -c 1 sset 'Internal Mic Boost' 0"
+                                 "   (then lower 'Capture' toward 40 if still hot)")
+            elif rms < 0.02:
+                verdict, hint = ("\033[93mTOO QUIET\033[0m",
+                                 "raise gain:  amixer -c 1 sset 'Capture' 80%")
+            else:
+                verdict, hint = ("\033[92mGOOD ✓\033[0m", "ready to record")
+            print(f"  rms={rms:.3f}  peak={peak:.2f}  clip={clip:.1f}%   →  {verdict}")
+            print(f"    {hint}")
+        try:
+            if input("  [ENTER] test again / [q] done: ").strip().lower() == "q":
+                break
+        except (EOFError, KeyboardInterrupt):
+            break
+    print()
+
+
 # --- main flow ------------------------------------------------------------- #
 def run_record(
     *,

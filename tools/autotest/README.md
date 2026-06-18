@@ -1,66 +1,81 @@
 # `tools.autotest` — autonomous (no-human) test harness
 
-Drives the **real** runtime end-to-end with **no person at the mic and no real
-microphone**, so a session can self-verify STT / TTS / barge-in / memory and
-emit a committable verdict. It sits between `tools.live_session` (needs a human)
-and `--engine replay` (only re-runs *recorded* audio).
+Drives the **real** runtime end-to-end with **no person at the mic**, so a
+session can self-verify STT / TTS / barge-in / memory and emit a committable
+verdict. Sits between `tools.live_session` (needs a human) and `--engine replay`
+(only re-plays recordings).
 
 ```
 python -m tools.autotest all                         # memory + voice + suite + scorecard
 python -m tools.autotest memory  [--llm echo|ollama] [--model gemma3:4b]
-python -m tools.autotest voice   [--llm echo|ollama] [--model gemma3:4b]
+python -m tools.autotest voice   [--acoustics cable|delay|speaker] [--utterances DIR] [--make-sound]
 python -m tools.autotest replay  [--bundle logs/runs/run-<id>.wav]
 python -m tools.autotest suite                       # existing headless pytest gates
 ```
 
-Use a **small** LLM — the harness tests the audio/memory plumbing, not model
-intelligence. Default `ollama/gemma3:4b` (long, signal-rich replies; best for
-the acoustic tiers); `--llm echo` is faster but its short replies give the AEC
-too little signal and make the barge windows tiny — use it only for quick
-plumbing checks.
+Use a **small** LLM (default `ollama/gemma3:4b`) — this tests the audio/memory
+plumbing, not model intelligence. Run from the repo root with the venv python:
+`.venv/bin/python -m tools.autotest …`. Reports land under `logs/autotest/`
+(gitignored); the `voice` tier also drops a normal `logs/runs/` bundle.
 
-Reports land under `logs/autotest/` (gitignored). The `voice` tier *also* drops
-a normal run bundle under `logs/runs/` (the committed barge/AEC regression
-corpus). Run from the repo root with the venv python: `.venv/bin/python -m
-tools.autotest …`.
+## The `voice` tier: real injection + three acoustic paths
 
-## Tiers
+It runs the real `sherpa` engine and injects "user" utterances on a real
+timeline — either the engine's **synthesized** voice (default) or **your real
+recordings** (`--utterances DIR`). STT is scored by **WER** (word error rate)
+against each clip's ground-truth transcript.
 
-| tier | what it proves | needs |
-|------|----------------|-------|
-| `memory` | a fact stated in turn 1 is recalled at turn N — both the recall block is injected (plumbing) **and** the model uses it in its answer (semantic) | in-RAM `SessionMemory` (no DB); small LLM |
-| `voice` | the real `sherpa` engine round-trips STT→LLM→TTS over a virtual cable; a talk-over cuts the reply; self-interrupt diagnostics | PipeWire (`pactl`/`paplay`), sherpa models, small LLM |
-| `replay` | delay-independent self-interrupt (`tools.replay_barge`) + AEC ERLE/delay (`tools.aec_probe`) over a bundle | a `run-<id>.wav` with a `.ref.wav` sibling |
-| `suite` | the existing headless barge/sandbox/memory pytest gates | nothing extra |
+The acoustic path (`--acoustics`) is pluggable — and which one to use depends on
+what you're testing, because the assistant's own audio interacts with the mic:
 
-## How the `voice` tier works
+| mode | echo? | sound? | best for |
+|------|-------|--------|----------|
+| `cable` (default) | no (playback → dead sink) | silent | **STT accuracy + round-trip** — clean, reproducible (digital injection = a perfect near-field user). Does **not** test self-interrupt/barge (no echo). |
+| `delay` | yes (loopback + ~260 ms air-gap) | silent | **self-interrupt + barge-in** with the AEC reference aligned the way it is on a real speaker. |
+| `speaker` | yes (real speaker + mic) | **audible** | **true over-the-air** — real ~260 ms acoustic delay + room/speaker coloring. The genuine open-speaker condition; calibrates STT/TTS under real echo. Needs `--make-sound`. |
 
-1. Loads a `module-null-sink` — a virtual audio cable. **Reversible**: unloaded
-   on exit; the system default sink/source is never changed.
-2. Launches `python -m core --engine sherpa --input-device pipewire
-   --output-device pipewire --record --debug --stream-tts` and moves **only that
-   process's** playback + capture streams onto the cable
-   (`pactl move-sink-input` / `move-source-output`, matched by the ALSA-PipeWire
-   bridge node names — those streams carry no PID).
-3. Injects TTS-synthesized "user" utterances with `paplay` and reads the
-   engine's `--debug` stdout live (`[live] engine running`, `speaking:`,
-   `barge-in detected`, `dropping self-echo final`).
-4. Analyzes the run bundle + runs the delay-independent replay probes.
+Why the split: in a loopback/over-the-air path the assistant's TTS raises the
+engine's learned **echo floor**, which then drops quiet user clips as
+"echo/ambient". A real user is near-field (loud) so they pass; an injected clip
+must either avoid the echo (cable) or out-shout it (the gain boost in
+delay/speaker). And barge-in/self-interrupt only *exist* when there's echo — so
+they're tested in `delay`/`speaker`, while `cable` gives the clean STT number.
 
-### The digital-loopback caveat (important)
+For the **truest STT number that predicts your app**, inject your real
+recordings in `cable` mode (clean near-field). For **realism** (echo, barge,
+self-interrupt), use `speaker`.
 
-The cable is a *digital* loopback: ~tens-of-ms reference delay, vs the open
-speaker's ~260 ms acoustic delay (`aec_ref_delay_ms`). With the configured
-260 ms the DTLN reference is misaligned, so the residual-path barge may
-self-fire — an **artifact of the loopback, not the open-speaker bug**. So:
+## Recording your own utterances (`--utterances DIR`)
 
-* the **verdict** gates only on the robust signals (cable carried audio,
-  STT→LLM→TTS round-tripped, bundle produced);
-* the **self-interrupt** result is a diagnostic, authoritative via the
-  **delay-independent coherence probe** (`replay`), corroborated by AEC ERLE;
-* `--calibrate` measures the loopback delay and aligns the AEC to it for a fair
-  live residual-path check (per-launch delay is noisy, so it's advisory);
-  `--aec-delay-ms N` forces it (P1 deep-dive).
+Record in your **normal usage position/voice**, one sentence per file, **mono
+WAV** (16 kHz or 48 kHz), with a `manifest.json` in the directory:
 
-The loopback gives **autonomous regression coverage** of the real-time path;
-it does **not** replace the human-at-the-mic open-speaker validation.
+```json
+{"clips": [
+  {"file": "capital.wav", "text": "what is the capital of france", "role": "round_trip"},
+  {"file": "weather.wav",  "text": "what's the weather like today",  "role": "round_trip"},
+  {"file": "story.wav",    "text": "tell me a short story about a sailor", "role": "speak"},
+  {"file": "planets.wav",  "text": "tell me about the planets",      "role": "speak"},
+  {"file": "barge.wav",    "text": "wait stop for a second",         "role": "barge"},
+  {"file": "stop.wav",     "text": "stop",                           "role": "command"}
+]}
+```
+
+Roles: `round_trip` (ask → expect a reply; record several for WER stats),
+`speak` (longer prompts — `speak[0]` drives the self-interrupt window,
+`speak[1]` the barge-in window), `barge` (a talk-over phrase; not WER-scored —
+it deliberately overlaps), `command` (a KWS word). `text` is the ground truth.
+Any omitted role falls back to a synthesized clip.
+
+## Tiers at a glance
+
+| tier | proves | needs |
+|------|--------|-------|
+| `memory` | a fact in turn 1 is recalled at turn N — injected into the prompt AND used in the answer | in-RAM memory (no DB); small LLM |
+| `voice`  | real engine round-trips STT→LLM→TTS; WER; barge-in cuts; self-interrupt | PipeWire, sherpa models, small LLM |
+| `replay` | delay-independent self-interrupt + AEC ERLE/delay over a bundle | a `run-<id>.wav` + `.ref.wav` |
+| `suite`  | the existing headless barge/sandbox/memory pytest gates | nothing extra |
+
+Verdict gates on the robust signals (audio flowed + round-trip + bundle). All
+PipeWire devices it creates are reversible (unloaded on exit); the system
+default sink/source and your config are restored verbatim.

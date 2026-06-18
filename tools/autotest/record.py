@@ -7,8 +7,11 @@ short breath, and moves to the next. At the end it writes ``manifest.json`` so
 the clips drop straight into ``tools.autotest voice --utterances <dir>``.
 
 The script below covers the app's capabilities -- plain questions, instant
-commands, long prompts (so the assistant talks a while), barge-in talk-overs,
-and a memory fact/recall pair. Filter with ``--group`` or shorten with
+commands, long prompts (so the assistant talks a while), barge-in talk-overs, a
+memory fact/recall pair, and a **corrections** group: self-corrections ("five --
+no, ten minutes"), repeats/stutters ("what what time is it"), and stretched
+words ("Lonnndon") that test the final text fed to the LLM and whether the
+system still makes sense of messy input. Filter with ``--group`` or shorten with
 ``--limit``; ``--review`` lets you keep/redo each take. No human/mic? ``--dry-run``
 prints the script and ``--simulate`` synthesizes each line with the TTS voice
 (used to self-test this tool).
@@ -29,9 +32,10 @@ import numpy as np
 class Line:
     group: str
     role: str          # round_trip | speak | barge | command
-    text: str
+    text: str          # the words you actually SAY (ground truth for WER)
     tip: str = ""      # how to say it
     tag: str = ""      # extra label (e.g. memory_fact) -- ignored by the harness
+    intent: str = ""   # what it should MEAN, for judging the reply (disfluent cases)
 
 
 # --- the capability-covering script ---------------------------------------- #
@@ -75,6 +79,30 @@ SCRIPT: list[Line] = [
     Line("natural", "round_trip", "set an alarm for seven thirty in the morning", "A bit quicker."),
     Line("natural", "round_trip", "i'd like to hear the news headlines for today"),
     Line("natural", "round_trip", "how do you spell the word necessary", "Spelling request."),
+
+    # corrections & repairs: messy, real-world speech. `text` is what you SAY
+    # (scored for WER); `intent` is what it should MEAN (judge the reply). These
+    # test the final text fed to the LLM and the system's ability to make sense
+    # of self-corrections, repeats, and stretched words.
+    Line("corrections", "round_trip", "set a timer for five no wait ten minutes",
+         "Correct yourself mid-sentence (say 'five', then 'no wait ten').",
+         intent="set a 10-minute timer"),
+    Line("corrections", "round_trip", "what's the weather in paris i mean london",
+         "Correct the city mid-sentence.", intent="weather in London"),
+    Line("corrections", "round_trip", "remind me to call john no james",
+         "Correct the name.", intent="remind me to call James"),
+    Line("corrections", "round_trip", "what what time is it",
+         "Repeat the first word, like a stumble.", intent="what time is it"),
+    Line("corrections", "round_trip", "play play the jazz music",
+         "Repeat the first word.", intent="play jazz music"),
+    Line("corrections", "round_trip", "turn the volume down down please",
+         "Repeat 'down'.", intent="lower the volume"),
+    Line("corrections", "round_trip", "what is the weather in london",
+         "STRETCH 'London' so it's clear: Lonnndon.", intent="weather in London"),
+    Line("corrections", "round_trip", "navigate to the nearest restaurant",
+         "STRETCH 'restaurant': res-tau-rant.", intent="navigate to nearest restaurant"),
+    Line("corrections", "round_trip", "set an alarm for seven seven thirty a m",
+         "Say 'seven', then correct to 'seven thirty'.", intent="alarm at 7:30 am"),
 ]
 
 
@@ -209,7 +237,7 @@ def run_record(
         if dry_run:
             print("  (dry-run: not recording)")
             manifest.append({"file": fname, "text": ln.text, "role": ln.role,
-                             "group": ln.group, "tag": ln.tag})
+                             "group": ln.group, "tag": ln.tag, "intent": ln.intent})
             continue
 
         while True:
@@ -237,7 +265,7 @@ def run_record(
                     os.remove(path) if os.path.exists(path) else None
                     break
             manifest.append({"file": fname, "text": ln.text, "role": ln.role,
-                             "group": ln.group, "tag": ln.tag})
+                             "group": ln.group, "tag": ln.tag, "intent": ln.intent})
             break
 
         if not simulate and not dry_run and i < total:

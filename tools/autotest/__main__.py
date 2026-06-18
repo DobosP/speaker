@@ -1,0 +1,242 @@
+"""CLI for the autonomous test harness.
+
+    python -m tools.autotest memory   [--llm echo|ollama] [--model gemma3:4b]
+    python -m tools.autotest voice    [--llm echo|ollama] [--model gemma3:4b]
+    python -m tools.autotest replay   [--bundle logs/runs/run-<id>.wav]
+    python -m tools.autotest suite                       # existing pytest gates
+    python -m tools.autotest all                         # everything + scorecard
+
+Each tier prints a PASS/FAIL line and writes a JSON report under
+``logs/autotest/`` (gitignored alongside other run artifacts). Exit code is
+non-zero if any requested tier fails, so it doubles as a CI gate.
+"""
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from dataclasses import asdict
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+OUT = os.path.join(REPO, "logs", "autotest")
+
+
+def _stamp() -> str:
+    return time.strftime("%Y%m%d-%H%M%S")
+
+
+def _write(report: dict, name: str) -> str:
+    os.makedirs(OUT, exist_ok=True)
+    path = os.path.join(OUT, f"autotest-{_stamp()}-{name}.json")
+    with open(path, "w") as f:
+        json.dump(report, f, indent=2, default=str)
+    return path
+
+
+# --------------------------------------------------------------------------- #
+# tiers
+# --------------------------------------------------------------------------- #
+def tier_memory(args) -> dict:
+    from .memory_probe import run_memory_probe
+
+    r = run_memory_probe(llm_kind=args.llm, model=args.model)
+    rep = {"tier": "memory", **asdict(r)}
+    sem = "" if r.answer_uses_fact is None else f" answer_uses_fact={r.answer_uses_fact}"
+    print(f"[memory] {'PASS' if r.ok else 'FAIL'} "
+          f"({r.llm_label}, {r.turns} turns, {r.duration_sec}s) "
+          f"recall_injected={r.recall_injected}{sem}")
+    print(f"         answer: {r.answer[:120]!r}")
+    return rep
+
+
+def tier_voice(args) -> dict:
+    from core.config import load_config
+    from .voice_loop import run_voice_loop
+
+    cfg = load_config()
+    sherpa_cfg = cfg.get("sherpa", {})
+    out_dir = os.path.join(OUT, f"voice-{_stamp()}")
+    r = run_voice_loop(
+        repo_root=REPO, sherpa_cfg=sherpa_cfg,
+        llm_kind=args.llm, model=args.model, out_dir=out_dir,
+        aec_delay_ms=args.aec_delay_ms,
+        calibrate=args.calibrate,
+    )
+    rep = {"tier": "voice", **asdict(r)}
+
+    # fold in post-hoc bundle analysis (transcript / turns / barge) if present
+    if r.summary_path and os.path.exists(r.summary_path):
+        rep["bundle"] = _analyze_bundle(r.summary_path)
+    # and the delay-independent replay probes (needs the .ref.wav)
+    if r.wav_path and r.ref_wav_path:
+        rep["replay"] = _replay_probes(r.wav_path)
+
+    # Verdict gates on the ROBUST signals that prove the real-time pipeline ran
+    # over the cable: audio actually flowed, STT->LLM->TTS round-tripped, and a
+    # run bundle was produced. Barge-in and self-interrupt are reported as
+    # instrumented diagnostics -- on a *digital* loopback the self-interrupt
+    # count is confounded by the AEC reference-delay mismatch (the loopback is
+    # ~tens of ms vs the configured 260ms acoustic delay), so the authoritative
+    # self-interrupt signal is the delay-INDEPENDENT coherence probe.
+    sc = r.scenarios
+    coherence_si = rep.get("replay", {}).get("self_interrupts_remaining")
+    rep["self_interrupt_coherence_remaining"] = coherence_si
+    ok = (
+        r.summary_path is not None
+        and r.monitor_rms > 0.01
+        and sc.get("s1_round_trip", {}).get("assistant_spoke", False)
+    )
+    rep["ok"] = ok
+
+    print(f"[voice] {'PASS' if ok else 'FAIL'} (pipeline) run_id={r.run_id} "
+          f"ready={r.ready} aec_delay={r.calibrated_delay_ms or 'config'} "
+          f"monitor_rms={r.monitor_rms:.3f}")
+    for k, v in sc.items():
+        print(f"        {k}: {v}")
+    if "replay" in rep:
+        print(f"        self-interrupt (delay-independent coherence): "
+              f"{rep['replay'].get('summary','')}")
+    bun = rep.get("bundle", {})
+    if bun:
+        print(f"        transcript: users={bun.get('user_finals')} "
+              f"replies={bun.get('assistant_replies')}")
+    if not ok:
+        print(f"        (engine stdout: {r.log_path})")
+    return rep
+
+
+def _analyze_bundle(summary_path: str) -> dict:
+    with open(summary_path) as f:
+        d = json.load(f)
+    tr = d.get("transcript", [])
+    users = [t for t in tr if t.get("role") == "user"]
+    asst = [t for t in tr if t.get("role") == "assistant"]
+    turns = d.get("turns", [])
+    barges = [t for t in turns if t.get("barge_in_latency") is not None]
+    return {
+        "user_finals": [t.get("text", "") for t in users],
+        "assistant_replies": [t.get("text", "")[:80] for t in asst],
+        "n_turns": len(turns),
+        "n_barge_in_turns": len(barges),
+        "stuck_hints": d.get("stuck_hints", []),
+        "errors": d.get("errors", []),
+        "warnings": d.get("counts", {}).get("warnings", 0),
+    }
+
+
+def _replay_probes(wav_path: str) -> dict:
+    """Run the delay-independent coherence + AEC probes over a recorded bundle."""
+    out: dict = {}
+    summary_bits: list[str] = []
+    # coherence self-interrupt (delay-independent)
+    try:
+        p = subprocess.run(
+            [sys.executable, "-m", "tools.replay_barge", wav_path],
+            cwd=REPO, capture_output=True, text=True, timeout=120,
+        )
+        out["replay_barge_stdout"] = p.stdout.strip()
+        m = re.search(r"REMAINING after grace=(\d+)", p.stdout)
+        if m:
+            out["self_interrupts_remaining"] = int(m.group(1))
+            summary_bits.append(f"self-interrupts(remaining)={m.group(1)}")
+    except Exception as e:  # noqa: BLE001
+        out["replay_barge_error"] = str(e)
+    # AEC ERLE / best delay
+    try:
+        p = subprocess.run(
+            [sys.executable, "-m", "tools.aec_probe", wav_path,
+             "--backend", "dtln", "--max-delay-ms", "400"],
+            cwd=REPO, capture_output=True, text=True, timeout=240,
+        )
+        out["aec_probe_stdout"] = p.stdout.strip()
+        m = re.search(r"BEST:\s*delay=(\d+)ms\s*ERLE=([+\-0-9.]+)dB", p.stdout)
+        if m:
+            out["aec_best_delay_ms"] = int(m.group(1))
+            out["aec_best_erle_db"] = float(m.group(2))
+            summary_bits.append(f"AEC best={m.group(1)}ms ERLE={m.group(2)}dB")
+    except Exception as e:  # noqa: BLE001
+        out["aec_probe_error"] = str(e)
+    out["summary"] = "; ".join(summary_bits) or "(probes produced no parse)"
+    return out
+
+
+def tier_replay(args) -> dict:
+    """Run the replay probes over an explicit bundle or the newest with a ref."""
+    wav = args.bundle
+    if not wav:
+        refs = sorted(glob.glob(os.path.join(REPO, "logs", "runs", "*.ref.wav")))
+        if not refs:
+            print("[replay] FAIL no bundle with a .ref.wav sibling found")
+            return {"tier": "replay", "ok": False, "error": "no .ref.wav bundle"}
+        wav = refs[-1].replace(".ref.wav", ".wav")
+    rep = {"tier": "replay", "bundle": wav, **_replay_probes(wav)}
+    si = rep.get("self_interrupts_remaining")
+    ok = si == 0 if si is not None else False
+    rep["ok"] = ok
+    print(f"[replay] {'PASS' if ok else 'WARN'} {os.path.basename(wav)}: {rep['summary']}")
+    return rep
+
+
+def tier_suite(args) -> dict:
+    """Run the existing headless barge/sandbox/memory pytest gates."""
+    targets = [
+        "tests/test_barge_scorecard.py",
+        "tests/test_barge_requirement.py",
+        "tests/test_barge_self_interrupt.py",
+        "tests/test_sandbox_middle_layer.py",
+        "tests/test_memory_contract.py",
+    ]
+    p = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", *targets],
+        cwd=REPO, capture_output=True, text=True,
+    )
+    tail = "\n".join(p.stdout.strip().splitlines()[-6:])
+    ok = p.returncode == 0
+    print(f"[suite] {'PASS' if ok else 'FAIL'}\n{tail}")
+    return {"tier": "suite", "ok": ok, "returncode": p.returncode, "tail": tail}
+
+
+# --------------------------------------------------------------------------- #
+# main
+# --------------------------------------------------------------------------- #
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(prog="tools.autotest", description=__doc__)
+    ap.add_argument("tier", choices=["memory", "voice", "replay", "suite", "all"])
+    ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama",
+                    help="small LLM for the in-loop tiers (default ollama/gemma3:4b)")
+    ap.add_argument("--model", default="gemma3:4b", help="ollama model (small by default)")
+    ap.add_argument("--bundle", default=None, help="replay: explicit run-<id>.wav")
+    ap.add_argument("--aec-delay-ms", type=int, default=None, dest="aec_delay_ms",
+                    help="voice: force the AEC reference delay (P1 deep-dive)")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="voice: measure the loopback delay first + align AEC to it "
+                         "(opt-in; per-launch delay is noisy so this is advisory)")
+    args = ap.parse_args(argv)
+
+    reports: list[dict] = []
+    if args.tier in ("memory", "all"):
+        reports.append(tier_memory(args))
+    if args.tier in ("voice", "all"):
+        reports.append(tier_voice(args))
+    if args.tier in ("replay",):
+        reports.append(tier_replay(args))
+    if args.tier in ("suite", "all"):
+        reports.append(tier_suite(args))
+
+    bundle = {"stamp": _stamp(), "tier": args.tier, "reports": reports}
+    path = _write(bundle, args.tier)
+    # a tier "passes" if ok is True; replay is advisory (WARN, not FAIL)
+    failed = [r for r in reports if r.get("ok") is False and r.get("tier") != "replay"]
+    print(f"\nreport: {path}")
+    print(f"VERDICT: {'PASS' if not failed else 'FAIL'} "
+          f"({len(reports) - len(failed)}/{len(reports)} tiers ok)")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

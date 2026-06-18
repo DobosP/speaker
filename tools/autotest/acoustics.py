@@ -42,7 +42,9 @@ class CableAcoustics:
     needs_routing = True
     uses_real_device = False
     has_echo = False     # playback -> dead sink, so STT only (no self-interrupt/barge)
-    inject_gain = 100        # digital full-level injection; no echo to out-shout
+    inject_gain = 55         # the engine captures the monitor ~2.7x hot; keep it
+                             # below clipping so the echo/quiet floor doesn't
+                             # ratchet up + start dropping clips on long runs
 
     def __init__(self, prefix: str = "cc_autotest"):
         self._play = f"{prefix}_play"

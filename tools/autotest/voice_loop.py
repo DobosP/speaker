@@ -1,30 +1,25 @@
-"""Autonomous voice tier: drive the REAL sherpa engine over a virtual cable.
+"""Autonomous voice tier: drive the REAL sherpa engine end-to-end, no human.
 
-No human, no real mic. We stand up a PipeWire null sink, launch the runtime
-routed onto it (its own streams only), and inject TTS-synthesized "user"
-utterances. Because the engine's capture pulls from the sink's monitor -- which
-also carries the engine's own TTS -- this exercises the real-time capture
-thread, the ``_audio_cb`` playback FIFO, AEC, and barge-in, and reproduces the
-open-speaker self-interrupt condition (the assistant hears itself) headlessly.
+The engine runs for real; "user" utterances are injected on a real timeline
+(synth or the owner's recordings) and the run is analyzed from its bundle. The
+acoustic path is pluggable (see :mod:`.acoustics`):
 
-A crucial subtlety: a *digital* loopback has a tiny (~40 ms) reference delay,
-whereas the open speaker's acoustic delay is ~260 ms (the configured
-``aec_ref_delay_ms``). Run the loopback with the configured 260 ms and the
-DTLN reference is ~220 ms misaligned, so the AEC barely cancels and the
-residual-path barge self-fires -- an ARTIFACT of the loopback, not the
-open-speaker bug. So the tier first **calibrates**: it measures the loopback's
-real delay with ``tools.aec_probe`` and temporarily aligns ``aec_ref_delay_ms``
-to it, making the self-interrupt check fair. The verdict for the P1 leans on
-the **delay-independent** coherence probe (``tools.replay_barge``), which is the
-detector the project actually uses for open-speaker barge.
+* ``cable``   -- digital null-sink loopback (~tens-of-ms delay). Silent, fast.
+                 The AEC reference is auto-aligned to the cable delay (~40 ms by
+                 default) so the echo is cancelled, later clips aren't dropped as
+                 echo, and the live self-interrupt count is meaningful. The
+                 cleanest mode for STT accuracy + barge-in.
+* ``delay``   -- two sinks bridged with a ~260 ms ``module-loopback`` so the AEC
+                 reference aligns the way it does on a real speaker. Silent.
+* ``speaker`` -- TRUE over-the-air: real default speaker + mic, clips play out
+                 the speaker. Real ~260 ms acoustic delay + room/speaker
+                 coloring -- the genuine open-speaker condition. Makes sound;
+                 gated behind ``make_sound=True``.
 
-Scenarios (run with AEC aligned):
-
-* **S1 round-trip** -- inject one utterance; expect a spoken reply.
-* **S2 self-interrupt (P1)** -- inject one utterance, then NOTHING while the
-  assistant replies; expect ZERO barge-ins from reply-start to reply-end.
-* **S3 barge-in cut** -- once the assistant is speaking a long reply, inject a
-  talk-over; expect a barge-in to fire.
+Live signals from ``--debug`` stdout: ``[live] engine running`` (ready),
+``speaking:`` (a reply started), ``barge-in detected``, ``dropping self-echo
+final``. STT accuracy (WER) + self-interrupt analysis are folded in by the CLI
+from the recorded bundle.
 """
 from __future__ import annotations
 
@@ -40,15 +35,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import audio
+from . import acoustics as acoustics_mod
+from . import audio, clips as clips_mod
 
 _RUN_ID_RE = re.compile(r"run-(\d{8}-\d{6})")
-_BEST_RE = re.compile(r"BEST:\s*delay=(\d+)ms\s*ERLE=([+\-0-9.]+)dB")
 
 
 @dataclass
 class VoiceRun:
     ok: bool
+    mode: str
     run_id: Optional[str]
     summary_path: Optional[str]
     log_path: Optional[str]
@@ -56,7 +52,9 @@ class VoiceRun:
     ref_wav_path: Optional[str]
     ready: bool
     monitor_rms: float
-    calibrated_delay_ms: Optional[int]
+    clip_source: str
+    injected_refs: list[str]               # ground-truth transcripts injected (for WER)
+    aec_delay_ms: Optional[int]
     markers: dict = field(default_factory=dict)
     scenarios: dict = field(default_factory=dict)
     detail: list[str] = field(default_factory=list)
@@ -112,7 +110,6 @@ class _Proc:
         return False
 
     def wait_idle(self, timeout: float, quiet: float = 2.5) -> bool:
-        """Return once no new ``speaking:`` marker has appeared for ``quiet`` s."""
         end = time.monotonic() + timeout
         last = self.count("speaking")
         last_change = time.monotonic()
@@ -158,38 +155,38 @@ def _aec_delay_override(repo_root: str, delay_ms: Optional[int]):
             f.write(orig)
 
 
-def _engine_args(llm_kind: str, model: str) -> list[str]:
-    args = [
-        sys.executable, "-m", "core",
-        "--engine", "sherpa", "--llm", llm_kind,
-        "--input-device", "pipewire", "--output-device", "pipewire",
-        "--record", "--debug", "--stream-tts",
-    ]
+def _engine_args(llm_kind: str, model: str, real_device: bool) -> list[str]:
+    args = [sys.executable, "-m", "core", "--engine", "sherpa", "--llm", llm_kind,
+            "--record", "--debug", "--stream-tts"]
+    if not real_device:                       # cable/delay reach PipeWire via the bridge
+        args += ["--input-device", "pipewire", "--output-device", "pipewire"]
     if llm_kind == "ollama":
         args += ["--model", model, "--fast-model", model]
     return args
 
 
 @contextlib.contextmanager
-def _running_engine(args, repo_root, log_path, sink):
-    """Launch the engine, pin its streams to ``sink``, wait until ready+routed."""
+def _running_engine(args, repo_root, log_path, ac):
+    """Launch the engine, (optionally) pin its streams onto ``ac``, wait ready."""
     proc = _Proc(args, cwd=repo_root, log_path=log_path)
     stop_mover = threading.Event()
 
     def _mover() -> None:
         while not stop_mover.is_set():
             with contextlib.suppress(Exception):
-                audio.route_process_streams(proc.proc.pid, sink)
+                ac.route(proc.proc.pid)
             stop_mover.wait(0.1)
 
-    mt = threading.Thread(target=_mover, daemon=True)
-    mt.start()
+    mt: Optional[threading.Thread] = None
+    if ac.needs_routing:
+        mt = threading.Thread(target=_mover, daemon=True)
+        mt.start()
     try:
         ready = proc.ready.wait(timeout=90.0)
         routed = False
         end = time.monotonic() + 30.0
         while time.monotonic() < end:
-            if audio.capture_is_routed(proc.proc.pid, sink):
+            if ac.capture_ready(proc.proc.pid):
                 routed = True
                 break
             time.sleep(0.2)
@@ -197,7 +194,7 @@ def _running_engine(args, repo_root, log_path, sink):
             raise RuntimeError(
                 f"engine not ready (ready={ready} routed={routed}); see {log_path}"
             )
-        time.sleep(1.0)
+        time.sleep(1.5)   # settle (let the capture path stabilize)
         yield proc
     finally:
         stop_mover.set()
@@ -208,27 +205,10 @@ def _bundle_paths(repo_root: str, run_id: Optional[str]):
     if not run_id:
         return None, None, None
     base = os.path.join(repo_root, "logs", "runs", f"run-{run_id}")
-    s = base + ".summary.json"
-    w = base + ".wav"
-    r = base + ".ref.wav"
+    s, w, r = base + ".summary.json", base + ".wav", base + ".ref.wav"
     return (s if os.path.exists(s) else None,
             w if os.path.exists(w) else None,
             r if os.path.exists(r) else None)
-
-
-def _measure_delay(repo_root: str, wav_path: str) -> Optional[int]:
-    try:
-        p = subprocess.run(
-            [sys.executable, "-m", "tools.aec_probe", wav_path,
-             "--backend", "dtln", "--max-delay-ms", "400"],
-            cwd=repo_root, capture_output=True, text=True, timeout=240,
-        )
-        m = _BEST_RE.search(p.stdout)
-        if m:
-            return int(m.group(1))
-    except Exception:
-        pass
-    return None
 
 
 def run_voice_loop(
@@ -238,122 +218,136 @@ def run_voice_loop(
     llm_kind: str = "ollama",
     model: str = "gemma3:4b",
     out_dir: str,
-    sink_name: str = "cc_autotest_sink",
-    aec_delay_ms: Optional[int] = None,   # explicit override of the AEC ref delay
-    calibrate: bool = False,              # opt-in: measure loopback delay first
+    acoustics_mode: str = "cable",
+    latency_ms: int = 260,
+    utterances_dir: Optional[str] = None,
+    aec_delay_ms: Optional[int] = None,
+    make_sound: bool = False,
 ) -> VoiceRun:
     detail: list[str] = []
     os.makedirs(out_dir, exist_ok=True)
 
-    # --- synthesize the injected "user" utterances ------------------------- #
-    clips = {
-        "cal": "testing one two three four five",
-        "s1": "what is the capital of france",
-        "s2": "please tell me a short story about a sailor and the sea",
-        "s3": "tell me everything about the planets in the solar system",
-        "barge": "excuse me wait a moment please",
-    }
-    paths: dict[str, str] = {}
-    for key, text in clips.items():
-        p = os.path.join(out_dir, f"inject_{key}.wav")
-        dur = audio.synth_to_wav(text, p, sherpa_cfg=sherpa_cfg)
-        paths[key] = p
-        detail.append(f"synth {key}: {text!r} ({dur:.1f}s)")
+    if acoustics_mode == "speaker" and not make_sound:
+        return VoiceRun(
+            ok=False, mode=acoustics_mode, run_id=None, summary_path=None,
+            log_path=None, wav_path=None, ref_wav_path=None, ready=False,
+            monitor_rms=0.0, clip_source="", injected_refs=[], aec_delay_ms=None,
+            error="speaker (real over-the-air) mode needs make_sound=True (it plays "
+                  "out the real speaker + records the real mic). Pass --make-sound.",
+        )
 
-    args = _engine_args(llm_kind, model)
+    clips_by_role, clip_source = clips_mod.get_clips(
+        os.path.join(out_dir, "clips"), sherpa_cfg, utterances_dir
+    )
+    detail.append(f"clips: {clip_source}; roles={ {k: len(v) for k, v in clips_by_role.items()} }")
 
-    with audio.null_sink(sink_name) as sink:
-        # --- calibration: measure the loopback's AEC reference delay -------- #
-        if aec_delay_ms is None and calibrate:
-            cal_log = os.path.join(out_dir, "engine_calibrate.log")
-            cal_run_id = None
-            try:
-                with _running_engine(args, repo_root, cal_log, sink) as cproc:
-                    spk0 = cproc.count("speaking")
-                    audio.inject(sink, paths["cal"])
-                    cproc.wait_speaking(spk0, timeout=25.0)
-                    time.sleep(5.0)  # let the reply play so a ref.wav is recorded
-                    cal_run_id = cproc.run_id
-                cs, cw, cr = _bundle_paths(repo_root, cal_run_id)
-                if cw:
-                    aec_delay_ms = _measure_delay(repo_root, cw)
-                detail.append(f"calibration run {cal_run_id}: loopback delay={aec_delay_ms}ms")
-            except Exception as e:  # noqa: BLE001
-                detail.append(f"calibration failed ({e}); using config delay")
-            if aec_delay_ms is None:
-                aec_delay_ms = 40  # sane loopback fallback if the probe didn't parse
-                detail.append(f"calibration unparsed; falling back to {aec_delay_ms}ms")
+    def first(role: str):
+        cl = clips_by_role.get(role) or clips_by_role.get("round_trip")
+        return cl[0] if cl else None
 
-        # --- scenarios with the AEC delay aligned to the loopback ---------- #
-        scenarios: dict = {}
-        monitor_rms = 0.0
-        run_id = None
-        scen_log = os.path.join(out_dir, "engine_stdout.log")
-        with _aec_delay_override(repo_root, aec_delay_ms):
-            with _running_engine(args, repo_root, scen_log, sink) as proc:
-                # S1: round-trip
-                spk = proc.count("speaking")
-                audio.inject(sink, paths["s1"])
-                spoke = proc.wait_speaking(spk, timeout=25.0)
-                proc.wait_idle(timeout=30.0)
+    ac = acoustics_mod.make_acoustics(acoustics_mode, latency_ms=latency_ms)
+    args = _engine_args(llm_kind, model, ac.uses_real_device)
+    detail.append(f"acoustics={acoustics_mode}; engine={' '.join(args)}")
+
+    injected_refs: list[str] = []
+    scenarios: dict = {}
+    run_id = log_path = None
+    markers: dict = {}
+
+    with _aec_delay_override(repo_root, aec_delay_ms):
+        with ac.session():
+            scen_log = os.path.join(out_dir, "engine_stdout.log")
+            with _running_engine(args, repo_root, scen_log, ac) as proc:
+                tgt = ac.inject_target
+
+                # S1: round-trip(s) -- drives WER. In the echo-free cable (STT)
+                # mode, score EVERY non-barge clip; in the echo modes keep S1 to
+                # the round_trip clips (speak/barge are used by S2/S3).
+                if ac.has_echo:
+                    rt_clips = clips_by_role.get("round_trip", [])
+                else:
+                    rt_clips = [c for role, cl in clips_by_role.items()
+                                if role != "barge" for c in cl]
+                spoke_any = False
+                for c in rt_clips:
+                    spk = proc.count("speaking")
+                    audio.inject(tgt, c.path, volume_pct=ac.inject_gain)
+                    injected_refs.append(c.text)
+                    spoke = proc.wait_speaking(spk, timeout=25.0)
+                    spoke_any = spoke_any or spoke
+                    proc.wait_idle(timeout=30.0)
                 scenarios["s1_round_trip"] = {
-                    "injected": clips["s1"], "assistant_spoke": spoke,
+                    "clips": len(rt_clips), "assistant_spoke": spoke_any,
                 }
-                detail.append(f"S1: spoke={spoke}")
+                detail.append(f"S1: {len(rt_clips)} round-trip clip(s), spoke={spoke_any}")
 
-                # S2: self-interrupt -- no user audio during the reply
-                proc.wait_idle(timeout=10.0)
-                spk = proc.count("speaking")
-                audio.inject(sink, paths["s2"])
-                proc.wait_speaking(spk, timeout=25.0)
-                barge_at_start = proc.count("barge")  # excludes injection-induced barge
-                proc.wait_idle(timeout=30.0)           # reply plays out, NOTHING injected
-                self_barges = proc.count("barge") - barge_at_start
-                scenarios["s2_self_interrupt"] = {
-                    "injected": clips["s2"],
-                    "barge_ins_during_own_reply": self_barges,
-                    "self_echo_drops": proc.count("self_echo_drop"),
-                    "live_pass": self_barges == 0,
-                }
-                detail.append(f"S2: self_barges={self_barges} (want 0)")
+                # the speak clips: distinct prompts for S2 and S3 so the second
+                # injection isn't a same-clip repeat the engine garbles.
+                speak_clips = clips_by_role.get("speak") or [first("speak")]
 
-                # S3: barge-in cut -- talk over a long reply
-                proc.wait_idle(timeout=10.0)
-                spk = proc.count("speaking")
-                audio.inject(sink, paths["s3"])
-                started = proc.wait_speaking(spk, timeout=25.0)
-                barge_before = proc.count("barge")
-                time.sleep(1.0)
-                audio.inject(sink, paths["barge"])   # the talk-over
-                time.sleep(3.5)
-                barge_fired = proc.count("barge") - barge_before
-                scenarios["s3_barge_in"] = {
-                    "injected": "long prompt + talk-over",
-                    "assistant_started": started,
-                    "barge_ins_after_talkover": barge_fired,
-                    "pass": barge_fired >= 1,
-                }
-                detail.append(f"S3: started={started} barge_ins={barge_fired} (want >=1)")
+                # S2/S3 need the echo/talk-over relationship -- skip them in the
+                # echo-free cable mode (it's the clean STT path only).
+                if not ac.has_echo:
+                    note = "skipped: cable has no echo (use delay/speaker)"
+                    scenarios["s2_self_interrupt"] = {"note": note}
+                    scenarios["s3_barge_in"] = {"note": note}
+                else:
+                    # S2: self-interrupt -- inject one, NOTHING during the reply
+                    proc.wait_idle(timeout=10.0)
+                    sp = speak_clips[0]
+                    spk = proc.count("speaking")
+                    audio.inject(tgt, sp.path, volume_pct=ac.inject_gain)
+                    injected_refs.append(sp.text)
+                    proc.wait_speaking(spk, timeout=25.0)
+                    barge_at_start = proc.count("barge")
+                    proc.wait_idle(timeout=35.0)
+                    self_barges = proc.count("barge") - barge_at_start
+                    scenarios["s2_self_interrupt"] = {
+                        "barge_ins_during_own_reply": self_barges,
+                        "self_echo_drops": proc.count("self_echo_drop"),
+                        "live_pass": self_barges == 0,
+                    }
+                    detail.append(f"S2: self_barges={self_barges} (want 0)")
 
-                # sanity: the cable carried audio
-                cap = os.path.join(out_dir, "monitor_sanity.wav")
-                rec = subprocess.Popen(["pw-record", "--target", sink.monitor, cap])
-                audio.inject(sink, paths["barge"])
-                time.sleep(0.4)
-                rec.terminate()
-                with contextlib.suppress(Exception):
-                    rec.wait(timeout=3)
-                monitor_rms = audio.wav_rms(cap)[0]
+                    # S3: barge-in cut -- talk over a long reply. Let a sentence
+                    # get going, then a LOUD talk-over (must out-shout the reply),
+                    # and poll for the cut.
+                    proc.wait_idle(timeout=10.0)
+                    sp = speak_clips[1] if len(speak_clips) > 1 else speak_clips[0]
+                    bg = first("barge")
+                    spk = proc.count("speaking")
+                    audio.inject(tgt, sp.path, volume_pct=ac.inject_gain)
+                    injected_refs.append(sp.text)
+                    started = proc.wait_speaking(spk, timeout=25.0)
+                    time.sleep(0.8)
+                    barge_before = proc.count("barge")
+                    # the barge clip is NOT scored: it deliberately overlaps, so
+                    # it won't transcribe cleanly.
+                    audio.inject(tgt, bg.path, volume_pct=min(400, ac.inject_gain + 100))
+                    barge_fired = 0
+                    end = time.monotonic() + 6.0
+                    while time.monotonic() < end:
+                        barge_fired = proc.count("barge") - barge_before
+                        if barge_fired >= 1:
+                            break
+                        time.sleep(0.1)
+                    scenarios["s3_barge_in"] = {
+                        "assistant_started": started,
+                        "barge_ins_after_talkover": barge_fired,
+                        "pass": started and barge_fired >= 1,
+                    }
+                    detail.append(f"S3: started={started} barge_ins={barge_fired} (want >=1)")
+
                 run_id = proc.run_id
                 markers = dict(proc.counts)
                 log_path = proc.log_path
 
     summary, wav, ref = _bundle_paths(repo_root, run_id)
+    monitor_rms = audio.wav_rms(wav)[0] if wav else 0.0
     return VoiceRun(
-        ok=False,  # the CLI decides ok after folding in the replay probe
-        run_id=run_id, summary_path=summary, log_path=log_path,
-        wav_path=wav, ref_wav_path=ref,
-        ready=True, monitor_rms=monitor_rms,
-        calibrated_delay_ms=aec_delay_ms,
-        markers=markers, scenarios=scenarios, detail=detail,
+        ok=False,  # CLI computes ok after folding in WER + the replay probe
+        mode=acoustics_mode, run_id=run_id, summary_path=summary, log_path=log_path,
+        wav_path=wav, ref_wav_path=ref, ready=True, monitor_rms=monitor_rms,
+        clip_source=clip_source, injected_refs=[r for r in injected_refs if r],
+        aec_delay_ms=aec_delay_ms, markers=markers, scenarios=scenarios, detail=detail,
     )

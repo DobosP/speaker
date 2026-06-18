@@ -80,20 +80,69 @@ human-at-the-mic open-speaker run (still the P1's final gate).
   `aec_ref_delay_ms` only with `--calibrate`/`--aec-delay-ms`, restoring the
   file verbatim afterwards.
 
+## Enhancement (pt2): real-voice injection + over-the-air
+
+Extended the `voice` tier so it's faithful to real-world usage (owner request):
+real recorded-clip injection, WER scoring, and a pluggable acoustic path.
+
+**New: clip sources + STT scoring.** `--utterances DIR` injects the owner's real
+recordings (a `manifest.json` lists each clip's `file`/`text`/`role`); default is
+the engine's synth voice. STT is scored by **WER** vs each clip's ground-truth
+text (`tools/autotest/score.py`). Roles: `round_trip`, `speak` (long, for the
+self-interrupt/barge windows), `barge` (overlap, not WER-scored), `command`.
+
+**New: three acoustic modes (`--acoustics`).** The assistant's own audio
+interacts with the mic, so the right mode depends on the goal:
+
+| mode | echo | sound | for |
+|------|------|-------|-----|
+| `cable` (default) | no (playback→dead sink) | silent | clean, reproducible **STT/WER** (digital injection = perfect near-field). |
+| `delay` | yes (loopback + ~260 ms air-gap) | silent | **self-interrupt + barge-in**, AEC aligned. |
+| `speaker` | yes (real speaker+mic) | audible | **true over-the-air** — real ~260 ms delay + room/speaker coloring. Needs `--make-sound`. |
+
+Why split: the assistant's TTS raises the engine's learned **echo floor**, which
+drops quiet far-field clips as "echo/ambient". A real near-field user is loud
+enough to pass; injected clips must avoid the echo (cable) or out-shout it (gain
+boost in delay/speaker). Barge-in/self-interrupt only exist *with* echo. The big
+finding: cable's per-launch loopback delay **jitters** (0–120 ms), so a fixed AEC
+delay can't reliably align it — hence cable goes echo-free for STT, and the echo
+story lives in `delay` (aligned by a 260 ms loopback) and `speaker` (real 260 ms).
+
+**Validated (gemma3:4b, synth voice):**
+- `cable` — **STT mean WER ≈ 0.13–0.16**, clips recognized ("sailor in the sea"
+  0.08, "capital of France" 0.00); reproducible. The STT-accuracy path.
+- `delay` — **self-interrupt = 0 (live), barge-in fires (pass)**; silent.
+- `speaker` (real OTA) — **self-interrupt = 0 with the real ~260 ms acoustic
+  delay** (the genuine open-speaker result, autonomous). STT degraded (WER ~0.9):
+  synth-over-speaker is doubly degraded + far-field — **the owner's real
+  recordings will score far better, and `cable` is the STT number that predicts
+  the app** (near-field).
+
+Honest limitation: with a single laptop speaker the injected "user" voice and the
+assistant's TTS share one speaker (both far-field) — fine for STT/self-interrupt,
+an approximation for *simultaneous* barge-in. True near/far separation needs a
+second small speaker by the mic (optional).
+
+Files added pt2: `tools/autotest/{acoustics,clips,score}.py`; `voice_loop.py` and
+`__main__.py` reworked. Full logic suite still green (1991 passed, 24 skipped).
+
 ## Next steps (pick up here)
 
-1. **The open-speaker P1 still needs ONE human-at-the-mic run** (unchanged from
-   the prior handoff): `./session.sh --llm echo` on the open speaker → confirm
-   the self-interrupt is gone live, then calibrate `aec_ref_delay_ms` from the
-   new `.ref.wav` via `python -m tools.aec_probe …`. The autonomous harness now
-   covers the *regression* side of this headlessly.
-2. **Optional: a delay-matched cable.** Insert a controlled ~260 ms latency into
-   the loopback (`module-loopback latency_msec`) so the digital path matches the
-   configured acoustic delay — then the *live* self-interrupt count becomes a
-   fair gate too, not just the coherence probe.
-3. **Optional: CI wiring.** `tools.autotest suite` is CI-safe today; the `voice`
+1. **Owner: record real clips** (per `tools/autotest/README.md`) into a dir with
+   a `manifest.json`, then `.venv/bin/python -m tools.autotest voice --acoustics
+   cable --utterances <dir>` for the real STT/WER number (near-field), and
+   `--acoustics speaker --make-sound --utterances <dir>` for the real
+   over-the-air run. Real voice should score far better than the synth defaults.
+2. **The open-speaker P1 still wants ONE human-at-the-mic run** for the final
+   gate: `./session.sh --llm echo` on the open speaker → confirm self-interrupt
+   gone live, then calibrate `aec_ref_delay_ms` from the new `.ref.wav` via
+   `python -m tools.aec_probe …`. The harness now covers the regression side
+   headlessly, incl. a real-OTA self-interrupt check (S2=0).
+3. **Optional: near/far separation for true simultaneous barge-in** — a second
+   small speaker by the mic so the injected "user" isn't co-located with the
+   assistant's TTS. Today both share one speaker (fine for STT/self-interrupt).
+4. **Optional: CI wiring.** `tools.autotest suite` is CI-safe today; the `voice`
    tier needs PipeWire + models + a small LLM, so it's a self-hosted/manual gate.
-4. **Minor finding to watch:** with the loopback misaligned, one assistant story
-   phrase ("jack in hand") was recognized as a *user* final and echoed back
-   (`self_echo_drops=0`) — a self-echo-as-input leak the `dropping self-echo
-   final` defense didn't catch. Re-check once AEC is delay-matched.
+5. **Minor finding to watch:** in the echo modes an assistant phrase occasionally
+   gets recognized as a *user* final (self-echo-as-input) that the `dropping
+   self-echo final` defense doesn't always catch — worth revisiting in the P1.

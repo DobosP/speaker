@@ -95,39 +95,42 @@ def _is_engine_stream(ident: str, node_prefix: str) -> bool:
     return node_prefix in ident or ("ALSA" in ident and "python" in ident.lower())
 
 
-def route_process_streams(pid: int, sink: NullSink) -> tuple[int, int]:
-    """Move the engine's bridge playback/capture streams onto ``sink`` /
-    ``sink.monitor``. Idempotent -- safe to call repeatedly from a poll loop.
-    ``pid`` is accepted for API symmetry but bridge streams expose no PID, so
-    matching is by node name. Returns ``(playback_moved, capture_moved)``."""
-    moved_play = moved_cap = 0
-    for idx, _tgt, ident in _streams("sink-inputs"):
-        if _is_engine_stream(ident, _PLAY_NODE):
-            r = subprocess.run(
-                ["pactl", "move-sink-input", idx, sink.name], capture_output=True
-            )
-            moved_play += int(r.returncode == 0)
-    for idx, _tgt, ident in _streams("source-outputs"):
-        if _is_engine_stream(ident, _CAP_NODE):
-            r = subprocess.run(
-                ["pactl", "move-source-output", idx, sink.monitor], capture_output=True
-            )
-            moved_cap += int(r.returncode == 0)
-    return moved_play, moved_cap
-
-
-def capture_is_routed(pid: int, sink: NullSink) -> bool:
-    """True once the engine's capture stream is pulling from ``sink.monitor``."""
-    want = None
-    # resolve the monitor source's numeric index once
+def _source_index(name: str) -> Optional[str]:
+    """Numeric index of a source by name (e.g. ``cc_sink.monitor``)."""
     short = subprocess.run(
         ["pactl", "list", "short", "sources"], capture_output=True, text=True
     ).stdout
     for line in short.splitlines():
         parts = line.split("\t")
-        if len(parts) >= 2 and parts[1] == sink.monitor:
-            want = parts[0]
-            break
+        if len(parts) >= 2 and parts[1] == name:
+            return parts[0]
+    return None
+
+
+def route_streams(pid: int, play_sink: str, capture_source: str) -> tuple[int, int]:
+    """Move the engine's bridge playback streams onto ``play_sink`` and its
+    capture streams onto ``capture_source``. Idempotent -- safe to call from a
+    poll loop. ``pid`` is accepted for API symmetry but bridge streams expose no
+    PID, so matching is by node name. Returns ``(playback_moved, capture_moved)``."""
+    moved_play = moved_cap = 0
+    for idx, _tgt, ident in _streams("sink-inputs"):
+        if _is_engine_stream(ident, _PLAY_NODE):
+            r = subprocess.run(
+                ["pactl", "move-sink-input", idx, play_sink], capture_output=True
+            )
+            moved_play += int(r.returncode == 0)
+    for idx, _tgt, ident in _streams("source-outputs"):
+        if _is_engine_stream(ident, _CAP_NODE):
+            r = subprocess.run(
+                ["pactl", "move-source-output", idx, capture_source], capture_output=True
+            )
+            moved_cap += int(r.returncode == 0)
+    return moved_play, moved_cap
+
+
+def capture_on(pid: int, source_name: str) -> bool:
+    """True once the engine's capture stream is pulling from ``source_name``."""
+    want = _source_index(source_name)
     if want is None:
         return False
     for _idx, tgt, ident in _streams("source-outputs"):
@@ -136,9 +139,21 @@ def capture_is_routed(pid: int, sink: NullSink) -> bool:
     return False
 
 
-def inject(sink: NullSink, wav_path: str) -> None:
-    """Play ``wav_path`` into the cable (a synthesized 'user' utterance)."""
-    subprocess.run(["paplay", f"--device={sink.name}", wav_path], capture_output=True)
+def inject(target_sink: Optional[str], wav_path: str, *, volume_pct: int = 100) -> None:
+    """Play ``wav_path`` into ``target_sink`` (a 'user' utterance). ``None`` ->
+    the system default sink (real over-the-air through the speaker).
+
+    ``volume_pct`` boosts playback (100 = unity, 65536 PA units): a far-field
+    injection (real speaker, or the lossy delay rig) must out-shout the
+    assistant's echo to clear the engine's echo-floor gate, the way a near-field
+    user naturally does."""
+    cmd = ["paplay"]
+    if target_sink:
+        cmd.append(f"--device={target_sink}")
+    if volume_pct != 100:
+        cmd.append(f"--volume={int(65536 * volume_pct / 100)}")
+    cmd.append(wav_path)
+    subprocess.run(cmd, capture_output=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -161,6 +176,13 @@ def synth_to_wav(text: str, out_path: str, *, sherpa_cfg: dict, speed: float = 1
     audio = tts.generate(text, sid=0, speed=speed)
     samples = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
     sr = int(audio.sample_rate)
+    # peak-normalize to a loud, consistent level so an injected "user" clip sits
+    # clearly above the engine's learned echo/quiet floor (a near-field user is
+    # louder than the assistant's open-speaker echo; a quiet clip gets dropped as
+    # "echo/ambient, not speech").
+    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
+    if peak > 1e-4:
+        samples = samples * (0.95 / peak)
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
     with wave.open(out_path, "wb") as w:
         w.setnchannels(1)

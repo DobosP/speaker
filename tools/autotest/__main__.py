@@ -58,34 +58,44 @@ def tier_voice(args) -> dict:
     from core.config import load_config
     from .voice_loop import run_voice_loop
 
+    from .score import score_transcripts
+
     cfg = load_config()
     sherpa_cfg = cfg.get("sherpa", {})
     out_dir = os.path.join(OUT, f"voice-{_stamp()}")
     r = run_voice_loop(
         repo_root=REPO, sherpa_cfg=sherpa_cfg,
         llm_kind=args.llm, model=args.model, out_dir=out_dir,
-        aec_delay_ms=args.aec_delay_ms,
-        calibrate=args.calibrate,
+        acoustics_mode=args.acoustics, latency_ms=args.latency_ms,
+        utterances_dir=args.utterances, aec_delay_ms=args.aec_delay_ms,
+        make_sound=args.make_sound,
     )
     rep = {"tier": "voice", **asdict(r)}
+    if r.error:
+        print(f"[voice] FAIL ({r.mode}): {r.error}")
+        rep["ok"] = False
+        return rep
 
-    # fold in post-hoc bundle analysis (transcript / turns / barge) if present
+    has_echo = r.mode in ("delay", "speaker")
+
+    # bundle analysis (transcript / turns / barge)
+    bun = {}
     if r.summary_path and os.path.exists(r.summary_path):
-        rep["bundle"] = _analyze_bundle(r.summary_path)
-    # and the delay-independent replay probes (needs the .ref.wav)
-    if r.wav_path and r.ref_wav_path:
-        rep["replay"] = _replay_probes(r.wav_path)
+        bun = _analyze_bundle(r.summary_path)
+        rep["bundle"] = bun
 
-    # Verdict gates on the ROBUST signals that prove the real-time pipeline ran
-    # over the cable: audio actually flowed, STT->LLM->TTS round-tripped, and a
-    # run bundle was produced. Barge-in and self-interrupt are reported as
-    # instrumented diagnostics -- on a *digital* loopback the self-interrupt
-    # count is confounded by the AEC reference-delay mismatch (the loopback is
-    # ~tens of ms vs the configured 260ms acoustic delay), so the authoritative
-    # self-interrupt signal is the delay-INDEPENDENT coherence probe.
+    # STT accuracy: WER of the engine's recognized user finals vs the injected
+    # clips' ground-truth transcripts (real-voice or synth).
+    stt = score_transcripts(r.injected_refs, bun.get("user_finals", []))
+    rep["stt"] = {"mean_wer": stt.mean_wer, "n": stt.n,
+                  "pairs": [{"ref": a, "hyp": b, "wer": round(w, 2)} for a, b, w in stt.pairs]}
+
+    # Verdict gates on the robust signals: audio flowed, STT->LLM->TTS round-trip,
+    # bundle produced. Self-interrupt + barge-in are reported per scenario from
+    # the LIVE engine -- in the echo modes (delay/speaker) the AEC is aligned, so
+    # the live self-interrupt count is the authoritative signal. (The standalone
+    # `replay` tier offers deeper ERLE/coherence analysis on a chosen bundle.)
     sc = r.scenarios
-    coherence_si = rep.get("replay", {}).get("self_interrupts_remaining")
-    rep["self_interrupt_coherence_remaining"] = coherence_si
     ok = (
         r.summary_path is not None
         and r.monitor_rms > 0.01
@@ -93,18 +103,19 @@ def tier_voice(args) -> dict:
     )
     rep["ok"] = ok
 
-    print(f"[voice] {'PASS' if ok else 'FAIL'} (pipeline) run_id={r.run_id} "
-          f"ready={r.ready} aec_delay={r.calibrated_delay_ms or 'config'} "
-          f"monitor_rms={r.monitor_rms:.3f}")
-    for k, v in sc.items():
-        print(f"        {k}: {v}")
-    if "replay" in rep:
-        print(f"        self-interrupt (delay-independent coherence): "
-              f"{rep['replay'].get('summary','')}")
-    bun = rep.get("bundle", {})
-    if bun:
-        print(f"        transcript: users={bun.get('user_finals')} "
-              f"replies={bun.get('assistant_replies')}")
+    print(f"[voice] {'PASS' if ok else 'FAIL'} (pipeline) mode={r.mode} "
+          f"run_id={r.run_id} clips={r.clip_source} monitor_rms={r.monitor_rms:.3f}")
+    print(f"        STT mean WER={stt.mean_wer} over {stt.n} clips")
+    for ref, hyp, w in stt.pairs:
+        print(f"          WER={w:.2f}  ref={ref!r}  hyp={hyp!r}")
+    s2, s3 = sc.get("s2_self_interrupt", {}), sc.get("s3_barge_in", {})
+    if has_echo:
+        print(f"        self-interrupt: live barge-ins during own reply="
+              f"{s2.get('barge_ins_during_own_reply')} (pass={s2.get('live_pass')})")
+        print(f"        barge-in: {s3.get('barge_ins_after_talkover')} after talk-over "
+              f"(pass={s3.get('pass')})")
+    else:
+        print(f"        self-interrupt / barge-in: {s2.get('note','n/a')}")
     if not ok:
         print(f"        (engine stdout: {r.log_path})")
     return rep
@@ -211,11 +222,20 @@ def main(argv=None) -> int:
                     help="small LLM for the in-loop tiers (default ollama/gemma3:4b)")
     ap.add_argument("--model", default="gemma3:4b", help="ollama model (small by default)")
     ap.add_argument("--bundle", default=None, help="replay: explicit run-<id>.wav")
+    ap.add_argument("--acoustics", choices=["cable", "delay", "speaker"], default="cable",
+                    help="voice: cable=silent null-sink loopback (default); "
+                         "delay=silent loopback + ~260ms air-gap (AEC aligned); "
+                         "speaker=real over-the-air (needs --make-sound)")
+    ap.add_argument("--latency-ms", type=int, default=260, dest="latency_ms",
+                    help="voice/delay: emulated air-gap delay (default 260)")
+    ap.add_argument("--utterances", default=None,
+                    help="voice: dir of recorded clips + manifest.json (real-voice "
+                         "injection); default = synth the engine's own voice")
+    ap.add_argument("--make-sound", action="store_true", dest="make_sound",
+                    help="voice/speaker: REQUIRED to run real over-the-air "
+                         "(plays the speaker + records the real mic)")
     ap.add_argument("--aec-delay-ms", type=int, default=None, dest="aec_delay_ms",
                     help="voice: force the AEC reference delay (P1 deep-dive)")
-    ap.add_argument("--calibrate", action="store_true",
-                    help="voice: measure the loopback delay first + align AEC to it "
-                         "(opt-in; per-launch delay is noisy so this is advisory)")
     args = ap.parse_args(argv)
 
     reports: list[dict] = []

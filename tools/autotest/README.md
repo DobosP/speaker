@@ -59,9 +59,13 @@ silence, takes a short break, and writes `manifest.json` for you:
 ```
 
 The built-in script covers questions, instant commands, long prompts, barge-in
-talk-overs, a memory fact/recall pair, and harder/natural speech. Recordings go
-to a **gitignored** dir (your raw voice stays local, per architecture §9.7).
-Then point the voice tier at it: `--utterances recordings/owner`.
+talk-overs, a memory fact/recall pair, harder/natural speech, and a
+**corrections** group — self-corrections ("five — no, ten minutes"),
+repeats/stutters ("what what time is it"), and stretched words ("Lonnndon") that
+test the final text fed to the LLM and whether the system makes sense of messy
+input (the report prints each final text → the assistant's reply so you can
+judge). Recordings go to a **gitignored** dir (your raw voice stays local, per
+architecture §9.7). Then point the voice tier at it: `--utterances recordings/owner`.
 
 You can also hand-build the directory: one sentence per file, **mono WAV**
 (16 kHz or 48 kHz), with a `manifest.json`:

@@ -67,6 +67,10 @@ logs/real_usage/
 # run bundle under logs/runs/ (committed via the whitelist above); these are not.
 logs/autotest/
 
+# Owner's recorded test clips (tools.autotest record). Raw personal voice -- per
+# architecture §9.7 it stays on the device and is NOT committed.
+/recordings/
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

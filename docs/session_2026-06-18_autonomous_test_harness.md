@@ -128,11 +128,16 @@ Files added pt2: `tools/autotest/{acoustics,clips,score}.py`; `voice_loop.py` an
 
 ## Next steps (pick up here)
 
-1. **Owner: record real clips** (per `tools/autotest/README.md`) into a dir with
-   a `manifest.json`, then `.venv/bin/python -m tools.autotest voice --acoustics
-   cable --utterances <dir>` for the real STT/WER number (near-field), and
-   `--acoustics speaker --make-sound --utterances <dir>` for the real
-   over-the-air run. Real voice should score far better than the synth defaults.
+1. **Owner: record real clips with the guided studio** —
+   `.venv/bin/python -m tools.autotest record --out recordings/owner` shows each
+   line, counts down `3..2..1..GO`, auto-stops when you finish, trims silence,
+   and writes `manifest.json` (gitignored, §9.7). The built-in script covers
+   questions / commands / long prompts / barge-in / a memory fact+recall pair /
+   natural speech (`--group`/`--limit`/`--review` to tailor). Then
+   `.venv/bin/python -m tools.autotest voice --acoustics cable --utterances
+   recordings/owner` for the real near-field STT/WER, and `--acoustics speaker
+   --make-sound --utterances recordings/owner` for real over-the-air. Real voice
+   should score far better than the synth defaults.
 2. **The open-speaker P1 still wants ONE human-at-the-mic run** for the final
    gate: `./session.sh --llm echo` on the open speaker → confirm self-interrupt
    gone live, then calibrate `aec_ref_delay_ms` from the new `.ref.wav` via

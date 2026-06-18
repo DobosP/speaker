@@ -217,7 +217,7 @@ def tier_suite(args) -> dict:
 # --------------------------------------------------------------------------- #
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="tools.autotest", description=__doc__)
-    ap.add_argument("tier", choices=["memory", "voice", "replay", "suite", "all"])
+    ap.add_argument("tier", choices=["memory", "voice", "replay", "suite", "all", "record"])
     ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama",
                     help="small LLM for the in-loop tiers (default ollama/gemma3:4b)")
     ap.add_argument("--model", default="gemma3:4b", help="ollama model (small by default)")
@@ -236,7 +236,33 @@ def main(argv=None) -> int:
                          "(plays the speaker + records the real mic)")
     ap.add_argument("--aec-delay-ms", type=int, default=None, dest="aec_delay_ms",
                     help="voice: force the AEC reference delay (P1 deep-dive)")
+    # record-only
+    ap.add_argument("--out", default="recordings/owner",
+                    help="record: dir for the clips + manifest.json (gitignored)")
+    ap.add_argument("--group", action="append", default=None,
+                    help="record: only this group (repeatable): questions, commands, "
+                         "long, barge, memory, natural")
+    ap.add_argument("--limit", type=int, default=None, help="record: cap the number of clips")
+    ap.add_argument("--device", default=None, help="record: input device index/name")
+    ap.add_argument("--review", action="store_true", help="record: keep/redo each take")
+    ap.add_argument("--dry-run", action="store_true", help="record: print the script, don't record")
+    ap.add_argument("--simulate", action="store_true",
+                    help="record: synthesize each line instead of recording (self-test)")
     args = ap.parse_args(argv)
+
+    if args.tier == "record":
+        from .record import run_record
+        sherpa_cfg = {}
+        if args.simulate:
+            from core.config import load_config
+            sherpa_cfg = load_config().get("sherpa", {})
+        out = args.out if os.path.isabs(args.out) else os.path.join(REPO, args.out)
+        run_record(
+            out_dir=out, device=args.device, groups=args.group, limit=args.limit,
+            review=args.review, dry_run=args.dry_run, simulate=args.simulate,
+            sherpa_cfg=sherpa_cfg,
+        )
+        return 0
 
     reports: list[dict] = []
     if args.tier in ("memory", "all"):

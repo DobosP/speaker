@@ -45,10 +45,26 @@ For the **truest STT number that predicts your app**, inject your real
 recordings in `cable` mode (clean near-field). For **realism** (echo, barge,
 self-interrupt), use `speaker`.
 
-## Recording your own utterances (`--utterances DIR`)
+## Recording your own utterances
 
-Record in your **normal usage position/voice**, one sentence per file, **mono
-WAV** (16 kHz or 48 kHz), with a `manifest.json` in the directory:
+Easiest — the **guided recording studio**: it shows each line, counts down
+`3..2..1..GO`, records while you speak and auto-stops when you finish, trims the
+silence, takes a short break, and writes `manifest.json` for you:
+
+```
+.venv/bin/python -m tools.autotest record --out recordings/owner
+.venv/bin/python -m tools.autotest record --group questions --group commands   # subset
+.venv/bin/python -m tools.autotest record --review                              # keep/redo each take
+.venv/bin/python -m tools.autotest record --dry-run                            # just print the script
+```
+
+The built-in script covers questions, instant commands, long prompts, barge-in
+talk-overs, a memory fact/recall pair, and harder/natural speech. Recordings go
+to a **gitignored** dir (your raw voice stays local, per architecture §9.7).
+Then point the voice tier at it: `--utterances recordings/owner`.
+
+You can also hand-build the directory: one sentence per file, **mono WAV**
+(16 kHz or 48 kHz), with a `manifest.json`:
 
 ```json
 {"clips": [

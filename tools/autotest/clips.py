@@ -24,7 +24,14 @@ from . import audio
 
 # the default synthesized script (role -> list of (text,))
 _DEFAULT_SCRIPT = {
-    "round_trip": ["what is the capital of france", "name three primary colors"],
+    "round_trip": [
+        "what is the capital of france",
+        "name three primary colors",
+        # disfluent / self-correcting input: tests the final text fed to the LLM
+        # and whether the system still makes sense of repeats + corrections.
+        "what what time is it",
+        "set a timer for five no wait ten minutes",
+    ],
     # two distinct long-reply prompts: speak[0] for the self-interrupt window,
     # speak[1] for the barge-in window (so the 2nd isn't a garbled repeat).
     "speak": [

@@ -108,6 +108,16 @@ def tier_voice(args) -> dict:
     print(f"        STT mean WER={stt.mean_wer} over {stt.n} clips")
     for ref, hyp, w in stt.pairs:
         print(f"          WER={w:.2f}  ref={ref!r}  hyp={hyp!r}")
+    # the conversation: the FINAL text the LLM received -> its reply, so messy /
+    # self-correcting input can be judged for whether the system made sense of it.
+    convo = bun.get("conversation", [])
+    if convo:
+        print("        conversation (final text fed to LLM -> reply):")
+        for role, text in convo[:24]:
+            tag = "you " if role == "user" else "asst" if role == "assistant" else role[:4]
+            print(f"          {tag}: {text[:90]!r}")
+        if len(convo) > 24:
+            print(f"          ... (+{len(convo) - 24} more; full transcript in the report)")
     s2, s3 = sc.get("s2_self_interrupt", {}), sc.get("s3_barge_in", {})
     if has_echo:
         print(f"        self-interrupt: live barge-ins during own reply="
@@ -132,6 +142,9 @@ def _analyze_bundle(summary_path: str) -> dict:
     return {
         "user_finals": [t.get("text", "") for t in users],
         "assistant_replies": [t.get("text", "")[:80] for t in asst],
+        # ordered transcript -- the final text fed to the LLM next to its reply,
+        # so disfluent/correction cases can be judged for sense-making.
+        "conversation": [(t.get("role", ""), t.get("text", "")) for t in tr],
         "n_turns": len(turns),
         "n_barge_in_turns": len(barges),
         "stuck_hints": d.get("stuck_hints", []),

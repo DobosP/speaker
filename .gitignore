@@ -62,6 +62,11 @@ logs/live/
 # bundles for one on-machine run. The curated overview is logs/runs/OVERVIEW.md.
 logs/real_usage/
 
+# Autonomous test harness (tools/autotest): transient per-run verdicts +
+# synthesized inject clips + engine stdout. The voice tier ALSO drops a curated
+# run bundle under logs/runs/ (committed via the whitelist above); these are not.
+logs/autotest/
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb

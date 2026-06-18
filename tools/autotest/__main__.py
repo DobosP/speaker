@@ -261,10 +261,16 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="record: print the script, don't record")
     ap.add_argument("--simulate", action="store_true",
                     help="record: synthesize each line instead of recording (self-test)")
+    ap.add_argument("--check", action="store_true",
+                    help="record: mic level check (say a test sentence -> hot/quiet/good); "
+                         "tune gain before recording for real")
     args = ap.parse_args(argv)
 
     if args.tier == "record":
-        from .record import run_record
+        from .record import run_record, mic_check
+        if args.check:
+            mic_check(device=args.device)
+            return 0
         sherpa_cfg = {}
         if args.simulate:
             from core.config import load_config

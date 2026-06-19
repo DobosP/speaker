@@ -269,10 +269,11 @@ def run_voice_loop(
                 else:
                     rt_clips = [c for role, cl in clips_by_role.items()
                                 if role != "barge" for c in cl]
+                lead_in = getattr(ac, "inject_lead_in_ms", 0)
                 spoke_any = False
                 for c in rt_clips:
                     spk = proc.count("speaking")
-                    audio.inject(tgt, c.path, volume_pct=ac.inject_gain)
+                    audio.inject(tgt, c.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(c.text)
                     spoke = proc.wait_speaking(spk, timeout=25.0)
                     spoke_any = spoke_any or spoke
@@ -297,7 +298,7 @@ def run_voice_loop(
                     proc.wait_idle(timeout=10.0)
                     sp = speak_clips[0]
                     spk = proc.count("speaking")
-                    audio.inject(tgt, sp.path, volume_pct=ac.inject_gain)
+                    audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(sp.text)
                     proc.wait_speaking(spk, timeout=25.0)
                     barge_at_start = proc.count("barge")
@@ -317,16 +318,18 @@ def run_voice_loop(
                     sp = speak_clips[1] if len(speak_clips) > 1 else speak_clips[0]
                     bg = first("barge")
                     spk = proc.count("speaking")
-                    audio.inject(tgt, sp.path, volume_pct=ac.inject_gain)
+                    audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(sp.text)
                     started = proc.wait_speaking(spk, timeout=25.0)
                     time.sleep(0.8)
                     barge_before = proc.count("barge")
                     # the barge clip is NOT scored: it deliberately overlaps, so
-                    # it won't transcribe cleanly.
-                    audio.inject(tgt, bg.path, volume_pct=min(400, ac.inject_gain + 100))
+                    # it won't transcribe cleanly. It still needs the lead-in so a
+                    # Bluetooth inject sink doesn't drop the talk-over's onset.
+                    audio.inject(tgt, bg.path, volume_pct=min(400, ac.inject_gain + 100),
+                                 lead_in_ms=lead_in)
                     barge_fired = 0
-                    end = time.monotonic() + 6.0
+                    end = time.monotonic() + 7.0
                     while time.monotonic() < end:
                         barge_fired = proc.count("barge") - barge_before
                         if barge_fired >= 1:

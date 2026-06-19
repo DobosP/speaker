@@ -45,6 +45,7 @@ class CableAcoustics:
     inject_gain = 55         # the engine captures the monitor ~2.7x hot; keep it
                              # below clipping so the echo/quiet floor doesn't
                              # ratchet up + start dropping clips on long runs
+    inject_lead_in_ms = 0    # virtual cable: instant, no warm-up needed
 
     def __init__(self, prefix: str = "cc_autotest"):
         self._play = f"{prefix}_play"
@@ -92,6 +93,7 @@ class DelayAcoustics:
     uses_real_device = False
     has_echo = True
     inject_gain = 300        # the loopback rig is lossy -> out-shout the echo
+    inject_lead_in_ms = 0    # virtual sinks: no resume/warm-up to cover
 
     def __init__(self, latency_ms: int = 260, prefix: str = "cc_autotest"):
         self.latency_ms = latency_ms
@@ -159,12 +161,18 @@ class SpeakerAcoustics:
     uses_real_device = True
     has_echo = True
     capture_source = ""
+    # real over-the-air: pad each injected clip with lead-in silence so the sink
+    # is live + the engine's VAD has settled before the first word. A Bluetooth
+    # inject sink (e.g. the JBL) resuming from idle drops the start of a fresh
+    # stream, so it needs the most; a wired sink still benefits (clean VAD onset).
+    inject_lead_in_ms = 500
 
     def __init__(self, inject_sink: Optional[str] = None, inject_gain: int = 170):
         self._inject_sink = inject_sink
         # near-field (a dedicated user speaker by the mic) needs no boost; the
         # shared-speaker far-field case keeps the boost to clear the echo floor.
         self.inject_gain = 100 if inject_sink else inject_gain
+        self._keepalive: Optional[subprocess.Popen] = None
 
     @property
     def inject_target(self) -> Optional[str]:
@@ -172,7 +180,27 @@ class SpeakerAcoustics:
 
     @contextlib.contextmanager
     def session(self) -> Iterator["SpeakerAcoustics"]:
-        yield self
+        # A dedicated inject sink suspends between clips (the assistant no longer
+        # holds it open), and a Bluetooth sink then drops the start of the next
+        # freshly-resumed stream -- truncating each injected clip's first word(s).
+        # Hold it awake with a continuous silent stream for the whole run so every
+        # clip plays from a warm link. (No-op for the shared-speaker case, where
+        # the assistant's own output keeps the default sink warm.)
+        if self._inject_sink:
+            with contextlib.suppress(Exception):
+                self._keepalive = subprocess.Popen(
+                    ["pacat", f"--device={self._inject_sink}", "--channels=1",
+                     "--rate=48000", "--format=s16le", "/dev/zero"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+        try:
+            yield self
+        finally:
+            if self._keepalive is not None:
+                self._keepalive.terminate()
+                with contextlib.suppress(Exception):
+                    self._keepalive.wait(timeout=3)
+                self._keepalive = None
 
     def route(self, pid: int) -> None:  # nothing to move
         pass

@@ -45,6 +45,20 @@ For the **truest STT number that predicts your app**, inject your real
 recordings in `cable` mode (clean near-field). For **realism** (echo, barge,
 self-interrupt), use `speaker`.
 
+**Near/far over-the-air** (`speaker` mode): by default the assistant and the
+injected user clips share one speaker (both far-field). Pass `--inject-sink
+<pactl-sink>` to play the user clips through a **different** speaker — e.g. the
+assistant on an external speaker set as the default sink, and the user clips on
+the laptop speaker next to the mic — for real near/far separation (the faithful
+open-speaker scenario). Mind the levels: capturing speaker *playback* through the
+mic needs more gain than capturing a near-field voice, and OTA re-capture
+degrades STT (judge STT from `cable`, not `speaker`). See
+`docs/session_2026-06-19_real_voice_ota_setup.md` for a worked JBL setup.
+
+A hot mic ruins everything (clipping garbles STT, unrecoverably). On PipeWire the
+knob that sticks is the **source volume**, not the ALSA mixer:
+`pactl set-source-volume @DEFAULT_SOURCE@ 40%`. Verify with `record --check`.
+
 ## Recording your own utterances
 
 Easiest — the **guided recording studio**: it shows each line, counts down

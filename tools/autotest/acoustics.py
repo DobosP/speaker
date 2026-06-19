@@ -143,15 +143,32 @@ class DelayAcoustics:
 
 
 class SpeakerAcoustics:
-    """Real over-the-air: engine on the default speaker+mic; clips play out the
-    speaker. No virtual devices, no stream moving -- just real sound."""
+    """Real over-the-air: the engine speaks out the default sink + captures the
+    real mic. ``inject_sink`` controls where the 'user' clips play:
+
+    * ``None`` -> the default sink (assistant and user share one speaker; both
+      far-field). Simplest.
+    * a sink name (e.g. the laptop's ``alsa_output...analog-stereo``) -> the
+      user clips come from a DIFFERENT speaker than the assistant. With the
+      assistant on an external speaker (e.g. a JBL set as default) and the user
+      clips on the laptop speaker next to the mic, this gives real near/far
+      separation -- the faithful open-speaker scenario.
+    """
 
     needs_routing = False
     uses_real_device = True
     has_echo = True
-    inject_gain = 170             # far-field over the real speaker -> boost
-    inject_target = None          # default sink == the real speaker
     capture_source = ""
+
+    def __init__(self, inject_sink: Optional[str] = None, inject_gain: int = 170):
+        self._inject_sink = inject_sink
+        # near-field (a dedicated user speaker by the mic) needs no boost; the
+        # shared-speaker far-field case keeps the boost to clear the echo floor.
+        self.inject_gain = 100 if inject_sink else inject_gain
+
+    @property
+    def inject_target(self) -> Optional[str]:
+        return self._inject_sink
 
     @contextlib.contextmanager
     def session(self) -> Iterator["SpeakerAcoustics"]:
@@ -164,11 +181,11 @@ class SpeakerAcoustics:
         return True                # the engine already opened the real mic
 
 
-def make_acoustics(mode: str, *, latency_ms: int = 260):
+def make_acoustics(mode: str, *, latency_ms: int = 260, inject_sink: Optional[str] = None):
     if mode == "cable":
         return CableAcoustics()
     if mode == "delay":
         return DelayAcoustics(latency_ms=latency_ms)
     if mode == "speaker":
-        return SpeakerAcoustics()
+        return SpeakerAcoustics(inject_sink=inject_sink)
     raise ValueError(f"unknown acoustics mode: {mode!r}")

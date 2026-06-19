@@ -68,7 +68,7 @@ def tier_voice(args) -> dict:
         llm_kind=args.llm, model=args.model, out_dir=out_dir,
         acoustics_mode=args.acoustics, latency_ms=args.latency_ms,
         utterances_dir=args.utterances, aec_delay_ms=args.aec_delay_ms,
-        make_sound=args.make_sound,
+        make_sound=args.make_sound, inject_sink=args.inject_sink,
     )
     rep = {"tier": "voice", **asdict(r)}
     if r.error:
@@ -247,6 +247,10 @@ def main(argv=None) -> int:
     ap.add_argument("--make-sound", action="store_true", dest="make_sound",
                     help="voice/speaker: REQUIRED to run real over-the-air "
                          "(plays the speaker + records the real mic)")
+    ap.add_argument("--inject-sink", default=None, dest="inject_sink",
+                    help="voice/speaker: pactl sink to play the 'user' clips into "
+                         "(e.g. the laptop speaker for near/far separation); "
+                         "default = the engine's output sink")
     ap.add_argument("--aec-delay-ms", type=int, default=None, dest="aec_delay_ms",
                     help="voice: force the AEC reference delay (P1 deep-dive)")
     # record-only

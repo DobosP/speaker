@@ -55,6 +55,18 @@ speaker than the assistant, for real near/far separation.
   `alsa_output.pci-0000_00_1f.3.analog-stereo`
 * **Capture → laptop mic**: `alsa_input.pci-0000_00_1f.3.analog-stereo` (default source)
 
+**Step 0 — reconnect the JBL + make it the default sink.** Bluetooth speakers
+auto-disconnect when idle, so the default sink reverts to the laptop speaker
+(it did between runs this session). Each OTA session, first:
+```
+# reconnect the JBL (power it on; if needed: bluetoothctl connect D8:37:3B:19:CF:03)
+pactl list short sinks | grep bluez                       # confirm the JBL sink is present
+pactl set-default-sink bluez_output.D8_37_3B_19_CF_03.1   # assistant -> JBL
+```
+If the JBL sink isn't present, it's disconnected — reconnect it first. (Without
+this the assistant would speak out the laptop speaker, same one as the injected
+clips, and there's no near/far separation.)
+
 Command:
 ```
 .venv/bin/python -m tools.autotest voice --acoustics speaker --make-sound \

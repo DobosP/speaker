@@ -15,8 +15,10 @@ real speech the recognizer can transcribe.
 from __future__ import annotations
 
 import contextlib
+import os
 import re
 import subprocess
+import tempfile
 import time
 import wave
 from dataclasses import dataclass
@@ -139,21 +141,61 @@ def capture_on(pid: int, source_name: str) -> bool:
     return False
 
 
-def inject(target_sink: Optional[str], wav_path: str, *, volume_pct: int = 100) -> None:
+def _with_lead_in(wav_path: str, lead_in_ms: int) -> str:
+    """Write a temp copy of ``wav_path`` with ``lead_in_ms`` of leading silence,
+    returning its path. The caller removes it.
+
+    Two failure modes this fixes: (1) a Bluetooth sink resuming from idle drops
+    the first audio of a freshly-opened stream while the A2DP link spins up, and
+    (2) the engine's VAD needs a clean onset or it truncates the first word(s).
+    Silence padding in the SAME stream covers both -- the link is live and the
+    VAD has settled by the time real speech starts."""
+    with wave.open(wav_path, "rb") as w:
+        nch, sw, sr = w.getnchannels(), w.getsampwidth(), w.getframerate()
+        frames = w.readframes(w.getnframes())
+    pad = b"\x00" * (int(sr * lead_in_ms / 1000) * nch * sw)
+    fd, out = tempfile.mkstemp(prefix="cc_inject_", suffix=".wav")
+    os.close(fd)
+    with wave.open(out, "wb") as w:
+        w.setnchannels(nch)
+        w.setsampwidth(sw)
+        w.setframerate(sr)
+        w.writeframes(pad + frames)
+    return out
+
+
+def inject(
+    target_sink: Optional[str], wav_path: str, *, volume_pct: int = 100,
+    lead_in_ms: int = 0,
+) -> None:
     """Play ``wav_path`` into ``target_sink`` (a 'user' utterance). ``None`` ->
     the system default sink (real over-the-air through the speaker).
 
     ``volume_pct`` boosts playback (100 = unity, 65536 PA units): a far-field
     injection (real speaker, or the lossy delay rig) must out-shout the
     assistant's echo to clear the engine's echo-floor gate, the way a near-field
-    user naturally does."""
-    cmd = ["paplay"]
-    if target_sink:
-        cmd.append(f"--device={target_sink}")
-    if volume_pct != 100:
-        cmd.append(f"--volume={int(65536 * volume_pct / 100)}")
-    cmd.append(wav_path)
-    subprocess.run(cmd, capture_output=True)
+    user naturally does.
+
+    ``lead_in_ms`` prepends that much silence to the played clip (real over-the-
+    air, esp. Bluetooth) so the sink is live + the engine's VAD has settled
+    before the first word -- otherwise the clip's opening gets truncated."""
+    play_path = wav_path
+    tmp: Optional[str] = None
+    if lead_in_ms > 0:
+        tmp = _with_lead_in(wav_path, lead_in_ms)
+        play_path = tmp
+    try:
+        cmd = ["paplay"]
+        if target_sink:
+            cmd.append(f"--device={target_sink}")
+        if volume_pct != 100:
+            cmd.append(f"--volume={int(65536 * volume_pct / 100)}")
+        cmd.append(play_path)
+        subprocess.run(cmd, capture_output=True)
+    finally:
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
 
 
 # --------------------------------------------------------------------------- #

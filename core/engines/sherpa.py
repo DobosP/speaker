@@ -38,6 +38,7 @@ from ..audio_frontend import (
     AudioResampler,
     InputAGC,
     apply_gain_soft_limit,
+    declick,
     normalize_rms,
 )
 from ..engine import AudioEngine, EngineCallbacks
@@ -319,6 +320,14 @@ class SherpaConfig:
     # 0.0 disables -> the streaming path is byte-identical to before. ~0.1-0.15 is a
     # normal speech RMS; the soft-knee limiter keeps loud sentences from clipping.
     tts_target_rms: float = 0.0
+    # Post-synthesis de-click: the on-device VITS voice emits deterministic
+    # sample-level impulse spikes on some text (dozens per sentence) -> audible
+    # clicks/crackle on an open speaker + a spike teed into the echo reference can
+    # nudge a false self-interrupt. ``declick`` (core.audio_frontend) repairs the
+    # isolated impulses on the synthesis (producer) thread; a no-op on clean
+    # speech. True by default (the artifact is real on the shipped voice); set
+    # false for byte-identical legacy output.
+    tts_declick: bool = True
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -2462,7 +2471,10 @@ class SherpaOnnxEngine(AudioEngine):
             if target_rms <= 0.0 and self._tts_can_stream:
 
                 def on_chunk(samples, *_progress) -> int:
-                    write(np.asarray(samples, dtype="float32").reshape(-1))
+                    blk = np.asarray(samples, dtype="float32").reshape(-1)
+                    if self.config.tts_declick:        # repair VITS impulse spikes
+                        blk = np.asarray(declick(blk), dtype="float32").reshape(-1)
+                    write(blk)
                     return 0 if (
                         self._stop_speaking.is_set()
                         or (gen is not None and self._speak_gen != gen)
@@ -2483,6 +2495,8 @@ class SherpaOnnxEngine(AudioEngine):
         samples = np.asarray(
             normalize_rms(samples, target_rms), dtype="float32"
         ).reshape(-1)
+        if self.config.tts_declick:                    # repair VITS impulse spikes
+            samples = np.asarray(declick(samples), dtype="float32").reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):

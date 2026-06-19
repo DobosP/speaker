@@ -74,7 +74,7 @@ class _Proc:
         )
         self.ready = threading.Event()
         self.run_id: Optional[str] = None
-        self.counts = {"speaking": 0, "barge": 0, "self_echo_drop": 0}
+        self.counts = {"speaking": 0, "barge": 0, "self_echo_drop": 0, "barge_rejected": 0}
         self._lock = threading.Lock()
         self._t = threading.Thread(target=self._read, daemon=True)
         self._t.start()
@@ -94,6 +94,8 @@ class _Proc:
                     self.counts["speaking"] += 1
                 if "barge-in detected" in line:
                     self.counts["barge"] += 1
+                if "barge-in REJECTED" in line:
+                    self.counts["barge_rejected"] += 1
                 if "dropping self-echo final" in line:
                     self.counts["self_echo_drop"] += 1
 

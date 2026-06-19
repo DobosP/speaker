@@ -223,6 +223,7 @@ def run_voice_loop(
     utterances_dir: Optional[str] = None,
     aec_delay_ms: Optional[int] = None,
     make_sound: bool = False,
+    inject_sink: Optional[str] = None,    # speaker mode: where the 'user' clips play
 ) -> VoiceRun:
     detail: list[str] = []
     os.makedirs(out_dir, exist_ok=True)
@@ -245,7 +246,7 @@ def run_voice_loop(
         cl = clips_by_role.get(role) or clips_by_role.get("round_trip")
         return cl[0] if cl else None
 
-    ac = acoustics_mod.make_acoustics(acoustics_mode, latency_ms=latency_ms)
+    ac = acoustics_mod.make_acoustics(acoustics_mode, latency_ms=latency_ms, inject_sink=inject_sink)
     args = _engine_args(llm_kind, model, ac.uses_real_device)
     detail.append(f"acoustics={acoustics_mode}; engine={' '.join(args)}")
 

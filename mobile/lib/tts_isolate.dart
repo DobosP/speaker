@@ -187,14 +187,43 @@ Float32List _postProcessTts(
   if (n < 3) return x;
   final y = Float32List.fromList(x);
 
+  // ORDER MATCHES THE DESKTOP CORE (core/engines/sherpa.py::_synthesize):
+  // normalize_rms FIRST, then declick. The declick threshold is an ABSOLUTE
+  // amplitude tuned for the post-normalization level, so declicking the raw
+  // (pre-boost) signal would compare against the wrong scale on a quiet sentence.
+
+  // Per-sentence loudness normalization with a soft-knee limiter (boost capped).
+  if (targetRms > 0) {
+    var sum = 0.0;
+    for (var i = 0; i < n; i++) {
+      sum += y[i] * y[i];
+    }
+    final rms = math.sqrt(sum / n);
+    if (rms > 1e-6) {
+      final gain = math.min(targetRms / rms, maxGain);
+      const knee = 0.8;
+      for (var i = 0; i < n; i++) {
+        var v = y[i] * gain;
+        final mag = v.abs();
+        if (mag > knee) {
+          final sign = v < 0 ? -1.0 : 1.0;
+          v = sign * (knee + (1.0 - knee) * _tanh((mag - knee) / (1.0 - knee)));
+        }
+        y[i] = v;
+      }
+    }
+  }
+
   // De-click: flag samples whose deviation from the 3-point median exceeds the
   // threshold (a real spike), then interpolate across runs up to maxRun long.
+  // Reads the normalized signal (y), repairs in place; bad[] is fully computed
+  // before any interpolation so a repair can't contaminate a later median test.
   if (declickThreshold > 0) {
     final bad = List<bool>.filled(n, false);
     for (var i = 0; i < n; i++) {
-      final a = x[i == 0 ? 0 : i - 1];
-      final b = x[i];
-      final c = x[i == n - 1 ? n - 1 : i + 1];
+      final a = y[i == 0 ? 0 : i - 1];
+      final b = y[i];
+      final c = y[i == n - 1 ? n - 1 : i + 1];
       // median of three = sum - max - min
       final med = a + b + c -
           math.max(a, math.max(b, c)) -
@@ -220,28 +249,6 @@ Float32List _postProcessTts(
         i = j;
       } else {
         i++;
-      }
-    }
-  }
-
-  // Per-sentence loudness normalization with a soft-knee limiter (boost capped).
-  if (targetRms > 0) {
-    var sum = 0.0;
-    for (var i = 0; i < n; i++) {
-      sum += y[i] * y[i];
-    }
-    final rms = math.sqrt(sum / n);
-    if (rms > 1e-6) {
-      final gain = math.min(targetRms / rms, maxGain);
-      const knee = 0.8;
-      for (var i = 0; i < n; i++) {
-        var v = y[i] * gain;
-        final mag = v.abs();
-        if (mag > knee) {
-          final sign = v < 0 ? -1.0 : 1.0;
-          v = sign * (knee + (1.0 - knee) * _tanh((mag - knee) / (1.0 - knee)));
-        }
-        y[i] = v;
       }
     }
   }

@@ -5,6 +5,8 @@ freeze + reset."""
 from __future__ import annotations
 
 import os
+import threading
+import time
 
 import numpy as np
 import pytest
@@ -57,6 +59,88 @@ def test_process_16k_passthrough_on_error():
 
 def test_reset_is_safe_on_impl_without_reset():
     EchoCanceller(_RaisingImpl()).reset()  # no reset() on impl -> no-op, no raise
+
+
+# --- reset()/process_16k serialization (cross-thread race) -------------------
+
+
+class _FramedImpl:
+    """Mimics a framed canceller's (e.g. the WebRTC APM) near/far carry buffers:
+    ``process`` does a multi-step read-modify-write on two lists that MUST stay
+    length-aligned, with a widened window between the two extends. A ``reset``
+    interleaved mid-``process`` clears the buffers between the extends and desyncs
+    them -- the exact corruption EchoCanceller's lock must prevent."""
+
+    def __init__(self):
+        self.near: list = []
+        self.far: list = []
+        self.desynced = False
+
+    def process(self, near, far):
+        n = list(np.asarray(near, dtype=np.float32).reshape(-1))
+        self.near.extend(n)        # step 1
+        time.sleep(0.0005)         # window an interleaved reset() could land in
+        self.far.extend(n)         # step 2 -- same count as step 1 by construction
+        frame = 4
+        k = min(len(self.near), len(self.far)) // frame
+        self.near = self.near[k * frame:]
+        self.far = self.far[k * frame:]
+        if len(self.near) != len(self.far):
+            self.desynced = True   # near/far carry lengths diverged -> AEC ruined
+        return np.zeros(k * frame, dtype=np.float32)
+
+    def reset(self):
+        self.near = []
+        self.far = []
+
+
+def test_reset_is_serialized_against_process_under_concurrency():
+    """A reset() from another thread (the event bus / playback worker) must never
+    land inside an in-flight process() block, which would permanently desync a
+    framed impl's near/far carry buffers (silent ERLE collapse). The lock added to
+    EchoCanceller serializes the two; without it this test desyncs reliably."""
+    impl = _FramedImpl()
+    ec = EchoCanceller(impl)
+    stop = threading.Event()
+
+    def hammer_reset():
+        while not stop.is_set():
+            ec.reset()
+
+    t = threading.Thread(target=hammer_reset, daemon=True)
+    t.start()
+    try:
+        block = np.ones(6, dtype=np.float32)  # 6 % 4 != 0 -> always a carry remainder
+        far = np.zeros(6, dtype=np.float32)
+        for _ in range(200):
+            ec.process_16k(block, far)
+    finally:
+        stop.set()
+        t.join(timeout=2.0)
+    assert not impl.desynced  # the lock kept near/far length-aligned across reset()
+
+
+def test_divergence_guard_internal_reset_does_not_deadlock():
+    """The in-process divergence guard resets the impl while already holding the
+    lock -- it must use the unlocked path (_do_reset), not re-enter self.reset(),
+    or process_16k would deadlock. An amplifying-then-NaN impl forces that path."""
+
+    class _DivergingImpl:
+        def __init__(self):
+            self.reset_calls = 0
+
+        def process(self, near, far):
+            return np.array([np.inf, np.inf], dtype=np.float32)  # non-finite -> guard fires
+
+        def reset(self):
+            self.reset_calls += 1
+
+    impl = _DivergingImpl()
+    ec = EchoCanceller(impl)
+    near = np.array([0.1, 0.2], dtype=np.float32)
+    out = ec.process_16k(near, np.zeros(2, dtype=np.float32))  # must return, not hang
+    assert np.array_equal(out, near)         # passthrough on divergence
+    assert impl.reset_calls == 1             # guard reset fired exactly once
 
 
 # --- divergence guard (a canceller must never AMPLIFY) ----------------------

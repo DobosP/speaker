@@ -25,9 +25,11 @@ The barge-in stress harness applies this automatically (see barge_stress.py).
 from __future__ import annotations
 
 import contextlib
+import re
 import subprocess
 import threading
 import time
+from typing import Optional
 
 # --- the owner's rig (machine-specific device IDs; this laptop) ------------- #
 LAPTOP_SPEAKER = "alsa_output.pci-0000_00_1f.3.analog-stereo"
@@ -56,6 +58,24 @@ def _set_adc(pct: int) -> None:
                    capture_output=True)
     subprocess.run(["amixer", "-c", str(MIC_ADC_CARD), "sset", "Internal Mic Boost", "0"],
                    capture_output=True)
+
+
+def _amixer_raw(control: str) -> Optional[str]:
+    """Read an amixer control's raw (settable) first-channel value, e.g. '33' from
+    'Front Left: Capture 33 [52%] [7.50dB] [on]' -- used to SAVE the pre-run level
+    so :func:`gain_pinner` can restore it exactly (raw avoids %-rounding drift)."""
+    out = subprocess.run(["amixer", "-c", str(MIC_ADC_CARD), "sget", control],
+                         capture_output=True, text=True).stdout
+    m = re.search(r":\s*(?:Capture\s+)?(\d+)\s*\[", out)
+    return m.group(1) if m else None
+
+
+def _source_pct() -> Optional[str]:
+    """The PipeWire source volume as an integer percent string, or None."""
+    out = subprocess.run(["pactl", "get-source-volume", CAPTURE_SOURCE],
+                         capture_output=True, text=True).stdout
+    m = re.search(r"/\s*(\d+)%", out)
+    return m.group(1) if m else None
 
 
 def ensure_jbl_connected(timeout_s: float = 8.0) -> bool:
@@ -95,13 +115,23 @@ def apply() -> dict:
 
 @contextlib.contextmanager
 def gain_pinner(period_s: float = 0.5):
-    """Hold the mic ADC gain down for the duration of a run (PipeWire keeps
-    resetting it to +30 dB on suspend/resume, which clips the capture)."""
+    """Hold the mic ADC gain down AND the source volume up for the duration of a
+    run (PipeWire resets the ADC to +30 dB *and* restores a saved source volume on
+    every suspend/resume, so without pinning the source a run can capture far too
+    quiet -- the failure observed 2026-06-21 where a stale 13% source survived a
+    barge_stress run and crippled the next live session).
+
+    Crucially, RESTORE the pre-run ADC + source on exit so a run is non-destructive
+    -- it must not leave the mic dialled to the rig's levels for the next app."""
+    orig_cap = _amixer_raw("Capture")
+    orig_boost = _amixer_raw("Internal Mic Boost")
+    orig_src = _source_pct()
     stop = threading.Event()
 
     def _loop() -> None:
         while not stop.is_set():
             _set_adc(MIC_ADC_CAPTURE_PCT)
+            _pactl("set-source-volume", CAPTURE_SOURCE, f"{MIC_SOURCE_VOLUME_PCT}%")
             stop.wait(period_s)
 
     t = threading.Thread(target=_loop, daemon=True)
@@ -111,6 +141,15 @@ def gain_pinner(period_s: float = 0.5):
     finally:
         stop.set()
         t.join(timeout=2.0)
+        # best-effort restore of the pre-run capture levels
+        if orig_cap is not None:
+            subprocess.run(["amixer", "-c", str(MIC_ADC_CARD), "sset", "Capture", orig_cap],
+                           capture_output=True)
+        if orig_boost is not None:
+            subprocess.run(["amixer", "-c", str(MIC_ADC_CARD), "sset",
+                            "Internal Mic Boost", orig_boost], capture_output=True)
+        if orig_src is not None:
+            _pactl("set-source-volume", CAPTURE_SOURCE, f"{orig_src}%")
 
 
 def main() -> int:

@@ -141,6 +141,64 @@ def declick(samples, *, threshold: float = 0.18, max_run: int = 8):
     return y
 
 
+def compute_input_calibration(
+    blocks,
+    *,
+    floor_percentile: float = 20.0,
+    headroom: float = 3.0,
+    min_floor: float = 0.004,
+    max_floor: float = 0.08,
+    clip_level: float = 0.98,
+):
+    """Estimate a device's ambient operating point from a few captured blocks.
+
+    The "smart + generic across all devices" calibration: instead of a hand-set
+    per-machine gain, measure what THIS mic's quiet-between-sounds level actually
+    is at startup and set the AGC's noise floor just above it -- so a deliberately
+    low (never-clipping) OS gain still reaches the recognizer, on any hardware,
+    with no manual tuning. ``blocks`` is a list of mono float32 arrays already at
+    the ASR rate (pre-AGC). Returns a dict the engine applies to :class:`InputAGC`
+    and logs into the run bundle.
+
+    ``noise_floor_rms`` = clamp(``headroom`` * the LOW-percentile per-block RMS,
+    ``min_floor``, ``max_floor``). The low percentile (not the mean) is the quiet
+    floor, robust to a cough or a word spoken during the calibration window; the
+    headroom lifts the AGC's "this is signal, not hiss" gate just above it.
+    ``clipping_fraction`` flags a too-HOT ADC the boost-only AGC cannot fix (the
+    user must lower the OS level). Empty input -> safe defaults (no-op floor)."""
+    import numpy as np
+
+    rmss = []
+    peak = 0.0
+    clipped = 0
+    total = 0
+    for b in blocks:
+        x = np.asarray(b, dtype="float32").reshape(-1)
+        if x.size == 0:
+            continue
+        rmss.append(float(np.sqrt(np.mean(x.astype("float64") ** 2))))
+        peak = max(peak, float(np.max(np.abs(x))))
+        clipped += int(np.count_nonzero(np.abs(x) >= clip_level))
+        total += int(x.size)
+    if not rmss:
+        return {
+            "noise_floor_rms": float(min_floor),
+            "ambient_rms": 0.0,
+            "peak": 0.0,
+            "clipping_fraction": 0.0,
+            "n_blocks": 0,
+        }
+    ambient = float(np.percentile(rmss, floor_percentile))
+    floor = min(max(headroom * ambient, float(min_floor)), float(max_floor))
+    return {
+        "noise_floor_rms": float(floor),
+        "ambient_rms": ambient,
+        "peak": peak,
+        "clipping_fraction": (clipped / total) if total else 0.0,
+        "n_blocks": len(rmss),
+    }
+
+
 class InputAGC:
     """Stateful automatic gain control for the capture path.
 

@@ -47,6 +47,23 @@ mic ─► InputAGC / input_gain ─► anti-alias resample (soxr→16 kHz)
   embedding shifts post-denoise). Skipped automatically when the always-on APM
   already owns noise suppression.
 
+## Smart generic level calibration (`input_calibrate`)
+
+So "low OS gain, never clips" works on any mic without hand-tuning: with
+`input_calibrate=true` the engine listens for `input_calibrate_sec` (~1.5 s) of
+room tone at startup, measures **this device's** quiet floor
+(`compute_input_calibration`, a low-percentile RMS robust to a stray word), and
+sets the `InputAGC` noise gate just above it — the device-generic operating point
+the AGC otherwise cold-starts wrong. It also measures the ADC clip fraction and
+emits an **`input_clipping`** metric into the run bundle (a hot ADC is the #1
+silent STT-garbler, and the boost-only AGC can't fix it — the OS level must come
+down). Off by default (adds the calibration window to startup); only moves the
+AGC floor when `input_agc` is also on, otherwise it just logs the measurement.
+Steady-state clipping during a run surfaces the same `input_clipping` metric from
+the capture heartbeat. Note: don't pair `input_agc=true` with open-speaker
+barge-in — its time-varying gain perturbs the coherence detector; let the APM's
+AGC2 own gain there instead.
+
 ## Echo cancellation backends (`aec_backend`)
 
 | backend | what it is | open-speaker? | deps |

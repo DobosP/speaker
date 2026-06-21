@@ -83,6 +83,35 @@ def test_synthesize_falls_back_to_chunked_waveform_without_callback():
     assert np.concatenate(written).shape[0] == 4000
 
 
+def test_synthesize_normalizes_then_declicks_when_target_rms_set():
+    """With tts_target_rms>0 the non-streaming path runs normalize_rms THEN declick
+    on the whole sentence -- the shipped fluidity path, currently untested at the
+    engine level (no other test sets tts_target_rms, so they all take the streaming
+    branch). A LOUD clip with an impulse spike must come out near the target level
+    with the spike repaired -- proving both stages ran in _synthesize."""
+    sr = 16000
+    t = np.arange(4000) / sr
+    loud = (0.4 * np.sqrt(2) * np.sin(2 * np.pi * 220 * t)).astype("float32")  # RMS ~0.4
+    loud[2000] = 0.95                                   # an impulse spike on top
+
+    class _LoudTts:
+        sample_rate = sr
+
+        def generate(self, text, sid=0, speed=1.0):
+            return _GenAudio(loud.copy(), sample_rate=sr)
+
+    eng = SherpaOnnxEngine(
+        SherpaConfig(tts_target_rms=0.12, tts_declick=True, tts_declick_threshold=0.22)
+    )
+    eng._tts = _LoudTts()
+    written: list = []
+    eng._synthesize("x", written.append)
+    out = np.concatenate(written)
+    out_rms = float(np.sqrt(np.mean(out.astype("float64") ** 2)))
+    assert abs(out_rms - 0.12) < 0.02                  # normalize_rms ran (level steady)
+    assert abs(float(out[2000])) < 0.22                # declick repaired the post-gain spike
+
+
 def test_speak_enqueues_and_stop_speaking_flushes():
     eng = _engine(_StreamingTts())
     eng.speak("one")

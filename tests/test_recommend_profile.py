@@ -35,6 +35,35 @@ def test_recommend_apple_silicon_16gb_gets_macbook_profile():
     assert profile == "macbook_m_series"
 
 
+def test_marketing_capacity_boundaries_classify_up():
+    """Hardware reports just UNDER its nominal capacity (reserved VRAM, kernel RAM),
+    so a real 16/8 GB part must still land in its marketing tier -- not drop one
+    tier down. Regression guard for the owner's RTX 4090 Laptop (15.99 GiB) that
+    was auto-selecting 'desktop' instead of 'desktop_gpu_4090'."""
+    # NVIDIA 16 GB card reports ~16376 MiB = 15.99 GiB.
+    assert recommend(HostInfo(cores=24, ram_gb=30, gpu_kind="nvidia",
+                              gpu_mem_gb=16376 / 1024))[0] == "desktop_gpu_4090"
+    # NVIDIA 8 GB card reports ~8188 MiB = 7.996 GiB -> the 8-16 GB 'desktop' tier
+    # (NOT dropped out of the GPU tiers entirely).
+    assert recommend(HostInfo(cores=8, ram_gb=16, gpu_kind="nvidia",
+                              gpu_mem_gb=8188 / 1024))[0] == "desktop"
+    # Apple 16 GB unified memory commonly probes ~15.3 GiB.
+    assert recommend(HostInfo(cores=10, ram_gb=15.3, gpu_kind="apple",
+                              gpu_mem_gb=15.3))[0] == "macbook_m_series"
+    # 8 GB phone probes ~7.6 GiB.
+    assert recommend(HostInfo(cores=8, ram_gb=7.6, gpu_kind=None, gpu_mem_gb=0,
+                              mobile=True))[0] == "phone"
+
+
+def test_genuine_lower_tier_still_misses_the_higher_threshold():
+    """The margin must not over-reach: a true 12 GB card stays 'desktop', a true
+    6 GB phone stays 'phone_lite' -- the tier below must not leak up."""
+    assert recommend(HostInfo(cores=12, ram_gb=32, gpu_kind="nvidia",
+                              gpu_mem_gb=12.0))[0] == "desktop"
+    assert recommend(HostInfo(cores=6, ram_gb=6.0, gpu_kind=None, gpu_mem_gb=0,
+                              mobile=True))[0] == "phone_lite"
+
+
 def test_recommend_cpu_only_with_16gb_gets_cpu_laptop():
     info = HostInfo(cores=8, ram_gb=16, gpu_kind=None, gpu_mem_gb=0)
     profile, rationale = recommend(info)
@@ -104,7 +133,7 @@ def test_format_report_includes_probe_recommendation_and_run_hint():
     info = HostInfo(cores=8, ram_gb=16, gpu_kind=None, gpu_mem_gb=0)
     out = format_report(info, "cpu_laptop", "no gpu, cloud recommended")
     assert "8" in out
-    assert "16.0 GB" in out
+    assert "16.00 GB" in out          # 2-decimal so a 15.99 GiB part isn't shown as 16.0
     assert "cpu_laptop" in out
     assert "python -m core --device cpu_laptop" in out
 

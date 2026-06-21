@@ -334,6 +334,31 @@ def check_audio_frontend(
     return out
 
 
+def profile_ollama_models(config: dict, device=None) -> tuple:
+    """The ollama models the ACTIVE (resolved) device profile actually needs --
+    main_model + fast_model + router_model from the device-profile-merged llm block.
+    This lets doctor catch a profile that selects a model the box never pulled (e.g.
+    `--device open_speaker` -> gemma3:1b), instead of only the hardcoded defaults
+    (the gap that let the 2026-06-21 `gemma3:1b not found` 404 ship). Empty for a
+    non-ollama backend (llamacpp uses GGUF files, not ollama-pulled models)."""
+    try:
+        from core.config import apply_device_profile, resolve_device
+        dev, _ = resolve_device(config, device or config.get("device", "auto"))
+        merged = apply_device_profile(config, dev)
+    except Exception:  # noqa: BLE001 - best-effort; fall back to the base config
+        merged = config if isinstance(config, dict) else {}
+    llm = merged.get("llm", {}) if isinstance(merged, dict) else {}
+    backend = str(llm.get("backend", "") or "").lower()
+    if backend and backend != "ollama":
+        return ()
+    seen = []
+    for key in ("main_model", "fast_model", "router_model"):
+        v = llm.get(key)
+        if v and str(v) not in seen:
+            seen.append(str(v))
+    return tuple(seen)
+
+
 def run_all(
     config: dict,
     *,
@@ -341,8 +366,13 @@ def run_all(
     ollama_lister: Optional[Callable[[], Iterable[str]]] = None,
     import_fn: Callable[[str], object] = importlib.import_module,
     exists: Callable[[str], bool] = os.path.exists,
-    models_needed: Iterable[str] = DEFAULT_OLLAMA_MODELS,
+    models_needed: Optional[Iterable[str]] = None,
+    device=None,
 ) -> list[Check]:
+    # When models_needed isn't pinned by the caller, check the ACTIVE profile's
+    # models (so a missing profile model is caught), falling back to the defaults.
+    if models_needed is None:
+        models_needed = profile_ollama_models(config, device) or DEFAULT_OLLAMA_MODELS
     checks = [check_python(), check_platform()]
     checks += check_imports(import_fn=import_fn)
     checks.append(check_sherpa_models(config, exists=exists))
@@ -370,6 +400,9 @@ def summarize(checks: Iterable[Check]) -> tuple[bool, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Preflight check for the native voice runtime")
     parser.add_argument("--config", default="config.json")
+    parser.add_argument("--device", default=None,
+                        help="check the models/config a specific device profile needs "
+                             "(e.g. open_speaker); default = config.device")
     args = parser.parse_args(argv)
     try:
         # Use the app loader so config.local.json (the machine-local model paths
@@ -379,7 +412,7 @@ def main(argv: list[str] | None = None) -> int:
         config = _load_config(args.config)
     except Exception:
         config = {}
-    ready, text = summarize(run_all(config))
+    ready, text = summarize(run_all(config, device=args.device))
     print(text)
     print()
     if ready:

@@ -17,9 +17,15 @@ from tools.doctor import (
     check_python,
     check_sherpa_models,
     check_speaker_id,
+    profile_ollama_models,
     run_all,
     summarize,
 )
+
+
+class _FakeSD16k:
+    def query_devices(self, kind):
+        return {"name": "d", "default_samplerate": 16000.0}
 from tools.setup_models import dest_for, extract_member, wire_sherpa_paths
 
 
@@ -320,6 +326,53 @@ def test_audio_frontend_no_apm_anywhere_emits_no_livekit_check():
         "device_profiles": {"desktop": {"sherpa": {"aec_backend": "nlms"}}},
     }
     assert _apm_check(check_audio_frontend(config, import_fn=_no_livekit)) is None
+
+
+# --- doctor validates the SELECTED profile's ollama models (gemma3:1b gap) ------
+
+
+def test_profile_ollama_models_picks_the_selected_profile():
+    cfg = {
+        "device": "auto",
+        "llm": {"main_model": "gemma3:12b", "fast_model": "gemma3:4b"},
+        "device_profiles": {
+            "desktop": {"llm": {"main_model": "gemma3:12b", "fast_model": "gemma3:4b"}},
+            "open_speaker": {"llm": {"main_model": "gemma3:4b", "fast_model": "gemma3:1b"}},
+        },
+    }
+    assert set(profile_ollama_models(cfg, "open_speaker")) == {"gemma3:4b", "gemma3:1b"}
+
+
+def test_profile_ollama_models_empty_for_non_ollama_backend():
+    cfg = {
+        "device": "phone",
+        "llm": {"backend": "ollama", "main_model": "gemma3:12b", "fast_model": "gemma3:4b"},
+        "device_profiles": {
+            "phone": {"llm": {"backend": "llamacpp", "main_model": "a.gguf", "fast_model": "b.gguf"}}
+        },
+    }
+    assert profile_ollama_models(cfg, "phone") == ()  # GGUF, not ollama-pulled
+
+
+def test_run_all_catches_a_missing_profile_model():
+    """`doctor --device open_speaker` on a box without gemma3:1b must FAIL on it --
+    the gap that let the 2026-06-21 `gemma3:1b not found` 404 reach a live run."""
+    cfg = {
+        "device": "auto",
+        "sherpa": {},
+        "llm": {"main_model": "gemma3:12b", "fast_model": "gemma3:4b"},
+        "device_profiles": {
+            "open_speaker": {"llm": {"main_model": "gemma3:4b", "fast_model": "gemma3:1b"}}
+        },
+    }
+    checks = run_all(
+        cfg, sd=_FakeSD16k(),
+        ollama_lister=lambda: ["gemma3:4b", "gemma3:12b"],  # NO gemma3:1b
+        import_fn=lambda name: object(), exists=lambda p: True,
+        device="open_speaker",
+    )
+    bad = [c for c in checks if c.name == "ollama model gemma3:1b"]
+    assert bad and not bad[0].ok and "ollama pull gemma3:1b" in bad[0].hint
 
 
 def test_run_all_ready_when_everything_passes():

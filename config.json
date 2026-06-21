@@ -234,6 +234,29 @@
       "input_gate": {"enabled": false, "unsure_acts": true, "max_context": 4},
       "cleanup": {"enabled": false, "max_context": 3}
     },
+    "open_speaker": {
+      "_comment": "EXPLICIT (non-auto) profile for open-speaker barge-in WITHOUT headphones (the owner HARD REQUIREMENT). Select with `--device open_speaker`. Turns on the production WebRTC AudioProcessingModule (AEC3 + residual-echo suppressor + ML noise suppression + AGC2 + high-pass filter) for the capture path -- it tolerates the NONLINEAR open laptop speaker where the linear NLMS filter measures ~0 dB ERLE and diverges. Needs `pip install livekit` (build_aec fails OPEN to no-AEC if absent) -- it exposes rtc.AudioProcessingModule and runs standalone (no room). Inherits everything else from the base profile; layers gemma3:4b/1b like cpu_laptop so it runs on a real laptop. apm_always_on runs the APM on every block so its NS/AGC also clean the user's own idle utterance (the desktop analog of the OS voice-comm path the Android app already uses). This makes the working open-speaker config reproducible from a CLEAN CLONE instead of living only in a machine-local config.local.json. Re-enroll your voice after enabling (the speaker embedding shifts post-cleanup). VALIDATE live at the mic (barge_stress) before trusting it.",
+      "llm": {
+        "backend": "ollama",
+        "main_model": "gemma3:4b",
+        "fast_model": "gemma3:1b",
+        "keep_alive": "10m",
+        "options": {"num_ctx": 2048, "num_predict": 256}
+      },
+      "sherpa": {
+        "asr_num_threads": 4,
+        "tts_num_threads": 2,
+        "aec_enabled": true,
+        "aec_backend": "apm",
+        "apm_noise_suppression": true,
+        "apm_high_pass_filter": true,
+        "apm_gain_control": false,
+        "apm_always_on": true,
+        "aec_auto_delay": true,
+        "_capture_voice_comm_note": "Set capture_voice_comm=true on Windows (WASAPI Communications). On Linux load PipeWire module-echo-cancel and point input_device at the EC source instead (see docs/audio_pipeline.md)."
+      },
+      "input_gate": {"enabled": false, "unsure_acts": true, "max_context": 4}
+    },
     "phone": {
       "_comment": "router.threshold=0.55 overrides the base 0.3: on phone the 'main' tier is gemma-3-4b GGUF on CPU (n_gpu_layers=0), so over-escalating idiom/borderline turns onto it is a real latency hit. Keep escalation reserved for clearly heavy turns here (the doc-prescribed phone safety valve, docs/archive/flow_control_intelligence_2026-05.md).",
       "llm": {
@@ -432,6 +455,8 @@
     "tts_data_dir": "",
     "tts_speaker_id": 0,
     "tts_speed": 1.0,
+    "_tts_target_rms_comment": "Per-sentence TTS loudness normalization (core/audio_frontend.normalize_rms). The offline VITS voice emits a DIFFERENT absolute amplitude per sentence (a function of phonetics/length: measured RMS 0.108-0.130, peak 0.726-0.863 -> a >2 dB sentence-to-sentence swing the listener hears as uneven/choppy 'not fluid' delivery, and a swinging open-speaker echo floor the barge gate can't settle on). 0.12 normalizes every sentence to a steady ~speech RMS (soft-knee limited on peaks). Tradeoff: switches synthesis from the streaming callback to whole-clip synth (needs the full clip to measure RMS) -> ~0.1s more first-audio latency. 0.0 = OFF (streaming path, byte-identical).",
+    "tts_target_rms": 0.12,
     "speaker_embedding_model": "",
     "speaker_enroll_wav": "",
     "speaker_enroll_embedding": "",

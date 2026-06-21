@@ -214,6 +214,90 @@ def check_audio(sd=None) -> list[Check]:
     return out
 
 
+def _pipewire_echo_cancel_loaded(modules_text: Optional[str] = None) -> Optional[bool]:
+    """True/False if a PipeWire/Pulse ``module-echo-cancel`` (the OS voice-comm /
+    Teams-equivalent capture path) is loaded; ``None`` when ``pactl`` is
+    unavailable (so the check is skipped rather than failed)."""
+    if modules_text is None:
+        import shutil
+        import subprocess
+
+        if shutil.which("pactl") is None:
+            return None
+        try:
+            res = subprocess.run(
+                ["pactl", "list", "short", "modules"],
+                capture_output=True, text=True, timeout=3,
+            )
+            modules_text = res.stdout
+        except Exception:  # noqa: BLE001 - pactl absent / errored -> skip
+            return None
+    return "echo-cancel" in (modules_text or "")
+
+
+def check_audio_frontend(
+    config: dict,
+    *,
+    import_fn: Callable[[str], object] = importlib.import_module,
+    platform: str = sys.platform,
+    modules_text: Optional[str] = None,
+) -> list[Check]:
+    """Capture/playback front-end deps: the anti-alias resampler, the WebRTC APM
+    (only when a profile selects it), and the OS echo-cancel source on Linux."""
+    out: list[Check] = []
+    # soxr: the stateful anti-alias resampler. Without it the capture path falls
+    # back to a stateless per-block polyphase filter (a seam every 0.1 s) -> a real
+    # WER hit on sibilants. Advisory: capture still works, just lower quality.
+    try:
+        import_fn("soxr")
+        out.append(Check("soxr anti-alias resampler", True))
+    except Exception:  # noqa: BLE001
+        out.append(Check(
+            "soxr anti-alias resampler", False,
+            "not installed -> per-block resampling aliases into the speech band",
+            "python -m pip install soxr",
+        ))
+    # If ANY sherpa config (base or a device profile) selects the WebRTC APM
+    # backend, livekit must be importable or AEC silently fails open to none.
+    sherpa = config.get("sherpa", {}) if isinstance(config, dict) else {}
+    backends = {str(sherpa.get("aec_backend", "")).lower()}
+    for prof in (config.get("device_profiles", {}) or {}).values():
+        backends.add(str((prof.get("sherpa", {}) or {}).get("aec_backend", "")).lower())
+    if backends & {"apm", "webrtc"}:
+        try:
+            rtc = import_fn("livekit.rtc")
+            ok = hasattr(rtc, "AudioProcessingModule")
+            out.append(Check(
+                "livekit WebRTC APM (aec_backend=apm)", ok,
+                "" if ok else "livekit present but exposes no AudioProcessingModule",
+                "" if ok else "python -m pip install -U livekit",
+            ))
+        except Exception:  # noqa: BLE001
+            out.append(Check(
+                "livekit WebRTC APM (aec_backend=apm)", False,
+                "aec_backend='apm' configured but livekit isn't installed (AEC fails open to none)",
+                "python -m pip install livekit",
+            ))
+    # Linux + the user opted into the OS voice-comm path (capture_voice_comm): is
+    # the PipeWire/Pulse echo-cancel source actually loaded? Only checked when
+    # requested -- it is an ALTERNATIVE to the in-app APM, not required, so it must
+    # never block READY for someone using the APM (or no AEC at all).
+    wants_voice_comm = bool(sherpa.get("capture_voice_comm", False)) or any(
+        (prof.get("sherpa", {}) or {}).get("capture_voice_comm", False)
+        for prof in (config.get("device_profiles", {}) or {}).values()
+    )
+    if platform.startswith("linux") and wants_voice_comm:
+        loaded = _pipewire_echo_cancel_loaded(modules_text)
+        if loaded is not None:
+            out.append(Check(
+                "OS echo-cancel source (PipeWire)", loaded,
+                "module-echo-cancel loaded" if loaded else "not loaded (raw mic; no OS AEC/NS/AGC)",
+                "" if loaded
+                else "pactl load-module module-echo-cancel aec_method=webrtc  (see docs/audio_pipeline.md)",
+            ))
+    return out
+
+
 def run_all(
     config: dict,
     *,
@@ -229,6 +313,7 @@ def run_all(
     checks.append(check_speaker_id(config, exists=exists))
     checks += check_ollama(models_needed=models_needed, lister=ollama_lister)
     checks += check_audio(sd=sd)
+    checks += check_audio_frontend(config)
     return checks
 
 

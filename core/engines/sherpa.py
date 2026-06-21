@@ -280,6 +280,36 @@ class SherpaConfig:
     # can't keep real-time.
     aec_num_threads: int = 1
     aec_relaxed_margin_db: float = 3.0
+    # Auto-calibrate the AEC far-end read delay during a run. The coherence
+    # detector already measures the speaker->mic lag (echo_coherence.
+    # measured_delay_samples); when this is on the capture loop periodically feeds
+    # that measurement back into _aec_ref_delay, so a mis-set aec_ref_delay_ms
+    # self-corrects instead of degrading cancellation for the whole session (a
+    # wrong delay = poor/zero ERLE; the true delay is device-specific: ~40ms a
+    # laptop speaker vs ~260ms Bluetooth). No-op when AEC or coherence is off.
+    aec_auto_delay: bool = True
+    # --- WebRTC Audio Processing Module (aec_backend="apm") ----------------------
+    # The production audio front-end Chrome/Meet/Teams ship: AEC3 (multi-delay,
+    # nonlinear-tolerant echo cancel) + a residual-echo suppressor + ML noise
+    # suppression + AGC2 + a high-pass filter, in one stage. Selected via
+    # aec_backend="apm" (needs the `livekit` package, which exposes
+    # rtc.AudioProcessingModule; build_aec fails OPEN to no-AEC if it is absent).
+    # Unlike the hand-rolled NLMS/DTLN backends, AEC3 handles a nonlinear open
+    # laptop speaker (where linear NLMS measures ~0 dB ERLE and diverges). These
+    # toggle the four APM sub-stages; the echo canceller is always on for the
+    # "apm" backend (that is the point). apm_always_on runs the whole APM on EVERY
+    # capture block (not just during playback) so its NS/AGC/HPF clean the user's
+    # own idle-path utterance too -- the desktop analog of the OS voice-comm path
+    # the mobile app already uses; OFF keeps the idle path byte-identical and only
+    # engages the APM (for echo cancel) while the assistant speaks.
+    apm_noise_suppression: bool = True
+    apm_high_pass_filter: bool = True
+    apm_gain_control: bool = False
+    apm_always_on: bool = False
+    # Hint the AEC3 render->capture delay (ms). 0 is correct here because the
+    # far-end reference is already time-aligned to the mic by the FarEndRing read
+    # at aec_ref_delay_ms; AEC3 refines it internally from there.
+    apm_stream_delay_ms: int = 0
     # Post-AEC barge-in: a real barge must stand this many dB above the AUTO-
     # CALIBRATED residual echo+noise floor (``_playback_floor_rms``, learned online
     # during playback with a freeze-on-burst EWMA). Because the floor tracks the
@@ -328,6 +358,14 @@ class SherpaConfig:
     # speech. True by default (the artifact is real on the shipped voice); set
     # false for byte-identical legacy output.
     tts_declick: bool = True
+    # Impulse-detection threshold for the de-clicker (|sample - local median| that
+    # counts as a spike to repair). The real VITS spikes jump to ~0.5-0.95 while
+    # legitimate dense-consonant/fricative energy peaks around ~0.14, so a bar at
+    # ~0.22 catches every real click yet leaves consonants untouched -- the prior
+    # default (0.18, the function default) sat close enough to speech to smear the
+    # consonant-densest words ("robotic" timbre). Lower it only if real clicks are
+    # getting through; raise it if speech detail is being softened.
+    tts_declick_threshold: float = 0.22
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -342,6 +380,11 @@ class SherpaConfig:
     # raise min_speech to demand a denser/longer talk-over before cutting.
     barge_in_min_speech_sec: float = 0.2
     barge_in_sustain_window_sec: float = 0.5
+    # Raised-cosine fade-out (ms) applied to the playback FIFO tail on a barge-in
+    # cut, so the audible stop is a smooth ~few-ms glide to silence instead of an
+    # instant step discontinuity (a click/pop on every interrupt, also teed as a
+    # transient into the echo reference). 0 = legacy hard cut.
+    barge_fade_ms: float = 4.0
     # Master switch for talk-over barge-in during playback. On OPEN SPEAKERS with
     # no AEC, the assistant's own (loud) TTS leaks into the mic and a level-only
     # gate self-interrupts longer responses (observed: a story reply cut itself
@@ -551,6 +594,19 @@ class SherpaConfig:
     # the default output is e.g. an HDMI monitor with no speakers.
     input_device: object = None
     output_device: object = None
+    # Capture from the OS "voice communication" path so the DRIVER/OS applies its
+    # own AEC + noise-suppression + AGC before the app reads a sample -- the same
+    # path Microsoft Teams / browser getUserMedia (and this project's own Android
+    # app) use, and the single biggest reason Teams' capture sounds clean on the
+    # bare laptop while a raw-mic app does not. On WINDOWS this passes
+    # sounddevice's WasapiSettings(communications=True) (the AEC/NS Communications
+    # category). On LINUX the OS voice-comm path is PipeWire's webrtc
+    # module-echo-cancel virtual source: load it once and point ``input_device`` at
+    # the "Echo Cancellation Source" node (no code flag -- see docs/audio_pipeline.md);
+    # ``python -m tools.doctor`` checks whether it is loaded. macOS uses the
+    # VoiceProcessingIO unit (not yet wired). Fails open: if the platform hint
+    # can't be applied the raw stream is opened as before.
+    capture_voice_comm: bool = False
     # Close the TTS output stream when the play queue drains (default: keep it
     # open for low-latency next-utterance start). Enable this when ANOTHER process
     # must share the one output device -- e.g. the live_session ACOUSTIC test,
@@ -738,6 +794,14 @@ class SherpaOnnxEngine(AudioEngine):
         # thread). None until the coherence detector is built.
         self._coh_ref_q: "Optional[deque]" = None
         self._aec_ref_delay = 0
+        # WebRTC-APM flags (set in _build from the canceller the backend returns):
+        # always_on => run the APM on every capture block (idle path too) for its
+        # NS/AGC/HPF; suppresses_noise => it owns NS, so skip the GTCRN denoiser.
+        self._apm_always_on = False
+        self._apm_owns_ns = False
+        # aec_auto_delay: rolling counter so the measured speaker->mic delay is fed
+        # back into _aec_ref_delay ~once/sec during playback (not every block).
+        self._aec_delay_recalc_blocks = 0
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
@@ -1004,9 +1068,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._far_ref = FarEndRing() if self._aec is not None else None
         if self._aec is not None:
             self._aec_ref_delay = int(c.sample_rate * c.aec_ref_delay_ms / 1000)
+            # The WebRTC-APM backend tags itself with these (absent on nlms/dtln).
+            self._apm_always_on = bool(getattr(self._aec, "always_on", False))
+            self._apm_owns_ns = self._apm_always_on and bool(
+                getattr(self._aec, "suppresses_noise", False)
+            )
             log.info(
-                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms)",
-                c.aec_backend, c.aec_ref_delay_ms,
+                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms, "
+                "apm_always_on=%s)",
+                c.aec_backend, c.aec_ref_delay_ms, self._apm_always_on,
             )
         # Device-adaptive fused double-talk detector: the open-speaker barge trigger.
         # Built only when coherence + AEC are both on (it fuses the coherence
@@ -1167,6 +1237,22 @@ class SherpaOnnxEngine(AudioEngine):
             supports=_supports,
         )
 
+        # Windows-only: the WASAPI "Communications" category turns on the OS
+        # AEC/NS/AGC the same way Teams gets it. Best-effort -- absent on
+        # non-WASAPI hosts, so build it once and fail open if unavailable.
+        extra_settings = None
+        if self.config.capture_voice_comm:
+            try:
+                extra_settings = sd.WasapiSettings(communications=True)
+                log.info("capture: requesting the WASAPI Communications (voice-comm) path")
+            except Exception as exc:  # noqa: BLE001 - not WASAPI / old sounddevice
+                log.info(
+                    "capture_voice_comm set but the WASAPI path is unavailable (%s); on Linux "
+                    "load PipeWire module-echo-cancel and point input_device at the EC source",
+                    exc,
+                )
+                extra_settings = None
+
         def _open(device, samplerate):
             return sd.InputStream(
                 channels=1,
@@ -1174,6 +1260,7 @@ class SherpaOnnxEngine(AudioEngine):
                 dtype="float32",
                 blocksize=int(samplerate * 0.1),
                 device=device,
+                extra_settings=extra_settings,
             )
 
         self._stream_in = _RecoveringInputStream(
@@ -1327,7 +1414,13 @@ class SherpaOnnxEngine(AudioEngine):
                 and self._fifo is not None
                 and self._speaking.is_set()
             ):
-                self._fifo.flush()
+                # Fade the tail to silence instead of a hard cut (de-click the
+                # barge-in). The FIFO is sized in play_sr samples.
+                fade = (
+                    int(self._play_sr * self.config.barge_fade_ms / 1000.0)
+                    if self._play_sr else 0
+                )
+                self._fifo.flush(fade)
                 cut = True
         # Playback is being cut: drop the echo reference so the capture loop
         # doesn't keep gating barge-in against a level that is no longer audible.
@@ -1723,16 +1816,30 @@ class SherpaOnnxEngine(AudioEngine):
                     # which garbles ASR on the user's own (echo-free) voice. So
                     # skip it then: nothing to cancel, and the input reaches ASR
                     # untouched. (Also saves the DTLN cost on every idle block.)
-                    if far is not None and float(np.sqrt(np.mean(
+                    far_energetic = far is not None and float(np.sqrt(np.mean(
                         np.asarray(far, dtype="float64") ** 2
-                    ))) > 1e-4:
+                    ))) > 1e-4
+                    if self._apm_always_on:
+                        # WebRTC APM runs on EVERY block so its NS/AGC/HPF also
+                        # clean the user's own (echo-free) idle utterance -- the
+                        # desktop analog of the OS voice-comm path. When nothing is
+                        # playing the far ref is ~zeros, so the echo canceller
+                        # self-cancels to a no-op (measured idle passthrough ~93%).
+                        if far is None:
+                            far = np.zeros(samples.shape[0], dtype="float32")
+                        samples = self._aec.process_16k(samples, far)
+                    elif far_energetic:
                         samples = self._aec.process_16k(samples, far)
                 # Speech denoise on the 16 kHz block, AFTER resampling and BEFORE
                 # every consumer (recorder, accept_waveform, the speaker embedder,
                 # the VAD). When no denoiser is built this is a zero-cost identity,
                 # so the path stays byte-identical to no-denoise. Passthrough-on-
                 # error inside, so it can never crash this daemon thread.
-                if self._denoiser is not None:
+                # Skip the GTCRN denoiser when the always-on APM already owns noise
+                # suppression (it cleaned every block above) -- double-NS over-
+                # suppresses. A playback-gated APM does NOT clean idle blocks, so
+                # the denoiser still runs then.
+                if self._denoiser is not None and not self._apm_owns_ns:
                     samples = self._denoiser.process_16k(samples)
 
                 if self._recorder is not None:
@@ -1842,6 +1949,19 @@ class SherpaOnnxEngine(AudioEngine):
                     # current speaker volume + room noise online -- no manual
                     # calibration, and the steady echo can't self-interrupt.
                     if self._aec is not None:
+                        # Auto-calibrate the far-end read delay from the coherence
+                        # detector's measured speaker->mic lag (~once/sec, not every
+                        # block). A mis-set aec_ref_delay_ms then self-corrects
+                        # instead of degrading cancellation for the whole session;
+                        # both rings are teed from the same callback so the delay is
+                        # directly transferable. No-op until a delay is measured.
+                        if self.config.aec_auto_delay and self._echo_coherence is not None:
+                            self._aec_delay_recalc_blocks += 1
+                            if self._aec_delay_recalc_blocks >= 10:
+                                self._aec_delay_recalc_blocks = 0
+                                _d = self._echo_coherence.measured_delay_samples()
+                                if _d is not None and 0 <= _d < self.config.sample_rate:
+                                    self._aec_ref_delay = int(_d)
                         self._update_playback_floor(rms(samples))
                         # ALSO track the echo-only floor on the RAW pre-AEC mic. The
                         # barge energy-confirmation keys off THIS (not the post-AEC
@@ -2473,7 +2593,10 @@ class SherpaOnnxEngine(AudioEngine):
                 def on_chunk(samples, *_progress) -> int:
                     blk = np.asarray(samples, dtype="float32").reshape(-1)
                     if self.config.tts_declick:        # repair VITS impulse spikes
-                        blk = np.asarray(declick(blk), dtype="float32").reshape(-1)
+                        blk = np.asarray(
+                            declick(blk, threshold=self.config.tts_declick_threshold),
+                            dtype="float32",
+                        ).reshape(-1)
                     write(blk)
                     return 0 if (
                         self._stop_speaking.is_set()
@@ -2496,7 +2619,10 @@ class SherpaOnnxEngine(AudioEngine):
             normalize_rms(samples, target_rms), dtype="float32"
         ).reshape(-1)
         if self.config.tts_declick:                    # repair VITS impulse spikes
-            samples = np.asarray(declick(samples), dtype="float32").reshape(-1)
+            samples = np.asarray(
+                declick(samples, threshold=self.config.tts_declick_threshold),
+                dtype="float32",
+            ).reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):

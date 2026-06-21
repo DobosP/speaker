@@ -257,27 +257,63 @@ def check_audio_frontend(
             "not installed -> per-block resampling aliases into the speech band",
             "python -m pip install soxr",
         ))
-    # If ANY sherpa config (base or a device profile) selects the WebRTC APM
-    # backend, livekit must be importable or AEC silently fails open to none.
+    # livekit (the WebRTC APM) must be importable ONLY when the config actually
+    # SELECTS the apm backend -- i.e. the ACTIVE resolved profile, not merely any
+    # profile that DEFINES it. The committed `open_speaker` profile selects apm,
+    # but it is opt-in (--device open_speaker); livekit is a remote-only optional
+    # dependency, so demanding it on every clean clone (which resolves to a non-apm
+    # profile) would wrongly flip READY=False on a perfectly healthy default box.
+    # Mirror the capture_voice_comm rule below: an unselected apm profile is
+    # ADVISORY (never blocks READY).
     sherpa = config.get("sherpa", {}) if isinstance(config, dict) else {}
-    backends = {str(sherpa.get("aec_backend", "")).lower()}
+    active_backend = str(sherpa.get("aec_backend", "")).lower()
+    try:  # resolve the device the way core.app does; best-effort
+        from core.config import apply_device_profile, resolve_device
+        dev, _rationale = resolve_device(config, config.get("device", "auto"))
+        active_backend = str(
+            (apply_device_profile(config, dev).get("sherpa", {}) or {}).get(
+                "aec_backend", active_backend)
+        ).lower()
+    except Exception:  # noqa: BLE001 - fall back to the base backend
+        pass
+    defined_backends = {active_backend}
     for prof in (config.get("device_profiles", {}) or {}).values():
-        backends.add(str((prof.get("sherpa", {}) or {}).get("aec_backend", "")).lower())
-    if backends & {"apm", "webrtc"}:
+        defined_backends.add(str((prof.get("sherpa", {}) or {}).get("aec_backend", "")).lower())
+
+    def _have_apm() -> Optional[bool]:
         try:
             rtc = import_fn("livekit.rtc")
-            ok = hasattr(rtc, "AudioProcessingModule")
-            out.append(Check(
-                "livekit WebRTC APM (aec_backend=apm)", ok,
-                "" if ok else "livekit present but exposes no AudioProcessingModule",
-                "" if ok else "python -m pip install -U livekit",
-            ))
+            return bool(hasattr(rtc, "AudioProcessingModule"))
         except Exception:  # noqa: BLE001
+            return None  # livekit not importable at all
+
+    if active_backend in ("apm", "webrtc"):
+        have = _have_apm()
+        if have:
+            out.append(Check("livekit WebRTC APM (aec_backend=apm)", True, "", ""))
+        elif have is False:
             out.append(Check(
                 "livekit WebRTC APM (aec_backend=apm)", False,
-                "aec_backend='apm' configured but livekit isn't installed (AEC fails open to none)",
+                "livekit present but exposes no AudioProcessingModule",
+                "python -m pip install -U livekit",
+            ))
+        else:
+            out.append(Check(
+                "livekit WebRTC APM (aec_backend=apm)", False,
+                "aec_backend='apm' selected but livekit isn't installed (AEC fails open to none)",
                 "python -m pip install livekit",
             ))
+    elif defined_backends & {"apm", "webrtc"}:
+        # An UNSELECTED profile (e.g. open_speaker) uses apm. Advisory only --
+        # ok=True so it never flips READY; just tells the user what they'd need.
+        have = _have_apm()
+        out.append(Check(
+            "livekit WebRTC APM (optional; an unselected profile uses aec_backend=apm)",
+            True,
+            "livekit available" if have
+            else "not installed; only needed if you select an apm profile (e.g. --device open_speaker)",
+            "" if have else "python -m pip install livekit",
+        ))
     # Linux + the user opted into the OS voice-comm path (capture_voice_comm): is
     # the PipeWire/Pulse echo-cancel source actually loaded? Only checked when
     # requested -- it is an ALTERNATIVE to the in-app APM, not required, so it must

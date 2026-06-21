@@ -38,6 +38,7 @@ from ..audio_frontend import (
     AudioResampler,
     InputAGC,
     apply_gain_soft_limit,
+    compute_input_calibration,
     declick,
     normalize_rms,
 )
@@ -647,6 +648,17 @@ class SherpaConfig:
     input_agc_noise_floor_rms: float = 0.004
     input_agc_rise: float = 0.08
     input_agc_fall: float = 0.4
+    # Startup ambient calibration (core/audio_frontend.compute_input_calibration):
+    # before the capture loop starts, listen for ``input_calibrate_sec`` of room
+    # tone and set the AGC's noise-floor gate just above THIS device's measured
+    # quiet level -- the device-generic "establish an operating point" step so the
+    # AGC doesn't cold-start on a hardcoded floor that's wrong for the mic. Also
+    # measures the ADC clip fraction and surfaces an `input_clipping` metric (the
+    # boost-only AGC can't fix a hot ADC -- the OS level must come down). OFF by
+    # default (adds the calibration window to startup); only adjusts the AGC when
+    # ``input_agc`` is also on, otherwise it just logs the measured floor.
+    input_calibrate: bool = False
+    input_calibrate_sec: float = 1.5
     # PIN the mic capture sample rate (0 = auto: probe 16k, then a clean
     # integer-ratio rate, then the device native rate). Set this to the device's
     # NATIVE rate for a USB mic that self-mutes when ALSA reconfigures it to a
@@ -872,6 +884,8 @@ class SherpaOnnxEngine(AudioEngine):
         # ADC rails shreds the waveform -> garbled STT. Detected in the capture
         # heartbeat from the per-block clipped-sample fraction.
         self._clip_warned: bool = False
+        # Result of the optional startup ambient calibration (None until run).
+        self._last_calibration: Optional[dict] = None
         # Optional input AGC: lets the user run a low (non-clipping) OS mic and
         # have the captured level normalized to the recognizer's sweet spot.
         c = self.config
@@ -1302,6 +1316,8 @@ class SherpaOnnxEngine(AudioEngine):
                 self._ref_recorder = WavRecorder(ref_path, self.config.sample_rate)
                 self._ref_accum = np.zeros(0, dtype="float32")
                 log.info("recording playback reference (replay) -> %s", ref_path)
+        if self.config.input_calibrate:
+            self._calibrate_input()
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
@@ -1727,6 +1743,54 @@ class SherpaOnnxEngine(AudioEngine):
         )
 
     # --- internals ---
+    def _calibrate_input(self) -> None:
+        """Startup ambient calibration: read ``input_calibrate_sec`` of room tone
+        off the open stream (BEFORE the capture loop starts) and set the AGC's
+        noise floor to this device's measured quiet level -- the device-generic
+        operating point. Best-effort: any read error just ends calibration early
+        and the engine proceeds with the configured defaults. Also surfaces an
+        ``input_clipping`` metric into the run bundle if the ADC is already hot."""
+        import numpy as np
+
+        sec = float(self.config.input_calibrate_sec)
+        if sec <= 0.0 or self._stream_in is None:
+            return
+        block_sec = self.config.block_sec
+        n_blocks = max(1, int(round(sec / block_sec)))
+        blocks = []
+        for _ in range(n_blocks):
+            try:
+                audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
+            except Exception:  # noqa: BLE001 - end calibration early, proceed
+                break
+            s = np.asarray(audio, dtype="float32").reshape(-1)
+            if self._resampler is not None:
+                s = self._resampler.process(s)
+            if s.size:
+                blocks.append(s)
+        if not blocks:
+            return
+        cal = compute_input_calibration(blocks)
+        self._last_calibration = cal
+        log.info(
+            "input calibration: ambient_rms=%.4f -> noise_floor=%.4f peak=%.3f clip=%.1f%% (%d blocks)",
+            cal["ambient_rms"], cal["noise_floor_rms"], cal["peak"],
+            cal["clipping_fraction"] * 100.0, cal["n_blocks"],
+        )
+        if self._input_agc is not None:
+            self._input_agc.noise_floor_rms = cal["noise_floor_rms"]
+        if cal["clipping_fraction"] > 0.02:
+            self._clip_warned = True  # don't double-warn in the heartbeat
+            log.warning(
+                "input is CLIPPING during calibration (%.1f%% railed) -- the boost-only AGC "
+                "cannot fix a hot ADC; LOWER the OS mic level / disable 'mic boost'.",
+                cal["clipping_fraction"] * 100.0,
+            )
+            try:
+                self._cb.on_metric("input_clipping")
+            except Exception:  # noqa: BLE001 - metric is best-effort
+                pass
+
     def _capture_loop(self) -> None:
         import numpy as np
 
@@ -1882,6 +1946,12 @@ class SherpaOnnxEngine(AudioEngine):
                             "OS mic input level / disable 'mic boost' (target rms ~0.1-0.2).",
                             avg_clip * 100.0, avg,
                         )
+                        # Surface it into the run bundle (summary.json), not just the
+                        # log -- a hot ADC is the #1 silent STT-garbler.
+                        try:
+                            self._cb.on_metric("input_clipping")
+                        except Exception:  # noqa: BLE001 - metric is best-effort
+                            pass
                     self._cb.on_heartbeat()
                     last_beat, beat_blocks, beat_level, beat_clip = now, 0, 0.0, 0.0
 

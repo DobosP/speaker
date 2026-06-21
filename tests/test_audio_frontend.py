@@ -137,3 +137,25 @@ def test_wer_normalizes_case_and_punctuation():
 def test_wer_empty_reference():
     assert word_error_rate("", "").wer == 0.0
     assert word_error_rate("", "spurious words").wer == 1.0
+
+
+def test_normalize_rms_collapses_sentence_to_sentence_variance():
+    """The "fluid TTS" property: a sequence of sentences at WILDLY different raw
+    levels (what the VITS voice emits) must come out at a STEADY level, so playback
+    isn't choppy. Pins the spread-collapse, not just per-clip level (which the
+    test above already covers)."""
+    rng = np.random.default_rng(7)
+    target = 0.12
+    levels = [0.02, 0.05, 0.10, 0.20, 0.30, 0.40]
+    raw, out = [], []
+    for i, lvl in enumerate(levels):
+        x = rng.standard_normal(2000).astype("float32")
+        x *= lvl / float(np.sqrt(np.mean(x ** 2)))      # exact raw RMS = lvl
+        raw.append(lvl)
+        y = np.asarray(normalize_rms(x, target), dtype="float32")
+        out.append(float(np.sqrt(np.mean(y.astype("float64") ** 2))))
+    raw_spread = max(raw) - min(raw)                    # 0.38
+    out_spread = max(out) - min(out)
+    assert out_spread < raw_spread / 8                  # variance collapsed (no /0)
+    for r in out:
+        assert abs(r - target) < 0.15 * target          # each within 15% of target

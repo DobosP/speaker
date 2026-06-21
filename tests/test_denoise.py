@@ -259,6 +259,42 @@ def test_capture_hook_applies_injected_denoiser():
     np.testing.assert_array_equal(impl.seen[0][0], block)
 
 
+def test_always_on_apm_feeds_asr_cleaned_block_and_skips_denoiser():
+    """The apm_always_on capture path must (a) feed ASR the AEC OUTPUT (not the raw
+    mic) on EVERY block, and (b) skip the GTCRN denoiser when the APM owns NS --
+    on a realistic 1600-sample block, with finite non-empty output. No livekit: a
+    fake AEC stands in for the real WebRTC APM."""
+    from core.engines._aec import FarEndRing
+
+    class _FakeAEC:
+        always_on = True
+        suppresses_noise = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def process_16k(self, near, far):
+            self.calls += 1
+            return np.asarray(near, dtype="float32") * 0.5
+
+    eng = SherpaOnnxEngine(SherpaConfig())
+    aec = _FakeAEC()
+    eng._aec = aec
+    eng._apm_always_on = True
+    eng._apm_owns_ns = True
+    eng._far_ref = FarEndRing()
+    den_impl = _FakeImpl(scale=0.25)
+    eng._denoiser = Denoiser(den_impl, sample_rate=16000)
+    block = np.full(1600, 0.2, dtype="float32")
+    rec = _run_one_block(eng, block)
+    assert rec.blocks, "accept_waveform was never called"
+    out = rec.blocks[0]
+    np.testing.assert_allclose(out, block * 0.5)        # ASR saw the APM output, not raw
+    assert aec.calls >= 1                               # the APM ran on the block
+    assert not den_impl.seen                            # denoiser SKIPPED (apm owns NS)
+    assert out.size > 0 and np.all(np.isfinite(out))
+
+
 def test_capture_hook_recorder_sees_denoised_block():
     eng = SherpaOnnxEngine(SherpaConfig())
     eng._denoiser = Denoiser(_FakeImpl(scale=0.25), sample_rate=16000)

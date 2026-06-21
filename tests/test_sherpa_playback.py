@@ -221,9 +221,11 @@ class _FakeOutStream:
 class _FakeFIFO:
     def __init__(self):
         self.flushed = 0
+        self.last_fade = None
 
-    def flush(self):
+    def flush(self, fade_samples=0):
         self.flushed += 1
+        self.last_fade = fade_samples
 
     def count(self):
         return 0

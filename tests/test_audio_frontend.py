@@ -139,6 +139,16 @@ def test_wer_empty_reference():
     assert word_error_rate("", "spurious words").wer == 1.0
 
 
+def test_resampler_accepts_quality_kwarg():
+    # The capture downsampler takes a soxr quality kernel; VHQ/HQ/LQ must all build
+    # (default HQ is byte-identical) and still resample roughly by the ratio.
+    for q in ("VHQ", "HQ", "LQ"):
+        r = AudioResampler(48000, 16000, quality=q)
+        assert r.kind in ("soxr", "scipy", "linear")
+        out = r.process(np.zeros(4800, dtype="float32"))
+        assert 0 < out.size <= 1700          # ~1600 samples out (+/- FIR warmup)
+
+
 def test_normalize_rms_collapses_sentence_to_sentence_variance():
     """The "fluid TTS" property: a sequence of sentences at WILDLY different raw
     levels (what the VITS voice emits) must come out at a STEADY level, so playback

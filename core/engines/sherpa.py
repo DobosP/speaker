@@ -161,6 +161,19 @@ class SherpaConfig:
     asr_final_decoder: str = ""          # Whisper only
     asr_final_use_itn: bool = True       # SenseVoice inverse-text-normalization
     asr_final_language: str = ""         # SenseVoice language hint ("en", "" = auto)
+    # Contextual biasing for the SECOND-PASS final (the only biasing that reaches
+    # the text the LLM sees -- ``asr_hotwords`` biases ONLY the streaming pass,
+    # which the SenseVoice second pass overrides for normal-length turns). These
+    # wire sherpa-onnx's homophone-replacement + rule-FST machinery: hr_dict_dir +
+    # hr_lexicon + hr_rule_fsts replace homophones in the final (e.g. a name the
+    # model consistently mishears), and rule_fsts applies general replacement FSTs.
+    # All empty (default) = byte-identical; an older sherpa build that lacks these
+    # params drops them via ``_supported`` (no crash). Author an hr dict per the
+    # sherpa-onnx homophone-replacer docs. See docs/asr_biasing.md.
+    asr_final_hr_dict_dir: str = ""
+    asr_final_hr_lexicon: str = ""
+    asr_final_hr_rule_fsts: str = ""
+    asr_final_rule_fsts: str = ""
     # Skip the second pass on utterances shorter than this (a tiny "yes"/"stop"
     # the streaming model already nails) to save the offline-decode latency.
     asr_final_min_sec: float = 0.0
@@ -186,6 +199,13 @@ class SherpaConfig:
     # should be primed to hear (names, jargon, command words), so they aren't
     # mis-transcribed. ``asr_hotwords_score`` is the boost strength. Needs
     # ``modified_beam_search``. Empty -> no biasing.
+    # IMPORTANT: this biases ONLY the STREAMING transducer (the partials + the
+    # short-clip / no-second-pass final). When ``asr_final_backend='sense_voice'``
+    # is on (the default when the model is present), the SenseVoice second pass
+    # RE-transcribes the utterance and OVERRIDES the streaming text for any
+    # normal-length turn -- so a name fixed here will NOT appear in the LLM-facing
+    # final. To bias the FINAL transcript, use the ``asr_final_hr_*`` / rule-FST
+    # fields above (homophone replacement) instead. See docs/asr_biasing.md.
     asr_hotwords: str = ""
     asr_hotwords_score: float = 1.5
     # Endpoint rules (the turn-commit latency knobs). rule1 fires on trailing
@@ -667,6 +687,11 @@ class SherpaConfig:
     # exactly this rate and never probes others; the anti-aliased soxr resampler
     # converts to ``sample_rate`` (16 kHz) regardless of ratio.
     capture_samplerate: int = 0
+    # soxr resampler kernel quality for the capture downsample (only runs when the
+    # mic can't open at 16 kHz). "HQ" (default) is transparent for speech; "VHQ"
+    # spends a little more CPU for a steeper anti-alias on a capable box; "LQ"/"MQ"
+    # trade fidelity for CPU on a weak SoC. Default "HQ" = byte-identical.
+    resampler_quality: str = "HQ"
     # ONNX execution provider for STT/TTS/speaker-ID. Keep "cpu" so the GPU
     # stays free for the LLM; sherpa-onnx also supports "cuda"/"coreml".
     provider: str = "cpu"
@@ -1290,7 +1315,7 @@ class SherpaOnnxEngine(AudioEngine):
         # scipy polyphase -> linear). Replaces the old per-block np.interp, which
         # aliased content >8 kHz into the speech band and corrupted ASR features.
         self._resampler = (
-            AudioResampler(self._capture_sr, preferred_sr)
+            AudioResampler(self._capture_sr, preferred_sr, quality=self.config.resampler_quality)
             if self._capture_sr != preferred_sr
             else None
         )

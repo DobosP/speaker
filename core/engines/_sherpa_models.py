@@ -95,6 +95,18 @@ def build_final_recognizer(c: "SherpaConfig"):
                 provider=c.provider, use_itn=bool(getattr(c, "asr_final_use_itn", True)),
                 language=getattr(c, "asr_final_language", "") or "",
             )
+            # Contextual biasing for the FINAL transcript (homophone replacement +
+            # rule FSTs). Added ONLY when set so the call is byte-identical when
+            # unconfigured; _supported drops them on an older sherpa build.
+            for cfg_key, kw in (
+                ("asr_final_hr_dict_dir", "hr_dict_dir"),
+                ("asr_final_hr_lexicon", "hr_lexicon"),
+                ("asr_final_hr_rule_fsts", "hr_rule_fsts"),
+                ("asr_final_rule_fsts", "rule_fsts"),
+            ):
+                val = getattr(c, cfg_key, "") or ""
+                if val:
+                    kwargs[kw] = val
             return sherpa_onnx.OfflineRecognizer.from_sense_voice(**_supported(
                 sherpa_onnx.OfflineRecognizer.from_sense_voice, kwargs))
         if backend == "whisper":

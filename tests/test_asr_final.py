@@ -140,3 +140,49 @@ def test_config_parses_final_fields():
     })
     assert c.asr_final_backend == "sense_voice" and c.asr_final_model == "/m.onnx"
     assert c.asr_final_use_itn is False and c.asr_final_min_sec == 0.5
+
+
+def _capture_sense_voice(monkeypatch):
+    """Patch from_sense_voice to capture kwargs + make the model 'exist'."""
+    import os
+
+    import sherpa_onnx
+
+    captured: dict = {}
+
+    def _fake(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(sherpa_onnx.OfflineRecognizer, "from_sense_voice", _fake)
+    monkeypatch.setattr(os.path, "exists", lambda _p: True)
+    return captured
+
+
+def test_build_final_recognizer_wires_homophone_replacement(monkeypatch):
+    # The hr_* / rule_fsts fields are the ONLY contextual biasing that reaches the
+    # SenseVoice second-pass final (asr_hotwords biases only the streaming pass).
+    captured = _capture_sense_voice(monkeypatch)
+    cfg = SherpaConfig.from_dict({
+        "asr_final_backend": "sense_voice",
+        "asr_final_model": "/fake/model.onnx",
+        "asr_final_hr_dict_dir": "/hr/dict",
+        "asr_final_hr_lexicon": "/hr/lexicon.txt",
+        "asr_final_rule_fsts": "/rules.fst",
+    })
+    assert build_final_recognizer(cfg) is not None
+    assert captured["hr_dict_dir"] == "/hr/dict"
+    assert captured["hr_lexicon"] == "/hr/lexicon.txt"
+    assert captured["rule_fsts"] == "/rules.fst"
+    assert "hr_rule_fsts" not in captured       # empty field -> not passed
+
+
+def test_build_final_recognizer_omits_hr_when_unset(monkeypatch):
+    # Byte-identical when unconfigured: none of the hr_/rule keys are passed.
+    captured = _capture_sense_voice(monkeypatch)
+    cfg = SherpaConfig.from_dict({
+        "asr_final_backend": "sense_voice", "asr_final_model": "/fake/model.onnx",
+    })
+    assert build_final_recognizer(cfg) is not None
+    for k in ("hr_dict_dir", "hr_lexicon", "hr_rule_fsts", "rule_fsts"):
+        assert k not in captured

@@ -17,6 +17,8 @@ import 'package:flutter/services.dart';
 import 'package:record/record.dart';
 
 import './asr_isolate.dart';
+import './audio_capture_config.dart';
+import './barge_calibrator.dart';
 import './contract.dart';
 import './llm.dart';
 import './tts_isolate.dart';
@@ -64,7 +66,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // watch near-end loudness on the mic stream during playback and stop on
   // sustained sound. Thresholds are device-dependent — calibrate from the
   // "spoke: … peakRms" line in the exported logs.
-  static const _bargeInRms = 0.08; // near-end RMS (0..1) that counts as speech
+  static const _bargeInRms = 0.08; // legacy fixed floor; now the calibrator's min
+  // Adaptive barge-in threshold: learns the room's ambient floor from the
+  // echo-free (not-speaking) windows and raises the bar to a margin above it, so
+  // background noise can't self-interrupt. Floored at _bargeInRms -> never less
+  // sensitive than the old constant in a quiet room (no default regression).
+  final BargeCalibrator _bargeCal = BargeCalibrator(absoluteMin: _bargeInRms);
   static const _bargeInMs = 150; // sustained loud audio (ms) before cutting off
   int _loudMs = 0; // accumulated loud-audio time in the current window
   // Per speaking-window diagnostics (exported via Copy logs) so we can see
@@ -182,19 +189,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
     AsrService.instance.reset(); // fresh recognizer stream for this session
 
     // voiceCommunication + echoCancel let the mic stay open during playback
-    // without the recognizer transcribing the assistant's own TTS.
-    final config = RecordConfig(
-      encoder: AudioEncoder.pcm16bits,
-      sampleRate: 16000,
-      numChannels: 1,
-      echoCancel: true,
-      noiseSuppress: true,
-      autoGain: true,
-      androidConfig: const AndroidRecordConfig(
-        audioSource: AndroidAudioSource.voiceCommunication,
-      ),
-    );
-    final audioStream = await _recorder.startStream(config);
+    // without the recognizer transcribing the assistant's own TTS. The config is
+    // a regression-tested factory (see audio_capture_config.dart) so a revert to
+    // AudioSource.mic -- which silently drops the OS AEC/NS/AGC -- fails CI.
+    final audioStream = await _recorder.startStream(buildCaptureConfig());
     setState(() {
       _listening = true;
       _status = 'Listening…';
@@ -264,13 +262,16 @@ class _AssistantScreenState extends State<AssistantScreen> {
   void _onMicChunk(Uint8List chunk) {
     AsrService.instance.feed(chunk);
     if (!_speaking) {
+      // Echo-free window: learn the room's ambient floor for the adaptive barge
+      // threshold (the mic hears the room, not the assistant's own TTS here).
+      _bargeCal.observeQuiet(_rms(chunk));
       _loudMs = 0;
       return;
     }
     _spkChunks++;
     final rms = _rms(chunk);
     if (rms > _spkPeakRms) _spkPeakRms = rms;
-    if (rms >= _bargeInRms) {
+    if (rms >= _bargeCal.threshold) {
       _loudMs += 1000 * (chunk.length ~/ 2) ~/ 16000;
       if (_loudMs >= _bargeInMs) {
         _appendBargeLog('energy ${rms.toStringAsFixed(3)}');

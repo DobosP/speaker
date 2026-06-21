@@ -167,7 +167,8 @@
       },
       "sherpa": {
         "asr_num_threads": 2,
-        "tts_num_threads": 2
+        "tts_num_threads": 2,
+        "resampler_quality": "VHQ"
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
@@ -188,7 +189,8 @@
       },
       "sherpa": {
         "asr_num_threads": 4,
-        "tts_num_threads": 2
+        "tts_num_threads": 2,
+        "resampler_quality": "VHQ"
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3},
@@ -417,6 +419,7 @@
     "asr_final_min_sec": 0.5,
     "asr_decoding_method": "modified_beam_search",
     "asr_max_active_paths": 4,
+    "_asr_hotwords_comment": "Newline-separated bias phrases for the STREAMING transducer only. With asr_final_backend='sense_voice' ON (the default), the second pass overrides the streaming text for normal-length turns, so a name fixed here will NOT reach the LLM-facing final -- use asr_final_hr_dict_dir/asr_final_hr_lexicon/asr_final_hr_rule_fsts (SenseVoice homophone replacement) to bias the FINAL. See docs/asr_biasing.md.",
     "asr_hotwords": "",
     "asr_hotwords_score": 1.5,
     "asr_rule1_min_trailing_silence": 2.4,

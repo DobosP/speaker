@@ -129,6 +129,55 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       docs/session_2026-06-08_device_adaptive_barge_in.md. tools/echo_probe.py logs
       per-frame D for re-calibration on any machine. ref_delay stays 0 (FIFO already
       aligns the far-ref; do NOT set 260ms).
+
+### APM-landing review findings (2026-06-21, 7-dim adversarial review; 11 confirmed 3/3) — open items
+> Two P1s already FIXED + merged this session (commit on fix/apm-review-followups):
+> the AEC reset()/process_16k cross-thread data race (core/engines/_aec.py lock) and
+> the doctor false-fail on clean clones (tools/doctor.py active-vs-defined backend).
+> The items below are the UNFIXED findings — left for a focused/live session because
+> they change the hard-requirement barge gate (must validate at the mic) or are Dart
+> (no SDK on the desktop box). Full review: logs of run wf_6f5da8f6 / session handoff.
+- [ ] **★★ P1 — DTD barge gate reads the APM-NS-suppressed residual under `open_speaker`
+      (the headline finding; CORROBORATED by the 2026-06-21 barge_stress subset:
+      tp_rate=0.50, "voiced did not trip the gate").** The June-8 DTD weights (raw 0.2,
+      **resid 1.0**, coh 0.0) + the 12 dB `dtd_residual_floor_margin_db` gate assume the
+      post-AEC residual CONTAINS the user's voice (NLMS/DTLN can't cancel the near-end
+      user — not in the reference — so they land in the residual). But `open_speaker`
+      sets `apm_always_on=true` + NS, so the APM's ML noise-suppression runs on EVERY
+      block and attenuates the near-end USER during double-talk — the SAME failure mode
+      the project already documents at sherpa.py ("DTLN suppresses the near-end voice →
+      gate rejected EVERY barge / user had to scream"). The 2026-06-10 raw-mic fix only
+      covers the COHERENCE-confirm path, which is dead under the DTD branch. **Fix
+      (needs live mic A/B — risks re-opening self-interrupt if done blindly):** when
+      `_apm_owns_ns`, feed the DTD `resid` feature + the floor gate from a NON-NS source
+      (mic_raw, or a pre-NS APM tap), or shift the DTD weight onto z_raw/z_coh (the only
+      features that still see the user once NS has run). Add a double-talk regression at
+      the production config (NS=true, always_on=true) asserting a real talk-over fires.
+- [ ] **P2 — Mobile BargeCalibrator ambient floor is contaminated** (mobile/lib/assistant.dart):
+      `observeQuiet` is fed on every `!_speaking` chunk, which includes the user's own
+      request speech AND the TTS-echo tail (because `_speaking` clears before `_player.stop()`
+      completes) → the learned floor drifts UP → `threshold=max(0.08, floor*2.0)` rises →
+      a real talk-over gets harder to trigger over a session. Fix: gate `observeQuiet` on a
+      genuinely-idle window (no ASR partial in flight + ~300-500 ms cooldown after playback)
+      and add an upper clamp. Dart — validate with `flutter test barge_calibrator_test`.
+- [ ] **P2 — No double-talk test at the SHIPPED APM config** (tests/test_apm.py): the only
+      user-voice-survival test builds the APM with NS=FALSE (opposite of `open_speaker`).
+      Add a NS=true echo+near-end mix test asserting the residual the DTD reads keeps enough
+      near-end energy — this is the headless guardrail for the P1 above.
+- [ ] **P2/P3 — test gaps locking the APM behavior** (live-unvalidated code, tests are the
+      only net): (a) the headline `aec_auto_delay` capture-loop feedback (sherpa.py ~2056)
+      has NO test — add an engine-level test driving `_capture_loop` that asserts
+      `_aec_ref_delay` updates after ≥10 playback blocks, ignores out-of-range, no-ops when
+      off; (b) `_apm_owns_ns` AND-guard derivation in `start()` is bypassed (test sets the
+      flags by hand) — assert always_on=False+NS=True ⇒ `_apm_owns_ns`=False (denoiser still
+      runs on idle); (c) `apm_stream_delay_ms`→APM + the reverse/delay/forward call order is
+      untested — monkeypatch a fake rtc.APM and assert order; (d) pin that `tts_target_rms>0`
+      forces non-streaming TTS and `=0` keeps streaming (couples loudness-norm to whole-clip).
+- [ ] **P3 — defaults-safe / doc nits:** `barge_fade_ms=4.0` is a SECOND clean-clone default
+      deviation beyond `tts_target_rms` (de-click on barge flush) — either sanction it in the
+      invariant doc or default the dataclass to 0.0 and set 4.0 only in config.json.
+      `aec_relaxed_margin_db` is effectively DEAD when any AEC+DTD is on (the DTD/residual-floor
+      gates return first) — correct or delete its "uses aec_relaxed_margin_db instead" doc.
 - [ ] **★ Stream the TTS for long answers (owner 2026-06-08).** A long story feels
       like it waits for the whole LLM answer before speaking. `_stream_and_speak`
       (core/capabilities.py) already emits sentence-by-sentence, so investigate why

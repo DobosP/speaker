@@ -23,9 +23,10 @@ and `livekit 1.1.10` into the venv this session.
 | **Reproducible config** | committed `open_speaker` device profile (`--device open_speaker`) turns on the full APM — no more gitignored-only config. | `config.json` |
 | **Mobile parity** | ported `declick` + `normalize_rms` into the TTS worker isolate. | `mobile/lib/tts_isolate.dart` |
 | **Doctor** | checks `soxr`, `livekit` (when a profile selects apm), and the PipeWire EC source (when `capture_voice_comm`). | `tools/doctor.py` |
-| **Tests** | `test_apm.py` (echo-cancel + idle passthrough + the EchoCanceller-seam regression guard, self-skip without livekit), `test_barge_fade.py`, declick fricative test. | `tests/` |
+| **Smart generic calibration** | `input_calibrate` (opt-in) measures this device's ambient floor at startup (`compute_input_calibration`, low-percentile RMS) and sets the AGC noise gate to it — the device-generic operating point; emits an `input_clipping` metric into the run bundle (also from the capture heartbeat). | `core/audio_frontend.py`, `sherpa.py::_calibrate_input` |
+| **Tests** | `test_apm.py` (echo-cancel + idle passthrough + the EchoCanceller-seam regression guard, self-skip without livekit), `test_barge_fade.py`, `test_input_calibration.py`, declick fricative test. | `tests/` |
 
-**Tests:** `python -m pytest tests -q` → **2013 passed, 24 skipped**. Imports smoke 152/152.
+**Tests:** `python -m pytest tests -q` → **2019 passed, 24 skipped**. Imports smoke 152/152.
 
 ## Why Teams is better (the answer)
 

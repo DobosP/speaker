@@ -227,13 +227,30 @@ class PlaybackFIFO:
             self._cond.notify_all()         # a drain freed space: wake a blocked producer
         return m
 
-    def flush(self) -> None:
-        """Barge-in cut: drop every queued sample in one short lock (the next
-        callback emits silence -- equivalent to discarding the device buffer) and
-        wake any producer blocked in :meth:`write`."""
+    def flush(self, fade_samples: int = 0) -> None:
+        """Barge-in cut: drop the queued audio (the next callback emits silence --
+        equivalent to discarding the device buffer) and wake any producer blocked
+        in :meth:`write`.
+
+        ``fade_samples`` > 0 KEEPS a short head of the queue and ramps it to zero
+        with a raised-cosine taper, discarding the rest. A hard cut zeroes the
+        output in one sample -- a step discontinuity that clicks/pops on every
+        barge-in (and tees a transient into the echo reference that can nudge a
+        false self-interrupt). A ~3-5 ms faded tail makes the cut a smooth glide
+        to silence instead. ``0`` = the legacy hard cut (byte-identical)."""
         with self._cond:
-            self._r = self._w
-            self._count = 0
+            keep = min(int(fade_samples), self._count) if fade_samples > 0 else 0
+            if keep > 0:
+                idx = (self._r + np.arange(keep)) % self._cap
+                # full -> 0 raised-cosine ramp; the last kept sample lands at 0.
+                ramp = (0.5 * (1.0 + np.cos(np.pi * (np.arange(keep) + 1) / keep))
+                        ).astype(np.float32)
+                self._buf[idx] = self._buf[idx] * ramp
+                self._count = keep
+                self._w = (self._r + keep) % self._cap
+            else:
+                self._r = self._w
+                self._count = 0
             self._cond.notify_all()
 
     def count(self) -> int:
@@ -601,11 +618,29 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
 
     ``aec_backend='nlms'`` (default) builds the dependency-free NumPy FDAF.
     ``aec_backend='dtln'`` is reserved for the ONNX deep tier (needs a tflite->ONNX
-    conversion) and currently fails open to no-AEC -- use ``'nlms'`` today."""
+    conversion) and currently fails open to no-AEC -- use ``'nlms'`` today.
+    ``aec_backend='apm'`` builds the production WebRTC AudioProcessingModule
+    (AEC3+RES+NS+AGC2+HPF via the ``livekit`` package); it tolerates a nonlinear
+    open speaker where NLMS measures ~0 dB ERLE, and is the recommended backend for
+    open-speaker barge-in. The returned canceller carries ``always_on`` /
+    ``suppresses_noise`` flags the engine reads to drive the always-on capture
+    stage and skip the redundant GTCRN denoiser."""
     if not getattr(c, "aec_enabled", False):
         return None
     backend = str(getattr(c, "aec_backend", "nlms") or "nlms").lower()
     sr = int(getattr(c, "sample_rate", 16000))
+    if backend in ("apm", "webrtc"):
+        from ._apm import build_apm_impl  # lazy: optional livekit dependency
+
+        impl = build_apm_impl(c)
+        if impl is None:
+            return None
+        ec = EchoCanceller(impl, sample_rate=sr)
+        # Flags the engine reads (default-absent on the other backends): run the
+        # APM on every block (idle path too), and let it own noise suppression.
+        ec.always_on = bool(getattr(c, "apm_always_on", False))
+        ec.suppresses_noise = bool(getattr(c, "apm_noise_suppression", True))
+        return ec
     if backend in ("nlms", "fdaf", "numpy"):
         frame = _next_pow2(int(getattr(c, "aec_filter_taps", 512) or 512))
         freeze = bool(getattr(c, "aec_doubletalk_freeze", True))

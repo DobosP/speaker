@@ -8,6 +8,8 @@
 // text and gets back a finished .wav path to play.
 import 'dart:async';
 import 'dart:isolate';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -147,9 +149,14 @@ void _ttsWorkerMain(SendPort toMain) {
           text: msg.text,
           config: sherpa_onnx.OfflineTtsGenerationConfig(sid: 0, speed: 1.0),
         );
+        // Parity with the desktop core's synth post-processing (core/audio_frontend):
+        // repair the VITS impulse spikes that click on an open speaker, then even
+        // out the per-sentence loudness so playback isn't choppy. Runs on the worker
+        // isolate, off the UI/ASR thread, exactly like the Python producer thread.
+        final samples = _postProcessTts(audio.samples);
         final ok = sherpa_onnx.writeWave(
           filename: msg.outPath,
-          samples: audio.samples,
+          samples: samples,
           sampleRate: audio.sampleRate,
         );
         toMain.send(_TtsResult(msg.id, ok ? msg.outPath : null));
@@ -158,4 +165,92 @@ void _ttsWorkerMain(SendPort toMain) {
       }
     }
   });
+}
+
+// --- TTS post-processing (Dart port of core/audio_frontend.py) ----------------
+//
+// The on-device VITS voice (same family as the desktop core) emits deterministic
+// sample-level impulse SPIKES on some text -> audible clicks/crackle on an open
+// speaker, and emits a DIFFERENT absolute amplitude per sentence -> uneven, choppy
+// playback. ``declick`` repairs the isolated impulses (3-point median test +
+// linear interpolation across short runs); ``normalize_rms`` scales each sentence
+// to a steady RMS with a soft-knee limiter on the peaks. Both are no-ops on
+// already-clean / already-leveled audio.
+Float32List _postProcessTts(
+  Float32List x, {
+  double declickThreshold = 0.22,
+  int maxRun = 8,
+  double targetRms = 0.12,
+  double maxGain = 20.0,
+}) {
+  final n = x.length;
+  if (n < 3) return x;
+  final y = Float32List.fromList(x);
+
+  // De-click: flag samples whose deviation from the 3-point median exceeds the
+  // threshold (a real spike), then interpolate across runs up to maxRun long.
+  if (declickThreshold > 0) {
+    final bad = List<bool>.filled(n, false);
+    for (var i = 0; i < n; i++) {
+      final a = x[i == 0 ? 0 : i - 1];
+      final b = x[i];
+      final c = x[i == n - 1 ? n - 1 : i + 1];
+      // median of three = sum - max - min
+      final med = a + b + c -
+          math.max(a, math.max(b, c)) -
+          math.min(a, math.min(b, c));
+      if ((b - med).abs() > declickThreshold) bad[i] = true;
+    }
+    var i = 0;
+    while (i < n) {
+      if (bad[i]) {
+        var j = i;
+        while (j < n && bad[j] && (j - i) < maxRun) {
+          j++;
+        }
+        final lo = i - 1;
+        final hi = j;
+        if (lo >= 0 && hi < n) {
+          final denom = (j - i) + 1; // matches numpy linspace interior spacing
+          for (var k = i; k < j; k++) {
+            final t = (k - i + 1) / denom;
+            y[k] = y[lo] + (y[hi] - y[lo]) * t;
+          }
+        }
+        i = j;
+      } else {
+        i++;
+      }
+    }
+  }
+
+  // Per-sentence loudness normalization with a soft-knee limiter (boost capped).
+  if (targetRms > 0) {
+    var sum = 0.0;
+    for (var i = 0; i < n; i++) {
+      sum += y[i] * y[i];
+    }
+    final rms = math.sqrt(sum / n);
+    if (rms > 1e-6) {
+      final gain = math.min(targetRms / rms, maxGain);
+      const knee = 0.8;
+      for (var i = 0; i < n; i++) {
+        var v = y[i] * gain;
+        final mag = v.abs();
+        if (mag > knee) {
+          final sign = v < 0 ? -1.0 : 1.0;
+          v = sign * (knee + (1.0 - knee) * _tanh((mag - knee) / (1.0 - knee)));
+        }
+        y[i] = v;
+      }
+    }
+  }
+  return y;
+}
+
+double _tanh(double x) {
+  if (x > 20.0) return 1.0;
+  if (x < -20.0) return -1.0;
+  final e2 = math.exp(2.0 * x);
+  return (e2 - 1.0) / (e2 + 1.0);
 }

@@ -564,9 +564,14 @@ class EchoCanceller:
     # discard the AEC output, reset the filter, and pass the raw near-end through.
     _DIVERGENCE_RATIO = 2.0  # +6 dB
 
-    def __init__(self, impl, *, sample_rate: int = 16000):
+    def __init__(self, impl, *, sample_rate: int = 16000, amplifies: bool = False):
         self._impl = impl
         self.sample_rate = int(sample_rate)
+        # When the impl LEGITIMATELY amplifies (a WebRTC APM with AGC2 boosting a
+        # quiet block toward its loudness setpoint), the "louder than input =
+        # diverged" heuristic is wrong, so the magnitude guard is skipped for it.
+        # The non-finite (NaN/inf) guard always stays -- that is never valid.
+        self._amplifies = bool(amplifies)
 
     def process_16k(self, near, far):
         """Echo-cancel one mono float32 16 kHz near-end block against the aligned
@@ -574,10 +579,11 @@ class EchoCanceller:
         adaptive filter frames internally). On ANY error returns ``near`` unchanged.
 
         DIVERGENCE GUARD: a linear adaptive filter fed a mis-aligned / under-powered
-        reference can diverge and AMPLIFY. A canceller must never make the signal
-        louder, so if the output exceeds the input by ``_DIVERGENCE_RATIO`` (or goes
-        non-finite) we discard it, reset the adaptive state, and pass the raw
-        near-end through -- bounded and safe, never an explosion that self-interrupts."""
+        reference can diverge and AMPLIFY. Such a canceller must never make the
+        signal louder, so if the output exceeds the input by ``_DIVERGENCE_RATIO``
+        we discard it, reset the adaptive state, and pass the raw near-end through.
+        Skipped for an ``amplifies`` impl (an APM with AGC, which is internally
+        stable and boosts by design); the non-finite check always applies."""
         try:
             out = self._impl.process(near, far)
         except Exception:  # noqa: BLE001 - never let AEC kill the capture loop
@@ -589,7 +595,11 @@ class EchoCanceller:
             near_arr = np.asarray(near, dtype=np.float64).reshape(-1)
             near_rms = float(np.sqrt(np.mean(near_arr ** 2))) if near_arr.size else 0.0
             out_rms = float(np.sqrt(np.mean(np.asarray(out, dtype=np.float64) ** 2)))
-            if not np.isfinite(out_rms) or out_rms > max(near_rms, 1e-6) * self._DIVERGENCE_RATIO:
+            amplified = (
+                not self._amplifies
+                and out_rms > max(near_rms, 1e-6) * self._DIVERGENCE_RATIO
+            )
+            if not np.isfinite(out_rms) or amplified:
                 log.debug(
                     "AEC diverged (out_rms=%.3f >> near_rms=%.3f); reset + passthrough",
                     out_rms, near_rms,
@@ -635,7 +645,11 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
         impl = build_apm_impl(c)
         if impl is None:
             return None
-        ec = EchoCanceller(impl, sample_rate=sr)
+        # AGC2 boosts quiet blocks by design, so it would trip the "louder =
+        # diverged" guard -> mark the canceller as amplifying to skip that check.
+        ec = EchoCanceller(
+            impl, sample_rate=sr, amplifies=bool(getattr(c, "apm_gain_control", False))
+        )
         # Flags the engine reads (default-absent on the other backends): run the
         # APM on every block (idle path too), and let it own noise suppression.
         ec.always_on = bool(getattr(c, "apm_always_on", False))

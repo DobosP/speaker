@@ -117,6 +117,42 @@ def test_apm_cancels_through_echocanceller_seam():
     assert erle_db > 20.0                # not the 0 dB error-passthrough
 
 
+def test_divergence_guard_exempts_amplifying_impl():
+    # The "louder than input = diverged -> passthrough" guard must NOT fire for an
+    # amplifying canceller (APM + AGC2 boosts quiet blocks by design). A non-amp
+    # canceller still discards a >2x-louder output; an amplifying one keeps it.
+    from core.engines._aec import EchoCanceller
+
+    class _Loud:                       # returns the input scaled 3x (>2x guard)
+        def process(self, near, far):
+            return np.asarray(near, dtype="float32") * 3.0
+
+    quiet = np.full(160, 0.05, dtype="float32")
+    discarded = EchoCanceller(_Loud(), amplifies=False).process_16k(quiet, None)
+    kept = EchoCanceller(_Loud(), amplifies=True).process_16k(quiet, None)
+
+    def rms(x):
+        return float(np.sqrt(np.mean(np.asarray(x, dtype="float64") ** 2)))
+
+    assert rms(discarded) <= rms(quiet) * 1.01      # guard fired -> raw passthrough
+    assert rms(kept) > rms(quiet) * 2.5             # amplified output preserved
+
+
+def test_divergence_guard_still_catches_nonfinite_when_amplifying():
+    # Even an amplifying impl must be discarded if it goes non-finite (NaN/inf).
+    from core.engines._aec import EchoCanceller
+
+    class _Nan:
+        def process(self, near, far):
+            out = np.asarray(near, dtype="float32").copy()
+            out[0] = np.inf
+            return out
+
+    near = np.full(160, 0.1, dtype="float32")
+    out = EchoCanceller(_Nan(), amplifies=True).process_16k(near, None)
+    assert np.all(np.isfinite(out))                 # discarded -> raw near returned
+
+
 @_needs_livekit
 def test_apm_output_length_framed():
     from core.engines._apm import _WebRTCAPM

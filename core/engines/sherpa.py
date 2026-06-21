@@ -1880,9 +1880,12 @@ class SherpaOnnxEngine(AudioEngine):
                     # which garbles ASR on the user's own (echo-free) voice. So
                     # skip it then: nothing to cancel, and the input reaches ASR
                     # untouched. (Also saves the DTLN cost on every idle block.)
-                    far_energetic = far is not None and float(np.sqrt(np.mean(
-                        np.asarray(far, dtype="float64") ** 2
-                    ))) > 1e-4
+                    far_energetic = (
+                        far is not None and far.size > 0
+                        and float(np.sqrt(np.mean(
+                            np.asarray(far, dtype="float64") ** 2
+                        ))) > 1e-4
+                    )
                     if self._apm_always_on:
                         # WebRTC APM runs on EVERY block so its NS/AGC/HPF also
                         # clean the user's own (echo-free) idle utterance -- the

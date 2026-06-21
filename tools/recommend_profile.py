@@ -146,6 +146,24 @@ def probe(*, ram_gb: Optional[float] = None,
 
 # --- recommendation ------------------------------------------------------
 
+# Hardware reports a bit UNDER its nominal/marketing capacity -- a "16 GB" GPU
+# reserves a slice and reports ~15.99 GiB; marketed RAM probes a few hundred MB
+# short after the kernel's reservations. A bare ``>= 16`` therefore drops a real
+# 16 GB part to the tier BELOW (the owner's RTX 4090 Laptop @ 15.99 GiB was
+# auto-selecting 'desktop' instead of 'desktop_gpu_4090'). These margins are the
+# headroom: wide enough to catch a true 16/8 GB part, tight enough that the tier
+# below (12 GB -> 12.0, 6 GB -> 6.0) still misses it.
+_VRAM_MARGIN_GB = 0.6
+_RAM_MARGIN_GB = 0.7
+
+
+def _at_least(probed: float, marketing: float, margin: float) -> bool:
+    """True if a ``probed`` capacity (GiB) meets a ``marketing`` tier (16/8 GB ...)
+    allowing for the under-report margin. Names the intent once so every threshold
+    site reads the same."""
+    return probed >= marketing - margin
+
+
 def recommend(info: HostInfo) -> tuple[str, str]:
     """Return ``(profile_name, rationale)``. Mirrors the device tiers in
     ``docs/target_architecture.md`` and the specsim model_fit thresholds.
@@ -153,23 +171,23 @@ def recommend(info: HostInfo) -> tuple[str, str]:
     Order: a discrete NVIDIA/Apple GPU wins outright; otherwise the
     ``mobile`` flag (set by ``is_mobile_os()`` or injected) decides
     whether a low-RAM host is a phone or a small CPU laptop."""
-    if info.gpu_kind == "nvidia" and info.gpu_mem_gb >= 16:
+    if info.gpu_kind == "nvidia" and _at_least(info.gpu_mem_gb, 16, _VRAM_MARGIN_GB):
         return ("desktop_gpu_4090",
                 "NVIDIA GPU >= 16 GB VRAM fits gemma3:12b comfortably; both input gates ON")
-    if info.gpu_kind == "nvidia" and info.gpu_mem_gb >= 8:
+    if info.gpu_kind == "nvidia" and _at_least(info.gpu_mem_gb, 8, _VRAM_MARGIN_GB):
         return ("desktop",
                 "NVIDIA GPU 8-16 GB VRAM: gemma3:12b on the edge; use the 'desktop' default")
-    if info.gpu_kind == "apple" and info.ram_gb >= 16:
+    if info.gpu_kind == "apple" and _at_least(info.ram_gb, 16, _RAM_MARGIN_GB):
         return ("macbook_m_series",
                 "Apple Silicon with >= 16 GB unified memory; gemma3:4b on Metal + 1b fast tier")
     if info.mobile:
-        if info.ram_gb >= 8:
+        if _at_least(info.ram_gb, 8, _RAM_MARGIN_GB):
             return ("phone",
                     "Android/iOS class, 8+ GB RAM: llamacpp + gemma3:4b GGUF main, 1b fast")
         return ("phone_lite",
                 "Android/iOS class, < 8 GB RAM: single-tier gemma3:1b GGUF; cloud REQUIRED")
     # Desktop / laptop CPU path.
-    if info.ram_gb >= 8:
+    if _at_least(info.ram_gb, 8, _RAM_MARGIN_GB):
         return ("cpu_laptop",
                 "CPU-only laptop, 8+ GB RAM: gemma3:4b main; enable cloud hedge for paragraph answers")
     if info.ram_gb >= 4:
@@ -184,13 +202,13 @@ def recommend(info: HostInfo) -> tuple[str, str]:
 def format_report(info: HostInfo, profile: str, rationale: str) -> str:
     gpu_desc = "none"
     if info.gpu_kind == "nvidia":
-        gpu_desc = f"NVIDIA, {info.gpu_mem_gb:.1f} GB VRAM"
+        gpu_desc = f"NVIDIA, {info.gpu_mem_gb:.2f} GB VRAM"
     elif info.gpu_kind == "apple":
-        gpu_desc = f"Apple Silicon (unified {info.ram_gb:.1f} GB)"
+        gpu_desc = f"Apple Silicon (unified {info.ram_gb:.2f} GB)"
     lines = [
         "Host probe:",
         f"  cores      : {info.cores}",
-        f"  ram        : {info.ram_gb:.1f} GB",
+        f"  ram        : {info.ram_gb:.2f} GB",
         f"  gpu        : {gpu_desc}",
         "",
         f"Recommended profile: {profile}",

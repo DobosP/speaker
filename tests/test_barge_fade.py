@@ -52,3 +52,24 @@ def test_fade_no_click_at_boundary():
     f.flush(fade_samples=128)
     tail = _drain(f, 128)
     assert float(np.max(np.abs(np.diff(tail)))) < 0.1   # smooth, no step
+
+
+def test_fade_injects_far_less_boundary_transient_than_a_hard_cut():
+    """Pins the de-click EFFECT (not just the ramp shape): the step discontinuity a
+    HARD cut tees into the echo reference -- the thing that can nudge a false
+    self-interrupt -- is materially smaller with the fade. Drain some played
+    full-scale samples, flush, then drain the following silence, and compare the
+    playback->silence boundary transient."""
+    def boundary_jump(fade):
+        f = PlaybackFIFO(capacity=8000)
+        f.write(np.ones(2000, dtype="float32"), lambda: False)
+        played = _drain(f, 500)                 # 500 full-scale samples already played
+        f.flush(fade)                           # barge-in cut
+        after = _drain(f, 600)                  # faded tail (if any) + silence
+        stream = np.concatenate([played, after])
+        return float(np.max(np.abs(np.diff(stream))))
+
+    hard = boundary_jump(0)
+    faded = boundary_jump(64)                   # ~4 ms @ 16 kHz
+    assert hard > 0.9                           # the hard cut IS a full-scale step
+    assert faded < hard / 5                     # the fade glides instead

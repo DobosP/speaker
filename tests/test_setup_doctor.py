@@ -10,6 +10,7 @@ import pytest
 
 from tools.doctor import (
     check_audio,
+    check_audio_frontend,
     check_imports,
     check_ollama,
     check_platform,
@@ -247,6 +248,78 @@ def test_run_all_and_summarize_reports_not_ready():
     ready, text = summarize(checks)
     assert not ready  # sherpa models unset + ollama models missing
     assert "FAIL" in text
+
+
+# --- check_audio_frontend: apm/livekit gating (must not false-fail clean clones) ---
+
+
+def _no_livekit(name):
+    if "livekit" in name:
+        raise ImportError("simulated clean clone: livekit not installed")
+    return object()
+
+
+def _apm_check(checks):
+    for c in checks:
+        if "apm" in c.name.lower() or "livekit" in c.name.lower():
+            return c
+    return None
+
+
+def test_audio_frontend_unselected_apm_profile_is_advisory_not_fail():
+    """The committed open_speaker profile DEFINES aec_backend=apm, but the active
+    (resolved) profile here is nlms. With livekit absent the apm check must be
+    ADVISORY (ok=True) so READY is never blocked on a healthy default box."""
+    config = {
+        "device": "desktop",
+        "sherpa": {"aec_backend": "nlms"},
+        "device_profiles": {
+            "desktop": {"sherpa": {"aec_backend": "nlms"}},
+            "open_speaker": {"sherpa": {"aec_backend": "apm"}},
+        },
+    }
+    checks = check_audio_frontend(config, import_fn=_no_livekit)
+    apm = _apm_check(checks)
+    assert apm is not None and apm.ok is True          # advisory, not a failure
+    assert not any(not c.ok for c in checks)           # nothing here blocks READY
+
+
+def test_audio_frontend_active_apm_backend_fails_without_livekit():
+    """When the RESOLVED profile actually selects apm, livekit IS required: absent
+    -> a real FAIL (AEC would silently fail open to no echo cancellation)."""
+    config = {
+        "device": "open_speaker",
+        "sherpa": {"aec_backend": "nlms"},
+        "device_profiles": {"open_speaker": {"sherpa": {"aec_backend": "apm"}}},
+    }
+    checks = check_audio_frontend(config, import_fn=_no_livekit)
+    apm = _apm_check(checks)
+    assert apm is not None and apm.ok is False
+
+
+def test_audio_frontend_active_apm_ok_when_livekit_present():
+    class _RTC:
+        AudioProcessingModule = object()
+
+    def have_livekit(name):
+        return _RTC() if "livekit" in name else object()
+
+    config = {
+        "device": "open_speaker",
+        "sherpa": {"aec_backend": "nlms"},
+        "device_profiles": {"open_speaker": {"sherpa": {"aec_backend": "apm"}}},
+    }
+    apm = _apm_check(check_audio_frontend(config, import_fn=have_livekit))
+    assert apm is not None and apm.ok is True
+
+
+def test_audio_frontend_no_apm_anywhere_emits_no_livekit_check():
+    config = {
+        "device": "desktop",
+        "sherpa": {"aec_backend": "nlms"},
+        "device_profiles": {"desktop": {"sherpa": {"aec_backend": "nlms"}}},
+    }
+    assert _apm_check(check_audio_frontend(config, import_fn=_no_livekit)) is None
 
 
 def test_run_all_ready_when_everything_passes():

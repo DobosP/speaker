@@ -572,6 +572,16 @@ class EchoCanceller:
         # diverged" heuristic is wrong, so the magnitude guard is skipped for it.
         # The non-finite (NaN/inf) guard always stays -- that is never valid.
         self._amplifies = bool(amplifies)
+        # The impl keeps internal carry/adaptive state that assumes single-threaded
+        # access. process_16k() runs on the capture thread, but reset() is reachable
+        # from OTHER threads -- the event bus (CONTROL_STOP -> stop_speaking) and the
+        # playback worker (reply end). A reset() landing mid-process() can desync a
+        # framed impl's near/far carry buffers permanently (the APM pairs the mic
+        # against a shifted far-end reference for the rest of the session -> ERLE
+        # collapse). Serialize the two: the lock wraps a few-hundred-sample numpy op
+        # on the capture thread (microseconds, not the audio callback), so reset()
+        # simply waits for the in-flight block to finish.
+        self._lock = threading.Lock()
 
     def process_16k(self, near, far):
         """Echo-cancel one mono float32 16 kHz near-end block against the aligned
@@ -584,34 +594,44 @@ class EchoCanceller:
         we discard it, reset the adaptive state, and pass the raw near-end through.
         Skipped for an ``amplifies`` impl (an APM with AGC, which is internally
         stable and boosts by design); the non-finite check always applies."""
-        try:
-            out = self._impl.process(near, far)
-        except Exception:  # noqa: BLE001 - never let AEC kill the capture loop
-            log.debug("AEC block failed; passing the raw near-end through", exc_info=True)
-            return near
-        try:
-            if out is None or len(out) == 0:
-                return out
-            near_arr = np.asarray(near, dtype=np.float64).reshape(-1)
-            near_rms = float(np.sqrt(np.mean(near_arr ** 2))) if near_arr.size else 0.0
-            out_rms = float(np.sqrt(np.mean(np.asarray(out, dtype=np.float64) ** 2)))
-            amplified = (
-                not self._amplifies
-                and out_rms > max(near_rms, 1e-6) * self._DIVERGENCE_RATIO
-            )
-            if not np.isfinite(out_rms) or amplified:
-                log.debug(
-                    "AEC diverged (out_rms=%.3f >> near_rms=%.3f); reset + passthrough",
-                    out_rms, near_rms,
+        with self._lock:
+            try:
+                out = self._impl.process(near, far)
+            except Exception:  # noqa: BLE001 - never let AEC kill the capture loop
+                log.debug("AEC block failed; passing the raw near-end through", exc_info=True)
+                return near
+            try:
+                if out is None or len(out) == 0:
+                    return out
+                near_arr = np.asarray(near, dtype=np.float64).reshape(-1)
+                near_rms = float(np.sqrt(np.mean(near_arr ** 2))) if near_arr.size else 0.0
+                out_rms = float(np.sqrt(np.mean(np.asarray(out, dtype=np.float64) ** 2)))
+                amplified = (
+                    not self._amplifies
+                    and out_rms > max(near_rms, 1e-6) * self._DIVERGENCE_RATIO
                 )
-                self.reset()
-                return near_arr.astype(np.float32)
-        except Exception:  # noqa: BLE001 - the guard must never crash the capture loop
+                if not np.isfinite(out_rms) or amplified:
+                    log.debug(
+                        "AEC diverged (out_rms=%.3f >> near_rms=%.3f); reset + passthrough",
+                        out_rms, near_rms,
+                    )
+                    self._do_reset()  # already holding the lock -- never self.reset()
+                    return near_arr.astype(np.float32)
+            except Exception:  # noqa: BLE001 - the guard must never crash the capture loop
+                return out
             return out
-        return out
 
     def reset(self) -> None:
-        """Clear adaptive/LSTM state (call on barge-in/idle + ASR decode-recovery)."""
+        """Clear adaptive/LSTM state (call on barge-in/idle + ASR decode-recovery).
+        Serialized against ``process_16k`` so a cross-thread reset can never land
+        mid-block and desync a framed impl's carry buffers."""
+        with self._lock:
+            self._do_reset()
+
+    def _do_reset(self) -> None:
+        """Reset the impl WITHOUT taking the lock -- callable both from the public
+        :meth:`reset` (which holds it) and the in-process divergence guard (which
+        already holds it); a re-entrant ``self.reset()`` there would deadlock."""
         reset = getattr(self._impl, "reset", None)
         if callable(reset):
             try:

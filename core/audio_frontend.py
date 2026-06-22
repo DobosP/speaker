@@ -285,46 +285,65 @@ def _true_peak_gain_envelope(x, ceiling_lin: float, sr: int, *, oversample: int 
 
 
 def output_leveler(samples, *, target_dbfs: float, true_peak_dbtp: float, sr: int,
-                   prev_gain_db: float = 0.0, max_boost_db: float = 18.0,
-                   max_cut_db: float = 12.0, max_step_db: float = 3.0,
-                   oversample: int = 4, lookahead_ms: float = 1.5,
+                   prev_gain_db=None, max_boost_db: float = 18.0,
+                   max_cut_db: float = 12.0, max_slew_db_per_s: float = 6.0,
+                   oversample: int = 8, lookahead_ms: float = 1.5,
                    release_ms: float = 50.0):
-    """Opt-in TTS output stage: perceptual loudness target + look-ahead true-peak
-    limiter, in one fused pass. Pure numpy, allocation-light, runs on the
-    producer thread (never the audio callback).
+    """Opt-in TTS output stage: a speech-level (loudness) target + look-ahead
+    true-peak limiter, in one fused pass. Pure numpy, allocation-light, runs on
+    the producer thread (never the audio callback).
 
-    STAGE 1 (loudness): measure the clip's speech level (dBFS RMS over the voiced
-    portion), compute ``gain_db = target_dbfs - measured`` clamped to
-    ``[-max_cut_db, +max_boost_db]``, then SLEW it toward that from
-    ``prev_gain_db`` by at most ``max_step_db`` (the per-utterance analog of
-    AGC2's slow attack -- loudness ramps smoothly across a multi-sentence reply
-    instead of jumping per sentence). Applied as a flat linear multiply.
+    STAGE 1 (loudness): measure the clip's speech level -- broadband dBFS RMS over
+    the VOICED samples (a cheap proxy for loudness; not BS.1770 K-weighted LUFS,
+    which is overkill for one fixed on-device voice -- libebur128 is the upgrade
+    path). Compute ``desired = target_dbfs - measured`` clamped to
+    ``[-max_cut_db, +max_boost_db]``, then move toward it from ``prev_gain_db``:
+
+    * ``prev_gain_db is None`` (the FIRST utterance of a session) -> SEED straight
+      to ``desired`` so the very first reply is on target (no audible ramp-up);
+    * otherwise SLEW, TIME-AWARE like WebRTC AGC2: at most
+      ``max_slew_db_per_s * clip_duration_s`` dB this call. This damps the ~2 dB
+      sentence-to-sentence swing + the rare large correction WITHOUT the
+      reply-length dependence a per-call cap has (a 0.4 s 'Yes.' and an 8 s
+      sentence would otherwise both move the same fixed step).
+
+    Applied as a flat linear multiply.
 
     STAGE 2 (true-peak limit): :func:`_true_peak_gain_envelope` builds a
     CONTINUOUS per-sample gain reduction (= a soft knee, no step discontinuities)
     that holds the inter-sample peak below ``true_peak_dbtp`` (dBTP relative to
     1.0 full scale); a final NaN-safe clip at full scale is the brick-wall safety
-    net (a no-op on real signal, since the ceiling is sub-0 dBFS).
+    net (a no-op on real signal, since the ceiling is sub-0 dBFS). ``oversample``
+    defaults to 8x so the measured true peak converges to within ~0.001 of the
+    ceiling even on dense near-Nyquist content (4x under-reads it by ~0.33 dB).
 
     Returns ``(leveled_float32, applied_gain_db)`` so the caller carries
-    ``applied_gain_db`` as ``prev_gain_db`` into the next sentence (inter-sentence
-    slew). Length-preserving (the oversample is for peak MEASUREMENT only and is
-    discarded), NaN-safe, silence -> passthrough (loudness held, limiter inert)."""
+    ``applied_gain_db`` (a float) as ``prev_gain_db`` into the next sentence.
+    Length-preserving (the oversample is for peak MEASUREMENT only and is
+    discarded), NaN-safe, silence -> passthrough (loudness gain held, limiter
+    inert)."""
     import numpy as np
 
     x = np.asarray(samples, dtype="float32").reshape(-1)
+    # NaN/Inf-safe up front so neither the level estimate nor the multiply trips a
+    # RuntimeWarning (TTS never emits these; the function is documented NaN-safe).
+    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
     if x.size == 0:
-        return x, float(prev_gain_db)
+        return x, (0.0 if prev_gain_db is None else float(prev_gain_db))
 
-    # --- Stage 1: perceptual loudness target, slew-limited between sentences ---
+    # --- Stage 1: speech-level (loudness) target; seed first, then time-aware slew ---
     meas = _rms_dbfs_voiced(x)
     if meas is None:  # silence -> don't move the loudness gain
-        gain_db = float(prev_gain_db)
+        gain_db = 0.0 if prev_gain_db is None else float(prev_gain_db)
     else:
-        want = float(target_dbfs) - meas
-        want = max(-float(max_cut_db), min(float(max_boost_db), want))
-        step = max(-float(max_step_db), min(float(max_step_db), want - float(prev_gain_db)))
-        gain_db = float(prev_gain_db) + step
+        desired = float(target_dbfs) - meas
+        desired = max(-float(max_cut_db), min(float(max_boost_db), desired))
+        if prev_gain_db is None:                       # first utterance -> seed to target
+            gain_db = desired
+        else:                                          # time-aware slew (dB/s * duration)
+            step = float(max_slew_db_per_s) * (x.size / float(sr))
+            delta = max(-step, min(step, desired - float(prev_gain_db)))
+            gain_db = float(prev_gain_db) + delta
     y = x * np.float32(10.0 ** (gain_db / 20.0))
 
     # --- Stage 2: look-ahead true-peak limiter (always last) ---

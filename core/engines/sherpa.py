@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
@@ -45,6 +45,7 @@ from ..audio_frontend import (
 )
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
+from ..tts_markup import parse_tts_markup, resolve_tts_params
 from ._denoiser import build_denoiser
 from ._aec import FarEndRing, PlaybackFIFO, build_aec
 from ._sherpa_models import (
@@ -369,6 +370,30 @@ class SherpaConfig:
     tts_lexicon: str = ""
     tts_speaker_id: int = 0
     tts_speed: float = 1.0
+    # EXPRESSIVE MARKUP (opt-in, default OFF -> byte-identical). When True the LLM
+    # may prefix a sentence with a leading directive tag -- [emotion:.. voice:..
+    # rate:..] (see core/tts_markup.py) -- which SherpaOnnxEngine.speak() strips
+    # from the spoken text and maps to a per-utterance (speaker_id, speed). This is
+    # the cheap on-device "emotion + voice diversity" capability: no extra model,
+    # just a regex + two dict lookups per sentence. Requires a system prompt that
+    # teaches the grammar (also opt-in); with the default tag-unaware prompt the
+    # LLM never emits a tag, so enabling this alone changes nothing. The two maps
+    # below are inert while this is False.
+    tts_markup: bool = False
+    # Named-voice map (diversity): voice name -> Kokoro sid. Lets the markup (or a
+    # deployment) pick a voice by role ("warm", "narrator", ...) instead of a raw
+    # integer. Empty (default) -> only tts_speaker_id is ever used. Out-of-range
+    # sids are validated against the model's speaker count at synth time.
+    tts_speaker_voices: dict = field(default_factory=dict)
+    # Emotion -> speed-multiplier map (rate-as-affect, the realistic cheap emotion
+    # lever sherpa-onnx Kokoro exposes -- there is no latent style vector). e.g.
+    # {"calm": 0.9, "excited": 1.1}. Multiplies tts_speed for the tagged sentence;
+    # the result is clamped to [tts_speed_min, tts_speed_max]. Empty -> no effect.
+    tts_emotion_speed_map: dict = field(default_factory=dict)
+    # Safe synthesis-speed band a markup rate/emotion can never exceed (a runaway
+    # "[rate:50]" must not produce unusable audio). Only relevant when tts_markup.
+    tts_speed_min: float = 0.5
+    tts_speed_max: float = 2.0
     # Per-sentence TTS loudness normalization (core/audio_frontend.normalize_rms).
     # The offline VITS model emits a DIFFERENT amplitude per sentence, so on an open
     # speaker the played-back echo level swings and the barge-in echo floor can never
@@ -1421,7 +1446,7 @@ class SherpaOnnxEngine(AudioEngine):
                     self._out_stream.close()
                 except Exception:  # noqa: BLE001 - device may be mid-teardown
                     pass
-        self._play_q.put((None, None, 0))  # sentinel: wake the worker so it exits
+        self._play_q.put((None, None, 0, None))  # sentinel: wake the worker so it exits
         if self._final_q is not None:
             # Any finals still queued here are intentionally dropped on shutdown
             # (like _play_q) -- dispatching a final into a tearing-down runtime is
@@ -1471,7 +1496,18 @@ class SherpaOnnxEngine(AudioEngine):
             if on_done:
                 on_done()
             return
-        self._enqueue_play(text, on_done)
+        # Expressive markup (opt-in): strip a leading [emotion:.. voice:.. rate:..]
+        # tag off the text and carry the parsed directives to _synthesize, which
+        # maps them to this utterance's (sid, speed). Default OFF -> no parsing,
+        # byte-identical. A tag-only emission (nothing left to say) is dropped.
+        directives = None
+        if self.config.tts_markup:
+            text, directives = parse_tts_markup(text)
+            if not text:
+                if on_done:
+                    on_done()
+                return
+        self._enqueue_play(text, on_done, directives)
 
     def stop_speaking(self) -> None:
         # Cut the current utterance and discard whatever is queued behind it, so
@@ -2337,12 +2373,19 @@ class SherpaOnnxEngine(AudioEngine):
             kws.reset_stream(ks)
             self._cb.on_command(keyword)
 
-    def _enqueue_play(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
+    def _enqueue_play(
+        self,
+        text: str,
+        on_done: Optional[Callable[[], None]],
+        directives: Optional[dict] = None,
+    ) -> None:
         # Stamp the sentence with the current generation (rc-3): if a barge bumps
         # the generation before this sentence is dequeued, the worker drops it.
+        # ``directives`` (opt-in expressive markup) rides alongside to _synthesize.
         gen = self._speak_gen
+        item = (text, on_done, gen, directives)
         try:
-            self._play_q.put_nowait((text, on_done, gen))
+            self._play_q.put_nowait(item)
         except queue.Full:
             # Drop the oldest queued sentence rather than block or lag playback.
             try:
@@ -2350,7 +2393,7 @@ class SherpaOnnxEngine(AudioEngine):
             except queue.Empty:
                 pass
             try:
-                self._play_q.put_nowait((text, on_done, gen))
+                self._play_q.put_nowait(item)
             except queue.Full:
                 if on_done:
                     on_done()
@@ -2466,7 +2509,7 @@ class SherpaOnnxEngine(AudioEngine):
         try:
             while self._running.is_set():
                 try:
-                    text, on_done, item_gen = self._play_q.get(timeout=0.1)
+                    text, on_done, item_gen, directives = self._play_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
                 if text is None:  # shutdown sentinel from stop()
@@ -2610,7 +2653,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # so the stream is normally already active here. Restart it
                         # only if something stopped it.
                         out.start()
-                    self._synthesize(text, write, my_gen)
+                    self._synthesize(text, write, my_gen, directives)
                     # (true barge-in-stop is stamped in stop_speaking() at the
                     # abort() instant -- the moment audio actually goes silent.)
                 finally:
@@ -2707,7 +2750,11 @@ class SherpaOnnxEngine(AudioEngine):
                     pass
 
     def _synthesize(
-        self, text: str, write: Callable[[object], None], gen: Optional[int] = None
+        self,
+        text: str,
+        write: Callable[[object], None],
+        gen: Optional[int] = None,
+        directives: Optional[dict] = None,
     ) -> None:
         """Synthesize ``text``, handing each audio chunk to ``write`` as it is
         produced. sherpa-onnx ``OfflineTts.generate`` streams via a ``callback``,
@@ -2723,6 +2770,20 @@ class SherpaOnnxEngine(AudioEngine):
         tts = self._tts
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
+        # Opt-in expressive markup: map this utterance's parsed directives to a
+        # per-sentence (sid, speed). Fail-soft + clamped (resolve_tts_params);
+        # ``directives`` is None on the default path -> defaults unchanged.
+        if directives:
+            sid, speed = resolve_tts_params(
+                directives,
+                default_sid=self.config.tts_speaker_id,
+                default_speed=self.config.tts_speed,
+                voice_map=self.config.tts_speaker_voices,
+                emotion_speed_map=self.config.tts_emotion_speed_map,
+                num_speakers=int(getattr(tts, "num_speakers", 0) or 0),
+                speed_min=self.config.tts_speed_min,
+                speed_max=self.config.tts_speed_max,
+            )
         target_rms = self.config.tts_target_rms
         leveler_on = self.config.tts_output_leveler
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm

@@ -125,10 +125,9 @@ def test_true_peak_envelope_unity_when_below_ceiling():
 def test_leveler_brings_quiet_and_loud_to_same_target():
     sr = 16000
     target = -20.0
-    quiet, _ = output_leveler(_tone(0.02), target_dbfs=target, true_peak_dbtp=-1.0, sr=sr,
-                              max_step_db=100.0)  # unbounded step -> reach target in one clip
-    loud, _ = output_leveler(_tone(0.30), target_dbfs=target, true_peak_dbtp=-1.0, sr=sr,
-                             max_step_db=100.0)
+    # prev_gain_db=None (default) SEEDS to target on this first call -> reaches it.
+    quiet, _ = output_leveler(_tone(0.02), target_dbfs=target, true_peak_dbtp=-1.0, sr=sr)
+    loud, _ = output_leveler(_tone(0.30), target_dbfs=target, true_peak_dbtp=-1.0, sr=sr)
     # Both land near the perceptual target (within boost/cut bounds + limiter pull).
     assert _dbfs(quiet) == pytest.approx(target, abs=1.5)
     assert _dbfs(loud) == pytest.approx(target, abs=2.0)
@@ -141,7 +140,7 @@ def test_leveler_respects_max_boost_on_quiet_clip():
     sr = 16000
     quiet = _tone(0.01)  # ~-40 dBFS, target -20 -> wants +20 dB -> clamp to +18
     out, applied = output_leveler(quiet, target_dbfs=-20.0, true_peak_dbtp=-1.0, sr=sr,
-                                  max_boost_db=18.0, max_step_db=100.0)
+                                  max_boost_db=18.0)  # first call seeds to clamped desired
     assert applied == pytest.approx(18.0, abs=1e-6)  # clamped to max_boost
 
 
@@ -149,25 +148,31 @@ def test_leveler_respects_max_cut_on_hot_clip():
     sr = 16000
     hot = _tone(0.5)  # ~-6 dBFS, target -20 -> wants -14 dB, clamp at -12
     out, applied = output_leveler(hot, target_dbfs=-20.0, true_peak_dbtp=-1.0, sr=sr,
-                                  max_cut_db=12.0, max_step_db=100.0)
+                                  max_cut_db=12.0)  # first call seeds to clamped desired
     assert applied == pytest.approx(-12.0, abs=1e-6)
 
 
-def test_leveler_slews_gain_between_sentences():
-    # The inter-sentence slew: a big desired gain change is reached over several
-    # sentences (max_step_db per call), not in one jump -- AGC2's slow attack.
+def test_leveler_slew_is_time_aware_after_seeding():
+    # The FIRST call seeds (prev=None); subsequent calls SLEW toward a new desired
+    # by at most rate*duration per call -- so the step scales with sentence LENGTH
+    # (time-aware, like AGC2), not a fixed per-call amount.
     sr = 16000
-    quiet = _tone(0.01)  # wants a large boost
-    prev = 0.0
-    gains = []
-    for _ in range(5):
-        _, prev = output_leveler(quiet, target_dbfs=-20.0, true_peak_dbtp=-1.0, sr=sr,
-                                 prev_gain_db=prev, max_step_db=3.0, max_boost_db=18.0)
-        gains.append(prev)
-    # Monotonic ramp, each step bounded by max_step_db, converging toward the cap.
-    for a, b in zip(gains, gains[1:]):
-        assert 0 < (b - a) <= 3.0 + 1e-6
-    assert gains[-1] > gains[0]
+    n = sr  # 1.0 s clips -> step cap == rate*1.0 == rate
+    rate = 4.0  # dB/s
+    quiet = _tone(0.01, n=n, sr=sr)   # -40 dBFS, target -20 -> desired +18 (clamped)
+    _, g0 = output_leveler(quiet, target_dbfs=-20.0, true_peak_dbtp=-1.0, sr=sr,
+                           max_boost_db=18.0, max_slew_db_per_s=rate)
+    assert g0 == pytest.approx(18.0, abs=1e-6)        # seeded straight to clamped target
+    # A LOUD 1 s clip flips the desired gain negative; it slews DOWN by rate*1.0 s.
+    loud = _tone(0.3, n=n, sr=sr)     # -10.5 dBFS, target -20 -> desired ~ -9.5
+    _, g1 = output_leveler(loud, target_dbfs=-20.0, true_peak_dbtp=-1.0, sr=sr,
+                           prev_gain_db=g0, max_slew_db_per_s=rate)
+    assert (g0 - g1) == pytest.approx(rate, abs=1e-6)         # stepped by rate * 1.0 s
+    # A SHORTER clip at the same level moves PROPORTIONALLY less (the time-aware fix).
+    short = _tone(0.3, n=n // 4, sr=sr)  # 0.25 s -> step cap rate*0.25 = 1.0 dB
+    _, g2 = output_leveler(short, target_dbfs=-20.0, true_peak_dbtp=-1.0, sr=sr,
+                           prev_gain_db=g0, max_slew_db_per_s=rate)
+    assert (g0 - g2) == pytest.approx(rate * 0.25, abs=1e-6)  # quarter the time -> quarter step
 
 
 # --- output_leveler: true-peak guarantee ------------------------------------
@@ -179,7 +184,7 @@ def test_leveler_never_clips_full_scale():
     # still keep the inter-sample peak below the dBTP ceiling and never hit 1.0.
     hot = _tone(0.4)
     out, _ = output_leveler(hot, target_dbfs=-6.0, true_peak_dbtp=-1.0, sr=sr,
-                            max_boost_db=18.0, max_step_db=100.0)
+                            max_boost_db=18.0)  # first call seeds; loudness pushes it hotter
     ceiling = 10.0 ** (-1.0 / 20.0)
     assert float(np.max(np.abs(out))) < 1.0
     tp = float(np.max(_upsampled_abs_per_sample(out, 4)))
@@ -190,8 +195,7 @@ def test_leveler_with_impulse_does_not_clip():
     sr = 16000
     x = _tone(0.2, n=4000, sr=sr).copy()
     x[2000] = 0.99  # a leftover transient (declick would normally catch it)
-    out, _ = output_leveler(x, target_dbfs=-12.0, true_peak_dbtp=-1.0, sr=sr,
-                            max_step_db=100.0)
+    out, _ = output_leveler(x, target_dbfs=-12.0, true_peak_dbtp=-1.0, sr=sr)
     assert float(np.max(np.abs(out))) < 1.0
 
 
@@ -301,33 +305,32 @@ def test_engine_leveler_on_replaces_normalize_rms_and_caps_peak():
     eng._synthesize("x", written.append)
     out = np.concatenate(written)
     assert float(np.max(np.abs(out))) < 1.0          # true-peak limiter held it
-    # The leveler (not normalize_rms) ran: a loud (~-8 dBFS) FIRST sentence is
-    # SLEWED toward the -18 dBFS target by one max_step_db (=3.0 default) -- a CUT
-    # -- so the loudness gain is exactly -3 dB and the output got quieter, moving
-    # toward target. normalize_rms would instead have driven RMS straight to 0.12
-    # (-18.4 dBFS) in one shot, so this proves the legacy stage was skipped (no
-    # double-normalize). Loudness converges to target over subsequent sentences
-    # (covered by test_engine_leveler_slews_across_a_multi_sentence_reply).
-    assert eng._tts_level_gain_db == pytest.approx(-3.0, abs=1e-6)
-    assert _dbfs(out) < _dbfs(loud) - 1.0            # moved toward the quieter target
+    # The leveler (not normalize_rms) OWNS loudness: the FIRST sentence of the
+    # session SEEDS straight to the -18 dBFS target, so a loud (~-8 dBFS) clip is
+    # brought right onto target in this one call. (normalize_rms would instead drive
+    # LINEAR RMS to 0.12; the discriminating proof is the gain state + that the
+    # whole-clip leveler path ran and capped the peak -- no double-normalize.)
+    assert eng._tts_level_gain_db is not None and eng._tts_level_gain_db < -1.0  # a real cut
+    assert abs(_dbfs(out) - (-18.0)) < 1.5           # seeded onto the loudness target
 
 
-def test_engine_leveler_slews_across_a_multi_sentence_reply():
-    # The engine carries _tts_level_gain_db across sentences, so a quiet reply
-    # ramps up over several sentences instead of jumping.
+def test_engine_leveler_consistent_loudness_across_sentences():
+    # The owner's GOAL: every sentence of a reply lands at the SAME loudness. The
+    # first sentence SEEDS to target; same-level sentences then HOLD that gain (no
+    # per-sentence ramp, no reply-length dependence).
     from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
     sr = 16000
-    quiet = _tone(0.01, n=4000, sr=sr)
+    clip = _tone(0.05, n=4000, sr=sr)  # -26 dBFS, a reachable +8 dB to the -18 target
 
     class _Tts:
         sample_rate = sr
 
         def generate(self, text, sid=0, speed=1.0):
-            return type("A", (), {"samples": quiet.copy(), "sample_rate": sr})()
+            return type("A", (), {"samples": clip.copy(), "sample_rate": sr})()
 
     eng = SherpaOnnxEngine(
-        SherpaConfig(tts_output_leveler=True, tts_loudness_target_dbfs=-20.0,
+        SherpaConfig(tts_output_leveler=True, tts_loudness_target_dbfs=-18.0,
                      tts_true_peak_dbtp=-1.0, tts_declick=False)
     )
     eng._tts = _Tts()
@@ -336,6 +339,50 @@ def test_engine_leveler_slews_across_a_multi_sentence_reply():
     for _ in range(4):
         eng._synthesize("x", (lambda *a: None))
         gains.append(eng._tts_level_gain_db)
-    for a, b in zip(gains, gains[1:]):
-        assert b > a            # ramps up sentence to sentence
-        assert (b - a) <= 3.0 + 1e-6  # bounded by the per-sentence slew step
+    assert gains[0] == pytest.approx(8.0, abs=0.6)    # first sentence seeded to target
+    for g in gains[1:]:
+        assert g == pytest.approx(gains[0], abs=0.5)  # held -> consistent loudness
+
+
+def test_leveler_default_config_on_target_realistic_vits():
+    # The SHIPPING default (time-aware slew 6 dB/s, target -18) on realistic VITS-
+    # level clips at the real 22050 Hz rate: every sentence lands ON target -- the
+    # owner's consistent-loudness goal, proven for the actual config (not a 10-dB-off
+    # synthetic). max_step is not overridden, so the default slew is exercised.
+    sr = 22050
+    levels = [0.108, 0.130, 0.115, 0.122]  # measured VITS RMS range (config.json comment)
+    prev = None
+    outs = []
+    for rms in levels:
+        clip = _tone(rms, n=int(sr * 1.2), sr=sr)  # ~1.2 s sentences
+        y, prev = output_leveler(clip, target_dbfs=-18.0, true_peak_dbtp=-1.0, sr=sr,
+                                 prev_gain_db=prev)
+        outs.append(_dbfs(y))
+    for d in outs:
+        assert abs(d - (-18.0)) < 1.5  # consistent, on the loudness target every sentence
+
+
+@pytest.mark.parametrize("sr", [16000, 22050])
+def test_true_peak_holds_below_ceiling_at_production_rate(sr):
+    # The shipped voice is 22050 Hz, but the rest of the suite runs at 16000; the
+    # lookahead window + release coefficient both scale with sr, so cover both.
+    x = _tone(0.9, n=sr // 4, sr=sr, freq=300.0)
+    ceiling = 10.0 ** (-1.0 / 20.0)
+    out, _ = output_leveler(x, target_dbfs=-6.0, true_peak_dbtp=-1.0, sr=sr, max_boost_db=18.0)
+    tp = float(np.max(_upsampled_abs_per_sample(out, 8)))
+    assert tp <= ceiling + 2e-3
+    assert float(np.max(np.abs(out))) < 1.0
+
+
+def test_leveler_without_scipy_fallback_is_safe(monkeypatch):
+    # When scipy is absent, _upsampled_abs_per_sample degrades to linear-interp
+    # (which cannot SEE inter-sample peaks), so the limiter becomes a sample-peak
+    # limiter. It must still preserve length and never clip full scale.
+    import core.audio_frontend as af
+
+    monkeypatch.setattr(af, "_has_scipy", lambda: False)
+    sr = 16000
+    x = _tone(0.5, n=2000, sr=sr, freq=300.0)
+    out, _ = af.output_leveler(x, target_dbfs=-12.0, true_peak_dbtp=-1.0, sr=sr)
+    assert out.shape[0] == x.shape[0]
+    assert float(np.max(np.abs(out))) <= 1.0

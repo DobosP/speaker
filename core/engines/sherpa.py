@@ -41,6 +41,7 @@ from ..audio_frontend import (
     compute_input_calibration,
     declick,
     normalize_rms,
+    output_leveler,
 )
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
@@ -387,6 +388,26 @@ class SherpaConfig:
     # consonant-densest words ("robotic" timbre). Lower it only if real clicks are
     # getting through; raise it if speech detail is being softened.
     tts_declick_threshold: float = 0.22
+    # OUTPUT LEVELER (opt-in, default OFF). A pure-numpy port of WebRTC AGC2's
+    # adaptive-digital loudness leveler + look-ahead true-peak soft-knee limiter
+    # (core/audio_frontend.output_leveler), as the TTS output stage. When True it
+    # REPLACES normalize_rms (which targets a LINEAR RMS and would fight the
+    # perceptual target): the synth -> declick -> output_leveler -> FIFO chain
+    # owns loudness + peak. Brings Teams/Zoom-grade consistent loudness that never
+    # clips on weak/old speakers, and slews the gain smoothly across a multi-
+    # sentence reply (carried in self._tts_level_gain_db). When False the legacy
+    # normalize_rms path is BYTE-IDENTICAL (the leveler is never reached). The two
+    # numeric keys below are inert until this bool is True.
+    tts_output_leveler: bool = False
+    # Perceptual loudness target in dBFS (full scale = 1.0; speech RMS over the
+    # voiced portion is brought toward this, slew-limited). -20.0 is a broadcast-
+    # ish speech level. Inert unless tts_output_leveler=True.
+    tts_loudness_target_dbfs: float = -20.0
+    # True-peak ceiling in dBTP (relative to 1.0 full scale). -1.0 dBTP is the
+    # standard true-peak ceiling: it leaves ~1 dB of inter-sample headroom so the
+    # DAC reconstruction of an old/weak speaker never clips. Inert unless
+    # tts_output_leveler=True.
+    tts_true_peak_dbtp: float = -1.0
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -934,6 +955,12 @@ class SherpaOnnxEngine(AudioEngine):
         # (play audio as it is synthesized). Flipped off on the first build that
         # rejects the ``callback`` kwarg, after which we chunk the finished wave.
         self._tts_can_stream = True
+        # Output-leveler inter-sentence loudness slew state (output_leveler).
+        # Carries the applied loudness gain (dB) across sentences so loudness
+        # ramps smoothly across a multi-sentence reply (AGC2's slow attack, per
+        # utterance) instead of jumping per sentence. Only read/written on the
+        # synthesis (producer) thread; inert unless tts_output_leveler=True.
+        self._tts_level_gain_db = 0.0
         # Self-interruption suppression (realtime-concurrency-5). An EWMA of the
         # RMS level of the audio currently being played, written by the playback
         # thread and read by the capture thread as the reference level for the
@@ -2679,14 +2706,16 @@ class SherpaOnnxEngine(AudioEngine):
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
         target_rms = self.config.tts_target_rms
+        leveler_on = self.config.tts_output_leveler
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm
         # pass can't drive the same model at the same time.
         with self._tts_lock:
             # Streaming path (first samples play before the whole sentence is
-            # synthesized). Used ONLY when loudness normalization is OFF -- the
-            # normalizer needs the whole clip's RMS, which the streaming callback
-            # cannot provide. target_rms<=0 -> this branch is byte-identical to before.
-            if target_rms <= 0.0 and self._tts_can_stream:
+            # synthesized). Used ONLY when neither whole-clip loudness stage is on
+            # -- both normalize_rms (target_rms>0) and the output_leveler need the
+            # whole clip's level, which the streaming callback cannot provide.
+            # target_rms<=0 AND leveler OFF -> this branch is byte-identical to before.
+            if target_rms <= 0.0 and not leveler_on and self._tts_can_stream:
 
                 def on_chunk(samples, *_progress) -> int:
                     blk = np.asarray(samples, dtype="float32").reshape(-1)
@@ -2709,19 +2738,42 @@ class SherpaOnnxEngine(AudioEngine):
 
             audio = tts.generate(text, sid=sid, speed=speed)
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
-        # Normalize the WHOLE sentence to a consistent RMS so every reply couples a
-        # STABLE echo level into the mic (the barge floor learns against this) and the
-        # listener hears an even volume -- the 2026-06-10 fix for the swinging echo
-        # floor + the perceived volume fluctuation. No-op when target_rms<=0.
-        samples = np.asarray(
-            normalize_rms(samples, target_rms), dtype="float32"
-        ).reshape(-1)
-        if self.config.tts_declick:                    # repair VITS impulse spikes
-            samples = np.asarray(
-                declick(samples, threshold=self.config.tts_declick_threshold),
-                dtype="float32",
-            ).reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
+        if leveler_on:
+            # OUTPUT LEVELER path: declick FIRST (so the limiter's true-peak
+            # estimate is not driven by a VITS impulse spike declick would have
+            # removed), THEN the fused perceptual-loudness + true-peak limiter
+            # OWNS loudness + peak (normalize_rms is SKIPPED -- its linear-RMS
+            # target would fight the perceptual target). The applied gain is
+            # carried across sentences (self._tts_level_gain_db) so loudness slews
+            # smoothly across a multi-sentence reply.
+            if self.config.tts_declick:                # repair VITS impulse spikes first
+                samples = np.asarray(
+                    declick(samples, threshold=self.config.tts_declick_threshold),
+                    dtype="float32",
+                ).reshape(-1)
+            samples, self._tts_level_gain_db = output_leveler(
+                samples,
+                target_dbfs=self.config.tts_loudness_target_dbfs,
+                true_peak_dbtp=self.config.tts_true_peak_dbtp,
+                sr=sr,
+                prev_gain_db=self._tts_level_gain_db,
+            )
+            samples = np.asarray(samples, dtype="float32").reshape(-1)
+        else:
+            # Legacy path: normalize the WHOLE sentence to a consistent RMS so every
+            # reply couples a STABLE echo level into the mic (the barge floor learns
+            # against this) and the listener hears an even volume -- the 2026-06-10
+            # fix for the swinging echo floor + the perceived volume fluctuation.
+            # No-op when target_rms<=0.
+            samples = np.asarray(
+                normalize_rms(samples, target_rms), dtype="float32"
+            ).reshape(-1)
+            if self.config.tts_declick:                # repair VITS impulse spikes
+                samples = np.asarray(
+                    declick(samples, threshold=self.config.tts_declick_threshold),
+                    dtype="float32",
+                ).reshape(-1)
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
             if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):

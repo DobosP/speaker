@@ -21,6 +21,7 @@ clean integer /3 decimation (short, well-conditioned FIR), versus the ugly
 """
 from __future__ import annotations
 
+import math
 from math import gcd
 
 
@@ -139,6 +140,208 @@ def declick(samples, *, threshold: float = 0.18, max_run: int = 8):
         else:
             i += 1
     return y
+
+
+# --- OUTPUT LEVELER -------------------------------------------------------
+# Opt-in TTS output stage (perceptual loudness target + look-ahead true-peak
+# limiter), a pure-numpy port of WebRTC's AGC2 adaptive-digital leveler +
+# fixed-digital limiter. It REPLACES ``normalize_rms`` when on (which targets a
+# LINEAR RMS and would fight the perceptual target); ``declick`` still runs in
+# both modes. Runs on the synthesis (producer) thread, never the audio callback
+# -- cheap (one RMS reduction, one flat multiply, a 4x peak-only upsample of the
+# already-small ~1-3 s clip, and a per-sample envelope pass). Default OFF, so a
+# clean clone keeps the legacy ``normalize_rms`` path byte-identical.
+#
+# Why dBFS referenced to full scale 1.0 (not 32768): the repo audio is float in
+# [-1, 1]. The WebRTC dB MATH is scale-invariant for GAINS; only the absolute
+# level constants change reference. So we re-reference dBFS to 1.0
+# (``dbfs = 20*log10(|x|)``, full scale = 1.0) and keep everything in [-1, 1] --
+# 0 dBFS == |x|=1.0. The true-peak ceiling is expressed in dBTP relative to that
+# 1.0 full scale (e.g. -1.0 dBTP leaves ~1 dB of inter-sample headroom).
+
+
+def _rms_dbfs_voiced(x, *, floor_dbfs: float = -50.0):
+    """Perceptual speech-level estimate: RMS over the VOICED samples only, in
+    dBFS (full scale = 1.0). Gating out near-silence (below ``floor_dbfs``) so
+    leading/trailing silence and inter-word gaps don't drag the measured level
+    down -- this is the analog of AGC2 weighting the level estimate by speech
+    probability (here ~1 everywhere TTS is actually speaking). Returns ``None``
+    when the clip is essentially silent (caller leaves loudness unchanged)."""
+    import numpy as np
+
+    x = np.asarray(x, dtype="float32").reshape(-1)
+    if x.size == 0:
+        return None
+    floor = 10.0 ** (float(floor_dbfs) / 20.0)
+    mag = np.abs(x)
+    voiced = x[mag > floor]
+    if voiced.size < x.size * 0.02:  # essentially silence -> no estimate
+        return None
+    r = float(np.sqrt(np.mean(voiced.astype("float64") ** 2)))
+    if r <= 1e-6:
+        return None
+    return 20.0 * math.log10(r)
+
+
+def _upsampled_abs_per_sample(x, oversample: int):
+    """Inter-sample (true) peak magnitude per ORIGINAL sample, via ``oversample``x
+    upsampling for the MEASUREMENT only (the upsampled signal is discarded). For
+    each original sample we take the max |.| over its ``oversample`` upsampled
+    points (and the join to the next sample), so a magnitude that peaks BETWEEN
+    two samples -- which a per-sample |x| misses but the DAC reconstruction
+    actually emits -- is caught. Prefers ``scipy.signal.resample_poly`` (polyphase,
+    same library the capture resampler uses) and falls back to ``np.interp``
+    linear upsampling. Length of the returned array == ``x.size``."""
+    import numpy as np
+
+    x = np.asarray(x, dtype="float64").reshape(-1)
+    n = x.size
+    if n == 0:
+        return np.zeros(0, dtype="float64")
+    os = max(1, int(oversample))
+    if os == 1 or n == 1:
+        return np.abs(x)
+    up = None
+    if _has_scipy():
+        try:
+            from scipy.signal import resample_poly
+
+            up = resample_poly(x, os, 1).astype("float64")
+        except Exception:  # noqa: BLE001 - degrade to linear
+            up = None
+    if up is None:
+        idx = np.linspace(0.0, n - 1, num=n * os - (os - 1))
+        up = np.interp(idx, np.arange(n), x)
+    up_abs = np.abs(up)
+    # Map back to one value per ORIGINAL sample: the max over this sample's
+    # upsampled span (incl. the rise to the next sample). Build n windows of
+    # length `os+1` (clamped at the tail) and take their max -- allocation-light.
+    out = np.empty(n, dtype="float64")
+    for k in range(os + 1):
+        lo = k
+        if lo == 0:
+            cand = up_abs[0 : n * os : os]
+            cand = cand[:n]
+        else:
+            sl = up_abs[lo : n * os : os]
+            cand = np.empty(n, dtype="float64")
+            cand[: sl.size] = sl
+            cand[sl.size :] = sl[-1] if sl.size else 0.0
+        if k == 0:
+            out[:] = cand
+        else:
+            np.maximum(out, cand, out=out)
+    return out
+
+
+def _running_min_forward(g, window: int):
+    """Forward look-ahead: replace each sample with the MIN of itself and the
+    next ``window`` samples, so a gain reduction lands BEFORE the peak it must
+    tame (no overshoot). Vectorized via a strided sliding window (cheap on the
+    ~1-3 s clip). ``window <= 1`` is a no-op."""
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view
+
+    g = np.asarray(g, dtype="float64").reshape(-1)
+    w = max(1, int(window))
+    if w <= 1 or g.size == 0:
+        return g
+    # Pad the tail with the last value so the final samples have a full window.
+    padded = np.concatenate([g, np.full(w - 1, g[-1], dtype="float64")])
+    return sliding_window_view(padded, w).min(axis=1)
+
+
+def _true_peak_gain_envelope(x, ceiling_lin: float, sr: int, *, oversample: int = 4,
+                             lookahead_ms: float = 1.5, release_ms: float = 50.0):
+    """Per-sample gain-reduction envelope holding the INTER-SAMPLE peak below
+    ``ceiling_lin``, with forward look-ahead (gain dips before the peak -> no
+    overshoot) + a slow one-pole release (no pumping). Instant attack: the gain
+    drops immediately when the look-ahead window sees a peak; it recovers only as
+    fast as the release one-pole allows. This is the look-ahead soft-knee true-
+    peak limiter -- the envelope is continuous, so it acts as a soft knee."""
+    import numpy as np
+
+    x = np.asarray(x, dtype="float32").reshape(-1)
+    if x.size == 0:
+        return np.ones(0, dtype="float32")
+    mag = _upsampled_abs_per_sample(x, oversample)  # len == x.size, float64
+    desired = np.ones_like(mag)
+    hot = mag > ceiling_lin
+    # Guard divide-by-zero (mag>ceiling implies mag>0, but stay defensive).
+    desired[hot] = np.where(mag[hot] > 0.0, ceiling_lin / mag[hot], 1.0)
+    # Look-ahead: running MIN over a forward window so the gain dips before peak.
+    la = max(1, int(sr * lookahead_ms / 1000.0))
+    desired = _running_min_forward(desired, la)
+    # One-pole release: gain may only RISE this slowly back toward 1.0; a drop
+    # (attack) is instantaneous so an incoming peak is always tamed in time.
+    rel = math.exp(-1.0 / max(1.0, sr * release_ms / 1000.0))
+    g = np.empty_like(desired)
+    cur = 1.0
+    for i in range(desired.size):  # cheap: a TTS clip is ~1-3 s
+        d = desired[i]
+        cur = d if d < cur else (cur * rel + d * (1.0 - rel))
+        g[i] = cur
+    return g.astype("float32")
+
+
+def output_leveler(samples, *, target_dbfs: float, true_peak_dbtp: float, sr: int,
+                   prev_gain_db: float = 0.0, max_boost_db: float = 18.0,
+                   max_cut_db: float = 12.0, max_step_db: float = 3.0,
+                   oversample: int = 4, lookahead_ms: float = 1.5,
+                   release_ms: float = 50.0):
+    """Opt-in TTS output stage: perceptual loudness target + look-ahead true-peak
+    limiter, in one fused pass. Pure numpy, allocation-light, runs on the
+    producer thread (never the audio callback).
+
+    STAGE 1 (loudness): measure the clip's speech level (dBFS RMS over the voiced
+    portion), compute ``gain_db = target_dbfs - measured`` clamped to
+    ``[-max_cut_db, +max_boost_db]``, then SLEW it toward that from
+    ``prev_gain_db`` by at most ``max_step_db`` (the per-utterance analog of
+    AGC2's slow attack -- loudness ramps smoothly across a multi-sentence reply
+    instead of jumping per sentence). Applied as a flat linear multiply.
+
+    STAGE 2 (true-peak limit): :func:`_true_peak_gain_envelope` builds a
+    CONTINUOUS per-sample gain reduction (= a soft knee, no step discontinuities)
+    that holds the inter-sample peak below ``true_peak_dbtp`` (dBTP relative to
+    1.0 full scale); a final NaN-safe clip at full scale is the brick-wall safety
+    net (a no-op on real signal, since the ceiling is sub-0 dBFS).
+
+    Returns ``(leveled_float32, applied_gain_db)`` so the caller carries
+    ``applied_gain_db`` as ``prev_gain_db`` into the next sentence (inter-sentence
+    slew). Length-preserving (the oversample is for peak MEASUREMENT only and is
+    discarded), NaN-safe, silence -> passthrough (loudness held, limiter inert)."""
+    import numpy as np
+
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if x.size == 0:
+        return x, float(prev_gain_db)
+
+    # --- Stage 1: perceptual loudness target, slew-limited between sentences ---
+    meas = _rms_dbfs_voiced(x)
+    if meas is None:  # silence -> don't move the loudness gain
+        gain_db = float(prev_gain_db)
+    else:
+        want = float(target_dbfs) - meas
+        want = max(-float(max_cut_db), min(float(max_boost_db), want))
+        step = max(-float(max_step_db), min(float(max_step_db), want - float(prev_gain_db)))
+        gain_db = float(prev_gain_db) + step
+    y = x * np.float32(10.0 ** (gain_db / 20.0))
+
+    # --- Stage 2: look-ahead true-peak limiter (always last) ---
+    ceiling = 10.0 ** (float(true_peak_dbtp) / 20.0)  # dBTP -> linear, full scale 1.0
+    env = _true_peak_gain_envelope(
+        y, ceiling, int(sr), oversample=oversample,
+        lookahead_ms=lookahead_ms, release_ms=release_ms,
+    )
+    y = (y * env).astype("float32")
+    # Brick-wall safety net: the continuous per-sample envelope IS a soft knee
+    # (no step discontinuities), so a hard clip here only ever catches residual
+    # inter-sample overshoot BETWEEN the sampled peaks -- and it clips at full
+    # scale (1.0), comfortably ABOVE the sub-0-dBFS ceiling the envelope targets,
+    # so on real signal it never fires. NaN-safe.
+    y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+    np.clip(y, -1.0, 1.0, out=y)
+    return y.astype("float32"), gain_db
 
 
 def compute_input_calibration(

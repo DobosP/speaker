@@ -127,3 +127,4 @@ pretrained_models/asr_candidates/
 pretrained_models/**/sherpa-onnx-*/
 models/
 *.gguf
+tmp/

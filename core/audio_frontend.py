@@ -92,6 +92,40 @@ def normalize_rms(samples, target_rms: float, *, max_gain: float = 20.0):
     return apply_gain_soft_limit(x, gain)
 
 
+def lowpass_soft(samples, sr: int, cutoff_hz: float, *, width_hz: float = 1500.0):
+    """Zero-phase soft low-pass: a raised-cosine taper from ``cutoff_hz`` up to
+    ``cutoff_hz + width_hz``, with everything above fully attenuated.
+
+    Tames a TTS voice's high-frequency energy so a bright model (e.g. Kokoro,
+    spectral centroid ~2.8 kHz) does not overdrive a small/cheap OPEN speaker into
+    a buzzy / "vibrating" rasp -- the dark legacy VITS (~0.8 kHz) never reached
+    that band, so this is the knob that makes the natural-but-bright voice usable
+    on the bare laptop speaker (owner A/B 2026-06-22). FFT-domain + zero-phase so
+    it adds no group delay or the pre-echo a causal IIR would; applied once to the
+    whole clip (the caller forces the whole-clip synth path when this is on).
+    ``cutoff_hz <= 0`` is a no-op (byte-identical); a cutoff at/above Nyquist is
+    also a no-op. Never raises."""
+    import numpy as np
+
+    if cutoff_hz is None or cutoff_hz <= 0.0 or sr <= 0:
+        return samples
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if x.size < 8:
+        return x
+    nyq = sr * 0.5
+    if cutoff_hz >= nyq:
+        return x
+    width = max(1.0, float(width_hz))
+    X = np.fft.rfft(x.astype("float64"))
+    fr = np.fft.rfftfreq(x.size, 1.0 / sr)
+    H = np.ones(fr.shape, dtype="float64")
+    t = (fr - float(cutoff_hz)) / width
+    mid = (t > 0.0) & (t < 1.0)
+    H[mid] = 0.5 * (1.0 + np.cos(np.pi * t[mid]))
+    H[fr >= float(cutoff_hz) + width] = 0.0
+    return np.fft.irfft(X * H, n=x.size).astype("float32")
+
+
 def declick(samples, *, threshold: float = 0.18, max_run: int = 8):
     """Repair isolated impulse samples in a synthesized waveform.
 

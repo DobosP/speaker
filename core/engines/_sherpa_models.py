@@ -204,16 +204,36 @@ def build_keyword_spotter(c: "SherpaConfig"):
 
 
 def build_tts(c: "SherpaConfig"):
-    """Offline VITS TTS, or ``None`` if no model configured."""
+    """Offline TTS (VITS/Piper by default, Kokoro when ``tts_voices`` is set), or
+    ``None`` if no model configured.
+
+    The Kokoro family (StyleTTS2-based, many built-in voices, more natural than the
+    libritts VITS) is a sibling of ``vits`` on ``OfflineTtsConfig.model``: it needs a
+    ``voices.bin`` (hence keying on ``tts_voices``) plus the same tokens + espeak-ng
+    ``data_dir``, and the multi-lang packages also a ``lexicon``. Everything
+    downstream is family-agnostic -- ``generate(text, sid=, speed=, callback=)`` and
+    ``.sample_rate`` are identical -- so voice selection stays ``tts_speaker_id`` and
+    the sample rate auto-adapts (Kokoro is 24 kHz). The VITS path is byte-identical
+    when ``tts_voices`` is empty (default), so this is a drop-in, opt-in addition."""
     if not c.tts_model:
         return None
     import sherpa_onnx
 
     tts_config = sherpa_onnx.OfflineTtsConfig()
-    tts_config.model.vits.model = c.tts_model
-    tts_config.model.vits.tokens = c.tts_tokens
-    if c.tts_data_dir:
-        tts_config.model.vits.data_dir = c.tts_data_dir
+    if getattr(c, "tts_voices", ""):  # Kokoro (voices.bin present)
+        k = tts_config.model.kokoro
+        k.model = c.tts_model
+        k.voices = c.tts_voices
+        k.tokens = c.tts_tokens
+        if c.tts_data_dir:
+            k.data_dir = c.tts_data_dir
+        if getattr(c, "tts_lexicon", ""):  # multi-lang packages ship a lexicon
+            k.lexicon = c.tts_lexicon
+    else:  # VITS / Piper (unchanged)
+        tts_config.model.vits.model = c.tts_model
+        tts_config.model.vits.tokens = c.tts_tokens
+        if c.tts_data_dir:
+            tts_config.model.vits.data_dir = c.tts_data_dir
     tts_config.model.num_threads = c.resolved_tts_threads
     tts_config.model.provider = c.provider
     return sherpa_onnx.OfflineTts(tts_config)

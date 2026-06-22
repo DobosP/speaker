@@ -168,7 +168,8 @@
       "sherpa": {
         "asr_num_threads": 2,
         "tts_num_threads": 2,
-        "resampler_quality": "VHQ"
+        "resampler_quality": "VHQ",
+        "playback_fifo_sec": 1.5
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
@@ -190,7 +191,8 @@
       "sherpa": {
         "asr_num_threads": 4,
         "tts_num_threads": 2,
-        "resampler_quality": "VHQ"
+        "resampler_quality": "VHQ",
+        "playback_fifo_sec": 1.5
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3},
@@ -211,7 +213,8 @@
       },
       "sherpa": {
         "asr_num_threads": 4,
-        "tts_num_threads": 2
+        "tts_num_threads": 2,
+        "playback_fifo_sec": 1.5
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3}
@@ -473,6 +476,8 @@
     "tts_loudness_target_dbfs": -18.0,
     "tts_true_peak_dbtp": -1.0,
     "tts_loudness_slew_db_per_s": 6.0,
+    "_playback_fifo_sec_comment": "Playback ring-buffer depth in seconds. The producer (synthesis) runs AHEAD of the audio callback into this FIFO; a deeper buffer absorbs synthesis jitter under CPU contention so the output never starves mid-reply (the 'interrupted/choppy' symptom), at the cost of a little more run-ahead latency. A barge-in FLUSHES the FIFO instantly, so depth does NOT add cut latency. 1.0 is the safe default (kept on phone/weak profiles, which also use the cheap streaming Piper path); capable profiles raise it to ~1.5 because the whole-clip Kokoro path (RTF ~0.6 on CPU) needs more headroom before the buffer drains. Too small -> audible mid-sentence underruns on a slow synth; too large -> needless buffered audio.",
+    "playback_fifo_sec": 1.0,
     "speaker_embedding_model": "",
     "speaker_enroll_wav": "",
     "speaker_enroll_embedding": "",

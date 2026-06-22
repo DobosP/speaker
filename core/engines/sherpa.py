@@ -360,6 +360,13 @@ class SherpaConfig:
     tts_model: str = ""
     tts_tokens: str = ""
     tts_data_dir: str = ""
+    # Kokoro TTS (StyleTTS2-based, many natural built-in voices): set tts_voices to
+    # the package's voices.bin to select the Kokoro family in build_tts (a sibling
+    # of vits). tts_lexicon is the (comma-separated) lexicon the multi-lang packages
+    # ship. Both empty (default) -> the VITS/Piper path is byte-identical. Voice is
+    # still picked by tts_speaker_id; sample rate auto-adapts (Kokoro is 24 kHz).
+    tts_voices: str = ""
+    tts_lexicon: str = ""
     tts_speaker_id: int = 0
     tts_speed: float = 1.0
     # Per-sentence TTS loudness normalization (core/audio_frontend.normalize_rms).

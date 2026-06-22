@@ -399,15 +399,24 @@ class SherpaConfig:
     # normalize_rms path is BYTE-IDENTICAL (the leveler is never reached). The two
     # numeric keys below are inert until this bool is True.
     tts_output_leveler: bool = False
-    # Perceptual loudness target in dBFS (full scale = 1.0; speech RMS over the
-    # voiced portion is brought toward this, slew-limited). -20.0 is a broadcast-
-    # ish speech level. Inert unless tts_output_leveler=True.
-    tts_loudness_target_dbfs: float = -20.0
+    # Speech-level (loudness) target in dBFS (full scale = 1.0; broadband RMS over
+    # the voiced portion is brought toward this). -18.0 matches the shipped VITS
+    # voice's natural level (~-18.4 dBFS) so steady-state action is near-neutral and
+    # the limiter is the only thing that touches loud peaks. Inert unless
+    # tts_output_leveler=True.
+    tts_loudness_target_dbfs: float = -18.0
     # True-peak ceiling in dBTP (relative to 1.0 full scale). -1.0 dBTP is the
     # standard true-peak ceiling: it leaves ~1 dB of inter-sample headroom so the
     # DAC reconstruction of an old/weak speaker never clips. Inert unless
     # tts_output_leveler=True.
     tts_true_peak_dbtp: float = -1.0
+    # TIME-AWARE loudness slew rate (dB/second, like WebRTC AGC2 ~6 dB/s). The
+    # per-call gain change is this rate * the sentence's duration, so loudness
+    # converges proportionally to audio time (a long sentence corrects fully, a
+    # short one barely moves) -- NOT a fixed per-sentence step (which would make
+    # loudness depend on reply length). The FIRST utterance of a session seeds
+    # straight to target (no ramp). Inert unless tts_output_leveler=True.
+    tts_loudness_slew_db_per_s: float = 6.0
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -957,10 +966,12 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts_can_stream = True
         # Output-leveler inter-sentence loudness slew state (output_leveler).
         # Carries the applied loudness gain (dB) across sentences so loudness
-        # ramps smoothly across a multi-sentence reply (AGC2's slow attack, per
-        # utterance) instead of jumping per sentence. Only read/written on the
-        # synthesis (producer) thread; inert unless tts_output_leveler=True.
-        self._tts_level_gain_db = 0.0
+        # converges smoothly (time-aware, AGC2-style) across a multi-sentence
+        # reply instead of jumping per sentence. ``None`` = no utterance leveled
+        # yet -> the first sentence SEEDS straight to target (no audible ramp-up);
+        # thereafter it holds a float and slews. Only read/written on the synthesis
+        # (producer) thread; inert unless tts_output_leveler=True.
+        self._tts_level_gain_db = None
         # Self-interruption suppression (realtime-concurrency-5). An EWMA of the
         # RMS level of the audio currently being played, written by the playback
         # thread and read by the capture thread as the reference level for the
@@ -2758,6 +2769,7 @@ class SherpaOnnxEngine(AudioEngine):
                 true_peak_dbtp=self.config.tts_true_peak_dbtp,
                 sr=sr,
                 prev_gain_db=self._tts_level_gain_db,
+                max_slew_db_per_s=self.config.tts_loudness_slew_db_per_s,
             )
             samples = np.asarray(samples, dtype="float32").reshape(-1)
         else:

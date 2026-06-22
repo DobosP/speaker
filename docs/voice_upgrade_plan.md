@@ -1,9 +1,24 @@
 # Voice upgrade: natural + emotional + diverse, still cheap
 
-**Status:** proposal · **Date:** 2026-06-22 · **Scope:** desktop `core/` runtime (sherpa-onnx engine); mobile follows once validated
+**Status:** partially IMPLEMENTED (see status box) · **Date:** 2026-06-22 · **Scope:** desktop `core/` runtime (sherpa-onnx engine); mobile follows once validated
 **Owner ask (verbatim):** the TTS is *"blurry, robotic, interrupted, not clear — the main issue"*; wants a **better voice + emotion + diversity, still cheap on-device.**
 
 This doc is built entirely from one run's diagnosis (`run-20260622-093456` + a full read of the synthesis/playout chain). All file/line references were re-verified against the working tree.
+
+---
+
+## Implementation status — 2026-06-22 (what landed)
+
+A fan-out investigation (4 read-only agents + synthesis) re-verified this diagnosis against the tree, and a **direct synthesis probe settled the open question**: Kokoro is **not** broken (the `run-20260622-100328` "empty `.ref.wav`" was an *idle* session — `finals=0`, so the assistant never spoke). Live Kokoro synth measures **centroid 1763–2880 Hz / HF-ratio 0.16–0.27** across voices vs the old libritts **~800 Hz / ~0.0026** — objectively far brighter/clearer. 103 voices, all real; the speed knob works (0.9→2.84 s, 1.15→2.27 s).
+
+**Shipped (branch `feat/kokoro-tts-backend`):**
+- **Problem A (robotic/blurry) — Kokoro model swap.** Already wired (`build_tts` keys Kokoro on `tts_voices`; commit `2b928b8`) + verified bright/clear above.
+- **Emotion + voice diversity (the headline ask).** New `core/tts_markup.py` (pure `parse_tts_markup` + `resolve_tts_params` + `build_markup_guidance`). Opt-in `SherpaConfig.tts_markup`: the LLM prefixes a sentence with `[emotion:.. voice:.. rate:..]`; `speak()` strips it and maps to a **per-utterance (speaker_id, speed)** — voice-choice for timbre diversity, rate-as-affect for emotion (the only expressivity sherpa-onnx Kokoro exposes — no latent style vector). `runtime.py` teaches the answering model the grammar + its configured voices/emotions when the flag is on. **Default OFF → byte-identical.** Commit `e503538`; 26 tests.
+- **Problem B (interrupted) — partial, safe mitigation.** `playback_fifo_sec` raised 1.0→1.5 on capable profiles (desktop/4090/macbook) so the whole-clip producer has run-ahead headroom under CPU contention; phone/weak keep 1.0. Commit `c60d11b`. NOTE: the box's earlier "interrupted" was dominated by **environment artifacts** (a dead-quiet mic left by `barge_stress`, + heavy external CPU load) per prior diagnosis — not assistant logic.
+
+**Deliberately deferred (the real first-audio-latency fix):** a **streaming-compatible output leveler** (per-chunk feed-forward gain seeded from the carried `_tts_level_gain_db`, AGC2 is inherently streaming) to reclaim low first-audio latency *without* losing the stable open-speaker echo floor the whole-clip leveling provides. NOT landed because it must be **validated live at the mic against the barge-in P1** (echo-floor stability) on a quiet box — which the current CPU load + idle-mic sessions don't allow. This is the next step, gated on a clean live A/B.
+
+**This machine (`config.local.json`, gitignored):** Kokoro + `tts_markup:true` + a provisional named-voice set `{warm:16, bright:28, deep:9, narrator:26, soft:3, lively:18}` + emotion→speed map; audition `logs/kokoro_voice_audition.wav` (104 s) for the owner to pick/rename voices by ear.
 
 ---
 

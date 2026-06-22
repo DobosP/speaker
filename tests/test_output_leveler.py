@@ -15,9 +15,40 @@ from core.audio_frontend import (
     _running_min_forward,
     _true_peak_gain_envelope,
     _upsampled_abs_per_sample,
+    lowpass_soft,
     normalize_rms,
     output_leveler,
 )
+
+
+def _sine(freq, sr=24000, dur=0.25, amp=0.3):
+    t = np.arange(int(sr * dur)) / sr
+    return (amp * np.sin(2 * np.pi * freq * t)).astype("float32")
+
+
+# --- HF roll-off (lowpass_soft) for cheap open speakers --------------------
+
+def test_lowpass_off_is_passthrough():
+    x = _sine(9000)
+    assert np.array_equal(lowpass_soft(x, 24000, 0.0), x)       # cutoff<=0
+    assert np.array_equal(lowpass_soft(x, 24000, 20000.0), x)   # >= Nyquist
+
+
+def test_lowpass_attenuates_above_cutoff_keeps_below():
+    sr = 24000
+    hi = _sine(10000, sr)   # well above a 7k cutoff -> should be crushed
+    lo = _sine(1000, sr)    # well below -> should survive
+    hi_out = lowpass_soft(hi, sr, 7000.0, width_hz=1500.0)
+    lo_out = lowpass_soft(lo, sr, 7000.0, width_hz=1500.0)
+    assert _rms(hi_out) < 0.1 * _rms(hi)    # HF removed
+    assert _rms(lo_out) > 0.9 * _rms(lo)    # LF preserved
+
+
+def test_lowpass_length_preserving_and_safe():
+    x = _sine(3000)
+    assert lowpass_soft(x, 24000, 7000.0).shape == x.shape
+    assert lowpass_soft(np.zeros(4, dtype="float32"), 24000, 7000.0).size == 4  # too short -> passthrough
+    assert lowpass_soft(np.zeros(0, dtype="float32"), 24000, 7000.0).size == 0
 
 
 def _rms(x):

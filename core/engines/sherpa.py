@@ -40,6 +40,7 @@ from ..audio_frontend import (
     apply_gain_soft_limit,
     compute_input_calibration,
     declick,
+    lowpass_soft,
     normalize_rms,
     output_leveler,
 )
@@ -449,6 +450,17 @@ class SherpaConfig:
     # loudness depend on reply length). The FIRST utterance of a session seeds
     # straight to target (no ramp). Inert unless tts_output_leveler=True.
     tts_loudness_slew_db_per_s: float = 6.0
+    # OUTPUT HIGH-FREQUENCY ROLL-OFF for small/cheap OPEN speakers (opt-in, default
+    # OFF). A bright TTS voice (Kokoro spectral centroid ~2.8 kHz) can overdrive a
+    # bare laptop speaker into a buzzy / "vibrating" rasp the dark legacy VITS
+    # (~0.8 kHz) never triggered (owner live A/B 2026-06-22: raw Kokoro "vibrated",
+    # a ~7 kHz roll-off removed it while keeping clarity). When >0 a zero-phase soft
+    # low-pass (core.audio_frontend.lowpass_soft) tames the TTS output above this
+    # cutoff as the final stage before playback. 0 = OFF (byte-identical). Forces
+    # the whole-clip synth path (like the leveler) so the FFT filter is applied once
+    # cleanly. tts_output_lowpass_width_hz is the raised-cosine transition width.
+    tts_output_lowpass_hz: float = 0.0
+    tts_output_lowpass_width_hz: float = 1500.0
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -2786,15 +2798,17 @@ class SherpaOnnxEngine(AudioEngine):
             )
         target_rms = self.config.tts_target_rms
         leveler_on = self.config.tts_output_leveler
+        lowpass_hz = self.config.tts_output_lowpass_hz
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm
         # pass can't drive the same model at the same time.
         with self._tts_lock:
             # Streaming path (first samples play before the whole sentence is
-            # synthesized). Used ONLY when neither whole-clip loudness stage is on
-            # -- both normalize_rms (target_rms>0) and the output_leveler need the
-            # whole clip's level, which the streaming callback cannot provide.
-            # target_rms<=0 AND leveler OFF -> this branch is byte-identical to before.
-            if target_rms <= 0.0 and not leveler_on and self._tts_can_stream:
+            # synthesized). Used ONLY when no whole-clip stage is on -- normalize_rms
+            # (target_rms>0) and the output_leveler need the whole clip's level, and
+            # the HF roll-off (lowpass_hz>0) applies one clean zero-phase FFT filter
+            # to the whole clip; none can run on the streaming callback. All three
+            # off -> this branch is byte-identical to before.
+            if target_rms <= 0.0 and not leveler_on and lowpass_hz <= 0.0 and self._tts_can_stream:
 
                 def on_chunk(samples, *_progress) -> int:
                     blk = np.asarray(samples, dtype="float32").reshape(-1)
@@ -2854,6 +2868,15 @@ class SherpaOnnxEngine(AudioEngine):
                     declick(samples, threshold=self.config.tts_declick_threshold),
                     dtype="float32",
                 ).reshape(-1)
+        # HF roll-off (final stage, after loudness): tame a bright voice's highs so
+        # they don't overdrive a small/cheap open speaker into a buzzy rasp. Applied
+        # last so it also smooths any limiter-introduced HF; no-op when <=0.
+        if lowpass_hz > 0.0:
+            samples = np.asarray(
+                lowpass_soft(samples, sr, lowpass_hz,
+                             width_hz=self.config.tts_output_lowpass_width_hz),
+                dtype="float32",
+            ).reshape(-1)
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
             if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):

@@ -28,6 +28,7 @@ from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
+from .tts_markup import build_markup_guidance
 from .resume import ResumeConfig, ResumeTracker
 from .routing import Router
 from .turn_merge import FinalDispatcher, TurnMergeConfig
@@ -148,7 +149,22 @@ class VoiceRuntime:
         # enabled flag -- so the model isn't told it can search the web when the
         # provider would silently fall back to the local corpus.
         web_enabled = bool(getattr(web_cfg, "enabled", False) and getattr(web_cfg, "base_url", ""))
-        system_prompt = build_system_prompt(registry, persona=persona, web_enabled=web_enabled)
+        # Opt-in expressive-TTS markup: when the engine has tts_markup on, teach the
+        # answering model the leading-tag grammar + its configured voices/emotions
+        # so it can emit [emotion:.. voice:..] tags. Duck-typed off the engine
+        # config (a sherpa-only feature), so a non-sherpa engine yields "" and the
+        # prompt is unchanged. Off by default -> the model stays tag-unaware.
+        markup_guidance = ""
+        _eng_cfg = getattr(self.engine, "config", None)
+        if _eng_cfg is not None and getattr(_eng_cfg, "tts_markup", False):
+            markup_guidance = build_markup_guidance(
+                voices=list(getattr(_eng_cfg, "tts_speaker_voices", {}) or {}),
+                emotions=list(getattr(_eng_cfg, "tts_emotion_speed_map", {}) or {}),
+            )
+        system_prompt = build_system_prompt(
+            registry, persona=persona, web_enabled=web_enabled,
+            markup_guidance=markup_guidance,
+        )
         # Kept so the startup pre-warm prefills the model's cacheable system
         # prefix with the REAL prompt (not a throwaway "hi" with no system), so
         # turn 1's first token isn't paying to fill a cold KV-cache prefix.

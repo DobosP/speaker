@@ -63,3 +63,20 @@ def test_coherence_detector_honours_configured_nperseg():
     """The wiring target: the detector actually uses the nperseg it's given."""
     det = EchoCoherenceDetector(16000, nperseg=128)
     assert det.nperseg == 128
+
+
+def test_playback_fifo_default_and_capable_profile_override():
+    """Playback FIFO depth: 1.0 default (unchanged), capable profiles raise it to
+    1.5 for whole-clip-synth headroom under load; phone profiles keep 1.0."""
+    import json
+
+    assert SherpaConfig().playback_fifo_sec == 1.0  # default unmoved
+    config = json.load(open("config.json"))
+    assert config["sherpa"]["playback_fifo_sec"] == 1.0  # base unchanged
+    for profile in ("desktop", "desktop_gpu_4090", "macbook_m_series"):
+        merged = apply_device_profile(config, profile)["sherpa"]
+        assert merged["playback_fifo_sec"] == 1.5, profile
+    # Weak profiles inherit the lean 1.0 base (no override).
+    for profile in ("phone", "phone_lite"):
+        merged = apply_device_profile(config, profile)["sherpa"]
+        assert merged.get("playback_fifo_sec", 1.0) == 1.0, profile

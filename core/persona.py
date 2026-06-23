@@ -124,13 +124,17 @@ def build_system_prompt(
     *,
     persona: Optional[PersonaConfig] = None,
     web_enabled: bool = False,
+    markup_guidance: str = "",
 ) -> str:
     """Compose the answering model's system prompt.
 
     Identity (persona-aware) + the live skill list + the shared interaction
     guidance + a web-access line that reflects the actual §9.7 egress state.
     Reuses the same sentence constants as :data:`DEFAULT_SYSTEM`, so there's one
-    source per sentence."""
+    source per sentence. ``markup_guidance`` (opt-in, default "") is the
+    expressive-TTS tag grammar the runtime supplies when SherpaConfig.tts_markup
+    is on; empty -> nothing appended (DEFAULT_SYSTEM and tag-unaware callers stay
+    byte-identical)."""
     if persona is not None and persona.name:
         identity = f"You are {persona.name}, a local, on-device voice assistant."
     else:
@@ -145,6 +149,8 @@ def build_system_prompt(
     parts.append(_ASR)
     parts.append(_WEB if web_enabled else _NO_WEB)
     parts.append(_NO_COMMENT)
+    if markup_guidance:
+        parts.append(markup_guidance)
     if persona is not None and persona.extra:
         parts.append(persona.extra)
     return "\n\n".join(parts)

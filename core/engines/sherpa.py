@@ -7,7 +7,7 @@ import queue
 import threading
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
@@ -40,11 +40,13 @@ from ..audio_frontend import (
     apply_gain_soft_limit,
     compute_input_calibration,
     declick,
+    lowpass_soft,
     normalize_rms,
     output_leveler,
 )
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
+from ..tts_markup import parse_tts_markup, resolve_tts_params
 from ._denoiser import build_denoiser
 from ._aec import FarEndRing, PlaybackFIFO, build_aec
 from ._sherpa_models import (
@@ -360,8 +362,39 @@ class SherpaConfig:
     tts_model: str = ""
     tts_tokens: str = ""
     tts_data_dir: str = ""
+    # Kokoro TTS (StyleTTS2-based, many natural built-in voices): set tts_voices to
+    # the package's voices.bin to select the Kokoro family in build_tts (a sibling
+    # of vits). tts_lexicon is the (comma-separated) lexicon the multi-lang packages
+    # ship. Both empty (default) -> the VITS/Piper path is byte-identical. Voice is
+    # still picked by tts_speaker_id; sample rate auto-adapts (Kokoro is 24 kHz).
+    tts_voices: str = ""
+    tts_lexicon: str = ""
     tts_speaker_id: int = 0
     tts_speed: float = 1.0
+    # EXPRESSIVE MARKUP (opt-in, default OFF -> byte-identical). When True the LLM
+    # may prefix a sentence with a leading directive tag -- [emotion:.. voice:..
+    # rate:..] (see core/tts_markup.py) -- which SherpaOnnxEngine.speak() strips
+    # from the spoken text and maps to a per-utterance (speaker_id, speed). This is
+    # the cheap on-device "emotion + voice diversity" capability: no extra model,
+    # just a regex + two dict lookups per sentence. Requires a system prompt that
+    # teaches the grammar (also opt-in); with the default tag-unaware prompt the
+    # LLM never emits a tag, so enabling this alone changes nothing. The two maps
+    # below are inert while this is False.
+    tts_markup: bool = False
+    # Named-voice map (diversity): voice name -> Kokoro sid. Lets the markup (or a
+    # deployment) pick a voice by role ("warm", "narrator", ...) instead of a raw
+    # integer. Empty (default) -> only tts_speaker_id is ever used. Out-of-range
+    # sids are validated against the model's speaker count at synth time.
+    tts_speaker_voices: dict = field(default_factory=dict)
+    # Emotion -> speed-multiplier map (rate-as-affect, the realistic cheap emotion
+    # lever sherpa-onnx Kokoro exposes -- there is no latent style vector). e.g.
+    # {"calm": 0.9, "excited": 1.1}. Multiplies tts_speed for the tagged sentence;
+    # the result is clamped to [tts_speed_min, tts_speed_max]. Empty -> no effect.
+    tts_emotion_speed_map: dict = field(default_factory=dict)
+    # Safe synthesis-speed band a markup rate/emotion can never exceed (a runaway
+    # "[rate:50]" must not produce unusable audio). Only relevant when tts_markup.
+    tts_speed_min: float = 0.5
+    tts_speed_max: float = 2.0
     # Per-sentence TTS loudness normalization (core/audio_frontend.normalize_rms).
     # The offline VITS model emits a DIFFERENT amplitude per sentence, so on an open
     # speaker the played-back echo level swings and the barge-in echo floor can never
@@ -417,6 +450,17 @@ class SherpaConfig:
     # loudness depend on reply length). The FIRST utterance of a session seeds
     # straight to target (no ramp). Inert unless tts_output_leveler=True.
     tts_loudness_slew_db_per_s: float = 6.0
+    # OUTPUT HIGH-FREQUENCY ROLL-OFF for small/cheap OPEN speakers (opt-in, default
+    # OFF). A bright TTS voice (Kokoro spectral centroid ~2.8 kHz) can overdrive a
+    # bare laptop speaker into a buzzy / "vibrating" rasp the dark legacy VITS
+    # (~0.8 kHz) never triggered (owner live A/B 2026-06-22: raw Kokoro "vibrated",
+    # a ~7 kHz roll-off removed it while keeping clarity). When >0 a zero-phase soft
+    # low-pass (core.audio_frontend.lowpass_soft) tames the TTS output above this
+    # cutoff as the final stage before playback. 0 = OFF (byte-identical). Forces
+    # the whole-clip synth path (like the leveler) so the FFT filter is applied once
+    # cleanly. tts_output_lowpass_width_hz is the raised-cosine transition width.
+    tts_output_lowpass_hz: float = 0.0
+    tts_output_lowpass_width_hz: float = 1500.0
     # Barge-in temporal confirmation (core/engines/_dtd.BargeSustain): a cut fires
     # when at least barge_in_min_speech_sec of detected talk-over lands within the
     # trailing barge_in_sustain_window_sec. The per-frame DTD verdict FLICKERS on a
@@ -1414,7 +1458,7 @@ class SherpaOnnxEngine(AudioEngine):
                     self._out_stream.close()
                 except Exception:  # noqa: BLE001 - device may be mid-teardown
                     pass
-        self._play_q.put((None, None, 0))  # sentinel: wake the worker so it exits
+        self._play_q.put((None, None, 0, None))  # sentinel: wake the worker so it exits
         if self._final_q is not None:
             # Any finals still queued here are intentionally dropped on shutdown
             # (like _play_q) -- dispatching a final into a tearing-down runtime is
@@ -1464,7 +1508,18 @@ class SherpaOnnxEngine(AudioEngine):
             if on_done:
                 on_done()
             return
-        self._enqueue_play(text, on_done)
+        # Expressive markup (opt-in): strip a leading [emotion:.. voice:.. rate:..]
+        # tag off the text and carry the parsed directives to _synthesize, which
+        # maps them to this utterance's (sid, speed). Default OFF -> no parsing,
+        # byte-identical. A tag-only emission (nothing left to say) is dropped.
+        directives = None
+        if self.config.tts_markup:
+            text, directives = parse_tts_markup(text)
+            if not text:
+                if on_done:
+                    on_done()
+                return
+        self._enqueue_play(text, on_done, directives)
 
     def stop_speaking(self) -> None:
         # Cut the current utterance and discard whatever is queued behind it, so
@@ -2330,12 +2385,19 @@ class SherpaOnnxEngine(AudioEngine):
             kws.reset_stream(ks)
             self._cb.on_command(keyword)
 
-    def _enqueue_play(self, text: str, on_done: Optional[Callable[[], None]]) -> None:
+    def _enqueue_play(
+        self,
+        text: str,
+        on_done: Optional[Callable[[], None]],
+        directives: Optional[dict] = None,
+    ) -> None:
         # Stamp the sentence with the current generation (rc-3): if a barge bumps
         # the generation before this sentence is dequeued, the worker drops it.
+        # ``directives`` (opt-in expressive markup) rides alongside to _synthesize.
         gen = self._speak_gen
+        item = (text, on_done, gen, directives)
         try:
-            self._play_q.put_nowait((text, on_done, gen))
+            self._play_q.put_nowait(item)
         except queue.Full:
             # Drop the oldest queued sentence rather than block or lag playback.
             try:
@@ -2343,7 +2405,7 @@ class SherpaOnnxEngine(AudioEngine):
             except queue.Empty:
                 pass
             try:
-                self._play_q.put_nowait((text, on_done, gen))
+                self._play_q.put_nowait(item)
             except queue.Full:
                 if on_done:
                     on_done()
@@ -2459,7 +2521,7 @@ class SherpaOnnxEngine(AudioEngine):
         try:
             while self._running.is_set():
                 try:
-                    text, on_done, item_gen = self._play_q.get(timeout=0.1)
+                    text, on_done, item_gen, directives = self._play_q.get(timeout=0.1)
                 except queue.Empty:
                     continue
                 if text is None:  # shutdown sentinel from stop()
@@ -2603,7 +2665,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # so the stream is normally already active here. Restart it
                         # only if something stopped it.
                         out.start()
-                    self._synthesize(text, write, my_gen)
+                    self._synthesize(text, write, my_gen, directives)
                     # (true barge-in-stop is stamped in stop_speaking() at the
                     # abort() instant -- the moment audio actually goes silent.)
                 finally:
@@ -2700,7 +2762,11 @@ class SherpaOnnxEngine(AudioEngine):
                     pass
 
     def _synthesize(
-        self, text: str, write: Callable[[object], None], gen: Optional[int] = None
+        self,
+        text: str,
+        write: Callable[[object], None],
+        gen: Optional[int] = None,
+        directives: Optional[dict] = None,
     ) -> None:
         """Synthesize ``text``, handing each audio chunk to ``write`` as it is
         produced. sherpa-onnx ``OfflineTts.generate`` streams via a ``callback``,
@@ -2716,17 +2782,33 @@ class SherpaOnnxEngine(AudioEngine):
         tts = self._tts
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
+        # Opt-in expressive markup: map this utterance's parsed directives to a
+        # per-sentence (sid, speed). Fail-soft + clamped (resolve_tts_params);
+        # ``directives`` is None on the default path -> defaults unchanged.
+        if directives:
+            sid, speed = resolve_tts_params(
+                directives,
+                default_sid=self.config.tts_speaker_id,
+                default_speed=self.config.tts_speed,
+                voice_map=self.config.tts_speaker_voices,
+                emotion_speed_map=self.config.tts_emotion_speed_map,
+                num_speakers=int(getattr(tts, "num_speakers", 0) or 0),
+                speed_min=self.config.tts_speed_min,
+                speed_max=self.config.tts_speed_max,
+            )
         target_rms = self.config.tts_target_rms
         leveler_on = self.config.tts_output_leveler
+        lowpass_hz = self.config.tts_output_lowpass_hz
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm
         # pass can't drive the same model at the same time.
         with self._tts_lock:
             # Streaming path (first samples play before the whole sentence is
-            # synthesized). Used ONLY when neither whole-clip loudness stage is on
-            # -- both normalize_rms (target_rms>0) and the output_leveler need the
-            # whole clip's level, which the streaming callback cannot provide.
-            # target_rms<=0 AND leveler OFF -> this branch is byte-identical to before.
-            if target_rms <= 0.0 and not leveler_on and self._tts_can_stream:
+            # synthesized). Used ONLY when no whole-clip stage is on -- normalize_rms
+            # (target_rms>0) and the output_leveler need the whole clip's level, and
+            # the HF roll-off (lowpass_hz>0) applies one clean zero-phase FFT filter
+            # to the whole clip; none can run on the streaming callback. All three
+            # off -> this branch is byte-identical to before.
+            if target_rms <= 0.0 and not leveler_on and lowpass_hz <= 0.0 and self._tts_can_stream:
 
                 def on_chunk(samples, *_progress) -> int:
                     blk = np.asarray(samples, dtype="float32").reshape(-1)
@@ -2786,6 +2868,15 @@ class SherpaOnnxEngine(AudioEngine):
                     declick(samples, threshold=self.config.tts_declick_threshold),
                     dtype="float32",
                 ).reshape(-1)
+        # HF roll-off (final stage, after loudness): tame a bright voice's highs so
+        # they don't overdrive a small/cheap open speaker into a buzzy rasp. Applied
+        # last so it also smooths any limiter-introduced HF; no-op when <=0.
+        if lowpass_hz > 0.0:
+            samples = np.asarray(
+                lowpass_soft(samples, sr, lowpass_hz,
+                             width_hz=self.config.tts_output_lowpass_width_hz),
+                dtype="float32",
+            ).reshape(-1)
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
             if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):

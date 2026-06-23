@@ -2190,8 +2190,16 @@ class SherpaOnnxEngine(AudioEngine):
                                 if det is not None:
                                     det.decide(mic_raw)
                                     incoh = float(det.last_incoherent_fraction)
+                                # Residual feature source MUST match the gate's
+                                # (_dtd_residual_level): under _apm_owns_ns the
+                                # chart learns the raw-mic echo floor, so the gate's
+                                # raw-derived resid scores against the right
+                                # baseline (a post-NS-learned chart vs a raw-read
+                                # value would self-interrupt on echo-only).
                                 self._dtd.observe_echo(
-                                    rms(mic_raw), rms(samples), incoh
+                                    rms(mic_raw),
+                                    self._dtd_residual_level(samples, mic_raw),
+                                    incoh,
                                 )
                             # Windowed temporal confirmation (BargeSustain): the
                             # per-frame eligibility FLICKERS on a real open-speaker
@@ -2883,6 +2891,31 @@ class SherpaOnnxEngine(AudioEngine):
                 break
             write(samples[i : i + chunk])
 
+    def _dtd_residual_level(self, samples, mic_raw) -> float:
+        """RMS of the signal the DTD's *residual* feature (and its floor gate)
+        should read for this block.
+
+        A LINEAR echo canceller (nlms/dtln, or headphones with no echo) removes
+        only the far-end reference it has -- it CANNOT cancel the near-end USER
+        (the user is not in the reference), so the user's voice lands in the
+        post-AEC residual, which is therefore the strongest barge feature (DTD
+        weight 1.0). The always-on WebRTC APM, however, ALSO runs ML noise
+        suppression on every block (``_apm_owns_ns``); during double-talk that NS
+        attenuates the near-end user in the residual, so the residual goes BLIND
+        to a real talk-over -- the documented open-speaker "user had to scream /
+        0 fired" miss (``_apm_owns_ns`` profiles: e.g. ``open_speaker``). The RAW
+        pre-AEC/pre-NS mic still carries the user, so under ``_apm_owns_ns`` the
+        residual feature is read from ``mic_raw`` instead of the suppressed
+        ``samples`` (and the caller pairs it with the raw-mic floor,
+        ``_raw_playback_floor_rms``). Non-APM paths are byte-identical
+        (``_apm_owns_ns`` is False). MUST be the single source of truth shared by
+        the gate (``_looks_like_user``) and the echo-learning tap
+        (``observe_echo`` in the capture loop), so the chart the DTD calibrates
+        and the value it scores against it always come from the SAME signal --
+        otherwise a chart learned on the near-silent post-NS floor would make the
+        raw-mic level a z-outlier and self-interrupt on echo-only."""
+        return rms(mic_raw) if self._apm_owns_ns else rms(samples)
+
     def _looks_like_user(self, samples, mic_raw=None) -> bool:
         # Is playback-time mic voice a genuine barge-in (vs the assistant's own TTS
         # echo)? IDENTITY-FREE: speaker/user detection is a SEPARATE feature used
@@ -2931,7 +2964,19 @@ class SherpaOnnxEngine(AudioEngine):
             if det is not None:
                 det.decide(mic_raw)
                 incoh = float(det.last_incoherent_fraction)
-            resid_rms = rms(samples)
+            # Which signal carries the user for the DTD's "residual" feature + its
+            # floor gate. A linear AEC (nlms/dtln, or headphones with no echo)
+            # leaves the near-end user IN the post-AEC residual; the always-on APM
+            # additionally runs ML noise suppression on EVERY block
+            # (``_apm_owns_ns``) and attenuates the user there, so under APM the
+            # residual goes BLIND to a real talk-over -- read the raw pre-NS mic +
+            # its floor instead. See ``_dtd_residual_level``. (Non-APM paths are
+            # byte-identical: ``_apm_owns_ns`` is False.)
+            resid_rms = self._dtd_residual_level(samples, mic_raw)
+            resid_floor = (
+                self._raw_playback_floor_rms if self._apm_owns_ns
+                else self._playback_floor_rms
+            )
             fired = self._dtd.decide(
                 raw_rms=rms(mic_raw), resid_rms=resid_rms, incoherent_fraction=incoh,
             )
@@ -2952,9 +2997,9 @@ class SherpaOnnxEngine(AudioEngine):
             if (
                 fired
                 and self.config.dtd_residual_floor_margin_db > 0.0
-                and self._playback_floor_rms > 0.0
+                and resid_floor > 0.0
                 and not loudness_admits(
-                    resid_rms, self._playback_floor_rms,
+                    resid_rms, resid_floor,
                     margin_db=self.config.dtd_residual_floor_margin_db,
                 )
             ):
@@ -2967,7 +3012,7 @@ class SherpaOnnxEngine(AudioEngine):
                 "raw=%.4f resid=%.4f incoh=%.2f resid_floor=%.4f consec=%d",
                 self._dtd.last_D, self._dtd.k, fired, floored, self._dtd.last_z_raw,
                 self._dtd.last_z_resid, self._dtd.last_z_coh,
-                rms(mic_raw), resid_rms, incoh, self._playback_floor_rms,
+                rms(mic_raw), resid_rms, incoh, resid_floor,
                 self._dtd.last_consec,
             )
             return floored

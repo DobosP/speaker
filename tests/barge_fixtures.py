@@ -813,6 +813,11 @@ def live_engine_with_dtd(*, incoherent_fraction: float = 0.9, vad_speech: bool =
     eng._fake_coherence = _FakeCoherence(incoherent_fraction)
     eng._echo_coherence = eng._fake_coherence
     eng._aec = object()  # sentinel: only its non-None-ness gates PATH A
+    # Mirrors SherpaOnnxEngine.__init__ (sherpa.py): default False (dtln/nlms/
+    # headphones leave the user in the residual). A test toggles it True to drive
+    # the always-on-APM-owns-NS path (open_speaker), where the residual feature +
+    # floor are read from the raw pre-NS mic instead (see _dtd_residual_level).
+    eng._apm_owns_ns = False
     eng._fake_vad = _FakeVad(vad_speech)
     eng._vad = eng._fake_vad
     # Barge state at post-build defaults.

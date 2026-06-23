@@ -18,7 +18,38 @@ A fan-out investigation (4 read-only agents + synthesis) re-verified this diagno
 
 **Deliberately deferred (the real first-audio-latency fix):** a **streaming-compatible output leveler** (per-chunk feed-forward gain seeded from the carried `_tts_level_gain_db`, AGC2 is inherently streaming) to reclaim low first-audio latency *without* losing the stable open-speaker echo floor the whole-clip leveling provides. NOT landed because it must be **validated live at the mic against the barge-in P1** (echo-floor stability) on a quiet box — which the current CPU load + idle-mic sessions don't allow. This is the next step, gated on a clean live A/B.
 
-**This machine (`config.local.json`, gitignored):** Kokoro + `tts_markup:true` + a provisional named-voice set `{warm:16, bright:28, deep:9, narrator:26, soft:3, lively:18}` + emotion→speed map; audition `logs/kokoro_voice_audition.wav` (104 s) for the owner to pick/rename voices by ear.
+**This machine (`config.local.json`, gitignored):** Kokoro + `tts_markup:true` + a provisional named-voice set `{warm:16, bright:28, deep:9, narrator:26, soft:3, lively:18}` + emotion→speed map + `tts_output_lowpass_hz:7000` (the cheap-open-speaker fix); audition `logs/kokoro_voice_audition.wav` (104 s) for the owner to pick/rename voices by ear.
+
+### Update — 2026-06-23: the "vibrating" symptom is SOLVED (HF roll-off)
+
+Owner live A/B settled it: the pipeline was provably clean (declick 0.00% changed; leveler pure +8 dB / 150 dB gain-matched SNR; native 24 kHz; 0 underruns) — the buzz was **acoustic**: Kokoro's bright highs (centroid ~2.8 kHz vs the dark VITS ~0.8 kHz) overdrove the bare laptop speaker. Fix shipped (`622d04a`): `core.audio_frontend.lowpass_soft` + `SherpaConfig.tts_output_lowpass_hz` (default OFF; this box 7 kHz → played centroid 2839→1528 Hz, clean). **Lesson: judge TTS by the owner's ear on the target speaker, not by a brightness metric.**
+
+---
+
+## Next steps (planned)
+
+Ordered, each headless-testable unless marked **[live mic]**. Picked up by the next session.
+
+### P1 — Finalize the voice set by ear *(owner-gated)*
+Audition `logs/kokoro_voice_audition.wav` + `logs/final_pipeline_demo.wav`; pick/rename the clean, English-sounding sids (the model is v1.1-**zh**, order undocumented — some sids may have a non-English timbre). Update `tts_speaker_voices` in `config.local.json` (and, once stable, seed a sensible default set in `config.json` so a clean clone gets diversity). Confirm the 7 kHz cutoff vs 5.5 kHz by ear; lower if still buzzy.
+
+### P1 — Streaming-compatible output leveler **[live mic]** *(the real first-audio-latency fix)*
+Today `tts_target_rms`/`tts_output_leveler`/`tts_output_lowpass_hz` all force the **whole-clip** synth path → first-audio waits for the entire sentence (worse under Kokoro's RTF~0.6). Make the leveler stream: a per-chunk feed-forward gain seeded from the carried `_tts_level_gain_db` (AGC2 is inherently streaming) + a stateful (IIR) low-pass, so audio starts before synthesis finishes. **Gate:** must be validated live at the mic against the open-speaker barge-in P1 — the whole-clip leveling is what gives the *stable echo floor* barge-in depends on; a streaming version must preserve that on a QUIET box (the current external CPU load + idle-mic sessions invalidate the test). See `[[apm-dtd-ns-interaction-2026-06-21]]`.
+
+### P2 — Per-device default for the HF roll-off
+Set `tts_output_lowpass_hz` per profile so it's automatic, not machine-local: ~7000 on `open_speaker`/`cpu_laptop`/laptop profiles (cheap speakers), **0** on headphone/good-speaker setups (no roll-off needed). Add a `tts_speaker` hint or document the headphones-vs-speaker choice. Headless: a profile-merge test.
+
+### P2 — Profile-gate Kokoro vs Piper for "cheap" on weak devices
+The mechanism is already in place (`build_tts` keys Kokoro on `tts_voices`). Remaining: populate `device_profiles.*.sherpa` so capable profiles point at Kokoro and `phone`/`phone_lite` stay on the cheap streaming Piper VITS (RTF~0.04); add a `tools/setup_models` Kokoro fetch entry; add a `build_tts` **graceful fallback** (missing Kokoro files → clear warning + fall back, not a cryptic native crash). Headless: a gating-dispatch test (mock `OfflineTts`).
+
+### P3 — Emotion stickiness within a reply *(optional)*
+Today directives are per-sentence (a tag on sentence 1 doesn't carry to sentence 2). Optionally carry the **voice** (persona) across a reply while keeping **emotion/rate** per-sentence — reset on a new reply / barge. Adds engine state; only if the owner wants whole-reply personas.
+
+### P3 — fp32 / English Kokoro model *(fallback if the zh-int8 voices prove limiting)*
+If the v1.1-zh int8 voices stay limited after the voice-set finalization, evaluate `kokoro-en-v0_19` (English-only, named voices, fp32) for cleaner output — at a higher RTF (gate behind the profile work above).
+
+### Mic durability *(ops, recurring)*
+The capture ADC keeps drifting to +30 dB → clipping (run-20260622-211604 saw 33% railed at calibration). `input_agc`/`input_calibrate` help post-capture, but a durable OS-level pin (or the `ota_setup` restore-on-exit) is needed for trustworthy live tests. See `[[ota-real-conversation-rig]]`.
 
 ---
 

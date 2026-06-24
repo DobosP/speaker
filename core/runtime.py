@@ -26,7 +26,7 @@ from .contract import is_stop_command, normalize_command
 from .engine import AudioEngine, EngineCallbacks
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMClient
-from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, LLM_FIRST_TOKEN, MetricsRecorder
+from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, HELD, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
 from .tts_markup import build_markup_guidance
 from .resume import ResumeConfig, ResumeTracker
@@ -261,7 +261,11 @@ class VoiceRuntime:
         # dispatch, byte-identical.
         self._dispatcher: Optional[FinalDispatcher] = None
         if turn_merge_config is not None and turn_merge_config.enabled:
-            self._dispatcher = FinalDispatcher(self._process_final, turn_merge_config)
+            self._dispatcher = FinalDispatcher(
+                self._process_final,
+                turn_merge_config,
+                on_hold=lambda: self.metrics.mark(HELD),
+            )
         # Resume-after-interrupt + L4 self-echo guard (core/resume.py): tracks
         # the current turn's query + the sentences actually SPOKEN so (a) a
         # "start again"/"continue" after a cut resumes the reply from where it
@@ -534,6 +538,7 @@ class VoiceRuntime:
         # Nothing downstream can do anything sensible with it.
         if not normalize_text(text):
             log.info("dropping empty/punctuation-only final: %r", text)
+            self.metrics.mark(HANDLED_LOCAL)
             return
         # L4 self-echo guard (core/resume.py): a final that arrived within the
         # echo window of playback end AND reads like a just-spoken sentence is
@@ -543,6 +548,7 @@ class VoiceRuntime:
         # echo, the text match can. Dropped before addressing/ingest/metrics.
         if self._resume.is_self_echo(text):
             log.info("dropping self-echo final (own TTS heard back): %r", text)
+            self.metrics.mark(HANDLED_LOCAL)
             return
         # Resume-after-interrupt: "start again"/"continue" after a CUT reply
         # becomes a continue-from-where-you-stopped prompt instead of a fresh
@@ -581,6 +587,7 @@ class VoiceRuntime:
                     log.info("addressing override: continuation of in-flight turn")
                 else:
                     self.memory.add(text, tags=("ingested",))
+                    self.metrics.mark(HANDLED_LOCAL)
                     return
         self.metrics.mark(ASR_FINAL)
         # Cleanup pass: rewrite disfluencies / self-corrections so the brain
@@ -612,6 +619,7 @@ class VoiceRuntime:
                         "dropping final: cleaner rewrote noise %r into the "
                         "assistant's own words %r", text, cleaned,
                     )
+                    self.metrics.mark(HANDLED_LOCAL)
                     return
                 if rewrite_is_overreach(text, cleaned):
                     log.info(

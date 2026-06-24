@@ -157,14 +157,17 @@ class FinalDispatcher:
         self,
         dispatch: Callable[[str], None],
         config: Optional[TurnMergeConfig] = None,
+        on_hold: Optional[Callable[[], None]] = None,
     ) -> None:
         self._dispatch = dispatch
         self._c = config or TurnMergeConfig()
+        self._on_hold = on_hold
         self._coalescer = FinalCoalescer(self._c)
         self._cv = threading.Condition()
         self._pending: Optional[str] = None
         self._deadline = 0.0
         self._hold_started = 0.0
+        self._dispatching = False
         self._running = False
         self._thread: Optional[threading.Thread] = None
         # Diagnostics (read by tests/run-bundle debugging).
@@ -174,7 +177,7 @@ class FinalDispatcher:
     @property
     def has_pending(self) -> bool:
         with self._cv:
-            return self._pending is not None
+            return self._pending is not None or self._dispatching
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -195,6 +198,7 @@ class FinalDispatcher:
                 if self._coalescer.should_hold(text):
                     self.held_count += 1
                     self._deadline = now + self._c.hold_sec
+                    self._note_hold()
                     log.debug("holding incomplete final %r for up to %.1fs",
                               text, self._c.hold_sec)
                 else:
@@ -210,6 +214,8 @@ class FinalDispatcher:
                 self._deadline = min(
                     now + extend, self._hold_started + self._c.max_hold_sec
                 )
+                if extend > 0.0:
+                    self._note_hold()
             self._cv.notify()
 
     def note_partial(self) -> None:
@@ -223,6 +229,14 @@ class FinalDispatcher:
                 self._hold_started + self._c.max_hold_sec,
             )
             self._cv.notify()
+
+    def _note_hold(self) -> None:
+        if self._on_hold is None:
+            return
+        try:
+            self._on_hold()
+        except Exception:  # noqa: BLE001 - diagnostics must not break dispatch
+            log.exception("final hold callback failed")
 
     def flush(self) -> None:
         """Dispatch any held final immediately (e.g. before shutdown)."""
@@ -263,7 +277,12 @@ class FinalDispatcher:
                     self._cv.wait(timeout=self._deadline - now)
                     continue
                 text, self._pending = self._pending, None
+                self._dispatching = True
             try:
                 self._dispatch(text)
             except Exception:  # noqa: BLE001 - a turn must never kill the worker
                 log.exception("final dispatch raised; turn dropped")
+            finally:
+                with self._cv:
+                    self._dispatching = False
+                    self._cv.notify_all()

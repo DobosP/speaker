@@ -188,6 +188,25 @@ class _FakeStream:
         return self._block.copy(), False
 
 
+class _FakeBlockStream:
+    """Serve a finite sequence of blocks, then stop the loop."""
+
+    def __init__(self, blocks, engine):
+        self._blocks = list(blocks)
+        self._engine = engine
+        self._idx = 0
+
+    def read(self, n):
+        if self._idx >= len(self._blocks):
+            self._engine._running.clear()
+            return np.zeros(0, dtype="float32"), False
+        block = self._blocks[self._idx]
+        self._idx += 1
+        if self._idx >= len(self._blocks):
+            self._engine._running.clear()
+        return np.asarray(block, dtype="float32").copy(), False
+
+
 class _FakeASRStream:
     """Records every block handed to accept_waveform (the loop calls it on the
     STREAM, not the recognizer)."""
@@ -227,6 +246,20 @@ def _run_one_block(engine, block):
     engine._recognizer = rec
     engine._cb = EngineCallbacks()
     engine._stream_in = _FakeStream(block, engine)
+    engine._running.set()
+    t = threading.Thread(target=engine._capture_loop)
+    t.start()
+    t.join(timeout=5.0)
+    assert not t.is_alive(), "capture loop did not exit"
+    return rec
+
+
+def _run_blocks(engine, blocks):
+    """Drive _capture_loop over a finite sequence of captured blocks."""
+    rec = _FakeRecognizer()
+    engine._recognizer = rec
+    engine._cb = EngineCallbacks()
+    engine._stream_in = _FakeBlockStream(blocks, engine)
     engine._running.set()
     t = threading.Thread(target=engine._capture_loop)
     t.start()
@@ -293,6 +326,85 @@ def test_always_on_apm_feeds_asr_cleaned_block_and_skips_denoiser():
     assert aec.calls >= 1                               # the APM ran on the block
     assert not den_impl.seen                            # denoiser SKIPPED (apm owns NS)
     assert out.size > 0 and np.all(np.isfinite(out))
+
+
+def test_apm_owns_ns_requires_always_on_and_noise_suppression(monkeypatch):
+    import core.engines.sherpa as sherpa_mod
+
+    class _FakeAEC:
+        always_on = False
+        suppresses_noise = True
+
+    for name in (
+        "build_recognizer",
+        "build_final_recognizer",
+        "build_vad",
+        "build_tts",
+        "build_denoiser",
+        "build_keyword_spotter",
+        "build_punctuation",
+    ):
+        monkeypatch.setattr(sherpa_mod, name, lambda c: None)
+    monkeypatch.setattr(sherpa_mod, "build_aec", lambda c: _FakeAEC())
+
+    eng = SherpaOnnxEngine(
+        SherpaConfig.from_dict(
+            {
+                "aec_enabled": True,
+                "coherence_barge_in_enabled": False,
+                "apm_always_on": False,
+                "apm_noise_suppression": True,
+            }
+        )
+    )
+    eng._build()
+
+    assert eng._apm_always_on is False
+    assert eng._apm_owns_ns is False
+
+
+def test_aec_auto_delay_updates_on_cadence_and_ignores_invalid_measurements():
+    from core.engines._aec import FarEndRing
+
+    class _FakeAEC:
+        def process_16k(self, near, far):
+            return np.asarray(near, dtype="float32")
+
+    class _FakeCoherence:
+        def __init__(self):
+            self.delay = 333
+
+        def measured_delay_samples(self):
+            return self.delay
+
+    eng = SherpaOnnxEngine(SherpaConfig.from_dict({"aec_auto_delay": True}))
+    eng._aec = _FakeAEC()
+    eng._far_ref = FarEndRing()
+    eng._speaking.set()
+    eng._echo_coherence = _FakeCoherence()
+    eng._aec_ref_delay = 80
+    block = np.full(1600, 0.05, dtype="float32")
+
+    _run_blocks(eng, [block] * 9)
+    assert eng._aec_delay_recalc_blocks == 9
+    assert eng._aec_ref_delay == 80
+
+    _run_blocks(eng, [block])
+    assert eng._aec_delay_recalc_blocks == 0
+    assert eng._aec_ref_delay == 333
+
+    eng._echo_coherence.delay = None
+    _run_blocks(eng, [block] * 10)
+    assert eng._aec_ref_delay == 333
+
+    eng._echo_coherence.delay = eng.config.sample_rate
+    _run_blocks(eng, [block] * 10)
+    assert eng._aec_ref_delay == 333
+
+    eng.config.aec_auto_delay = False
+    eng._echo_coherence.delay = 222
+    _run_blocks(eng, [block] * 10)
+    assert eng._aec_ref_delay == 333
 
 
 def test_capture_hook_recorder_sees_denoised_block():

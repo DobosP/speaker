@@ -6,6 +6,8 @@ self-skip when ``livekit`` is absent (like the real_model tier), and assert the
 build seam + fail-open behaviour with no dependency at all.
 """
 import importlib.util
+import sys
+import types
 
 import numpy as np
 import pytest
@@ -163,3 +165,55 @@ def test_apm_output_length_framed():
     # The next block completes a 10 ms frame (160 @ 16 kHz) -> one frame out.
     out = apm.process(np.zeros(100, "float32"), np.zeros(100, "float32"))
     assert out.size == 160
+
+
+def test_apm_process_orders_render_delay_then_capture(monkeypatch):
+    from core.engines._apm import _WebRTCAPM
+
+    calls = []
+    livekit = types.ModuleType("livekit")
+    rtc = types.SimpleNamespace()
+
+    class _Frame:
+        def __init__(self, data, sample_rate, num_channels, samples_per_channel):
+            self.data = data
+            self.sample_rate = sample_rate
+            self.num_channels = num_channels
+            self.samples_per_channel = samples_per_channel
+
+    class _APM:
+        def __init__(self, **kwargs):
+            calls.append(("init", kwargs))
+
+        def process_reverse_stream(self, frame):
+            calls.append(("reverse", frame.samples_per_channel))
+
+        def set_stream_delay_ms(self, delay_ms):
+            calls.append(("delay", delay_ms))
+
+        def process_stream(self, frame):
+            calls.append(("capture", frame.samples_per_channel))
+
+    rtc.AudioFrame = _Frame
+    rtc.AudioProcessingModule = _APM
+    livekit.rtc = rtc
+    monkeypatch.setitem(sys.modules, "livekit", livekit)
+
+    apm = _WebRTCAPM(stream_delay_ms=37, sample_rate=16000)
+    out = apm.process(np.full(160, 0.1, dtype="float32"), np.full(160, 0.2, dtype="float32"))
+
+    assert out.size == 160
+    assert calls == [
+        (
+            "init",
+            {
+                "echo_cancellation": True,
+                "noise_suppression": True,
+                "high_pass_filter": True,
+                "auto_gain_control": False,
+            },
+        ),
+        ("reverse", 160),
+        ("delay", 37),
+        ("capture", 160),
+    ]

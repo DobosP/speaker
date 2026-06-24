@@ -37,6 +37,7 @@ from .metrics import (
     BARGE_IN,
     BARGE_IN_STOP,
     HANDLED_LOCAL,
+    HELD,
     LLM_FIRST_TOKEN,
     MetricsRecorder,
     SUPERSEDED,
@@ -195,6 +196,7 @@ class StuckWatchdog:
             if (
                 BARGE_IN in stamps or BARGE_IN_STOP in stamps
                 or HANDLED_LOCAL in stamps or SUPERSEDED in stamps
+                or (HELD in stamps and ASR_FINAL not in stamps)
             ):
                 continue
             if ASR_FINAL in stamps and LLM_FIRST_TOKEN not in stamps:

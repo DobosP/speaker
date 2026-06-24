@@ -193,6 +193,25 @@ def test_has_pending_reflects_the_hold():
         d.stop()
 
 
+def test_hold_callback_fires_when_fragment_is_held():
+    received: list[str] = []
+    held = 0
+
+    def on_hold() -> None:
+        nonlocal held
+        held += 1
+
+    cfg = TurnMergeConfig(enabled=True, hold_sec=0.15, max_hold_sec=1.0)
+    d = FinalDispatcher(received.append, cfg, on_hold=on_hold)
+    d.start()
+    try:
+        d.submit("A long story about")
+        assert _wait_for(lambda: held == 1, timeout=1.0)
+        assert received == []
+    finally:
+        d.stop()
+
+
 # --- VoiceRuntime integration ---------------------------------------------------
 
 

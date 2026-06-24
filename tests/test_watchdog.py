@@ -15,7 +15,9 @@ from core.metrics import (
     BARGE_IN,
     BARGE_IN_STOP,
     HANDLED_LOCAL,
+    HELD,
     LLM_FIRST_TOKEN,
+    SPEECH_END,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
     MetricsRecorder,
@@ -64,6 +66,34 @@ def test_handled_local_turn_is_not_flagged_stuck(fake_clock, caplog):
         wd.tick()
     assert "llm stuck" not in caplog.text
     assert "tts stuck" not in caplog.text
+
+
+def test_held_turn_without_dispatch_is_not_flagged_stuck(fake_clock, caplog):
+    """A held fragment can have an engine-opened metrics turn, but until the
+    dispatcher emits ASR_FINAL it is waiting for turn-merge, not stalled."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    rec.mark(SPEECH_END)
+    rec.mark(HELD)
+    t[0] = 10.0
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck" not in caplog.text
+    assert "tts stuck" not in caplog.text
+
+
+def test_dispatched_held_turn_can_still_be_flagged_stuck(fake_clock, caplog):
+    """HELD suppresses only the pre-dispatch hold window. If the held text is
+    eventually dispatched and then stalls after ASR_FINAL, keep the warning."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    rec.mark(SPEECH_END)
+    rec.mark(HELD)
+    rec.mark(ASR_FINAL)
+    t[0] = 10.0
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "llm stuck: turn 0 had asr_final but no llm_first_token" in caplog.text
 
 
 def test_superseded_turn_is_not_flagged_stuck(fake_clock, caplog):

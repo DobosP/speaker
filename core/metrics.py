@@ -24,6 +24,7 @@ TTS_FIRST_AUDIO = "tts_first_audio"  # assistant's first audio sample played
 BARGE_IN = "barge_in"              # user spoke over playback
 BARGE_IN_STOP = "barge_in_stop"    # playback actually halted
 HANDLED_LOCAL = "handled_local"    # turn resolved with NO LLM (intent fast-path) -- never reaches first token
+HELD = "held"                      # final is intentionally held for turn-merge; not yet dispatched
 SUPERSEDED = "superseded"          # turn preempted by a newer final (newest-input-wins) -- cancelled pre-answer
 
 # A new utterance begins at whichever of these we see first (speech_end leads

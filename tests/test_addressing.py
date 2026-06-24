@@ -193,6 +193,20 @@ def test_ingested_utterance_does_not_open_a_metrics_turn():
     assert runtime.metrics.records() == []  # no turn opened
 
 
+def test_ingested_utterance_marks_engine_opened_turn_handled_local():
+    """Production engines stamp SPEECH_END before the addressing gate. If that
+    text is INGESTed, mark the open turn locally handled so watchdog summaries
+    do not report a fake stuck turn."""
+    from core.metrics import HANDLED_LOCAL, SPEECH_END
+
+    runtime, engine, _ = _runtime_with_gate({"background noise here": INGEST})
+    runtime.metrics.mark(SPEECH_END)
+    engine.final("background noise here")
+    assert runtime.wait_idle()
+    [record] = runtime.metrics.records()
+    assert HANDLED_LOCAL in record.stamps
+
+
 def test_classifier_sees_recent_memory_as_context():
     """The runtime feeds the last few memory items to the classifier so it can
     disambiguate. Ingested utterances flow into memory via the runtime; later

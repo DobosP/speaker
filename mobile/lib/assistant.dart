@@ -72,6 +72,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // background noise can't self-interrupt. Floored at _bargeInRms -> never less
   // sensitive than the old constant in a quiet room (no default regression).
   final BargeCalibrator _bargeCal = BargeCalibrator(absoluteMin: _bargeInRms);
+  final QuietObservationGate _quietGate = QuietObservationGate();
   static const _bargeInMs = 150; // sustained loud audio (ms) before cutting off
   int _loudMs = 0; // accumulated loud-audio time in the current window
   // Per speaking-window diagnostics (exported via Copy logs) so we can see
@@ -210,6 +211,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   void _onPartial(String partial) {
     if (partial.isEmpty) return;
     _tLastVoice = DateTime.now();
+    _quietGate.noteVoice(_tLastVoice!);
     // Barge-in via transcription (complements the energy path): the user talking
     // — or saying a stop word — while the assistant speaks cuts it off.
     if (_speaking) {
@@ -230,6 +232,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
   // A finished utterance from the ASR worker.
   void _onEndpoint(String utterance) {
     if (utterance.isEmpty) return;
+    _quietGate.noteVoice(DateTime.now());
     // A completed utterance supersedes any in-flight reply (its tokens stop
     // feeding TTS) and silences whatever is still playing.
     _turn++;
@@ -262,9 +265,13 @@ class _AssistantScreenState extends State<AssistantScreen> {
   void _onMicChunk(Uint8List chunk) {
     AsrService.instance.feed(chunk);
     if (!_speaking) {
-      // Echo-free window: learn the room's ambient floor for the adaptive barge
-      // threshold (the mic hears the room, not the assistant's own TTS here).
-      _bargeCal.observeQuiet(_rms(chunk));
+      // Genuine-idle window: learn the room's ambient floor only after recent
+      // user speech and playback tails have cooled down. `_speaking == false`
+      // by itself is not enough: it is also true while ASR is endpointing the
+      // user's own request and immediately after the player stops.
+      if (_quietGate.canObserveQuiet(DateTime.now())) {
+        _bargeCal.observeQuiet(_rms(chunk));
+      }
       _loudMs = 0;
       return;
     }
@@ -370,10 +377,12 @@ class _AssistantScreenState extends State<AssistantScreen> {
   Future<void> _stopSpeaking() async {
     _speechQueue.clear();
     _ttsBuffer = '';
+    _quietGate.notePlaybackStopped(DateTime.now());
     _speaking = false;
     _draining = false;
     if (!(_playInterrupt?.isCompleted ?? true)) _playInterrupt!.complete();
     await _player.stop();
+    _quietGate.notePlaybackStopped(DateTime.now());
   }
 
   // --- streaming TTS ---
@@ -413,6 +422,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
       }
     } finally {
       _draining = false;
+      _quietGate.notePlaybackStopped(DateTime.now());
       _speaking = false;
       // Window summary: if chunks==0 the mic was starved during playback; if
       // peakRms stayed below _bargeInRms, near-end speech isn't reaching us.

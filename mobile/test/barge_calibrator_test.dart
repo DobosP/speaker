@@ -42,7 +42,50 @@ void main() {
   test('ignores NaN / negative rms', () {
     final c = BargeCalibrator();
     c.observeQuiet(double.nan);
+    c.observeQuiet(double.infinity);
     c.observeQuiet(-1.0);
     expect(c.ambientFloor, 0.0); // unseeded, unchanged
+  });
+
+  test('ambient floor is capped against contaminated quiet observations', () {
+    final c = BargeCalibrator(
+      absoluteMin: 0.0,
+      margin: 2.0,
+      alpha: 1.0,
+      maxAmbientFloor: 0.12,
+    );
+    c.observeQuiet(0.80); // impossible as room tone; speech/playback contamination
+    expect(c.ambientFloor, closeTo(0.12, 1e-9));
+    expect(c.threshold, closeTo(0.24, 1e-9));
+  });
+
+  test('quiet observation gate rejects recent speech and playback tail', () {
+    final gate = QuietObservationGate(
+      speechCooldown: const Duration(milliseconds: 500),
+      playbackCooldown: const Duration(milliseconds: 400),
+    );
+    final t0 = DateTime(2026, 1, 1, 12);
+
+    expect(gate.canObserveQuiet(t0), isTrue);
+
+    gate.noteVoice(t0);
+    expect(
+      gate.canObserveQuiet(t0.add(const Duration(milliseconds: 499))),
+      isFalse,
+    );
+    expect(
+      gate.canObserveQuiet(t0.add(const Duration(milliseconds: 500))),
+      isTrue,
+    );
+
+    gate.notePlaybackStopped(t0.add(const Duration(seconds: 1)));
+    expect(
+      gate.canObserveQuiet(t0.add(const Duration(milliseconds: 1399))),
+      isFalse,
+    );
+    expect(
+      gate.canObserveQuiet(t0.add(const Duration(milliseconds: 1400))),
+      isTrue,
+    );
   });
 }

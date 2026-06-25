@@ -74,13 +74,13 @@ def test_final_transcribe_empty_second_pass_falls_back():
 
 def test_final_transcribe_min_sec_skips_short_utterance():
     eng = _engine(asr_final_min_sec=2.0)
-    eng._final_recognizer = _FakeOffline("SECOND PASS")
+    eng._final_recognizer = _FakeOffline("Hi there.")
     # 0.5s of audio < the 2.0s floor -> skip the second pass, fall back.
     out = eng._final_transcribe(np.ones(8000, dtype="float32"), "hi there")
-    assert out != "SECOND PASS"
+    assert out != "Hi there."
     # ...but a long-enough utterance DOES use it.
     long_out = eng._final_transcribe(np.ones(2 * 16000, dtype="float32"), "hi there")
-    assert long_out == "SECOND PASS"
+    assert long_out == "Hi there."
 
 
 def test_final_transcribe_recovers_from_second_pass_error():
@@ -125,8 +125,8 @@ def test_final_transcribe_rejects_short_hallucination():
 
 def test_final_transcribe_keeps_long_garbled_correction():
     # The legit case the 2nd pass exists for: a real, longer utterance the streaming
-    # pass mangled ('Ario der' -> 'are you there'), near-zero token overlap. NOT a
-    # short clip -> trust the 2nd pass unconditionally (the guard must not regress it).
+    # pass mangled ('Ario der' -> 'are you there'), near-zero token overlap but
+    # high phrase similarity. The guard must not regress it.
     eng = _engine()
     eng._final_recognizer = _FakeOffline("are you there")
     seg = np.ones(2 * 16000, dtype="float32")  # 2.0s -> not short

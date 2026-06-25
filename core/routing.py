@@ -18,13 +18,33 @@ module's docstring for the full relationship.
 from __future__ import annotations
 
 import re
+from enum import Enum
 from typing import Iterable, Mapping, Optional, Pattern, Protocol, runtime_checkable
+
+from .contract import is_stop_command
 
 # A model tier: "fast" (small, snappy) or "main" (large/multimodal, slower).
 ModelTier = str
 
 FAST: ModelTier = "fast"
 MAIN: ModelTier = "main"
+
+
+class LatencyPolicy(str, Enum):
+    """Spoken-turn latency policy.
+
+    The policy is deliberately deterministic and cheap: it lets the runtime
+    decide whether to acknowledge a slow turn before the LLM/planner starts
+    without consulting another model or changing the local/cloud boundary.
+    """
+
+    INSTANT_CONTROL = "instant_control"
+    SNAPPY_ANSWER = "snappy_answer"
+    ACK_THEN_THINK = "ack_then_think"
+    STREAM_MAIN = "stream_main"
+    STREAM_RESEARCH = "stream_research"
+    CLARIFY = "clarify"
+    SILENT_INGEST = "silent_ingest"
 
 # --- Live headroom signal (smart-routing-2) --------------------------------
 #
@@ -252,6 +272,86 @@ def _compile_markers(markers: Iterable[str]) -> Pattern[str]:
 # single regex scan per list rather than N substring checks.
 _COMPLEXITY_RE = _compile_markers(_COMPLEXITY_MARKERS)
 _GENERATION_RE = _compile_markers(_GENERATION_MARKERS)
+
+_GATHER_MARKERS = (
+    "search",
+    "look up",
+    "look for",
+    "find",
+    "research",
+    "compare",
+    "latest",
+    "options",
+    "list of",
+    "and then",
+)
+_GATHER_RE = _compile_markers(_GATHER_MARKERS)
+
+
+def classify_latency_policy(
+    query: str,
+    context: Optional[Mapping[str, object]] = None,
+    *,
+    router: Optional[Router] = None,
+) -> LatencyPolicy:
+    """Classify a turn's latency behavior without calling an LLM.
+
+    This is intentionally a policy layer, not execution: CONTROL and SILENT
+    turns never get an ack, ordinary short answers stay snappy, and turns that
+    are likely to spend time in the main/research/tool path get an immediate
+    acknowledgement before the existing cancellable background task continues.
+    """
+    q = (query or "").strip()
+    ql = q.lower()
+    ctx = context or {}
+    mode = str(ctx.get("mode", "") or "").lower()
+    intent_kind = str(ctx.get("intent_kind", "") or "").lower()
+    action = str(ctx.get("route_action", "") or "").lower()
+    tier = str(ctx.get("tier", "") or "").lower()
+
+    if str(ctx.get("addressing", "") or "").lower() == "ingest":
+        return LatencyPolicy.SILENT_INGEST
+    if not q:
+        return LatencyPolicy.SILENT_INGEST
+    if is_stop_command(q) or action == "control" or intent_kind in {"stop", "mode_switch"}:
+        return LatencyPolicy.INSTANT_CONTROL
+    if intent_kind in _FAST_INTENTS or mode in {"dictation", "meeting"}:
+        return LatencyPolicy.SILENT_INGEST
+
+    words = ql.split()
+    if len(words) <= 2 and ql.endswith(("?", "please")):
+        return LatencyPolicy.CLARIFY
+
+    gather = (
+        action in {"research", "act"}
+        or intent_kind in _MAIN_INTENTS
+        or mode in _MAIN_MODES
+        or (len(words) >= 4 and _GATHER_RE.search(ql) is not None)
+    )
+    if gather:
+        if ctx.get("stream_tts"):
+            return LatencyPolicy.STREAM_RESEARCH
+        return LatencyPolicy.ACK_THEN_THINK
+
+    # Long reasoning is the dead-air case even when it is not a tool/research
+    # turn. Generation-only requests ("tell me a story") are intentionally not
+    # acked here so streaming/story behavior stays unchanged.
+    reasoning_hits = len(set(_COMPLEXITY_RE.findall(ql)))
+    generation = _GENERATION_RE.search(ql) is not None
+    if not generation and (len(words) >= 18 or reasoning_hits >= 2):
+        return LatencyPolicy.ACK_THEN_THINK
+
+    if not tier and router is not None:
+        try:
+            tier = router.choose(q, ctx)
+        except Exception:  # noqa: BLE001 - policy must never break a turn
+            tier = ""
+    if tier == MAIN and ctx.get("stream_tts") and not generation:
+        return LatencyPolicy.STREAM_MAIN
+    if tier == MAIN and not generation:
+        return LatencyPolicy.ACK_THEN_THINK
+
+    return LatencyPolicy.SNAPPY_ANSWER
 
 
 class HeuristicRouter(BaseRouter):

@@ -33,6 +33,9 @@ _TIMEOUT_APOLOGY = "Sorry, that took too long -- let's try again."
 # replies so it isn't ingested as conversational content.
 _FAILURE_APOLOGY = "Sorry, I ran into a problem with that -- let's try again."
 
+_ACK_THEN_THINK_POLICY = "ack_then_think"
+_ACK_THEN_THINK_TEXT = "I'll check that now."
+
 from .capabilities import CapabilityRegistry, create_default_capabilities
 from .continuation import (
     CONTINUE,
@@ -70,6 +73,7 @@ class SupervisorState:
     # owner-verified live audio. Default FAIL-CLOSED.
     turn_owner_verified: bool = False
     turn_origin: str = "unknown"
+    turn_metadata: dict[str, object] = field(default_factory=dict)
     spoken_outputs: "deque[str]" = field(default_factory=lambda: deque(maxlen=512))
     event_log: "deque[AgentEvent]" = field(default_factory=lambda: deque(maxlen=1024))
     failures: "deque[str]" = field(default_factory=lambda: deque(maxlen=128))
@@ -162,6 +166,7 @@ class AgentSupervisor:
                 is_final=True,
                 owner_verified=bool(event.payload.get("owner_verified", False)),
                 origin=str(event.payload.get("origin", "unknown")),
+                metadata=event.payload.get("metadata"),
             )
             return
         if event.kind == EventKind.FOLLOWUP_TICK:
@@ -327,6 +332,7 @@ class AgentSupervisor:
     def _handle_speech(
         self, text: str, *, is_final: bool,
         owner_verified: bool = False, origin: str = "unknown",
+        metadata: object = None,
     ) -> None:
         # Record the current turn's speaker-ID trust (fail-closed) so tasks created
         # from this utterance carry it to the action chokepoint. Set on every final
@@ -335,6 +341,11 @@ class AgentSupervisor:
         if is_final:
             self.state.turn_owner_verified = bool(owner_verified)
             self.state.turn_origin = str(origin)
+            self.state.turn_metadata = (
+                {"latency_policy": metadata["latency_policy"]}
+                if isinstance(metadata, Mapping) and "latency_policy" in metadata
+                else {}
+            )
         observation = self.analyzer.observe(text, is_final=is_final)
         self.state.observations.append(observation)
         if not observation.normalized:
@@ -379,6 +390,7 @@ class AgentSupervisor:
         task = self.tasks.create_task(decision)
         task.metadata["owner_verified"] = bool(self.state.turn_owner_verified)
         task.metadata["origin"] = str(self.state.turn_origin)
+        task.metadata.update(self.state.turn_metadata)
         return task
 
     def _execute_decision(self, decision: IntentDecision) -> None:
@@ -446,7 +458,28 @@ class AgentSupervisor:
             if timeout > 0:
                 task.deadline_at = time.monotonic() + timeout
             self.state.active_tasks[task.task_id] = task
+            epoch = task.speech_epoch
+        self._emit_latency_ack(task, epoch)
         self.tasks.start(task)
+
+    def _emit_latency_ack(self, task: AgentTask, epoch: int) -> None:
+        if task.metadata.get("latency_policy") != _ACK_THEN_THINK_POLICY:
+            return
+        if not task.metadata.get("speak", True) or task.metadata.get("followup"):
+            return
+        task.started_speaking = True
+        self.state.spoken_outputs.append(_ACK_THEN_THINK_TEXT)
+        self.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": task.task_id,
+                    "text": _ACK_THEN_THINK_TEXT,
+                    "epoch": epoch,
+                    "latency_ack": True,
+                },
+            )
+        )
 
     def _timeout_for(self, mode: Mode) -> float:
         return self._task_timeouts.get(mode.value, _FALLBACK_TASK_TIMEOUT)

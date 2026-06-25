@@ -30,7 +30,7 @@ from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, HELD, LLM_FIRST_TOKEN, 
 from .persona import PersonaConfig, build_system_prompt
 from .tts_markup import build_markup_guidance
 from .resume import ResumeConfig, ResumeTracker
-from .routing import Router
+from .routing import Router, classify_latency_policy
 from .turn_merge import FinalDispatcher, TurnMergeConfig
 from .watchdog import StuckWatchdog
 from .websearch import WebSearchConfig, attach_web_search_capability
@@ -108,6 +108,7 @@ class VoiceRuntime:
         # through an LLM rewrite to drop disfluencies and resolve self-
         # corrections before the brain sees it. See core/cleanup.py.
         self._cleaner = cleaner
+        self._stream_tts = bool(stream_tts)
         self.bus = EventBus()
         # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
@@ -138,6 +139,7 @@ class VoiceRuntime:
             router = CapabilityTierRouter(capability_router)
             if planner_on and planner_config.escalate:
                 escalate = escalate_predicate(capability_router)
+        self._latency_router = router
         # Capability-aware system prompt: the answering model is told who it is
         # (the configured persona) and what skills it ACTUALLY has, enumerated
         # from the live capability manifest, with a web-access line that reflects
@@ -640,22 +642,25 @@ class VoiceRuntime:
         # this call records the decision for the run summary AND primes the
         # fast-LLM action cache, so the in-capability escalate/tier consults this
         # turn don't re-call the model. Best-effort: routing never breaks a turn.
+        route_decision = None
         if self._capability_router is not None:
             try:
-                decision = self._capability_router.route(
-                    final_text, {"mode": self.mode.value}
+                route_decision = self._capability_router.route(
+                    final_text, {"mode": self.mode.value, "stream_tts": self._stream_tts}
                 )
                 log.info(
-                    "route: action=%s tier=%s conf=%.2f source=%s (%s) for %r",
-                    decision.action, decision.tier, decision.confidence,
-                    decision.source, decision.reason, final_text,
+                    "route: action=%s tier=%s policy=%s conf=%.2f source=%s (%s) for %r",
+                    route_decision.action, route_decision.tier,
+                    route_decision.latency_policy, route_decision.confidence,
+                    route_decision.source, route_decision.reason, final_text,
                     extra={"route": {
-                        "action": decision.action, "tier": decision.tier,
-                        "confidence": decision.confidence,
-                        "source": decision.source, "reason": decision.reason,
+                        "action": route_decision.action, "tier": route_decision.tier,
+                        "latency_policy": route_decision.latency_policy,
+                        "confidence": route_decision.confidence,
+                        "source": route_decision.source, "reason": route_decision.reason,
                     }},
                 )
-                self.metrics.mark(f"route_{decision.action}")
+                self.metrics.mark(f"route_{route_decision.action}")
             except Exception:  # noqa: BLE001 - routing observability is best-effort
                 log.exception("capability router failed; default routing stands")
         # Try the no-LLM fast-path next; only fall through to the brain on a miss.
@@ -690,7 +695,26 @@ class VoiceRuntime:
         # A NEW turn for the resume tracker (resets the spoken-text window; a
         # resume turn deliberately bypasses this above and keeps accumulating).
         self._resume.note_query(final_text)
-        self.bus.publish(AgentEvent.final(final_text))
+        latency_context: dict[str, object] = {
+            "mode": self.mode.value,
+            "stream_tts": self._stream_tts,
+        }
+        if route_decision is not None:
+            latency_context.update({
+                "route_action": route_decision.action,
+                "tier": route_decision.tier,
+            })
+            latency_policy = route_decision.latency_policy
+        else:
+            latency_policy = classify_latency_policy(
+                final_text, latency_context, router=self._latency_router
+            ).value
+        self.bus.publish(
+            AgentEvent.final(
+                final_text,
+                metadata={"latency_policy": latency_policy},
+            )
+        )
 
     def _on_barge_in(self) -> None:
         # User spoke over the assistant: cancel in-flight work, then cut playback.

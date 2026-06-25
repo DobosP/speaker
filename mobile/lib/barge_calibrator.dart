@@ -16,6 +16,7 @@ class BargeCalibrator {
     this.absoluteMin = 0.08, // the legacy fixed threshold -> a hard floor
     this.margin = 2.0, // ~6 dB above the learned ambient
     this.alpha = 0.02, // EWMA rate: slow, so a stray word doesn't spike it
+    this.maxAmbientFloor = 0.12, // contamination/drift cap for mobile mics
   });
 
   /// The threshold never drops below this (no regression vs the old constant).
@@ -27,6 +28,11 @@ class BargeCalibrator {
   /// EWMA smoothing factor for the ambient estimate (0..1; smaller = slower).
   final double alpha;
 
+  /// Upper bound for the learned ambient floor. This keeps accidental training
+  /// on speech or playback tails from making barge-in unreachable for the rest
+  /// of the session. Set to null to disable the cap in tests/experiments.
+  final double? maxAmbientFloor;
+
   double _floor = 0.0;
   bool _seeded = false;
 
@@ -34,12 +40,14 @@ class BargeCalibrator {
   /// hears the room, not the assistant's echo). EWMA so a brief sound doesn't move
   /// the floor much.
   void observeQuiet(double rms) {
-    if (rms.isNaN || rms < 0) return;
+    if (!rms.isFinite || rms < 0) return;
+    final capped = maxAmbientFloor == null ? rms : math.min(rms, maxAmbientFloor!);
     if (!_seeded) {
-      _floor = rms;
+      _floor = capped;
       _seeded = true;
     } else {
-      _floor = (1.0 - alpha) * _floor + alpha * rms;
+      final next = (1.0 - alpha) * _floor + alpha * capped;
+      _floor = maxAmbientFloor == null ? next : math.min(next, maxAmbientFloor!);
     }
   }
 
@@ -50,4 +58,44 @@ class BargeCalibrator {
 
   /// The learned ambient floor (for logging / tests).
   double get ambientFloor => _floor;
+}
+
+/// Pure-Dart guard for deciding when a mic chunk is safe to use as ambient
+/// training data.
+///
+/// The assistant can have `_speaking == false` while the user is still talking
+/// before endpoint, or while the player's acoustic tail is still draining after
+/// stop/complete. Those chunks are not room tone; learning from them raises the
+/// barge threshold and makes later talk-over harder to detect.
+class QuietObservationGate {
+  QuietObservationGate({
+    this.speechCooldown = const Duration(milliseconds: 500),
+    this.playbackCooldown = const Duration(milliseconds: 500),
+  });
+
+  final Duration speechCooldown;
+  final Duration playbackCooldown;
+
+  DateTime? _lastVoiceAt;
+  DateTime? _playbackQuietAfter;
+
+  void noteVoice(DateTime now) {
+    _lastVoiceAt = now;
+  }
+
+  void notePlaybackStopped(DateTime now) {
+    _playbackQuietAfter = now.add(playbackCooldown);
+  }
+
+  bool canObserveQuiet(DateTime now) {
+    final lastVoice = _lastVoiceAt;
+    if (lastVoice != null && now.difference(lastVoice) < speechCooldown) {
+      return false;
+    }
+    final quietAfter = _playbackQuietAfter;
+    if (quietAfter != null && now.isBefore(quietAfter)) {
+      return false;
+    }
+    return true;
+  }
 }

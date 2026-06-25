@@ -39,7 +39,15 @@ from always_on_agent.react import should_escalate
 
 from .contract import is_stop_command, normalize_command
 from .llm import LLMClient
-from .routing import FAST, MAIN, HeuristicRouter, Router, build_router
+from .routing import (
+    FAST,
+    MAIN,
+    HeuristicRouter,
+    LatencyPolicy,
+    Router,
+    build_router,
+    classify_latency_policy,
+)
 
 log = logging.getLogger("speaker.capability_router")
 
@@ -75,6 +83,7 @@ class RouteDecision:
     confidence: float      # 0..1; below the router's threshold -> LLM disambiguates
     reason: str            # short human-readable why (lands in logs / run summary)
     source: str = "heuristic"  # "heuristic" | "llm"
+    latency_policy: str = LatencyPolicy.SNAPPY_ANSWER.value
 
     @property
     def escalates(self) -> bool:
@@ -118,7 +127,7 @@ class HeuristicCapabilityRouter:
         # 1. CONTROL: a stop/cancel phrase or a configured command phrase. Instant
         #    and unambiguous -- never spend an LLM on it.
         if q and (is_stop_command(q) or normalize_command(q) in self._commands):
-            return RouteDecision(CONTROL, FAST, 0.97, "control phrase")
+            return self._decision(q, ctx, CONTROL, FAST, 0.97, "control phrase")
 
         # 2. RESEARCH: reuse the exact predicate the planner already escalates on,
         #    so routing here never diverges from what the brain would have done.
@@ -127,9 +136,9 @@ class HeuristicCapabilityRouter:
         # 3. ACT: an imperative that wants something DONE (not just answered).
         act = any(m in ql for m in self._act_markers)
         if act and not research:
-            return RouteDecision(ACT, MAIN, 0.7, "action marker")
+            return self._decision(q, ctx, ACT, MAIN, 0.7, "action marker")
         if research:
-            return RouteDecision(RESEARCH, MAIN, 0.7, "gather/multi-step marker")
+            return self._decision(q, ctx, RESEARCH, MAIN, 0.7, "gather/multi-step marker")
 
         # 4. SIMPLE: ordinary reply. Tier from the existing heuristic; confidence
         #    reflects how sure we are it ISN'T really a gather/act turn -- a long
@@ -142,7 +151,22 @@ class HeuristicCapabilityRouter:
             conf = 0.5
         else:
             conf = 0.7
-        return RouteDecision(SIMPLE, tier, conf, "no gather/action markers")
+        return self._decision(q, ctx, SIMPLE, tier, conf, "no gather/action markers")
+
+    @staticmethod
+    def _decision(
+        text: str,
+        context: Mapping[str, object],
+        action: str,
+        tier: str,
+        confidence: float,
+        reason: str,
+    ) -> RouteDecision:
+        policy = classify_latency_policy(
+            text,
+            {**dict(context), "route_action": action, "tier": tier},
+        )
+        return RouteDecision(action, tier, confidence, reason, latency_policy=policy.value)
 
 
 _LLM_SYSTEM = (
@@ -199,7 +223,14 @@ class LLMCapabilityRouter:
         if action is None or action == base.action:
             return base
         tier = MAIN if action in (RESEARCH, ACT) else base.tier
-        return RouteDecision(action, tier, 0.9, "llm disambiguation", source="llm")
+        policy = classify_latency_policy(
+            text,
+            {**dict(context), "route_action": action, "tier": tier},
+        )
+        return RouteDecision(
+            action, tier, 0.9, "llm disambiguation", source="llm",
+            latency_policy=policy.value,
+        )
 
     def _action_for(self, text: str) -> Optional[str]:
         key = (text or "").strip().lower()

@@ -15,6 +15,7 @@ from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.events import Mode
 
 from core.engines.scripted import ScriptedEngine
+from core.intents import LocalIntentHandler
 from core.llm import EchoLLM
 from core.runtime import VoiceRuntime
 
@@ -50,8 +51,54 @@ def test_research_prefix_runs_multistep_plan_and_speaks():
     engine.final("research local speech to text engines")
     assert runtime.wait_idle()
     # Research plan = scope -> search.local -> research.local(synthesis, spoken).
+    assert len(engine.spoken) == 2
+    assert engine.spoken[0] == "I'll check that now."
+    assert engine.spoken[1]  # non-empty synthesized answer
+
+
+class _BlockingGenerateLLM:
+    def __init__(self, reply: str = "final answer"):
+        self.reply = reply
+        self.started = threading.Event()
+        self.gate = threading.Event()
+
+    def generate(self, prompt: str, *, system=None, images=None) -> str:
+        self.started.set()
+        self.gate.wait(timeout=2.0)
+        return self.reply
+
+    def stream(self, prompt: str, *, system=None, images=None) -> Iterator[str]:
+        yield self.generate(prompt, system=system)
+
+
+def test_ack_then_think_speaks_before_slow_reasoning_finishes():
+    llm = _BlockingGenerateLLM("Here is the comparison.")
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(engine, llm, start_mode=Mode.ASSISTANT)
+    runtime.start(run_bus=True)
+    try:
+        engine.final("compare the latest local speech to text engines")
+        assert _wait_until(lambda: engine.spoken == ["I'll check that now."])
+        assert _wait_until(lambda: llm.started.is_set())
+        assert engine.spoken == ["I'll check that now."]
+        llm.gate.set()
+        assert runtime.wait_idle()
+        assert engine.spoken == ["I'll check that now.", "Here is the comparison."]
+    finally:
+        runtime.stop()
+
+
+def test_instant_local_intent_gets_no_latency_ack():
+    engine = ScriptedEngine()
+    intents = LocalIntentHandler(engine.speak)
+    runtime = VoiceRuntime(
+        engine, EchoLLM(reply="should not run"), start_mode=Mode.ASSISTANT, intents=intents
+    )
+    runtime.start(run_bus=False)
+    engine.final("what time is it")
+    assert runtime.wait_idle()
     assert len(engine.spoken) == 1
-    assert engine.spoken[0]  # non-empty synthesized answer
+    assert engine.spoken[0].startswith("It's ")
 
 
 def test_stop_phrase_cancels_and_halts_playback():

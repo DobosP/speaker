@@ -10,6 +10,7 @@ the engine, off by default) adds real punctuation to finals on top of this.
 """
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import re
 
 # Sentence terminators after which the next letter is capitalized.
@@ -74,6 +75,66 @@ def _content_tokens(text: str) -> set[str]:
     return {t for t in _CONTENT_TOKEN.findall(text.lower()) if len(t) >= 2}
 
 
+def _normalized_words(text: str) -> list[str]:
+    """Lowercased alphanumeric words for punctuation/casing-insensitive checks."""
+    return _CONTENT_TOKEN.findall(text.lower())
+
+
+def _compact_words(words: list[str]) -> str:
+    return "".join(words)
+
+
+def word_agreement(streaming_final: str, second_pass: str) -> bool:
+    """Whether two transcripts agree after punctuation/casing normalization.
+
+    This is intentionally lexical and conservative: exact normalized words always
+    agree (``"stop"`` vs ``"Stop."``), and longer phrases may agree by sharing
+    enough >=2-character content words. Single-letter artifacts are ignored for
+    shared-token agreement so ``"I."`` cannot validate an invented final.
+    """
+    st_words = _normalized_words(streaming_final)
+    sp_words = _normalized_words(second_pass)
+    if st_words and st_words == sp_words:
+        return True
+
+    st_tokens = {w for w in st_words if len(w) >= 2}
+    sp_tokens = {w for w in sp_words if len(w) >= 2}
+    if not st_tokens or not sp_tokens:
+        return False
+
+    shared = len(st_tokens & sp_tokens)
+    shorter = min(len(st_tokens), len(sp_tokens))
+    required = 1 if shorter <= 2 else 2
+    return shared >= required
+
+
+def _clear_long_improvement(
+    streaming_final: str,
+    second_pass: str,
+    *,
+    segment_sec: float | None,
+    short_sec: float,
+) -> bool:
+    """Narrow escape hatch for real longer corrections with low word overlap."""
+    if segment_sec is None or segment_sec < short_sec:
+        return False
+
+    st_words = _normalized_words(streaming_final)
+    sp_words = _normalized_words(second_pass)
+    if len(sp_words) < 3:
+        return False
+
+    st_compact = _compact_words(st_words)
+    sp_compact = _compact_words(sp_words)
+    if not st_compact or not sp_compact:
+        return False
+
+    # Whole-phrase character similarity catches common ASR segmentation/phonetic
+    # repairs such as "Ario der" -> "are you there" without opening the door to
+    # unrelated short acknowledgements like "Okay.".
+    return SequenceMatcher(None, st_compact, sp_compact).ratio() >= 0.55
+
+
 def agreement_guard(
     streaming_final: str,
     second_pass: str,
@@ -98,22 +159,14 @@ def agreement_guard(
     not on overlap, so the legit long correction is preserved:
 
     1. If either side is empty/blank, return the non-empty side.
-    2. Decide whether this is a short, hallucination-prone clip: by ``segment_sec``
-       when known (``< short_sec``), else by the streaming final's token count
-       (``<= short_words``). KNOWN LIMITATION: a real but garbled correction whose
-       clip lands in ``[asr_final_min_sec, short_sec)`` (the 2nd pass runs but the
-       clip is still "short") with zero >=2-char token overlap would be demoted to
-       the streaming final. Dormant while the 2nd pass is off; if re-enabled, shrink
-       the band (raise ``asr_final_min_sec`` toward ``short_sec``) or let a
-       high-overlap 2nd pass through even when short.
-    3. If NOT short, trust the 2nd pass unconditionally (keeps ``"Ario der" ->
-       "are you there"`` even though the tokens don't overlap).
-    4. If short, accept the 2nd pass only when it AGREES with the streaming final
-       -- i.e. they share at least one normalized content token (lowercased,
-       len>=2 alphanumeric; single-letter artifacts like ``"I."`` collapse to the
-       empty set). On disagreement, return the streaming final raw: it is left
-       un-postprocessed because the L1/L2 energy/refractory gates then drop the
-       echo final anyway.
+    2. Reject a 2nd pass that collapses to no content words while the streaming
+       final has real content.
+    3. Accept punctuation/casing cleanup or a lexical correction only when the two
+       transcripts agree after normalization.
+    4. For short clips (by duration, or by streaming word count when duration is
+       unavailable), require that agreement. For longer clips, also allow a narrow
+       whole-phrase similarity escape hatch so a real garbled correction like
+       ``"Ario der" -> "are you there"`` still lands.
 
     Pure, dependency-free, no I/O -- mirrors ``restore_casing`` so it runs on the
     final path with no model or audio import."""
@@ -129,14 +182,24 @@ def agreement_guard(
     # / 'IT IS' the 2nd pass invented into 'H.' / 'I.', which the length gate
     # below would otherwise have trusted unconditionally).
     st_tokens = _content_tokens(streaming_final)
-    if st_tokens and not _content_tokens(second_pass):
+    sp_tokens = _content_tokens(second_pass)
+    if st_tokens and not sp_tokens:
         return streaming_final
+
     if segment_sec is not None:
         short = segment_sec < short_sec
     else:
-        short = len(streaming_final.split()) <= short_words
-    if not short:
+        short = len(_normalized_words(streaming_final)) <= short_words
+
+    if word_agreement(streaming_final, second_pass):
         return second_pass
-    if st_tokens & _content_tokens(second_pass):
+
+    if not short and _clear_long_improvement(
+        streaming_final,
+        second_pass,
+        segment_sec=segment_sec,
+        short_sec=short_sec,
+    ):
         return second_pass
+
     return streaming_final

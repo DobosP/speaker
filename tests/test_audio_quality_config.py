@@ -62,3 +62,52 @@ def test_base_aec_stays_off_so_clean_clones_are_byte_identical():
     # The shipment is opt-in: the BASE config must keep AEC off so an auto-selected
     # box (or a clean clone) doesn't silently run the unvalidated live capture path.
     assert _committed_config()["sherpa"]["aec_enabled"] is False
+
+
+def test_target_rms_gt0_couples_wholeclip_only_on_first_sentence():
+    """Backlog item (d): tts_target_rms>0 forces whole-clip synthesis on the FIRST
+    sentence of a session (no prior gain established), but from the second sentence
+    onward the feed-forward carry enables the streaming callback path.
+    tts_target_rms=0 takes the streaming path unconditionally.
+
+    This pins the loudness-norm -> first-sentence-whole-clip coupling so a future
+    change that accidentally makes target_rms always-streaming (without the carry
+    mechanism) is caught by CI."""
+    import numpy as np
+    from core.engines.sherpa import SherpaOnnxEngine
+
+    sr = 16000
+    t = np.arange(int(sr * 0.25)) / sr
+    samples = (0.3 * np.sqrt(2) * np.sin(2 * np.pi * 220 * t)).astype("float32")
+
+    class _Track:
+        sample_rate = sr
+        callback_used: bool | None = None
+
+        def generate(self, text, sid=0, speed=1.0, callback=None):
+            self.callback_used = callback is not None
+            if callback is not None:
+                callback(samples.copy(), 1.0)
+            return type("A", (), {"samples": samples.copy(), "sample_rate": sr})()
+
+    tts = _Track()
+
+    # target_rms>0, no prior carry: WHOLE-CLIP on sentence 1.
+    eng = SherpaOnnxEngine(SherpaConfig(tts_target_rms=0.12, tts_declick=False))
+    eng._tts = tts
+    eng._synthesize("sentence one", [].append)
+    assert tts.callback_used is False, "first sentence must use whole-clip path"
+    assert eng._tts_normalize_gain is not None, "carry must be set after first sentence"
+
+    # Sentence 2: carry established -> STREAMING.
+    tts.callback_used = None
+    eng._synthesize("sentence two", [].append)
+    assert tts.callback_used is True, "second sentence must use streaming path"
+
+    # target_rms=0: always streaming, no carry involved.
+    tts2 = _Track()
+    eng2 = SherpaOnnxEngine(SherpaConfig(tts_target_rms=0.0, tts_declick=False))
+    eng2._tts = tts2
+    eng2._synthesize("any sentence", [].append)
+    assert tts2.callback_used is True, "target_rms=0 must always use streaming path"
+    assert eng2._tts_normalize_gain is None, "target_rms=0 path must not touch the carry"

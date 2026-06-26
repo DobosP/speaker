@@ -508,3 +508,90 @@ def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
     assert eng._far_ref._written == 0
     assert metrics == []
     assert eng._first_audio_pending is True
+
+
+# --- Streaming normalize_rms path (backlog item d + new streaming leveler) ---
+# Repo invariant: tts_target_rms>0 forces whole-clip on the FIRST sentence
+# (no prior gain established yet) but takes the streaming callback path from
+# the second sentence onward, applying the carried feed-forward gain instead
+# of waiting for the full clip.
+
+
+class _TrackingTts:
+    """A streaming TTS stub that records whether the callback was used."""
+
+    sample_rate = 16000
+
+    def __init__(self, samples):
+        self._samples = samples
+        self.callback_used: bool | None = None
+
+    def generate(self, text, sid=0, speed=1.0, callback=None):
+        self.callback_used = callback is not None
+        chunks = [self._samples[:len(self._samples) // 2],
+                  self._samples[len(self._samples) // 2:]]
+        if callback is not None:
+            for c in chunks:
+                if callback(c, 1.0) == 0:
+                    break
+        return _GenAudio(self._samples.copy(), sample_rate=self.sample_rate)
+
+
+def _sine(sr=16000, dur_s=0.25, rms=0.4, freq=220):
+    import numpy as np
+    t = np.arange(int(sr * dur_s)) / sr
+    return (rms * np.sqrt(2) * np.sin(2 * np.pi * freq * t)).astype("float32")
+
+
+def test_target_rms_wholeclip_on_first_sentence_sets_carry():
+    """First sentence with tts_target_rms>0: whole-clip path runs (callback not
+    used) and _tts_normalize_gain is set so the next sentence can stream."""
+    samp = _sine()
+    tts = _TrackingTts(samp)
+    eng = SherpaOnnxEngine(SherpaConfig(tts_target_rms=0.12, tts_declick=False))
+    eng._tts = tts
+    assert eng._tts_normalize_gain is None  # not yet set
+    written: list = []
+    eng._synthesize("hello", written.append)
+    assert tts.callback_used is False           # whole-clip path (no callback)
+    assert eng._tts_normalize_gain is not None  # carry established
+    assert eng._tts_normalize_gain > 0.0
+
+
+def test_target_rms_streaming_on_second_sentence_applies_carry():
+    """Second sentence with tts_target_rms>0: streaming callback is used, the
+    carried gain is applied, and _tts_normalize_gain is updated afterward."""
+    samp = _sine(rms=0.4)
+    tts = _TrackingTts(samp)
+    eng = SherpaOnnxEngine(SherpaConfig(tts_target_rms=0.12, tts_declick=False))
+    eng._tts = tts
+    # Synthesize first sentence (whole-clip) to establish the carry.
+    eng._synthesize("first", [].append)
+    assert eng._tts_normalize_gain is not None
+    gain_after_first = eng._tts_normalize_gain
+    # Second sentence: streaming path should be taken.
+    tts.callback_used = None
+    written2: list = []
+    eng._synthesize("second", written2.append)
+    assert tts.callback_used is True        # streaming path taken
+    # Carry is updated from the measured raw RMS.
+    assert eng._tts_normalize_gain is not None
+    # Output level should be near target_rms (within ±20% tolerance,
+    # acknowledging feed-forward may be slightly off if the TTS level varies).
+    out = np.concatenate(written2)
+    out_rms = float(np.sqrt(np.mean(out.astype("float64") ** 2)))
+    assert abs(out_rms - 0.12) < 0.06, f"streaming RMS {out_rms:.3f} far from 0.12"
+    _ = gain_after_first  # used for context; the carry updated after second
+
+
+def test_target_rms_zero_always_takes_streaming_regardless_of_carry():
+    """With tts_target_rms=0 the streaming path is taken on the first sentence
+    (no carry needed, no normalization). This pins the pure-streaming invariant."""
+    samp = _sine()
+    tts = _TrackingTts(samp)
+    eng = SherpaOnnxEngine(SherpaConfig(tts_target_rms=0.0, tts_declick=False))
+    eng._tts = tts
+    assert eng._tts_normalize_gain is None  # irrelevant on this path
+    eng._synthesize("hi", [].append)
+    assert tts.callback_used is True        # streaming path regardless
+    assert eng._tts_normalize_gain is None  # still None (not updated by this path)

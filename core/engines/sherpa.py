@@ -43,6 +43,7 @@ from ..audio_frontend import (
     lowpass_soft,
     normalize_rms,
     output_leveler,
+    rms_of,
 )
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
@@ -1016,6 +1017,16 @@ class SherpaOnnxEngine(AudioEngine):
         # thereafter it holds a float and slews. Only read/written on the synthesis
         # (producer) thread; inert unless tts_output_leveler=True.
         self._tts_level_gain_db = None
+        # normalize_rms feed-forward gain (linear) carried from the previous
+        # sentence. None until the first whole-clip sentence establishes it.
+        # Once set, _synthesize() takes the STREAMING callback path for subsequent
+        # sentences and applies this gain per-chunk instead of buffering the whole
+        # clip -- reclaiming the low first-audio latency the whole-clip normalize
+        # path loses without sacrificing a stable echo floor (the barge gate learns
+        # against the played level; adjacent sentences differ by ≤2 dB, which the
+        # EWMA absorbs). Only read/written on the synthesis (producer) thread;
+        # inert unless tts_target_rms > 0 and tts_output_leveler is False.
+        self._tts_normalize_gain: Optional[float] = None
         # Self-interruption suppression (realtime-concurrency-5). An EWMA of the
         # RMS level of the audio currently being played, written by the playback
         # thread and read by the capture thread as the reference level for the
@@ -2842,12 +2853,31 @@ class SherpaOnnxEngine(AudioEngine):
         # pass can't drive the same model at the same time.
         with self._tts_lock:
             # Streaming path (first samples play before the whole sentence is
-            # synthesized). Used ONLY when no whole-clip stage is on -- normalize_rms
-            # (target_rms>0) and the output_leveler need the whole clip's level, and
-            # the HF roll-off (lowpass_hz>0) applies one clean zero-phase FFT filter
-            # to the whole clip; none can run on the streaming callback. All three
-            # off -> this branch is byte-identical to before.
-            if target_rms <= 0.0 and not leveler_on and lowpass_hz <= 0.0 and self._tts_can_stream:
+            # synthesized). Two cases allow streaming:
+            #   (A) No whole-clip stage at all (target_rms=0, leveler off,
+            #       lowpass off) -- the original pure-streaming path.
+            #   (B) normalize_rms is on (target_rms>0) AND we have a carried
+            #       _tts_normalize_gain from a previous sentence -- feed-forward
+            #       streaming: apply the prior sentence's gain per-chunk instead
+            #       of waiting for the whole clip, then update the carry afterward.
+            #       First sentence of a session falls through to whole-clip so the
+            #       initial gain can be established.
+            # The output_leveler and lowpass_hz still force whole-clip (unchanged).
+            _stream_with_rms = (
+                target_rms > 0.0
+                and not leveler_on
+                and lowpass_hz <= 0.0
+                and self._tts_normalize_gain is not None
+            )
+            if self._tts_can_stream and not leveler_on and lowpass_hz <= 0.0 and (
+                target_rms <= 0.0 or _stream_with_rms
+            ):
+                _norm_gain = (
+                    np.float32(self._tts_normalize_gain) if _stream_with_rms else None
+                )
+                # Accumulate pre-gain chunks so we can re-measure actual RMS
+                # after synthesis and update the carry for the next sentence.
+                _raw_chunks: list = []
 
                 def on_chunk(samples, *_progress) -> int:
                     blk = np.asarray(samples, dtype="float32").reshape(-1)
@@ -2856,6 +2886,9 @@ class SherpaOnnxEngine(AudioEngine):
                             declick(blk, threshold=self.config.tts_declick_threshold),
                             dtype="float32",
                         ).reshape(-1)
+                    if _norm_gain is not None:
+                        _raw_chunks.append(blk)        # pre-gain, for RMS update
+                        blk = (blk * _norm_gain).astype("float32")
                     write(blk)
                     return 0 if (
                         self._stop_speaking.is_set()
@@ -2864,6 +2897,14 @@ class SherpaOnnxEngine(AudioEngine):
 
                 try:
                     tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
+                    # Post-synthesis: update the carried gain from actual raw RMS
+                    # so the next sentence's feed-forward stays on target.
+                    if _norm_gain is not None and _raw_chunks:
+                        r = rms_of(np.concatenate(_raw_chunks))
+                        if r > 1e-6:
+                            self._tts_normalize_gain = min(
+                                float(target_rms) / r, 20.0
+                            )
                     return
                 except TypeError:
                     self._tts_can_stream = False  # this build has no streaming callback
@@ -2894,14 +2935,18 @@ class SherpaOnnxEngine(AudioEngine):
             )
             samples = np.asarray(samples, dtype="float32").reshape(-1)
         else:
-            # Legacy path: normalize the WHOLE sentence to a consistent RMS so every
-            # reply couples a STABLE echo level into the mic (the barge floor learns
-            # against this) and the listener hears an even volume -- the 2026-06-10
-            # fix for the swinging echo floor + the perceived volume fluctuation.
-            # No-op when target_rms<=0.
+            # Legacy whole-clip path: normalize_rms needs the full clip's RMS.
+            # Capture the raw (pre-gain) RMS so we can carry the applied gain to
+            # subsequent sentences -- enabling the streaming path above from
+            # sentence 2 onward (feed-forward with this session's established level).
+            raw_rms = rms_of(samples) if target_rms > 0.0 else 0.0
             samples = np.asarray(
                 normalize_rms(samples, target_rms), dtype="float32"
             ).reshape(-1)
+            if target_rms > 0.0 and raw_rms > 1e-6:
+                # Store the actual linear gain applied; subsequent sentences can
+                # use the streaming path with this as their feed-forward seed.
+                self._tts_normalize_gain = min(float(target_rms) / raw_rms, 20.0)
             if self.config.tts_declick:                # repair VITS impulse spikes
                 samples = np.asarray(
                     declick(samples, threshold=self.config.tts_declick_threshold),

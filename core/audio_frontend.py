@@ -92,6 +92,21 @@ def normalize_rms(samples, target_rms: float, *, max_gain: float = 20.0):
     return apply_gain_soft_limit(x, gain)
 
 
+def rms_of(samples) -> float:
+    """RMS of a float32 waveform, or 0.0 for an empty or silent clip.
+
+    Shared utility so callers don't duplicate the float64 upgrade + sqrt.
+    Used by the streaming normalize_rms path in the engine to measure the
+    pre-gain level of a just-synthesized sentence and carry the applied gain
+    forward to the next sentence (feed-forward streaming leveler)."""
+    import numpy as np
+
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if x.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(x.astype("float64") ** 2)))
+
+
 def lowpass_soft(samples, sr: int, cutoff_hz: float, *, width_hz: float = 1500.0):
     """Zero-phase soft low-pass: a raised-cosine taper from ``cutoff_hz`` up to
     ``cutoff_hz + width_hz``, with everything above fully attenuated.

@@ -123,6 +123,27 @@ def test_generation_verbs_compose_draft_write_an_escalate():
     assert router.choose("write an essay about the sea", {}) == MAIN
 
 
+def test_contextful_followup_uses_main_on_desktop_threshold():
+    # Recent-context injection happens before tier routing. A referential
+    # follow-up that is cheap-looking in isolation should use the main tier on a
+    # capable desktop so it does not produce a shallow context-free reply.
+    router = HeuristicRouter(threshold=0.3)
+    ctx = {"recent_conversation": "=== Recent conversation ===\nUser: tell me about apm\nYou: ..."}
+    assert router.choose("tell me more about that", ctx) == MAIN
+    assert router.choose("what is its tradeoff", ctx) == MAIN
+    # No recent block -> the same short follow-up stays cheap.
+    assert router.choose("tell me more about that", {}) == FAST
+    # Presence of recent context alone is not enough to escalate unrelated asks.
+    assert router.choose("what time is it", ctx) == FAST
+
+
+def test_contextful_followup_respects_phone_threshold():
+    # Phone keeps a higher threshold because the 4b main tier is CPU-bound.
+    router = HeuristicRouter(threshold=0.55)
+    ctx = {"recent_conversation": "=== Recent conversation ===\nUser: tell me about apm\nYou: ..."}
+    assert router.choose("tell me more about that", ctx) == FAST
+
+
 def test_build_router_defaults_to_heuristic():
     router = build_router({})
     assert isinstance(router, HeuristicRouter)

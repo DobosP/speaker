@@ -338,6 +338,7 @@ class TaskRuntime:
                 {
                     "task_id": task.task_id,
                     "mode": task.mode.value,
+                    "capability": task.capability,
                     "text": task.output_text,
                     "speak": bool(task.metadata.get("speak", True)),
                     "followup": bool(task.metadata.get("followup")),

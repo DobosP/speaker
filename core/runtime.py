@@ -37,6 +37,8 @@ from .websearch import WebSearchConfig, attach_web_search_capability
 
 log = logging.getLogger("speaker.runtime")
 
+_LLM_BACKED_TASK_CAPABILITIES = frozenset({"assistant.answer", "research.local"})
+
 
 class VoiceRuntime:
     """Thin orchestrator: ``AudioEngine`` <-> ``AgentSupervisor`` <-> TTS.
@@ -769,6 +771,13 @@ class VoiceRuntime:
 
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:
+        if event.kind == EventKind.TASK_COMPLETED:
+            capability = str(event.payload.get("capability", "") or "")
+            if capability and capability not in _LLM_BACKED_TASK_CAPABILITIES:
+                # The brain completed a local/non-LLM capability (dictation,
+                # meeting note, local search/command staging). The turn has an
+                # ASR_FINAL but legitimately never gets an LLM_FIRST_TOKEN.
+                self.metrics.mark(HANDLED_LOCAL)
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
             if not text:

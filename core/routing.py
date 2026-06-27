@@ -46,6 +46,7 @@ MAIN: ModelTier = "main"
 # Protocol signature stays unchanged and every existing call site keeps
 # working with no live signal at all.
 LIVE_CONTEXT_KEY = "live"
+RECENT_CONVERSATION_CONTEXT_KEY = "recent_conversation"
 
 # Local TTFT (ms) at/above which the nudge saturates. ~2.5s to first token is
 # already a poor local experience; past it, lean on the cloud/main tier.
@@ -230,6 +231,17 @@ _GENERATION_MARKERS = (
     "walk me through", "a list of", "give me a", "essay", "lyrics", "joke",
 )
 
+# Follow-ups that depend on the immediate conversation thread. The recent block
+# is already injected before tier routing; this nudge just keeps context-heavy
+# references from being answered by the smallest tier on capable profiles.
+_CONTEXT_FOLLOWUP_MARKERS = (
+    "that", "this", "those", "them", "its",
+    "the first", "the second", "the previous", "the latter", "the former",
+    "what about", "how about", "tell me more", "more about", "go on",
+    "continue", "elaborate", "expand", "also", "make it", "shorter", "longer",
+)
+_CONTEXT_FOLLOWUP_NUDGE = 0.30
+
 
 def _compile_markers(markers: Iterable[str]) -> Pattern[str]:
     r"""Compile a marker list into one word-boundary alternation.
@@ -252,6 +264,12 @@ def _compile_markers(markers: Iterable[str]) -> Pattern[str]:
 # single regex scan per list rather than N substring checks.
 _COMPLEXITY_RE = _compile_markers(_COMPLEXITY_MARKERS)
 _GENERATION_RE = _compile_markers(_GENERATION_MARKERS)
+_CONTEXT_FOLLOWUP_RE = _compile_markers(_CONTEXT_FOLLOWUP_MARKERS)
+
+
+def _has_recent_conversation(ctx: Mapping[str, object]) -> bool:
+    recent = ctx.get(RECENT_CONVERSATION_CONTEXT_KEY)
+    return isinstance(recent, str) and bool(recent.strip())
 
 
 class HeuristicRouter(BaseRouter):
@@ -299,6 +317,15 @@ class HeuristicRouter(BaseRouter):
         # Long-form / generation request -> the big model (one hit is enough).
         if _GENERATION_RE.search(q):
             s += 0.5
+
+        # Contextful follow-up: a short referential ask ("tell me more about
+        # that", "what is its population") can look cheap in isolation but needs
+        # the prior turn to be interpreted well. Escalate only when a recent
+        # conversation block is actually present and the query carries a
+        # reference/follow-up cue. Per-profile thresholds still apply, so phone's
+        # higher threshold keeps these on the low-latency tier.
+        if _has_recent_conversation(ctx) and _CONTEXT_FOLLOWUP_RE.search(q):
+            s += _CONTEXT_FOLLOWUP_NUDGE
 
         if q.count("?") >= 2:
             s += 0.1

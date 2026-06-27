@@ -107,7 +107,12 @@ def check_sherpa_models(
         elif not exists(path):
             problems.append(f"{key} missing on disk")
     if problems:
-        return Check("sherpa models", False, "; ".join(problems), "python -m tools.setup_models")
+        return Check(
+            "sherpa models",
+            False,
+            "; ".join(problems) + " (config.json/config.local.json)",
+            "python -m tools.setup_models  # writes config.local.json",
+        )
     return Check("sherpa models", True, "ASR + TTS paths set")
 
 

@@ -17,6 +17,7 @@ from core.metrics import (
     HANDLED_LOCAL,
     HELD,
     LLM_FIRST_TOKEN,
+    MERGED,
     SPEECH_END,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
@@ -115,6 +116,25 @@ def test_superseded_turn_is_not_flagged_stuck(fake_clock, caplog):
     with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
         wd.tick()
     assert "stuck" not in caplog.text  # neither the superseded nor the done turn flags
+
+
+def test_merged_turn_is_not_flagged_stuck(fake_clock, caplog):
+    """A continuation merge cancels the original pre-audio turn and answers a
+    synthetic merged replacement. The original may have ASR_FINAL but no token;
+    MERGED makes that shape explicitly non-stuck."""
+    t, rec, wd = _make(fake_clock)
+    wd.LLM_FIRST_TOKEN_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)       # original turn
+    t[0] = 0.2
+    rec.mark(ASR_FINAL)       # add-on/merged replacement banks original
+    rec.mark_merged_turn()
+    rec.mark(LLM_FIRST_TOKEN)
+    rec.mark(TTS_FIRST_AUDIO)
+    t[0] = 10.0
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+    assert "stuck" not in caplog.text
+    assert MERGED in rec.records()[0].stamps
 
 
 # --- control-plane-3: EWMA-scaled adaptive deadlines -------------------------

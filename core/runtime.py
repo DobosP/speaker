@@ -248,6 +248,7 @@ class VoiceRuntime:
             # routing-only load_snapshot, which is live_routing-gated), since
             # tightening the concurrency ceiling under load is always safe.
             load_fraction=admission_load,
+            on_turn_merged=self.metrics.mark_merged_turn,
         )
         self.supervisor.state.mode = start_mode
         self.bus.subscribe(self._on_event)

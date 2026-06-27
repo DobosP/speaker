@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Download the sherpa-onnx ASR/VAD/TTS models for the native (`--engine sherpa`)
-path and wire their paths into config.json.
+path and wire their paths into config.local.json.
 
 Run once, then start the assistant:
 
@@ -248,7 +248,7 @@ def fetch_gguf_models(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Fetch sherpa models + wire config.json")
+    parser = argparse.ArgumentParser(description="Fetch sherpa models + wire config.local.json")
     parser.add_argument("--force", action="store_true", help="re-download even if files exist")
     parser.add_argument(
         "--accuracy",

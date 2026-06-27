@@ -282,6 +282,8 @@ class _PreGatedStreamLLM:
 def test_addon_before_audio_merges_into_single_answer():
     """The headline ADD-ON fix: a follow-up that lands before the assistant has
     spoken merges into ONE answer instead of racing a second competing turn."""
+    from core.metrics import MERGED, SUPERSEDED
+
     llm = _PreGatedStreamLLM()
     engine = ScriptedEngine(hold_speech=False)
     runtime = VoiceRuntime(
@@ -319,6 +321,9 @@ def test_addon_before_audio_merges_into_single_answer():
         assert "whats the weather" in spoken_joined
         assert "and also the forecast" in spoken_joined
         assert "first asked" in spoken_joined, engine.spoken
+        records = runtime.metrics.records()
+        assert MERGED in records[0].stamps
+        assert SUPERSEDED in records[0].stamps
     finally:
         runtime.stop()
 

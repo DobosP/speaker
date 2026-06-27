@@ -7,6 +7,7 @@ from core.metrics import (
     BARGE_IN,
     BARGE_IN_STOP,
     LLM_FIRST_TOKEN,
+    MERGED,
     SPEECH_END,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
@@ -33,6 +34,17 @@ def test_mark_superseded_turn_is_a_noop_with_nothing_banked():
     rec.mark_superseded_turn()   # no completed turn yet -> no crash, no stamp
     rec.mark(ASR_FINAL)
     assert SUPERSEDED not in rec.records()[0].stamps
+
+
+def test_mark_merged_turn_stamps_the_just_banked_turn():
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)       # original turn, cancelled by continuation merge
+    rec.mark(ASR_FINAL)       # add-on turn banks the original
+    rec.mark_merged_turn()
+    records = rec.records()
+    assert MERGED in records[0].stamps
+    assert SUPERSEDED in records[0].stamps
+    assert MERGED not in records[1].stamps
 
 
 class FakeClock:

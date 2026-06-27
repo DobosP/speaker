@@ -16,6 +16,7 @@ from always_on_agent.events import Mode
 
 from core.engines.scripted import ScriptedEngine
 from core.llm import EchoLLM
+from core.metrics import HANDLED_LOCAL, LLM_FIRST_TOKEN
 from core.runtime import VoiceRuntime
 
 
@@ -36,6 +37,24 @@ def test_assistant_reply_is_spoken():
     engine.final("what time is it")
     assert runtime.wait_idle()
     assert engine.spoken == ["The time is noon."]
+
+
+def test_llm_task_does_not_mark_handled_local():
+    runtime, engine = _runtime(reply="The time is noon.")
+    engine.final("what time is it")
+    assert runtime.wait_idle()
+    [record] = runtime.metrics.records()
+    assert LLM_FIRST_TOKEN in record.stamps
+    assert HANDLED_LOCAL not in record.stamps
+
+
+def test_brain_local_task_marks_handled_local_for_watchdog():
+    runtime, engine = _runtime(start_mode=Mode.MEETING)
+    engine.final("we agreed to ship the local task metric")
+    assert runtime.wait_idle()
+    [record] = runtime.metrics.records()
+    assert HANDLED_LOCAL in record.stamps
+    assert LLM_FIRST_TOKEN not in record.stamps
 
 
 def test_voice_mode_switch():

@@ -405,6 +405,13 @@ def test_no_smart_endpoint_flag_leaves_endpoint_untouched(monkeypatch):
     assert "endpoint_enabled" not in config.get("sherpa", {})
 
 
+def test_preflight_missing_models_points_at_config_local():
+    problems = live_main._preflight({"sherpa": {}})
+    text = "\n".join(problems)
+    assert "tools.setup_models" in text
+    assert "config.local.json" in text
+
+
 def test_committed_config_endpoint_enabled_with_validated_min_silence():
     # Smart endpoint was validated on-device (docs/archive/live_validation_run_2026-05-30.md:
     # ~300ms first-audio win, no tail clipping, no sentence splitting) and ENABLED.

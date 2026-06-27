@@ -148,6 +148,8 @@ def test_check_sherpa_models_missing_then_present():
     bad = check_sherpa_models({"sherpa": {}})
     assert not bad.ok
     assert "setup_models" in bad.hint
+    assert "config.local.json" in bad.detail
+    assert "config.local.json" in bad.hint
 
     paths = {
         k: f"/m/{k}"
@@ -165,6 +167,7 @@ def test_check_sherpa_models_path_set_but_file_absent():
     res = check_sherpa_models({"sherpa": paths}, exists=lambda p: False)
     assert not res.ok
     assert "missing on disk" in res.detail
+    assert "config.local.json" in res.detail
 
 
 def test_check_speaker_id_unconfigured_is_ok_advisory():

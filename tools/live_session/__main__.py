@@ -39,9 +39,15 @@ def _preflight(config: dict) -> list[str]:
         problems.append(f"sounddevice not importable ({exc}); pip install sounddevice + a PortAudio backend")
     sherpa = config.get("sherpa", {}) or {}
     if not sherpa.get("asr_encoder") or not sherpa.get("asr_tokens"):
-        problems.append("sherpa.asr_encoder / asr_tokens not set -- no ASR model (config.json)")
+        problems.append(
+            "sherpa.asr_encoder / asr_tokens not set -- no ASR model "
+            "(run `python -m tools.setup_models`; writes config.local.json)"
+        )
     if not sherpa.get("tts_model"):
-        problems.append("sherpa.tts_model not set -- no TTS voice for the synthetic user / assistant")
+        problems.append(
+            "sherpa.tts_model not set -- no TTS voice for the synthetic user / assistant "
+            "(run `python -m tools.setup_models`; writes config.local.json)"
+        )
     return problems
 
 

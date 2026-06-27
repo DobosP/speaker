@@ -106,6 +106,7 @@ def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):
     msg = str(exc.value)
     assert "tools.setup_models" in msg
     assert "no sherpa model paths" in msg.lower()
+    assert "config.local.json" in msg
 
 
 def test_load_config_merges_config_local(tmp_path, monkeypatch):

@@ -53,11 +53,11 @@ def _require_asr_models(sherpa_cfg, engine_name: str) -> None:
     if not getattr(sherpa_cfg, "asr_encoder", "") or not getattr(sherpa_cfg, "asr_tokens", ""):
         raise SystemExit(
             f"\n--engine {engine_name} needs the on-device speech models, but "
-            "config.json has no sherpa model paths set.\n\n"
+            "config.json/config.local.json have no sherpa model paths set.\n\n"
             "  Run once:   python -m tools.setup_models\n"
             "  (or full:   ./install.sh)\n\n"
             "That downloads the ASR/VAD/TTS models and writes their paths into "
-            f"config.json. Then re-run:\n  python -m core --engine {engine_name}\n"
+            f"config.local.json. Then re-run:\n  python -m core --engine {engine_name}\n"
         )
 
 

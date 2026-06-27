@@ -7,8 +7,10 @@ import pytest
 
 from core.audio_frontend import (
     AudioResampler,
+    StreamingLowpass,
     apply_gain_soft_limit,
     normalize_rms,
+    rms_of,
 )
 from core.wer import word_error_rate
 
@@ -112,6 +114,57 @@ def test_normalize_rms_caps_gain_on_near_silence():
 def test_normalize_rms_silence_is_safe():
     y = normalize_rms(np.zeros(1600, dtype="float32"), 0.12)
     assert float(np.abs(y).max()) == 0.0  # no divide-by-zero blow-up
+
+
+# --- streaming TTS low-pass -------------------------------------------------
+
+
+def _tone_mag(samples, sr: int, freq: float) -> float:
+    x = np.asarray(samples, dtype="float64").reshape(-1)
+    t = np.arange(x.size, dtype="float64") / float(sr)
+    s = np.sin(2.0 * np.pi * float(freq) * t)
+    c = np.cos(2.0 * np.pi * float(freq) * t)
+    return float((2.0 / x.size) * np.hypot(np.dot(x, s), np.dot(x, c)))
+
+
+def test_rms_of_empty_and_tone():
+    assert rms_of(np.zeros(0, dtype="float32")) == 0.0
+    x = np.array([1.0, -1.0, 1.0, -1.0], dtype="float32")
+    assert rms_of(x) == pytest.approx(1.0)
+
+
+def test_streaming_lowpass_attenuates_high_frequency_energy_across_chunks():
+    sr = 16000
+    t = np.arange(sr, dtype="float64") / sr
+    low = 0.30 * np.sin(2.0 * np.pi * 300.0 * t)
+    high = 0.30 * np.sin(2.0 * np.pi * 6000.0 * t)
+    x = (low + high).astype("float32")
+
+    filt = StreamingLowpass(sr, 1000.0)
+    y = np.concatenate([filt.process(chunk) for chunk in np.array_split(x, 17)])
+
+    assert _tone_mag(y, sr, 6000.0) < 0.08 * _tone_mag(x, sr, 6000.0)
+    assert _tone_mag(y, sr, 300.0) > 0.85 * _tone_mag(x, sr, 300.0)
+
+
+def test_streaming_lowpass_chunking_matches_single_pass():
+    sr = 16000
+    rng = np.random.default_rng(4)
+    x = rng.standard_normal(4096).astype("float32") * 0.05
+    whole = StreamingLowpass(sr, 1800.0).process(x)
+
+    filt = StreamingLowpass(sr, 1800.0)
+    chunked = np.concatenate([filt.process(chunk) for chunk in np.array_split(x, 13)])
+
+    np.testing.assert_allclose(chunked, whole, rtol=1e-6, atol=1e-7)
+
+
+def test_streaming_lowpass_disabled_and_above_nyquist_are_unchanged():
+    x = np.random.default_rng(5).standard_normal(128).astype("float32")
+    assert StreamingLowpass(16000, 0.0).process(x) is x
+    assert StreamingLowpass(16000, -200.0).process(x) is x
+    assert StreamingLowpass(16000, 8000.0).process(x) is x
+    assert StreamingLowpass(0, 1000.0).process(x) is x
 
 
 # --- WER --------------------------------------------------------------------

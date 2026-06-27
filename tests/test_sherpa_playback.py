@@ -7,6 +7,8 @@ testable pieces (`_synthesize`, queue/flush) are factored out of the thread.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 
 from core.engines._aec import FarEndRing, PlaybackFIFO
@@ -258,6 +260,58 @@ class _FakeFIFO:
 
     def count(self):
         return 0
+
+
+class _StuckFIFO:
+    def __init__(self, count=1600):
+        self._count = int(count)
+        self.flushed = 0
+
+    def flush(self, fade_samples=0):
+        self.flushed += 1
+        self._count = 0
+
+    def count(self):
+        return self._count
+
+
+def test_playback_drain_timeout_flushes_before_reopening_asr(caplog):
+    # Root-cause guard for full-sentence echo finals: if the output callback stalls,
+    # _speaking must not clear while queued assistant audio remains available to
+    # play later with ASR open. The timeout path drops that stale tail and emits a
+    # metric so the hardware stall is visible in the run bundle.
+    eng = _engine(_StreamingTts())
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._fifo = _StuckFIFO(count=800)
+    eng._running.set()
+    caplog.set_level(logging.WARNING, logger="speaker.sherpa")
+
+    drained = eng._wait_for_playback_drain(timeout_sec=0.0)
+
+    assert drained is False
+    assert eng._fifo.flushed == 1
+    assert eng._fifo.count() == 0
+    assert "playback FIFO did not drain before idle deadline" in caplog.text
+    assert metrics == ["playback_drain_timeout"]
+
+
+def test_playback_drain_timeout_does_not_flush_during_stop():
+    # stop_speaking()/stop() own teardown flushing. The idle-drain guard should
+    # only diagnose an otherwise-healthy playback callback that missed its drain
+    # deadline, not double-report a deliberate stop.
+    eng = _engine(_StreamingTts())
+    metrics: list = []
+    eng._cb.on_metric = metrics.append
+    eng._fifo = _StuckFIFO(count=800)
+    eng._running.set()
+    eng._stop_speaking.set()
+
+    drained = eng._wait_for_playback_drain(timeout_sec=0.0)
+
+    assert drained is False
+    assert eng._fifo.flushed == 0
+    assert metrics == []
 
 
 def test_stop_speaking_flushes_live_fifo_and_stamps_metric():

@@ -117,7 +117,7 @@ def lowpass_soft(samples, sr: int, cutoff_hz: float, *, width_hz: float = 1500.0
     that band, so this is the knob that makes the natural-but-bright voice usable
     on the bare laptop speaker (owner A/B 2026-06-22). FFT-domain + zero-phase so
     it adds no group delay or the pre-echo a causal IIR would; applied once to the
-    whole clip (the caller forces the whole-clip synth path when this is on).
+    whole clip on the non-streaming fallback path.
     ``cutoff_hz <= 0`` is a no-op (byte-identical); a cutoff at/above Nyquist is
     also a no-op. Never raises."""
     import numpy as np
@@ -139,6 +139,102 @@ def lowpass_soft(samples, sr: int, cutoff_hz: float, *, width_hz: float = 1500.0
     H[mid] = 0.5 * (1.0 + np.cos(np.pi * t[mid]))
     H[fr >= float(cutoff_hz) + width] = 0.0
     return np.fft.irfft(X * H, n=x.size).astype("float32")
+
+
+class StreamingLowpass:
+    """Stateful causal low-pass for streaming TTS chunks.
+
+    This is a simple RBJ/Butterworth biquad. It is intentionally separate from
+    :func:`lowpass_soft`: the FFT path remains the zero-phase whole-clip filter,
+    while this one carries only the two IIR delay samples needed between chunks.
+    Create one instance per utterance so sentence boundaries reset filter history
+    and one sentence's tail cannot color the next sentence's onset.
+    """
+
+    def __init__(self, sr: int, cutoff_hz: float, *, q: float = math.sqrt(0.5)):
+        self._enabled = False
+        self._b0 = 1.0
+        self._b1 = 0.0
+        self._b2 = 0.0
+        self._a1 = 0.0
+        self._a2 = 0.0
+        self._z1 = 0.0
+        self._z2 = 0.0
+        self.configure(sr, cutoff_hz, q=q)
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def configure(self, sr: int, cutoff_hz: float, *, q: float = math.sqrt(0.5)) -> None:
+        """Set coefficients and reset state; invalid or no-op cutoffs disable."""
+        self.reset()
+        try:
+            sr_i = int(sr)
+            cutoff = float(cutoff_hz)
+            q_f = float(q)
+        except (TypeError, ValueError):
+            self._enabled = False
+            return
+        if (
+            sr_i <= 0
+            or not math.isfinite(cutoff)
+            or cutoff <= 0.0
+            or not math.isfinite(q_f)
+            or q_f <= 0.0
+        ):
+            self._enabled = False
+            return
+        nyq = sr_i * 0.5
+        if cutoff >= nyq:
+            self._enabled = False
+            return
+
+        omega = 2.0 * math.pi * min(cutoff, nyq * 0.999) / sr_i
+        cos_w = math.cos(omega)
+        sin_w = math.sin(omega)
+        alpha = sin_w / (2.0 * q_f)
+        a0 = 1.0 + alpha
+        self._b0 = ((1.0 - cos_w) * 0.5) / a0
+        self._b1 = (1.0 - cos_w) / a0
+        self._b2 = self._b0
+        self._a1 = (-2.0 * cos_w) / a0
+        self._a2 = (1.0 - alpha) / a0
+        self._enabled = True
+
+    def reset(self) -> None:
+        self._z1 = 0.0
+        self._z2 = 0.0
+
+    def process(self, samples):
+        """Filter one chunk, carrying IIR state for the next chunk.
+
+        Disabled, invalid, or above-Nyquist cutoffs return ``samples`` unchanged
+        so callers can leave the hook in the hot path without changing output.
+        """
+        if not self._enabled:
+            return samples
+        import numpy as np
+
+        x = np.asarray(samples, dtype="float32").reshape(-1)
+        if x.size == 0:
+            return x
+        y = np.empty_like(x)
+        z1 = self._z1
+        z2 = self._z2
+        b0 = self._b0
+        b1 = self._b1
+        b2 = self._b2
+        a1 = self._a1
+        a2 = self._a2
+        for i, xn in enumerate(x):
+            out = b0 * float(xn) + z1
+            z1 = b1 * float(xn) - a1 * out + z2
+            z2 = b2 * float(xn) - a2 * out
+            y[i] = out
+        self._z1 = z1
+        self._z2 = z2
+        return y
 
 
 def declick(samples, *, threshold: float = 0.18, max_run: int = 8):

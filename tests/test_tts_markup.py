@@ -184,9 +184,9 @@ def test_synthesize_applies_directives_streaming_path():
     assert written  # the streaming callback fed at least one block
 
 
-def test_synthesize_lowpass_forces_wholeclip_and_attenuates_hf():
-    """tts_output_lowpass_hz>0 must (a) force the whole-clip path (no streaming
-    callback, since the FFT filter needs the whole clip) and (b) crush HF energy."""
+def test_synthesize_lowpass_streams_and_attenuates_hf():
+    """tts_output_lowpass_hz>0 streams through a causal per-chunk filter and
+    attenuates high-frequency energy."""
     class _BrightTTS:
         sample_rate = 24000
         num_speakers = 103
@@ -198,19 +198,26 @@ def test_synthesize_lowpass_forces_wholeclip_and_attenuates_hf():
             self.callback_used = callback is not None
             t = np.arange(int(self.sample_rate * 0.3)) / self.sample_rate
             tone = (0.3 * np.sin(2 * np.pi * 10000 * t)).astype("float32")  # 10 kHz
-            return _FakeAudio(0, self.sample_rate) if callback else type(
-                "A", (), {"samples": tone, "sample_rate": self.sample_rate})()
+            if callback is not None:
+                for chunk in np.array_split(tone, 4):
+                    callback(chunk, 1.0)
+                return _FakeAudio(0, self.sample_rate)
+            return type("A", (), {"samples": tone, "sample_rate": self.sample_rate})()
 
     cfg = SherpaConfig(tts_declick=False, tts_target_rms=0.0, tts_output_leveler=False,
-                       tts_output_lowpass_hz=7000.0)
+                       tts_output_lowpass_hz=3000.0)
     eng = _bare_engine(cfg)
     eng._tts = _BrightTTS()
     written = []
     eng._synthesize("hi", written.append, gen=0)
-    assert eng._tts.callback_used is False  # lowpass forced whole-clip synth
+    assert eng._tts.callback_used is True
     out = np.concatenate(written) if written else np.zeros(0)
-    rms = float(np.sqrt(np.mean(out ** 2)))
-    assert rms < 0.05  # the 10 kHz tone (rms ~0.21) crushed by the 7 kHz roll-off
+    t = np.arange(out.size) / eng._tts.sample_rate
+    raw_mag = float((2.0 / out.size) * abs(np.dot(
+        0.3 * np.sin(2 * np.pi * 10000 * t), np.sin(2 * np.pi * 10000 * t)
+    )))
+    out_mag = float((2.0 / out.size) * abs(np.dot(out, np.sin(2 * np.pi * 10000 * t))))
+    assert out_mag < 0.12 * raw_mag
 
 
 def test_synthesize_without_directives_uses_config_defaults():

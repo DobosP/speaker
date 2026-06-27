@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 
 import numpy as np
+import pytest
 
 from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
@@ -510,37 +511,39 @@ def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
     assert eng._first_audio_pending is True
 
 
-# --- Streaming normalize_rms path (backlog item d + new streaming leveler) ---
-# Repo invariant: tts_target_rms>0 forces whole-clip on the FIRST sentence
-# (no prior gain established yet) but takes the streaming callback path from
-# the second sentence onward, applying the carried feed-forward gain instead
-# of waiting for the full clip.
+# --- Streaming normalize_rms + low-pass path --------------------------------
 
 
 class _TrackingTts:
-    """A streaming TTS stub that records whether the callback was used."""
+    """Streaming TTS stub that records whether _synthesize used callback=."""
 
     sample_rate = 16000
 
     def __init__(self, samples):
-        self._samples = samples
-        self.callback_used: bool | None = None
+        self.samples = np.asarray(samples, dtype="float32").reshape(-1)
+        self.callback_used: list[bool] = []
 
     def generate(self, text, sid=0, speed=1.0, callback=None):
-        self.callback_used = callback is not None
-        chunks = [self._samples[:len(self._samples) // 2],
-                  self._samples[len(self._samples) // 2:]]
+        self.callback_used.append(callback is not None)
+        samples = self.samples.copy()
         if callback is not None:
-            for c in chunks:
-                if callback(c, 1.0) == 0:
+            for chunk in np.array_split(samples, 4):
+                if callback(chunk, 1.0) == 0:
                     break
-        return _GenAudio(self._samples.copy(), sample_rate=self.sample_rate)
+        return _GenAudio(samples, sample_rate=self.sample_rate)
 
 
-def _sine(sr=16000, dur_s=0.25, rms=0.4, freq=220):
-    import numpy as np
-    t = np.arange(int(sr * dur_s)) / sr
-    return (rms * np.sqrt(2) * np.sin(2 * np.pi * freq * t)).astype("float32")
+def _sine(sr=16000, dur_s=0.25, rms=0.4, freq=300.0):
+    t = np.arange(int(sr * dur_s), dtype="float64") / sr
+    return (rms * np.sqrt(2.0) * np.sin(2.0 * np.pi * freq * t)).astype("float32")
+
+
+def _tone_mag(samples, sr: int, freq: float) -> float:
+    x = np.asarray(samples, dtype="float64").reshape(-1)
+    t = np.arange(x.size, dtype="float64") / float(sr)
+    s = np.sin(2.0 * np.pi * float(freq) * t)
+    c = np.cos(2.0 * np.pi * float(freq) * t)
+    return float((2.0 / x.size) * np.hypot(np.dot(x, s), np.dot(x, c)))
 
 
 def test_target_rms_wholeclip_on_first_sentence_sets_carry():
@@ -553,7 +556,7 @@ def test_target_rms_wholeclip_on_first_sentence_sets_carry():
     assert eng._tts_normalize_gain is None  # not yet set
     written: list = []
     eng._synthesize("hello", written.append)
-    assert tts.callback_used is False           # whole-clip path (no callback)
+    assert tts.callback_used == [False]         # whole-clip path (no callback)
     assert eng._tts_normalize_gain is not None  # carry established
     assert eng._tts_normalize_gain > 0.0
 
@@ -570,10 +573,9 @@ def test_target_rms_streaming_on_second_sentence_applies_carry():
     assert eng._tts_normalize_gain is not None
     gain_after_first = eng._tts_normalize_gain
     # Second sentence: streaming path should be taken.
-    tts.callback_used = None
     written2: list = []
     eng._synthesize("second", written2.append)
-    assert tts.callback_used is True        # streaming path taken
+    assert tts.callback_used == [False, True]  # streaming path taken
     # Carry is updated from the measured raw RMS.
     assert eng._tts_normalize_gain is not None
     # Output level should be near target_rms (within ±20% tolerance,
@@ -593,5 +595,77 @@ def test_target_rms_zero_always_takes_streaming_regardless_of_carry():
     eng._tts = tts
     assert eng._tts_normalize_gain is None  # irrelevant on this path
     eng._synthesize("hi", [].append)
-    assert tts.callback_used is True        # streaming path regardless
+    assert tts.callback_used == [True]      # streaming path regardless
     assert eng._tts_normalize_gain is None  # still None (not updated by this path)
+
+
+def test_lowpass_enabled_streams_from_first_sentence_when_target_rms_off():
+    sr = 16000
+    t = np.arange(sr // 2, dtype="float64") / sr
+    raw = (
+        0.15 * np.sin(2.0 * np.pi * 300.0 * t)
+        + 0.30 * np.sin(2.0 * np.pi * 6000.0 * t)
+    ).astype("float32")
+    tts = _TrackingTts(raw)
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.0,
+            tts_output_lowpass_hz=1000.0,
+            tts_declick=False,
+        )
+    )
+    eng._tts = tts
+
+    written: list = []
+    eng._synthesize("lowpass now streams", written.append)
+
+    assert tts.callback_used == [True]
+    assert len(written) == 4
+    out = np.concatenate(written)
+    assert _tone_mag(out, sr, 6000.0) < 0.08 * _tone_mag(raw, sr, 6000.0)
+
+
+def test_target_rms_and_lowpass_stream_on_second_sentence_after_carry_seeded():
+    samp = _sine(rms=0.4, freq=300.0)
+    tts = _TrackingTts(samp)
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.12,
+            tts_output_lowpass_hz=2000.0,
+            tts_declick=False,
+        )
+    )
+    eng._tts = tts
+
+    first: list = []
+    eng._synthesize("first", first.append)
+    assert tts.callback_used == [False]
+    assert eng._tts_normalize_gain is not None
+
+    second: list = []
+    eng._synthesize("second", second.append)
+
+    assert tts.callback_used == [False, True]
+    assert len(second) == 4
+    out = np.concatenate(second)
+    out_rms = float(np.sqrt(np.mean(out.astype("float64") ** 2)))
+    assert out_rms == pytest.approx(0.12, rel=0.15)
+
+
+def test_output_leveler_still_forces_whole_clip_with_lowpass_enabled():
+    tts = _TrackingTts(_sine(rms=0.2, freq=300.0))
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.0,
+            tts_output_leveler=True,
+            tts_output_lowpass_hz=2000.0,
+            tts_declick=False,
+        )
+    )
+    eng._tts = tts
+
+    written: list = []
+    eng._synthesize("leveler remains whole clip", written.append)
+
+    assert tts.callback_used == [False]
+    assert written

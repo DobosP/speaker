@@ -25,6 +25,7 @@ BARGE_IN = "barge_in"              # user spoke over playback
 BARGE_IN_STOP = "barge_in_stop"    # playback actually halted
 HANDLED_LOCAL = "handled_local"    # turn resolved with NO LLM (intent fast-path) -- never reaches first token
 HELD = "held"                      # final is intentionally held for turn-merge; not yet dispatched
+MERGED = "merged"                  # turn was folded into a newer merged continuation
 SUPERSEDED = "superseded"          # turn preempted by a newer final (newest-input-wins) -- cancelled pre-answer
 
 # A new utterance begins at whichever of these we see first (speech_end leads
@@ -234,6 +235,22 @@ class MetricsRecorder:
         with self._lock:
             if self._completed:
                 self._completed[-1].stamps.setdefault(SUPERSEDED, self._clock())
+
+    def mark_merged_turn(self) -> None:
+        """Stamp the most-recently-banked turn as folded into a merged follow-up.
+
+        Continuation merge has the same metrics shape as newest-input-wins: the
+        follow-up's ASR_FINAL banks the earlier turn, then the supervisor cancels
+        that earlier task and starts one synthetic merged task. Marking the
+        banked turn keeps the watchdog from mistaking the cancelled pre-audio
+        turn for an LLM stall while still letting the merged replacement turn be
+        checked normally.
+        """
+        with self._lock:
+            if self._completed:
+                now = self._clock()
+                self._completed[-1].stamps.setdefault(MERGED, now)
+                self._completed[-1].stamps.setdefault(SUPERSEDED, now)
 
     def close_turn(self) -> None:
         """Bank the open turn (call once a replayed utterance has settled)."""

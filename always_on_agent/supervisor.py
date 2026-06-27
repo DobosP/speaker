@@ -91,6 +91,7 @@ class AgentSupervisor:
         task_timeouts: Mapping[str, float] | None = None,
         load_fraction: Optional[Callable[[], Optional[float]]] = None,
         admission_load_ceiling: float = 0.85,
+        on_turn_merged: Optional[Callable[[], None]] = None,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -120,6 +121,7 @@ class AgentSupervisor:
         # so a supervisor built without it behaves exactly as before.
         self._load_fraction = load_fraction
         self._admission_load_ceiling = float(admission_load_ceiling)
+        self._on_turn_merged = on_turn_merged
         self._task_timeouts = dict(DEFAULT_TASK_TIMEOUTS)
         if isinstance(task_timeouts, Mapping):
             for key, value in task_timeouts.items():
@@ -619,6 +621,11 @@ class AgentSupervisor:
                 "continuation MERGE: victim %s superseded by merged turn %s",
                 victim.task_id, task.task_id,
             )
+            if self._on_turn_merged is not None:
+                try:
+                    self._on_turn_merged()
+                except Exception:  # noqa: BLE001 - diagnostics must not break merge
+                    log.exception("continuation merge callback failed")
             self._start_task(task)
             return True
         # AFTER first audio: the victim is already talking -- don't cancel or

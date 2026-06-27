@@ -39,6 +39,7 @@ from .metrics import (
     HANDLED_LOCAL,
     HELD,
     LLM_FIRST_TOKEN,
+    MERGED,
     MetricsRecorder,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
@@ -196,6 +197,7 @@ class StuckWatchdog:
             if (
                 BARGE_IN in stamps or BARGE_IN_STOP in stamps
                 or HANDLED_LOCAL in stamps or SUPERSEDED in stamps
+                or MERGED in stamps
                 or (HELD in stamps and ASR_FINAL not in stamps)
             ):
                 continue

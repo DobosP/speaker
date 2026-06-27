@@ -2690,15 +2690,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # unplugged device can never hang the worker (mirrors the
                         # 1.0s join guards in stop()). A barge-in flush makes
                         # count()==0 immediately, so this returns at once then.
-                        deadline = time.monotonic() + self.config.playback_fifo_sec + 0.5
-                        while (
-                            self._fifo is not None
-                            and self._fifo.count() > 0
-                            and self._running.is_set()
-                            and not self._stop_speaking.is_set()
-                            and time.monotonic() < deadline
-                        ):
-                            time.sleep(0.01)
+                        self._wait_for_playback_drain()
                         self._speaking.clear()
                         # Acoustic-artifact diagnostic (off the real-time thread):
                         # if the FIFO underran during this reply the listener heard
@@ -2768,6 +2760,45 @@ class SherpaOnnxEngine(AudioEngine):
                     out.close()
                 except Exception:  # noqa: BLE001 - may already be aborted/closed
                     pass
+
+    def _wait_for_playback_drain(self, timeout_sec: Optional[float] = None) -> bool:
+        """Wait for queued playback to drain before reopening ASR.
+
+        Returns True when no queued FIFO audio remains. If the output callback stalls
+        past the bounded deadline while the session is otherwise healthy, flush the
+        unplayed tail before ``_speaking`` clears; otherwise that tail can play after
+        ASR reopens and be transcribed as a user final.
+        """
+        fifo = self._fifo
+        if fifo is None:
+            return True
+        if timeout_sec is None:
+            timeout_sec = self.config.playback_fifo_sec + 0.5
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+        while (
+            fifo is not None
+            and fifo.count() > 0
+            and self._running.is_set()
+            and not self._stop_speaking.is_set()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+            fifo = self._fifo
+        if fifo is None or fifo.count() <= 0:
+            return True
+        if self._running.is_set() and not self._stop_speaking.is_set():
+            remaining = fifo.count()
+            fifo.flush()
+            log.warning(
+                "playback FIFO did not drain before idle deadline; flushed %d queued "
+                "samples before reopening ASR",
+                remaining,
+            )
+            try:
+                self._cb.on_metric("playback_drain_timeout")
+            except Exception:  # noqa: BLE001 - metric is best-effort
+                pass
+        return False
 
     def _synthesize(
         self,

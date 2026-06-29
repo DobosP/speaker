@@ -574,6 +574,12 @@ class SherpaConfig:
     dtd_weight_raw: float = 0.2
     dtd_weight_resid: float = 1.0
     dtd_weight_coh: float = 0.0
+    # Coherence echo veto on the DTD path. The DTD still owns the positive
+    # trigger, but an explicit coherence ``False`` means "the playback reference
+    # explains this frame"; letting a residual z-spike override that is exactly
+    # how a nonlinear TTS echo can self-interrupt while ``w_coh`` is 0.0. ``True``
+    # or ``None`` keep the previous DTD behavior (user / no reference).
+    dtd_coherence_echo_veto: bool = True
     # confirm_frames=1: the DTD reports per-frame; the capture loop's LEAKY
     # integrator (barge_in_min_speech_sec) does the temporal confirmation. A real
     # talk-over's D flickers frame-to-frame (breath/pauses), so requiring N
@@ -1526,7 +1532,11 @@ class SherpaOnnxEngine(AudioEngine):
         # byte-identical. A tag-only emission (nothing left to say) is dropped.
         directives = None
         if self.config.tts_markup:
-            text, directives = parse_tts_markup(text)
+            text, directives = parse_tts_markup(
+                text,
+                voices=self.config.tts_speaker_voices.keys(),
+                emotions=self.config.tts_emotion_speed_map.keys(),
+            )
             if not text:
                 if on_done:
                     on_done()
@@ -2831,6 +2841,20 @@ class SherpaOnnxEngine(AudioEngine):
         import numpy as np
 
         tts = self._tts
+        if self.config.tts_markup:
+            parsed_text, parsed_directives = parse_tts_markup(
+                text,
+                voices=self.config.tts_speaker_voices.keys(),
+                emotions=self.config.tts_emotion_speed_map.keys(),
+            )
+            if parsed_directives:
+                text = parsed_text
+                merged_directives = dict(parsed_directives)
+                if directives:
+                    merged_directives.update(directives)
+                directives = merged_directives
+                if not text:
+                    return
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
         # Opt-in expressive markup: map this utterance's parsed directives to a
@@ -2898,6 +2922,10 @@ class SherpaOnnxEngine(AudioEngine):
                         ).reshape(-1)
                     if _lowpass.enabled:
                         blk = np.asarray(_lowpass.process(blk), dtype="float32").reshape(-1)
+                        # A causal filter can overshoot after upstream limiting; keep
+                        # the actual PortAudio feed finite and inside float full-scale.
+                        blk = np.nan_to_num(blk, nan=0.0, posinf=0.0, neginf=0.0)
+                        np.clip(blk, -1.0, 1.0, out=blk)
                     write(blk)
                     return 0 if (
                         self._stop_speaking.is_set()
@@ -2967,6 +2995,10 @@ class SherpaOnnxEngine(AudioEngine):
                              width_hz=self.config.tts_output_lowpass_width_hz),
                 dtype="float32",
             ).reshape(-1)
+            # The FFT low-pass is linear and can overshoot the leveler's ceiling.
+            # Keep the final playback buffer finite and inside float full-scale.
+            samples = np.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
+            np.clip(samples, -1.0, 1.0, out=samples)
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
             if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):
@@ -3042,9 +3074,10 @@ class SherpaOnnxEngine(AudioEngine):
         # core/engines/_dtd.py.
         if self._dtd is not None:
             det = self._echo_coherence
+            coh_verdict = None
             incoh = 0.0
             if det is not None:
-                det.decide(mic_raw)
+                coh_verdict = det.decide(mic_raw)
                 incoh = float(det.last_incoherent_fraction)
             # Which signal carries the user for the DTD's "residual" feature + its
             # floor gate. A linear AEC (nlms/dtln, or headphones with no echo)
@@ -3062,6 +3095,19 @@ class SherpaOnnxEngine(AudioEngine):
             fired = self._dtd.decide(
                 raw_rms=rms(mic_raw), resid_rms=resid_rms, incoherent_fraction=incoh,
             )
+            # Coherence echo veto (2026-06-27 self-interrupt fix). DTD's shipped
+            # weights currently ignore coherence (w_coh=0.0), so a DTLN residual
+            # spike from nonlinear laptop-speaker echo can cross K even when the
+            # reference-coherence detector explicitly classified the frame as
+            # echo-only. Honor that explicit False only as a veto: True and None
+            # keep the prior DTD behavior, so a real coherence-confirmed talk-over
+            # still cuts and no-reference moments still fall back to the DTD.
+            coh_veto = bool(
+                fired
+                and getattr(self.config, "dtd_coherence_echo_veto", True)
+                and coh_verdict is False
+            )
+
             # Residual-floor gate (2026-06-10 self-interrupt fix). On a starved mic
             # the z-scores BLOAT against a near-silent warmup baseline, so a 2-fire
             # reply-onset echo burst can fire the DTD even though the absolute
@@ -3075,9 +3121,9 @@ class SherpaOnnxEngine(AudioEngine):
             # CURRENT reply's echo level, not a stale prior one. Fail-open until the
             # floor is learned (cold start) and when the margin is 0 (disabled), so
             # an echo-free / non-AEC setup is unchanged.
-            floored = fired
+            floored = fired and not coh_veto
             if (
-                fired
+                floored
                 and self.config.dtd_residual_floor_margin_db > 0.0
                 and resid_floor > 0.0
                 and not loudness_admits(
@@ -3089,13 +3135,18 @@ class SherpaOnnxEngine(AudioEngine):
             # Log EVERY evaluation (not just fires) so a run bundle shows the full D
             # distribution -- echo-only D vs talk-over D -- to calibrate K per device.
             # ``gated`` reflects the post-floor verdict the caller acts on.
+            ref_delay_ms = (
+                1000.0 * float(getattr(self, "_aec_ref_delay", 0))
+                / max(1, int(self.config.sample_rate))
+            )
             log.debug(
                 "dtd: D=%.2f K=%.1f fired=%s gated=%s (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
-                "raw=%.4f resid=%.4f incoh=%.2f resid_floor=%.4f consec=%d",
+                "raw=%.4f resid=%.4f incoh=%.2f resid_floor=%.4f consec=%d "
+                "coh=%s coh_veto=%s ref_delay=%.0fms",
                 self._dtd.last_D, self._dtd.k, fired, floored, self._dtd.last_z_raw,
                 self._dtd.last_z_resid, self._dtd.last_z_coh,
-                rms(mic_raw), resid_rms, incoh, resid_floor,
-                self._dtd.last_consec,
+                rms(mic_raw), resid_rms, incoh, resid_floor, self._dtd.last_consec,
+                coh_verdict, coh_veto, ref_delay_ms,
             )
             return floored
         det = self._echo_coherence

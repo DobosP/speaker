@@ -50,6 +50,32 @@ def test_parse_accepts_equals_and_commas():
     assert d == {"voice": "narrator", "rate": "1.05"}
 
 
+def test_parse_accepts_configured_keyless_voice_and_emotion_variants():
+    text, d = parse_tts_markup(
+        "[gentle voice:soft] Yes.",
+        voices=["soft", "warm"],
+        emotions=["gentle", "calm"],
+    )
+    assert text == "Yes."
+    assert d == {"voice": "soft", "emotion": "gentle"}
+
+    text, d = parse_tts_markup(
+        "[warm voice] Once upon a time.",
+        voices=["soft", "warm"],
+        emotions=["gentle", "calm"],
+    )
+    assert text == "Once upon a time."
+    assert d == {"voice": "warm"}
+
+    text, d = parse_tts_markup(
+        "[voice warm rate 1.05] Once.",
+        voices=["soft", "warm"],
+        emotions=["gentle", "calm"],
+    )
+    assert text == "Once."
+    assert d == {"voice": "warm", "rate": "1.05"}
+
+
 def test_parse_footnote_bracket_is_not_a_tag():
     # A leading bracket with NONE of the known keys is ordinary text, untouched.
     assert parse_tts_markup("[1] First reference.") == ("[1] First reference.", {})
@@ -184,6 +210,31 @@ def test_synthesize_applies_directives_streaming_path():
     assert written  # the streaming callback fed at least one block
 
 
+def test_synthesize_strips_unparsed_bracket_directive_before_tts():
+    cfg = SherpaConfig(
+        tts_markup=True, tts_declick=False, tts_target_rms=0.0, tts_output_leveler=False,
+        tts_speaker_voices={"warm": 7}, tts_emotion_speed_map={"gentle": 0.92})
+    eng = _bare_engine(cfg)
+    written = []
+    eng._synthesize("[warm voice] Once upon a time.", written.append, gen=0)
+    assert eng._tts.calls == [("Once upon a time.", 7, pytest.approx(1.0))]
+    assert written
+
+
+def test_synthesize_merges_final_guard_directives_with_existing_ones():
+    cfg = SherpaConfig(
+        tts_markup=True, tts_declick=False, tts_target_rms=0.0, tts_output_leveler=False,
+        tts_speaker_voices={"warm": 7, "soft": 3}, tts_emotion_speed_map={"gentle": 0.92})
+    eng = _bare_engine(cfg)
+    eng._synthesize(
+        "[gentle voice:soft] Yes.",
+        lambda _samples: None,
+        gen=0,
+        directives={"voice": "warm"},
+    )
+    assert eng._tts.calls == [("Yes.", 7, pytest.approx(0.92))]
+
+
 def test_synthesize_lowpass_streams_and_attenuates_hf():
     """tts_output_lowpass_hz>0 streams through a causal per-chunk filter and
     attenuates high-frequency energy."""
@@ -236,6 +287,15 @@ def test_speak_strips_tag_and_enqueues_directives():
     text, on_done, gen, directives = eng._play_q.get_nowait()
     assert text == "Hello there."
     assert directives == {"voice": "warm", "emotion": "calm"}
+
+
+def test_speak_strips_live_keyless_voice_variant():
+    cfg = SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7})
+    eng = _bare_engine(cfg)
+    eng.speak("[warm voice] Once upon a time.")
+    text, on_done, gen, directives = eng._play_q.get_nowait()
+    assert text == "Once upon a time."
+    assert directives == {"voice": "warm"}
 
 
 def test_speak_markup_off_is_passthrough():

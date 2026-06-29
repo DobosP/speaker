@@ -167,6 +167,34 @@ def test_streaming_lowpass_disabled_and_above_nyquist_are_unchanged():
     assert StreamingLowpass(0, 1000.0).process(x) is x
 
 
+def test_streaming_lowpass_stable_on_loud_long_near_nyquist_cutoff():
+    sr = 24000
+    rng = np.random.default_rng(8)
+    x = rng.uniform(-0.98, 0.98, sr * 3).astype("float32")
+
+    filt = StreamingLowpass(sr, sr * 0.49)
+    y = np.concatenate([filt.process(chunk) for chunk in np.array_split(x, 97)])
+
+    assert np.all(np.isfinite(y))
+    assert float(np.max(np.abs(y))) < 2.0
+
+
+def test_streaming_lowpass_after_soft_gain_remains_finite_and_stable():
+    sr = 24000
+    t = np.arange(sr, dtype="float64") / sr
+    x = (
+        0.40 * np.sin(2.0 * np.pi * 300.0 * t)
+        + 0.35 * np.sin(2.0 * np.pi * 7000.0 * t)
+    ).astype("float32")
+    gained = np.asarray(apply_gain_soft_limit(x, 4.0), dtype="float32")
+
+    filt = StreamingLowpass(sr, 7000.0)
+    y = np.concatenate([filt.process(chunk) for chunk in np.array_split(gained, 31)])
+
+    assert np.all(np.isfinite(y))
+    assert float(np.max(np.abs(y))) < 1.25
+
+
 # --- WER --------------------------------------------------------------------
 
 

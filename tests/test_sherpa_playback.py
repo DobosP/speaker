@@ -12,6 +12,7 @@ import logging
 import numpy as np
 import pytest
 
+from core.audio_frontend import apply_gain_soft_limit
 from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.metrics import TTS_FIRST_AUDIO
@@ -623,6 +624,34 @@ def test_lowpass_enabled_streams_from_first_sentence_when_target_rms_off():
     assert len(written) == 4
     out = np.concatenate(written)
     assert _tone_mag(out, sr, 6000.0) < 0.08 * _tone_mag(raw, sr, 6000.0)
+
+
+def test_streaming_lowpass_output_is_peak_bounded_after_filter_overshoot():
+    sr = 24000
+    t = np.arange(sr, dtype="float64") / sr
+    raw = (
+        0.40 * np.sin(2.0 * np.pi * 300.0 * t)
+        + 0.35 * np.sin(2.0 * np.pi * 7000.0 * t)
+    ).astype("float32")
+    hot = np.asarray(apply_gain_soft_limit(raw, 4.0), dtype="float32")
+    tts = _TrackingTts(hot)
+    tts.sample_rate = sr
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.0,
+            tts_output_lowpass_hz=7000.0,
+            tts_declick=False,
+        )
+    )
+    eng._tts = tts
+
+    written: list = []
+    eng._synthesize("lowpass overshoot is bounded", written.append)
+
+    assert tts.callback_used == [True]
+    out = np.concatenate(written)
+    assert np.all(np.isfinite(out))
+    assert float(np.max(np.abs(out))) <= 1.0
 
 
 def test_target_rms_and_lowpass_stream_on_second_sentence_after_carry_seeded():

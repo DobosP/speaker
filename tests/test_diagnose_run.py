@@ -14,6 +14,8 @@ import pytest
 from tools.diagnose_run import (
     ParsedRun,
     _analyze_wav_segment,
+    analyze_mic_ref_wav,
+    analyze_ref_wav,
     _nearest_speaking_state,
     classify_barge_event,
     format_report,
@@ -31,6 +33,20 @@ def _write_log(tmp_path: Path, lines: list[str]) -> str:
     p = tmp_path / "run-test.txt"
     p.write_text("\n".join(lines), encoding="utf-8")
     return str(p)
+
+
+def _write_wav(path: Path, samples, sample_rate: int = 16000) -> str:
+    import wave
+    import numpy as np
+
+    pcm = np.clip(samples, -1.0, 1.0)
+    data = (pcm * 32767.0).astype(np.int16).tobytes()
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(data)
+    return str(path)
 
 
 CLEAN_RUN_LINES = [
@@ -153,6 +169,25 @@ def test_dtd_associated_with_sentence(tmp_path):
     assert all(f.incoh > 0.8 for f in s.dtd_frames)
 
 
+def test_parse_dtd_current_suffix_and_aec_config(tmp_path):
+    lines = [
+        "12:00:00.000 INFO  speaker | run 20260628-120005 started -> x.txt",
+        "12:00:00.100 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=40ms, apm_always_on=False)",
+        "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Delay probe.' (queue depth=0)",
+        "12:00:10.500 DEBUG speaker.sherpa | dtd: D=9.24 K=5.0 fired=True gated=False (z_raw=6.51 z_resid=7.94 z_coh=722303.29) raw=0.0581 resid=0.0649 incoh=0.72 resid_floor=0.0091 consec=1 coh=False coh_veto=True ref_delay=150ms",
+    ]
+    path = _write_log(tmp_path, lines)
+    run = parse_log(path)
+
+    assert run.aec_backend == "dtln"
+    assert run.aec_config_ref_delay_ms == 40.0
+    assert run.apm_always_on is False
+    frame = run.dtd_frames[0]
+    assert frame.coh_verdict == "False"
+    assert frame.coh_veto is True
+    assert frame.ref_delay_ms == 150.0
+
+
 # ---------------------------------------------------------------------------
 # Classification / suspicion tests
 # ---------------------------------------------------------------------------
@@ -265,6 +300,88 @@ def test_analyze_wav_segment_empty():
     result = _analyze_wav_segment(np.array([], dtype=np.float32), 24000)
     assert result["rms"] is None
     assert result["duration_s"] == 0.0
+
+
+def test_ref_wav_marks_first_audio_and_pre_audio_barge(tmp_path):
+    import numpy as np
+
+    lines = [
+        "12:00:00.000 INFO  speaker | run 20260628-120006 started -> x.txt",
+        "12:00:00.000 INFO  speaker.sherpa | recording playback reference (replay) -> run-test.ref.wav",
+        "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Slow first audio.' (queue depth=0)",
+        "12:00:10.200 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate (talk-over ignored?)",
+        "12:00:10.700 DEBUG speaker.sherpa | speaking: 'Next sentence.' (queue depth=0)",
+    ]
+    log_path = _write_log(tmp_path, lines)
+    sr = 16000
+    samples = np.zeros(sr * 12, dtype=np.float32)
+    t = np.arange(sr) / sr
+    samples[10 * sr + sr // 2:11 * sr + sr // 2] = 0.15 * np.sin(2 * np.pi * 440 * t)
+    wav_path = _write_wav(tmp_path / "run-test.ref.wav", samples, sr)
+
+    run = parse_log(log_path)
+    wav_metrics = analyze_ref_wav(wav_path, run)
+    report = format_report(run, wav_metrics)
+    out = to_json(run, wav_metrics)
+
+    assert wav_metrics[0]["first_audio_offset_s"] == pytest.approx(0.5, abs=0.03)
+    assert "before first playback reference audio" in report
+    assert out["sentences"][0]["barge_events"][0]["phase"] == "pre-first-ref-audio"
+
+
+def test_ref_wav_flags_no_reference_audio(tmp_path):
+    import numpy as np
+
+    lines = [
+        "12:00:00.000 INFO  speaker | run 20260628-120007 started -> x.txt",
+        "12:00:00.000 INFO  speaker.sherpa | recording playback reference (replay) -> run-test.ref.wav",
+        "12:00:01.000 DEBUG speaker.sherpa | speaking: 'Silent ref.' (queue depth=0)",
+    ]
+    log_path = _write_log(tmp_path, lines)
+    wav_path = _write_wav(tmp_path / "run-test.ref.wav", np.zeros(16000 * 3, dtype=np.float32))
+
+    run = parse_log(log_path)
+    wav_metrics = analyze_ref_wav(wav_path, run)
+    report = format_report(run, wav_metrics)
+
+    assert wav_metrics[0]["first_audio_offset_s"] is None
+    assert "playback reference has no detected audio" in report
+    assert "NO-REF" in report
+
+
+def test_mic_ref_delay_estimate_flags_config_mismatch(tmp_path):
+    import numpy as np
+
+    lines = [
+        "12:00:00.000 INFO  speaker | run 20260628-120008 started -> x.txt",
+        "12:00:00.000 INFO  speaker.sherpa | recording playback reference (replay) -> run-test.ref.wav",
+        "12:00:00.100 INFO  speaker.sherpa | AEC ACTIVE on the capture path (16 kHz, backend=dtln, ref_delay=40ms, apm_always_on=False)",
+        "12:00:01.000 DEBUG speaker.sherpa | speaking: 'Delay mismatch.' (queue depth=0)",
+        "12:00:03.000 DEBUG speaker.sherpa | speaking: 'Done.' (queue depth=0)",
+    ]
+    log_path = _write_log(tmp_path, lines)
+    sr = 16000
+    rng = np.random.default_rng(123)
+    ref = np.zeros(sr * 4, dtype=np.float32)
+    ref[sr:sr * 3] = (0.08 * rng.standard_normal(sr * 2)).astype(np.float32)
+    delay = int(0.160 * sr)
+    mic = np.zeros_like(ref)
+    mic[delay:] = ref[:-delay] * 0.8
+    mic += (0.002 * rng.standard_normal(ref.size)).astype(np.float32)
+    ref_path = _write_wav(tmp_path / "run-test.ref.wav", ref, sr)
+    mic_path = _write_wav(tmp_path / "run-test.wav", mic, sr)
+
+    run = parse_log(log_path)
+    wav_metrics = analyze_ref_wav(ref_path, run)
+    delay_metrics = analyze_mic_ref_wav(mic_path, ref_path, run)
+    report = format_report(run, wav_metrics, delay_metrics)
+    out = to_json(run, wav_metrics, delay_metrics=delay_metrics)
+
+    assert delay_metrics[0]["estimated_delay_ms"] == pytest.approx(160.0, abs=3.0)
+    assert delay_metrics[0]["delay_correlation"] > 0.5
+    assert "AEC delay mismatch" in report
+    assert "AEC-DELAY-MISMATCH" in report
+    assert any("AEC delay mismatch" in finding for finding in out["findings"])
 
 
 # ---------------------------------------------------------------------------

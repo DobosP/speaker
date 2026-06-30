@@ -8,6 +8,7 @@ testable pieces (`_synthesize`, queue/flush) are factored out of the thread.
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 import pytest
@@ -132,6 +133,41 @@ def test_speak_without_tts_calls_on_done_immediately():
     eng.speak("hi", on_done=lambda: done.append(1))
     assert done == [1]
     assert eng._play_q.empty()
+
+
+def test_speak_logs_tts_sanitize_marker(caplog):
+    eng = SherpaOnnxEngine(SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7}))
+    eng._tts = _StreamingTts()
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+
+    eng.speak("[voice:warm] Hello there.")
+
+    assert "tts sanitize:" in caplog.text
+    assert '"raw": "[voice:warm] Hello there."' in caplog.text
+    assert '"spoken": "Hello there."' in caplog.text
+    assert '"voice": "warm"' in caplog.text
+
+
+def test_synthesize_logs_resolved_quality_params(caplog):
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_target_rms=0.12,
+            tts_output_lowpass_hz=7000.0,
+            tts_speaker_id=5,
+            tts_speed=1.1,
+            tts_declick=False,
+        )
+    )
+    eng._tts = _StreamingTts()
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+
+    eng._synthesize("hello there", [].append)
+
+    assert "tts resolved:" in caplog.text
+    assert '"sid": 5' in caplog.text
+    assert '"speed": 1.1' in caplog.text
+    assert '"lowpass_hz": 7000.0' in caplog.text
+    assert '"target_rms": 0.12' in caplog.text
 
 
 def test_enqueue_drops_oldest_under_backpressure():
@@ -378,8 +414,22 @@ def test_barge_watch_stays_armed_between_queued_sentences_while_tail_is_audible(
     eng._speaking.set()
     eng._first_audio_pending = True
     eng._playback_level = 0.02
+    eng._last_playback_at = time.monotonic()
 
     assert eng._barge_watch_active() is True
+
+
+def test_barge_watch_treats_stale_tail_level_as_ref_empty():
+    # _playback_level is an EWMA and can remain nonzero after the FIFO has drained.
+    # Do not let that stale value arm ref-dependent barge logic during a long
+    # queued-sentence synth lead-in.
+    eng = _engine(_StreamingTts())
+    eng._speaking.set()
+    eng._first_audio_pending = True
+    eng._playback_level = 0.02
+    eng._last_playback_at = time.monotonic() - 1.0
+
+    assert eng._barge_watch_active() is False
 
 
 # --- clean shutdown: stop() must tear the live stream down so a wedged play ---
@@ -498,6 +548,7 @@ def test_audio_cb_drains_fifo_zero_fills_underrun_and_tees_only_real_samples():
     # TTS_FIRST_AUDIO stamped exactly once, at the first real-audio block.
     assert metrics == [TTS_FIRST_AUDIO]
     assert eng._first_audio_pending is False
+    assert eng._last_playback_at > 0.0
 
 
 def test_audio_cb_does_not_stamp_first_audio_on_an_underrun_only_block():
@@ -516,6 +567,7 @@ def test_audio_cb_does_not_stamp_first_audio_on_an_underrun_only_block():
     assert eng._far_ref._written == 0  # nothing teed
     assert metrics == []  # ...no real audio played -> no stamp
     assert eng._first_audio_pending is True  # stays armed for the first real block
+    assert eng._last_playback_at == 0.0
 
 
 def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
@@ -534,6 +586,7 @@ def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
     assert eng._far_ref._written == 0
     assert metrics == []
     assert eng._first_audio_pending is True
+    assert eng._last_playback_at == 0.0
 
 
 # --- Streaming normalize_rms + low-pass path --------------------------------

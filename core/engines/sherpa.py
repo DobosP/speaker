@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -20,6 +21,10 @@ log = logging.getLogger("speaker.sherpa")
 # capture thread stalls, where dropping the oldest played blocks is the safe
 # degradation (the coherence ring is a rolling window anyway).
 _COH_REF_Q_MAX = 256
+# How long a just-played block may keep the barge watch armed while the next
+# queued sentence is still waiting for its own first audio. Past this, a stale
+# playback-level EWMA is not evidence of an audible tail.
+_BARGE_TAIL_FRESH_SEC = 0.30
 
 
 def _auto_threads() -> int:
@@ -1041,6 +1046,10 @@ class SherpaOnnxEngine(AudioEngine):
         # the read/write atomic and a stale sample only nudges a threshold, so
         # no lock is taken on the hot path. Decays to 0 once playback stops.
         self._playback_level: float = 0.0
+        # monotonic timestamp of the last callback block that contained real
+        # played audio. Used to distinguish a currently audible queued-sentence
+        # tail from a stale nonzero _playback_level during a long synth lead-in.
+        self._last_playback_at: float = 0.0
         # Auto-calibrated post-AEC residual echo+noise floor (capture thread only),
         # learned online DURING playback by _update_playback_floor. The barge gate
         # (when AEC is on) requires a real interrupt to stand
@@ -1532,11 +1541,27 @@ class SherpaOnnxEngine(AudioEngine):
         # byte-identical. A tag-only emission (nothing left to say) is dropped.
         directives = None
         if self.config.tts_markup:
+            raw_text = text
             text, directives = parse_tts_markup(
                 text,
                 voices=self.config.tts_speaker_voices.keys(),
                 emotions=self.config.tts_emotion_speed_map.keys(),
             )
+            if raw_text != text or raw_text.lstrip().startswith("["):
+                log.info(
+                    "tts sanitize: %s",
+                    json.dumps(
+                        {
+                            "raw": raw_text,
+                            "spoken": text,
+                            "directives": directives or {},
+                            "status": "parsed" if directives else "unrecognized_tag",
+                        },
+                        sort_keys=True,
+                        ensure_ascii=True,
+                        default=str,
+                    ),
+                )
             if not text:
                 if on_done:
                     on_done()
@@ -1581,6 +1606,7 @@ class SherpaOnnxEngine(AudioEngine):
         # Playback is being cut: drop the echo reference so the capture loop
         # doesn't keep gating barge-in against a level that is no longer audible.
         self._playback_level = 0.0
+        self._last_playback_at = 0.0
         # AUTHORITATIVELY end the speaking state HERE (RC-2). A barge-in/stop is
         # "stop now"; ownership of the _speaking transition must NOT be left to the
         # playback worker's epilogue (sherpa.py finally, ~_speaking.clear()), which
@@ -2163,7 +2189,7 @@ class SherpaOnnxEngine(AudioEngine):
                     # "barge-in REJECTED during playback" diagnostics. Keep ASR gated
                     # for this committed reply, but do not arm playback-time barge-in
                     # until audio is actually audible. If a previous queued sentence's
-                    # tail is still audible, _playback_level keeps the watch armed.
+                    # tail is still audible, a fresh playback stamp keeps the watch armed.
                     if not self._barge_watch_active():
                         barge_sustain.reset()
                         rejected_run = 0.0
@@ -2529,6 +2555,7 @@ class SherpaOnnxEngine(AudioEngine):
                 # by ACTUAL playback: the level EWMA (barge-in reference), the
                 # coherence echo reference, and the AEC far-end ring.
                 self._note_playback_level(played)
+                self._last_playback_at = time.monotonic()
                 # audio-bargein-8: hand the played block to the capture thread via
                 # a lock-free deque instead of calling note_playback HERE -- that
                 # takes the coherence lock (and the capture thread holds it while
@@ -2566,14 +2593,18 @@ class SherpaOnnxEngine(AudioEngine):
         a VAD blip can only produce misleading "during playback" barge diagnostics
         or a false cut. Once the audio callback has played anything,
         ``_first_audio_pending`` clears. Between queued sentences it may be armed
-        for the next utterance while the prior tail is still audible; the playback
-        level keeps the watch enabled for that gap.
+        for the next utterance while the prior tail is still audible; a recent
+        playback block plus playback level keeps the watch enabled for that gap.
         """
         if not self._speaking.is_set():
             return False
         if not self._first_audio_pending:
             return True
-        return math.isfinite(self._playback_level) and self._playback_level > 1e-5
+        level = self._playback_level
+        last_playback_at = getattr(self, "_last_playback_at", 0.0)
+        if not (math.isfinite(level) and level > 1e-5 and last_playback_at > 0.0):
+            return False
+        return time.monotonic() - last_playback_at <= _BARGE_TAIL_FRESH_SEC
 
     def _playback_loop(self) -> None:
         import sounddevice as sd
@@ -2758,6 +2789,7 @@ class SherpaOnnxEngine(AudioEngine):
                             )
                             self._cb.on_metric("playback_underrun")
                         self._playback_level = 0.0  # nothing playing -> no echo ref
+                        self._last_playback_at = 0.0
                         self._last_speaking_end = time.monotonic()  # arm the L2 refractory
                         if self._echo_coherence is not None:
                             self._echo_coherence.reset()  # drop the stale reference
@@ -2909,6 +2941,35 @@ class SherpaOnnxEngine(AudioEngine):
             stream_sr = int(getattr(tts, "sample_rate", 0) or self._tts_sr or 22050)
         except (TypeError, ValueError):
             stream_sr = 22050
+        carried_gain = getattr(self, "_tts_normalize_gain", None)
+        streaming_candidate = bool(
+            self._tts_can_stream
+            and not leveler_on
+            and (
+                target_rms <= 0.0
+                or (target_rms > 0.0 and carried_gain is not None)
+            )
+        )
+        log.info(
+            "tts resolved: %s",
+            json.dumps(
+                {
+                    "text": text,
+                    "sid": sid,
+                    "speed": round(float(speed), 4),
+                    "directives": directives or {},
+                    "sample_rate": stream_sr,
+                    "streaming_candidate": streaming_candidate,
+                    "lowpass_hz": round(float(lowpass_hz), 1),
+                    "target_rms": round(float(target_rms), 4),
+                    "leveler": bool(leveler_on),
+                    "declick": bool(self.config.tts_declick),
+                },
+                sort_keys=True,
+                ensure_ascii=True,
+                default=str,
+            ),
+        )
         # Hold the TTS lock for the whole synthesis so a concurrent startup warm
         # pass can't drive the same model at the same time.
         with self._tts_lock:
@@ -2919,7 +2980,6 @@ class SherpaOnnxEngine(AudioEngine):
             # stream through a fresh per-utterance IIR filter. The filter is not
             # carried across sentence boundaries so one sentence's tail cannot
             # color the onset of the next sentence.
-            carried_gain = getattr(self, "_tts_normalize_gain", None)
             _norm_gain = (
                 float(carried_gain)
                 if target_rms > 0.0 and carried_gain is not None

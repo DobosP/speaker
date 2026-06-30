@@ -1,8 +1,8 @@
 """Unit tests for the SenseVoice 2nd-pass agreement guard (core.asr_text).
 
-Pure text, no audio/model deps -- Tier-0 safe. These pin the length-keyed (NOT
-overlap-keyed) discriminator that demotes a short-clip hallucinated 2nd pass back
-to the streaming final while preserving the legit long garbled-correction case.
+Pure text, no audio/model deps -- Tier-0 safe. These pin the fail-closed
+agreement guard that demotes hallucinated 2nd-pass text back to the streaming
+final while preserving punctuation/casing cleanup and legit long corrections.
 The hallucination pairs come straight from ``logs/runs/run-20260608-181250``
 (open-speaker echo producing plausible-but-invented finals).
 """
@@ -41,7 +41,8 @@ def test_short_hallucination_w_story_old_to_o():
 
 def test_long_low_overlap_correction_accepted():
     # The legit case the 2nd pass exists for: a real, longer utterance the
-    # streaming pass mangled, with near-zero token overlap. Not short -> trusted.
+    # streaming pass mangled, with near-zero token overlap but high phrase
+    # similarity. A long, clear improvement is accepted.
     assert (
         agreement_guard("Ario der", "are you there", segment_sec=2.0)
         == "are you there"
@@ -56,6 +57,13 @@ def test_long_correction_full_sentence_accepted():
             segment_sec=2.5,
         )
         == "Hello, is this code working?"
+    )
+
+
+def test_long_unrelated_second_pass_rejected():
+    assert (
+        agreement_guard("please turn on the kitchen lights", "The weather is lovely.", segment_sec=2.2)
+        == "please turn on the kitchen lights"
     )
 
 
@@ -99,7 +107,7 @@ def test_token_fallback_short_rejected():
 
 
 def test_token_fallback_long_accepted():
-    # >2 tokens -> not short -> trust the 2nd pass even without a duration.
+    # >2 tokens -> not short, but still accepted because the normalized words agree.
     assert (
         agreement_guard(
             "please set a timer for ten minutes",

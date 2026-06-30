@@ -79,6 +79,7 @@ _AEC_ACTIVE_PAT = re.compile(
 )
 _TTS_SANITIZE_PAT = re.compile(r"tts sanitize:\s+(\{.*\})")
 _TTS_RESOLVED_PAT = re.compile(r"tts resolved:\s+(\{.*\})")
+_TTS_QUALITY_PAT = re.compile(r"tts audio quality:\s+(\{.*\})")
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +124,9 @@ class Sentence:
     queue_depth: int
     tts_sanitize: Optional[dict] = None
     tts_resolved: Optional[dict] = None
+    tts_quality: Optional[dict] = None
     t_playback_open: Optional[float] = None
+    playback_sample_rate: Optional[int] = None
     playback_open_latency_ms: Optional[float] = None
     t_end: Optional[float] = None       # next sentence start or barge-in or EOF
     dtd_frames: list = field(default_factory=list)
@@ -174,6 +177,7 @@ def parse_log(txt_path: str) -> ParsedRun:
     aec_config_ref_delay_ms: Optional[float] = None
     apm_always_on: Optional[bool] = None
     pending_tts_sanitize: Optional[dict] = None
+    last_playback_sample_rate: Optional[int] = None
 
     with open(txt_path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
@@ -218,6 +222,14 @@ def parse_log(txt_path: str) -> ParsedRun:
                     sentences[-1].tts_resolved = json.loads(mtr.group(1))
                 except json.JSONDecodeError:
                     sentences[-1].tts_resolved = None
+                continue
+
+            mtq = _TTS_QUALITY_PAT.search(msg)
+            if mtq and "speaker.sherpa" in logger and sentences:
+                try:
+                    sentences[-1].tts_quality = json.loads(mtq.group(1))
+                except json.JSONDecodeError:
+                    sentences[-1].tts_quality = None
                 continue
 
             # Heartbeat
@@ -267,6 +279,7 @@ def parse_log(txt_path: str) -> ParsedRun:
                     text=ms2.group(1),
                     queue_depth=int(ms2.group(2)),
                     tts_sanitize=pending_tts_sanitize,
+                    playback_sample_rate=last_playback_sample_rate,
                 )
                 pending_tts_sanitize = None
                 sentences.append(sent)
@@ -275,9 +288,11 @@ def parse_log(txt_path: str) -> ParsedRun:
             # Playback open
             mp = _PLAYBACK_OPEN_PAT.search(msg)
             if mp and "speaker.sherpa" in logger and sentences:
+                last_playback_sample_rate = int(mp.group(1))
                 s = sentences[-1]
                 if s.t_playback_open is None:
                     s.t_playback_open = t
+                    s.playback_sample_rate = last_playback_sample_rate
                     s.playback_open_latency_ms = round((t - s.t_speak) * 1000, 1)
                 continue
 
@@ -549,6 +564,8 @@ def analyze_ref_wav(
         return {"_error": "cannot determine ref.wav start time"}
 
     results: dict = {}
+    results["_sample_rate"] = sr
+    results["_duration_s"] = round(len(pcm) / sr, 3)
     for s in run.sentences:
         pb_start = s.t_playback_open if s.t_playback_open is not None else s.t_speak
         t_start = pb_start - wav_base
@@ -727,6 +744,18 @@ def _barge_phase(be: BargeEvent, run: ParsedRun, wav_metrics: Optional[dict]) ->
     return "unknown"
 
 
+#: Thresholds for the "tts audio quality" findings below. Calibrated against
+#: tests/test_output_leveler.py's audio_quality_metrics tests: a pure tone
+#: reads spectral_flatness < 0.01, white noise > 0.3 -- 0.35 leaves margin on
+#: both sides. clip/DC thresholds are deliberately tighter than the .ref.wav
+#: checks elsewhere in this file because this metric is computed on the EXACT
+#: final synthesized samples (not a lossy 16 kHz proxy), so a real digital-
+#: domain defect is fully visible here.
+_TTS_QUALITY_FLATNESS_WARN = 0.35   # >= this reads noise-like, not tonal speech
+_TTS_QUALITY_CLIP_WARN_PCT = 1.0    # % of samples at/near full scale
+_TTS_QUALITY_DC_WARN = 0.02         # DC offset, full scale = 1.0
+
+
 def diagnostic_findings(
     run: ParsedRun,
     wav_metrics: Optional[dict] = None,
@@ -734,6 +763,30 @@ def diagnostic_findings(
 ) -> list[str]:
     """Human-focused anomalies that should be obvious in a run review."""
     findings: list[str] = []
+
+    for s in run.sentences:
+        tq = s.tts_quality
+        if not tq:
+            continue
+        flatness = tq.get("spectral_flatness")
+        if flatness is not None and flatness >= _TTS_QUALITY_FLATNESS_WARN:
+            findings.append(
+                f"sentence[{s.idx}] synthesized audio reads noise-like "
+                f"(spectral_flatness={flatness}, mode={tq.get('mode')}) -- "
+                "a DIGITAL-domain defect, not just acoustic/speaker"
+            )
+        clip_pct = tq.get("clip_pct")
+        if clip_pct is not None and clip_pct >= _TTS_QUALITY_CLIP_WARN_PCT:
+            findings.append(
+                f"sentence[{s.idx}] synthesized audio is clipping "
+                f"(clip_pct={clip_pct}%, mode={tq.get('mode')})"
+            )
+        dc = tq.get("dc_offset")
+        if dc is not None and abs(dc) >= _TTS_QUALITY_DC_WARN:
+            findings.append(
+                f"sentence[{s.idx}] synthesized audio has a DC offset "
+                f"(dc_offset={dc}, mode={tq.get('mode')})"
+            )
 
     for be in run.barge_events:
         phase = _barge_phase(be, run, wav_metrics)
@@ -754,6 +807,18 @@ def diagnostic_findings(
                     )
 
     if wav_metrics:
+        ref_sr = wav_metrics.get("_sample_rate")
+        for s in run.sentences:
+            if (
+                ref_sr is not None
+                and s.playback_sample_rate is not None
+                and int(ref_sr) != int(s.playback_sample_rate)
+            ):
+                findings.append(
+                    f"sentence[{s.idx}] playback reference is {int(ref_sr)} Hz "
+                    f"frame-aligned diagnostic audio, not bit-exact "
+                    f"{int(s.playback_sample_rate)} Hz PortAudio output"
+                )
         for s in run.sentences:
             wm = wav_metrics.get(s.idx)
             quality = _ref_quality_label(wm)
@@ -955,10 +1020,35 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
                 f"lowpass={s.tts_resolved.get('lowpass_hz')} "
                 f"streaming_candidate={s.tts_resolved.get('streaming_candidate')}"
             )
+        if s.tts_quality:
+            tq = s.tts_quality
+            noise_flag = (
+                "  [NOISE-LIKE]"
+                if (tq.get("spectral_flatness") or 0) >= _TTS_QUALITY_FLATNESS_WARN
+                else ""
+            )
+            lines.append(
+                "     tts audio quality: "
+                f"mode={tq.get('mode')} rms={tq.get('rms')} peak={tq.get('peak')} "
+                f"clip={tq.get('clip_pct')}% dc={tq.get('dc_offset')} "
+                f"hf_ratio={tq.get('hf_ratio')} flatness={tq.get('spectral_flatness')}"
+                f"{noise_flag}"
+            )
         if s.t_playback_open is not None:
-            lines.append(f"     playback-open: +{s.playback_open_latency_ms:.0f}ms after speak command")
+            sr_note = (
+                f" at {s.playback_sample_rate} Hz"
+                if s.playback_sample_rate is not None else ""
+            )
+            lines.append(
+                f"     playback-open: +{s.playback_open_latency_ms:.0f}ms "
+                f"after speak command{sr_note}"
+            )
         else:
-            lines.append("     playback-open: (no separate open event logged)")
+            sr_note = (
+                f" (stream already open at {s.playback_sample_rate} Hz)"
+                if s.playback_sample_rate is not None else ""
+            )
+            lines.append(f"     playback-open: (no separate open event logged){sr_note}")
         lines.append(f"     DTD while playing: {_dtd_summary(s.dtd_frames)}")
         for be in s.barge_events:
             t_boff = _fmt_offset(be.t, s.t_speak)
@@ -1108,7 +1198,9 @@ def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dic
                 "text": s.text,
                 "tts_sanitize": s.tts_sanitize,
                 "tts_resolved": s.tts_resolved,
+                "tts_quality": s.tts_quality,
                 "queue_depth": s.queue_depth,
+                "playback_sample_rate": s.playback_sample_rate,
                 "playback_open_latency_ms": s.playback_open_latency_ms,
                 "t_end": s.t_end,
                 "dtd": {

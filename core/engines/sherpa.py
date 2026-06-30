@@ -44,6 +44,7 @@ from ..audio_frontend import (
     InputAGC,
     StreamingLowpass,
     apply_gain_soft_limit,
+    audio_quality_metrics,
     compute_input_calibration,
     declick,
     lowpass_soft,
@@ -2992,9 +2993,21 @@ class SherpaOnnxEngine(AudioEngine):
                 _lowpass = StreamingLowpass(stream_sr, lowpass_hz)
                 _raw_sumsq = 0.0
                 _raw_count = 0
+                # Cheap running accumulators for the post-DSP "tts audio quality"
+                # summary below -- scalar-only (no spectral metrics): a per-chunk
+                # FFT would need Welch-style aggregation across non-uniform chunk
+                # sizes, and buffering the whole clip just to measure it would
+                # defeat the point of this streaming path (first audio before the
+                # whole sentence is ready). The whole-clip path below logs the
+                # full metric set (incl. hf_ratio/spectral_flatness) instead.
+                _q_sum = 0.0
+                _q_sumsq = 0.0
+                _q_peak = 0.0
+                _q_clip = 0
+                _q_n = 0
 
                 def on_chunk(samples, *_progress) -> int:
-                    nonlocal _raw_sumsq, _raw_count
+                    nonlocal _raw_sumsq, _raw_count, _q_sum, _q_sumsq, _q_peak, _q_clip, _q_n
                     raw = np.asarray(samples, dtype="float32").reshape(-1)
                     blk = raw
                     if _norm_gain is not None:
@@ -3017,6 +3030,13 @@ class SherpaOnnxEngine(AudioEngine):
                         # the actual PortAudio feed finite and inside float full-scale.
                         blk = np.nan_to_num(blk, nan=0.0, posinf=0.0, neginf=0.0)
                         np.clip(blk, -1.0, 1.0, out=blk)
+                    if blk.size:
+                        blk64 = blk.astype("float64")
+                        _q_sum += float(np.sum(blk64))
+                        _q_sumsq += float(np.dot(blk64, blk64))
+                        _q_peak = max(_q_peak, float(np.max(np.abs(blk64))))
+                        _q_clip += int(np.count_nonzero(np.abs(blk64) >= 0.99))
+                        _q_n += int(blk64.size)
                     write(blk)
                     return 0 if (
                         self._stop_speaking.is_set()
@@ -3029,6 +3049,25 @@ class SherpaOnnxEngine(AudioEngine):
                         r = math.sqrt(_raw_sumsq / float(_raw_count))
                         if r > 1e-6:
                             self._tts_normalize_gain = min(float(target_rms) / r, 20.0)
+                    if _q_n > 0:
+                        log.info(
+                            "tts audio quality: %s",
+                            json.dumps(
+                                {
+                                    "mode": "streaming",
+                                    "rms": round(math.sqrt(_q_sumsq / _q_n), 5),
+                                    "peak": round(_q_peak, 5),
+                                    "clip_pct": round(100.0 * _q_clip / _q_n, 3),
+                                    "dc_offset": round(_q_sum / _q_n, 6),
+                                    "hf_ratio": None,
+                                    "spectral_flatness": None,
+                                    "n_samples": _q_n,
+                                },
+                                sort_keys=True,
+                                ensure_ascii=True,
+                                default=str,
+                            ),
+                        )
                     return
                 except TypeError:
                     self._tts_can_stream = False  # this build has no streaming callback
@@ -3090,6 +3129,18 @@ class SherpaOnnxEngine(AudioEngine):
             # Keep the final playback buffer finite and inside float full-scale.
             samples = np.nan_to_num(samples, nan=0.0, posinf=0.0, neginf=0.0)
             np.clip(samples, -1.0, 1.0, out=samples)
+        # Final-signal quality snapshot -- the EXACT samples about to reach the
+        # FIFO/speaker, at the TTS's native rate (see audio_quality_metrics'
+        # docstring for why this is more trustworthy than the .ref.wav AEC tap).
+        log.info(
+            "tts audio quality: %s",
+            json.dumps(
+                {"mode": "whole_clip", **audio_quality_metrics(samples, sr)},
+                sort_keys=True,
+                ensure_ascii=True,
+                default=str,
+            ),
+        )
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
             if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):

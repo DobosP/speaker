@@ -18,6 +18,7 @@ from tools.diagnose_run import (
     analyze_ref_wav,
     _nearest_speaking_state,
     classify_barge_event,
+    diagnostic_findings,
     format_report,
     parse_log,
     self_interrupt_summary,
@@ -115,6 +116,7 @@ def test_parse_clean_run(tmp_path):
     s = run.sentences[0]
     assert s.text == "Hello, world."
     assert s.queue_depth == 0
+    assert s.playback_sample_rate == 24000
     assert s.playback_open_latency_ms is not None
     assert 15 < s.playback_open_latency_ms < 30  # ~20ms
     assert len(run.heartbeats) == 3
@@ -145,6 +147,7 @@ def test_parse_multi_sentence(tmp_path):
     assert run.sentences[0].text == "Sentence one."
     assert run.sentences[1].text == "Sentence two."
     assert run.sentences[2].text == "Sentence three."
+    assert [s.playback_sample_rate for s in run.sentences] == [24000, 24000, 24000]
     # sentence[0] should be closed at the next sentence start
     assert run.sentences[0].t_end is not None
 
@@ -186,6 +189,97 @@ def test_parse_dtd_current_suffix_and_aec_config(tmp_path):
     assert frame.coh_verdict == "False"
     assert frame.coh_veto is True
     assert frame.ref_delay_ms == 150.0
+
+
+# ---------------------------------------------------------------------------
+# "tts audio quality" telemetry (2026-06-30 robotic/white-noise investigation)
+# ---------------------------------------------------------------------------
+
+def _quality_log_lines(quality_json: str) -> list[str]:
+    return [
+        "12:00:00.000 INFO  speaker | run 20260630-120000 started -> x.txt",
+        "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Probe sentence.' (queue depth=0)",
+        f"12:00:10.050 INFO  speaker.sherpa | tts audio quality: {quality_json}",
+    ]
+
+
+def test_parse_tts_quality_attaches_to_sentence(tmp_path):
+    quality = {
+        "mode": "whole_clip", "rms": 0.07, "peak": 0.5, "clip_pct": 0.0,
+        "dc_offset": 0.0001, "hf_ratio": 0.01, "spectral_flatness": 0.02,
+        "n_samples": 1000,
+    }
+    path = _write_log(tmp_path, _quality_log_lines(json.dumps(quality)))
+    run = parse_log(path)
+
+    assert run.sentences[0].tts_quality == quality
+
+
+def test_finding_flags_noise_like_spectral_flatness(tmp_path):
+    quality = {
+        "mode": "whole_clip", "rms": 0.07, "peak": 0.5, "clip_pct": 0.0,
+        "dc_offset": 0.0, "hf_ratio": 0.6, "spectral_flatness": 0.55,
+        "n_samples": 1000,
+    }
+    path = _write_log(tmp_path, _quality_log_lines(json.dumps(quality)))
+    run = parse_log(path)
+
+    findings = diagnostic_findings(run)
+    assert any("noise-like" in f and "sentence[0]" in f for f in findings)
+
+
+def test_finding_flags_clipping_and_dc_offset(tmp_path):
+    quality = {
+        "mode": "whole_clip", "rms": 0.7, "peak": 1.0, "clip_pct": 12.5,
+        "dc_offset": 0.05, "hf_ratio": 0.0, "spectral_flatness": 0.0,
+        "n_samples": 1000,
+    }
+    path = _write_log(tmp_path, _quality_log_lines(json.dumps(quality)))
+    run = parse_log(path)
+
+    findings = diagnostic_findings(run)
+    assert any("clipping" in f for f in findings)
+    assert any("DC offset" in f for f in findings)
+
+
+def test_finding_silent_on_clean_tts_quality(tmp_path):
+    quality = {
+        "mode": "whole_clip", "rms": 0.07, "peak": 0.3, "clip_pct": 0.0,
+        "dc_offset": 0.0001, "hf_ratio": 0.01, "spectral_flatness": 0.02,
+        "n_samples": 1000,
+    }
+    path = _write_log(tmp_path, _quality_log_lines(json.dumps(quality)))
+    run = parse_log(path)
+
+    findings = diagnostic_findings(run)
+    assert not any("sentence[0]" in f for f in findings)
+
+
+def test_format_report_shows_tts_quality_and_noise_flag(tmp_path):
+    quality = {
+        "mode": "streaming", "rms": 0.2, "peak": 0.9, "clip_pct": 0.0,
+        "dc_offset": 0.0, "hf_ratio": None, "spectral_flatness": 0.6,
+        "n_samples": 500,
+    }
+    path = _write_log(tmp_path, _quality_log_lines(json.dumps(quality)))
+    run = parse_log(path)
+
+    report = format_report(run)
+    assert "tts audio quality: mode=streaming" in report
+    assert "[NOISE-LIKE]" in report
+
+
+def test_to_json_includes_tts_quality(tmp_path):
+    quality = {
+        "mode": "whole_clip", "rms": 0.07, "peak": 0.3, "clip_pct": 0.0,
+        "dc_offset": 0.0, "hf_ratio": 0.01, "spectral_flatness": 0.02,
+        "n_samples": 1000,
+    }
+    path = _write_log(tmp_path, _quality_log_lines(json.dumps(quality)))
+    run = parse_log(path)
+
+    data = to_json(run)
+    assert data["sentences"][0]["tts_quality"] == quality
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +441,25 @@ def test_ref_wav_flags_no_reference_audio(tmp_path):
     assert wav_metrics[0]["first_audio_offset_s"] is None
     assert "playback reference has no detected audio" in report
     assert "NO-REF" in report
+
+
+def test_ref_wav_warns_when_not_bit_exact_output_rate(tmp_path):
+    import numpy as np
+
+    log_path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    samples = np.zeros(16000 * 14, dtype=np.float32)
+    t = np.arange(16000) / 16000
+    samples[10 * 16000:11 * 16000] = 0.1 * np.sin(2 * np.pi * 440 * t)
+    wav_path = _write_wav(tmp_path / "run-test.ref.wav", samples, 16000)
+
+    run = parse_log(log_path)
+    wav_metrics = analyze_ref_wav(wav_path, run)
+    report = format_report(run, wav_metrics)
+    out = to_json(run, wav_metrics)
+
+    assert wav_metrics["_sample_rate"] == 16000
+    assert "not bit-exact 24000 Hz PortAudio output" in report
+    assert any("not bit-exact 24000 Hz" in finding for finding in out["findings"])
 
 
 def test_mic_ref_delay_estimate_flags_config_mismatch(tmp_path):

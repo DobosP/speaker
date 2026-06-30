@@ -170,6 +170,47 @@ def test_synthesize_logs_resolved_quality_params(caplog):
     assert '"target_rms": 0.12' in caplog.text
 
 
+def test_synthesize_logs_audio_quality_whole_clip(caplog):
+    """The whole-clip path (forced here by target_rms>0 on the first/uncarried
+    sentence) must log a full quality snapshot -- incl. the spectral fields --
+    computed on the EXACT final samples about to reach the FIFO. This is the
+    trustworthy alternative to the lossy 16 kHz .ref.wav AEC tap (see
+    audio_quality_metrics' docstring)."""
+    eng = SherpaOnnxEngine(
+        SherpaConfig(tts_target_rms=0.12, tts_output_lowpass_hz=7000.0, tts_declick=False)
+    )
+    eng._tts = _StreamingTts()  # generate() called w/o callback here -> whole-clip
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+
+    written: list = []
+    eng._synthesize("hello there", written.append)
+
+    assert "tts audio quality:" in caplog.text
+    assert '"mode": "whole_clip"' in caplog.text
+    assert '"n_samples": 3' in caplog.text          # [0.1, 0.2, 0.3] concatenated
+    assert '"hf_ratio"' in caplog.text              # spectral fields computed (not null)
+    assert '"spectral_flatness"' in caplog.text
+
+
+def test_synthesize_logs_audio_quality_streaming(caplog):
+    """The streaming path logs the cheap scalar subset (rms/peak/clip/dc) from
+    running per-chunk accumulators, with the spectral fields explicitly null
+    (a per-chunk FFT would need Welch-style aggregation, and buffering the
+    whole clip just to measure it would defeat the point of streaming)."""
+    eng = SherpaOnnxEngine(SherpaConfig(tts_target_rms=0.0, tts_declick=False))
+    eng._tts = _StreamingTts()
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+
+    written: list = []
+    eng._synthesize("hello there", written.append)
+
+    assert "tts audio quality:" in caplog.text
+    assert '"mode": "streaming"' in caplog.text
+    assert '"hf_ratio": null' in caplog.text
+    assert '"spectral_flatness": null' in caplog.text
+    assert '"n_samples": 3' in caplog.text          # two chunks, 2 + 1 samples
+
+
 def test_enqueue_drops_oldest_under_backpressure():
     eng = _engine(_StreamingTts())
     eng._play_q.maxsize = 2

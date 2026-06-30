@@ -2156,6 +2156,19 @@ class SherpaOnnxEngine(AudioEngine):
                         self._barge_sustain_reset_pending = False
                         barge_sustain.reset()
                         rejected_run = 0.0
+                    # The playback worker marks _speaking at synth start, before the
+                    # first audible block necessarily reaches PortAudio. Until a real
+                    # playback reference exists, DTD/coherence/ref-floor decisions are
+                    # ref-empty and can only produce misleading self-interrupts or
+                    # "barge-in REJECTED during playback" diagnostics. Keep ASR gated
+                    # for this committed reply, but do not arm playback-time barge-in
+                    # until audio is actually audible. If a previous queued sentence's
+                    # tail is still audible, _playback_level keeps the watch armed.
+                    if not self._barge_watch_active():
+                        barge_sustain.reset()
+                        rejected_run = 0.0
+                        rejected_flagged = False
+                        continue
                     # Auto-calibrate the post-AEC residual echo+noise floor on EVERY
                     # playback block (the assistant's own cancelled echo). The barge
                     # gate keys off this floor, so the interrupt threshold tracks the
@@ -2543,6 +2556,24 @@ class SherpaOnnxEngine(AudioEngine):
                     self._cb.on_metric(TTS_FIRST_AUDIO)
         except Exception:  # noqa: BLE001 - a transient must never kill the audio thread
             pass
+
+    def _barge_watch_active(self) -> bool:
+        """Whether playback-time barge-in has a real acoustic reference.
+
+        ``_speaking`` flips at synthesis start so ASR is gated as soon as the
+        assistant has committed to a reply, but the first audible block can arrive
+        later. Before that block, coherence/DTD/ref-floor gates are ref-empty and
+        a VAD blip can only produce misleading "during playback" barge diagnostics
+        or a false cut. Once the audio callback has played anything,
+        ``_first_audio_pending`` clears. Between queued sentences it may be armed
+        for the next utterance while the prior tail is still audible; the playback
+        level keeps the watch enabled for that gap.
+        """
+        if not self._speaking.is_set():
+            return False
+        if not self._first_audio_pending:
+            return True
+        return math.isfinite(self._playback_level) and self._playback_level > 1e-5
 
     def _playback_loop(self) -> None:
         import sounddevice as sd

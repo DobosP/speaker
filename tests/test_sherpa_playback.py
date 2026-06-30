@@ -358,6 +358,30 @@ def test_stop_speaking_clears_speaking_and_relatches_on_the_cut():
     assert eng._barge_in_fired_this_run is False  # barge-in re-armed for the next interrupt
 
 
+def test_barge_watch_is_not_armed_before_first_audio_plays():
+    # A reply is marked _speaking before TTS has produced its first audible block.
+    # During that synth lead-in there is no playback reference yet, so VAD noise
+    # must not accumulate as a rejected/detected "during playback" barge episode.
+    eng = _engine(_StreamingTts())
+    eng._speaking.set()
+    eng._first_audio_pending = True
+    eng._playback_level = 0.0
+
+    assert eng._barge_watch_active() is False
+
+
+def test_barge_watch_stays_armed_between_queued_sentences_while_tail_is_audible():
+    # For adjacent queued sentences the next utterance can set _first_audio_pending
+    # while the previous sentence's FIFO tail is still audibly playing. Keep the
+    # watch armed then so real talk-over in the inter-sentence gap is not missed.
+    eng = _engine(_StreamingTts())
+    eng._speaking.set()
+    eng._first_audio_pending = True
+    eng._playback_level = 0.02
+
+    assert eng._barge_watch_active() is True
+
+
 # --- clean shutdown: stop() must tear the live stream down so a wedged play ---
 # thread can exit. On a dead device the play thread can block in FIFO.write();
 # the queue sentinel can't wake it, so stop() would hang on the join. stop() now

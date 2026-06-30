@@ -125,6 +125,9 @@ class Heartbeat:
     avg_rms: float
     clip: float
     speaking: bool
+    underruns: int = 0    # cumulative total since run start
+    partials: int = 0     # partial transcripts in this 2 s interval
+    finals: int = 0       # final transcripts in this 2 s interval
 
 
 @dataclass
@@ -185,6 +188,9 @@ def parse_log(txt_path: str) -> ParsedRun:
                     avg_rms=float(mhb.group(2)),
                     clip=float(mhb.group(3)),
                     speaking=mhb.group(7) == "True",
+                    underruns=int(mhb.group(4)),
+                    partials=int(mhb.group(5)),
+                    finals=int(mhb.group(6)),
                 ))
                 continue
 
@@ -434,6 +440,103 @@ def self_interrupt_summary(run: ParsedRun) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Pass/fail verdict for open-speaker A/B
+# ---------------------------------------------------------------------------
+
+#: Thresholds for the live A/B pass/fail verdict.
+_FIRST_AUDIO_WARN_MS = 300.0   # warn if avg > 300 ms
+_FIRST_AUDIO_FAIL_MS = 600.0   # fail if avg > 600 ms
+_UNDERRUN_WARN = 3             # warn if total underruns > this
+_UNDERRUN_FAIL = 10            # fail if total underruns > this
+
+
+def pass_fail_verdict(run: ParsedRun) -> dict:
+    """Structured PASS/WARN/FAIL verdict for open-speaker A/B validation.
+
+    Criteria (all headless-measurable from a run log):
+
+    * **self_interrupt** — FAIL if any barge-in suspect during speaking.
+    * **underruns** — WARN/FAIL based on cumulative playback underruns from the
+      last heartbeat (the engine's own metric; reflects TTS synth falling behind
+      PortAudio under CPU load).
+    * **first_audio** — WARN if avg first-audio latency > 300 ms; FAIL > 600 ms.
+    * **missed_barges** — informational count of "barge-in REJECTED while
+      speaking" events (not a FAIL criterion alone — the rate depends on whether
+      the user actually tried to interrupt).
+    * **pre_first_audio_noise** — count of barge events that arrived BEFORE
+      ``playback opened`` within a sentence (the window the ``_barge_watch_active``
+      gate now suppresses; should be 0 with the gate on).
+
+    Overall:
+    * PASS  — all criteria PASS.
+    * WARN  — no FAIL criterion but at least one WARN.
+    * FAIL  — any FAIL criterion (self-interrupt suspect or hard thresholds).
+    """
+    si = self_interrupt_summary(run)
+
+    # Self-interrupt
+    si_fail = si["suspect_count"] > 0
+    si_status = "FAIL" if si_fail else "PASS"
+
+    # Underruns (cumulative from last heartbeat)
+    total_underruns = run.heartbeats[-1].underruns if run.heartbeats else 0
+    if total_underruns > _UNDERRUN_FAIL:
+        underrun_status = "FAIL"
+    elif total_underruns > _UNDERRUN_WARN:
+        underrun_status = "WARN"
+    else:
+        underrun_status = "PASS"
+
+    # First-audio latency
+    latencies = [
+        s.playback_open_latency_ms
+        for s in run.sentences
+        if s.playback_open_latency_ms is not None
+    ]
+    avg_latency_ms = round(sum(latencies) / len(latencies), 1) if latencies else None
+    if avg_latency_ms is None:
+        first_audio_status = "UNKNOWN"
+    elif avg_latency_ms > _FIRST_AUDIO_FAIL_MS:
+        first_audio_status = "FAIL"
+    elif avg_latency_ms > _FIRST_AUDIO_WARN_MS:
+        first_audio_status = "WARN"
+    else:
+        first_audio_status = "PASS"
+
+    # Pre-first-audio barge noise (events before playback opened within a sentence)
+    pre_first_audio_noise = 0
+    for s in run.sentences:
+        if s.t_playback_open is None:
+            continue
+        for be in s.barge_events:
+            if be.t < s.t_playback_open:
+                pre_first_audio_noise += 1
+
+    # Overall verdict
+    fail_criteria = [c for c in (si_status, underrun_status, first_audio_status) if c == "FAIL"]
+    warn_criteria = [c for c in (si_status, underrun_status, first_audio_status) if c == "WARN"]
+    if fail_criteria:
+        overall = "FAIL"
+    elif warn_criteria:
+        overall = "WARN"
+    else:
+        overall = "PASS"
+
+    return {
+        "overall": overall,
+        "self_interrupt": si_status,
+        "self_interrupt_suspects": si["suspect_count"],
+        "rejected_while_speaking": si["rejected_while_speaking"],
+        "underruns_total": total_underruns,
+        "underrun_verdict": underrun_status,
+        "first_audio_avg_ms": avg_latency_ms,
+        "first_audio_count": len(latencies),
+        "first_audio_verdict": first_audio_status,
+        "pre_first_audio_noise": pre_first_audio_noise,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Report formatter
 # ---------------------------------------------------------------------------
 
@@ -531,7 +634,9 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None) -> str:
     if run.heartbeats:
         hbs_while_speaking = [hb for hb in run.heartbeats if hb.speaking]
         hbs_silent = [hb for hb in run.heartbeats if not hb.speaking]
+        total_underruns = run.heartbeats[-1].underruns
         lines.append("\n--- Capture Heartbeat Stats ---")
+        lines.append(f"  playback underruns (cumulative): {total_underruns}")
         if hbs_while_speaking:
             avg_rms = sum(hb.avg_rms for hb in hbs_while_speaking) / len(hbs_while_speaking)
             avg_clip = sum(hb.clip for hb in hbs_while_speaking) / len(hbs_while_speaking)
@@ -545,15 +650,46 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None) -> str:
                 f"  while silent ({len(hbs_silent)} hb): avg_rms={avg_rms:.4f}"
             )
 
+    # --- Pass/Fail Verdict (for live A/B) ---
+    pf = pass_fail_verdict(run)
+    lines.append("\n--- Pass/Fail Verdict ---")
+    lines.append(f"OVERALL: {pf['overall']}")
+    _pf_icons = {"PASS": "✓", "WARN": "~", "FAIL": "✗", "UNKNOWN": "?"}
+    lines.append(
+        f"  [{_pf_icons.get(pf['self_interrupt'], '?')}] self-interrupt: "
+        f"{pf['self_interrupt']}  (suspects={pf['self_interrupt_suspects']})"
+    )
+    lines.append(
+        f"  [{_pf_icons.get(pf['underrun_verdict'], '?')}] underruns: "
+        f"{pf['underrun_verdict']}  (total={pf['underruns_total']})"
+    )
+    fa_ms = f"{pf['first_audio_avg_ms']:.0f} ms" if pf["first_audio_avg_ms"] is not None else "n/a"
+    lines.append(
+        f"  [{_pf_icons.get(pf['first_audio_verdict'], '?')}] first-audio latency: "
+        f"{pf['first_audio_verdict']}  (avg={fa_ms} over {pf['first_audio_count']} sentences)"
+    )
+    if pf["rejected_while_speaking"] > 0:
+        lines.append(
+            f"  [~] real-barge rejected while speaking: {pf['rejected_while_speaking']}"
+            f"  (potential missed cut-offs — validate live)"
+        )
+    if pf["pre_first_audio_noise"] > 0:
+        lines.append(
+            f"  [~] pre-first-audio barge noise: {pf['pre_first_audio_noise']} events"
+            f"  (suppressed by _barge_watch_active gate)"
+        )
+
     return "\n".join(lines)
 
 
 def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dict] = None) -> dict:
     """Structured JSON-serializable representation."""
     si = si or self_interrupt_summary(run)
+    pf = pass_fail_verdict(run)
     return {
         "run_id": run.run_id,
         "self_interrupt": si,
+        "pass_fail": pf,
         "sentences": [
             {
                 "idx": s.idx,
@@ -610,6 +746,14 @@ def main(argv: Optional[list] = None) -> int:
         help="Hz above which energy is counted as HF (default: 4000)",
     )
     parser.add_argument("--json", action="store_true", help="Output JSON instead of text")
+    parser.add_argument(
+        "--exit-code", action="store_true",
+        help="Exit 1 if overall verdict is FAIL, 2 if WARN (useful for CI / scripting)",
+    )
+    parser.add_argument(
+        "--verdict-only", action="store_true",
+        help="Print only the pass/fail verdict block and exit (implies --exit-code)",
+    )
     args = parser.parse_args(argv)
 
     txt_path = args.log
@@ -637,10 +781,25 @@ def main(argv: Optional[list] = None) -> int:
                 file=sys.stderr,
             )
 
-    if args.json:
+    pf = pass_fail_verdict(run)
+
+    if getattr(args, "verdict_only", False):
+        print(f"OVERALL: {pf['overall']}")
+        for key in ("self_interrupt", "underrun_verdict", "first_audio_verdict"):
+            print(f"  {key}: {pf[key]}")
+        print(f"  underruns_total: {pf['underruns_total']}")
+        print(f"  first_audio_avg_ms: {pf['first_audio_avg_ms']}")
+        print(f"  pre_first_audio_noise: {pf['pre_first_audio_noise']}")
+    elif args.json:
         print(json.dumps(to_json(run, wav_metrics), indent=2))
     else:
         print(format_report(run, wav_metrics))
+
+    if getattr(args, "exit_code", False) or getattr(args, "verdict_only", False):
+        if pf["overall"] == "FAIL":
+            return 1
+        if pf["overall"] == "WARN":
+            return 2
     return 0
 
 

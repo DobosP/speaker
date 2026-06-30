@@ -322,3 +322,175 @@ def test_main_cli_missing_file(tmp_path, capsys):
     from tools.diagnose_run import main
     rc = main([str(tmp_path / "nonexistent.txt")])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat underruns / partials / finals parsing
+# ---------------------------------------------------------------------------
+
+UNDERRUN_RUN_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260628-120010 started -> x.txt",
+    "12:00:05.000 DEBUG speaker.sherpa | capture heartbeat: blocks=100 avg_rms=0.0085 clip=0.0% underruns=0 partials=1 finals=0 speaking=False",
+    "12:00:07.000 DEBUG speaker.sherpa | capture heartbeat: blocks=200 avg_rms=0.0200 clip=0.1% underruns=3 partials=2 finals=1 speaking=True",
+    "12:00:09.000 DEBUG speaker.sherpa | capture heartbeat: blocks=300 avg_rms=0.0100 clip=0.0% underruns=5 partials=0 finals=1 speaking=False",
+]
+
+
+def test_heartbeat_captures_underruns(tmp_path):
+    path = _write_log(tmp_path, UNDERRUN_RUN_LINES)
+    run = parse_log(path)
+
+    assert len(run.heartbeats) == 3
+    assert run.heartbeats[0].underruns == 0
+    assert run.heartbeats[0].partials == 1
+    assert run.heartbeats[0].finals == 0
+    assert run.heartbeats[1].underruns == 3
+    assert run.heartbeats[1].partials == 2
+    assert run.heartbeats[1].finals == 1
+    assert run.heartbeats[2].underruns == 5
+
+
+def test_heartbeat_underruns_in_report(tmp_path, capsys):
+    path = _write_log(tmp_path, UNDERRUN_RUN_LINES)
+    from tools.diagnose_run import main
+    main([str(path)])
+    out = capsys.readouterr().out
+    assert "playback underruns" in out
+    assert "5" in out   # cumulative from last heartbeat
+
+
+# ---------------------------------------------------------------------------
+# pass_fail_verdict
+# ---------------------------------------------------------------------------
+
+def test_pass_fail_clean_run(tmp_path):
+    from tools.diagnose_run import pass_fail_verdict
+    path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    run = parse_log(path)
+    pf = pass_fail_verdict(run)
+
+    assert pf["self_interrupt"] == "PASS"
+    assert pf["self_interrupt_suspects"] == 0
+    assert pf["underruns_total"] == 0
+    assert pf["underrun_verdict"] == "PASS"
+
+
+def test_pass_fail_self_interrupt_fails(tmp_path):
+    from tools.diagnose_run import pass_fail_verdict
+    path = _write_log(tmp_path, SELF_INTERRUPT_LINES)
+    run = parse_log(path)
+    pf = pass_fail_verdict(run)
+
+    assert pf["self_interrupt"] == "FAIL"
+    assert pf["overall"] == "FAIL"
+    assert pf["self_interrupt_suspects"] >= 1
+
+
+def test_pass_fail_underrun_warn(tmp_path):
+    from tools.diagnose_run import pass_fail_verdict
+    path = _write_log(tmp_path, UNDERRUN_RUN_LINES)
+    run = parse_log(path)
+    pf = pass_fail_verdict(run)
+
+    assert pf["underruns_total"] == 5
+    assert pf["underrun_verdict"] == "WARN"
+    assert pf["overall"] in ("WARN", "FAIL")
+
+
+def test_pass_fail_in_json_output(tmp_path, capsys):
+    path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    from tools.diagnose_run import main
+    main([str(path), "--json"])
+    data = json.loads(capsys.readouterr().out)
+    assert "pass_fail" in data
+    assert data["pass_fail"]["overall"] in ("PASS", "WARN", "FAIL")
+
+
+def test_exit_code_pass_returns_zero(tmp_path):
+    path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    from tools.diagnose_run import main
+    rc = main([str(path), "--exit-code"])
+    assert rc == 0
+
+
+def test_exit_code_fail_returns_one(tmp_path):
+    path = _write_log(tmp_path, SELF_INTERRUPT_LINES)
+    from tools.diagnose_run import main
+    rc = main([str(path), "--exit-code"])
+    assert rc == 1
+
+
+def test_verdict_only_mode(tmp_path, capsys):
+    path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    from tools.diagnose_run import main
+    rc = main([str(path), "--verdict-only"])
+    out = capsys.readouterr().out
+    assert "OVERALL" in out
+    assert "self_interrupt" in out
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# pre-first-audio barge noise detection
+# ---------------------------------------------------------------------------
+
+PRE_FIRST_AUDIO_BARGE_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260628-120020 started -> x.txt",
+    # speaking starts (synth lead-in begins here)
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Assistant reply.' (queue depth=0)",
+    # barge REJECTED BEFORE playback is opened (pre-first-audio noise)
+    "12:00:10.010 INFO  speaker.sherpa | barge-in REJECTED: 0.2s of voiced speech during playback did not trip the gate",
+    # playback opens 20ms later
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    "12:00:11.000 DEBUG speaker.sherpa | capture heartbeat: blocks=200 avg_rms=0.02 clip=0.0% underruns=0 partials=0 finals=0 speaking=True",
+]
+
+
+def test_pre_first_audio_barge_counted(tmp_path):
+    from tools.diagnose_run import pass_fail_verdict
+    path = _write_log(tmp_path, PRE_FIRST_AUDIO_BARGE_LINES)
+    run = parse_log(path)
+    pf = pass_fail_verdict(run)
+
+    assert pf["pre_first_audio_noise"] == 1
+
+
+def test_pre_first_audio_noise_in_report(tmp_path, capsys):
+    path = _write_log(tmp_path, PRE_FIRST_AUDIO_BARGE_LINES)
+    from tools.diagnose_run import main
+    main([str(path)])
+    out = capsys.readouterr().out
+    assert "pre-first-audio" in out
+
+
+# ---------------------------------------------------------------------------
+# live_audio_ab smoke test
+# ---------------------------------------------------------------------------
+
+def test_live_audio_ab_single_run(tmp_path, capsys):
+    path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    from tools.live_audio_ab import main as ab_main
+    rc = ab_main([str(path)])
+    out = capsys.readouterr().out
+    assert "OVERALL" in out
+    assert "first-audio latency" in out
+    assert rc == 0
+
+
+def test_live_audio_ab_two_runs(tmp_path, capsys):
+    path_a = _write_log(tmp_path / "a" if False else tmp_path, CLEAN_RUN_LINES)
+    # Need a distinct second log path - use a different name
+    path_b_p = tmp_path / "run-b.txt"
+    path_b_p.write_text("\n".join(SELF_INTERRUPT_LINES), encoding="utf-8")
+    from tools.live_audio_ab import main as ab_main
+    rc = ab_main(["--no-color", str(path_a), str(path_b_p)])
+    out = capsys.readouterr().out
+    assert "Side-by-Side" in out
+    assert "OVERALL" in out
+    assert rc == 1   # run B has a self-interrupt → FAIL
+
+
+def test_live_audio_ab_missing_file(tmp_path, capsys):
+    from tools.live_audio_ab import main as ab_main
+    rc = ab_main([str(tmp_path / "nonexistent.txt")])
+    assert rc == 1

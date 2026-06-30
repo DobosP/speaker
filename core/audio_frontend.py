@@ -107,6 +107,74 @@ def rms_of(samples) -> float:
     return float(np.sqrt(np.mean(x.astype("float64") ** 2)))
 
 
+def audio_quality_metrics(samples, sr: int, *, hf_cutoff_hz: float = 4000.0) -> dict:
+    """One-shot quality snapshot of a finished TTS clip: peak / RMS / clip% / DC
+    offset / HF-energy ratio / spectral flatness.
+
+    Pure numpy, a single ``rfft`` over the whole clip -- same cost class as
+    :func:`lowpass_soft` (already run on this exact clip when the HF roll-off is
+    on), so logging this on every whole-clip utterance is cheap. Exists because
+    the only forensic tap on a run bundle today (``.ref.wav``, the AEC far-end
+    reference) is a naive-linear-resampled 16 kHz COPY built for echo-cancel
+    correlation (see ``ref16`` in ``core.engines.sherpa._audio_cb``), not a
+    high-fidelity capture -- it can alias and should not be trusted to judge
+    fine digital-domain quality. This runs on the EXACT samples about to reach
+    the FIFO/speaker, at the TTS's native sample rate, so a "robotic / white-
+    noise" report can be checked against the real signal instead of a lossy
+    proxy.
+
+    ``spectral_flatness`` (Wiener entropy: geometric-mean(power) / arithmetic-
+    mean(power) of the FFT bins, power-floored to avoid log(0)) is ~1.0 for a
+    flat/noise-like spectrum and near 0 for tonal/harmonic content (normal
+    voiced speech) -- the property a "sounds like static" complaint is
+    describing, independent of which band it sits in. Caveat: a near-silent
+    clip also reads flat (uniform floor), so read it alongside ``rms``, not in
+    isolation. Never raises; an empty clip returns all-``None`` numeric
+    fields."""
+    import numpy as np
+
+    x = np.asarray(samples, dtype="float32").reshape(-1)
+    if x.size == 0:
+        return {
+            "rms": None,
+            "peak": None,
+            "clip_pct": None,
+            "dc_offset": None,
+            "hf_ratio": None,
+            "spectral_flatness": None,
+            "n_samples": 0,
+        }
+    x64 = x.astype("float64")
+    rms = float(np.sqrt(np.mean(x64 ** 2)))
+    peak = float(np.max(np.abs(x64)))
+    clip_pct = float(100.0 * np.mean(np.abs(x64) >= 0.99))
+    dc_offset = float(np.mean(x64))
+
+    mag = np.abs(np.fft.rfft(x64))
+    power = mag ** 2
+    floor = 1e-10
+    power_floored = np.maximum(power, floor)
+    total_power = float(np.sum(power)) or floor
+    freqs = np.fft.rfftfreq(x.size, 1.0 / sr) if sr > 0 else np.zeros(power.shape)
+    hf_power = float(np.sum(power[freqs >= hf_cutoff_hz]))
+    hf_ratio = hf_power / total_power
+
+    geo_mean = float(np.exp(np.mean(np.log(power_floored))))
+    arith_mean = float(np.mean(power_floored))
+    flatness = (geo_mean / arith_mean) if arith_mean > 0 else 0.0
+    flatness = max(0.0, min(1.0, flatness))
+
+    return {
+        "rms": round(rms, 5),
+        "peak": round(peak, 5),
+        "clip_pct": round(clip_pct, 3),
+        "dc_offset": round(dc_offset, 6),
+        "hf_ratio": round(hf_ratio, 4),
+        "spectral_flatness": round(flatness, 4),
+        "n_samples": int(x.size),
+    }
+
+
 def lowpass_soft(samples, sr: int, cutoff_hz: float, *, width_hz: float = 1500.0):
     """Zero-phase soft low-pass: a raised-cosine taper from ``cutoff_hz`` up to
     ``cutoff_hz + width_hz``, with everything above fully attenuated.

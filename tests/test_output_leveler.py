@@ -15,6 +15,7 @@ from core.audio_frontend import (
     _running_min_forward,
     _true_peak_gain_envelope,
     _upsampled_abs_per_sample,
+    audio_quality_metrics,
     lowpass_soft,
     normalize_rms,
     output_leveler,
@@ -417,3 +418,56 @@ def test_leveler_without_scipy_fallback_is_safe(monkeypatch):
     out, _ = af.output_leveler(x, target_dbfs=-12.0, true_peak_dbtp=-1.0, sr=sr)
     assert out.shape[0] == x.shape[0]
     assert float(np.max(np.abs(out))) <= 1.0
+
+
+# --- audio_quality_metrics (per-utterance quality telemetry) ---------------
+# Runtime instrumentation added for the 2026-06-30 "robotic / white-noise"
+# investigation: the only forensic tap on a run bundle before this was
+# .ref.wav, a naive-linear-resampled 16 kHz AEC tap (see audio_frontend's
+# docstring) that should not be trusted to judge fine digital-domain quality.
+# These tests pin the metric on signals with known, opposite character so a
+# future change can't silently break the "noise-like vs tonal" discrimination.
+
+def test_audio_quality_metrics_pure_tone_reads_tonal_and_clean():
+    sr = 24000
+    x = _sine(220, sr=sr, dur=0.5, amp=0.3)  # 220 Hz * 0.5 s = exact 110 cycles
+    m = audio_quality_metrics(x, sr)
+    assert abs(m["rms"] - 0.3 / (2 ** 0.5)) < 1e-3
+    assert m["peak"] == pytest.approx(0.3, abs=1e-4)
+    assert m["clip_pct"] == 0.0
+    assert abs(m["dc_offset"]) < 1e-6
+    assert m["hf_ratio"] == 0.0          # well below the 4 kHz default cutoff
+    assert m["spectral_flatness"] < 0.01  # tonal, not noise-like
+
+
+def test_audio_quality_metrics_white_noise_reads_flat_and_broadband():
+    sr = 24000
+    rng = np.random.default_rng(0)
+    x = (0.2 * rng.standard_normal(int(sr * 0.5))).astype("float32")
+    m = audio_quality_metrics(x, sr)
+    assert m["hf_ratio"] > 0.3            # noise has real energy above 4 kHz
+    assert m["spectral_flatness"] > 0.3   # the "sounds like static" signature
+
+
+def test_audio_quality_metrics_flags_clipping_and_dc_bias():
+    sr = 24000
+    x = _sine(220, sr=sr, dur=0.5, amp=0.3)
+    biased_clipped = np.clip(x * 4.0 + 0.05, -1.0, 1.0).astype("float32")
+    m = audio_quality_metrics(biased_clipped, sr)
+    assert m["clip_pct"] > 20.0
+    assert m["dc_offset"] > 0.01
+
+
+def test_audio_quality_metrics_hf_only_tone_is_all_high_frequency():
+    sr = 24000
+    x = _sine(9000, sr=sr, dur=0.5, amp=0.3)  # above the 4 kHz default cutoff
+    m = audio_quality_metrics(x, sr)
+    assert m["hf_ratio"] == 1.0
+
+
+def test_audio_quality_metrics_empty_clip_is_all_none():
+    m = audio_quality_metrics(np.zeros(0, dtype="float32"), 24000)
+    assert m == {
+        "rms": None, "peak": None, "clip_pct": None, "dc_offset": None,
+        "hf_ratio": None, "spectral_flatness": None, "n_samples": 0,
+    }

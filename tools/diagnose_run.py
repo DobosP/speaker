@@ -55,16 +55,18 @@ def _fmt_offset(t: float, base: float) -> str:
 _LOG_PAT = re.compile(
     r"^(\d+:\d+:\d+\.\d+)\s+(\S+)\s+(\S+)\s+\|\s+(.*)"
 )
+_NUM = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 
 _SPEAKING_PAT = re.compile(r"speaking:\s+'(.+)'\s+\(queue depth=(\d+)\)")
 _PLAYBACK_OPEN_PAT = re.compile(r"playback opened at (\d+) Hz")
 _BARGE_DETECTED_PAT = re.compile(r"barge-in detected")
 _BARGE_REJECTED_PAT = re.compile(r"barge-in REJECTED:\s+(.*)")
 _DTD_PAT = re.compile(
-    r"dtd:\s+D=([\d.]+)\s+K=([\d.]+)\s+fired=(True|False)\s+gated=(True|False)"
-    r"\s+\(z_raw=([\d.]+)\s+z_resid=([\d.]+)\s+z_coh=([\d.]+)\)"
-    r"\s+raw=([\d.]+)\s+resid=([\d.]+)\s+incoh=([\d.]+)"
-    r"\s+resid_floor=([\d.]+)\s+consec=(\d+)"
+    rf"dtd:\s+D=({_NUM})\s+K=({_NUM})\s+fired=(True|False)\s+gated=(True|False)"
+    rf"\s+\(z_raw=({_NUM})\s+z_resid=({_NUM})\s+z_coh=({_NUM})\)"
+    rf"\s+raw=({_NUM})\s+resid=({_NUM})\s+incoh=({_NUM})"
+    rf"\s+resid_floor=({_NUM})\s+consec=(\d+)"
+    rf"(?:\s+coh=(\S+)\s+coh_veto=(True|False)\s+ref_delay=({_NUM})ms)?"
 )
 _HEARTBEAT_PAT = re.compile(
     r"capture heartbeat:\s+blocks=(\d+)\s+avg_rms=([\d.]+)\s+clip=([\d.]+)%"
@@ -72,6 +74,11 @@ _HEARTBEAT_PAT = re.compile(
 )
 _REF_WAV_PAT = re.compile(r"recording playback reference.*->\s+(\S+\.ref\.wav)")
 _RUN_START_PAT = re.compile(r"run (\S+) started")
+_AEC_ACTIVE_PAT = re.compile(
+    r"AEC ACTIVE .*backend=([^,\s]+),\s+ref_delay=([\d.]+)ms,\s+apm_always_on=(True|False)"
+)
+_TTS_SANITIZE_PAT = re.compile(r"tts sanitize:\s+(\{.*\})")
+_TTS_RESOLVED_PAT = re.compile(r"tts resolved:\s+(\{.*\})")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +100,9 @@ class DTDFrame:
     incoh: float
     resid_floor: float
     consec: int
+    coh_verdict: Optional[str] = None
+    coh_veto: Optional[bool] = None
+    ref_delay_ms: Optional[float] = None
 
 
 @dataclass
@@ -111,6 +121,8 @@ class Sentence:
     t_speak: float      # timestamp of the speaking: line
     text: str
     queue_depth: int
+    tts_sanitize: Optional[dict] = None
+    tts_resolved: Optional[dict] = None
     t_playback_open: Optional[float] = None
     playback_open_latency_ms: Optional[float] = None
     t_end: Optional[float] = None       # next sentence start or barge-in or EOF
@@ -140,6 +152,9 @@ class ParsedRun:
     barge_events: list
     heartbeats: list
     dtd_frames: list
+    aec_backend: Optional[str] = None
+    aec_config_ref_delay_ms: Optional[float] = None
+    apm_always_on: Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +170,10 @@ def parse_log(txt_path: str) -> ParsedRun:
     run_start_t: Optional[float] = None
     ref_wav_path: Optional[str] = None
     ref_wav_start_t: Optional[float] = None
+    aec_backend: Optional[str] = None
+    aec_config_ref_delay_ms: Optional[float] = None
+    apm_always_on: Optional[bool] = None
+    pending_tts_sanitize: Optional[dict] = None
 
     with open(txt_path, encoding="utf-8", errors="replace") as fh:
         for raw in fh:
@@ -178,6 +197,28 @@ def parse_log(txt_path: str) -> ParsedRun:
                 ref_wav_path = mw.group(1)
                 if ref_wav_start_t is None:
                     ref_wav_start_t = t
+
+            maec = _AEC_ACTIVE_PAT.search(msg)
+            if maec:
+                aec_backend = maec.group(1)
+                aec_config_ref_delay_ms = float(maec.group(2))
+                apm_always_on = maec.group(3) == "True"
+
+            mts = _TTS_SANITIZE_PAT.search(msg)
+            if mts and "speaker.sherpa" in logger:
+                try:
+                    pending_tts_sanitize = json.loads(mts.group(1))
+                except json.JSONDecodeError:
+                    pending_tts_sanitize = None
+                continue
+
+            mtr = _TTS_RESOLVED_PAT.search(msg)
+            if mtr and "speaker.sherpa" in logger and sentences:
+                try:
+                    sentences[-1].tts_resolved = json.loads(mtr.group(1))
+                except json.JSONDecodeError:
+                    sentences[-1].tts_resolved = None
+                continue
 
             # Heartbeat
             mhb = _HEARTBEAT_PAT.search(msg)
@@ -205,6 +246,9 @@ def parse_log(txt_path: str) -> ParsedRun:
                     raw=float(md.group(8)), resid=float(md.group(9)),
                     incoh=float(md.group(10)), resid_floor=float(md.group(11)),
                     consec=int(md.group(12)),
+                    coh_verdict=md.group(13),
+                    coh_veto=(md.group(14) == "True") if md.group(14) else None,
+                    ref_delay_ms=float(md.group(15)) if md.group(15) else None,
                 )
                 dtd_frames.append(frame)
                 if sentences:
@@ -222,7 +266,9 @@ def parse_log(txt_path: str) -> ParsedRun:
                     t_speak=t,
                     text=ms2.group(1),
                     queue_depth=int(ms2.group(2)),
+                    tts_sanitize=pending_tts_sanitize,
                 )
+                pending_tts_sanitize = None
                 sentences.append(sent)
                 continue
 
@@ -278,6 +324,9 @@ def parse_log(txt_path: str) -> ParsedRun:
         barge_events=barge_events,
         heartbeats=heartbeats,
         dtd_frames=dtd_frames,
+        aec_backend=aec_backend,
+        aec_config_ref_delay_ms=aec_config_ref_delay_ms,
+        apm_always_on=apm_always_on,
     )
 
 
@@ -305,12 +354,26 @@ def _analyze_wav_segment(
     import numpy as np
 
     if samples.size == 0:
-        return {"rms": None, "peak": None, "clip_pct": None, "hf_ratio": None, "duration_s": 0.0}
+        return {
+            "rms": None,
+            "active_rms": None,
+            "peak": None,
+            "clip_pct": None,
+            "hf_ratio": None,
+            "duration_s": 0.0,
+            "first_audio_offset_s": None,
+        }
 
     rms = float(np.sqrt(np.mean(samples ** 2)))
     peak = float(np.max(np.abs(samples)))
     clip_pct = float(100.0 * np.mean(np.abs(samples) >= 0.99))
     duration_s = round(len(samples) / sample_rate, 3)
+    first_audio_offset = _first_audio_offset(samples, sample_rate)
+    active_rms = None
+    if first_audio_offset is not None:
+        active = samples[int(first_audio_offset * sample_rate):]
+        if active.size:
+            active_rms = float(np.sqrt(np.mean(active ** 2)))
 
     # HF ratio via FFT
     n = len(samples)
@@ -323,10 +386,136 @@ def _analyze_wav_segment(
 
     return {
         "rms": round(rms, 4),
+        "active_rms": round(active_rms, 4) if active_rms is not None else None,
         "peak": round(peak, 4),
         "clip_pct": round(clip_pct, 2),
         "hf_ratio": hf_ratio,
         "duration_s": duration_s,
+        "first_audio_offset_s": (
+            round(first_audio_offset, 3)
+            if first_audio_offset is not None else None
+        ),
+    }
+
+
+def _first_audio_offset(
+    samples: "np.ndarray",
+    sample_rate: int,
+    *,
+    frame_ms: float = 20.0,
+    min_rms: float = 0.0015,
+) -> Optional[float]:
+    """Return the first frame offset whose RMS looks like real reference audio."""
+    import numpy as np
+
+    if samples.size == 0:
+        return None
+    frame = max(1, int(sample_rate * frame_ms / 1000.0))
+    peak = float(np.max(np.abs(samples)))
+    if peak < min_rms:
+        return None
+    threshold = max(min_rms, 0.03 * peak)
+    for i in range(0, max(1, samples.size - frame + 1), frame):
+        block = samples[i:i + frame]
+        if block.size == 0:
+            continue
+        block_rms = float(np.sqrt(np.mean(block ** 2)))
+        if block_rms >= threshold:
+            return i / sample_rate
+    return None
+
+
+def _read_wav_mono(wav_path: str) -> tuple["np.ndarray", int]:
+    """Read a PCM WAV as mono float32 in [-1, 1]."""
+    import numpy as np
+
+    with wave.open(wav_path, "rb") as w:
+        sr = w.getframerate()
+        channels = w.getnchannels()
+        sample_width = w.getsampwidth()
+        n_frames = w.getnframes()
+        raw = w.readframes(n_frames)
+
+    if sample_width == 2:
+        pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    elif sample_width == 4:
+        pcm = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+    elif sample_width == 1:
+        pcm = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+    else:
+        raise ValueError(f"unsupported WAV sample width: {sample_width}")
+
+    if channels > 1:
+        pcm = pcm.reshape(-1, channels).mean(axis=1).astype(np.float32)
+    return pcm, sr
+
+
+def _estimate_ref_delay(
+    ref: "np.ndarray",
+    mic: "np.ndarray",
+    sample_rate: int,
+    *,
+    max_delay_ms: float = 400.0,
+    min_ref_rms: float = 0.002,
+) -> Optional[dict]:
+    """Estimate mic lag behind the playback reference with normalized correlation."""
+    import numpy as np
+
+    n = min(len(ref), len(mic))
+    if n <= max(32, int(0.08 * sample_rate)):
+        return None
+    ref = np.asarray(ref[:n], dtype=np.float32)
+    mic = np.asarray(mic[:n], dtype=np.float32)
+
+    onset = _first_audio_offset(ref, sample_rate)
+    if onset is not None:
+        start = max(0, int((onset - 0.02) * sample_rate))
+        ref = ref[start:]
+        mic = mic[start:]
+        n = min(len(ref), len(mic))
+        ref = ref[:n]
+        mic = mic[:n]
+
+    max_samples = int(6.0 * sample_rate)
+    if len(ref) > max_samples:
+        ref = ref[:max_samples]
+        mic = mic[:max_samples]
+    if len(ref) <= max(32, int(0.08 * sample_rate)):
+        return None
+
+    ref = ref - float(np.mean(ref))
+    mic = mic - float(np.mean(mic))
+    ref_rms = float(np.sqrt(np.mean(ref ** 2)))
+    mic_rms = float(np.sqrt(np.mean(mic ** 2)))
+    if ref_rms < min_ref_rms or mic_rms <= 1e-6:
+        return None
+
+    step = max(1, int(sample_rate / 4000))
+    ref_d = ref[::step]
+    mic_d = mic[::step]
+    sr_d = sample_rate / step
+    max_lag = min(int(max_delay_ms * sr_d / 1000.0), len(ref_d) - 32)
+    if max_lag <= 0:
+        return None
+
+    best_lag = 0
+    best_corr = -1.0
+    for lag in range(max_lag + 1):
+        r = ref_d[: len(ref_d) - lag]
+        m = mic_d[lag: lag + len(r)]
+        if len(r) < 32:
+            break
+        denom = float(np.linalg.norm(r) * np.linalg.norm(m))
+        if denom <= 1e-12:
+            continue
+        corr = float(np.dot(r, m) / denom)
+        if corr > best_corr:
+            best_corr = corr
+            best_lag = lag
+
+    return {
+        "estimated_delay_ms": round(1000.0 * best_lag / sr_d, 1),
+        "delay_correlation": round(best_corr, 3),
     }
 
 
@@ -341,19 +530,10 @@ def analyze_ref_wav(
     Returns a dict keyed by sentence index. Each value is the output of
     _analyze_wav_segment plus a 'window_s' tuple.
     """
-    import numpy as np
-
     try:
-        w = wave.open(wav_path, "rb")
-        sr = w.getframerate()
-        n_frames = w.getnframes()
-        raw = w.readframes(n_frames)
-        w.close()
+        pcm, sr = _read_wav_mono(wav_path)
     except Exception as exc:
         return {"_error": str(exc)}
-
-    # int16 PCM → float32 in [-1, 1]
-    pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
 
     # The ref.wav records PLAYBACK output starting from the moment the engine
     # opened the reference recorder (logged as "recording playback reference").
@@ -379,8 +559,72 @@ def analyze_ref_wav(
         segment = pcm[i0:i1]
         metrics = _analyze_wav_segment(segment, sr, hf_cutoff_hz=hf_cutoff_hz)
         metrics["window_s"] = (round(t_start, 3), round(t_end, 3))
+        metrics["window_log_start_t"] = pb_start
+        if metrics.get("first_audio_offset_s") is not None:
+            metrics["first_audio_log_t"] = round(
+                pb_start + float(metrics["first_audio_offset_s"]),
+                3,
+            )
+        else:
+            metrics["first_audio_log_t"] = None
         results[s.idx] = metrics
 
+    return results
+
+
+def analyze_mic_ref_wav(
+    mic_wav_path: str,
+    ref_wav_path: str,
+    run: ParsedRun,
+    *,
+    max_delay_ms: float = 400.0,
+) -> dict:
+    """Estimate acoustic delay per sentence from frame-aligned mic/ref WAVs."""
+    import numpy as np
+
+    try:
+        mic, mic_sr = _read_wav_mono(mic_wav_path)
+        ref, ref_sr = _read_wav_mono(ref_wav_path)
+    except Exception as exc:
+        return {"_error": str(exc)}
+
+    if mic_sr != ref_sr:
+        # Keep the dependency surface small: linear resampling is good enough for
+        # a diagnostic correlation estimate.
+        x_old = np.linspace(0.0, len(mic) / mic_sr, num=len(mic), endpoint=False)
+        x_new = np.linspace(
+            0.0,
+            len(mic) / mic_sr,
+            num=int(len(mic) * ref_sr / mic_sr),
+            endpoint=False,
+        )
+        mic = np.interp(x_new, x_old, mic).astype(np.float32)
+        mic_sr = ref_sr
+
+    wav_base = run.ref_wav_start_t
+    if wav_base is None:
+        return {"_error": "cannot determine WAV start time"}
+
+    results: dict = {}
+    for s in run.sentences:
+        pb_start = s.t_playback_open if s.t_playback_open is not None else s.t_speak
+        t_start = pb_start - wav_base
+        t_end = (s.t_end - wav_base) if s.t_end is not None else (t_start + 10.0)
+        i0 = max(0, int(t_start * ref_sr))
+        i1 = min(len(ref), len(mic), int(t_end * ref_sr))
+        if i1 <= i0:
+            results[s.idx] = {"estimated_delay_ms": None, "delay_correlation": None}
+            continue
+        estimate = _estimate_ref_delay(
+            ref[i0:i1],
+            mic[i0:i1],
+            ref_sr,
+            max_delay_ms=max_delay_ms,
+        )
+        results[s.idx] = estimate or {
+            "estimated_delay_ms": None,
+            "delay_correlation": None,
+        }
     return results
 
 
@@ -437,6 +681,113 @@ def self_interrupt_summary(run: ParsedRun) -> dict:
         "suspects": suspects,
         "rejected_while_speaking": len(rejected_while_speaking),
     }
+
+
+def _ref_quality_label(wm: Optional[dict]) -> str:
+    if not wm or wm.get("duration_s", 0.0) <= 0.0:
+        return "unknown"
+    peak = wm.get("peak")
+    active_rms = wm.get("active_rms")
+    rms = wm.get("rms")
+    if peak is None or peak < 0.005 or wm.get("first_audio_offset_s") is None:
+        return "no-ref"
+    if (
+        (active_rms is not None and active_rms < 0.01)
+        or (rms is not None and rms < 0.003)
+    ):
+        return "weak-ref"
+    return "ok"
+
+
+def _ref_delay_summary(frames: list[DTDFrame]) -> str:
+    delays = [f.ref_delay_ms for f in frames if f.ref_delay_ms is not None]
+    if not delays:
+        return ""
+    lo = min(delays)
+    hi = max(delays)
+    if abs(lo - hi) < 0.5:
+        return f" ref_delay={lo:.0f}ms"
+    avg = sum(delays) / len(delays)
+    return f" ref_delay={avg:.0f}ms range={lo:.0f}-{hi:.0f}ms"
+
+
+def _barge_phase(be: BargeEvent, run: ParsedRun, wav_metrics: Optional[dict]) -> str:
+    if be.sentence_idx is None or be.sentence_idx >= len(run.sentences):
+        return "unknown"
+    sent = run.sentences[be.sentence_idx]
+    wm = wav_metrics.get(sent.idx) if wav_metrics else None
+    if wm and wm.get("first_audio_log_t") is not None:
+        if be.t < float(wm["first_audio_log_t"]) - 0.02:
+            return "pre-first-ref-audio"
+        return "after-first-ref-audio"
+    if sent.t_playback_open is not None and be.t < sent.t_playback_open:
+        return "pre-playback-open"
+    if wm and _ref_quality_label(wm) in ("no-ref", "weak-ref"):
+        return _ref_quality_label(wm)
+    return "unknown"
+
+
+def diagnostic_findings(
+    run: ParsedRun,
+    wav_metrics: Optional[dict] = None,
+    delay_metrics: Optional[dict] = None,
+) -> list[str]:
+    """Human-focused anomalies that should be obvious in a run review."""
+    findings: list[str] = []
+
+    for be in run.barge_events:
+        phase = _barge_phase(be, run, wav_metrics)
+        if phase in ("pre-first-ref-audio", "pre-playback-open"):
+            sent = run.sentences[be.sentence_idx] if be.sentence_idx is not None else None
+            if sent is not None:
+                rel = be.t - sent.t_speak
+                wm = wav_metrics.get(sent.idx) if wav_metrics else None
+                onset = wm.get("first_audio_offset_s") if wm else None
+                if onset is not None:
+                    findings.append(
+                        f"sentence[{sent.idx}] {be.kind} barge at +{rel:.3f}s before "
+                        f"first playback reference audio (+{float(onset):.3f}s)"
+                    )
+                else:
+                    findings.append(
+                        f"sentence[{sent.idx}] {be.kind} barge at +{rel:.3f}s before playback opened"
+                    )
+
+    if wav_metrics:
+        for s in run.sentences:
+            wm = wav_metrics.get(s.idx)
+            quality = _ref_quality_label(wm)
+            if quality == "no-ref":
+                findings.append(f"sentence[{s.idx}] playback reference has no detected audio")
+            elif quality == "weak-ref":
+                findings.append(
+                    f"sentence[{s.idx}] playback reference is weak "
+                    f"(rms={wm.get('rms')} active_rms={wm.get('active_rms')} peak={wm.get('peak')})"
+                )
+
+    if delay_metrics and run.aec_config_ref_delay_ms is not None:
+        for s in run.sentences:
+            dm = delay_metrics.get(s.idx)
+            if not dm:
+                continue
+            est = dm.get("estimated_delay_ms")
+            corr = dm.get("delay_correlation")
+            if est is None or corr is None:
+                continue
+            if (
+                corr >= 0.15
+                and abs(float(est) - run.aec_config_ref_delay_ms) >= 50.0
+            ):
+                findings.append(
+                    f"sentence[{s.idx}] AEC delay mismatch: config={run.aec_config_ref_delay_ms:.0f}ms "
+                    f"estimated={float(est):.0f}ms corr={float(corr):.2f}"
+                )
+
+    if not findings:
+        findings.append(
+            "no first-audio/ref-energy/AEC-delay anomalies detected from available data"
+        )
+    return findings
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +900,7 @@ def _dtd_summary(frames: list[DTDFrame]) -> str:
     return (
         f"{len(frames)} frames: fired={fired}/{len(frames)} "
         f"gated={gated}/{len(frames)} avg_incoh={avg_incoh:.2f}"
+        f"{_ref_delay_summary(frames)}"
     )
 
 
@@ -557,23 +909,52 @@ def _dtd_context_str(ctx: list[DTDFrame]) -> str:
         return "  (no DTD context)"
     lines = []
     for f in ctx:
+        extra = ""
+        if f.coh_verdict is not None or f.ref_delay_ms is not None:
+            extra = f" coh={f.coh_verdict} coh_veto={f.coh_veto} ref_delay={f.ref_delay_ms}ms"
         lines.append(
             f"  dtd D={f.D:.1f} gated={f.gated} incoh={f.incoh:.2f} "
-            f"raw={f.raw:.4f} resid={f.resid:.4f}"
+            f"raw={f.raw:.4f} resid={f.resid:.4f}{extra}"
         )
     return "\n".join(lines)
 
 
-def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None) -> str:
+def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metrics: Optional[dict] = None) -> str:
     base = run.run_start_t or 0.0
     lines: list[str] = []
     lines.append(f"=== Run Diagnostics: {run.run_id} ===\n")
+    if run.aec_backend or run.aec_config_ref_delay_ms is not None:
+        lines.append(
+            "AEC: "
+            f"backend={run.aec_backend or 'unknown'} "
+            f"configured_ref_delay={run.aec_config_ref_delay_ms if run.aec_config_ref_delay_ms is not None else 'unknown'}ms "
+            f"apm_always_on={run.apm_always_on}"
+        )
+
+    lines.append("--- Findings ---")
+    for finding in diagnostic_findings(run, wav_metrics, delay_metrics):
+        lines.append(f"  - {finding}")
+    lines.append("")
 
     # --- Sentence Timeline ---
     lines.append("--- Sentence Timeline ---")
     for s in run.sentences:
         t_off = _fmt_offset(s.t_speak, base) if base else f"t={s.t_speak:.3f}"
         lines.append(f"\n[{s.idx}] {t_off}  \"{s.text[:80]}\"")
+        if s.tts_sanitize:
+            lines.append(
+                "     tts sanitize: "
+                f"status={s.tts_sanitize.get('status')} "
+                f"spoken={str(s.tts_sanitize.get('spoken', ''))[:80]!r}"
+            )
+        if s.tts_resolved:
+            lines.append(
+                "     tts resolved: "
+                f"sid={s.tts_resolved.get('sid')} "
+                f"speed={s.tts_resolved.get('speed')} "
+                f"lowpass={s.tts_resolved.get('lowpass_hz')} "
+                f"streaming_candidate={s.tts_resolved.get('streaming_candidate')}"
+            )
         if s.t_playback_open is not None:
             lines.append(f"     playback-open: +{s.playback_open_latency_ms:.0f}ms after speak command")
         else:
@@ -601,10 +982,34 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None) -> str:
                     noise_flag = "  [HIGH-HF: possible white-noise/artifact]"
                 if wm.get("clip_pct", 0) > 5:
                     noise_flag += "  [CLIPPING]"
+                quality = _ref_quality_label(wm)
+                if quality in ("no-ref", "weak-ref"):
+                    noise_flag += f"  [{quality.upper()}]"
+                onset = wm.get("first_audio_offset_s")
+                onset_str = (
+                    f" first_ref_audio=+{float(onset):.3f}s"
+                    if onset is not None else " first_ref_audio=(none)"
+                )
                 lines.append(
                     f"     ref_wav ({wm['duration_s']:.2f}s): "
-                    f"rms={wm['rms']:.4f} peak={wm['peak']:.4f} "
-                    f"clip={wm['clip_pct']:.1f}% hf_ratio={wm['hf_ratio']:.3f}{noise_flag}"
+                    f"rms={wm['rms']:.4f} active_rms={wm.get('active_rms')} "
+                    f"peak={wm['peak']:.4f} clip={wm['clip_pct']:.1f}% "
+                    f"hf_ratio={wm['hf_ratio']:.3f}{onset_str}{noise_flag}"
+                )
+        if delay_metrics and s.idx in delay_metrics:
+            dm = delay_metrics[s.idx]
+            if dm.get("estimated_delay_ms") is not None:
+                mismatch = ""
+                if (
+                    run.aec_config_ref_delay_ms is not None
+                    and dm.get("delay_correlation") is not None
+                    and float(dm["delay_correlation"]) >= 0.15
+                    and abs(float(dm["estimated_delay_ms"]) - run.aec_config_ref_delay_ms) >= 50.0
+                ):
+                    mismatch = "  [AEC-DELAY-MISMATCH]"
+                lines.append(
+                    f"     mic/ref delay estimate: {dm['estimated_delay_ms']:.1f}ms "
+                    f"corr={dm['delay_correlation']:.3f}{mismatch}"
                 )
 
     # --- Barge-in Event Log ---
@@ -682,19 +1087,27 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None) -> str:
     return "\n".join(lines)
 
 
-def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dict] = None) -> dict:
+def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dict] = None, delay_metrics: Optional[dict] = None) -> dict:
     """Structured JSON-serializable representation."""
     si = si or self_interrupt_summary(run)
     pf = pass_fail_verdict(run)
     return {
         "run_id": run.run_id,
+        "aec": {
+            "backend": run.aec_backend,
+            "configured_ref_delay_ms": run.aec_config_ref_delay_ms,
+            "apm_always_on": run.apm_always_on,
+        },
         "self_interrupt": si,
         "pass_fail": pf,
+        "findings": diagnostic_findings(run, wav_metrics, delay_metrics),
         "sentences": [
             {
                 "idx": s.idx,
                 "t_speak": s.t_speak,
                 "text": s.text,
+                "tts_sanitize": s.tts_sanitize,
+                "tts_resolved": s.tts_resolved,
                 "queue_depth": s.queue_depth,
                 "playback_open_latency_ms": s.playback_open_latency_ms,
                 "t_end": s.t_end,
@@ -713,15 +1126,21 @@ def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dic
                         "t": be.t,
                         "speaking": be.speaking_at_event,
                         "suspicion": classify_barge_event(be),
+                        "phase": _barge_phase(be, run, wav_metrics),
                         "dtd_context": [
-                            {"D": f.D, "gated": f.gated, "incoh": f.incoh,
-                             "raw": f.raw, "resid": f.resid}
+                            {
+                                "D": f.D, "gated": f.gated, "incoh": f.incoh,
+                                "raw": f.raw, "resid": f.resid,
+                                "coh": f.coh_verdict, "coh_veto": f.coh_veto,
+                                "ref_delay_ms": f.ref_delay_ms,
+                            }
                             for f in be.dtd_context
                         ],
                     }
                     for be in s.barge_events
                 ],
                 "wav": wav_metrics.get(s.idx) if wav_metrics else None,
+                "mic_ref_delay": delay_metrics.get(s.idx) if delay_metrics else None,
             }
             for s in run.sentences
         ],
@@ -740,6 +1159,10 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument(
         "--wav", default=None,
         help="Path to .ref.wav (playback reference); auto-discovered if omitted",
+    )
+    parser.add_argument(
+        "--mic-wav", default=None,
+        help="Path to session mic .wav for mic/ref delay estimate; auto-discovered if omitted",
     )
     parser.add_argument(
         "--hf-cutoff", type=int, default=4000,
@@ -770,11 +1193,20 @@ def main(argv: Optional[list] = None) -> int:
         if candidate.exists():
             wav_path = str(candidate)
 
+    mic_wav_path = args.mic_wav
+    if mic_wav_path is None:
+        candidate = Path(txt_path).with_suffix(".wav")
+        if candidate.exists():
+            mic_wav_path = str(candidate)
+
     wav_metrics: Optional[dict] = None
+    delay_metrics: Optional[dict] = None
     if wav_path:
         try:
             import numpy  # noqa: F401 — check available before calling
             wav_metrics = analyze_ref_wav(wav_path, run, hf_cutoff_hz=args.hf_cutoff)
+            if mic_wav_path:
+                delay_metrics = analyze_mic_ref_wav(mic_wav_path, wav_path, run)
         except ImportError:
             print(
                 "WARNING: numpy not available; WAV analysis skipped",
@@ -791,9 +1223,9 @@ def main(argv: Optional[list] = None) -> int:
         print(f"  first_audio_avg_ms: {pf['first_audio_avg_ms']}")
         print(f"  pre_first_audio_noise: {pf['pre_first_audio_noise']}")
     elif args.json:
-        print(json.dumps(to_json(run, wav_metrics), indent=2))
+        print(json.dumps(to_json(run, wav_metrics, delay_metrics=delay_metrics), indent=2))
     else:
-        print(format_report(run, wav_metrics))
+        print(format_report(run, wav_metrics, delay_metrics))
 
     if getattr(args, "exit_code", False) or getattr(args, "verdict_only", False):
         if pf["overall"] == "FAIL":

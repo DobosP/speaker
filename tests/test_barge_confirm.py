@@ -228,3 +228,58 @@ def test_reads_like_own_speech_overlap_and_novelty():
     assert eng._reads_like_own_speech("upon a time there was") is True
     assert eng._reads_like_own_speech("what are you talking about") is False
     assert eng._reads_like_own_speech("") is True  # inaudible -> not user evidence
+
+
+def test_now_playing_covers_ring_eviction():
+    # Live bug (run-20260702-223217): a long reply enqueues more sentences than
+    # the ring holds, evicting the CURRENTLY PLAYING one -- its echo then passed
+    # the filter and false-confirmed. _now_playing is the authoritative reference.
+    eng = _engine(_Rec())
+    for i in range(64):  # flood the ring far past maxlen
+        eng._recent_spoken.append(f"filler sentence number {i} with unique words")
+    eng._now_playing = "He would never abandon the outbreak in my village."
+    assert eng._reads_like_own_speech("he would") is True
+    assert eng._reads_like_own_speech("outbreak my") is True
+    assert eng._reads_like_own_speech("please stop talking now") is False
+
+
+# --- unconfirmed windows teach the DTD charts ------------------------------------
+
+
+class _FakeDTD:
+    def __init__(self):
+        self.echo_obs: list[tuple] = []
+
+    def observe_echo(self, raw, resid, incoh):
+        self.echo_obs.append((raw, resid, incoh))
+
+
+def test_unconfirmed_window_teaches_dtd_charts():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    r, s = _FakeRecognizer([""]), _FakeStream()
+    now = time.monotonic()
+    eng._begin_barge_confirm(r, s, now)
+    eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)      # banks one echo obs
+    eng._barge_confirm_step(r, s, _BLOCK, now + 0.2)      # banks another
+    assert eng._barge_confirm_step(r, s, _BLOCK, now + 99.0) is False  # expiry
+    # All banked blocks (incl. the expiry block) were fed to the charts, so the
+    # echo level is LEARNED and the trigger flood decays.
+    assert len(eng._dtd.echo_obs) == 3
+    assert eng._confirm_echo_obs == []  # cleared with the window
+
+
+def test_confirmed_window_discards_echo_obs():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._dtd = _FakeDTD()
+    eng._echo_coherence = None
+    r, s = _FakeRecognizer(["", "hey wait"]), _FakeStream()
+    now = time.monotonic()
+    eng._begin_barge_confirm(r, s, now)
+    assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.1) is True  # user confirmed
+    # User speech contaminated the window -> nothing taught to the echo charts.
+    assert eng._dtd.echo_obs == []
+    assert eng._confirm_echo_obs == []

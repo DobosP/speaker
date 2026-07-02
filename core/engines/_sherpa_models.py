@@ -214,13 +214,43 @@ def build_tts(c: "SherpaConfig"):
     downstream is family-agnostic -- ``generate(text, sid=, speed=, callback=)`` and
     ``.sample_rate`` are identical -- so voice selection stays ``tts_speaker_id`` and
     the sample rate auto-adapts (Kokoro is 24 kHz). The VITS path is byte-identical
-    when ``tts_voices`` is empty (default), so this is a drop-in, opt-in addition."""
+    when ``tts_voices`` is empty (default), so this is a drop-in, opt-in addition.
+
+    Fails OPEN like ``build_final_recognizer``: a Kokoro config whose model files
+    are missing (e.g. ``tts_voices`` set but the package was never fetched) is
+    caught BEFORE the native constructor -- which otherwise aborts cryptically --
+    and returns ``None`` with a clear, actionable warning. The engine already
+    treats ``_tts is None`` as "no speech" (a mute assistant + a loud log beats a
+    hard crash on the capture thread), and the doctor preflight names the fix."""
     if not c.tts_model:
         return None
+    import os
+
+    kokoro = bool(getattr(c, "tts_voices", ""))
+    if kokoro:
+        # Kokoro's native loader hard-aborts (not a catchable Python error) on a
+        # missing model/voices/tokens file, so guard the required paths up front.
+        missing = [
+            p for p in (c.tts_model, c.tts_voices, c.tts_tokens)
+            if p and not os.path.exists(p)
+        ]
+        if missing:
+            import logging
+
+            logging.getLogger("speaker.sherpa").warning(
+                "Kokoro TTS is selected (tts_voices set) but required file(s) are "
+                "missing: %s -- speech is DISABLED until they exist. Fetch the "
+                "package (model.onnx + voices.bin + tokens.txt + espeak-ng-data) "
+                "with `python -m tools.setup_models --kokoro` and point "
+                "tts_model/tts_voices/tts_tokens at it, or clear tts_voices to use "
+                "the Piper/VITS voice.",
+                ", ".join(missing),
+            )
+            return None
     import sherpa_onnx
 
     tts_config = sherpa_onnx.OfflineTtsConfig()
-    if getattr(c, "tts_voices", ""):  # Kokoro (voices.bin present)
+    if kokoro:  # Kokoro (voices.bin present)
         k = tts_config.model.kokoro
         k.model = c.tts_model
         k.voices = c.tts_voices
@@ -236,4 +266,14 @@ def build_tts(c: "SherpaConfig"):
             tts_config.model.vits.data_dir = c.tts_data_dir
     tts_config.model.num_threads = c.resolved_tts_threads
     tts_config.model.provider = c.provider
-    return sherpa_onnx.OfflineTts(tts_config)
+    try:
+        return sherpa_onnx.OfflineTts(tts_config)
+    except Exception:  # noqa: BLE001 - fail open to no-TTS with a loud, actionable log
+        import logging
+
+        logging.getLogger("speaker.sherpa").warning(
+            "TTS model failed to build (%s backend) -- speech disabled; verify the "
+            "model paths in the sherpa config.", "kokoro" if kokoro else "vits",
+            exc_info=True,
+        )
+        return None

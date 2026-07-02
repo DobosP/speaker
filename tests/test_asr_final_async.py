@@ -109,11 +109,29 @@ def test_finalize_dispatches_upgraded_final_and_backdated_speech_end():
     rec = _Rec()
     eng = _engine(rec)
     eng._final_recognizer = _FakeOffline("Helen, how are you.")
-    seg = np.ones(2 * 16000, dtype="float32")  # 2.0s -> not short -> trust 2nd pass
-    eng._finalize_and_dispatch(seg, "WHOLE HOLLO", 123.5)
+    seg = np.ones(2 * 16000, dtype="float32")  # 2.0s
+    # The 2nd pass provides the punctuation/casing upgrade of an AGREEING streaming
+    # final -- the common real correction the agreement_guard admits (word overlap).
+    eng._finalize_and_dispatch(seg, "helen how are you", 123.5)
     assert rec.finals == ["Helen, how are you."]  # the clean 2nd-pass text reached the LLM
     # SPEECH_END is stamped with the captured perf_counter, however late this ran.
     assert (SPEECH_END, {"at": 123.5}) in rec.metrics
+
+
+def test_finalize_keeps_streaming_when_second_pass_disagrees_on_long_clip():
+    # Guard the guard: a 2nd pass that INVENTS a different sentence with near-zero
+    # overlap on a long clip is indistinguishable from a hallucination, so the
+    # fail-closed agreement_guard keeps the (post-processed) streaming final rather
+    # than trusting the 2nd pass. Locks the core/asr_text.py hardening
+    # (commits 65bc852 / 5bc03cb) at the finalize/dispatch integration level.
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._final_recognizer = _FakeOffline("Helen, how are you.")
+    seg = np.ones(2 * 16000, dtype="float32")  # 2.0s -> not short, but no overlap
+    eng._finalize_and_dispatch(seg, "WHOLE HOLLO", 123.5)
+    assert rec.finals, "a final was still dispatched"
+    kept = rec.finals[0].lower()
+    assert "whole" in kept and "helen" not in kept  # streaming kept, hallucination rejected
 
 
 def test_finalize_without_second_pass_dispatches_streaming_final():

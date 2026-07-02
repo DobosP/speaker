@@ -1,5 +1,7 @@
 # Session 2026-06-05 — Live demo of barge-in + smart-routing (mock-user injection)
 
+> **Status (2026-07-02):** immutable dated record — the "both tiers = gemma3:4b in `config.local.json`" setting below was a point-in-time workaround; model tiering is now per-machine (committed `config.json` = gemma3:12b/4b; e.g. gemma4:12b pinned in `config.local.json` on the 4090 box). Do not copy config claims from this doc.
+
 **Goal:** A live, on-machine demo driving the REAL pipeline (sherpa ASR → Ollama
 LLM → sherpa TTS) over a mock user, to test response speed, interrupts, multiple
 questions, and the smart-routing "answering layer". Used `tools.live_session

@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-07-02):** describes the pre-refactor stack —
+> `scripts/run_tests.py`, `python main.py --record`, `benchmarks/`, and
+> `VoiceAssistant` were all deleted with the `main.py` monolith
+> (2026-05-26, `docs/adr/0002`). The current testing guide is
+> [`docs/testing.md`](../testing.md) (staged runner: `python tools/run_tests.py`).
+> Historical record.
+
 # Audio TDD Workflow
 
 This project uses three layers of voice testing so failures can be reproduced

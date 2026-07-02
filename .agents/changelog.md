@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-07-02):** historical — dormant since its single 2026-05-28
+> entry; the swarm loop it logged is retired (see `.agents/README.md` banner,
+> `docs/adr/0007`). The live ledger is `.agents/backlog.md`; shipped work is
+> recorded in `STATUS.md` + `docs/session_*.md` handoffs.
+
 # Swarm changelog
 
 One entry per shipped (green + pushed) version.

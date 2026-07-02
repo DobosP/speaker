@@ -1,5 +1,7 @@
 # Session 2026-06-03 — voice pipeline: STT fixed (SenseVoice), barge-in still flaky, deep analysis
 
+> **Status (2026-07-02):** immutable dated record — the DTLN stack + residual-floor gate and the config tunings below were superseded by `AdaptiveDTD` (`docs/adr/0004`) + WebRTC APM (`open_speaker` profile, `docs/adr/0006`; DTLN ships no models); do not apply the "CRITICAL for the other machine" config from this doc.
+
 **Branch:** `main` (all work landed + pushed to origin). **Tests:** 1322 passed, 13
 skipped (green). Worked on the **Windows desktop** (i9-13980HX, RTX 4090 Laptop).
 

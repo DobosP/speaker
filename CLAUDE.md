@@ -2,277 +2,76 @@
 
 Guidance for Claude Code working in this repo. Read this first every session.
 
+Docs discipline: see AGENTS.md — STATUS.md + ADR update is part of definition of done.
+
 ## What this project is
 
-A local-first, real-time voice assistant (`ASR → LLM → TTS`) with barge-in and
-a mode-based control plane. The desktop Python runtime in `core/` is the
-reference implementation; an on-device **Android app** lives in `mobile/`
-(Flutter), and a **host + thin-client** path (`remote/` + `web/`, over
-LiveKit/WebRTC) lets a browser or phone talk to one running brain. The **goal**
-is an always-listening, mode-based assistant across
-Linux/Windows/macOS/Android/iOS; the always-on capture/respond loop runs
-on-device (raw audio never leaves), with an optional cloud *thinking tier*
-(main planner / research / multimodal summarize / web search) for work that
-exceeds local headroom. The boundary is `docs/target_architecture.md` §9.7.
+A local-first, real-time voice assistant (`ASR → LLM → TTS`) with barge-in and a
+mode-based control plane, targeting always-listening use across
+Linux/Windows/macOS/Android/iOS. The desktop Python runtime `core/`
+(`VoiceRuntime` on sherpa-onnx) is the reference; `mobile/` is the on-device
+Flutter app; `remote/` + `web/` is the host + thin-client path (LiveKit/WebRTC).
+Shape (decided): **one portable core + thin per-platform shells** sharing the
+`always_on_agent` `AgentEvent`/`Mode` contract (`docs/adr/0001`); the legacy
+`main.py` monolith is deleted (`docs/adr/0002`). Read
+`docs/target_architecture.md` §9 before structural changes.
 
-> **HARD REQUIREMENT — open-speaker barge-in, NO headphones (owner decision,
-> 2026-06-05).** Barge-in MUST work on the **bare laptop speaker** (the open
-> Realtek speaker). **Headphones are NOT an acceptable requirement and must
-> never be assumed or suggested as the fix.** The earlier "open-speaker
-> barge-in is a hardware limit → use headphones" conclusion in prior session
-> notes is **REJECTED**: robust open-speaker barge-in is required work — the
-> assistant must NOT self-interrupt on its own TTS leaking into the mic, yet
-> MUST cut off promptly on a real talk-over. This is an open P1 (see
-> `.agents/backlog.md`); the levers are AEC calibration (`aec_ref_delay_ms` vs
-> the real ~260ms acoustic delay), gating DTLN to run only while `_speaking`,
-> and triggering barge on the reference-**coherence** detector (which sees the
-> user) rather than the DTLN-suppressed residual. Evidence: the live
-> `logs/runs/run-20260605-204551` bundle (self-interrupts + rejected real barges).
+**Local/cloud boundary (`docs/target_architecture.md` §9.7 — hard invariant):**
+STT, TTS, VAD, speaker-ID, the always-on capture loop, and the fast/answering
+LLM tier stay **on-device — raw audio never leaves the device**. The thinking
+tier (main planner / research / multimodal summarize / web search) may use
+cloud; only post-ASR text + screen captures + files given to the assistant may
+cross over, and only when invoked. This boundary supersedes the earlier blanket
+"no cloud STT/LLM/TTS by default" stance; the always-on loop is still fully local.
 
-> **Architecture reference:** `docs/unified_architecture.md` is the single
-> **current-truth** overview (how every subsystem is wired today, §0–§13). It
-> sits between `docs/architecture.md` (as-built) and `docs/target_architecture.md`
-> (north-star) and absorbs the dated `docs/*_2026-05.md` subsystem docs (now
-> banner-marked "superseded"). Start there; the two poles remain the authorities
-> for as-built detail and structural decisions respectively.
+> **HARD REQUIREMENT — open-speaker barge-in, NO headphones (owner decision
+> 2026-06-05; D-A, `docs/adr/0008`).** Barge-in MUST work on the bare laptop
+> speaker; headphones must never be assumed or suggested as the fix. Status:
+> **DONE + live-validated** via the device-adaptive `AdaptiveDTD`
+> (`docs/adr/0004`). **Never hard-set `aec_ref_delay_ms` to 260 ms** — calibrate
+> per machine with `tools/echo_probe.py` or use `aec_auto_delay`
+> (`docs/adr/0005`). Remaining open P1 (2026-06-21): the DTD barge gate reads
+> the APM-NS-suppressed residual under `open_speaker` — see `.agents/backlog.md`.
 
-> **Cross-platform shape (decided):** one portable **core** + thin **per-platform
-> shells** — *not* a monolith, *not* independent apps. Platforms share the
-> `always_on_agent` **`AgentEvent`/`Mode` contract** (plus its tests); the small
-> brain is reimplemented per runtime (Python on desktop/server, Dart on mobile).
-> Deployment topology is **hybrid**: on-device first for the always-on loop
-> (STT/TTS/VAD/speaker-ID + the fast LLM tier stay local; raw audio never
-> leaves), with the `remote/` host path as the iOS-background story and the
-> instant-reach fallback. The thinking tier (main LLM / research / multimodal
-> summarize / web search) may use cloud — see §9.7. Full rationale + the
-> resolved decisions live in **`docs/target_architecture.md`** §9 — read it
-> before structural changes.
->
-> The refactor removed the hand-rolled audio stack in favour of `sherpa-onnx`;
-> the `always_on_agent/` brain is kept and made real; the old `main.py` monolith
-> is **deleted**. The desktop runtime is `core/` (`VoiceRuntime`): a swappable
-> `AudioEngine` (sherpa-onnx production, scripted for tests, LiveKit for remote)
-> wired to the brain with real LLM-backed, cancellable capabilities. Try it
-> without audio: `python -m core --engine console --llm echo`.
-
-## Session bootstrap (run first every session)
-
-This project is worked on from **multiple machines**, and per-user Claude memory
-does **not** travel between them — prior-session state lives in the repo. At the
-start of a session, reconstruct where things left off **before touching code**:
+## Quickstart
 
 ```
-python -m tools.session_bootstrap   # pure-local, stdlib-only, <1s, no deps
+python -m tools.session_bootstrap            # session start: rebuild context (<1s, no deps)
+python -m core --engine console --llm echo   # run without audio/models
+python -m core --engine sherpa               # on-device audio
+python -m pytest tests -q                    # logic suite (the CI gate)
+python tools/run_tests.py fast               # staged runner, Tier 0
+python -m tools.doctor                       # preflight when a run won't start
 ```
 
-It prints a one-page briefing assembled in this read order, then a
-**Recommended working strategy** block:
-1. `.agents/status.json` — machine profile + last test verdict (green/red + counts)
-2. `docs/session_*.md` (newest by filename) — headline, branch, first 3 next-steps
-3. `logs/runs/*.summary.json` (3 newest) — per-run `stuck_hints`, errors, slow turns
-4. `.agents/backlog.md` — OPEN P0 items only
+## Hard policies
 
-The briefing is **advisory** — it sets direction, it does not change config or git
-state. If the tool is unavailable, walk the read order above by hand. A copy is
-written to `logs/session_<ts>_bootstrap.md` (gitignored).
+- **Git (fleet standard 2026-06-24, `docs/adr/0007`; see AGENTS.md).** `main` is
+  the integration branch; do feature work on a short-lived branch. Commit
+  locally when the work is complete and the logic suite is green. **Never push,
+  merge to `main`, or delete branches without Paul's explicit ask.** The older
+  2026-05-30 "standing session workflow" authorization is revoked; do not
+  resurrect it from prior session notes.
+- **On the Windows box**, the guard hook (`.claude/hooks/guard.ps1`) blocks the
+  work identity and (since 2026-07-02) pushes targeting `main`/`master` — land
+  via a PR; procedure + guard limits in `docs/windows_landing_workflow.md`.
+- **Secrets live in [`CREDENTIALS.md`](CREDENTIALS.md)** — single source of
+  truth for every credential. **Golden rule:** read from the env at runtime;
+  **never** hard-code, echo, or commit a token — reference it only as `$VAR`.
+- **Committed run bundles must be PII-free per §9.7** (no raw voice WAVs /
+  verbatim-PII transcripts) — scrub or omit before `git add`; see `docs/debugging.md`.
 
-At session **END**, if meaningful work landed, refresh `.agents/status.json`
-(machine + `last_verdict` + `next`) and write a
-`docs/session_<YYYY-MM-DD>_<slug>.md` handoff (header / branch-commit map /
-what-landed / environment-on-`<machine>` / **Next steps (pick up here)**) so the
-next session's bootstrap reads fresh state. See `tools/session_bootstrap.py` for
-the exact fields it parses.
+## Docs map
 
-## Layout
-
-- `core/` — **the runtime (all new work goes here).** `engine.py` (the
-  `AudioEngine` seam), `engines/sherpa.py` (production, on-device; CPU STT/TTS
-  with auto-tuned threads + explicit `provider`), `engines/scripted.py`
-  (tests/console), `engines/livekit.py` (WebRTC transport for the remote
-  host+thin-client path), `engines/speaker_gate.py` (speaker-ID barge-in gate),
-  keyword-spotter **command fast-path** (sherpa KWS runs alongside ASR and
-  fires `on_command`; the runtime maps it to a control event via the
-  `commands` config block — instant actions like "stop" with no LLM in the loop),
-  `llm.py` (the `LLMClient` protocol + `EchoLLM` fake, `OllamaLLM` for desktop
-  GPU, `LlamaCppLLM` for on-device GGUF; all accept optional `images=` for
-  multimodal Gemma 3), `capabilities.py` (LLM-backed cancellable providers;
-  two-model split — fast model answers, main/multimodal model researches),
-  `runtime.py` (`VoiceRuntime` orchestrator), `app.py` (CLI; builds models from
-  the `llm` config block and applies the selected device profile). Run:
-  `python -m core --engine console --llm echo`.
-- `always_on_agent/` — the **control-plane "brain"** (modes, priority event bus,
-  supervisor, cancellable threaded tasks, intent analyzer). The keeper. See its
-  `README.md` and `docs/archive/always_on_agent_layer.md`. Its `events.py`
-  (`AgentEvent`/`Mode`) is **the shell↔core contract** every platform shares.
-- `mobile/` — **on-device Android app** (Flutter): ASR/LLM/TTS fully local via
-  `sherpa_onnx` + `flutter_gemma` (Gemma 3 1B, MediaPipe/LiteRT). Today it is a
-  **parallel Dart loop** (`lib/assistant.dart`) that re-derives core behavior
-  (command fast-path, streaming TTS) rather than sharing the brain — the planned
-  convergence is onto the `AgentEvent` contract. See `mobile/README.md`.
-- `remote/` — **host + thin-client path** (optional; `requirements-remote.txt` +
-  `LIVEKIT_*`). `token_server.py` (FastAPI: mints LiveKit tokens, a text `/chat`,
-  serves `web/`), `worker.py` (joins a LiveKit room running the full Python brain
-  via `--engine livekit`). `web/index.html` is the browser client.
-- `utils/memory.py` (+ `memory_writer.py`, `memory_config.py`) — Postgres-backed
-  smart memory (the only surviving `utils/` modules). See `MEMORY.md`. Keep;
-  will move to SQLite on mobile.
-- `tests/` — pytest. `tests/sandbox/` is the device-simulation harness
-  (latency/LLM-weight profiles + simulated engine/LLM) for middle-layer tests;
-  `test_core_runtime.py` is fast logic; `test_sandbox_middle_layer.py` is
-  realistic-timing/concurrency. No audio/model deps.
-- `tools/` — dev tooling (no app code). `run_tests.py` + `testing/` (staged
-  pytest runner with reports under `test-reports/`); `specsim/` (machine-spec
-  simulator that renders an HTML capability report — see Conventions);
-  `cloudchat.py` (parallel cloud-LLM REPL: fires N prompts in parallel at the
-  endpoint in `config.llm.cloud`, streams them with `[Qn]` prefixes, `/cancel`
-  hard-closes the HTTP stream so the provider stops billing; needs `openai`);
-  `recommend_profile.py` (stdlib hardware probe → prints which
-  `device_profiles` entry to use; see `docs/target_architecture.md` §10).
-- `config.json` — runtime config. `docs/` — architecture and subsystem docs.
-
-> The legacy stack (`main.py`, `utils/audio.py`, the hand-rolled STT/TTS/LLM
-> plumbing, `benchmarks/`, `scripts/`, and their tests) was deleted in the
-> refactor. Don't try to import them.
-
-## Conventions
-
-- Python, standard `pytest`. Run tests: `python -m pytest tests -q`. Tests are
-  categorized by **one marker taxonomy → four tiers** (Tier 0 unit/logic = the
-  default CI-safe set; Tier 2 `real_model` = real weights over fixtures, self-
-  skips without models; Tier 3 `live_output` = REAL speakers, double-gated behind
-  `SPEAKER_LIVE=1`). **Full guide: [`docs/testing.md`](docs/testing.md).** For
-  staged runs with structured reports (per-stage + a tabular run summary under
-  `test-reports/`), use `python tools/run_tests.py
-  list|unit|core|sandbox|memory|cloud|imports|e2e|real_model|live|full` (`fast`
-  aliases `unit`; `live` preflights `tools.live_session --check` + sets
-  `SPEAKER_LIVE=1` — the only stage that makes sound).
-  The `imports` stage is a whole-tree import smoke that catches syntax errors
-  and missing optional libs across `core/`/`always_on_agent/`/`remote/`/`tools/`
-  before any logic test runs — use it as a "does the code compile and are the
-  libraries present" preflight.
-- Run the app: `python -m core --engine console --llm echo` (no audio/models);
-  `python -m core --engine sherpa` for on-device audio;
-  `python -m core --engine replay --replay-dir <dir>` to run the real engine
-  headless over recorded `.npy`/`.wav` fixtures (no sound card);
-  `python -m remote.worker` for the host+thin-client path (joins a LiveKit room;
-  needs `LIVEKIT_*`). Engines: `--engine {console,sherpa,replay,livekit}`; LLM:
-  `--llm {echo,ollama,llamacpp}`.
-- Latency instrumentation: `core/metrics.py` records per-turn stage timings
-  (`speech_end → asr_final → llm_first_token → tts_first_audio`, plus
-  `barge_in → barge_in_stop`) via `runtime.metrics`. The real engine, the
-  file-replay engine, and the sandbox sim engine all feed it through the
-  `on_metric` callback, so measured and simulated numbers share one shape.
-- **Run logs & debugging — read [`docs/debugging.md`](docs/debugging.md) when the
-  user reports a failed/stuck/slow run or attaches files.** Every run writes a
-  committable bundle under `logs/runs/run-<id>.{txt,summary.json}` (+ `.wav` with
-  `--record`) — **committed bundles must be PII-free per §9.7** (no raw voice
-  WAVs / verbatim-PII transcripts; scrub or omit before `git add`, see
-  `docs/debugging.md`): the `summary.json` has `stuck_hints`, per-turn latencies, every
-  LLM request, the conversation transcript, CPU/GPU/RAM telemetry, and errors;
-  the `.txt` is the full async DEBUG trace. `./session.sh` captures everything in
-  one go (`--debug` = console only; `--record` = audio). Recorded WAVs replay via
-  `python -m core --engine replay --replay-dir logs/runs` and become regression
-  tests. Preflight with `python -m tools.doctor`. `pytest` runs write the same
-  shape under `logs/tests/`. Capture is built to stay off the hot path: logging
-  is fully async (a queue handler that defers all formatting + I/O to one
-  background listener thread), recording uses a writer thread, and telemetry is
-  sampled on its own thread — so `--debug`/`--record` don't slow the real-time
-  pipeline. See `docs/debugging.md` §Performance for the reliability tradeoffs.
-- Real-model latency benchmark: `python -m tools.bench --fake` is a no-download
-  plumbing smoke test; `python -m tools.bench --profile phone --fixtures
-  tests/fixture_audio/virtual_real_world` fetches small Gemma GGUF (via
-  `$HUGGINGFACE_TOKEN`) + sherpa ONNX and runs the REAL ASR→LLM→TTS pipeline
-  over fixtures, writing a measured-vs-`specsim`-budget report under
-  `test-reports/perf/`. Model coordinates are overridable via a
-  `--models-manifest` JSON / `SPEAKER_BENCH_*` env vars.
-- LLM/device config (`config.json`): the `llm` block selects a `backend`
-  (`ollama` desktop-GPU, or `llamacpp` on-device GGUF) plus a `main_model`
-  (large/multimodal) and `fast_model` (snappy replies). `device_profiles`
-  (`desktop`, `phone`, …) are shallow-merged over the base per section; pick one
-  with `--device <name>` (default from `config.device`). Desktop runs
-  gemma3:12b + 4b on Ollama/GPU; the `phone` profile runs the **Python core**
-  under phone-like limits (small Gemma 4b/1b GGUF on `llama.cpp`, STT/TTS threads
-  dialed down) — Ollama is desktop-only. Note: the **shipped Flutter app**
-  (`mobile/`) is separate from these profiles and uses `flutter_gemma`
-  (MediaPipe/LiteRT), not `llama.cpp`, for its on-device LLM.
-- Simulate specs without hardware: `python -m tools.specsim` renders
-  `test-reports/specsim/index.html` (model-fit + responsiveness matrix + per-
-  device ASR→LLM→TTS timelines across 4090/Mac/Windows/phone/web). Numbers are
-  modelled estimates, not measurements — calibrate `tools/specsim/specs.py` from
-  real runs before trusting absolutes.
-- Keep new control-plane logic in `always_on_agent/`, typed and testable, not in `main.py`.
-- Prefer replay/transcript tests over tests that require live audio devices.
-- **Local/cloud boundary (`docs/target_architecture.md` §9.7).** STT, TTS,
-  VAD, speaker-ID, the always-on capture loop, and the fast/answering LLM
-  tier stay **on-device** — raw audio must never leave the device. The
-  *thinking tier* (main planner / research / multimodal summarize) and web
-  search **may use cloud**; only post-ASR text + screen captures + files
-  given to the assistant may cross over, and only when invoked. The earlier
-  "no cloud STT/LLM/TTS by default" stance is superseded by this boundary;
-  the always-on loop is still fully local.
-- CI: `.github/workflows/tests.yml` runs the logic suite (`python -m pytest tests`,
-  audio/model-dep tests excluded) on every push to `main` and every pull request.
-  Keep it green; it is the gate that lets the autofix loop below know when a
-  change is safe. `.github/workflows/perf.yml` is the (heavier) real-model
-  latency benchmark. It runs on every push to `main` (post-merge), on manual
-  `workflow_dispatch`, and on PRs labelled `perf`. It downloads models (cached;
-  uses the `HF_TOKEN` Actions secret), runs `python -m tools.bench`, uploads the
-  report as an artifact + the headline table to the job summary, and (on
-  main/dispatch) publishes the full HTML report to GitHub Pages at
-  https://dobosp.github.io/speaker/ . A GitHub CPU is a repeatable baseline, not
-  phone silicon — read it as calibration against `specsim`.
-  `android-apk.yml` builds + publishes the mobile APK on pushes touching
-  `mobile/**`; `publish-model.yml` republishes the gated Gemma model (see
-  Environment / git).
-
-## Environment / git
-
-- `main` is the integration branch and holds the latest work. Do feature work
-  on a short-lived branch and merge back to `main`.
-- **Standing session workflow (durably authorized — do not ask per action).**
-  When a session's work is complete and the logic suite is green
-  (`python -m pytest tests -q`), Claude may, without stopping to ask:
-  commit, push, **merge the short-lived branch into `main`, push `main`, and
-  delete that now-merged branch** (local; also remote if it was pushed). This
-  supersedes the older "only commit/push/merge when the user explicitly asks"
-  stance — a successful session ends by landing on `main` and cleaning up its
-  branch. **Still pause and confirm** only when: tests are red or the work is
-  not actually finished; the operation is destructive *beyond* deleting the
-  just-merged branch (e.g. force-push, history rewrite, deleting an *unmerged*
-  or shared branch); or `main` itself would regress. Surface a one-line summary
-  of what was merged/pushed/deleted so the user can see it after the fact.
-- Web sessions run in an ephemeral container; commit anything worth keeping.
-- **Secrets & tokens live in [`CREDENTIALS.md`](CREDENTIALS.md)** — the single
-  source of truth for every credential (the CI `HF_TOKEN` Actions secret, the
-  session `HUGGINGFACE_TOKEN` and `GIT_HUB_TOKEN` env vars, and `LIVEKIT_*`):
-  where each comes from, what it unlocks, and how it's consumed. **Golden rule
-  for all of them:** read from the env at runtime; **never** hard-code, echo, or
-  commit a token — reference it only as `$VAR`.
-- `GIT_HUB_TOKEN` is the **maximum-access** key: it performs the privileged ops
-  the session harness blocks — branch deletion, `workflow_dispatch`, re-running
-  Actions, reading/writing Actions secrets. The `tools/gh_admin.py` helper wraps
-  these (dry-run by default; `--execute` to send, `--yes` for destructive ops)
-  and never prints the token; raw `curl` recipes are in `CREDENTIALS.md`.
-- NOTE: pushes may be blocked if the session was provisioned read-only
-  (`403 Permission denied`). If so, surface it — it's an environment permission,
-  not a code problem (and `GIT_HUB_TOKEN` does not change it).
-- **On the Windows box**, a local guard hook (`.claude/hooks/guard.ps1`) blocks
-  direct `main` pushes + the work identity by design; the personal SSH key and
-  feature-branch pushes work. Land via a PR — full procedure (SSH identity, the
-  `gh`/`$GIT_HUB_TOKEN` PR-merge commands, branch cleanup, local-main reconcile)
-  is in [`docs/windows_landing_workflow.md`](docs/windows_landing_workflow.md).
-  Note: the guard matches literal command text, so don't even name the work key /
-  SSH-config / global gitconfig paths in a shell command.
-- Self-monitoring / autofix loop: put work in a PR, then a Claude session can
-  `subscribe` to that PR's activity to receive its CI results (from
-  `tests.yml`) and review comments as events, and push fixes until checks pass.
-  The loop is driven by the live session (subscription is per-session, not
-  stored state); on merge/abandon, unsubscribe. Claude can edit pipelines
-  (`.github/workflows/*`) and watch runs, but cannot trigger/re-run a workflow
-  or create Actions secrets from its in-session toolset — those need the API
-  with an out-of-band token.
+- `STATUS.md` — current truth (top of precedence); `.agents/backlog.md` — live work queue.
+- `docs/dev_guide.md` — session bootstrap/end protocol, repo layout, run matrix, tooling (bench/specsim/cloudchat), CI workflows, environment notes.
+- `docs/unified_architecture.md` — current-truth architecture overview (start here); `docs/target_architecture.md` — north-star + structural decisions (§9).
+- `docs/adr/` — dated decisions (append-only); `docs/archive/` — superseded history (incl. the old as-built `architecture.md`).
+- `docs/testing.md` — test tiers + staged runner; `docs/debugging.md` — run logs, telemetry, stuck runs.
+- `docs/audio_pipeline.md` — audio chain (AEC/APM/DTD); `docs/deployment_profiles.md` — device profiles + the `llm` config block.
+- `docs/windows_landing_workflow.md` — PR landing from Windows; `MEMORY.md` — memory subsystem; `SETUP.md` — install.
+- `docs/PROJECT_KICKOFF.md` — running list of product decisions; check it for current intent.
 
 ## When unsure
 
-Ask clarifying questions before large changes. `docs/PROJECT_KICKOFF.md` is the
-running list of product decisions; check it for current intent and open items.
+Ask clarifying questions before large changes.

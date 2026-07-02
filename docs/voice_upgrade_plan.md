@@ -1,5 +1,8 @@
 # Voice upgrade: natural + emotional + diverse, still cheap
 
+> **Decision record (2026-07-02):** the Kokoro adoption is pinned in
+> [`docs/adr/0010`](adr/0010-kokoro-tts-adopted.md).
+
 **Status:** partially IMPLEMENTED (see status box) · **Date:** 2026-06-22 · **Scope:** desktop `core/` runtime (sherpa-onnx engine); mobile follows once validated
 **Owner ask (verbatim):** the TTS is *"blurry, robotic, interrupted, not clear — the main issue"*; wants a **better voice + emotion + diversity, still cheap on-device.**
 

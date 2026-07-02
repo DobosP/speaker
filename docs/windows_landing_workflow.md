@@ -14,9 +14,14 @@ landing always goes through a **pull request**, never a direct `main` push.
 - **Allowed with this key:** feature-branch pushes, `fetch`/`pull`, and deleting
   remote *feature* branches (`git push origin --delete <branch>`).
 - **Blocked by the guard (by design — do not evade):** the work key, the SSH
-  config, the global git identity, `git config --global/--system`, and any
-  `git push` that targets `main`. The guard matches on the literal command text,
-  so even *mentioning* those paths in a shell command is denied. Land via a PR.
+  config, the global git identity, `git config --global/--system`, and (explicit
+  deny rule added 2026-07-02) any `git push` whose text targets `main`/`master`.
+  The guard matches on the literal command text, so even *mentioning* those
+  paths in a shell command is denied. Land via a PR.
+- **Known gap:** a bare `git push` while `main` is checked out contains no
+  `main` in its text, so the text-matching rule can't see it. The guard is a
+  backstop, not the rule — the fleet no-push policy (`docs/adr/0007`) is what
+  you follow.
 
 ## Why a PR (and not a direct push)
 

@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-07-02):** the DTLN stack described here was retired — DTLN
+> ships no models; the production open-speaker AEC is **WebRTC APM**
+> (`aec_backend='apm'`, committed `open_speaker` profile,
+> [`docs/adr/0006`](../adr/0006-webrtc-apm-production-open-speaker-aec.md)) and
+> barge-in fires on `AdaptiveDTD` (`docs/adr/0004`) with calibrated/auto ref
+> delay (`docs/adr/0005`). Do not apply the config below. Historical record.
+
 # Open-speaker barge-in (laptop mic + laptop speaker, no headphones)
 
 Talk-over barge-in on an **open speaker** is hard: the assistant's own TTS leaks

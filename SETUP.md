@@ -153,8 +153,12 @@ export DATABASE_URL="postgresql:///voice_assistant"
 
 ### Using Command Line
 
+There is no `--db-url` runtime flag. The runtime is `python -m core`; it reads
+`DATABASE_URL` from the environment / `.env` (see `MEMORY.md` and the `memory`
+block in `config.json`):
+
 ```bash
-python main.py --db-url "postgresql:///voice_assistant"
+DATABASE_URL="postgresql:///voice_assistant" python -m core
 ```
 
 ## Troubleshooting
@@ -230,10 +234,13 @@ sudo -u postgres psql -d voice_assistant -c "CREATE EXTENSION vector;"
 
 ## Running Without Database
 
-If you don't want to set up PostgreSQL, the assistant will work in **in-memory mode**:
+If you don't want to set up PostgreSQL, the assistant works in **in-memory
+mode** automatically. There is no `--no-memory` flag: when `DATABASE_URL` is
+unset (and the `memory` config block doesn't force the Postgres backend), the
+runtime falls back to the in-RAM `SessionMemory`.
 
 ```bash
-python main.py --no-memory
+python -m core
 ```
 
 Note: History will be lost when you restart the application.
@@ -242,16 +249,26 @@ Note: History will be lost when you restart the application.
 
 Once setup is complete:
 
-1. **Start Ollama:**
+1. **Start Ollama** and pull the models named in `config.json`'s `llm` block
+   (gemma3/gemma4 tiering; e.g. `gemma3:4b`, or `gemma4:12b` on a big-GPU box
+   via `config.local.json`):
    ```bash
    ollama serve
-   ollama pull llama2
+   ollama pull gemma3:4b
    ```
 
-2. **Run the assistant:**
+2. **Run the assistant** (the legacy `main.py` was deleted 2026-05-26 —
+   see `docs/adr/0002`):
    ```bash
-   python main.py
+   python -m core --engine sherpa          # on-device audio
+   python -m core --engine console --llm echo   # no audio/models smoke test
    ```
+
+   > **WARNING — run-log pruning:** `python -m core` prunes the run bundles
+   > under `logs/runs/` to the newest **20** (`keep=20`) — **including
+   > COMMITTED bundles**, which then show up as phantom `git status` deletions.
+   > If you see unexpected deleted `logs/runs/*` entries after a run, restore
+   > them (`git checkout -- logs/runs`) instead of committing the deletions.
 
 3. **Test memory:**
    - Say: "My name is John"

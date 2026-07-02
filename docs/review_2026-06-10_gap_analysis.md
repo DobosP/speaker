@@ -1,3 +1,5 @@
+> **STATUS (2026-07-02):** dated review — read as history, not a work queue. Security-1 partially resolved: `.env` untracked same day (15ef939); the exposed Gemini key was **rotated 2026-07-02** (old key dead); owner decision 2026-07-02: current public history is accepted for now — the history purge (D1) and WAV/PII purge (D-B, `docs/roadmap_2026-06-17.md`) both happen at the pre-release gate, when the project is re-published from the organization's GitHub account (OWNER-ONLY; no agent force-push/filter-repo). Current truth: `STATUS.md` + `.agents/backlog.md`.
+
 # Speaker â€” Architecture Gap Report & Implementation Roadmap
 
 **Date:** 2026-06-10 Â· **Scope:** full repo (`core/`, `always_on_agent/`, `utils/memory*`, `remote/`+`web/`, `mobile/`, `tools/`, `docs/`, config plane) Â· **Basis:** subsystem map (10 subsystems) + 45 adversarially-verified findings

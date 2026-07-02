@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-07-02):** coherence-as-primary was replaced by the fused
+> `AdaptiveDTD` detector (coherence is now one of its three z-scored features) —
+> see [`docs/adr/0004`](../adr/0004-adaptive-dtd-device-adaptive-barge-in.md);
+> open-speaker AEC is WebRTC APM (`docs/adr/0006`). Historical record.
+
 # Barge-in, rethought: reference coherence (volume-independent, zero-setup)
 
 **Date:** 2026-06-02

@@ -10,14 +10,25 @@ How the runtime is sized per machine and deployed per platform. Config lives in
 
 ## Device profiles (`device` + `device_profiles`)
 
-`config.device` picks the active profile; `--device <name>` overrides it.
+`config.device` picks the active profile — the committed default is `"auto"`,
+which probes the host (cores/RAM/GPU/mobile, via `tools.recommend_profile`) and
+applies the matching profile at launch; `--device <name>` overrides it.
 `device_profiles[<name>]` is **shallow-merged over the base config per section**,
-so a profile only states what differs.
+so a profile only states what differs. Profiles shipped in `config.json`
+(2026-07-02):
 
 | Profile  | LLM backend | Models | Notes |
 |----------|-------------|--------|-------|
 | `desktop` | `ollama` (GPU) | `gemma3:12b` main + `gemma3:4b` fast | Ollama is desktop-only |
-| `phone`   | `llamacpp` (GGUF) | `gemma-3-4b` main + `gemma-3-1b` fast | `n_gpu_layers: 0`, `n_ctx: 2048`, STT/TTS threads dialed down |
+| `desktop_gpu_4090` | `ollama` (GPU) | `gemma3:12b` + `gemma3:4b` | input gate + cleanup + capability router all on |
+| `macbook_m_series` | `ollama` (Metal) | `gemma3:4b` + `gemma3:1b` | US-only cloud chains available, **default off** |
+| `cpu_laptop` | `ollama` (CPU) | `gemma3:4b` + `gemma3:1b` | gates off (no fast-tier headroom); cloud default off |
+| `open_speaker` | `ollama` | `gemma3:4b` + `gemma3:1b` | **explicit, never auto-picked**: WebRTC APM AEC for no-headphones barge-in (`docs/adr/0006`) |
+| `phone`   | `llamacpp` (GGUF) | `gemma-3-4b` + `gemma-3-1b` | `n_gpu_layers: 0`, `n_ctx: 2048`, STT/TTS threads dialed down |
+| `phone_lite` | `llamacpp` (GGUF) | `gemma-3-1b` single-tier | streaming-only ASR finals + greedy decode |
+
+Newer model tiers (e.g. `gemma4:12b`) are pinned per machine in the gitignored
+`config.local.json`, not in the committed profiles.
 
 The `phone` profile runs the **Python core** under phone-like limits (for
 simulation / low-power desktops). The **shipped Flutter app** (`mobile/`) is a
@@ -31,7 +42,7 @@ see [`../mobile/README.md`](../mobile/README.md).
   "backend": "ollama",        // or "llamacpp" (on-device GGUF)
   "main_model": "gemma3:12b",  // large / multimodal
   "fast_model": "gemma3:4b",   // snappy replies
-  "router": { "backend": "heuristic", "threshold": 0.5 }  // or "learned"
+  "router": { "backend": "heuristic", "threshold": 0.3 }  // or "learned"
 }
 ```
 
@@ -69,7 +80,12 @@ python -m remote.worker --llm echo                          # remote brain, offl
 
 ## Guardrails
 
-`local_only: true` keeps STT/LLM/TTS fully local (a hard product requirement; no
-cloud by default). Lazy imports mean a profile only pulls the heavy deps it
+The always-on loop is fully local and raw audio never leaves the device; the
+optional cloud *thinking tier* is a deliberate opt-in (`cloud.enabled=true`) and
+never activates silently on API-key presence — the boundary is
+`docs/target_architecture.md` §9.7 (it supersedes the older "no cloud
+STT/LLM/TTS by default" stance). An invariant test keeps every committed
+profile cloud-off (`tests/test_device_profile_invariants.py`). Lazy imports
+mean a profile only pulls the heavy deps it
 actually uses (Ollama, llama.cpp, torch, sherpa-onnx, livekit) — the base test
 suite and the `console` engine need none of them.

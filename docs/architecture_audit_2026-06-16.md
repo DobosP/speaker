@@ -147,11 +147,15 @@ default-OFF and owner-gated. Mandatory guardrails for adopting the set:
 - **Caveat that still applies during dev:** if the GitHub remote is *public*, these
   WAVs are already exposed regardless of local use — consider a private remote until
   the purge.
-- **No committed API keys found.** A scan of the tracked tree for key material hit
-  only dummy strings in test files (`test_cloud_pii_egress.py` etc.). The completeness
-  critic's "rotate keys" suggestion is **precautionary, not evidence-backed** — the
-  tracked tree is clean. (`CREDENTIALS.md` is env-var docs; `docker/.env.example` is
-  an example.)
+- **No API keys in the tracked TREE — but a real key IS reachable in PUBLIC
+  history.** A scan of the tracked tree for key material hit only dummy strings
+  in test files (`test_cloud_pii_egress.py` etc.); `CREDENTIALS.md` is env-var
+  docs and `docker/.env.example` is an example. However the "rotate keys"
+  recommendation **is evidence-backed**: a real Gemini key remains reachable in
+  the PUBLIC repo's git history at `d32db9f` (`.env`, untracked 2026-06-10 via
+  15ef939 but never purged). *Correction + status 2026-07-02:* key **rotated
+  2026-07-02**; the public-history purge (D1) is **still pending, OWNER-ONLY**
+  — agents must not run filter-repo/force-push.
 
 ---
 

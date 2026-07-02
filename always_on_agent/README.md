@@ -1,8 +1,9 @@
-# Always-On Agent Prototype
+# Always-On Agent (control-plane brain)
 
-This is a separate control-plane prototype for the next architecture. It does
-not replace `main.py` yet, but it is designed to be wired into the existing
-partial/final STT callbacks.
+This is the control-plane brain of the runtime. It is wired into the `core/`
+`VoiceRuntime` via the partial/final STT callbacks (the legacy `main.py`
+monolith was deleted 2026-05-26 — see `docs/adr/0002`; the runtime is
+`python -m core`).
 
 It proves these pieces independently from the audio stack:
 
@@ -52,9 +53,9 @@ Run the tests:
 python -m pytest tests/test_always_on_agent.py
 ```
 
-Next integration step: publish `AgentEvent.partial(...)` and
-`AgentEvent.final(...)` from the existing partial/final STT callbacks in
-`main.py`, then let this supervisor decide which task should run.
+Integration: the `core/` runtime publishes `AgentEvent.partial(...)` and
+`AgentEvent.final(...)` from its STT callbacks and this supervisor decides
+which task runs (see `core/runtime.py` and `docs/unified_architecture.md` §2).
 
 ## Current Modules
 

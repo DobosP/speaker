@@ -1,3 +1,8 @@
+> **COMPLETED (2026-07-02):** shipped — `endpoint_high_confidence_floor: 0.6` is
+> the committed default in `config.json`; rationale + validation absorbed into
+> `docs/unified_architecture.md` §13 and the `config.json`
+> `_endpoint_high_confidence_comment`. Historical record.
+
 # Cutting the endpoint wait — adaptive confidence-tiered floor (2026-06-01)
 
 Tackling the #1 latency lever identified in `docs/live_validation_capabilities_2026-06-01.md`:

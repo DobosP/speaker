@@ -3,7 +3,8 @@
 How the capture and playback paths are cleaned today, **why Microsoft Teams
 sounds better than a raw-mic app on the same laptop**, and the concrete knobs to
 close that gap on desktop and mobile. This is the current-truth companion to
-`docs/open_speaker_barge_in.md` (barge-in internals) and `docs/TTS.md`.
+`docs/TTS.md`; barge-in decisions live in `docs/adr/0004`–`0006` (the DTLN-era
+internals doc is archived at `docs/archive/open_speaker_barge_in.md`).
 
 ## TL;DR — why Teams is better, and the three highest-leverage moves
 

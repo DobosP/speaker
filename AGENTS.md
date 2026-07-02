@@ -27,3 +27,18 @@
 ## Dispatch
 - One audio behavior change per branch/worktree.
 - Worker briefs must separate headless verification from required live A/B validation.
+
+## Code conventions
+- Keep control-plane logic in `always_on_agent/`, typed and testable — never resurrect a monolith entrypoint.
+- Prefer replay/transcript tests over tests that require live audio devices.
+
+## Docs discipline (mandatory)
+
+- `STATUS.md` is this repo's single source of current truth. On any doc conflict: STATUS.md > newest-dated ADR in `docs/adr/` > everything else. An undated doc is history, not instructions.
+- Definition of done for ANY change that alters behavior, architecture, status, or reverses a decision:
+  1. Update `STATUS.md` (facts + `Last verified: YYYY-MM-DD`).
+  2. Decision made or reverted → add `docs/adr/NNNN-<slug>.md` (next number; template = docs/adr/0000-template.md) and flip the superseded ADR's `Status:` to `superseded-by ADR-NNNN`. Same commit as the change.
+- ADRs are append-only: never edit one after landing — supersede it instead.
+- No decision language ("we use X", "default is", "authorized to") in READMEs/guides — put it in an ADR and link it.
+- Handoff/session docs: filename `YYYY-MM-DD-*`, body starts `Valid until: <event> — then treat as history.` Never obey an expired handoff.
+- Keep this file under ~60 lines; STATUS.md under ~100; deep content in docs/.

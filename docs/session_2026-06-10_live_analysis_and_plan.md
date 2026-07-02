@@ -1,5 +1,7 @@
 # Live-session analysis + fix plan — 2026-06-10
 
+> **Status (2026-07-02):** COMPLETED — the plan below was implemented (resume/echo-guard/turn-merge/topic-reset are committed `config.json` defaults; the SenseVoice second pass was re-enabled and made async 2026-06-17). Immutable dated record; config claims here are stale.
+
 From the live run `run-20260609-234435` (self-interrupt) and `run-20260610-003800`
 (post-mic-bump). Owner reported four problems; a 6-agent fan-out analyzed each
 against the trace + code, synthesized a dependency-ordered plan, and an

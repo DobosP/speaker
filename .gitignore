@@ -50,6 +50,13 @@ transcripts/
 !logs/runs/*.wav
 !logs/runs/*.mp3
 
+# FREEZE (2026-07-02, doc-audit §3 + owner decision D-B): NEW files under
+# logs/runs/ are ignored by default -- this deliberately overrides the replay
+# whitelist above. Already-tracked bundles STAY tracked (gitignore never
+# untracks; the WAV/PII purge is deferred to the pre-release gate, owner-only).
+# To commit a scrubbed, PII-free replay fixture on purpose, use `git add -f`.
+logs/runs/**
+
 # Per-run pytest log bundles are transient (timestamped trace + summary for the
 # machine they ran on); curated logs/runs/ bundles are committed, these are not.
 logs/tests/

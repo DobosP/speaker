@@ -13,7 +13,7 @@ reference; `CLAUDE.md` only points here.**
 
 | Credential | Where it comes from | Used by | Unlocks |
 |---|---|---|---|
-| `GIT_HUB_TOKEN` | session environment (this repo's web/CI sessions) | `tools/gh_admin.py`, ad-hoc `curl` | **Maximum repo access** — the privileged GitHub ops the session harness blocks |
+| `GIT_HUB_TOKEN` | session environment (this repo's web/CI sessions) | `tools/gh_admin.py`, ad-hoc `curl` | **Maximum repo access** — the privileged GitHub ops the session harness blocks. **Explicit authorization only** (see below) |
 | `HUGGINGFACE_TOKEN` | session environment (Gemma license accepted) | `tools/bench/__main__.py` | Pulling gated Gemma weights at runtime (dev/bench) |
 | `HF_TOKEN` | **GitHub Actions secret** | `perf.yml`, `publish-model.yml` | Same HuggingFace pull, but inside CI |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | session/host environment | `remote/token_server.py`, `core/app.py` | Minting LiveKit JWTs for the remote host + thin-client path |
@@ -21,13 +21,21 @@ reference; `CLAUDE.md` only points here.**
 
 ---
 
-## `GIT_HUB_TOKEN` — maximum repo access
+## `GIT_HUB_TOKEN` — maximum repo access (explicit authorization only)
 
-Routine git (push to `main`/branches) and ordinary GitHub reads/writes already
-go through the **session harness** (git proxy + repo-scoped GitHub MCP) with no
-stored credential. The harness deliberately **blocks** a handful of admin
-operations. `GIT_HUB_TOKEN` is the out-of-band key that performs exactly those,
-against the GitHub REST API on `dobosp/speaker`:
+> **Policy scope (fleet git standard 2026-06-24 — `AGENTS.md`, `docs/adr/0007`):**
+> having this token is **not** authorization to use it. Agents never push, merge
+> to `main`, delete branches, or run any of the admin operations below without
+> Paul's **explicit ask**. The one sanctioned write path is an
+> explicitly-authorized landing — feature branch → PR → merge — per
+> [`docs/windows_landing_workflow.md`](docs/windows_landing_workflow.md), where
+> `gh`/`$GIT_HUB_TOKEN` performs the PR create/merge the SSH transport cannot.
+
+Ordinary git transport and GitHub reads/writes go through the **session
+harness** (git proxy + repo-scoped GitHub MCP) or SSH with no stored
+credential. The harness deliberately **blocks** a handful of admin operations.
+`GIT_HUB_TOKEN` is the out-of-band key that performs exactly those, against
+the GitHub REST API on `dobosp/speaker`:
 
 | Operation | REST endpoint |
 |---|---|

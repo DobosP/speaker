@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-07-02):** the 2026-05-28 swarm loop below — including its
+> "commit + push green versions to `main`" protocol — is retired by the
+> 2026-06-24 fleet git policy (`AGENTS.md`, `docs/adr/0007`): never push, merge
+> to `main`, or delete branches without Paul's explicit ask.
+> `.agents/backlog.md` remains the **live work queue** and the harness commands
+> still work; the roles/loop text is historical.
+
 # Speaker improvement swarm
 
 A small set of role-specialized agents + a self-improving loop that builds,

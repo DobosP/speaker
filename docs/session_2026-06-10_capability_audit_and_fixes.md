@@ -1,5 +1,7 @@
 # Capability audit + the three owner complaints — 2026-06-10
 
+> **Status (2026-07-02):** immutable dated record — the "guard.ps1 is DEAD" P0 below was fixed 2026-07-02 (the hook now blocks the work identity and direct pushes targeting `main`; see CLAUDE.md), and the public-history P0 is handled per `STATUS.md` §SECURITY (owner-accepted-deferred until republication from the organization account — not an open agent task).
+
 Owner ask: "still has issues with the barge in, answering to incomplete
 questions, and the memory of our conversation — do a review and a complex
 refactor/audit to improve the capabilities." Ran the `speaker-review`

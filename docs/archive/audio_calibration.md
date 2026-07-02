@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-07-02):** the level-margin gate calibrated here is
+> fallback-only now — barge-in fires on the self-calibrating `AdaptiveDTD`
+> (`docs/adr/0004`) with echo-probe-calibrated/auto AEC ref delay
+> (`docs/adr/0005`) and WebRTC APM as the production open-speaker AEC
+> (`docs/adr/0006`). `barge_in_output_margin_db=6` survives only as the
+> committed no-AEC fallback default. Historical record.
+
 # Audio self-interruption (TTS-echo) calibration
 
 The always-on assistant keeps the mic **open while it speaks** (barge-in needs

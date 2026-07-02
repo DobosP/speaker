@@ -52,6 +52,11 @@ Each run writes structured reports under `test-reports/<run_id>/` (per-stage
 `summary.json` / `failures.json` / `llm-summary.md` + a run rollup). Plain
 `pytest` also logs to `logs/tests/`.
 
+The `imports` stage is a whole-tree import smoke that catches syntax errors and
+missing optional libs across `core/`/`always_on_agent/`/`remote/`/`tools/`
+before any logic test runs — use it as a "does the code compile and are the
+libraries present" preflight.
+
 ### Fast loop / full run / parallel
 
 ```

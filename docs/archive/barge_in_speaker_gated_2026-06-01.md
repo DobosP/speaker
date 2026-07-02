@@ -1,3 +1,8 @@
+> **SUPERSEDED (2026-07-02):** the speaker-ID gate as the primary barge signal
+> was replaced by the self-calibrating `AdaptiveDTD` detector — see
+> [`docs/adr/0004`](../adr/0004-adaptive-dtd-device-adaptive-barge-in.md);
+> speaker-ID remains an auxiliary gate only. Historical record.
+
 # Speaker-gated barge-in (no-AEC) — calibrated 2026-06-01
 
 Barge-in on open speakers without AEC had two failure modes (earlier sessions): a

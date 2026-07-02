@@ -172,7 +172,7 @@ Async DEBUG log from these loggers (grep by prefix):
 5. **Freeze it as a test:** the recorded WAV is the same format the replay
    loader (`core/engines/file_replay.py: load_waveform`) consumes, so a captured
    session becomes a deterministic regression fixture (see
-   `docs/testing_audio.md`).
+   `docs/testing.md`).
 
 ---
 

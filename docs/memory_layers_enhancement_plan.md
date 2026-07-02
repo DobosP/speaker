@@ -1,5 +1,9 @@
 # Memory Layers Enhancement Plan — Hermes-inspired, on-device, off the hot path
 
+> **Decision record (2026-07-02):** the approve/defer decision is pinned in
+> [`docs/adr/0009`](adr/0009-memory-layers-approved-deferred.md) — this plan is
+> the design reference, not an active work order.
+>
 > Design output of the `memory-layers-hermes-design` workflow (2026-06-21): 2 web
 > research + 2 code-mapping agents → 3 competing designs → 3-lens judge panel →
 > synthesis. Status: **PLAN APPROVED, IMPLEMENTATION DEFERRED** (owner chose "stop

@@ -1,5 +1,7 @@
 # Session 2026-06-07/08 — Device-adaptive barge-in (WORKS on the open laptop speaker) + latency/persona, Gemma 4 on Linux
 
+> **Status (2026-07-02):** immutable dated record — the `AdaptiveDTD` landed here is the operative design (`docs/adr/0004`), but the DTLN AEC in the machine-local config below was later replaced by WebRTC APM for open-speaker (`open_speaker` profile, `docs/adr/0006`), and `aec_ref_delay_ms` is echo-probe-calibrated or `aec_auto_delay` (`docs/adr/0005`). Do not copy the AEC config from this doc.
+
 **Branch:** `fix/barge-raw-mic-and-latency` → merged to `main`. Prior same-session
 work already on `main`: Gemma 4 adoption + the barge-in audit/coherence-primary
 (`5cd7f60`, handoff `docs/session_2026-06-07_barge_in_coherence_primary.md`).

@@ -125,11 +125,13 @@ Environment:
 export DATABASE_URL=postgresql:///voice_assistant
 
 # Fast path: no embeddings, debounced user-only saves
-python main.py
-
-# Disable memory entirely
-python main.py --no-memory
+python -m core
 ```
+
+There are no `--no-memory`/`--db-url` flags (the legacy `main.py` was deleted
+2026-05-26 — `docs/adr/0002`). Memory is toggled via the `memory` block in
+`config.json` and the `DATABASE_URL` env var: with `DATABASE_URL` unset, the
+runtime uses the in-RAM `SessionMemory` (nothing persists).
 
 ## Tests
 

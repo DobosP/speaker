@@ -1,10 +1,16 @@
 # Real-Time Local Voice Assistant
 
-A fully-local, always-listening voice assistant (`ASR → LLM → TTS`) with
-barge-in and a mode-based control plane. Open-source components only; no cloud
-dependency. Target: on-device across Linux/Windows/macOS and (later) Android/iOS.
+A local-first, always-listening voice assistant (`ASR → LLM → TTS`) with
+barge-in and a mode-based control plane. The always-on loop is **fully local**:
+STT, TTS, VAD, speaker-ID, and the fast answering LLM run on-device, and raw
+audio never leaves the machine. An optional *thinking tier* (research / web
+search) may use a cloud LLM — **off by default**, deliberately opt-in, and only
+post-ASR text crosses (the [`docs/target_architecture.md`](docs/target_architecture.md)
+§9.7 boundary). Open-source components. Target: on-device across
+Linux/Windows/macOS and (later) Android/iOS.
 
-> **Architecture & roadmap:** see [`docs/target_architecture.md`](docs/target_architecture.md).
+> **Current architecture:** [`docs/unified_architecture.md`](docs/unified_architecture.md) — the single current-truth overview.
+> **North-star & roadmap:** [`docs/target_architecture.md`](docs/target_architecture.md).
 > **Working notes & open decisions:** [`docs/PROJECT_KICKOFF.md`](docs/PROJECT_KICKOFF.md).
 
 ## Design
@@ -26,8 +32,10 @@ dependency. Target: on-device across Linux/Windows/macOS and (later) Android/iOS
   (`passive/assistant/command/search/research/dictation/meeting`), a priority
   event bus, a supervisor, and cancellable tasks that run on their own threads.
   Its `AgentEvent`/`Mode` contract is what every platform shell shares.
-- **`core/engines/speaker_gate.py`** — speaker-ID barge-in gate so the
-  assistant's own TTS can't self-interrupt (no AEC required).
+- **`core/engines/speaker_gate.py`** — speaker-ID gate (auxiliary). Open-speaker
+  barge-in — no headphones — fires on the self-calibrating `AdaptiveDTD`
+  detector with WebRTC APM echo cancellation (`--device open_speaker`); see
+  `docs/adr/0004`–`0006`.
 - **`utils/memory*`** — Postgres-backed smart memory (see [`MEMORY.md`](MEMORY.md)).
 - **`mobile/`** — on-device **Android app** (Flutter): `sherpa_onnx` +
   `flutter_gemma`, fully local. See [`mobile/README.md`](mobile/README.md).
@@ -57,6 +65,7 @@ and add the local LLM:
 
 ```bash
 ollama pull gemma3:12b && ollama pull gemma3:4b    # https://ollama.com
+# newer tiers (e.g. gemma4:12b) can be pinned per machine in config.local.json
 ```
 
 Not sure what's missing? `python -m tools.doctor` prints a READY/NOT-READY
@@ -98,8 +107,11 @@ gate) a speaker-embedding model, then set their paths in `config.json`:
 }
 ```
 
-Without a speaker model the gate fails open (any voice can barge in — use a
-headset for clean barge-in). With enrollment, only your voice interrupts.
+Without a speaker model the gate fails open (any voice can barge in). With
+enrollment, only your voice interrupts. For barge-in on the bare laptop
+speaker (no headphones), select the committed `open_speaker` profile
+(`--device open_speaker`): WebRTC APM echo cancellation + the AdaptiveDTD
+double-talk detector.
 
 ## Tests
 

@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-07-02):** refined by the 2026-06-17 **async** second pass —
+> the streaming final now dispatches immediately and SenseVoice upgrades it in
+> place behind a fail-closed agreement guard; see
+> [`docs/session_2026-06-17_async_second_pass_asr.md`](../session_2026-06-17_async_second_pass_asr.md)
+> and `docs/unified_architecture.md` §7. Two-pass itself remains the shipped
+> default (`asr_final_backend='sense_voice'`, config.json).
+
 # Two-pass ASR: SenseVoice final recognizer (2026-06-01)
 
 Fixing the real STT wall: the streaming GigaSpeech zipformer garbles **run-on /

@@ -1,3 +1,7 @@
+> **SUPERSEDED (2026-07-02):** this 2026-06-02 as-built snapshot is superseded by
+> [`docs/unified_architecture.md`](../unified_architecture.md), the single current-truth
+> overview — read that instead; historical record only.
+
 # Current Architecture (as built)
 
 A snapshot of how the runtime is wired **today**. For the cross-platform

@@ -132,7 +132,10 @@ def test_capture_and_inject_procedural_rule():
     sys = llm.systems[-1]
     assert PROCEDURAL_HEADER in sys
     assert "Keep your answers very short." in sys
-    assert sys.endswith(DEFAULT_SYSTEM)  # rules sit ahead of the base system prompt
+    # R06b: the base system prompt is the cacheable prefix (FIRST); the procedural
+    # rules follow it (still adjacent + authoritative), so the KV cache survives.
+    assert sys.startswith(DEFAULT_SYSTEM)
+    assert sys.index(DEFAULT_SYSTEM) < sys.index(PROCEDURAL_HEADER)
 
 
 def test_procedural_block_is_trusted_not_spotlighted():
@@ -179,9 +182,10 @@ def test_procedural_rule_floats_sensitivity_to_private():
     assert ctx["sensitivity"] == PRIVATE
 
 
-def test_procedural_block_after_untrusted_recall_before_system():
-    # Placement contract: spotlighted untrusted recall FIRST, then the trusted
-    # procedural block, then the system prompt.
+def test_system_then_procedural_then_untrusted_recall():
+    # R06b placement contract (prefix-cache-safe): the stable system prompt FIRST,
+    # then the trusted procedural block, then the spotlighted untrusted recall --
+    # every per-turn-volatile block sits AFTER the cacheable system+procedural head.
     from always_on_agent.untrusted import SPOTLIGHT_DIRECTIVE
 
     class _Mem(SessionMemory):
@@ -194,7 +198,7 @@ def test_procedural_block_after_untrusted_recall_before_system():
     reg = _assistant(llm, mem, recall=RecallConfig(enabled=True, procedural_enabled=True))
     reg.invoke("assistant.answer", "hello", {})
     sys = llm.systems[-1]
-    assert sys.index(SPOTLIGHT_DIRECTIVE) < sys.index(PROCEDURAL_HEADER) < sys.index(DEFAULT_SYSTEM)
+    assert sys.index(DEFAULT_SYSTEM) < sys.index(PROCEDURAL_HEADER) < sys.index(SPOTLIGHT_DIRECTIVE)
 
 
 def test_capture_runs_on_escalated_turn():

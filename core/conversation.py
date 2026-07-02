@@ -69,6 +69,16 @@ class RecentContextConfig:
     max_turns: int = 6
     max_chars: int = 800
     per_turn_chars: int = 240
+    # R11: send prior turns to the answering model as ROLE-STRUCTURED chat
+    # messages (user/assistant) instead of a truncated text block pasted into the
+    # system string -- which the small model handles far better ("continue the
+    # story" actually continues it, not a 240-char fragment). OFF by default so
+    # the shipped prompt stays byte-identical; when ON, the volume is bounded by
+    # the (larger) messages_* budget below instead of max_chars/per_turn_chars,
+    # and the text block is dropped (the history rides the chat-messages path).
+    as_messages: bool = False
+    messages_max_turns: int = 12
+    messages_per_turn_chars: int = 1200
     # Optional TOKEN bound carved from the shared recall budget so the recent
     # block and the semantic-recall block can never independently stack and blow
     # up the context. 0 == OFF (char-cap only -- the back-compat default); a
@@ -94,6 +104,11 @@ class RecentContextConfig:
             max_turns=int(data.get("recent_context_turns", 6) or 6),
             max_chars=int(data.get("recent_context_max_chars", 800) or 800),
             per_turn_chars=int(data.get("recent_context_per_turn_chars", 240) or 240),
+            as_messages=bool(data.get("recent_context_as_messages", False)),
+            messages_max_turns=int(data.get("recent_context_messages_turns", 12) or 12),
+            messages_per_turn_chars=int(
+                data.get("recent_context_messages_per_turn_chars", 1200) or 1200
+            ),
             reserve_tokens=int(data.get("recall_recent_reserve_tokens", 0) or 0),
             reset_enabled=bool(data.get("recent_context_reset_enabled", True)),
             reset_phrases=(
@@ -219,6 +234,21 @@ def format_recent_block(
         rows.pop(0)
         block = header + "\n" + "\n".join(rows)
     return block
+
+
+def history_messages(turns: list[tuple[str, str]]) -> list[dict]:
+    """Map collected ``(role, text)`` turns to chat messages (R11).
+
+    ``collect_recent_turns`` labels roles ``"User"``/``"You"``; the LLM chat
+    protocol wants ``"user"``/``"assistant"``. Empty texts are dropped. Returns a
+    list ready to pass as ``LLMClient.stream(..., history=...)``."""
+    out: list[dict] = []
+    for role, text in turns:
+        content = (text or "").strip()
+        if not content:
+            continue
+        out.append({"role": "user" if role == "User" else "assistant", "content": content})
+    return out
 
 
 def build_recent_context(

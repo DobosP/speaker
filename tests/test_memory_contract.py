@@ -231,8 +231,10 @@ def test_fact_stated_turn_1_recalled_at_turn_n():
     assert llm.systems, "model.stream was never called"
     system_used = llm.systems[-1]
     assert "favorite color is teal" in system_used
-    # The default system is still appended after the recall block.
-    assert system_used.endswith(DEFAULT_SYSTEM)
+    # R06b: the base system prompt is the cacheable prefix (FIRST); the recall
+    # block now follows it (present, just after system), so the KV cache survives.
+    assert system_used.startswith(DEFAULT_SYSTEM)
+    assert system_used.index(DEFAULT_SYSTEM) < system_used.index("favorite color is teal")
 
 
 def test_adapter_recall_degrades_to_empty_without_db():
@@ -330,7 +332,7 @@ def test_recall_block_is_token_bounded():
     from always_on_agent.untrusted import _BEGIN, _END
 
     system_used = llm.systems[-1]
-    assert system_used.endswith(DEFAULT_SYSTEM)
+    assert system_used.startswith(DEFAULT_SYSTEM)  # R06b: system is the cacheable prefix
     # The recall block now rides inside an untrusted-data envelope (prompt-injection
     # spotlighting). The recall TOKEN budget bounds the recalled CONTENT; the fixed
     # security directive is separate, bounded overhead -- so measure the content

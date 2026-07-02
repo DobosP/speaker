@@ -68,6 +68,29 @@ def _log_llm_request(
 # models such as gemma3:1b ignore images.
 ImageInput = str | bytes
 
+# A prior conversation turn for multi-turn chat: ``{"role": "user"|"assistant",
+# "content": str}``. Optional on every LLMClient call; ``None`` (the default)
+# keeps the single-turn prompt path byte-identical. When provided, an
+# implementation inserts these BETWEEN the system prompt and the CURRENT user
+# turn, so the model sees real chat history (R11) instead of history pasted as
+# text into the system string -- which the small answering model handles far
+# better ("continue the story" actually continues it).
+HistoryTurn = Mapping[str, str]
+
+
+def _history_messages(history: "Optional[Sequence[HistoryTurn]]") -> list[dict]:
+    """Normalize prior turns to chat messages, dropping malformed/empty entries.
+
+    Shared by the Ollama and OpenAI-style message builders so both runtimes turn
+    the same ``[{'role','content'}, ...]`` into the same message list."""
+    out: list[dict] = []
+    for turn in history or ():
+        role = str(turn.get("role", "")).strip().lower()
+        content = str(turn.get("content", "")).strip()
+        if role in ("user", "assistant") and content:
+            out.append({"role": role, "content": content})
+    return out
+
 
 @runtime_checkable
 class LLMClient(Protocol):
@@ -75,6 +98,8 @@ class LLMClient(Protocol):
 
     ``images`` is optional so the same client serves text-only and multimodal
     callers; implementations backed by a text-only model simply ignore it.
+    ``history`` is optional prior-turn context (``HistoryTurn`` list); ``None``
+    keeps the single-turn path byte-identical.
     """
 
     def generate(
@@ -83,6 +108,7 @@ class LLMClient(Protocol):
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str: ...
 
     def stream(
@@ -91,6 +117,7 @@ class LLMClient(Protocol):
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> Iterator[str]: ...
 
 
@@ -106,11 +133,14 @@ class EchoLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
         if self._reply is not None:
             return self._reply
         suffix = f" [+{len(images)} image(s)]" if images else ""
-        return f"You said: {prompt}{suffix}"
+        turns = _history_messages(history)
+        hist = f" [+{len(turns)} prior turn(s)]" if turns else ""
+        return f"You said: {prompt}{suffix}{hist}"
 
     def stream(
         self,
@@ -118,8 +148,9 @@ class EchoLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> Iterator[str]:
-        yield self.generate(prompt, system=system, images=images)
+        yield self.generate(prompt, system=system, images=images, history=history)
 
 
 class OllamaLLM:
@@ -190,21 +221,23 @@ class OllamaLLM:
         return self._client
 
     def _messages(
-        self, prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]]
+        self, prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]],
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> list[dict]:
         msgs: list[dict] = []
         if system:
             msgs.append({"role": "system", "content": system})
+        msgs.extend(_history_messages(history))  # prior turns between system + current
         user: dict = {"role": "user", "content": prompt}
         if images:
             user["images"] = list(images)
         msgs.append(user)
         return msgs
 
-    def _chat_kwargs(self, prompt, system, images, *, stream: bool) -> dict:
+    def _chat_kwargs(self, prompt, system, images, *, stream: bool, history=None) -> dict:
         kwargs = {
             "model": self.model,
-            "messages": self._messages(prompt, system, images),
+            "messages": self._messages(prompt, system, images, history),
             "stream": stream,
         }
         if self._options:
@@ -221,9 +254,12 @@ class OllamaLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
         t0 = time.perf_counter()
-        resp = self._ensure().chat(**self._chat_kwargs(prompt, system, images, stream=False))
+        resp = self._ensure().chat(
+            **self._chat_kwargs(prompt, system, images, stream=False, history=history)
+        )
         out = resp["message"]["content"]
         _log_llm_request(
             _ollama_log, self.model, prompt, system,
@@ -237,6 +273,7 @@ class OllamaLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> Iterator[str]:
         t0 = time.perf_counter()
         ttft: Optional[float] = None
@@ -245,7 +282,7 @@ class OllamaLLM:
         cancelled = True  # flipped to False only on natural exhaustion
         try:
             for chunk in self._ensure().chat(
-                **self._chat_kwargs(prompt, system, images, stream=True)
+                **self._chat_kwargs(prompt, system, images, stream=True, history=history)
             ):
                 piece = chunk.get("message", {}).get("content", "")
                 if piece:
@@ -412,11 +449,13 @@ class LlamaCppLLM:
         return self._client
 
     def _messages(
-        self, prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]]
+        self, prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]],
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> list[dict]:
         msgs: list[dict] = []
         if system:
             msgs.append({"role": "system", "content": system})
+        msgs.extend(_history_messages(history))  # prior turns between system + current
         if images:
             content: list[dict] = [{"type": "text", "text": prompt}]
             for img in images:
@@ -433,11 +472,13 @@ class LlamaCppLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
         client = self._ensure()
         with self._lock:  # one inference at a time on the shared context
             resp = client.create_chat_completion(
-                messages=self._messages(prompt, system, images), stream=False, **self._options
+                messages=self._messages(prompt, system, images, history),
+                stream=False, **self._options
             )
         return resp["choices"][0]["message"]["content"]
 
@@ -447,6 +488,7 @@ class LlamaCppLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> Iterator[str]:
         client = self._ensure()
         # Held across the whole generation (released when the generator is
@@ -454,7 +496,8 @@ class LlamaCppLLM:
         # driven by two threads at once.
         with self._lock:
             for chunk in client.create_chat_completion(
-                messages=self._messages(prompt, system, images), stream=True, **self._options
+                messages=self._messages(prompt, system, images, history),
+                stream=True, **self._options
             ):
                 piece = chunk["choices"][0].get("delta", {}).get("content")
                 if piece:
@@ -498,12 +541,14 @@ def _redact_messages_for_egress(messages: list[dict]) -> list[dict]:
 
 
 def _openai_messages(
-    prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]]
+    prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]],
+    history: Optional[Sequence[HistoryTurn]] = None,
 ) -> list[dict]:
     """OpenAI-style chat messages (also used by llama-server, Groq, etc.)."""
     msgs: list[dict] = []
     if system:
         msgs.append({"role": "system", "content": system})
+    msgs.extend(_history_messages(history))  # prior turns between system + current
     if images:
         content: list[dict] = [{"type": "text", "text": prompt}]
         for img in images:
@@ -663,8 +708,8 @@ class OpenAICompatLLM:
             )
         return self._client
 
-    def _create_kwargs(self, prompt, system, images, *, stream: bool) -> dict:
-        messages = _openai_messages(prompt, system, images)
+    def _create_kwargs(self, prompt, system, images, *, stream: bool, history=None) -> dict:
+        messages = _openai_messages(prompt, system, images, history)
         if self._redact_pii_outbound:
             messages = _redact_messages_for_egress(messages)
         kwargs: dict = {
@@ -708,9 +753,10 @@ class OpenAICompatLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
         resp = self._ensure().chat.completions.create(
-            **self._create_kwargs(prompt, system, images, stream=False)
+            **self._create_kwargs(prompt, system, images, stream=False, history=history)
         )
         return resp.choices[0].message.content or ""
 
@@ -720,6 +766,7 @@ class OpenAICompatLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> Iterator[str]:
         self.last_reasoning_chars = 0
         reasoning_field = self.profile.reasoning_field
@@ -733,7 +780,7 @@ class OpenAICompatLLM:
         # None and finally does nothing rather than raising AttributeError (BR6).
         try:
             sdk_stream = self._ensure().chat.completions.create(
-                **self._create_kwargs(prompt, system, images, stream=True)
+                **self._create_kwargs(prompt, system, images, stream=True, history=history)
             )
             for chunk in sdk_stream:
                 choices = getattr(chunk, "choices", None)
@@ -872,16 +919,25 @@ class HedgeLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
-        return "".join(self.stream(prompt, system=system, images=images)).strip()
+        return "".join(
+            self.stream(prompt, system=system, images=images, history=history)
+        ).strip()
 
     @staticmethod
-    def _worker(client, tag, prompt, system, images, q, stop) -> None:
+    def _worker(client, tag, prompt, system, images, history, q, stop) -> None:
         # Hold the underlying stream so a stop can close it at the next token
         # boundary -- that propagates GeneratorExit into the client's stream(),
         # running its ``finally`` (socket close, metric log) promptly instead
         # of leaving a half-read HTTP body dangling until GC.
-        stream = client.stream(prompt, system=system, images=images)
+        # ``history`` is forwarded ONLY when present (like ``hedge_delay_ms``), so
+        # a wrapped client / test fake that predates the multi-turn param is still
+        # called with the byte-identical single-turn signature by default.
+        kw: dict = {"system": system, "images": images}
+        if history:
+            kw["history"] = history
+        stream = client.stream(prompt, **kw)
         try:
             for token in stream:
                 if stop.is_set():
@@ -919,6 +975,7 @@ class HedgeLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
         hedge_delay_ms: Optional[int] = None,
     ) -> Iterator[str]:
         # Per-turn hedge-delay override (PINNED CONTRACT). ``None`` keeps the
@@ -933,7 +990,10 @@ class HedgeLLM:
         )
         if not self._clouds:
             self.last_source = "local"  # egress receipt: served on-device, no cloud
-            yield from self.local.stream(prompt, system=system, images=images)
+            local_kw: dict = {"system": system, "images": images}
+            if history:
+                local_kw["history"] = history
+            yield from self.local.stream(prompt, **local_kw)
             return
 
         # Reset the egress receipt at the START of the race so a no-winner turn
@@ -959,7 +1019,7 @@ class HedgeLLM:
             started.add(tag)
             t = threading.Thread(
                 target=self._worker,
-                args=(clients[tag], tag, prompt, system, images, q, stops[tag]),
+                args=(clients[tag], tag, prompt, system, images, history, q, stops[tag]),
                 daemon=True,
             )
             threads[tag] = t
@@ -1179,11 +1239,15 @@ class SensitivityRouterLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
         # Pick happens eagerly so any sensitivity-driven routing is logged
         # at the call site (via _pick) rather than at first-yield.
         impl = self._pick()
-        return impl.generate(prompt, system=system, images=images)
+        kw: dict = {"system": system, "images": images}
+        if history:  # forward only when present -> default call is byte-identical
+            kw["history"] = history
+        return impl.generate(prompt, **kw)
 
     def stream(
         self,
@@ -1191,19 +1255,20 @@ class SensitivityRouterLLM:
         *,
         system: Optional[str] = None,
         images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
         hedge_delay_ms: Optional[int] = None,
     ) -> Iterator[str]:
         impl = self._pick()
         # Transparent dispatch to the chosen per-chain backend. ``hedge_delay_ms``
-        # is the per-turn hedge-timing override (PINNED CONTRACT); forward it
-        # only when set AND only to a backend that accepts it (HedgeLLM), so the
+        # and ``history`` are forwarded ONLY when set (PINNED CONTRACT), so the
         # plain ``LLMClient`` protocol stream() of any other backing client is
         # called unchanged -- keeping default (None) behaviour byte-identical.
+        kw: dict = {"system": system, "images": images}
+        if history:
+            kw["history"] = history
         if hedge_delay_ms is not None and isinstance(impl, HedgeLLM):
-            return impl.stream(
-                prompt, system=system, images=images, hedge_delay_ms=hedge_delay_ms
-            )
-        return impl.stream(prompt, system=system, images=images)
+            return impl.stream(prompt, hedge_delay_ms=hedge_delay_ms, **kw)
+        return impl.stream(prompt, **kw)
 
 
 def _to_data_uri(raw: bytes) -> str:

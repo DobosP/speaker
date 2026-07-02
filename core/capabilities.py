@@ -16,7 +16,12 @@ from always_on_agent.untrusted import detect_injection, wrap_untrusted
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
-from .conversation import RecentContextConfig, collect_recent_turns, format_recent_block
+from .conversation import (
+    RecentContextConfig,
+    collect_recent_turns,
+    format_recent_block,
+    history_messages,
+)
 from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
 from .metrics import MetricsRecorder, mark_first_token
 from .persona import DEFAULT_SYSTEM
@@ -330,12 +335,24 @@ def attach_llm_capabilities(
         # sensitivity to the most-private over EVERY included prior turn before
         # EITHER path's LLM calls run. Best-effort: never break a turn.
         recent_block = ""
+        recent_history: list[dict] = []
         try:
             # current_query=query: a reset utterance ("start again") answers
             # FRESH (no block), and a reset turn in memory cuts the thread for
             # later turns -- see core/conversation.is_topic_reset.
+            collect_cfg = recent_cfg
+            if recent_cfg.as_messages:
+                # R11 messages mode: collect MORE turns at a FULLER per-turn cap --
+                # the volume rides the chat-messages budget, not the text max_chars.
+                from dataclasses import replace
+
+                collect_cfg = replace(
+                    recent_cfg,
+                    max_turns=recent_cfg.messages_max_turns,
+                    per_turn_chars=recent_cfg.messages_per_turn_chars,
+                )
             recent_turns = (
-                collect_recent_turns(memory, recent_cfg, current_query=query)
+                collect_recent_turns(memory, collect_cfg, current_query=query)
                 if (memory is not None and not skip_user_memory)
                 else []
             )
@@ -344,7 +361,12 @@ def attach_llm_capabilities(
                 for _role, turn_text in recent_turns:
                     sens = most_sensitive(str(sens), classify_sensitivity(turn_text))
                 context["sensitivity"] = sens
-                recent_block = format_recent_block(recent_turns, recent_cfg)
+                # Messages mode -> role-structured history for the chat API; text
+                # mode -> the historical pasted-into-system block (byte-identical).
+                if recent_cfg.as_messages:
+                    recent_history = history_messages(recent_turns)
+                else:
+                    recent_block = format_recent_block(recent_turns, recent_cfg)
         except Exception:  # noqa: BLE001 - context is best-effort, never fatal
             log.exception("recent-conversation context failed; continuing without it")
         if recent_block:
@@ -450,8 +472,8 @@ def attach_llm_capabilities(
                 # vector). Spotlight them as UNTRUSTED data with a never-obey directive
                 # so an instruction smuggled into a recalled line / on-screen text
                 # can't hijack the turn. No-op + byte-identical when nothing recalls.
-                prefix = (
-                    (wrap_untrusted("\n\n".join(prefix_parts), source="memory") + "\n\n")
+                memory_block = (
+                    wrap_untrusted("\n\n".join(prefix_parts), source="memory")
                     if prefix_parts else ""
                 )
                 # Procedural memory: standing user-taught behavior rules, injected on
@@ -460,13 +482,13 @@ def attach_llm_capabilities(
                 # spotlighted as untrusted). Placed adjacent to the system prompt so
                 # they read as authoritative instructions. Empty (-> byte-identical)
                 # when procedural memory is off or no rules are stored.
-                procedural_prefix = ""
+                procedural_block = ""
                 if recall_cfg.procedural_enabled:
                     rules_fn = getattr(memory, "procedural_rules", None)
                     rules = list(rules_fn()) if callable(rules_fn) else []
                     block = render_rules(rules)
                     if block:
-                        procedural_prefix = block + "\n\n"
+                        procedural_block = block
                         # §9.7: a rule may carry private info ("address me as <X>"),
                         # so float the turn's sensitivity over it before any LLM call
                         # -- a private rule must not pin the turn to a public chain.
@@ -474,8 +496,18 @@ def attach_llm_capabilities(
                             str(context.get("sensitivity") or PRIVATE),
                             classify_sensitivity(block),
                         )
-                suffix = ("\n\n" + recent_block) if recent_block else ""
-                system_for_call = prefix + procedural_prefix + system + suffix
+                # R06b: the STABLE system is FIRST (the pre-warmed, cacheable
+                # prefix), then the session-stable procedural rules (trusted +
+                # authoritative), then the VOLATILE blocks -- recall/last-session
+                # (untrusted-wrapped) and the recent-turns text. Keeping every
+                # per-turn-varying block AFTER system means Ollama's
+                # longest-common-prefix KV cache is reused turn to turn instead of
+                # being busted by a changed recall block (llm-inference-1). Default
+                # config (recall + procedural off, text recent block) reduces to
+                # `system` + the recent suffix -> byte-identical to before.
+                system_for_call = "\n\n".join(
+                    p for p in (system, procedural_block, memory_block, recent_block) if p
+                )
             except Exception:  # noqa: BLE001 - context is best-effort, never fatal
                 log.exception("conversation context / recall failed; answering without it")
         # Live headroom hint (smart-routing-2 + load follow-up): publish the
@@ -560,6 +592,10 @@ def attach_llm_capabilities(
             stream_kwargs: dict[str, object] = {"system": system_for_call}
             if images:
                 stream_kwargs["images"] = list(images)
+            # R11: prior turns as role-structured chat messages (messages mode
+            # only; empty otherwise, so the default single-turn call is unchanged).
+            if recent_history:
+                stream_kwargs["history"] = recent_history
             if live_routing:
                 base_ms = _base_hedge_delay_ms(attempt_model)
                 if base_ms is not None:

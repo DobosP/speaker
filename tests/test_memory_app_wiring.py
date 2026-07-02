@@ -216,6 +216,9 @@ def test_every_memory_config_key_is_consumed():
         "recent_context_enabled", "recent_context_turns", "recent_context_max_chars",
         "recent_context_per_turn_chars", "recent_context_reset_enabled",
         "recent_context_reset_max_words", "recent_context_reset_phrases",
+        # R11 structured-history mode + its (larger) budget
+        "recent_context_as_messages", "recent_context_messages_turns",
+        "recent_context_messages_per_turn_chars",
         # P2/P2b memory knobs (core.app._build_memory)
         "embeddings", "max_recent", "working_window", "profile_enabled",
         "cross_session_continuity", "persist_assistant",

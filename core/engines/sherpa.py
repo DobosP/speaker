@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -38,6 +39,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..asr_text import agreement_guard, restore_casing
+from ..contract import is_stop_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
     AudioResampler,
@@ -667,6 +669,29 @@ class SherpaConfig:
     # talk-over PAST the window still cuts (worst case <= grace later, never
     # lost). 0 disables (byte-identical parity).
     barge_in_playback_onset_grace_sec: float = 0.40
+    # Word-gated barge confirmation (duck-then-confirm, 2026-07-02). The live
+    # dichotomy on an open nonlinear speaker (run-20260702-220207): with the
+    # coherence veto ON the DTD's correct fires are all vetoed (no barge); with it
+    # OFF the DTD also fires on the assistant's own imperfectly-cancelled echo
+    # (self-interrupt). No acoustic detector alone can be perfect there, so --
+    # following the LiveKit/Pipecat word-gate pattern -- an acoustic trigger no
+    # longer hard-cuts: playback DUCKS to barge_confirm_duck_gain (audible but
+    # quiet), the streaming recognizer is fed for up to barge_confirm_window_sec,
+    # and the barge hard-fires ONLY when >= barge_confirm_min_words NEW words are
+    # transcribed that do not read as the assistant's own speech (or a stop
+    # command, which confirms alone). No words -> restore volume, keep speaking:
+    # a false trigger costs a brief volume dip instead of a self-interrupt, and a
+    # real talk-over still cuts -- with the user's words already in the stream
+    # (free pre-roll for the final). Ducking also physically shrinks the echo
+    # during the window, so the recognizer mostly hears the USER. After an
+    # unconfirmed window, re-triggers are suppressed for
+    # barge_confirm_retry_suppress_sec so an echo-heavy reply can't audibly pump
+    # the volume. False (default) -> the legacy immediate hard-fire, byte-identical.
+    barge_confirm_enabled: bool = False
+    barge_confirm_window_sec: float = 1.5
+    barge_confirm_min_words: int = 2
+    barge_confirm_duck_gain: float = 0.15
+    barge_confirm_retry_suppress_sec: float = 2.0
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -1051,6 +1076,20 @@ class SherpaOnnxEngine(AudioEngine):
         # played audio. Used to distinguish a currently audible queued-sentence
         # tail from a stale nonzero _playback_level during a long synth lead-in.
         self._last_playback_at: float = 0.0
+        # Duck-then-confirm barge state (barge_confirm_enabled). _duck_gain is
+        # applied in-place by the audio callback (1.0 = no duck; bare float, GIL-
+        # atomic, written by the capture thread / stop paths). _confirm_until > 0
+        # marks an ACTIVE confirm window (monotonic deadline); _confirm_base_text
+        # is the recognizer partial at window start so only NEW words count.
+        self._duck_gain: float = 1.0
+        self._confirm_until: float = 0.0
+        self._confirm_base_text: str = ""
+        # Recently spoken sentences (post-markup, what was actually synthesized):
+        # the echo filter for confirm-window partials -- transcribed text that
+        # reads like one of these is the assistant's own (ducked) echo, not the
+        # user. Appended by speak() (bus thread), read by the capture thread;
+        # deque append/iterate is GIL-safe for this diagnostic use.
+        self._recent_spoken: deque = deque(maxlen=8)
         # Auto-calibrated post-AEC residual echo+noise floor (capture thread only),
         # learned online DURING playback by _update_playback_floor. The barge gate
         # (when AEC is on) requires a real interrupt to stand
@@ -1567,6 +1606,14 @@ class SherpaOnnxEngine(AudioEngine):
                 if on_done:
                     on_done()
                 return
+        # Echo filter feed for the duck-then-confirm barge gate: what is about to
+        # be synthesized is what a confirm-window partial may transcribe back as
+        # the assistant's own (ducked) echo. Cheap ring; inert unless
+        # barge_confirm_enabled consults it. getattr: markup fixtures build the
+        # engine bypassing __init__, where the ring doesn't exist.
+        spoken_ring = getattr(self, "_recent_spoken", None)
+        if spoken_ring is not None:
+            spoken_ring.append(text)
         self._enqueue_play(text, on_done, directives)
 
     def stop_speaking(self) -> None:
@@ -1608,6 +1655,9 @@ class SherpaOnnxEngine(AudioEngine):
         # doesn't keep gating barge-in against a level that is no longer audible.
         self._playback_level = 0.0
         self._last_playback_at = 0.0
+        # A stop/barge ends any open confirm window and restores full volume for
+        # the next reply (idempotent; the confirm path also restores on its own).
+        self._end_barge_confirm()
         # AUTHORITATIVELY end the speaking state HERE (RC-2). A barge-in/stop is
         # "stop now"; ownership of the _speaking transition must NOT be left to the
         # playback worker's epilogue (sherpa.py finally, ~_speaking.clear()), which
@@ -2196,6 +2246,18 @@ class SherpaOnnxEngine(AudioEngine):
                         rejected_run = 0.0
                         rejected_flagged = False
                         continue
+                    # Duck-then-confirm: a prior acoustic trigger ducked playback
+                    # and opened a confirm window. Feed THIS block to the streaming
+                    # recognizer and look for real transcribed words (the user) vs
+                    # nothing/own-echo (a false trigger). Handled BEFORE the floor
+                    # updates below so the ducked echo can't be learned as the
+                    # floor, and instead of the sustain machinery -- word evidence
+                    # decides now, not more acoustic trips.
+                    if self._barge_confirm_active():
+                        self._barge_confirm_step(recognizer, stream, samples, now)
+                        barge_sustain.reset()
+                        rejected_run = 0.0
+                        continue
                     # Auto-calibrate the post-AEC residual echo+noise floor on EVERY
                     # playback block (the assistant's own cancelled echo). The barge
                     # gate keys off this floor, so the interrupt threshold tracks the
@@ -2277,15 +2339,30 @@ class SherpaOnnxEngine(AudioEngine):
                             if barge_sustain.update(eligible):
                                 barge_sustain.reset()
                                 rejected_run = 0.0
-                                # Latch: one barge-in per speaking run. The 0.5s
-                                # suppress window still debounces; the latch
-                                # caps the whole run so self-echo can't re-fire.
-                                self._barge_in_fired_this_run = True
-                                self._barge_in_suppressed_until = (
-                                    now + max(0.0, self.config.barge_in_suppress_sec)
-                                )
-                                log.info("barge-in detected")
-                                self._cb.on_barge_in()
+                                if (
+                                    self.config.barge_confirm_enabled
+                                    and recognizer is not None
+                                    and stream is not None
+                                ):
+                                    # Word gate: do NOT cut on acoustics alone --
+                                    # duck playback and require transcribed words
+                                    # within the confirm window. No latch burned:
+                                    # an unconfirmed (echo) trigger must not
+                                    # disarm a later REAL talk-over this run.
+                                    self._begin_barge_confirm(recognizer, stream, now)
+                                else:
+                                    # Legacy immediate hard-fire (byte-identical
+                                    # when barge_confirm_enabled is False).
+                                    # Latch: one barge-in per speaking run. The
+                                    # 0.5s suppress window still debounces; the
+                                    # latch caps the whole run so self-echo can't
+                                    # re-fire.
+                                    self._barge_in_fired_this_run = True
+                                    self._barge_in_suppressed_until = (
+                                        now + max(0.0, self.config.barge_in_suppress_sec)
+                                    )
+                                    log.info("barge-in detected")
+                                    self._cb.on_barge_in()
                             elif eligible:
                                 rejected_run = 0.0
                             else:
@@ -2318,6 +2395,11 @@ class SherpaOnnxEngine(AudioEngine):
                 # Not speaking -> reset the rejected-talk-over episode tracking.
                 rejected_run = 0.0
                 rejected_flagged = False
+                # Playback ended (naturally or via stop) while a confirm window
+                # was still open: close it so the duck gain never leaks into the
+                # next reply. Idempotent; stop_speaking() also restores.
+                if self._barge_confirm_active():
+                    self._end_barge_confirm()
 
                 try:
                     utterance.append(samples)
@@ -2544,6 +2626,15 @@ class SherpaOnnxEngine(AudioEngine):
             # and learn how many of those samples are REAL audio (vs zero-fill) so
             # we tee only the played audio into the echo refs.
             n = fifo.read_into(view)
+            # Duck-then-confirm barge gate: while a confirm window is open the
+            # capture thread sets _duck_gain < 1.0 and playback is attenuated
+            # IN PLACE, BEFORE the echo-reference tees below -- so the far-end
+            # AEC reference and the coherence reference describe the DUCKED
+            # signal that actually leaves the speaker. Real-time safe: one float
+            # read + one in-place multiply, no allocation. 1.0 = no-op.
+            duck = self._duck_gain
+            if duck != 1.0 and n > 0:
+                view[:n] *= duck
             # Underrun diagnostic: the FIFO ran dry PARTWAY through this block while
             # still speaking -> PortAudio plays the zero-filled tail as a gap (the
             # buzzy/glitchy artifact). Count only -- no logging on this thread. A
@@ -3420,6 +3511,123 @@ class SherpaOnnxEngine(AudioEngine):
             a = self._PLAYBACK_FLOOR_ALPHA
             self._raw_playback_floor_rms = (1.0 - a) * f + a * level
         # else: a >+6 dB burst -- likely a real talk-over -> freeze the floor.
+
+    # --- duck-then-confirm barge gate (word-gated interrupt) -----------------
+    # The LiveKit/Pipecat word-gate pattern, sliced for this engine: an acoustic
+    # trigger ducks playback (reversible, one callback period) and opens a short
+    # confirm window during which the capture loop feeds the streaming recognizer;
+    # only real transcribed words -- that don't read as the assistant's own ducked
+    # echo -- hard-fire the barge. See the barge_confirm_* config block.
+
+    def _barge_confirm_active(self) -> bool:
+        # getattr default: barge fixtures may build the engine bypassing
+        # __init__; a missing stamp reads as "no window open".
+        return getattr(self, "_confirm_until", 0.0) > 0.0
+
+    def _begin_barge_confirm(self, recognizer, stream, now: float) -> None:
+        """Open the confirm window: duck playback + snapshot the partial base.
+
+        The base snapshot means only words transcribed AFTER the trigger count
+        as confirmation -- residue already in the stream (a pre-reply partial
+        tail) can't confirm by itself."""
+        self._confirm_until = now + max(0.1, self.config.barge_confirm_window_sec)
+        base = ""
+        try:
+            base = (recognizer.get_result(stream) or "").strip()
+        except Exception:  # noqa: BLE001 - a stream hiccup must not break capture
+            base = ""
+        self._confirm_base_text = base
+        self._duck_gain = min(1.0, max(0.0, self.config.barge_confirm_duck_gain))
+        log.info(
+            "barge-in: acoustic trigger -- ducking playback, awaiting speech "
+            "confirmation (%.1fs window)", self.config.barge_confirm_window_sec,
+        )
+        self._cb.on_metric("barge_in_duck")
+
+    def _barge_confirm_step(self, recognizer, stream, samples, now: float) -> bool:
+        """One capture block inside an active confirm window.
+
+        Feeds the recognizer (playback is ducked, so the block is mostly the
+        USER if anyone is talking) and decides: enough NEW words that aren't the
+        assistant's own echo -> hard-fire the barge (True). A stop command
+        confirms alone. Window expired with no evidence -> restore volume, reset
+        the stream (drop any echo it was fed), arm the retry suppress, and keep
+        speaking (False)."""
+        text = ""
+        try:
+            stream.accept_waveform(self.config.sample_rate, samples)
+            while recognizer.is_ready(stream):
+                recognizer.decode_stream(stream)
+            text = (recognizer.get_result(stream) or "").strip()
+        except Exception:  # noqa: BLE001 - decode errors must not break capture
+            pass
+        base = self._confirm_base_text
+        new_text = text[len(base):].strip() if base and text.startswith(base) else text
+        words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
+        confirmed = bool(new_text) and (
+            is_stop_command(new_text)
+            or (
+                len(words) >= max(1, self.config.barge_confirm_min_words)
+                and not self._reads_like_own_speech(new_text)
+            )
+        )
+        if confirmed:
+            self._end_barge_confirm()
+            self._barge_in_fired_this_run = True
+            self._barge_in_suppressed_until = (
+                now + max(0.0, self.config.barge_in_suppress_sec)
+            )
+            log.info("barge-in confirmed by speech: %r", new_text[:80])
+            self._cb.on_metric("barge_in_confirmed")
+            # Keep the exact legacy log line so run-bundle tooling
+            # (grep "barge-in detected") sees confirmed barges too.
+            log.info("barge-in detected")
+            self._cb.on_barge_in()
+            # The confirm-window audio is already IN the stream: the user's
+            # first words become the head of the next final (free pre-roll)
+            # once _speaking clears and the normal ASR path resumes.
+            return True
+        if now >= self._confirm_until:
+            self._end_barge_confirm()
+            # Echo (or a transient) tripped the acoustics but nobody is talking:
+            # restore volume and keep speaking. Reset the stream so any ducked
+            # echo it was fed can't pollute the next real final, and suppress
+            # re-triggers briefly so an echo-heavy reply can't pump the volume.
+            try:
+                recognizer.reset(stream)
+            except Exception:  # noqa: BLE001 - reset is best-effort
+                pass
+            self._barge_in_suppressed_until = (
+                now + max(0.0, self.config.barge_confirm_retry_suppress_sec)
+            )
+            log.info(
+                "barge-in NOT confirmed (no talk-over speech in %.1fs) -- "
+                "restoring volume", self.config.barge_confirm_window_sec,
+            )
+            self._cb.on_metric("barge_in_unconfirmed")
+        return False
+
+    def _end_barge_confirm(self) -> None:
+        """Close the window + restore full volume (idempotent, any thread)."""
+        self._confirm_until = 0.0
+        self._confirm_base_text = ""
+        self._duck_gain = 1.0
+
+    def _reads_like_own_speech(self, text: str) -> bool:
+        """Does confirm-window text read as the assistant's own (ducked) echo?
+
+        Token-overlap against the recently synthesized sentences: when most of
+        the transcribed words appear in something the assistant just said, the
+        recognizer is hearing the speaker, not the user. Conservative on ties --
+        an empty/inaudible transcription is treated as echo (not confirmation)."""
+        words = set(re.findall(r"[a-z']+", text.lower()))
+        if not words:
+            return True
+        for spoken in tuple(getattr(self, "_recent_spoken", ())):
+            spoken_words = set(re.findall(r"[a-z']+", str(spoken).lower()))
+            if spoken_words and len(words & spoken_words) / len(words) >= 0.6:
+                return True
+        return False
 
     def _barge_in_fire_eligible(self, samples, mic_raw=None) -> bool:
         """Whether this block may *start/continue* arming a barge-in.

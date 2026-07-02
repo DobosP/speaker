@@ -45,6 +45,41 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       docs/session_2026-06-08_live_session_self_interrupt.md (think=false latency +
       prosody endpointing both validated live; re-assess turn-taking after the mic fix).
 
+## P1 — Windows live session findings (2026-07-02, owner-directed next to-dos)
+> Context: live debug on the Windows/4090 box (runs 212109 → 224616) after merging
+> R11/R06b + the asr-guard fix. Barge-in was rebuilt as the word-gated
+> duck-then-confirm gate (ADR-0011, `feat/barge-duck-confirm`) and works live
+> (talk-over + "stop" cut; pumping fixed). OWNER VERDICT ending the session:
+> **audio quality still has the problem, and STT quality too** — these two are
+> the explicit next to-dos.
+- [ ] **★★ Audio output quality on the Windows box.** The box still synthesizes
+      with Piper `en_US-libritts_r-medium` — `config.local.json` `tts_model` was
+      never repointed at the adopted Kokoro (ADR-0010) because C: was 100% full
+      (the `gemma3:4b` pull died mid-download; ~4 GB free after cleanup). Fix:
+      free disk → fetch the Kokoro int8 package → set `tts_model`/`tts_voices`/
+      `tts_tokens` (+ `tts_lexicon`) in config.local.json → listen; then apply
+      the voice-plan P2 items (per-device `tts_output_lowpass_hz` for the cheap
+      open speaker, named-voice set). Until then "audio quality is bad" on this
+      machine is EXPECTED — it is the old voice.
+- [ ] **★★ STT quality on the Windows box (the conversation ceiling).** Evidence
+      run-20260702-224616: raw finals "I'M NODDY" (→ "I'm not."), "NOTHING GOBOD
+      BREATHED THERE AND TALKING ABOUT" (→ a fabricated cleanup), fragments
+      answered. Mic captures at avg_rms ~0.0007 (30-70x below normal speech);
+      digital `input_gain` (now 4.0 machine-local) cannot add SNR. Fix order:
+      (1) raise the Windows OS mic level/boost toward ~-20 dBFS active median
+      and verify on the next bundle WAV; (2) re-tune SenseVoice + prosody
+      thresholds at the new level; (3) R14 Parakeet-TDT finalizer bakeoff;
+      (4) redo speaker-ID enrollment on a quiet system (tonight's enrollment
+      rejected the owner → `speaker_gate_input=false` machine-local until then);
+      (5) re-enable the addressing/cleanup gates once finals are clean
+      (input_gate/cleanup disabled machine-local tonight so garbled fragments
+      weren't silently dropped).
+- [ ] **Barge follow-ups (post-ADR-0011):** surface the `barge_in_duck` /
+      `barge_in_confirmed` / `barge_in_unconfirmed` metrics in
+      `tools/diagnose_run.py`; consider raw-mic word-confirm + KWS hotwords in
+      the confirm window; revisit `dtd_coherence_echo_veto` default (OFF where
+      the word gate is enabled — the gate is the guard now).
+
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds
 > fixed: AEC ref-delay (19→105ms calibrated, 30.3dB ERLE), DTD chart persistence,

@@ -202,19 +202,25 @@ def inject(
 # TTS synthesis of the injected utterances (same model the engine speaks with)
 # --------------------------------------------------------------------------- #
 def synth_to_wav(text: str, out_path: str, *, sherpa_cfg: dict, speed: float = 1.0) -> float:
-    """Render ``text`` to a 16-bit mono WAV with the engine's VITS voice.
+    """Render ``text`` to a 16-bit mono WAV with the engine's configured voice.
 
     Returns the clip duration in seconds. ``sherpa_cfg`` is the merged
-    ``config["sherpa"]`` block (for the tts model paths)."""
-    import sherpa_onnx
+    ``config["sherpa"]`` block. The TTS is built through the SAME
+    :func:`core.engines._sherpa_models.build_tts` the runtime uses, so it tracks
+    whichever family is configured -- Piper/VITS or Kokoro (ADR-0010) -- rather
+    than assuming VITS. (Wiring a Kokoro model into the VITS slot aborts natively:
+    "Not a model using characters as modeling unit. Please provide --vits-lexicon".)"""
+    from core.engines._sherpa_models import build_tts
+    from core.engines.sherpa import SherpaConfig
 
-    cfg = sherpa_onnx.OfflineTtsConfig()
-    cfg.model.vits.model = sherpa_cfg["tts_model"]
-    cfg.model.vits.tokens = sherpa_cfg["tts_tokens"]
-    if sherpa_cfg.get("tts_data_dir"):
-        cfg.model.vits.data_dir = sherpa_cfg["tts_data_dir"]
-    cfg.model.num_threads = 2
-    tts = sherpa_onnx.OfflineTts(cfg)
+    tts = build_tts(SherpaConfig.from_dict(sherpa_cfg))
+    if tts is None:
+        raise RuntimeError(
+            "autotest clip synth: TTS failed to build from the sherpa config -- "
+            "see the speaker.sherpa warning above (e.g. a Kokoro package with "
+            "missing model/voices/tokens files). Fix the tts_* paths in "
+            "config.local.json, or clear tts_voices to use the Piper/VITS voice."
+        )
     audio = tts.generate(text, sid=0, speed=speed)
     samples = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
     sr = int(audio.sample_rate)

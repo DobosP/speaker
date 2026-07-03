@@ -3,7 +3,9 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-02 late (branch feat/barge-duck-confirm, Windows box live session)
+Last verified: 2026-07-03 (Linux Mint boot of the ROG laptop; full logic suite
+2246 passed, 24 skipped; branch feat/diagnose-barge-funnel-autotest-kokoro).
+Prior: 2026-07-02 late (branch feat/barge-duck-confirm, Windows boot live session).
 
 ## What this is
 
@@ -81,6 +83,16 @@ git diff --check
 (Linux box venv: `/home/dobo/work/speaker/.venv/bin/python`.)
 
 ## Next (see `.agents/backlog.md` for the live queue)
+
+> **Boot note (2026-07-03):** items 1–2 below are **Windows-boot** conditions —
+> they do NOT hold on the Linux boot (Kokoro is already active there; STT fix is a
+> Windows OS mic-level change). Doing them requires booting Windows. Linux-boot
+> work this session: barge confirm-funnel surfaced in `tools/diagnose_run.py`,
+> the autotest `voice` tier un-broken for Kokoro (`synth_to_wav` was VITS-only →
+> native abort), APM double-talk regression confirmed green. The autotest cable
+> WER is synthetic-voice-artifact-dominated (Kokoro is OOD for the zipformer ASR),
+> so it is NOT a human-STT verdict. See
+> `docs/session_2026-07-03_linux_boot_barge_metrics_and_autotest_kokoro_fix.md`.
 
 1. **Audio output quality on the Windows box (owner verdict 2026-07-02: "still
    has the problem").** Root cause on THIS box: `config.local.json` still

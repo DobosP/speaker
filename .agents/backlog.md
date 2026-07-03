@@ -74,11 +74,43 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       (5) re-enable the addressing/cleanup gates once finals are clean
       (input_gate/cleanup disabled machine-local tonight so garbled fragments
       weren't silently dropped).
-- [ ] **Barge follow-ups (post-ADR-0011):** surface the `barge_in_duck` /
-      `barge_in_confirmed` / `barge_in_unconfirmed` metrics in
-      `tools/diagnose_run.py`; consider raw-mic word-confirm + KWS hotwords in
-      the confirm window; revisit `dtd_coherence_echo_veto` default (OFF where
-      the word gate is enabled — the gate is the guard now).
+- [~] **Barge follow-ups (post-ADR-0011).**
+      - [x] surface `barge_in_duck` / `barge_in_confirmed` / `barge_in_unconfirmed`
+        in `tools/diagnose_run.py` (2026-07-03, Linux boot): log-derived counts →
+        text `--- Barge Confirm Funnel (ADR-0011) ---` (with a self-heal WARN) +
+        `--json` `barge_confirm_funnel`; visible even on zero-hard-fire runs; tests
+        in `tests/test_diagnose_run.py`. Adversarial-review hardening: anchored
+        `_BARGE_DETECTED_PAT` to end-of-message so a confirm line whose transcript
+        contains "barge-in detected" isn't miscounted (dead path, now robust).
+      - [ ] consider raw-mic word-confirm + KWS hotwords in the confirm window.
+      - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
+        the interplay only bites in profiles that opt the gate ON, so the default
+        pairing is coherent. DOCUMENTED, not flipped (a barge-gate change needs a
+        live-mic A/B). Revisit per-profile when a profile enables the gate.
+- [x] **Autotest `voice` tier un-broken for Kokoro (2026-07-03).**
+      `tools/autotest/audio.py::synth_to_wav` hard-coded `cfg.model.vits.*` for the
+      injected "user" clips → once Kokoro (ADR-0010) became default the native
+      loader aborted ("Not a model using characters as modeling unit … --vits-lexicon").
+      Now builds clip synth via the runtime's own Kokoro-aware
+      `build_tts(SherpaConfig.from_dict(sherpa_cfg))`. Cable tier runs end-to-end again.
+- [ ] **Autotest `voice` WER is synthetic-voice-artifact-dominated (2026-07-03).**
+      Kokoro-synthesized "user" clips are OOD for the streaming zipformer ASR
+      (every injected clip gets a spurious leading "And"; long clips collapse to a
+      word) → the cable WER is a harness signal, NOT a human-STT measurement (real
+      cable STT with real recordings ≈0.10 WER, memory `ota-stt-is-test-artifact`).
+      Fix: inject **real** recordings via `--utterances DIR` (or a non-TTS user
+      voice) so the tier yields a trustworthy WER; until then don't read cable WER
+      as an STT verdict.
+- [ ] **Barge-in cut needs a HUMAN talk-over on the Linux boot (2026-07-03).**
+      `autotest voice --acoustics delay` (silent loopback): S2 self-interrupt clean
+      (0 barge-ins during own reply, pass); S3 talk-over registered 0 cuts (fail),
+      but CONFOUNDED by the digital-loopback caveat — loopback echo is loud and the
+      config `aec_ref_delay_ms=40` mismatches the loopback's adapted ~350 ms, so the
+      residual is echo-heavy and the DTD fires on echo (coherence veto correctly
+      rejected 4). Not a trustworthy barge-miss signal. A real human talk-over on
+      real hardware is required to verdict the cut (the loopback stress-tests the
+      echo veto, not the cut). `aec_ref_delay_ms` stays echo-probe-calibrated per
+      ADR-0005 (do NOT set it from a loopback run).
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds

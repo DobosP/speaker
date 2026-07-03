@@ -106,3 +106,26 @@ incl. gemma3:12b/4b), livekit APM available. Baseline logic suite green
   raise Windows OS mic level, redo Windows speaker-ID) — require booting Windows.
 - Optional harness follow-up: inject **real** recordings (or a non-TTS user voice)
   so the autotest voice tier yields a trustworthy WER instead of an OOD-synth one.
+
+## Follow-on: real-usage forensics (2026-07-04)
+
+Owner asked to "use the recording to analyze how the code would work on real
+usage." Analyzed 7 real human recordings (trace + a decisive A/B replay) instead
+of synthetic clips. **Headline: the STT/barge bottleneck is the AEC/APM pipeline,
+NOT the mic or the ASR model — this partly REFUTES the standing "raise the mic
+level" STT prescription.** See the `.agents/backlog.md` "REAL-USAGE FORENSICS"
+entry for the full findings + fix order. Key evidence:
+
+- **A/B replay:** the same streaming ASR on the same audio — live (post-APM) vs a
+  replay of the raw pre-APM mic (`core --engine replay`, applies no AEC/NS) —
+  recovered a full continuous narration that the live path had shredded into
+  fragments. The audio is intelligible; the live capture path discards it.
+- **`aec_ref_delay_ms` is hard-set to 40 ms on every real session while the
+  measured echo delay is 106–220 ms (corr ≈0.15)** — an ADR-0005 violation and the
+  systemic root (echo not cancelled → always-on NS over-corrects → ASR + DTD read a
+  mangled signal). Fix: echo-probe-calibrate per machine or `aec_auto_delay`.
+- **The raw mic is fine:** measured active-speech RMS 0.045 @ 30.5 dB SNR; the
+  scary heartbeat `avg_rms≈0.0017` is just silence-diluted averaging.
+
+A visual report artifact was produced for the owner (private). Raw transcripts are
+the owner's own voice — NOT committed to the repo (§9.7).

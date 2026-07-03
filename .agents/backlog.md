@@ -111,6 +111,38 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       real hardware is required to verdict the cut (the loopback stress-tests the
       echo veto, not the cut). `aec_ref_delay_ms` stays echo-probe-calibrated per
       ADR-0005 (do NOT set it from a loopback run).
+- [ ] **★★★ REAL-USAGE FORENSICS (2026-07-04): the STT/barge bottleneck is the
+      AEC/APM pipeline, NOT the mic — partly REFUTES the "raise mic level" STT
+      to-do.** Analyzed 7 real recordings (trace + an A/B replay); see
+      `docs/session_2026-07-03_*` + the real-usage report artifact. Findings:
+      - **`aec_ref_delay_ms` is hard-set to 40 ms (19 ms on Windows) on EVERY real
+        session, but the measured echo delay is 106–220 ms (corr ≈0.15).** The
+        canceller looks in the wrong place → echo not removed → always-on NS
+        over-corrects → the ASR + DTD read a mangled signal. This ADR-0005
+        violation is the systemic root. FIX: echo-probe-calibrate per machine
+        (est ~100–220 ms here) or enable `aec_auto_delay`. Config ships static 40 ms.
+      - **The raw mic is FINE.** The heartbeat `avg_rms≈0.0017` is silence-diluted
+        (speech ~1.6% of a 23-min session); measured active-speech RMS is 0.045 @
+        30.5 dB SNR (232506: 0.070 @ 36.8 dB) — comparable to owner enrollment.
+        So digital mic gain is the WRONG lever for STT; re-check the Windows finding
+        the same way (active-speech RMS, not the silence-diluted average) before
+        chasing the Windows mic level.
+      - **A/B PROOF:** the same streaming ASR on the same audio — live (post-APM)
+        vs replay of the raw pre-APM mic (`core --engine replay`, no AEC/NS) —
+        recovered a full continuous narration the live path shredded into fragments
+        (`THE MERE STORY`/`ABOUT`/`MY CAT BIKI`/`MEAN` → one continuous cat-story
+        sentence). The audio is intelligible; the pipeline discards it.
+      - **Barge is never calibrated on real usage:** 2–5 real talk-overs
+        rejected-while-speaking per Linux session (missed), vs the Windows 181250
+        self-interrupt cascade (12 fires on own echo). Both downstream of the broken
+        AEC. Ties to the open `_apm_owns_ns` residual P1.
+      - **Cleaner fabricates** confident wrong sentences from 2–3 garbled words
+        (`LIKE A QUESTION`→"And did you I could pressure in…"). Gate the LLM rewrite
+        on raw length/agreement so it can't expand noise into a fabricated request.
+        + TTS DC offset ~0.05 on every sentence + up to 14 underruns.
+      Fix order: (1) AEC ref-delay calibration [unblocks the rest]; (2) less-NS tap
+      for the ASR under `apm_always_on`; (3) cleaner anti-fabrication gate;
+      (4) looser endpointing; (5) TTS DC/underrun nits.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds

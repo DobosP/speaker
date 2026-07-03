@@ -59,8 +59,22 @@ _NUM = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?"
 
 _SPEAKING_PAT = re.compile(r"speaking:\s+'(.+)'\s+\(queue depth=(\d+)\)")
 _PLAYBACK_OPEN_PAT = re.compile(r"playback opened at (\d+) Hz")
-_BARGE_DETECTED_PAT = re.compile(r"barge-in detected")
+# Anchored to end-of-message: the engine logs the bare string "barge-in
+# detected" (core/engines/sherpa.py), so `$` matches it but NOT a confirm line
+# whose embedded transcription happens to contain the substring, e.g.
+# `barge-in confirmed by speech: 'barge-in detected'` (that ends in a quote).
+# Without the anchor such a line would be miscounted as a detected event and
+# skip the ADR-0011 confirm funnel.
+_BARGE_DETECTED_PAT = re.compile(r"barge-in detected\s*$")
 _BARGE_REJECTED_PAT = re.compile(r"barge-in REJECTED:\s+(.*)")
+# ADR-0011 word-gated duck-then-confirm funnel. These lines carry no
+# "detected"/"REJECTED" marker of their own, so they are counted directly to
+# expose the acoustic-trigger -> speech-confirm funnel -- including runs where
+# every trigger self-healed (ducked then expired) with zero hard-fires, which is
+# the echo-pumping signature the word gate defuses.
+_BARGE_DUCK_PAT = re.compile(r"barge-in: acoustic trigger")
+_BARGE_CONFIRMED_PAT = re.compile(r"barge-in confirmed by speech")
+_BARGE_UNCONFIRMED_PAT = re.compile(r"barge-in NOT confirmed")
 _DTD_PAT = re.compile(
     rf"dtd:\s+D=({_NUM})\s+K=({_NUM})\s+fired=(True|False)\s+gated=(True|False)"
     rf"\s+\(z_raw=({_NUM})\s+z_resid=({_NUM})\s+z_coh=({_NUM})\)"
@@ -158,6 +172,12 @@ class ParsedRun:
     aec_backend: Optional[str] = None
     aec_config_ref_delay_ms: Optional[float] = None
     apm_always_on: Optional[bool] = None
+    # ADR-0011 confirm-window funnel counts (log-derived): acoustic triggers that
+    # ducked, of those how many a real talk-over confirmed (hard-cut) vs
+    # self-healed (window expired with no words).
+    barge_duck: int = 0
+    barge_confirmed: int = 0
+    barge_unconfirmed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +196,7 @@ def parse_log(txt_path: str) -> ParsedRun:
     aec_backend: Optional[str] = None
     aec_config_ref_delay_ms: Optional[float] = None
     apm_always_on: Optional[bool] = None
+    barge_duck = barge_confirmed = barge_unconfirmed = 0
     pending_tts_sanitize: Optional[dict] = None
     last_playback_sample_rate: Optional[int] = None
 
@@ -330,6 +351,21 @@ def parse_log(txt_path: str) -> ParsedRun:
                     sentences[-1].barge_events.append(be)
                 continue
 
+            # Barge-in confirm-window funnel (ADR-0011). These lines carry no
+            # detected/REJECTED marker, so they fall through to here; count them
+            # directly. A confirmed window ALSO logs "barge-in detected" (handled
+            # above as a BargeEvent) so hard-fires stay in both views.
+            if "speaker.sherpa" in logger:
+                if _BARGE_DUCK_PAT.search(msg):
+                    barge_duck += 1
+                    continue
+                if _BARGE_CONFIRMED_PAT.search(msg):
+                    barge_confirmed += 1
+                    continue
+                if _BARGE_UNCONFIRMED_PAT.search(msg):
+                    barge_unconfirmed += 1
+                    continue
+
     return ParsedRun(
         run_id=run_id,
         run_start_t=run_start_t,
@@ -342,6 +378,9 @@ def parse_log(txt_path: str) -> ParsedRun:
         aec_backend=aec_backend,
         aec_config_ref_delay_ms=aec_config_ref_delay_ms,
         apm_always_on=apm_always_on,
+        barge_duck=barge_duck,
+        barge_confirmed=barge_confirmed,
+        barge_unconfirmed=barge_unconfirmed,
     )
 
 
@@ -1115,6 +1154,20 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
         if be.dtd_context:
             lines.append(_dtd_context_str(be.dtd_context))
 
+    # --- Barge Confirm Funnel (ADR-0011) ---
+    # Only rendered when the word-gated duck-then-confirm path was active, so a
+    # legacy run without it stays quiet instead of showing a zero block.
+    if run.barge_duck or run.barge_confirmed or run.barge_unconfirmed:
+        lines.append("\n--- Barge Confirm Funnel (ADR-0011) ---")
+        lines.append(f"  acoustic triggers  (barge_in_duck):        {run.barge_duck}")
+        lines.append(f"  confirmed by speech (barge_in_confirmed):  {run.barge_confirmed}")
+        lines.append(f"  self-healed        (barge_in_unconfirmed): {run.barge_unconfirmed}")
+        if run.barge_duck and run.barge_unconfirmed / run.barge_duck >= 0.5:
+            lines.append(
+                f"  [~] {run.barge_unconfirmed}/{run.barge_duck} triggers self-healed "
+                "— acoustic gate firing on echo (word gate absorbing it, no pumping)"
+            )
+
     # --- Self-interrupt Summary ---
     si = self_interrupt_summary(run)
     lines.append("\n--- Self-Interrupt Summary ---")
@@ -1189,6 +1242,11 @@ def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dic
             "apm_always_on": run.apm_always_on,
         },
         "self_interrupt": si,
+        "barge_confirm_funnel": {
+            "barge_in_duck": run.barge_duck,
+            "barge_in_confirmed": run.barge_confirmed,
+            "barge_in_unconfirmed": run.barge_unconfirmed,
+        },
         "pass_fail": pf,
         "findings": diagnostic_findings(run, wav_metrics, delay_metrics),
         "sentences": [

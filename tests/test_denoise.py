@@ -363,48 +363,48 @@ def test_apm_owns_ns_requires_always_on_and_noise_suppression(monkeypatch):
     assert eng._apm_owns_ns is False
 
 
-def test_aec_auto_delay_updates_on_cadence_and_ignores_invalid_measurements():
+def test_aec_auto_delay_wires_calibrator_into_ref_delay():
+    """The capture loop feeds AecDelayCalibrator(mic_raw, far0) and adopts its
+    measured delay as the operating ``_aec_ref_delay`` -- replacing the old
+    coherence-median feedback (un-normalized, no accept-gate, reset every reply)
+    that never converged on the open speaker. The calibrator's own convergence
+    and correlation-gating are unit-tested in tests/test_aec_seam.py; here we
+    assert only the engine wiring."""
     from core.engines._aec import FarEndRing
 
     class _FakeAEC:
         def process_16k(self, near, far):
             return np.asarray(near, dtype="float32")
 
-    class _FakeCoherence:
+    class _FakeCalibrator:
         def __init__(self):
+            self.observed = 0
             self.delay = 333
 
-        def measured_delay_samples(self):
+        def observe(self, mic_block, far0_block):
+            self.observed += 1
+
+        def current_delay_samples(self):
             return self.delay
 
     eng = SherpaOnnxEngine(SherpaConfig.from_dict({"aec_auto_delay": True}))
     eng._aec = _FakeAEC()
     eng._far_ref = FarEndRing()
     eng._speaking.set()
-    eng._echo_coherence = _FakeCoherence()
+    cal = _FakeCalibrator()
+    eng._aec_delay_cal = cal
     eng._aec_ref_delay = 80
     block = np.full(1600, 0.05, dtype="float32")
 
-    _run_blocks(eng, [block] * 9)
-    assert eng._aec_delay_recalc_blocks == 9
+    _run_blocks(eng, [block] * 3)
+    assert cal.observed >= 1           # the capture loop fed the calibrator
+    assert eng._aec_ref_delay == 333   # and adopted its measured operating delay
+
+    # No calibrator (auto-delay off / not built) -> the seed is left untouched.
+    eng._aec_delay_cal = None
+    eng._aec_ref_delay = 80
+    _run_blocks(eng, [block] * 3)
     assert eng._aec_ref_delay == 80
-
-    _run_blocks(eng, [block])
-    assert eng._aec_delay_recalc_blocks == 0
-    assert eng._aec_ref_delay == 333
-
-    eng._echo_coherence.delay = None
-    _run_blocks(eng, [block] * 10)
-    assert eng._aec_ref_delay == 333
-
-    eng._echo_coherence.delay = eng.config.sample_rate
-    _run_blocks(eng, [block] * 10)
-    assert eng._aec_ref_delay == 333
-
-    eng.config.aec_auto_delay = False
-    eng._echo_coherence.delay = 222
-    _run_blocks(eng, [block] * 10)
-    assert eng._aec_ref_delay == 333
 
 
 def test_capture_hook_recorder_sees_denoised_block():

@@ -108,6 +108,56 @@ def word_agreement(streaming_final: str, second_pass: str) -> bool:
     return shared >= required
 
 
+def _grounded_rewrite(raw: str, rewrite: str) -> bool:
+    """Whether a lexical (``word_agreement``) 2nd-pass acceptance is actually
+    *grounded* in the raw, not a fabrication that merely shares a token or two.
+
+    Live, SenseVoice rewrote the short garbled raw ``"LIKE A QUESTION"`` into
+    ``"And did you I could pressure in if you found this question"`` and ``"TEND
+    ME A LONG STORY ABOUT HER"`` into ``"A long story about the ceiling"``: each
+    slips past ``word_agreement`` on one/two shared content tokens while
+    inventing the rest. A genuine correction either reproduces the raw words
+    exactly (pure punctuation/casing/ITN cleanup) or KEEPS more than half of the
+    raw's content tokens without ballooning in length. Dimensionless ratios of
+    the raw itself -- no machine constant."""
+    raw_words = _normalized_words(raw)
+    rewrite_words = _normalized_words(rewrite)
+    if raw_words and raw_words == rewrite_words:
+        return True
+    raw_tokens = _content_tokens(raw)
+    shared = len(raw_tokens & _content_tokens(rewrite))
+    preserves_majority = 2 * shared > len(raw_tokens)
+    not_ballooned = len(rewrite_words) <= 2 * len(raw_words)
+    return preserves_majority and not_ballooned
+
+
+def _low_overlap(raw: str, rewrite: str) -> bool:
+    """Whether the raw is garbled *enough* (few shared content tokens) that the
+    whole-phrase char-similarity escape hatch (``_clear_long_improvement``) is
+    trustworthy. The hatch exists for ``"Ario der" -> "are you there"`` (zero
+    overlap, phonetic repair); it must NOT become a second door for a
+    fabrication that already reproduces much of the raw's content. Trust it only
+    when at most a third of the raw's content tokens survive."""
+    raw_tokens = _content_tokens(raw)
+    shared = len(raw_tokens & _content_tokens(rewrite))
+    return 3 * shared <= len(raw_tokens)
+
+
+def drops_and_invents(raw: str, cleaned: str) -> bool:
+    """True iff a cleanup rewrite DROPS most of the raw's content and INVENTS
+    new words in its place: it shares at least one content token (so it isn't a
+    total non-sequitur the expansion/self-echo guards already cover) yet keeps
+    at most half of them.
+
+    Live, the fast-tier cleaner turned ``"TEND ME A LONG STORY ABOUT HER"`` into
+    ``"A long story about the ceiling"`` -- same length, so the expansion check
+    misses it -- dropping three of six content tokens and fabricating "ceiling".
+    Pure text, a dimensionless ratio of the raw's own token count."""
+    raw_tokens = _content_tokens(raw)
+    shared = len(raw_tokens & _content_tokens(cleaned))
+    return shared >= 1 and 2 * shared <= len(raw_tokens)
+
+
 def _clear_long_improvement(
     streaming_final: str,
     second_pass: str,
@@ -191,14 +241,27 @@ def agreement_guard(
     else:
         short = len(_normalized_words(streaming_final)) <= short_words
 
-    if word_agreement(streaming_final, second_pass):
+    # A lexical agreement is trusted only when the 2nd pass is GROUNDED in the
+    # raw -- else SenseVoice fabrications that share a token or two ("LIKE A
+    # QUESTION" -> "...if you found this question") ride the shared-token path
+    # into the brain.
+    if word_agreement(streaming_final, second_pass) and _grounded_rewrite(
+        streaming_final, second_pass
+    ):
         return second_pass
 
-    if not short and _clear_long_improvement(
-        streaming_final,
-        second_pass,
-        segment_sec=segment_sec,
-        short_sec=short_sec,
+    # The whole-phrase char-similarity hatch is only trustworthy for a genuinely
+    # garbled raw (few shared tokens); gate it behind _low_overlap so a
+    # fabrication that already reproduces much of the raw can't sneak through it.
+    if (
+        not short
+        and _low_overlap(streaming_final, second_pass)
+        and _clear_long_improvement(
+            streaming_final,
+            second_pass,
+            segment_sec=segment_sec,
+            short_sec=short_sec,
+        )
     ):
         return second_pass
 

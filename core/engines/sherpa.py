@@ -58,7 +58,7 @@ from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ..tts_markup import parse_tts_markup, resolve_tts_params
 from ._denoiser import build_denoiser
-from ._aec import FarEndRing, PlaybackFIFO, build_aec
+from ._aec import AecDelayCalibrator, FarEndRing, PlaybackFIFO, build_aec
 from ._sherpa_models import (
     build_keyword_spotter,
     build_final_recognizer,
@@ -322,6 +322,16 @@ class SherpaConfig:
     # wrong delay = poor/zero ERLE; the true delay is device-specific: ~40ms a
     # laptop speaker vs ~260ms Bluetooth). No-op when AEC or coherence is off.
     aec_auto_delay: bool = True
+    # AecDelayCalibrator bounds (core/engines/_aec.py). The OPERATING far->near
+    # delay is MEASURED on-device by normalized cross-correlation of the mic vs the
+    # true-playback-aligned far reference (the same robust estimator diagnose_run
+    # uses), so ``aec_ref_delay_ms`` above is only a SEED used until the first
+    # high-correlation estimate is accepted. These three are PHYSICS bounds, NOT
+    # per-machine tuning: min_corr rejects noise-floor lags, window is the
+    # correlation integration length, max clamps the search (laptop speaker..BT).
+    aec_delay_window_ms: float = 1500.0
+    aec_delay_min_corr: float = 0.15
+    aec_delay_max_ms: float = 400.0
     # --- WebRTC Audio Processing Module (aec_backend="apm") ----------------------
     # The production audio front-end Chrome/Meet/Teams ship: AEC3 (multi-delay,
     # nonlinear-tolerant echo cancel) + a residual-echo suppressor + ML noise
@@ -949,9 +959,11 @@ class SherpaOnnxEngine(AudioEngine):
         # NS/AGC/HPF; suppresses_noise => it owns NS, so skip the GTCRN denoiser.
         self._apm_always_on = False
         self._apm_owns_ns = False
-        # aec_auto_delay: rolling counter so the measured speaker->mic delay is fed
-        # back into _aec_ref_delay ~once/sec during playback (not every block).
-        self._aec_delay_recalc_blocks = 0
+        # aec_auto_delay: the operating far->near delay is MEASURED on-device by
+        # this calibrator (normalized cross-correlation, correlation-gated) and
+        # written into _aec_ref_delay every energetic block; None until built (or
+        # when auto-delay is off), in which case _aec_ref_delay holds the seed.
+        self._aec_delay_cal: "Optional[AecDelayCalibrator]" = None
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
@@ -1268,15 +1280,28 @@ class SherpaOnnxEngine(AudioEngine):
         self._far_ref = FarEndRing() if self._aec is not None else None
         if self._aec is not None:
             self._aec_ref_delay = int(c.sample_rate * c.aec_ref_delay_ms / 1000)
+            # Runtime delay auto-calibration: measure the true speaker->mic delay
+            # on-device (aec_ref_delay_ms is only the seed until the first accepted
+            # estimate). Bounds are physics, not per-machine tuning.
+            if c.aec_auto_delay:
+                self._aec_delay_cal = AecDelayCalibrator(
+                    c.sample_rate,
+                    seed_delay_samples=self._aec_ref_delay,
+                    window_ms=c.aec_delay_window_ms,
+                    min_corr=c.aec_delay_min_corr,
+                    max_delay_ms=c.aec_delay_max_ms,
+                )
             # The WebRTC-APM backend tags itself with these (absent on nlms/dtln).
             self._apm_always_on = bool(getattr(self._aec, "always_on", False))
             self._apm_owns_ns = self._apm_always_on and bool(
                 getattr(self._aec, "suppresses_noise", False)
             )
             log.info(
-                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms, "
-                "apm_always_on=%s)",
-                c.aec_backend, c.aec_ref_delay_ms, self._apm_always_on,
+                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms"
+                "%s, apm_always_on=%s)",
+                c.aec_backend, c.aec_ref_delay_ms,
+                " [seed; auto-calibrated at runtime]" if c.aec_auto_delay else "",
+                self._apm_always_on,
             )
         # Device-adaptive fused double-talk detector: the open-speaker barge trigger.
         # Built only when coherence + AEC are both on (it fuses the coherence
@@ -2101,6 +2126,16 @@ class SherpaOnnxEngine(AudioEngine):
                 # untouched pre-AEC block for the rest of the iteration.
                 mic_raw = samples
                 if self._aec is not None:
+                    # Auto-calibrate the far->near delay from the true-playback-
+                    # aligned far (read at delay 0) vs the raw mic: the calibrator
+                    # self-gates on far energy + correlation, so idle/uncorrelated
+                    # blocks leave the operating delay unchanged. Drives the read
+                    # below, so a mis-set seed self-corrects within ~1 window.
+                    if self._aec_delay_cal is not None:
+                        far0 = self._far_ref.read(samples.shape[0], 0)
+                        if far0 is not None and far0.size:
+                            self._aec_delay_cal.observe(mic_raw, far0)
+                            self._aec_ref_delay = self._aec_delay_cal.current_delay_samples()
                     far = self._far_ref.read(samples.shape[0], self._aec_ref_delay)
                     # ONLY cancel when the assistant is actually playing (the
                     # far-end reference has energy). With no recent playback the
@@ -2278,19 +2313,12 @@ class SherpaOnnxEngine(AudioEngine):
                     # current speaker volume + room noise online -- no manual
                     # calibration, and the steady echo can't self-interrupt.
                     if self._aec is not None:
-                        # Auto-calibrate the far-end read delay from the coherence
-                        # detector's measured speaker->mic lag (~once/sec, not every
-                        # block). A mis-set aec_ref_delay_ms then self-corrects
-                        # instead of degrading cancellation for the whole session;
-                        # both rings are teed from the same callback so the delay is
-                        # directly transferable. No-op until a delay is measured.
-                        if self.config.aec_auto_delay and self._echo_coherence is not None:
-                            self._aec_delay_recalc_blocks += 1
-                            if self._aec_delay_recalc_blocks >= 10:
-                                self._aec_delay_recalc_blocks = 0
-                                _d = self._echo_coherence.measured_delay_samples()
-                                if _d is not None and 0 <= _d < self.config.sample_rate:
-                                    self._aec_ref_delay = int(_d)
+                        # (The far->near read delay is auto-calibrated up front by
+                        # AecDelayCalibrator via normalized cross-correlation -- see
+                        # the observe() call before the far read -- which replaced
+                        # the coherence-median feedback that never converged on the
+                        # open speaker: un-normalized, no accept-gate, reset every
+                        # reply. See docs/session_2026-07-04.)
                         self._update_playback_floor(rms(samples))
                         # ALSO track the echo-only floor on the RAW pre-AEC mic. The
                         # barge energy-confirmation keys off THIS (not the post-AEC

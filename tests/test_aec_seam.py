@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from core.engines._aec import (
+    AecDelayCalibrator,
     EchoCanceller,
     FarEndRing,
     PlaybackFIFO,
@@ -591,3 +592,89 @@ def test_dtln_real_inference_reduces_echo():
     tail = len(out) // 2
     erle = 10 * np.log10(np.sum(mic[tail:len(out)] ** 2) / (np.sum(out[tail:] ** 2) + 1e-12))
     assert erle > 15.0  # deep canceller -> strong reduction on single-talk echo
+
+
+# --- runtime delay self-calibration (AecDelayCalibrator) ---------------------
+# Reproduces diagnose_run's normalized cross-correlation on LIVE rolling buffers,
+# with the accept gate (min_corr + far energy) the offline estimator lacked. All
+# synthetic + no audio device; SR fixed at 16 kHz.
+
+_SR = 16000
+_WIN_MS = 1500.0
+_WIN = int(_WIN_MS * _SR / 1000.0)  # samples in one full rolling window
+
+
+def _delayed_echo_window(rng, delay, *, n=_WIN, scale=0.5, nonlinear=False, far_scale=0.3):
+    """A (far, mic) window pair where the mic is the far-end white noise delayed by
+    ``delay`` samples (scaled, optionally tanh-nonlinear) + a little sensor noise --
+    i.e. what an open speaker->mic echo path produces on a single-talk window."""
+    far = (rng.standard_normal(n) * far_scale).astype(np.float32)
+    mic = np.zeros(n, dtype=np.float32)
+    if delay < n:
+        mic[delay:] = far[: n - delay] * scale
+    if nonlinear:
+        mic = np.tanh(3.0 * mic).astype(np.float32)
+    mic = mic + (rng.standard_normal(n) * 0.01).astype(np.float32)  # mild ambient noise
+    return far, mic.astype(np.float32)
+
+
+def test_calibrator_recovers_known_lag_and_leaves_the_seed():
+    # far = white noise; mic = delayed + scaled + tanh-nonlinear copy at 120 samples.
+    rng = np.random.default_rng(0)
+    seed = 640  # 40 ms -- deliberately wrong
+    cal = AecDelayCalibrator(_SR, seed_delay_samples=seed)
+    far, mic = _delayed_echo_window(rng, 120, nonlinear=True)
+    cal.observe(mic, far)  # one full window -> triggers a recalc, fast-acquires
+    got = cal.current_delay_samples()
+    assert abs(got - 120) <= int(0.002 * _SR)  # within ~2 ms of the true lag
+    assert got != seed                         # the measured value replaced the seed
+
+
+def test_calibrator_rejects_low_correlation_and_holds_the_seed():
+    # Independent white noise far/mic -> no lag clears min_corr -> operating unchanged.
+    rng = np.random.default_rng(1)
+    seed = 320
+    cal = AecDelayCalibrator(_SR, seed_delay_samples=seed)
+    for _ in range(8):
+        far = (rng.standard_normal(_WIN) * 0.3).astype(np.float32)
+        mic = (rng.standard_normal(_WIN) * 0.3).astype(np.float32)  # uncorrelated
+        cal.observe(mic, far)
+    assert cal.current_delay_samples() == seed
+
+
+def test_calibrator_fast_acquires_then_median_absorbs_outlier_then_tracks_shift():
+    rng = np.random.default_rng(2)
+    seed = 640
+    cal = AecDelayCalibrator(_SR, seed_delay_samples=seed)
+
+    # Fast acquire + fill the median window with the true lag (120 samples).
+    for _ in range(6):
+        far, mic = _delayed_echo_window(rng, 120)
+        cal.observe(mic, far)
+    assert abs(cal.current_delay_samples() - 120) <= int(0.002 * _SR)
+
+    # A single OUTLIER window (lag 320) must be absorbed by the median -> the
+    # operating delay stays on the true 120, not yanked toward the outlier.
+    far, mic = _delayed_echo_window(rng, 320)
+    cal.observe(mic, far)
+    assert abs(cal.current_delay_samples() - 120) <= int(0.002 * _SR)
+
+    # A SUSTAINED shift to 240 samples (genuine drift): after enough accepts the
+    # median rolls over and the operating delay tracks the new lag.
+    for _ in range(6):
+        far, mic = _delayed_echo_window(rng, 240)
+        cal.observe(mic, far)
+    assert abs(cal.current_delay_samples() - 240) <= int(0.002 * _SR)
+
+
+def test_calibrator_low_far_energy_never_accepts():
+    # Far-end below the energy floor (idle / silence): no echo to align to, so no
+    # window is ever accepted and the operating delay stays at the seed.
+    rng = np.random.default_rng(3)
+    seed = 480
+    cal = AecDelayCalibrator(_SR, seed_delay_samples=seed)
+    for _ in range(8):
+        far = (rng.standard_normal(_WIN) * 1e-4).astype(np.float32)  # ~ -80 dBFS
+        mic = (rng.standard_normal(_WIN) * 0.3).astype(np.float32)   # mic has energy
+        cal.observe(mic, far)
+    assert cal.current_delay_samples() == seed

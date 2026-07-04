@@ -804,7 +804,7 @@ class EchoCanceller:
                 pass
 
 
-def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
+def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optional[EchoCanceller]:
     """Echo canceller, or ``None`` when disabled/unbuildable (path then byte-
     identical to no-AEC). Mirrors :func:`build_denoiser`: returns ``None`` unless
     ``aec_enabled``; fails OPEN (logs a warning, returns ``None``) rather than
@@ -818,7 +818,14 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
     open speaker where NLMS measures ~0 dB ERLE, and is the recommended backend for
     open-speaker barge-in. The returned canceller carries ``always_on`` /
     ``suppresses_noise`` flags the engine reads to drive the always-on capture
-    stage and skip the redundant GTCRN denoiser."""
+    stage and skip the redundant GTCRN denoiser.
+
+    ``ns_override`` (apm backend only) forces the ML noise-suppressor on/off
+    independent of ``apm_noise_suppression``; the engine uses ``ns_override=False``
+    to build a SECOND, NS-off APM tap for the recognizer under ``_apm_owns_ns`` so
+    near-end user words survive (echo cancel + residual-echo suppress + HPF stay
+    on -- only the aggressive ML NS is dropped). ``None`` = use the config value.
+    Ignored by nlms/dtln (they do no NS)."""
     if not getattr(c, "aec_enabled", False):
         return None
     backend = str(getattr(c, "aec_backend", "nlms") or "nlms").lower()
@@ -826,7 +833,7 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
     if backend in ("apm", "webrtc"):
         from ._apm import build_apm_impl  # lazy: optional livekit dependency
 
-        impl = build_apm_impl(c)
+        impl = build_apm_impl(c, noise_suppression=ns_override)
         if impl is None:
             return None
         # AGC2 boosts quiet blocks by design, so it would trip the "louder =
@@ -837,7 +844,11 @@ def build_aec(c: "SherpaConfig") -> Optional[EchoCanceller]:
         # Flags the engine reads (default-absent on the other backends): run the
         # APM on every block (idle path too), and let it own noise suppression.
         ec.always_on = bool(getattr(c, "apm_always_on", False))
-        ec.suppresses_noise = bool(getattr(c, "apm_noise_suppression", True))
+        _ns = (
+            bool(getattr(c, "apm_noise_suppression", True))
+            if ns_override is None else bool(ns_override)
+        )
+        ec.suppresses_noise = _ns
         return ec
     if backend in ("nlms", "fdaf", "numpy"):
         frame = _next_pow2(int(getattr(c, "aec_filter_taps", 512) or 512))

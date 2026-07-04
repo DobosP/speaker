@@ -137,14 +137,21 @@ class _WebRTCAPM:
         self._far_buf = np.zeros(0, dtype=np.float32)
 
 
-def build_apm_impl(c) -> Optional["_WebRTCAPM"]:
+def build_apm_impl(c, *, noise_suppression: Optional[bool] = None) -> Optional["_WebRTCAPM"]:
     """Construct the APM impl from a SherpaConfig, or ``None`` (fail open) when
     ``livekit`` is missing or the module can't be built. Caller wraps it in an
-    :class:`core.engines._aec.EchoCanceller`."""
+    :class:`core.engines._aec.EchoCanceller`.
+
+    ``noise_suppression`` overrides ``apm_noise_suppression`` when not ``None``
+    (the engine builds an NS-off tap for the recognizer under ``_apm_owns_ns``)."""
+    _ns = (
+        bool(getattr(c, "apm_noise_suppression", True))
+        if noise_suppression is None else bool(noise_suppression)
+    )
     try:
         impl = _WebRTCAPM(
             echo_cancellation=True,
-            noise_suppression=bool(getattr(c, "apm_noise_suppression", True)),
+            noise_suppression=_ns,
             high_pass_filter=bool(getattr(c, "apm_high_pass_filter", True)),
             gain_control=bool(getattr(c, "apm_gain_control", False)),
             stream_delay_ms=int(getattr(c, "apm_stream_delay_ms", 0) or 0),
@@ -162,7 +169,7 @@ def build_apm_impl(c) -> Optional["_WebRTCAPM"]:
         return None
     log.info(
         "AEC active: WebRTC APM (AEC3 + RES%s%s%s, always_on=%s)",
-        ", NS" if getattr(c, "apm_noise_suppression", True) else "",
+        ", NS" if _ns else "",
         ", HPF" if getattr(c, "apm_high_pass_filter", True) else "",
         ", AGC2" if getattr(c, "apm_gain_control", False) else "",
         getattr(c, "apm_always_on", False),

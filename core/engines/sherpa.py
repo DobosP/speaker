@@ -329,13 +329,13 @@ class SherpaConfig:
     # can't keep real-time.
     aec_num_threads: int = 1
     aec_relaxed_margin_db: float = 3.0
-    # Auto-calibrate the AEC far-end read delay during a run. The coherence
-    # detector already measures the speaker->mic lag (echo_coherence.
-    # measured_delay_samples); when this is on the capture loop periodically feeds
-    # that measurement back into _aec_ref_delay, so a mis-set aec_ref_delay_ms
-    # self-corrects instead of degrading cancellation for the whole session (a
+    # Auto-calibrate the AEC far-end read delay during a run (AecDelayCalibrator,
+    # below). When on, the capture loop measures the true speaker->mic lag on-device
+    # by normalized cross-correlation and drives _aec_ref_delay from it, so a mis-set
+    # seed self-corrects instead of degrading cancellation for the whole session (a
     # wrong delay = poor/zero ERLE; the true delay is device-specific: ~40ms a
-    # laptop speaker vs ~260ms Bluetooth). No-op when AEC or coherence is off.
+    # laptop speaker vs ~260ms Bluetooth). No dependency on the coherence detector.
+    # No-op only when AEC or aec_auto_delay is off.
     aec_auto_delay: bool = True
     # AecDelayCalibrator bounds (core/engines/_aec.py). The OPERATING far->near
     # delay is MEASURED on-device by normalized cross-correlation of the mic vs the
@@ -1899,7 +1899,7 @@ class SherpaOnnxEngine(AudioEngine):
                     log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
         return self._postprocess_final(raw_final)
 
-    def _finalize_and_dispatch(self, seg, raw_final: str, speech_end_ts) -> None:
+    def _finalize_and_dispatch(self, seg, raw_final: str, speech_end_ts, asr_seg=None) -> None:
         """Produce the FINAL transcript and deliver it (or its drop metric).
 
         Pulled out of the capture loop so the SAME logic can run either inline
@@ -1910,8 +1910,16 @@ class SherpaOnnxEngine(AudioEngine):
         (CAM++ embedding) -- then dispatches at most one final per utterance.
         Every input is owned by the work item (``seg`` is an already-concatenated
         copy; ``speech_end_ts`` a captured ``perf_counter`` so SPEECH_END stays
-        correctly backdated however late this runs), so it is safe off-thread."""
-        final_text = self._final_transcribe(seg, raw_final)
+        correctly backdated however late this runs), so it is safe off-thread.
+
+        ``asr_seg`` (fix 2): the NS-RELAXED copy of the utterance for the offline
+        2nd-pass decode under ``_apm_owns_ns`` (so the LLM-facing final also keeps
+        the near-end words NS erased). The L1 echo-floor gate + the speaker-ID gate
+        deliberately keep the NS-ON ``seg`` (their learned floor + enrolled
+        embedding live in the NS-on domain; the louder NS-off signal would clear
+        the floor too easily and re-open the echo-final cascade). ``None`` (every
+        non-apm-owns-ns path) -> decode ``seg``, byte-identical."""
+        final_text = self._final_transcribe(asr_seg if asr_seg is not None else seg, raw_final)
         log.info("asr final: %r (raw %r)", final_text, raw_final)
         if not self._final_above_floor(seg):
             # L1: at/near the device's learned echo/quiet floor -- the assistant's
@@ -1940,7 +1948,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_q = queue.Queue(maxsize=8)
             log.info("second-pass final ASR runs ASYNC (off the capture thread)")
 
-    def _enqueue_final(self, seg, raw_final: str, speech_end_ts) -> None:
+    def _enqueue_final(self, seg, raw_final: str, speech_end_ts, asr_seg=None) -> None:
         """Hand an endpointed utterance to the second-pass worker WITHOUT ever
         blocking the capture loop. On overflow (the worker is wedged/very slow --
         normally the queue sits near-empty), drop the OLDEST queued utterance to
@@ -1950,7 +1958,7 @@ class SherpaOnnxEngine(AudioEngine):
         after a newer one would wrongly cancel the newer turn. Single producer
         (this capture thread), so after one ``get_nowait`` a slot is free."""
         try:
-            self._final_q.put_nowait((seg, raw_final, speech_end_ts))
+            self._final_q.put_nowait((seg, raw_final, speech_end_ts, asr_seg))
             return
         except queue.Full:
             pass
@@ -1963,11 +1971,11 @@ class SherpaOnnxEngine(AudioEngine):
         except queue.Empty:
             pass  # the worker just drained one; a slot is free now
         try:
-            self._final_q.put_nowait((seg, raw_final, speech_end_ts))
+            self._final_q.put_nowait((seg, raw_final, speech_end_ts, asr_seg))
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
             log.warning("second-pass queue still full; finalizing inline")
-            self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+            self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
 
     def _final_worker(self) -> None:
         """Drain the second-pass work queue, finalizing one utterance at a time.
@@ -1986,9 +1994,9 @@ class SherpaOnnxEngine(AudioEngine):
                 continue
             if item is None:  # shutdown sentinel
                 break
-            seg, raw_final, speech_end_ts = item
+            seg, raw_final, speech_end_ts, asr_seg = item
             try:
-                self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+                self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
             except Exception:  # noqa: BLE001 - never let the worker die on one turn
                 log.exception("second-pass finalize failed; dropping this turn")
 
@@ -2139,6 +2147,9 @@ class SherpaOnnxEngine(AudioEngine):
         # Capped so a long monologue can't grow memory; the tail is what the
         # speaker model needs. Reset on every endpoint and on decode-recovery.
         utterance: list = []
+        # fix 2: parallel NS-off utterance (populated only under the relaxed-NS
+        # tap) so the offline 2nd pass decodes the NS-relaxed audio too.
+        asr_utterance: list = []
         utterance_len = 0
         max_utterance = int(self.config.sample_rate * 10)
         # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
@@ -2519,9 +2530,15 @@ class SherpaOnnxEngine(AudioEngine):
                 try:
                     utterance.append(samples)
                     utterance_len += samples.size
+                    if self._aec_asr is not None:
+                        asr_utterance.append(
+                            asr_samples if asr_samples is not None else samples
+                        )
                     while utterance_len > max_utterance and len(utterance) > 1:
                         utterance_len -= utterance[0].size
                         utterance.pop(0)
+                        if self._aec_asr is not None and asr_utterance:
+                            asr_utterance.pop(0)  # keep the NS-off buffer aligned
                     # fix 2: the streaming recognizer reads the NS-off tap so
                     # near-end words survive; the utterance buffer (seg) + the
                     # floor/speaker gates keep the NS-on ``samples``.
@@ -2578,7 +2595,14 @@ class SherpaOnnxEngine(AudioEngine):
                         # partial ever fired) falls back to now inside mark().
                         speech_end_ts, last_voiced_ts = last_voiced_ts, None
                         seg = np.concatenate(utterance) if utterance else samples
+                        # fix 2: NS-off segment for the 2nd pass. None off the
+                        # relaxed-NS path -> _finalize decodes `seg` (byte-identical).
+                        asr_seg = (
+                            np.concatenate(asr_utterance)
+                            if (self._aec_asr is not None and asr_utterance) else None
+                        )
                         utterance, utterance_len = [], 0
+                        asr_utterance = []
                         if raw_final.strip():
                             finals += 1
                             # Finalize (second-pass re-transcription, when
@@ -2588,9 +2612,9 @@ class SherpaOnnxEngine(AudioEngine):
                             # offline decode never stalls this real-time loop;
                             # otherwise finalize inline (legacy, byte-identical).
                             if self._final_q is not None:
-                                self._enqueue_final(seg, raw_final, speech_end_ts)
+                                self._enqueue_final(seg, raw_final, speech_end_ts, asr_seg)
                             else:
-                                self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+                                self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
                     asr_errors = 0
                 except Exception:
                     # Recover from a transient decode error by resetting the
@@ -2603,6 +2627,7 @@ class SherpaOnnxEngine(AudioEngine):
                     last_partial = ""
                     last_voiced_ts = None
                     utterance, utterance_len = [], 0
+                    asr_utterance = []
                     # Clear the denoiser's streaming state too, so a recovered
                     # stream starts the front-end fresh (best-effort; no-op when
                     # there's no denoiser).

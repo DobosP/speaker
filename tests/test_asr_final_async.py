@@ -142,6 +142,31 @@ def test_finalize_without_second_pass_dispatches_streaming_final():
     assert rec.finals == ["Hello world"]  # _postprocess_final casing, byte-identical
 
 
+def test_finalize_2nd_pass_reads_asr_seg_gates_keep_seg():
+    """fix 2: the offline 2nd pass decodes the NS-OFF ``asr_seg`` (so the LLM-facing
+    final keeps the near-end words NS erased), while the echo-floor + speaker-ID
+    gates keep the NS-ON ``seg`` (the louder NS-off signal would clear the learned
+    floor too easily and re-open the echo-final cascade). asr_seg=None (every
+    non-apm-owns-ns path) decodes ``seg`` -> byte-identical."""
+    rec = _Rec()
+    eng = _engine(rec)
+    seg = np.ones(16000, dtype="float32")            # NS-on
+    asr_seg = np.full(16000, 2.0, dtype="float32")   # NS-off, distinct object
+    got: dict = {}
+    eng._final_transcribe = lambda s, raw: (got.__setitem__("transcribe", s), "final")[1]
+    eng._final_above_floor = lambda s: (got.__setitem__("floor", s), True)[1]
+    eng._should_act_on_final = lambda s: (got.__setitem__("speaker", s), True)[1]
+
+    eng._finalize_and_dispatch(seg, "raw", 1.0, asr_seg)
+    assert got["transcribe"] is asr_seg   # 2nd pass reads the NS-off audio
+    assert got["floor"] is seg            # gates keep the NS-on audio
+    assert got["speaker"] is seg
+
+    got.clear()
+    eng._finalize_and_dispatch(seg, "raw", 1.0)   # asr_seg=None
+    assert got["transcribe"] is seg               # falls back to seg (byte-identical)
+
+
 def test_finalize_drops_below_echo_floor():
     rec = _Rec()
     eng = _engine(rec)
@@ -181,7 +206,7 @@ def test_worker_dispatches_in_capture_order_off_thread():
     eng._final_q = queue.Queue(maxsize=8)
     t = _run_worker(eng)
     for raw in ("one", "two", "three"):
-        eng._final_q.put((np.ones(16000, dtype="float32"), raw, 0.0))
+        eng._final_q.put((np.ones(16000, dtype="float32"), raw, 0.0, None))
     eng._final_q.put(None)  # sentinel
     t.join(timeout=3.0)
     assert not t.is_alive()
@@ -205,8 +230,8 @@ def test_worker_survives_a_finalize_exception():
 
     eng._final_above_floor = _flaky_floor
     t = _run_worker(eng)
-    eng._final_q.put((np.ones(16000, dtype="float32"), "first turn", 0.0))   # raises -> dropped
-    eng._final_q.put((np.ones(16000, dtype="float32"), "second turn", 0.0))  # must still dispatch
+    eng._final_q.put((np.ones(16000, dtype="float32"), "first turn", 0.0, None))   # raises -> dropped
+    eng._final_q.put((np.ones(16000, dtype="float32"), "second turn", 0.0, None))  # must still dispatch
     eng._final_q.put(None)
     t.join(timeout=3.0)
     assert not t.is_alive()
@@ -294,7 +319,7 @@ def test_real_sense_voice_second_pass_dispatches_one_final_off_thread():
 
     samples = np.load("tests/fixture_audio/recorded_ocean_utterance.npy").astype("float32").reshape(-1)
     t = _run_worker(eng)
-    eng._final_q.put((samples, "raw streaming text", 1.0))
+    eng._final_q.put((samples, "raw streaming text", 1.0, None))
     eng._final_q.put(None)
     t.join(timeout=15.0)
     assert not t.is_alive()

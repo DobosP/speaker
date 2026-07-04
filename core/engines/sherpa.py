@@ -990,6 +990,12 @@ class SherpaOnnxEngine(AudioEngine):
         # NS/AGC/HPF; suppresses_noise => it owns NS, so skip the GTCRN denoiser.
         self._apm_always_on = False
         self._apm_owns_ns = False
+        # The active canceller MASKS/suppresses the near-end user during double-talk
+        # (the always-on APM's NS, or DTLN's spectral mask) -> the post-AEC residual
+        # goes blind to a real talk-over, so the DTD reads the RAW pre-AEC mic + its
+        # floor instead. False for a genuinely LINEAR canceller (nlms/headphones)
+        # that leaves the user in the residual. Set in _build.
+        self._resid_blind = False
         # Parallel NS-OFF APM tap for the recognizer under _apm_owns_ns (fix 2):
         # AEC+RES+HPF on, ML NS off, so near-end words survive for ASR. None on
         # every other backend/profile -> the ASR path aliases the NS-on samples
@@ -1338,6 +1344,11 @@ class SherpaOnnxEngine(AudioEngine):
             self._apm_always_on = bool(getattr(self._aec, "always_on", False))
             self._apm_owns_ns = self._apm_always_on and bool(
                 getattr(self._aec, "suppresses_noise", False)
+            )
+            # A masking canceller (APM-NS or DTLN) suppresses the near-end user in
+            # the residual, so the DTD residual feature + floor read the raw mic.
+            self._resid_blind = self._apm_owns_ns or bool(
+                getattr(self._aec, "suppresses_nearend", False)
             )
             # Fix 2: when the always-on APM owns NS, build a second AEC tap with the
             # ML NS OFF, for the recognizer only. Its echo model converges to the
@@ -3448,8 +3459,15 @@ class SherpaOnnxEngine(AudioEngine):
         (``observe_echo`` in the capture loop), so the chart the DTD calibrates
         and the value it scores against it always come from the SAME signal --
         otherwise a chart learned on the near-silent post-NS floor would make the
-        raw-mic level a z-outlier and self-interrupt on echo-only."""
-        return rms(mic_raw) if self._apm_owns_ns else rms(samples)
+        raw-mic level a z-outlier and self-interrupt on echo-only.
+
+        NOTE: DTLN is NOT linear -- it is a spectral-MASKING canceller that, like
+        the APM's NS, attenuates the near-end user during double-talk (live proof:
+        run-20260704-143112 z_resid pinned at 0 on a loud talk-over -> D capped
+        ~1.5 < K, barge never fired). So ``_resid_blind`` covers DTLN + APM-NS, not
+        just ``_apm_owns_ns``; only a genuinely linear canceller (nlms/headphones)
+        leaves the user in the residual and reads ``samples``."""
+        return rms(mic_raw) if getattr(self, "_resid_blind", False) else rms(samples)
 
     def _looks_like_user(self, samples, mic_raw=None) -> bool:
         # Is playback-time mic voice a genuine barge-in (vs the assistant's own TTS
@@ -3510,7 +3528,7 @@ class SherpaOnnxEngine(AudioEngine):
             # byte-identical: ``_apm_owns_ns`` is False.)
             resid_rms = self._dtd_residual_level(samples, mic_raw)
             resid_floor = (
-                self._raw_playback_floor_rms if self._apm_owns_ns
+                self._raw_playback_floor_rms if getattr(self, "_resid_blind", False)
                 else self._playback_floor_rms
             )
             fired = self._dtd.decide(
@@ -3523,10 +3541,17 @@ class SherpaOnnxEngine(AudioEngine):
             # echo-only. Honor that explicit False only as a veto: True and None
             # keep the prior DTD behavior, so a real coherence-confirmed talk-over
             # still cuts and no-reference moments still fall back to the DTD.
+            # Under a masking canceller (_resid_blind), the DTD now fires from the
+            # RAW-mic energy the user plainly adds, and the raw echo floor + control
+            # chart are the echo guard. The coherence detector flickers False on a
+            # loud NONLINEAR talk-over (live: run-20260704-143112 vetoed real fires
+            # D=6.7/7.8/12.5), so the veto would wrongly kill it -- disable it there.
+            # It still guards the linear (nlms/headphone) path where resid == echo.
             coh_veto = bool(
                 fired
                 and getattr(self.config, "dtd_coherence_echo_veto", True)
                 and coh_verdict is False
+                and not getattr(self, "_resid_blind", False)
             )
 
             # Residual-floor gate (2026-06-10 self-interrupt fix). On a starved mic

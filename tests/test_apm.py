@@ -72,6 +72,46 @@ def test_asr_relax_tap_absent_off_the_apm_owns_ns_path():
     assert SherpaOnnxEngine(SherpaConfig())._aec_asr is None
 
 
+def test_nlms_is_not_resid_blind():
+    """A genuinely LINEAR canceller (NLMS freezes adaptation on double-talk) leaves
+    the near-end user in the residual, so it is NOT flagged suppresses_nearend --
+    the DTD keeps reading the post-AEC residual (byte-identical)."""
+    ec = build_aec(SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "nlms"}))
+    assert ec is not None
+    assert not getattr(ec, "suppresses_nearend", False)
+
+
+@_needs_livekit
+def test_apm_ns_sets_suppresses_nearend():
+    """APM+NS masks the near-end user during double-talk -> suppresses_nearend True
+    (the DTD reads the raw mic); NS off -> False."""
+    on = build_aec(SherpaConfig.from_dict({
+        "aec_enabled": True, "aec_backend": "apm",
+        "apm_always_on": True, "apm_noise_suppression": True}))
+    assert getattr(on, "suppresses_nearend", False) is True
+    off = build_aec(SherpaConfig.from_dict({
+        "aec_enabled": True, "aec_backend": "apm", "apm_noise_suppression": False}))
+    assert getattr(off, "suppresses_nearend", True) is False
+
+
+def test_dtln_sets_suppresses_nearend_if_model_present():
+    """DTLN is a spectral-MASKING canceller (not linear) -> flagged suppresses_nearend
+    so the DTD reads the raw mic. This is the live run-20260704-143112 barge miss:
+    the DTLN residual pinned at 0 on a real talk-over. Skips when the ONNX is absent."""
+    import os
+
+    aec_model = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "pretrained_models", "sherpa", "aec")
+    if not os.path.exists(os.path.join(aec_model, "dtln_aec_stage1.onnx")):
+        pytest.skip("DTLN ONNX not present")
+    ec = build_aec(SherpaConfig.from_dict(
+        {"aec_enabled": True, "aec_backend": "dtln", "aec_model": aec_model}))
+    if ec is None:
+        pytest.skip("DTLN build failed (onnxruntime unavailable?)")
+    assert getattr(ec, "suppresses_nearend", False) is True
+
+
 @_needs_livekit
 def test_apm_cancels_echo():
     from core.engines._apm import _WebRTCAPM

@@ -296,7 +296,8 @@ def test_engine_off_path_is_byte_identical_to_legacy_normalize_rms():
 
     eng = SherpaOnnxEngine(
         SherpaConfig(tts_target_rms=target_rms, tts_declick=True,
-                     tts_declick_threshold=0.22, tts_output_leveler=False)
+                     tts_declick_threshold=0.22, tts_output_leveler=False,
+                     tts_dc_block=False)  # isolate the normalize_rms->declick invariant
     )
     eng._tts = _Tts()
     eng._tts_can_stream = False  # force the whole-clip path

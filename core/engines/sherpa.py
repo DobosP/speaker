@@ -43,6 +43,7 @@ from ..contract import is_stop_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
     AudioResampler,
+    DCBlocker,
     InputAGC,
     StreamingLowpass,
     apply_gain_soft_limit,
@@ -261,6 +262,20 @@ class SherpaConfig:
     # endpoint is False anyway, so this bounds the cost to a few calls per turn.
     endpoint_prosody_min_silence: float = 0.15
     endpoint_prosody_threads: int = 1       # onnxruntime intra-op threads (capture thread)
+    # Adaptive endpoint floor (SessionPauseModel, core/endpointing.py). When on,
+    # the trailing-silence COMMIT floor is LEARNED per session from this speaker's
+    # own mid-utterance pause distribution (kills mid-sentence over-fragmentation
+    # like "THE MERE STORY"/"ABOUT"/"MY CAT BIKI") instead of a fixed silence
+    # number. The three floors above are REINTERPRETED as bounds, not operating
+    # points: high_confidence_floor = floor_lo (decoder-lookahead safe minimum),
+    # max_silence_sec = floor_hi (hard hold cap), min_silence_sec = cold-start
+    # until pause_min_samples gather. window/quantile/margin are learner knobs, not
+    # per-machine numbers. Dataclass default OFF (byte-identical); on in config.json.
+    endpoint_adaptive_floor: bool = False
+    endpoint_pause_window: int = 64
+    endpoint_pause_quantile: float = 0.85
+    endpoint_pause_margin: float = 0.15
+    endpoint_pause_min_samples: int = 8
     # Restore conventional casing on partials/finals (the streaming model emits
     # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
     asr_restore_casing: bool = True
@@ -433,6 +448,14 @@ class SherpaConfig:
     # speech. True by default (the artifact is real on the shipped voice); set
     # false for byte-identical legacy output.
     tts_declick: bool = True
+    # DC-blocking high-pass on the TTS output (core/audio_frontend.DCBlocker),
+    # applied FIRST in the synth chain so every downstream level/peak stage sees a
+    # DC-free signal. Real usage showed every synthesized sentence carried a ~0.05
+    # DC offset (wasted headroom + a steady bias into the AEC reference). tts_dc_
+    # block_hz is a UNIVERSAL corner (below the ~85 Hz speech fundamental), not a
+    # per-machine number: only the one-pole coefficient scales with the output rate.
+    tts_dc_block: bool = True
+    tts_dc_block_hz: float = 20.0
     # Impulse-detection threshold for the de-clicker (|sample - local median| that
     # counts as a spike to repair). The real VITS spikes jump to ~0.5-0.95 while
     # legitimate dense-consonant/fricative energy peaks around ~0.14, so a bar at
@@ -967,6 +990,13 @@ class SherpaOnnxEngine(AudioEngine):
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
+        # A SINGLE long-lived DC blocker for the TTS output: its one-pole state
+        # carries across chunks AND sentences (a per-sentence reset would re-settle
+        # the pole from zero -> an audible low-frequency thump). Lazily built at the
+        # output rate; rebuilt only if that rate changes. Touched only by the synth/
+        # playback worker thread (serialized), so no lock.
+        self._tts_dc_blocker: "Optional[DCBlocker]" = None
+        self._tts_dc_sr = 0
         self._capture_thread: Optional[threading.Thread] = None
         # asr-tts-2: dedicated second-pass worker. The queue (work items
         # ``(seg, raw_final, speech_end_ts)``) + thread are created in ``_build``
@@ -2459,7 +2489,14 @@ class SherpaOnnxEngine(AudioEngine):
                         # Record the instant (perf_counter, matching the metrics
                         # clock) so a later endpoint can backdate SPEECH_END to
                         # here, exposing the trailing-silence wait (lat-1).
-                        last_voiced_ts = time.perf_counter()
+                        _now = time.perf_counter()
+                        # Feed the inter-partial gap (a MID-utterance pause, not the
+                        # final end-of-turn silence) to the adaptive endpoint
+                        # learner: it learns THIS speaker's pause distribution so the
+                        # commit floor adapts per session instead of a fixed number.
+                        if last_voiced_ts is not None and self._endpoint_policy is not None:
+                            self._endpoint_policy.observe_pause(_now - last_voiced_ts)
+                        last_voiced_ts = _now
                         partials += 1
                         # Casing only on partials (cheap, every block); the
                         # heavier punctuation model is reserved for the final.
@@ -3026,6 +3063,25 @@ class SherpaOnnxEngine(AudioEngine):
                 pass
         return False
 
+    def _dc_block(self, samples, sr: int):
+        """DC-block a synth chunk/clip with the long-lived one-pole high-pass.
+
+        Applied FIRST in both synth paths so declick/leveler/normalize and every
+        level/peak metric see the DC-free signal. The single instance is built
+        lazily at the output rate and reused across chunks + sentences (state
+        continuity), rebuilt only if the rate changes. No-op when disabled or the
+        rate is unusable (DCBlocker returns the input unchanged)."""
+        if not self.config.tts_dc_block:
+            return samples
+        # getattr default: markup/barge fixtures build the engine bypassing
+        # __init__, so the handle may be unset on the first call.
+        blk = getattr(self, "_tts_dc_blocker", None)
+        if blk is None or getattr(self, "_tts_dc_sr", 0) != int(sr):
+            blk = DCBlocker(int(sr), self.config.tts_dc_block_hz)
+            self._tts_dc_blocker = blk
+            self._tts_dc_sr = int(sr)
+        return blk.process(samples)
+
     def _synthesize(
         self,
         text: str,
@@ -3149,6 +3205,9 @@ class SherpaOnnxEngine(AudioEngine):
                 def on_chunk(samples, *_progress) -> int:
                     nonlocal _raw_sumsq, _raw_count, _q_sum, _q_sumsq, _q_peak, _q_clip, _q_n
                     raw = np.asarray(samples, dtype="float32").reshape(-1)
+                    # DC-block FIRST so the raw-RMS/peak/dc metrics + normalize all
+                    # see a centred signal (state carries across chunks + sentences).
+                    raw = self._dc_block(raw, stream_sr)
                     blk = raw
                     if _norm_gain is not None:
                         if raw.size:
@@ -3215,6 +3274,8 @@ class SherpaOnnxEngine(AudioEngine):
             audio = tts.generate(text, sid=sid, speed=speed)
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
+        # DC-block FIRST (before declick/leveler/normalize + their level metrics).
+        samples = self._dc_block(samples, sr)
         if leveler_on:
             # OUTPUT LEVELER path: declick FIRST (so the limiter's true-peak
             # estimate is not driven by a VITS impulse spike declick would have

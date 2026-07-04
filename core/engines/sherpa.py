@@ -2537,31 +2537,12 @@ class SherpaOnnxEngine(AudioEngine):
                                     not self._barge_in_fired_this_run
                                     and self._vad.is_speech_detected()
                                 ):
+                                    # (Reverted 2026-07-04: the loose duck here opened
+                                    # on a fraction of K and PUMPED the volume on echo
+                                    # without cutting -- see the permanent-plan doc. The
+                                    # real fix is the capture path, not a looser trigger.)
                                     rejected_run += block_sec
-                                    # ADR-0011 LOOSE DUCK (masking-canceller path): the
-                                    # strict DTD gate just rejected this block, but the
-                                    # VAD hears speech during playback and the DTD raw D
-                                    # reached a FRACTION of K -- on a masking canceller
-                                    # (_resid_blind) that is as much acoustic evidence as
-                                    # the raw open-speaker mic can give (the uncancelled
-                                    # echo caps the z-score). Open a DUCK and let WORDS
-                                    # confirm, bypassing the coh-veto + 12 dB residual-
-                                    # floor gate (both mis-calibrated for the raw mic). A
-                                    # false duck self-heals (no words -> restore); it never
-                                    # hard-cuts on acoustics alone, so a loose bar is safe.
                                     if (
-                                        self.config.barge_confirm_enabled
-                                        and getattr(self, "_resid_blind", False)
-                                        and not self._barge_confirm_active()
-                                        and recognizer is not None
-                                        and stream is not None
-                                        and self._dtd is not None
-                                        and self._dtd.last_D
-                                        >= self._dtd.k * self.config.barge_confirm_duck_k_frac
-                                    ):
-                                        self._begin_barge_confirm(recognizer, stream, now)
-                                        rejected_run = 0.0
-                                    elif (
                                         rejected_run >= self.config.barge_in_min_speech_sec
                                         and not rejected_flagged
                                     ):
@@ -3620,17 +3601,15 @@ class SherpaOnnxEngine(AudioEngine):
             # echo-only. Honor that explicit False only as a veto: True and None
             # keep the prior DTD behavior, so a real coherence-confirmed talk-over
             # still cuts and no-reference moments still fall back to the DTD.
-            # Under a masking canceller (_resid_blind), the DTD now fires from the
-            # RAW-mic energy the user plainly adds, and the raw echo floor + control
-            # chart are the echo guard. The coherence detector flickers False on a
-            # loud NONLINEAR talk-over (live: run-20260704-143112 vetoed real fires
-            # D=6.7/7.8/12.5), so the veto would wrongly kill it -- disable it there.
-            # It still guards the linear (nlms/headphone) path where resid == echo.
+            # Coherence echo veto: honor an explicit echo-only verdict as a veto.
+            # (Reverted 2026-07-04: disabling it under _resid_blind removed the only
+            # echo guard on the raw-mic path and caused the APM self-interrupt --
+            # the raw-mic DTD collapses to a loudness gate that fires on the
+            # assistant's own loud narration syllables. See the permanent-plan doc.)
             coh_veto = bool(
                 fired
                 and getattr(self.config, "dtd_coherence_echo_veto", True)
                 and coh_verdict is False
-                and not getattr(self, "_resid_blind", False)
             )
 
             # Residual-floor gate (2026-06-10 self-interrupt fix). On a starved mic

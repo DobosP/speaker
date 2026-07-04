@@ -208,8 +208,15 @@ class AecDelayCalibrator:
         return self._operating
 
     def reset(self) -> None:
-        """Drop the rolling window + measurement history and fall back to the seed
-        (call on barge-in / AEC reset, where the echo path may have changed)."""
+        """Drop the rolling window + measurement history and fall back to the seed.
+
+        Call ONLY on a genuine echo-path change (a device/output-route handoff),
+        NOT on a routine barge-in or reply boundary: the speaker->mic geometry is
+        fixed within a session, so the engine deliberately PERSISTS the measured
+        delay across turns (resetting each turn would discard a good converged
+        value and force a slow re-acquire from the coarse seed every interrupt).
+        The energy-gated sliding window + median already absorb a mid-session
+        drift without a reset."""
         self._mic = np.zeros(0, dtype=np.float32)
         self._far = np.zeros(0, dtype=np.float32)
         self._since = 0

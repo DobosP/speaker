@@ -145,9 +145,13 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       - [x] (1) AEC ref-delay measured on-device by normalized cross-correlation
         (`AecDelayCalibrator`); aec_ref_delay_ms demoted to a seed. VALIDATED on
         run-20260702-004345 (40→~120 ms). config.local.json 40 ms override removed.
-      - [x] (2) relaxed-NS ASR tap under `_apm_owns_ns` (second APM, ML NS off, feeds
-        the recognizer + barge-confirm; gates keep NS-on). INERT on the current dtln
-        config -- **needs a live-mic A/B on the open_speaker (apm) profile** to
+      - [x] (2) relaxed-NS ASR tap under `_apm_owns_ns` (second APM, ML NS off) feeds
+        the streaming recognizer + barge-confirm AND the offline 2nd-pass decode (via
+        a parallel NS-off `asr_seg` threaded through _enqueue_final/_final_worker/
+        _finalize_and_dispatch); the echo-floor + speaker-ID gates keep the NS-on
+        `seg`. (2nd-pass completion added after the adversarial review caught that the
+        LLM-facing final was still decoded from NS-on audio.) INERT on the current
+        dtln config -- **needs a live-mic A/B on the open_speaker (apm) profile** to
         confirm STT recovery + no self-interrupt regression.
       - [x] (3) cleaner anti-fabrication gate (`agreement_guard` + `rewrite_is_overreach`).
       - [x] (4) learned adaptive endpoint floor (`SessionPauseModel`, enabled in config.json).

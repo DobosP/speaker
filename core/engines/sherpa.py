@@ -740,6 +740,15 @@ class SherpaConfig:
     barge_confirm_min_words: int = 2
     barge_confirm_duck_gain: float = 0.15
     barge_confirm_retry_suppress_sec: float = 2.0
+    # ADR-0011 LOOSE DUCK, masking-canceller (_resid_blind) path. On an open
+    # speaker the strict DTD gate can't clear K on the raw mic (the uncancelled
+    # echo dominates the chart), so a real talk-over is rejected. When the word
+    # gate is on, open the DUCK on looser evidence -- voiced speech during playback
+    # AND the DTD raw D at this FRACTION of K -- then let transcribed WORDS confirm
+    # (a false duck self-heals in ~window_sec). Dimensionless fraction of the
+    # already-self-calibrating K (unit-variance z-scores), so device-independent;
+    # NOT a per-machine RMS/dB. 1.0 = as strict as the hard-fire; lower = looser duck.
+    barge_confirm_duck_k_frac: float = 0.5
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -2529,7 +2538,30 @@ class SherpaOnnxEngine(AudioEngine):
                                     and self._vad.is_speech_detected()
                                 ):
                                     rejected_run += block_sec
+                                    # ADR-0011 LOOSE DUCK (masking-canceller path): the
+                                    # strict DTD gate just rejected this block, but the
+                                    # VAD hears speech during playback and the DTD raw D
+                                    # reached a FRACTION of K -- on a masking canceller
+                                    # (_resid_blind) that is as much acoustic evidence as
+                                    # the raw open-speaker mic can give (the uncancelled
+                                    # echo caps the z-score). Open a DUCK and let WORDS
+                                    # confirm, bypassing the coh-veto + 12 dB residual-
+                                    # floor gate (both mis-calibrated for the raw mic). A
+                                    # false duck self-heals (no words -> restore); it never
+                                    # hard-cuts on acoustics alone, so a loose bar is safe.
                                     if (
+                                        self.config.barge_confirm_enabled
+                                        and getattr(self, "_resid_blind", False)
+                                        and not self._barge_confirm_active()
+                                        and recognizer is not None
+                                        and stream is not None
+                                        and self._dtd is not None
+                                        and self._dtd.last_D
+                                        >= self._dtd.k * self.config.barge_confirm_duck_k_frac
+                                    ):
+                                        self._begin_barge_confirm(recognizer, stream, now)
+                                        rejected_run = 0.0
+                                    elif (
                                         rejected_run >= self.config.barge_in_min_speech_sec
                                         and not rejected_flagged
                                     ):
@@ -3828,7 +3860,12 @@ class SherpaOnnxEngine(AudioEngine):
             )
         text = ""
         try:
-            stream.accept_waveform(self.config.sample_rate, samples)
+            # C (masking-canceller path): decode the RAW mic, not the DTLN/NS-masked
+            # residual. Playback is ducked to barge_confirm_duck_gain during the
+            # window, so the raw mic is user-dominated and the words SURVIVE -- the
+            # masked residual would erase them and the window could never confirm.
+            decode_src = mic_raw if getattr(self, "_resid_blind", False) else samples
+            stream.accept_waveform(self.config.sample_rate, decode_src)
             while recognizer.is_ready(stream):
                 recognizer.decode_stream(stream)
             text = (recognizer.get_result(stream) or "").strip()

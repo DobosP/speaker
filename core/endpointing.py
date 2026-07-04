@@ -28,6 +28,7 @@ Everything here is pure + deterministic; the engine integration is a single
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Protocol, Sequence, runtime_checkable
 
@@ -245,6 +246,81 @@ class ScriptedTurnCompletionDetector:
         return self._mapping.get(text, self._default)
 
 
+# Linguistic floor (NOT per-machine): a gap under ~0.2s is a within-word / breath
+# micro-pause, never a real inter-phrase pause -- feeding it would drag the learned
+# floor toward zero and re-open the chopping. A universal speech-timing bound, not
+# a tuned operating point.
+_MIN_PAUSE_SEC: float = 0.2
+
+
+class SessionPauseModel:
+    """Learns THIS session's mid-utterance pause timing so the endpoint floor
+    self-calibrates to the SPEAKER instead of a fixed silence number.
+
+    The fixed ``min_silence`` floor over-fragments a speaker who pauses between
+    phrases: one sentence "the mere story ... about ... my cat Biki" commits three
+    times because each inter-phrase pause crosses the fixed timer. Feeding those
+    mid-utterance gaps in here (via :meth:`observe_pause`) lets :meth:`floor`
+    return a learned trailing-silence floor ``Lp`` -- a high quantile of the recent
+    pauses plus a margin -- so the endpoint waits out THIS speaker's own pauses
+    while still committing a clearly-complete turn promptly. No per-machine number:
+    ``Lp`` is derived at runtime from observed gaps and clamped to physical bounds.
+
+    Pure stdlib (a manual sorted-index percentile), deterministic, no numpy."""
+
+    def __init__(
+        self,
+        *,
+        window: int = 64,
+        pause_quantile: float = 0.85,
+        pause_margin: float = 0.15,
+        min_samples: int = 8,
+        floor_lo: float = 0.0,
+        floor_hi: float = 1.6,
+        cold_start_sec: float = 0.5,
+    ) -> None:
+        self._samples: deque[float] = deque(maxlen=max(1, int(window)))
+        self._q = float(pause_quantile)
+        self._margin = float(pause_margin)
+        self._min_samples = max(1, int(min_samples))
+        self._lo = float(floor_lo)
+        self._hi = float(floor_hi)
+        self._cold = float(cold_start_sec)
+
+    def observe_pause(self, gap_sec: float) -> None:
+        """Record a mid-utterance pause. Gaps below ``_MIN_PAUSE_SEC`` (micro-pauses)
+        and above ``floor_hi`` (an end-of-turn silence, not a mid-phrase pause --
+        feeding it would inflate the floor) are ignored."""
+        g = float(gap_sec)
+        if g < _MIN_PAUSE_SEC or g > self._hi:
+            return
+        self._samples.append(g)
+
+    def _clamp(self, v: float) -> float:
+        return min(max(v, self._lo), self._hi)
+
+    def _quantile(self, q: float) -> float:
+        """Linear-interpolated percentile on the sorted samples (numpy 'linear'
+        method), done by hand to stay stdlib-only + deterministic."""
+        xs = sorted(self._samples)
+        n = len(xs)
+        if n == 1:
+            return xs[0]
+        pos = q * (n - 1)
+        lo = int(pos)
+        if lo + 1 >= n:
+            return xs[-1]
+        return xs[lo] + (pos - lo) * (xs[lo + 1] - xs[lo])
+
+    def floor(self) -> float:
+        """The learned trailing-silence floor ``Lp``. Until ``min_samples`` pauses
+        have been seen, the (clamped) cold-start floor; then a high quantile of the
+        recent pauses plus a margin, clamped to ``[floor_lo, floor_hi]``."""
+        if len(self._samples) < self._min_samples:
+            return self._clamp(self._cold)
+        return self._clamp(self._quantile(self._q) * (1.0 + self._margin))
+
+
 @dataclass(frozen=True)
 class EndpointConfig:
     """Adaptive-endpoint thresholds (the ``sherpa`` endpoint_* config fields).
@@ -277,6 +353,18 @@ class EndpointConfig:
     # pause (or a run-on splits); validate on device before lowering.
     high_confidence_floor: float = 0.0
     high_confidence_score: float = 0.75
+    # Adaptive learned-pause floor (FIX-4). When true, the SHORTEN/anti-chop floor
+    # is the learned ``Lp`` from :class:`SessionPauseModel` (calibrated to THIS
+    # speaker's own inter-phrase pauses) instead of the fixed ``min_silence_sec``.
+    # The pause_* knobs configure that model; ``Lp`` is clamped to
+    # ``[high_confidence_floor, max_silence_sec]`` and cold-starts at
+    # ``min_silence_sec``. False (default) -> byte-identical to the fixed-floor
+    # policy.
+    adaptive_floor: bool = False
+    pause_window: int = 64
+    pause_quantile: float = 0.85
+    pause_margin: float = 0.15
+    pause_min_samples: int = 8
 
     @classmethod
     def from_sherpa(cls, c: object) -> "EndpointConfig":
@@ -288,6 +376,11 @@ class EndpointConfig:
             incomplete_threshold=float(getattr(c, "endpoint_incomplete_threshold", 0.3)),
             high_confidence_floor=float(getattr(c, "endpoint_high_confidence_floor", 0.0)),
             high_confidence_score=float(getattr(c, "endpoint_high_confidence_score", 0.75)),
+            adaptive_floor=bool(getattr(c, "endpoint_adaptive_floor", False)),
+            pause_window=int(getattr(c, "endpoint_pause_window", 64)),
+            pause_quantile=float(getattr(c, "endpoint_pause_quantile", 0.85)),
+            pause_margin=float(getattr(c, "endpoint_pause_margin", 0.15)),
+            pause_min_samples=int(getattr(c, "endpoint_pause_min_samples", 8)),
         )
 
 
@@ -297,9 +390,35 @@ class AdaptiveEndpointPolicy:
 
     def __init__(self, config: Optional[EndpointConfig] = None) -> None:
         self._c = config or EndpointConfig()
+        c = self._c
+        # The learned trailing-silence floor Lp is clamped to the SAME physical
+        # bounds the fixed policy uses: floor_lo = high_confidence_floor (the
+        # decoder-lookahead guard), floor_hi = max_silence_sec (the hard backstop),
+        # cold-starting at min_silence_sec until enough pauses are seen.
+        self._pause = SessionPauseModel(
+            window=c.pause_window,
+            pause_quantile=c.pause_quantile,
+            pause_margin=c.pause_margin,
+            min_samples=c.pause_min_samples,
+            floor_lo=c.high_confidence_floor,
+            floor_hi=c.max_silence_sec,
+            cold_start_sec=c.min_silence_sec,
+        )
+
+    def observe_pause(self, gap_sec: float) -> None:
+        """Feed a mid-utterance pause to the session pause model (the capture loop
+        calls this on each resume-after-gap). No-op for the floor until
+        ``pause_min_samples`` gaps have been seen."""
+        self._pause.observe_pause(gap_sec)
 
     def decide(self, *, acoustic_endpoint: bool, completion_score: float, silence_sec: float) -> bool:
         c = self._c
+        if c.adaptive_floor:
+            return self._decide_adaptive(
+                acoustic_endpoint=acoustic_endpoint,
+                completion_score=completion_score,
+                silence_sec=silence_sec,
+            )
         # SHORTEN: the turn clearly reads as complete and we've had at least the
         # minimum settle -> commit now, ahead of the acoustic timer. A HIGH-
         # confidence completion may use a LOWER floor when configured (still above
@@ -312,6 +431,35 @@ class AdaptiveEndpointPolicy:
             return True
         # EXTEND (bounded): the acoustic timer wants to commit, but the partial
         # ends mid-phrase and we haven't waited too long -> hold for more speech.
+        if (
+            acoustic_endpoint
+            and completion_score <= c.incomplete_threshold
+            and silence_sec < c.max_silence_sec
+        ):
+            return False
+        # Otherwise the acoustic decision stands (the safe default / hard backstop).
+        return acoustic_endpoint
+
+    def _decide_adaptive(self, *, acoustic_endpoint: bool, completion_score: float, silence_sec: float) -> bool:
+        """Learned-floor variant (``adaptive_floor``). Identical tiers to
+        :meth:`decide`, but the SHORTEN/anti-chop floor is the learned ``Lp``
+        (this speaker's own pause timing) instead of the fixed ``min_silence_sec``.
+        Lp ONLY moves the floor -- the completion-score tiers are unchanged."""
+        c = self._c
+        lp = self._pause.floor()  # clamped to [high_confidence_floor, max_silence_sec]
+        # ANTI-CHOP: below the learned pause floor, HOLD -- even when the acoustic
+        # timer or a (possibly false) lexical "complete" wants to commit. This is
+        # the fragmentation fix: a mid-utterance pause under Lp must not commit;
+        # the speaker's resume lands as a new partial. Bounded by max_silence_sec
+        # (Lp itself is clamped there, so this only defers to the hard backstop).
+        if silence_sec < lp and silence_sec < c.max_silence_sec:
+            return False
+        # SHORTEN: a clearly-complete turn commits as soon as trailing silence has
+        # reached Lp (not the fixed floor) -- the latency win, self-calibrated.
+        if completion_score >= c.complete_threshold and silence_sec >= lp:
+            return True
+        # EXTEND (bounded): mid-phrase + the acoustic timer fired + not waited too
+        # long -> hold for more speech (unchanged incomplete behaviour).
         if (
             acoustic_endpoint
             and completion_score <= c.incomplete_threshold

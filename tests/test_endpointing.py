@@ -18,6 +18,7 @@ from core.endpointing import (
     LexicalTurnCompletionDetector,
     ProsodyTurnCompletionDetector,
     ScriptedTurnCompletionDetector,
+    SessionPauseModel,
     TurnCompletionDetector,
     _slaney_mel_filters,
 )
@@ -323,3 +324,142 @@ def test_sherpa_config_parses_endpoint_fields_and_ignores_comment():
     )
     assert cfg.endpoint_enabled is True
     assert cfg.endpoint_min_silence_sec == 0.25
+
+
+# --- FIX-4: session pause model (learned trailing-silence floor Lp) -----------
+
+
+def test_session_pause_model_cold_start_below_min_samples():
+    # Under min_samples the floor is the (clamped) cold-start value; once enough
+    # pauses are seen it tracks the learned quantile (rises for a slow speaker).
+    m = SessionPauseModel(min_samples=8, cold_start_sec=0.5, floor_lo=0.4, floor_hi=1.6)
+    assert m.floor() == pytest.approx(0.5)  # no samples -> cold start
+    for _ in range(7):
+        m.observe_pause(0.9)
+    assert m.floor() == pytest.approx(0.5)  # 7 < 8 -> still cold start
+    m.observe_pause(0.9)  # 8th sample -> learned floor engages
+    assert m.floor() == pytest.approx(0.9 * 1.15)  # 1.035, above the cold start
+
+
+def test_session_pause_model_cold_start_is_clamped():
+    # A cold-start above the physical ceiling is clamped to floor_hi (never a raw
+    # number leaks past the bounds).
+    m = SessionPauseModel(min_samples=4, cold_start_sec=2.0, floor_lo=0.3, floor_hi=1.6)
+    assert m.floor() == pytest.approx(1.6)
+
+
+def test_session_pause_model_tracks_learned_quantile():
+    # rises toward the learned pause for a slow (~0.9s) speaker...
+    slow = SessionPauseModel(min_samples=4, floor_lo=0.4, floor_hi=1.6, pause_margin=0.15)
+    for _ in range(6):
+        slow.observe_pause(0.9)
+    assert slow.floor() == pytest.approx(0.9 * 1.15)  # 1.035
+    assert slow.floor() > 0.4
+    # ...and collapses to floor_lo for a terse (~0.3s) speaker.
+    terse = SessionPauseModel(min_samples=4, floor_lo=0.4, floor_hi=1.6, pause_margin=0.15)
+    for _ in range(6):
+        terse.observe_pause(0.3)
+    assert terse.floor() == pytest.approx(0.4)  # 0.3*1.15=0.345 clamped up to floor_lo
+
+
+def test_session_pause_model_observe_filters_micro_and_oversized_gaps():
+    # Sub-0.2s micro-pauses and gaps above floor_hi (end-of-turn silences) are
+    # ignored so they can't drag or inflate the learned floor.
+    m = SessionPauseModel(floor_hi=1.6)
+    m.observe_pause(0.1)    # micro-pause < 0.2 -> ignored
+    m.observe_pause(0.19)   # just under the 0.2 bound -> ignored
+    m.observe_pause(1.9)    # > floor_hi -> ignored
+    assert len(m._samples) == 0
+    m.observe_pause(0.2)    # exactly the linguistic floor -> kept
+    m.observe_pause(0.5)    # in range -> kept
+    m.observe_pause(1.6)    # exactly floor_hi -> kept
+    assert list(m._samples) == [0.2, 0.5, 1.6]
+
+
+def test_session_pause_model_window_ages_out_old_pauses():
+    # A bounded deque(maxlen=window): old pauses drop off so the floor tracks the
+    # CURRENT speaker, not the whole session.
+    m = SessionPauseModel(window=3, min_samples=1, floor_lo=0.0, floor_hi=1.6, pause_margin=0.0)
+    for g in (0.3, 0.4, 0.5, 0.9, 0.9, 0.9):
+        m.observe_pause(g)
+    assert list(m._samples) == [0.9, 0.9, 0.9]
+    assert m.floor() == pytest.approx(0.9)  # the early small pauses aged out
+
+
+# --- FIX-4: adaptive-floor policy (Lp replaces the fixed min-silence) ----------
+
+# The full existing decide() matrix, run with adaptive_floor OFF, must stay
+# byte-identical to today (both the default and the explicit-False flag).
+_BYTE_IDENTICAL_CASES = [
+    (dict(min_silence_sec=0.4), False, 0.9, 0.5, True),
+    (dict(min_silence_sec=0.4), False, 0.9, 0.3, False),
+    (dict(min_silence_sec=0.7, complete_threshold=0.6,
+          high_confidence_floor=0.55, high_confidence_score=0.75), False, 0.75, 0.55, True),
+    (dict(min_silence_sec=0.7, complete_threshold=0.6,
+          high_confidence_floor=0.55, high_confidence_score=0.75), False, 0.75, 0.54, False),
+    (dict(min_silence_sec=0.7, complete_threshold=0.6,
+          high_confidence_floor=0.55, high_confidence_score=0.75), False, 0.65, 0.55, False),
+    (dict(min_silence_sec=0.7, complete_threshold=0.6,
+          high_confidence_floor=0.55, high_confidence_score=0.75), False, 0.65, 0.7, True),
+    (dict(min_silence_sec=0.7, high_confidence_floor=0.0), False, 0.75, 0.55, False),
+    (dict(min_silence_sec=0.7, high_confidence_floor=0.0), False, 0.75, 0.7, True),
+    (dict(max_silence_sec=1.6), True, 0.1, 1.0, False),
+    (dict(max_silence_sec=1.6), True, 0.1, 1.7, True),
+    (dict(), True, 0.5, 0.9, True),
+    (dict(), False, 0.5, 0.9, False),
+]
+
+
+@pytest.mark.parametrize("cfg_kw,acoustic,score,silence,expected", _BYTE_IDENTICAL_CASES)
+def test_policy_adaptive_floor_false_is_byte_identical(cfg_kw, acoustic, score, silence, expected):
+    default = AdaptiveEndpointPolicy(EndpointConfig(enabled=True, **cfg_kw))
+    explicit = AdaptiveEndpointPolicy(EndpointConfig(enabled=True, adaptive_floor=False, **cfg_kw))
+    for p in (default, explicit):
+        assert p.decide(
+            acoustic_endpoint=acoustic, completion_score=score, silence_sec=silence
+        ) is expected
+
+
+def test_policy_adaptive_anti_chop_holds_a_mid_utterance_pause():
+    # The fragmentation regression: "the mere story ... about ... my cat biki".
+    # Learned Lp=0.9; a complete-scoring partial at 0.6s silence -- with the
+    # acoustic timer ALREADY fired -- is HELD, so the resume lands as a new
+    # partial instead of committing a fragment.
+    p = _policy(adaptive_floor=True, complete_threshold=0.6, max_silence_sec=1.6,
+                pause_margin=0.0, pause_min_samples=1)
+    p.observe_pause(0.9)  # Lp = clamp(0.9 * 1.0, floor_lo=0.0, floor_hi=1.6) = 0.9
+    assert p.decide(acoustic_endpoint=True, completion_score=0.75, silence_sec=0.6) is False
+    # ...but once trailing silence reaches Lp, the complete turn commits.
+    assert p.decide(acoustic_endpoint=True, completion_score=0.75, silence_sec=0.95) is True
+
+
+def test_policy_adaptive_terse_speaker_commits_at_floor_lo():
+    # A terse speaker with tiny pauses -> Lp collapses to floor_lo (the
+    # high_confidence_floor decoder guard). A complete turn commits as soon as
+    # trailing silence reaches floor_lo -- no slower than the fixed floor was.
+    p = _policy(adaptive_floor=True, complete_threshold=0.6, max_silence_sec=1.6,
+                high_confidence_floor=0.4, pause_min_samples=4)
+    for _ in range(4):
+        p.observe_pause(0.3)  # 0.3*1.15=0.345 -> clamped up to floor_lo 0.4
+    assert p._pause.floor() == pytest.approx(0.4)
+    assert p.decide(acoustic_endpoint=False, completion_score=0.9, silence_sec=0.4) is True
+    assert p.decide(acoustic_endpoint=False, completion_score=0.9, silence_sec=0.39) is False
+
+
+def test_policy_adaptive_incomplete_still_bounded_by_max_silence():
+    # The incomplete-EXTEND behaviour is preserved and still hard-capped at
+    # max_silence_sec (a mis-scored turn always commits eventually).
+    p = _policy(adaptive_floor=True, incomplete_threshold=0.3, max_silence_sec=1.6,
+                pause_margin=0.0, pause_min_samples=1)
+    p.observe_pause(0.9)  # Lp = 0.9
+    assert p.decide(acoustic_endpoint=True, completion_score=0.1, silence_sec=1.0) is False
+    assert p.decide(acoustic_endpoint=True, completion_score=0.1, silence_sec=1.7) is True
+
+
+def test_policy_observe_pause_delegates_to_the_session_model():
+    p = _policy(adaptive_floor=True, pause_min_samples=8, pause_margin=0.15,
+                high_confidence_floor=0.0, max_silence_sec=1.6)
+    for _ in range(8):
+        p.observe_pause(0.8)
+    assert len(p._pause._samples) == 8
+    assert p._pause.floor() == pytest.approx(min(max(0.8 * 1.15, 0.0), 1.6))

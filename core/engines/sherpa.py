@@ -43,6 +43,7 @@ from ..contract import is_stop_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
     AudioResampler,
+    DCBlocker,
     InputAGC,
     StreamingLowpass,
     apply_gain_soft_limit,
@@ -58,7 +59,7 @@ from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ..tts_markup import parse_tts_markup, resolve_tts_params
 from ._denoiser import build_denoiser
-from ._aec import FarEndRing, PlaybackFIFO, build_aec
+from ._aec import AecDelayCalibrator, FarEndRing, PlaybackFIFO, build_aec
 from ._sherpa_models import (
     build_keyword_spotter,
     build_final_recognizer,
@@ -261,6 +262,20 @@ class SherpaConfig:
     # endpoint is False anyway, so this bounds the cost to a few calls per turn.
     endpoint_prosody_min_silence: float = 0.15
     endpoint_prosody_threads: int = 1       # onnxruntime intra-op threads (capture thread)
+    # Adaptive endpoint floor (SessionPauseModel, core/endpointing.py). When on,
+    # the trailing-silence COMMIT floor is LEARNED per session from this speaker's
+    # own mid-utterance pause distribution (kills mid-sentence over-fragmentation
+    # like "THE MERE STORY"/"ABOUT"/"MY CAT BIKI") instead of a fixed silence
+    # number. The three floors above are REINTERPRETED as bounds, not operating
+    # points: high_confidence_floor = floor_lo (decoder-lookahead safe minimum),
+    # max_silence_sec = floor_hi (hard hold cap), min_silence_sec = cold-start
+    # until pause_min_samples gather. window/quantile/margin are learner knobs, not
+    # per-machine numbers. Dataclass default OFF (byte-identical); on in config.json.
+    endpoint_adaptive_floor: bool = False
+    endpoint_pause_window: int = 64
+    endpoint_pause_quantile: float = 0.85
+    endpoint_pause_margin: float = 0.15
+    endpoint_pause_min_samples: int = 8
     # Restore conventional casing on partials/finals (the streaming model emits
     # ALL-CAPS unpunctuated text). Pure-Python, cheap; on by default.
     asr_restore_casing: bool = True
@@ -314,14 +329,24 @@ class SherpaConfig:
     # can't keep real-time.
     aec_num_threads: int = 1
     aec_relaxed_margin_db: float = 3.0
-    # Auto-calibrate the AEC far-end read delay during a run. The coherence
-    # detector already measures the speaker->mic lag (echo_coherence.
-    # measured_delay_samples); when this is on the capture loop periodically feeds
-    # that measurement back into _aec_ref_delay, so a mis-set aec_ref_delay_ms
-    # self-corrects instead of degrading cancellation for the whole session (a
+    # Auto-calibrate the AEC far-end read delay during a run (AecDelayCalibrator,
+    # below). When on, the capture loop measures the true speaker->mic lag on-device
+    # by normalized cross-correlation and drives _aec_ref_delay from it, so a mis-set
+    # seed self-corrects instead of degrading cancellation for the whole session (a
     # wrong delay = poor/zero ERLE; the true delay is device-specific: ~40ms a
-    # laptop speaker vs ~260ms Bluetooth). No-op when AEC or coherence is off.
+    # laptop speaker vs ~260ms Bluetooth). No dependency on the coherence detector.
+    # No-op only when AEC or aec_auto_delay is off.
     aec_auto_delay: bool = True
+    # AecDelayCalibrator bounds (core/engines/_aec.py). The OPERATING far->near
+    # delay is MEASURED on-device by normalized cross-correlation of the mic vs the
+    # true-playback-aligned far reference (the same robust estimator diagnose_run
+    # uses), so ``aec_ref_delay_ms`` above is only a SEED used until the first
+    # high-correlation estimate is accepted. These three are PHYSICS bounds, NOT
+    # per-machine tuning: min_corr rejects noise-floor lags, window is the
+    # correlation integration length, max clamps the search (laptop speaker..BT).
+    aec_delay_window_ms: float = 1500.0
+    aec_delay_min_corr: float = 0.15
+    aec_delay_max_ms: float = 400.0
     # --- WebRTC Audio Processing Module (aec_backend="apm") ----------------------
     # The production audio front-end Chrome/Meet/Teams ship: AEC3 (multi-delay,
     # nonlinear-tolerant echo cancel) + a residual-echo suppressor + ML noise
@@ -340,6 +365,14 @@ class SherpaConfig:
     apm_high_pass_filter: bool = True
     apm_gain_control: bool = False
     apm_always_on: bool = False
+    # When the always-on APM owns noise suppression (_apm_owns_ns), feed the
+    # RECOGNIZER a parallel AEC+RES+HPF tap with the aggressive ML noise-suppressor
+    # OFF, so the near-end user's words survive for recognition (real usage: NS was
+    # erasing them; the raw-mic replay proved the words are present). Echo
+    # cancellation still runs -- only the ML NS is dropped, and ONLY on the ASR
+    # text path (the barge/floor/VAD/speaker gates keep the NS-on signal). Intent
+    # flag, auto-activated at runtime from _apm_owns_ns; no per-machine value.
+    apm_asr_relax_ns: bool = True
     # Hint the AEC3 render->capture delay (ms). 0 is correct here because the
     # far-end reference is already time-aligned to the mic by the FarEndRing read
     # at aec_ref_delay_ms; AEC3 refines it internally from there.
@@ -423,6 +456,14 @@ class SherpaConfig:
     # speech. True by default (the artifact is real on the shipped voice); set
     # false for byte-identical legacy output.
     tts_declick: bool = True
+    # DC-blocking high-pass on the TTS output (core/audio_frontend.DCBlocker),
+    # applied FIRST in the synth chain so every downstream level/peak stage sees a
+    # DC-free signal. Real usage showed every synthesized sentence carried a ~0.05
+    # DC offset (wasted headroom + a steady bias into the AEC reference). tts_dc_
+    # block_hz is a UNIVERSAL corner (below the ~85 Hz speech fundamental), not a
+    # per-machine number: only the one-pole coefficient scales with the output rate.
+    tts_dc_block: bool = True
+    tts_dc_block_hz: float = 20.0
     # Impulse-detection threshold for the de-clicker (|sample - local median| that
     # counts as a spike to repair). The real VITS spikes jump to ~0.5-0.95 while
     # legitimate dense-consonant/fricative energy peaks around ~0.14, so a bar at
@@ -949,12 +990,26 @@ class SherpaOnnxEngine(AudioEngine):
         # NS/AGC/HPF; suppresses_noise => it owns NS, so skip the GTCRN denoiser.
         self._apm_always_on = False
         self._apm_owns_ns = False
-        # aec_auto_delay: rolling counter so the measured speaker->mic delay is fed
-        # back into _aec_ref_delay ~once/sec during playback (not every block).
-        self._aec_delay_recalc_blocks = 0
+        # Parallel NS-OFF APM tap for the recognizer under _apm_owns_ns (fix 2):
+        # AEC+RES+HPF on, ML NS off, so near-end words survive for ASR. None on
+        # every other backend/profile -> the ASR path aliases the NS-on samples
+        # (byte-identical). Built in _build; touched only on the capture thread.
+        self._aec_asr = None
+        # aec_auto_delay: the operating far->near delay is MEASURED on-device by
+        # this calibrator (normalized cross-correlation, correlation-gated) and
+        # written into _aec_ref_delay every energetic block; None until built (or
+        # when auto-delay is off), in which case _aec_ref_delay holds the seed.
+        self._aec_delay_cal: "Optional[AecDelayCalibrator]" = None
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
+        # A SINGLE long-lived DC blocker for the TTS output: its one-pole state
+        # carries across chunks AND sentences (a per-sentence reset would re-settle
+        # the pole from zero -> an audible low-frequency thump). Lazily built at the
+        # output rate; rebuilt only if that rate changes. Touched only by the synth/
+        # playback worker thread (serialized), so no lock.
+        self._tts_dc_blocker: "Optional[DCBlocker]" = None
+        self._tts_dc_sr = 0
         self._capture_thread: Optional[threading.Thread] = None
         # asr-tts-2: dedicated second-pass worker. The queue (work items
         # ``(seg, raw_final, speech_end_ts)``) + thread are created in ``_build``
@@ -1268,15 +1323,40 @@ class SherpaOnnxEngine(AudioEngine):
         self._far_ref = FarEndRing() if self._aec is not None else None
         if self._aec is not None:
             self._aec_ref_delay = int(c.sample_rate * c.aec_ref_delay_ms / 1000)
+            # Runtime delay auto-calibration: measure the true speaker->mic delay
+            # on-device (aec_ref_delay_ms is only the seed until the first accepted
+            # estimate). Bounds are physics, not per-machine tuning.
+            if c.aec_auto_delay:
+                self._aec_delay_cal = AecDelayCalibrator(
+                    c.sample_rate,
+                    seed_delay_samples=self._aec_ref_delay,
+                    window_ms=c.aec_delay_window_ms,
+                    min_corr=c.aec_delay_min_corr,
+                    max_delay_ms=c.aec_delay_max_ms,
+                )
             # The WebRTC-APM backend tags itself with these (absent on nlms/dtln).
             self._apm_always_on = bool(getattr(self._aec, "always_on", False))
             self._apm_owns_ns = self._apm_always_on and bool(
                 getattr(self._aec, "suppresses_noise", False)
             )
+            # Fix 2: when the always-on APM owns NS, build a second AEC tap with the
+            # ML NS OFF, for the recognizer only. Its echo model converges to the
+            # same solution (identical near/far inputs, same delay), so it just
+            # keeps the near-end words the primary's NS erases.
+            if self._apm_owns_ns and c.apm_asr_relax_ns:
+                self._aec_asr = build_aec(c, ns_override=False)
+                if self._aec_asr is not None:
+                    log.info(
+                        "ASR relaxed-NS tap ACTIVE (recognizer reads AEC+RES+HPF "
+                        "with ML noise-suppression OFF; barge/floor/speaker gates "
+                        "keep the NS-on signal)"
+                    )
             log.info(
-                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms, "
-                "apm_always_on=%s)",
-                c.aec_backend, c.aec_ref_delay_ms, self._apm_always_on,
+                "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms"
+                "%s, apm_always_on=%s)",
+                c.aec_backend, c.aec_ref_delay_ms,
+                " [seed; auto-calibrated at runtime]" if c.aec_auto_delay else "",
+                self._apm_always_on,
             )
         # Device-adaptive fused double-talk detector: the open-speaker barge trigger.
         # Built only when coherence + AEC are both on (it fuses the coherence
@@ -1695,6 +1775,8 @@ class SherpaOnnxEngine(AudioEngine):
             self._far_ref.clear()
         if self._aec is not None:
             self._aec.reset()
+        if self._aec_asr is not None:
+            self._aec_asr.reset()
         # Stamp the *true* audible-stop instant (when the FIFO was flushed), not
         # when synthesis later notices the flag. Only when we actually flushed a
         # speaking stream, so a no-op stop (nothing playing) records nothing --
@@ -1817,7 +1899,7 @@ class SherpaOnnxEngine(AudioEngine):
                     log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
         return self._postprocess_final(raw_final)
 
-    def _finalize_and_dispatch(self, seg, raw_final: str, speech_end_ts) -> None:
+    def _finalize_and_dispatch(self, seg, raw_final: str, speech_end_ts, asr_seg=None) -> None:
         """Produce the FINAL transcript and deliver it (or its drop metric).
 
         Pulled out of the capture loop so the SAME logic can run either inline
@@ -1828,8 +1910,16 @@ class SherpaOnnxEngine(AudioEngine):
         (CAM++ embedding) -- then dispatches at most one final per utterance.
         Every input is owned by the work item (``seg`` is an already-concatenated
         copy; ``speech_end_ts`` a captured ``perf_counter`` so SPEECH_END stays
-        correctly backdated however late this runs), so it is safe off-thread."""
-        final_text = self._final_transcribe(seg, raw_final)
+        correctly backdated however late this runs), so it is safe off-thread.
+
+        ``asr_seg`` (fix 2): the NS-RELAXED copy of the utterance for the offline
+        2nd-pass decode under ``_apm_owns_ns`` (so the LLM-facing final also keeps
+        the near-end words NS erased). The L1 echo-floor gate + the speaker-ID gate
+        deliberately keep the NS-ON ``seg`` (their learned floor + enrolled
+        embedding live in the NS-on domain; the louder NS-off signal would clear
+        the floor too easily and re-open the echo-final cascade). ``None`` (every
+        non-apm-owns-ns path) -> decode ``seg``, byte-identical."""
+        final_text = self._final_transcribe(asr_seg if asr_seg is not None else seg, raw_final)
         log.info("asr final: %r (raw %r)", final_text, raw_final)
         if not self._final_above_floor(seg):
             # L1: at/near the device's learned echo/quiet floor -- the assistant's
@@ -1858,7 +1948,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_q = queue.Queue(maxsize=8)
             log.info("second-pass final ASR runs ASYNC (off the capture thread)")
 
-    def _enqueue_final(self, seg, raw_final: str, speech_end_ts) -> None:
+    def _enqueue_final(self, seg, raw_final: str, speech_end_ts, asr_seg=None) -> None:
         """Hand an endpointed utterance to the second-pass worker WITHOUT ever
         blocking the capture loop. On overflow (the worker is wedged/very slow --
         normally the queue sits near-empty), drop the OLDEST queued utterance to
@@ -1868,7 +1958,7 @@ class SherpaOnnxEngine(AudioEngine):
         after a newer one would wrongly cancel the newer turn. Single producer
         (this capture thread), so after one ``get_nowait`` a slot is free."""
         try:
-            self._final_q.put_nowait((seg, raw_final, speech_end_ts))
+            self._final_q.put_nowait((seg, raw_final, speech_end_ts, asr_seg))
             return
         except queue.Full:
             pass
@@ -1881,11 +1971,11 @@ class SherpaOnnxEngine(AudioEngine):
         except queue.Empty:
             pass  # the worker just drained one; a slot is free now
         try:
-            self._final_q.put_nowait((seg, raw_final, speech_end_ts))
+            self._final_q.put_nowait((seg, raw_final, speech_end_ts, asr_seg))
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
             log.warning("second-pass queue still full; finalizing inline")
-            self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+            self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
 
     def _final_worker(self) -> None:
         """Drain the second-pass work queue, finalizing one utterance at a time.
@@ -1904,9 +1994,9 @@ class SherpaOnnxEngine(AudioEngine):
                 continue
             if item is None:  # shutdown sentinel
                 break
-            seg, raw_final, speech_end_ts = item
+            seg, raw_final, speech_end_ts, asr_seg = item
             try:
-                self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+                self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
             except Exception:  # noqa: BLE001 - never let the worker die on one turn
                 log.exception("second-pass finalize failed; dropping this turn")
 
@@ -2057,6 +2147,9 @@ class SherpaOnnxEngine(AudioEngine):
         # Capped so a long monologue can't grow memory; the tail is what the
         # speaker model needs. Reset on every endpoint and on decode-recovery.
         utterance: list = []
+        # fix 2: parallel NS-off utterance (populated only under the relaxed-NS
+        # tap) so the offline 2nd pass decodes the NS-relaxed audio too.
+        asr_utterance: list = []
         utterance_len = 0
         max_utterance = int(self.config.sample_rate * 10)
         # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
@@ -2100,7 +2193,21 @@ class SherpaOnnxEngine(AudioEngine):
                 # to those new arrays -- so this reference keeps pointing at the
                 # untouched pre-AEC block for the rest of the iteration.
                 mic_raw = samples
+                # fix 2: NS-off recognizer tap. Stays None (the recognizer then
+                # reads the NS-on ``samples``, byte-identical) unless the relaxed
+                # APM tap is built (only under _apm_owns_ns).
+                asr_samples = None
                 if self._aec is not None:
+                    # Auto-calibrate the far->near delay from the true-playback-
+                    # aligned far (read at delay 0) vs the raw mic: the calibrator
+                    # self-gates on far energy + correlation, so idle/uncorrelated
+                    # blocks leave the operating delay unchanged. Drives the read
+                    # below, so a mis-set seed self-corrects within ~1 window.
+                    if self._aec_delay_cal is not None:
+                        far0 = self._far_ref.read(samples.shape[0], 0)
+                        if far0 is not None and far0.size:
+                            self._aec_delay_cal.observe(mic_raw, far0)
+                            self._aec_ref_delay = self._aec_delay_cal.current_delay_samples()
                     far = self._far_ref.read(samples.shape[0], self._aec_ref_delay)
                     # ONLY cancel when the assistant is actually playing (the
                     # far-end reference has energy). With no recent playback the
@@ -2124,6 +2231,14 @@ class SherpaOnnxEngine(AudioEngine):
                         if far is None:
                             far = np.zeros(samples.shape[0], dtype="float32")
                         samples = self._aec.process_16k(samples, far)
+                        if self._aec_asr is not None:
+                            # Same near (pre-AEC mic_raw) + far + delay as the
+                            # primary APM, but ML NS OFF -> the user's near-end words
+                            # survive for the recognizer. process_16k returns a new
+                            # array and never mutates mic_raw. The GTCRN denoiser is
+                            # skipped under _apm_owns_ns, so this stays parallel to
+                            # ``samples`` down to the recognizer feed.
+                            asr_samples = self._aec_asr.process_16k(mic_raw, far)
                     elif far_energetic:
                         samples = self._aec.process_16k(samples, far)
                 # Speech denoise on the 16 kHz block, AFTER resampling and BEFORE
@@ -2266,8 +2381,12 @@ class SherpaOnnxEngine(AudioEngine):
                     # floor, and instead of the sustain machinery -- word evidence
                     # decides now, not more acoustic trips.
                     if self._barge_confirm_active():
+                        # Decode the confirm window from the NS-off tap (words
+                        # survive); the step's internal DTD echo obs still uses mic_raw.
                         self._barge_confirm_step(
-                            recognizer, stream, samples, now, mic_raw=mic_raw
+                            recognizer, stream,
+                            asr_samples if asr_samples is not None else samples,
+                            now, mic_raw=mic_raw,
                         )
                         barge_sustain.reset()
                         rejected_run = 0.0
@@ -2278,19 +2397,12 @@ class SherpaOnnxEngine(AudioEngine):
                     # current speaker volume + room noise online -- no manual
                     # calibration, and the steady echo can't self-interrupt.
                     if self._aec is not None:
-                        # Auto-calibrate the far-end read delay from the coherence
-                        # detector's measured speaker->mic lag (~once/sec, not every
-                        # block). A mis-set aec_ref_delay_ms then self-corrects
-                        # instead of degrading cancellation for the whole session;
-                        # both rings are teed from the same callback so the delay is
-                        # directly transferable. No-op until a delay is measured.
-                        if self.config.aec_auto_delay and self._echo_coherence is not None:
-                            self._aec_delay_recalc_blocks += 1
-                            if self._aec_delay_recalc_blocks >= 10:
-                                self._aec_delay_recalc_blocks = 0
-                                _d = self._echo_coherence.measured_delay_samples()
-                                if _d is not None and 0 <= _d < self.config.sample_rate:
-                                    self._aec_ref_delay = int(_d)
+                        # (The far->near read delay is auto-calibrated up front by
+                        # AecDelayCalibrator via normalized cross-correlation -- see
+                        # the observe() call before the far read -- which replaced
+                        # the coherence-median feedback that never converged on the
+                        # open speaker: un-normalized, no accept-gate, reset every
+                        # reply. See docs/session_2026-07-04.)
                         self._update_playback_floor(rms(samples))
                         # ALSO track the echo-only floor on the RAW pre-AEC mic. The
                         # barge energy-confirmation keys off THIS (not the post-AEC
@@ -2418,10 +2530,22 @@ class SherpaOnnxEngine(AudioEngine):
                 try:
                     utterance.append(samples)
                     utterance_len += samples.size
+                    if self._aec_asr is not None:
+                        asr_utterance.append(
+                            asr_samples if asr_samples is not None else samples
+                        )
                     while utterance_len > max_utterance and len(utterance) > 1:
                         utterance_len -= utterance[0].size
                         utterance.pop(0)
-                    stream.accept_waveform(self.config.sample_rate, samples)
+                        if self._aec_asr is not None and asr_utterance:
+                            asr_utterance.pop(0)  # keep the NS-off buffer aligned
+                    # fix 2: the streaming recognizer reads the NS-off tap so
+                    # near-end words survive; the utterance buffer (seg) + the
+                    # floor/speaker gates keep the NS-on ``samples``.
+                    stream.accept_waveform(
+                        self.config.sample_rate,
+                        asr_samples if asr_samples is not None else samples,
+                    )
                     while recognizer.is_ready(stream):
                         recognizer.decode_stream(stream)
                     text = recognizer.get_result(stream)
@@ -2431,7 +2555,14 @@ class SherpaOnnxEngine(AudioEngine):
                         # Record the instant (perf_counter, matching the metrics
                         # clock) so a later endpoint can backdate SPEECH_END to
                         # here, exposing the trailing-silence wait (lat-1).
-                        last_voiced_ts = time.perf_counter()
+                        _now = time.perf_counter()
+                        # Feed the inter-partial gap (a MID-utterance pause, not the
+                        # final end-of-turn silence) to the adaptive endpoint
+                        # learner: it learns THIS speaker's pause distribution so the
+                        # commit floor adapts per session instead of a fixed number.
+                        if last_voiced_ts is not None and self._endpoint_policy is not None:
+                            self._endpoint_policy.observe_pause(_now - last_voiced_ts)
+                        last_voiced_ts = _now
                         partials += 1
                         # Casing only on partials (cheap, every block); the
                         # heavier punctuation model is reserved for the final.
@@ -2464,7 +2595,14 @@ class SherpaOnnxEngine(AudioEngine):
                         # partial ever fired) falls back to now inside mark().
                         speech_end_ts, last_voiced_ts = last_voiced_ts, None
                         seg = np.concatenate(utterance) if utterance else samples
+                        # fix 2: NS-off segment for the 2nd pass. None off the
+                        # relaxed-NS path -> _finalize decodes `seg` (byte-identical).
+                        asr_seg = (
+                            np.concatenate(asr_utterance)
+                            if (self._aec_asr is not None and asr_utterance) else None
+                        )
                         utterance, utterance_len = [], 0
+                        asr_utterance = []
                         if raw_final.strip():
                             finals += 1
                             # Finalize (second-pass re-transcription, when
@@ -2474,9 +2612,9 @@ class SherpaOnnxEngine(AudioEngine):
                             # offline decode never stalls this real-time loop;
                             # otherwise finalize inline (legacy, byte-identical).
                             if self._final_q is not None:
-                                self._enqueue_final(seg, raw_final, speech_end_ts)
+                                self._enqueue_final(seg, raw_final, speech_end_ts, asr_seg)
                             else:
-                                self._finalize_and_dispatch(seg, raw_final, speech_end_ts)
+                                self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
                     asr_errors = 0
                 except Exception:
                     # Recover from a transient decode error by resetting the
@@ -2489,6 +2627,7 @@ class SherpaOnnxEngine(AudioEngine):
                     last_partial = ""
                     last_voiced_ts = None
                     utterance, utterance_len = [], 0
+                    asr_utterance = []
                     # Clear the denoiser's streaming state too, so a recovered
                     # stream starts the front-end fresh (best-effort; no-op when
                     # there's no denoiser).
@@ -2500,6 +2639,8 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._aec is not None:
                         self._aec.reset()
                         self._far_ref.clear()
+                    if self._aec_asr is not None:
+                        self._aec_asr.reset()
                     try:
                         recognizer.reset(stream)
                     except Exception:
@@ -2921,6 +3062,8 @@ class SherpaOnnxEngine(AudioEngine):
                             self._far_ref.clear()
                         if self._aec is not None:
                             self._aec.reset()
+                        if self._aec_asr is not None:
+                            self._aec_asr.reset()
                         # Hand the output device back when asked (so a co-located
                         # process -- e.g. the acoustic test's synthetic user -- can
                         # open it for its turn). Flush the FIFO + drop the shared
@@ -2997,6 +3140,25 @@ class SherpaOnnxEngine(AudioEngine):
             except Exception:  # noqa: BLE001 - metric is best-effort
                 pass
         return False
+
+    def _dc_block(self, samples, sr: int):
+        """DC-block a synth chunk/clip with the long-lived one-pole high-pass.
+
+        Applied FIRST in both synth paths so declick/leveler/normalize and every
+        level/peak metric see the DC-free signal. The single instance is built
+        lazily at the output rate and reused across chunks + sentences (state
+        continuity), rebuilt only if the rate changes. No-op when disabled or the
+        rate is unusable (DCBlocker returns the input unchanged)."""
+        if not self.config.tts_dc_block:
+            return samples
+        # getattr default: markup/barge fixtures build the engine bypassing
+        # __init__, so the handle may be unset on the first call.
+        blk = getattr(self, "_tts_dc_blocker", None)
+        if blk is None or getattr(self, "_tts_dc_sr", 0) != int(sr):
+            blk = DCBlocker(int(sr), self.config.tts_dc_block_hz)
+            self._tts_dc_blocker = blk
+            self._tts_dc_sr = int(sr)
+        return blk.process(samples)
 
     def _synthesize(
         self,
@@ -3121,6 +3283,9 @@ class SherpaOnnxEngine(AudioEngine):
                 def on_chunk(samples, *_progress) -> int:
                     nonlocal _raw_sumsq, _raw_count, _q_sum, _q_sumsq, _q_peak, _q_clip, _q_n
                     raw = np.asarray(samples, dtype="float32").reshape(-1)
+                    # DC-block FIRST so the raw-RMS/peak/dc metrics + normalize all
+                    # see a centred signal (state carries across chunks + sentences).
+                    raw = self._dc_block(raw, stream_sr)
                     blk = raw
                     if _norm_gain is not None:
                         if raw.size:
@@ -3187,6 +3352,8 @@ class SherpaOnnxEngine(AudioEngine):
             audio = tts.generate(text, sid=sid, speed=speed)
         samples = np.asarray(audio.samples, dtype="float32").reshape(-1)
         sr = int(getattr(audio, "sample_rate", 0)) or 22050
+        # DC-block FIRST (before declick/leveler/normalize + their level metrics).
+        samples = self._dc_block(samples, sr)
         if leveler_on:
             # OUTPUT LEVELER path: declick FIRST (so the limiter's true-peak
             # estimate is not driven by a VITS impulse spike declick would have

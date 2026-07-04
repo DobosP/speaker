@@ -323,6 +323,32 @@ def test_rewrite_is_overreach_bounds():
     assert not rewrite_is_overreach("Count from one to1.", "Count from one to ten.")
 
 
+def test_rewrite_is_overreach_same_length_drops_and_invents():
+    from core.cleanup import rewrite_is_overreach
+
+    # FIX-3 live failure: a SAME-LENGTH rewrite that drops most of the raw's
+    # content and fabricates new words slips past the expansion bound (7 -> 6
+    # words) but drops_and_invents catches it (3 of 6 content tokens survive).
+    assert rewrite_is_overreach(
+        "TEND ME A LONG STORY ABOUT HER", "A long story about the ceiling"
+    )
+
+
+def test_drops_and_invents_predicate():
+    from core.asr_text import drops_and_invents
+
+    # Half or fewer content tokens kept + at least one shared -> drops & invents.
+    assert drops_and_invents(
+        "TEND ME A LONG STORY ABOUT HER", "A long story about the ceiling"
+    )
+    # Faithful cleanups keep (most of) the content -> not dropping/inventing.
+    assert not drops_and_invents("tell me about Paris Paris", "tell me about Paris")
+    assert not drops_and_invents("please set a timer for ten minutes",
+                                 "Please set a timer for 10 minutes.")
+    # Zero shared content is a total non-sequitur, covered by other guards.
+    assert not drops_and_invents("Ario der", "are you there")
+
+
 def test_cleaner_rewrite_into_own_words_drops_the_turn():
     """Live: the cleaner rewrote noise 'Well' into the assistant's own prior
     sentence (it sits in the cleaner's recent-context) and the assistant

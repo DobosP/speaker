@@ -91,6 +91,21 @@ BARGE_REJECTED_LINES = [
     "12:00:12.000 DEBUG speaker.sherpa | capture heartbeat: blocks=300 avg_rms=0.0100 clip=0.0% underruns=0 partials=0 finals=0 speaking=True",
 ]
 
+BARGE_CONFIRM_FUNNEL_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260703-120010 started (debug=True) -> logs/runs/run-20260703-120010.txt",
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'A long spoken reply.' (queue depth=0)",
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    # Trigger 1: echo trips the acoustic gate, no real words -> duck then self-heal.
+    "12:00:11.000 INFO  speaker.sherpa | barge-in: acoustic trigger -- ducking playback, awaiting speech confirmation (0.6s window)",
+    "12:00:11.700 INFO  speaker.sherpa | barge-in NOT confirmed (no talk-over speech in 0.6s) -- restoring volume",
+    # Trigger 2: real talk-over -> duck, confirmed by speech, hard-cut (also
+    # logs the legacy "barge-in detected" line for existing tooling).
+    "12:00:13.000 INFO  speaker.sherpa | barge-in: acoustic trigger -- ducking playback, awaiting speech confirmation (0.6s window)",
+    "12:00:13.400 INFO  speaker.sherpa | barge-in confirmed by speech: 'stop that please'",
+    "12:00:13.400 INFO  speaker.sherpa | barge-in detected",
+    "12:00:14.000 DEBUG speaker.sherpa | capture heartbeat: blocks=300 avg_rms=0.0100 clip=0.0% underruns=0 partials=0 finals=0 speaking=False",
+]
+
 MULTI_SENTENCE_LINES = [
     "12:00:00.000 INFO  speaker | run 20260628-120004 started (debug=True) -> logs/runs/run-20260628-120004.txt",
     "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Sentence one.' (queue depth=0)",
@@ -150,6 +165,66 @@ def test_parse_multi_sentence(tmp_path):
     assert [s.playback_sample_rate for s in run.sentences] == [24000, 24000, 24000]
     # sentence[0] should be closed at the next sentence start
     assert run.sentences[0].t_end is not None
+
+
+def test_parse_barge_confirm_funnel(tmp_path):
+    path = _write_log(tmp_path, BARGE_CONFIRM_FUNNEL_LINES)
+    run = parse_log(path)
+
+    # Two acoustic triggers ducked; one self-healed, one confirmed by speech.
+    assert run.barge_duck == 2
+    assert run.barge_confirmed == 1
+    assert run.barge_unconfirmed == 1
+    # The confirmed path still logs "barge-in detected" for legacy tooling, so
+    # exactly one hard-fire lands in the BargeEvent view too (no double-count of
+    # the "confirmed by speech" line).
+    assert sum(1 for be in run.barge_events if be.kind == "detected") == 1
+
+    # Surfaced in JSON under a key named for the on_metric markers.
+    js = to_json(run)
+    assert js["barge_confirm_funnel"] == {
+        "barge_in_duck": 2,
+        "barge_in_confirmed": 1,
+        "barge_in_unconfirmed": 1,
+    }
+
+    # ...and in the text report.
+    report = format_report(run)
+    assert "Barge Confirm Funnel" in report
+    assert "barge_in_duck" in report
+
+
+def test_confirm_line_with_detected_substring_counts_as_confirmed(tmp_path):
+    # Hardening: a confirm line whose transcription literally contains the
+    # substring "barge-in detected" must still count as barge_confirmed and NOT
+    # be swallowed as a detected event (the anchored _BARGE_DETECTED_PAT).
+    lines = [
+        "12:00:00.000 INFO  speaker | run 20260703-120011 started (debug=True) -> logs/runs/run-20260703-120011.txt",
+        "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Reply.' (queue depth=0)",
+        "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+        "12:00:12.000 INFO  speaker.sherpa | barge-in: acoustic trigger -- ducking playback, awaiting speech confirmation (0.6s window)",
+        "12:00:12.400 INFO  speaker.sherpa | barge-in confirmed by speech: 'barge-in detected'",
+        "12:00:12.400 INFO  speaker.sherpa | barge-in detected",
+    ]
+    run = parse_log(_write_log(tmp_path, lines))
+    assert run.barge_duck == 1
+    assert run.barge_confirmed == 1
+    # Exactly one real hard-fire, not two (the confirm line is not a detected row).
+    assert sum(1 for be in run.barge_events if be.kind == "detected") == 1
+
+
+def test_confirm_funnel_omitted_without_word_gate(tmp_path):
+    # A legacy run (no ADR-0011 lines) reports zero funnel counts and omits the
+    # funnel block entirely so old bundles stay uncluttered.
+    path = _write_log(tmp_path, CLEAN_RUN_LINES)
+    run = parse_log(path)
+    assert (run.barge_duck, run.barge_confirmed, run.barge_unconfirmed) == (0, 0, 0)
+    assert "Barge Confirm Funnel" not in format_report(run)
+    assert to_json(run)["barge_confirm_funnel"] == {
+        "barge_in_duck": 0,
+        "barge_in_confirmed": 0,
+        "barge_in_unconfirmed": 0,
+    }
 
 
 def test_parse_barge_rejected(tmp_path):

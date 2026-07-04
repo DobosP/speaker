@@ -26,6 +26,13 @@ _COH_REF_Q_MAX = 256
 # queued sentence is still waiting for its own first audio. Past this, a stale
 # playback-level EWMA is not evidence of an audible tail.
 _BARGE_TAIL_FRESH_SEC = 0.30
+# Fix 5b self-sizing playback FIFO: growth factor on a starved reply, decay factor
+# on a clean one, and the UX latency CEILING the buffer may grow to. These are
+# bounds (a control-loop rate + a max-added-latency ceiling), NOT per-machine
+# operating values -- the operating depth is measured from this box's underruns.
+_FIFO_GROW = 1.5
+_FIFO_DECAY = 0.9
+_FIFO_SEC_MAX = 4.0
 
 
 def _auto_threads() -> int:
@@ -1079,6 +1086,13 @@ class SherpaOnnxEngine(AudioEngine):
         # off-thread. Plain ints -> GIL-atomic, alloc-free, real-time safe.
         self._underrun_blocks: int = 0
         self._underrun_at_reply_start: int = 0
+        # Fix 5b: self-sizing playback FIFO lead. Seeded from playback_fifo_sec and
+        # then DERIVED at runtime from the measured per-reply underrun count -- grow
+        # the buffer when a reply starved (the leveler forces whole-clip synth, so a
+        # long next sentence can out-run a shallow FIFO -> inter-sentence gaps),
+        # slow-decay on clean replies. No per-machine constant: it converges to just
+        # above THIS box's worst inter-sentence synth spike, bounded by a UX ceiling.
+        self._playback_fifo_sec_cur: float = float(config.playback_fifo_sec)
         # Input-clipping diagnostic (one-shot WARNING): a mic gain so hot that the
         # ADC rails shreds the waveform -> garbled STT. Detected in the capture
         # heartbeat from the per-block clipped-sample fraction.
@@ -3013,7 +3027,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # outdata are both play_sr. The audio callback may already
                         # be firing (zero-filling) before this assignment -- that's
                         # fine: it checks `self._fifo is None` and emits silence.
-                        self._fifo = PlaybackFIFO(int(self._play_sr * self.config.playback_fifo_sec))
+                        self._fifo = PlaybackFIFO(int(self._play_sr * self._playback_fifo_sec_cur))
                         with self._out_lock:
                             self._out_stream = out
                     elif not out.active:
@@ -3053,6 +3067,23 @@ class SherpaOnnxEngine(AudioEngine):
                                 "ASR/second-pass worker?); raises buzzy/glitchy artifacts", _ur,
                             )
                             self._cb.on_metric("playback_underrun")
+                        # Fix 5b: self-size the FIFO lead from THIS reply's underrun
+                        # count -- grow when it starved, slow-decay toward the seed
+                        # when clean. Recreated HERE only: the queue is empty and the
+                        # drain wait above completed, so the old FIFO is spent and the
+                        # audio callback (which snapshots self._fifo then zero-fills an
+                        # empty one) is safe across the swap. Takes effect next reply.
+                        seed = float(self.config.playback_fifo_sec)
+                        prev = self._playback_fifo_sec_cur
+                        self._playback_fifo_sec_cur = self._next_fifo_sec(prev, _ur, seed)
+                        if (abs(self._playback_fifo_sec_cur - prev) > 1e-3
+                                and self._play_sr > 0):
+                            self._fifo = PlaybackFIFO(
+                                int(self._play_sr * self._playback_fifo_sec_cur))
+                            log.info(
+                                "playback FIFO lead -> %.2fs (seed %.2fs, underran %d)",
+                                self._playback_fifo_sec_cur, seed, _ur,
+                            )
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         self._last_playback_at = 0.0
                         self._last_speaking_end = time.monotonic()  # arm the L2 refractory
@@ -3151,6 +3182,22 @@ class SherpaOnnxEngine(AudioEngine):
             except Exception:  # noqa: BLE001 - metric is best-effort
                 pass
         return False
+
+    @staticmethod
+    def _next_fifo_sec(prev: float, ur: int, seed: float) -> float:
+        """Self-size the playback FIFO lead from a reply's underrun count (fix 5b).
+
+        Grow (multiplicatively, fast converge) when the reply STARVED (ur>2 -- 1-2
+        is the benign end-of-utterance straddle), slow-decay toward the ``seed``
+        floor when clean, bounded by the ``_FIFO_SEC_MAX`` UX-latency ceiling. Pure
+        + static so the control law is unit-tested without driving the audio loop.
+        No per-machine operating value: the ceiling/rates are bounds, the operating
+        depth is derived from THIS box's measured underruns."""
+        if ur > 2:
+            return min(_FIFO_SEC_MAX, prev * _FIFO_GROW)
+        if prev > seed:
+            return max(seed, prev * _FIFO_DECAY)
+        return prev
 
     def _dc_block(self, samples, sr: int):
         """DC-block a synth chunk/clip with the long-lived one-pole high-pass.

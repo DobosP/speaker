@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections import deque
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -112,6 +113,169 @@ class FarEndRing:
         with self._lock:
             self._buf[:] = 0.0
             self._written = 0
+
+
+class AecDelayCalibrator:
+    """Runtime self-calibration of the far->near echo delay for the AEC reference.
+
+    The FDAF / APM canceller subtracts the played far-end from the mic, but only if
+    the far-end block handed in is time-aligned to WHEN that audio reached the mic
+    through the speaker->air->mic path. That lag is per-machine (output-buffer depth
+    + acoustic distance) and DRIFTS across a session, so it must never be a
+    hard-coded constant. This estimator watches the LIVE mic + far streams on the
+    capture thread and measures the lag by robust normalized cross-correlation --
+    the SAME math ``tools/diagnose_run.py`` runs offline on a recorded run
+    (``_estimate_ref_delay``), reproduced here on a rolling window so ``FarEndRing``
+    can be read at the measured ``delay``.
+
+    Contract: it starts at ``seed_delay_samples`` (whatever the engine seeded from
+    an echo probe / ``aec_auto_delay``) and HOLDS it until the first estimate that
+    clears the accept gate -- peak correlation ``>= min_corr`` AND the far-end
+    carries real energy. That gate is the whole point: the offline estimator always
+    returned its best lag, so on a silent or uncorrelated window it reported
+    garbage; here a window that doesn't clear the gate leaves the operating delay
+    UNCHANGED. The first accepted estimate snaps in immediately (fast acquire);
+    afterwards each accepted best-lag is pushed through a small median window, so a
+    single outlier can't yank the alignment while genuine drift still tracks.
+
+    ``window_ms`` / ``min_corr`` / ``max_delay_ms`` are physics/linguistic BOUNDS
+    (the correlation-window length, a floor on "this really is the echo", the
+    longest plausible loudspeaker->mic lag) -- NOT per-machine tuning knobs. The
+    operating value is always the MEASURED delay (or the seed until one is
+    accepted), never a tuned constant. Capture-thread only: single writer, no lock."""
+
+    # A far-end RMS below this is silence / idle -- there is no echo to align to, so
+    # the window is IGNORED (operating delay held). ~ -54 dBFS: a signal-vs-noise
+    # BOUND just above the capture noise floor (mirrors diagnose_run's min_ref_rms),
+    # not a per-machine level.
+    _ENERGY_FLOOR_RMS = 0.002
+
+    def __init__(
+        self,
+        sample_rate: int,
+        seed_delay_samples: int,
+        window_ms: float = 1500.0,
+        min_corr: float = 0.15,
+        max_delay_ms: float = 400.0,
+        recalc_interval_ms: float = 350.0,
+        median_history: int = 9,
+    ) -> None:
+        self.sample_rate = int(sample_rate)
+        self._max_delay_ms = float(max_delay_ms)
+        self._max_delay_samples = int(self._max_delay_ms * self.sample_rate / 1000.0)
+        self._min_corr = float(min_corr)
+        self._window = max(1, int(window_ms * self.sample_rate / 1000.0))
+        self._recalc = max(1, int(recalc_interval_ms * self.sample_rate / 1000.0))
+        self._seed = self._clamp(int(seed_delay_samples))
+        self._operating = self._seed          # measured after the first accept
+        self._acquired = False                # snapped to the first accepted estimate?
+        self._median: deque = deque(maxlen=max(1, int(median_history)))
+        # Rolling window_ms of the two 16 kHz streams (single writer: capture thread).
+        self._mic = np.zeros(0, dtype=np.float32)
+        self._far = np.zeros(0, dtype=np.float32)
+        self._since = 0                       # energetic samples since the last recalc
+
+    def _clamp(self, d: int) -> int:
+        """Bound the delay to [0, max_delay]; a negative or out-of-range estimate is
+        unphysical (the mic can't hear the echo before it is played)."""
+        return int(min(max(0, int(d)), self._max_delay_samples))
+
+    def observe(self, mic_block, far0_block) -> None:
+        """Feed one aligned mic + far-end (channel 0) 16 kHz block from the capture
+        thread. Appends to the rolling window and, once ``recalc_interval_ms`` of
+        ENERGETIC far-end audio has accrued, runs one cross-correlation estimate."""
+        mic = np.asarray(mic_block, dtype=np.float32).reshape(-1)
+        far = np.asarray(far0_block, dtype=np.float32).reshape(-1)
+        n = min(mic.shape[0], far.shape[0])
+        if n == 0:
+            return
+        mic = mic[:n]
+        far = far[:n]
+        self._mic = np.concatenate([self._mic, mic])[-self._window:]
+        self._far = np.concatenate([self._far, far])[-self._window:]
+        # Only advance the recalc timer on real playback -- silence carries no echo
+        # to align to, so we neither run nor reset the operating value on it.
+        if float(np.sqrt(np.mean(far ** 2))) >= self._ENERGY_FLOOR_RMS:
+            self._since += n
+        if self._since >= self._recalc:
+            self._since = 0
+            self._recalc_now()
+
+    def current_delay_samples(self) -> int:
+        """The operating far->near delay in 16 kHz samples: the seed until the first
+        accepted estimate, then the measured (median) value -- always clamped to
+        ``[0, max_delay]``."""
+        return self._operating
+
+    def reset(self) -> None:
+        """Drop the rolling window + measurement history and fall back to the seed
+        (call on barge-in / AEC reset, where the echo path may have changed)."""
+        self._mic = np.zeros(0, dtype=np.float32)
+        self._far = np.zeros(0, dtype=np.float32)
+        self._since = 0
+        self._median.clear()
+        self._acquired = False
+        self._operating = self._seed
+
+    def _recalc_now(self) -> None:
+        est = self._estimate_delay(self._far, self._mic)
+        if est is None:
+            return                            # gate not cleared -> operating unchanged
+        best_lag, peak_corr = est
+        if peak_corr < self._min_corr:
+            return                            # too weak to be the echo -> ignore
+        if not self._acquired:
+            # Fast acquire: the first trustworthy estimate snaps in immediately.
+            self._acquired = True
+            self._median.append(best_lag)
+            self._operating = self._clamp(best_lag)
+            return
+        # Robust tracking: median over the recent accepts absorbs a lone outlier
+        # while still following genuine drift.
+        self._median.append(best_lag)
+        self._operating = self._clamp(int(np.median(self._median)))
+
+    def _estimate_delay(self, ref: np.ndarray, mic: np.ndarray):
+        """Robust normalized cross-correlation lag, mirroring diagnose_run's
+        ``_estimate_ref_delay``: mean-remove, decimate to ~4 kHz, sweep the lag and
+        keep the peak of ``dot(r, m) / (||r|| ||m||)``. Returns
+        ``(best_lag_samples, peak_corr)`` at the ORIGINAL sample rate, or ``None``
+        when the window is too short or the far-end lacks energy (the accept gate the
+        offline estimator never had)."""
+        n = min(len(ref), len(mic))
+        if n <= max(32, int(0.08 * self.sample_rate)):
+            return None
+        ref = np.asarray(ref[:n], dtype=np.float32)
+        mic = np.asarray(mic[:n], dtype=np.float32)
+        ref = ref - float(np.mean(ref))
+        mic = mic - float(np.mean(mic))
+        ref_rms = float(np.sqrt(np.mean(ref ** 2)))
+        mic_rms = float(np.sqrt(np.mean(mic ** 2)))
+        if ref_rms < self._ENERGY_FLOOR_RMS or mic_rms <= 1e-6:
+            return None                       # no far energy -> nothing to align to
+        step = max(1, int(self.sample_rate / 4000))
+        ref_d = ref[::step]
+        mic_d = mic[::step]
+        sr_d = self.sample_rate / step
+        max_lag = min(int(self._max_delay_ms * sr_d / 1000.0), len(ref_d) - 32)
+        if max_lag <= 0:
+            return None
+        best_lag = 0
+        best_corr = -1.0
+        for lag in range(max_lag + 1):
+            r = ref_d[: len(ref_d) - lag]
+            m = mic_d[lag: lag + len(r)]
+            if len(r) < 32:
+                break
+            denom = float(np.linalg.norm(r) * np.linalg.norm(m))
+            if denom <= 1e-12:
+                continue
+            corr = float(np.dot(r, m) / denom)
+            if corr > best_corr:
+                best_corr = corr
+                best_lag = lag
+        # best_lag is in decimated samples; map back to the original 16 kHz grid.
+        return best_lag * step, best_corr
 
 
 class PlaybackFIFO:

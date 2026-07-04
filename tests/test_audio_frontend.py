@@ -5,8 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+import core.audio_frontend as af
 from core.audio_frontend import (
     AudioResampler,
+    DCBlocker,
     StreamingLowpass,
     apply_gain_soft_limit,
     normalize_rms,
@@ -193,6 +195,90 @@ def test_streaming_lowpass_after_soft_gain_remains_finite_and_stable():
 
     assert np.all(np.isfinite(y))
     assert float(np.max(np.abs(y))) < 1.25
+
+
+# --- DCBlocker --------------------------------------------------------------
+
+
+def test_dcblocker_nulls_dc_offset_and_preserves_tone():
+    sr = 24000
+    t = np.arange(sr, dtype="float64") / sr
+    tone = (0.30 * np.sin(2.0 * np.pi * 220.0 * t)).astype("float32")
+    x = (tone + 0.40).astype("float32")           # tone riding on a big DC bias
+
+    y = DCBlocker(sr).process(x)
+
+    # the DC term is removed: output mean ~ 0 vs the input's +0.40 bias
+    assert abs(float(np.mean(y[sr // 2:]))) < 1e-3
+    assert abs(float(np.mean(x))) > 0.39
+    # the tone amplitude survives essentially unchanged (a 20 Hz corner barely
+    # touches a 220 Hz partial); _tone_mag is phase-insensitive so the tiny,
+    # unavoidable causal-HP phase lag at 220 Hz does not count against shape.
+    assert _tone_mag(y, sr, 220.0) > 0.998 * _tone_mag(tone, sr, 220.0)
+    # and the shape correlates ~1.0 once that few-sample phase lag is aligned out
+    tail = slice(sr // 2, None)                    # skip the pole settle transient
+    best = max(
+        np.corrcoef(np.roll(y, k)[tail], tone[tail])[0, 1] for k in range(0, 4)
+    )
+    assert best > 0.9995                           # residual is sub-sample lag only
+
+
+def test_dcblocker_chunked_equals_single_pass():
+    sr = 16000
+    rng = np.random.default_rng(11)
+    x = (rng.standard_normal(4096).astype("float32") * 0.05 + 0.25).astype("float32")
+
+    whole = DCBlocker(sr).process(x)
+
+    filt = DCBlocker(sr)
+    chunked = np.concatenate([filt.process(chunk) for chunk in np.array_split(x, 13)])
+
+    # scalar-state continuity: splitting the stream changes nothing
+    np.testing.assert_allclose(chunked, whole, rtol=1e-6, atol=1e-7)
+
+
+def test_dcblocker_scipy_path_equals_numpy_fallback(monkeypatch):
+    sr = 48000
+    rng = np.random.default_rng(12)
+    x = (rng.standard_normal(3000).astype("float32") * 0.1 + 0.3).astype("float32")
+
+    # scipy fast path (chunked, to exercise carried zi state)
+    scipy_filt = DCBlocker(sr)
+    scipy_out = np.concatenate(
+        [scipy_filt.process(c) for c in np.array_split(x, 7)]
+    )
+
+    # force the numpy-loop fallback by hiding scipy
+    monkeypatch.setattr(af, "_has_scipy", lambda: False)
+    numpy_filt = DCBlocker(sr)
+    numpy_out = np.concatenate(
+        [numpy_filt.process(c) for c in np.array_split(x, 7)]
+    )
+
+    np.testing.assert_allclose(scipy_out, numpy_out, rtol=1e-5, atol=1e-6)
+
+
+def test_dcblocker_disabled_and_invalid_are_passthrough():
+    x = np.random.default_rng(13).standard_normal(128).astype("float32")
+    assert DCBlocker(0).process(x) is x            # sr <= 0
+    assert DCBlocker(-16000).process(x) is x
+    assert DCBlocker(16000, 0.0).process(x) is x   # cutoff <= 0
+    assert DCBlocker(16000, -5.0).process(x) is x
+    assert DCBlocker(16000, float("nan")).process(x) is x
+    assert not DCBlocker(16000, 0.0).enabled
+
+
+def test_dcblocker_reset_zeroes_state():
+    sr = 16000
+    x = (np.ones(256, dtype="float32") * 0.5)      # pure DC -> loads the state
+
+    filt = DCBlocker(sr)
+    first = filt.process(x)
+    filt.reset()                                    # zero the accumulator
+    second = filt.process(x)
+
+    # after reset the response is identical to a fresh filter's first pass
+    np.testing.assert_allclose(first, second, rtol=0, atol=0)
 
 
 # --- WER --------------------------------------------------------------------

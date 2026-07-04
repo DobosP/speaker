@@ -50,12 +50,22 @@ def rewrite_is_overreach(raw: str, cleaned: str, *, max_extra_words: int = 2) ->
     about your place?' (it sits in the cleaner's recent-context), manufacturing
     a phantom user turn the assistant then answered. Rule: a raw of N words may
     grow by at most ``max_extra_words`` -- 'Ario der' -> 'are you there' (2->3)
-    survives, 'Well' -> a 9-word sentence does not. Pure + deterministic."""
+    survives, 'Well' -> a 9-word sentence does not. A same-length rewrite that
+    quietly DROPS most of the raw's content and INVENTS new words ('TEND ME A
+    LONG STORY ABOUT HER' -> 'A long story about the ceiling') slips past the
+    length bound, so it is caught separately by ``drops_and_invents``. Pure +
+    deterministic."""
     from always_on_agent.text import normalize_text
+
+    from .asr_text import drops_and_invents
 
     raw_n = len(normalize_text(raw).split())
     cleaned_n = len(normalize_text(cleaned).split())
-    return cleaned_n > raw_n + max_extra_words
+    if cleaned_n > raw_n + max_extra_words:
+        return True
+    if drops_and_invents(raw, cleaned):
+        return True
+    return False
 
 
 _SYSTEM_PROMPT = """You are a transcript cleaner for a voice assistant. The

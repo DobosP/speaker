@@ -178,3 +178,129 @@ def test_short_words_override_token_fallback():
     # Raising short_words makes a 3-token streaming final "short" again -> needs
     # agreement; 'WHO IS IT' vs 'Yo.' disagree -> keep streaming.
     assert agreement_guard("WHO IS IT", "Yo.", short_words=3) == "WHO IS IT"
+
+
+# --- FIX-3: shared-token fabrications rejected, grounded corrections kept ------
+# Real SenseVoice failures where the 2nd pass shares a token or two with the raw
+# and rides word_agreement / the char-similarity hatch into the brain while
+# inventing the rest. The grounding gates must separate these from genuine
+# corrections. Long clips so the length gate is out of the way -- the point is
+# the CONTENT test, not duration.
+
+
+def test_fabrication_like_a_question_kept_raw():
+    # raw 'LIKE A QUESTION' -> a 12-word invention sharing only 'question'.
+    assert (
+        agreement_guard(
+            "LIKE A QUESTION",
+            "And did you I could pressure in if you found this question",
+            segment_sec=2.5,
+        )
+        == "LIKE A QUESTION"
+    )
+
+
+def test_fabrication_long_story_to_ceiling_kept_raw():
+    # raw 'TEND ME A LONG STORY ABOUT HER' -> 'A long story about the ceiling':
+    # shares 3 of 6 content tokens (exactly half) and fabricates 'ceiling'.
+    assert (
+        agreement_guard(
+            "TEND ME A LONG STORY ABOUT HER",
+            "A long story about the ceiling",
+            segment_sec=2.5,
+        )
+        == "TEND ME A LONG STORY ABOUT HER"
+    )
+
+
+def test_legit_itn_cleanup_accepted():
+    # Pure ITN/punctuation cleanup: every content token preserved, 'ten' -> '10'.
+    assert (
+        agreement_guard(
+            "please set a timer for ten minutes",
+            "Please set a timer for 10 minutes.",
+            segment_sec=2.5,
+        )
+        == "Please set a timer for 10 minutes."
+    )
+
+
+def test_legit_garble_repair_accepted():
+    # Zero token overlap phonetic repair -> the char-similarity hatch (behind
+    # _low_overlap) still lands it.
+    assert (
+        agreement_guard("Ario der", "are you there", segment_sec=2.0)
+        == "are you there"
+    )
+
+
+def test_legit_full_sentence_repair_accepted():
+    # 2 of 6 content tokens shared -> word_agreement fires but grounding rejects
+    # it; the low-overlap char-similarity hatch then accepts the real repair.
+    assert (
+        agreement_guard(
+            "THE LOW IS THIS CORDOOR KING",
+            "Hello is this code working",
+            segment_sec=2.5,
+        )
+        == "Hello is this code working"
+    )
+
+
+def test_unrelated_second_pass_kept_raw():
+    # No shared content of substance and low phrase similarity -> keep raw.
+    assert (
+        agreement_guard(
+            "please turn on the kitchen lights",
+            "The weather is lovely.",
+            segment_sec=2.2,
+        )
+        == "please turn on the kitchen lights"
+    )
+
+
+# --- FIX-3: the pure grounding predicates in isolation ------------------------
+
+
+def test_grounded_rewrite_exact_normalized_match():
+    from core.asr_text import _grounded_rewrite
+
+    # Punctuation/casing only -> exact normalized-word match.
+    assert _grounded_rewrite("stop", "Stop.")
+    assert _grounded_rewrite("please set a timer for ten minutes",
+                             "Please set a timer for 10 minutes.")
+
+
+def test_grounded_rewrite_rejects_half_or_fewer_kept():
+    from core.asr_text import _grounded_rewrite
+
+    # 'LIKE A QUESTION': 1 of 2 content tokens kept (2*1 not > 2) -> not grounded.
+    assert not _grounded_rewrite(
+        "LIKE A QUESTION",
+        "And did you I could pressure in if you found this question",
+    )
+    # 'TEND ME A LONG STORY ABOUT HER': 3 of 6 kept (2*3 not > 6) -> not grounded.
+    assert not _grounded_rewrite(
+        "TEND ME A LONG STORY ABOUT HER", "A long story about the ceiling"
+    )
+
+
+def test_grounded_rewrite_rejects_balloon_even_if_majority_kept():
+    from core.asr_text import _grounded_rewrite
+
+    # Keeps both content tokens but more than doubles the word count -> ballooned.
+    assert not _grounded_rewrite(
+        "help now", "help me right now please with everything you can"
+    )
+
+
+def test_low_overlap_true_only_for_garbled_raw():
+    from core.asr_text import _low_overlap
+
+    # Zero/near-zero shared tokens -> the hatch is trustworthy.
+    assert _low_overlap("Ario der", "are you there")
+    assert _low_overlap("THE LOW IS THIS CORDOOR KING", "Hello is this code working")
+    # Half the raw's tokens reproduced -> NOT low overlap, hatch blocked.
+    assert not _low_overlap(
+        "TEND ME A LONG STORY ABOUT HER", "A long story about the ceiling"
+    )

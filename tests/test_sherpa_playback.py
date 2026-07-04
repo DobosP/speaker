@@ -54,7 +54,10 @@ class _NonStreamingTts:
 
 
 def _engine(tts) -> SherpaOnnxEngine:
-    eng = SherpaOnnxEngine(SherpaConfig())
+    # tts_dc_block off: these tests assert streaming MECHANICS (chunk counts +
+    # raw pass-through values). The DC-blocking high-pass is an orthogonal output
+    # stage whose own chunk/sentence continuity is covered in test_audio_frontend.
+    eng = SherpaOnnxEngine(SherpaConfig(tts_dc_block=False))
     eng._tts = tts
     return eng
 

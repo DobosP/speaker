@@ -3,7 +3,21 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-02 late (branch feat/barge-duck-confirm, Windows box live session)
+Last verified: 2026-07-04 (Linux Mint boot; full logic suite 2290 passed, 24
+skipped; branch feat/auto-calibrated-audio-pipeline — the 5 auto-calibrating
+audio fixes, ADR-0012). Prior: 2026-07-03 (feat/diagnose-barge-funnel-autotest-
+kokoro), 2026-07-02 (feat/barge-duck-confirm, Windows boot live session).
+
+**AUDIO PIPELINE SELF-CALIBRATION (2026-07-04, ADR-0012, branch above — committed,
+NOT merged).** Real-usage forensics found the STT/barge bottleneck is the AEC/APM
+pipeline, not the mic (aec_ref_delay_ms hard-set to 40 ms vs true 106–220 ms). Five
+runtime-self-calibrating fixes landed (no per-machine hard-coded values): (1) AEC
+delay measured on-device by cross-correlation — VALIDATED on a real recording
+(40→~120 ms); (2) relaxed-NS ASR tap under _apm_owns_ns; (3) cleaner anti-
+fabrication; (4) learned endpoint floor; (5) TTS DC blocker (underrun prebuffer
+deferred). Headless-green; **fixes 2 + barge-cut still need a live-mic A/B on the
+open_speaker profile** (autotest loopback can't judge them). Then re-run the
+forensics replay to confirm garble/fragmentation drop on real audio.
 
 ## What this is
 
@@ -81,6 +95,16 @@ git diff --check
 (Linux box venv: `/home/dobo/work/speaker/.venv/bin/python`.)
 
 ## Next (see `.agents/backlog.md` for the live queue)
+
+> **Boot note (2026-07-03):** items 1–2 below are **Windows-boot** conditions —
+> they do NOT hold on the Linux boot (Kokoro is already active there; STT fix is a
+> Windows OS mic-level change). Doing them requires booting Windows. Linux-boot
+> work this session: barge confirm-funnel surfaced in `tools/diagnose_run.py`,
+> the autotest `voice` tier un-broken for Kokoro (`synth_to_wav` was VITS-only →
+> native abort), APM double-talk regression confirmed green. The autotest cable
+> WER is synthetic-voice-artifact-dominated (Kokoro is OOD for the zipformer ASR),
+> so it is NOT a human-STT verdict. See
+> `docs/session_2026-07-03_linux_boot_barge_metrics_and_autotest_kokoro_fix.md`.
 
 1. **Audio output quality on the Windows box (owner verdict 2026-07-02: "still
    has the problem").** Root cause on THIS box: `config.local.json` still

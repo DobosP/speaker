@@ -305,6 +305,110 @@ class StreamingLowpass:
         return y
 
 
+class DCBlocker:
+    """Stateful one-pole DC-blocking high-pass for the streaming output chain.
+
+    ``y[n] = x[n] - x[n-1] + R*y[n-1]`` with ``R = exp(-2*pi*fc/sr)`` derived
+    purely from the sample rate and a UNIVERSAL corner ``fc`` (default 20 Hz --
+    below the ~85 Hz human speech fundamental, so it removes only the sub-audible
+    DC / rumble and leaves every speech partial untouched). ``fc`` is a physics
+    bound, not a per-machine operating point: the same 20 Hz corner is correct on
+    every device, only ``R`` scales with that device's ``sr``.
+
+    A DC term (a non-zero mean) in a TTS clip biases the waveform off centre,
+    which wastes headroom before the limiter and feeds a steady offset into the
+    AEC/coherence reference. Unlike :class:`StreamingLowpass`, this filter must
+    carry its ONE state variable across BOTH chunk boundaries AND sentence
+    boundaries -- a per-sentence ``reset`` would let the pole re-settle from zero
+    on every sentence onset, and that transient is an audible low-frequency
+    "thump". So the engine keeps a single long-lived instance and never resets it
+    between utterances; continuity is therefore exact end-to-end.
+
+    Uses the same single-accumulator transposed-direct-form-II recurrence that
+    ``scipy.signal.lfilter`` runs, so the fast path (``lfilter`` with ``zi``) and
+    the numpy-loop fallback carry an IDENTICAL scalar state and produce the same
+    output sample-for-sample. Mirrors :class:`StreamingLowpass`' API and its
+    optional-scipy pattern (see :func:`_has_scipy`) so there is no hard scipy
+    dependency. Disabled / ``sr <= 0`` / invalid cutoff is an unchanged
+    passthrough so the hook can stay in the hot path.
+    """
+
+    def __init__(self, sr: int = 0, cutoff_hz: float = 20.0):
+        self._enabled = False
+        self._b1 = -1.0          # b = [1, -1]
+        self._a1 = 0.0           # a = [1, -R]  (a1 = -R)
+        self._z = 0.0            # single transposed-DF2 accumulator
+        self.configure(sr, cutoff_hz)
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    def configure(self, sr: int, cutoff_hz: float = 20.0) -> None:
+        """Set the pole from ``sr`` + a universal ``cutoff_hz`` and reset state.
+
+        Invalid or no-op cutoffs disable (passthrough). ``R = exp(-2*pi*fc/sr)``
+        is always in ``(0, 1)`` for a positive corner, so the pole is
+        unconditionally stable -- there is no Nyquist constraint the way there is
+        for the low-pass.
+        """
+        self.reset()
+        try:
+            sr_i = int(sr)
+            cutoff = float(cutoff_hz)
+        except (TypeError, ValueError):
+            self._enabled = False
+            return
+        if sr_i <= 0 or not math.isfinite(cutoff) or cutoff <= 0.0:
+            self._enabled = False
+            return
+        r = math.exp(-2.0 * math.pi * cutoff / sr_i)
+        self._b1 = -1.0
+        self._a1 = -r
+        self._enabled = True
+
+    def reset(self) -> None:
+        """Zero the single filter accumulator (do NOT call between sentences)."""
+        self._z = 0.0
+
+    def process(self, samples):
+        """Filter one chunk, carrying the scalar state for the next chunk.
+
+        Disabled or invalid config returns ``samples`` unchanged. Prefers
+        ``scipy.signal.lfilter`` (carrying ``zi`` across chunks) and degrades to
+        an equivalent numpy loop when scipy is missing.
+        """
+        if not self._enabled:
+            return samples
+        import numpy as np
+
+        x = np.asarray(samples, dtype="float32").reshape(-1)
+        if x.size == 0:
+            return x
+        if _has_scipy():
+            try:
+                from scipy.signal import lfilter
+
+                zi = np.array([self._z], dtype="float64")
+                y, zf = lfilter(
+                    [1.0, self._b1], [1.0, self._a1], x.astype("float64"), zi=zi
+                )
+                self._z = float(zf[0])
+                return y.astype("float32")
+            except Exception:  # noqa: BLE001 - degrade to the numpy loop
+                pass
+        y = np.empty_like(x)
+        z = self._z
+        b1 = self._b1
+        a1 = self._a1
+        for i, xn in enumerate(x):
+            out = float(xn) + z          # b0 == 1.0
+            z = b1 * float(xn) - a1 * out
+            y[i] = out
+        self._z = z
+        return y
+
+
 def declick(samples, *, threshold: float = 0.18, max_run: int = 8):
     """Repair isolated impulse samples in a synthesized waveform.
 

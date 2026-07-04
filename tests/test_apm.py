@@ -49,6 +49,30 @@ def test_apm_build_carries_flags():
 
 
 @_needs_livekit
+def test_apm_ns_override_forces_ns_off_tap():
+    """fix 2: build_aec(ns_override=False) drops the ML noise-suppressor while
+    echo cancellation stays on -- the parallel recognizer tap that lets near-end
+    words survive. ns_override=None follows apm_noise_suppression (unchanged)."""
+    c = SherpaConfig.from_dict({
+        "aec_enabled": True, "aec_backend": "apm",
+        "apm_always_on": True, "apm_noise_suppression": True,
+    })
+    assert getattr(build_aec(c, ns_override=None), "suppresses_noise") is True
+    ec_off = build_aec(c, ns_override=False)
+    assert ec_off is not None
+    assert getattr(ec_off, "suppresses_noise") is False   # NS dropped for ASR
+    assert getattr(ec_off, "always_on") is True           # still an always-on APM
+
+
+def test_asr_relax_tap_absent_off_the_apm_owns_ns_path():
+    """No APM / not _apm_owns_ns -> the engine's relaxed-NS ASR tap is None, so the
+    recognizer reads the NS-on samples (byte-identical to before fix 2)."""
+    from core.engines.sherpa import SherpaOnnxEngine
+
+    assert SherpaOnnxEngine(SherpaConfig())._aec_asr is None
+
+
+@_needs_livekit
 def test_apm_cancels_echo():
     from core.engines._apm import _WebRTCAPM
 

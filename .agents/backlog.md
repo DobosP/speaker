@@ -74,11 +74,93 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       (5) re-enable the addressing/cleanup gates once finals are clean
       (input_gate/cleanup disabled machine-local tonight so garbled fragments
       weren't silently dropped).
-- [ ] **Barge follow-ups (post-ADR-0011):** surface the `barge_in_duck` /
-      `barge_in_confirmed` / `barge_in_unconfirmed` metrics in
-      `tools/diagnose_run.py`; consider raw-mic word-confirm + KWS hotwords in
-      the confirm window; revisit `dtd_coherence_echo_veto` default (OFF where
-      the word gate is enabled — the gate is the guard now).
+- [~] **Barge follow-ups (post-ADR-0011).**
+      - [x] surface `barge_in_duck` / `barge_in_confirmed` / `barge_in_unconfirmed`
+        in `tools/diagnose_run.py` (2026-07-03, Linux boot): log-derived counts →
+        text `--- Barge Confirm Funnel (ADR-0011) ---` (with a self-heal WARN) +
+        `--json` `barge_confirm_funnel`; visible even on zero-hard-fire runs; tests
+        in `tests/test_diagnose_run.py`. Adversarial-review hardening: anchored
+        `_BARGE_DETECTED_PAT` to end-of-message so a confirm line whose transcript
+        contains "barge-in detected" isn't miscounted (dead path, now robust).
+      - [ ] consider raw-mic word-confirm + KWS hotwords in the confirm window.
+      - [~] `dtd_coherence_echo_veto` default (True) vs word gate default (False):
+        the interplay only bites in profiles that opt the gate ON, so the default
+        pairing is coherent. DOCUMENTED, not flipped (a barge-gate change needs a
+        live-mic A/B). Revisit per-profile when a profile enables the gate.
+- [x] **Autotest `voice` tier un-broken for Kokoro (2026-07-03).**
+      `tools/autotest/audio.py::synth_to_wav` hard-coded `cfg.model.vits.*` for the
+      injected "user" clips → once Kokoro (ADR-0010) became default the native
+      loader aborted ("Not a model using characters as modeling unit … --vits-lexicon").
+      Now builds clip synth via the runtime's own Kokoro-aware
+      `build_tts(SherpaConfig.from_dict(sherpa_cfg))`. Cable tier runs end-to-end again.
+- [ ] **Autotest `voice` WER is synthetic-voice-artifact-dominated (2026-07-03).**
+      Kokoro-synthesized "user" clips are OOD for the streaming zipformer ASR
+      (every injected clip gets a spurious leading "And"; long clips collapse to a
+      word) → the cable WER is a harness signal, NOT a human-STT measurement (real
+      cable STT with real recordings ≈0.10 WER, memory `ota-stt-is-test-artifact`).
+      Fix: inject **real** recordings via `--utterances DIR` (or a non-TTS user
+      voice) so the tier yields a trustworthy WER; until then don't read cable WER
+      as an STT verdict.
+- [ ] **Barge-in cut needs a HUMAN talk-over on the Linux boot (2026-07-03).**
+      `autotest voice --acoustics delay` (silent loopback): S2 self-interrupt clean
+      (0 barge-ins during own reply, pass); S3 talk-over registered 0 cuts (fail),
+      but CONFOUNDED by the digital-loopback caveat — loopback echo is loud and the
+      config `aec_ref_delay_ms=40` mismatches the loopback's adapted ~350 ms, so the
+      residual is echo-heavy and the DTD fires on echo (coherence veto correctly
+      rejected 4). Not a trustworthy barge-miss signal. A real human talk-over on
+      real hardware is required to verdict the cut (the loopback stress-tests the
+      echo veto, not the cut). `aec_ref_delay_ms` stays echo-probe-calibrated per
+      ADR-0005 (do NOT set it from a loopback run).
+- [ ] **★★★ REAL-USAGE FORENSICS (2026-07-04): the STT/barge bottleneck is the
+      AEC/APM pipeline, NOT the mic — partly REFUTES the "raise mic level" STT
+      to-do.** Analyzed 7 real recordings (trace + an A/B replay); see
+      `docs/session_2026-07-03_*` + the real-usage report artifact. Findings:
+      - **`aec_ref_delay_ms` is hard-set to 40 ms (19 ms on Windows) on EVERY real
+        session, but the measured echo delay is 106–220 ms (corr ≈0.15).** The
+        canceller looks in the wrong place → echo not removed → always-on NS
+        over-corrects → the ASR + DTD read a mangled signal. This ADR-0005
+        violation is the systemic root. FIX: echo-probe-calibrate per machine
+        (est ~100–220 ms here) or enable `aec_auto_delay`. Config ships static 40 ms.
+      - **The raw mic is FINE.** The heartbeat `avg_rms≈0.0017` is silence-diluted
+        (speech ~1.6% of a 23-min session); measured active-speech RMS is 0.045 @
+        30.5 dB SNR (232506: 0.070 @ 36.8 dB) — comparable to owner enrollment.
+        So digital mic gain is the WRONG lever for STT; re-check the Windows finding
+        the same way (active-speech RMS, not the silence-diluted average) before
+        chasing the Windows mic level.
+      - **A/B PROOF:** the same streaming ASR on the same audio — live (post-APM)
+        vs replay of the raw pre-APM mic (`core --engine replay`, no AEC/NS) —
+        recovered a full continuous narration the live path shredded into fragments
+        (`THE MERE STORY`/`ABOUT`/`MY CAT BIKI`/`MEAN` → one continuous cat-story
+        sentence). The audio is intelligible; the pipeline discards it.
+      - **Barge is never calibrated on real usage:** 2–5 real talk-overs
+        rejected-while-speaking per Linux session (missed), vs the Windows 181250
+        self-interrupt cascade (12 fires on own echo). Both downstream of the broken
+        AEC. Ties to the open `_apm_owns_ns` residual P1.
+      - **Cleaner fabricates** confident wrong sentences from 2–3 garbled words
+        (`LIKE A QUESTION`→"And did you I could pressure in…"). Gate the LLM rewrite
+        on raw length/agreement so it can't expand noise into a fabricated request.
+        + TTS DC offset ~0.05 on every sentence + up to 14 underruns.
+      Fix order (IMPLEMENTED 2026-07-04, branch feat/auto-calibrated-audio-pipeline,
+      ADR-0012, all runtime-self-calibrating / no hard caps; suite 2290 green):
+      - [x] (1) AEC ref-delay measured on-device by normalized cross-correlation
+        (`AecDelayCalibrator`); aec_ref_delay_ms demoted to a seed. VALIDATED on
+        run-20260702-004345 (40→~120 ms). config.local.json 40 ms override removed.
+      - [x] (2) relaxed-NS ASR tap under `_apm_owns_ns` (second APM, ML NS off) feeds
+        the streaming recognizer + barge-confirm AND the offline 2nd-pass decode (via
+        a parallel NS-off `asr_seg` threaded through _enqueue_final/_final_worker/
+        _finalize_and_dispatch); the echo-floor + speaker-ID gates keep the NS-on
+        `seg`. (2nd-pass completion added after the adversarial review caught that the
+        LLM-facing final was still decoded from NS-on audio.) INERT on the current
+        dtln config -- **needs a live-mic A/B on the open_speaker (apm) profile** to
+        confirm STT recovery + no self-interrupt regression.
+      - [x] (3) cleaner anti-fabrication gate (`agreement_guard` + `rewrite_is_overreach`).
+      - [x] (4) learned adaptive endpoint floor (`SessionPauseModel`, enabled in config.json).
+      - [~] (5) TTS DC blocker DONE (`DCBlocker`, 0.05→0.00); the self-sizing playback
+        prebuffer for underruns is DEFERRED (touches the hard-real-time audio callback,
+        needs live validation) -- spec in the fix-5 design (workflow wf_eb0dff89).
+      REMAINING: a live-mic session on the apm profile to A/B fixes 2 + barge-cut, then
+      re-run the forensics replay (diagnose_run) to confirm the garble/fragmentation
+      actually drop on real audio; implement fix 5b if underruns persist.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds

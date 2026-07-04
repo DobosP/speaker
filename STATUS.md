@@ -3,9 +3,21 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-03 (Linux Mint boot of the ROG laptop; full logic suite
-2246 passed, 24 skipped; branch feat/diagnose-barge-funnel-autotest-kokoro).
-Prior: 2026-07-02 late (branch feat/barge-duck-confirm, Windows boot live session).
+Last verified: 2026-07-04 (Linux Mint boot; full logic suite 2290 passed, 24
+skipped; branch feat/auto-calibrated-audio-pipeline — the 5 auto-calibrating
+audio fixes, ADR-0012). Prior: 2026-07-03 (feat/diagnose-barge-funnel-autotest-
+kokoro), 2026-07-02 (feat/barge-duck-confirm, Windows boot live session).
+
+**AUDIO PIPELINE SELF-CALIBRATION (2026-07-04, ADR-0012, branch above — committed,
+NOT merged).** Real-usage forensics found the STT/barge bottleneck is the AEC/APM
+pipeline, not the mic (aec_ref_delay_ms hard-set to 40 ms vs true 106–220 ms). Five
+runtime-self-calibrating fixes landed (no per-machine hard-coded values): (1) AEC
+delay measured on-device by cross-correlation — VALIDATED on a real recording
+(40→~120 ms); (2) relaxed-NS ASR tap under _apm_owns_ns; (3) cleaner anti-
+fabrication; (4) learned endpoint floor; (5) TTS DC blocker (underrun prebuffer
+deferred). Headless-green; **fixes 2 + barge-cut still need a live-mic A/B on the
+open_speaker profile** (autotest loopback can't judge them). Then re-run the
+forensics replay to confirm garble/fragmentation drop on real audio.
 
 ## What this is
 

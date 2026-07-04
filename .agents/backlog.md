@@ -140,9 +140,23 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
         (`LIKE A QUESTION`→"And did you I could pressure in…"). Gate the LLM rewrite
         on raw length/agreement so it can't expand noise into a fabricated request.
         + TTS DC offset ~0.05 on every sentence + up to 14 underruns.
-      Fix order: (1) AEC ref-delay calibration [unblocks the rest]; (2) less-NS tap
-      for the ASR under `apm_always_on`; (3) cleaner anti-fabrication gate;
-      (4) looser endpointing; (5) TTS DC/underrun nits.
+      Fix order (IMPLEMENTED 2026-07-04, branch feat/auto-calibrated-audio-pipeline,
+      ADR-0012, all runtime-self-calibrating / no hard caps; suite 2290 green):
+      - [x] (1) AEC ref-delay measured on-device by normalized cross-correlation
+        (`AecDelayCalibrator`); aec_ref_delay_ms demoted to a seed. VALIDATED on
+        run-20260702-004345 (40→~120 ms). config.local.json 40 ms override removed.
+      - [x] (2) relaxed-NS ASR tap under `_apm_owns_ns` (second APM, ML NS off, feeds
+        the recognizer + barge-confirm; gates keep NS-on). INERT on the current dtln
+        config -- **needs a live-mic A/B on the open_speaker (apm) profile** to
+        confirm STT recovery + no self-interrupt regression.
+      - [x] (3) cleaner anti-fabrication gate (`agreement_guard` + `rewrite_is_overreach`).
+      - [x] (4) learned adaptive endpoint floor (`SessionPauseModel`, enabled in config.json).
+      - [~] (5) TTS DC blocker DONE (`DCBlocker`, 0.05→0.00); the self-sizing playback
+        prebuffer for underruns is DEFERRED (touches the hard-real-time audio callback,
+        needs live validation) -- spec in the fix-5 design (workflow wf_eb0dff89).
+      REMAINING: a live-mic session on the apm profile to A/B fixes 2 + barge-cut, then
+      re-run the forensics replay (diagnose_run) to confirm the garble/fragmentation
+      actually drop on real audio; implement fix 5b if underruns persist.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds

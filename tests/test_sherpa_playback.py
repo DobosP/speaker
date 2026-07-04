@@ -819,3 +819,25 @@ def test_output_leveler_still_forces_whole_clip_with_lowpass_enabled():
 
     assert tts.callback_used == [False]
     assert written
+
+
+def test_next_fifo_sec_self_sizes_from_underruns():
+    """fix 5b control law: grow on a starved reply, slow-decay toward the seed when
+    clean, bounded by the UX-latency ceiling. Pure function -- no audio loop."""
+    from core.engines.sherpa import _FIFO_SEC_MAX, SherpaOnnxEngine
+
+    f = SherpaOnnxEngine._next_fifo_sec
+    seed = 1.0
+    # starved (ur>2) grows multiplicatively
+    assert f(1.0, 18, seed) == pytest.approx(1.5)
+    assert f(1.5, 5, seed) == pytest.approx(2.25)
+    # benign 0-2 underruns do NOT grow (end-of-utterance straddle)
+    assert f(1.5, 2, seed) == pytest.approx(1.5 * 0.9)   # clean-ish -> decays
+    assert f(1.0, 2, seed) == pytest.approx(1.0)          # at seed, stays
+    # clean reply slow-decays toward the seed but never below it
+    assert f(2.25, 0, seed) == pytest.approx(2.25 * 0.9)
+    assert f(1.05, 0, seed) == pytest.approx(1.0)          # clamps to the seed floor
+    assert f(1.0, 0, seed) == pytest.approx(1.0)
+    # bounded by the ceiling
+    assert f(_FIFO_SEC_MAX, 50, seed) == pytest.approx(_FIFO_SEC_MAX)
+    assert f(3.5, 50, seed) == pytest.approx(_FIFO_SEC_MAX)  # 3.5*1.5=5.25 -> clamped

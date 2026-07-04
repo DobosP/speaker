@@ -856,6 +856,10 @@ def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optio
             if ns_override is None else bool(ns_override)
         )
         ec.suppresses_noise = _ns
+        # The APM's ML NS masks the near-end USER during double-talk too, so the
+        # post-AEC residual goes blind to a real talk-over -> the DTD must read the
+        # raw pre-NS mic (see _resid_blind in sherpa.py). Only when NS is actually on.
+        ec.suppresses_nearend = _ns
         return ec
     if backend in ("nlms", "fdaf", "numpy"):
         frame = _next_pow2(int(getattr(c, "aec_filter_taps", 512) or 512))
@@ -890,6 +894,16 @@ def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optio
             log.warning("could not load DTLN-aec ONNX (%s); continuing WITHOUT AEC", exc)
             return None
         log.info("AEC active: DTLN-aec deep ONNX tier (%s)", paths[0])
-        return EchoCanceller(impl, sample_rate=sr)
+        ec = EchoCanceller(impl, sample_rate=sr)
+        # DTLN is NOT a linear filter: it predicts a spectral MASK and multiplies
+        # the mic spectrum by it, which ATTENUATES the near-end user during double-
+        # talk (like the APM's NS) -- so the post-AEC residual goes blind to a real
+        # talk-over and the DTD must read the raw pre-AEC mic (_resid_blind). This
+        # is the live-observed dtln barge miss (run-20260704-143112: z_resid pinned
+        # at 0 on a loud talk-over, D capped ~1.5 < K=5). NLMS above is genuinely
+        # linear (freezes adaptation on double-talk) so it leaves the user in the
+        # residual and is deliberately NOT flagged.
+        ec.suppresses_nearend = True
+        return ec
     log.warning("unknown aec_backend=%r; continuing WITHOUT AEC", backend)
     return None

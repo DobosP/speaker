@@ -60,6 +60,9 @@ def _open_speaker_engine(apm_owns_ns: bool):
     is the shipped default."""
     eng = bf.live_engine_with_dtd()
     eng._apm_owns_ns = bool(apm_owns_ns)
+    # _resid_blind is what the DTD residual source/floor + coh_veto now key on
+    # (covers APM-NS AND the DTLN spectral-masking canceller); == _apm_owns_ns here.
+    eng._resid_blind = bool(apm_owns_ns)
     eng.config.dtd_residual_floor_margin_db = 12.0  # shipped default
     eng._dtd.new_run()
     return eng
@@ -96,8 +99,10 @@ def test_residual_feature_source_switches_on_apm_owns_ns():
     # Linear AEC (dtln/nlms/headphones): the user survives in the residual -> read it.
     assert abs(eng._dtd_residual_level(samples, mic_raw) - TALK_RESID_NS) < 1e-6
 
-    # APM owns NS: the residual is NS-blinded -> read the raw pre-NS mic instead.
-    eng._apm_owns_ns = True
+    # A masking canceller (APM-NS or DTLN): the residual is blinded -> read the raw
+    # pre-NS mic instead. (_resid_blind is the runtime flag; == _apm_owns_ns for APM,
+    # also True for DTLN via its suppresses_nearend capability.)
+    eng._resid_blind = True
     assert abs(eng._dtd_residual_level(samples, mic_raw) - TALK_RAW) < 1e-6
 
 

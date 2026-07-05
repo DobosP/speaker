@@ -9,6 +9,26 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > (`python -m tools.session_bootstrap`) reads the OPEN P0 items below.
 
 ## P0 — correctness / blocker
+- [ ] **★★★ PERMANENT open-speaker barge + voice fix (2026-07-05) — the live-test
+      thread. START HERE.** Conclusion after many live tests + a 3-verifier study:
+      NO clean single-mic acoustic barge fix exists (see
+      `docs/session_2026-07-04_permanent_voice_barge_plan.md` + memory
+      `barge-voice-no-acoustic-fix-2026-07-04`; do NOT re-try the ruled-out acoustic
+      approaches). This session's barge changes were REVERTED (Phase A: coh-veto
+      restored, loose duck removed) — the tree is stable/green. NEXT, in order:
+      **Phase B (measure first)** — resume the live APM+clean-mic test and MEASURE:
+      (1) is raw STT clean on a real talk-over? (2) does the confirm-window
+      recognizer emit ≥2 words on a ducked talk-over? These decide the architecture;
+      the loopback autotest cannot judge them (live human at the bare speaker only).
+      Before any live run: RE-PIN the mic ADC (`amixer -c 1 sset Capture 52%` +
+      `Internal Mic Boost 0`, held against PipeWire's +30 dB reset — see
+      `tools/autotest/ota_setup.py`). Then **Phase C** capture path: make OS
+      voice-comm capture the open_speaker default + enforce it per-OS (Linux
+      module-echo-cancel auto-load, Windows WASAPI communications already wired) and
+      the ADR-0011 word gate the hard-cut authority WITH the acoustic path as a
+      scoped fallback (do NOT delete it). **Phase D** voice: per-voice loudness
+      offsets (offline) + K-weighted leveler for the inter-sentence volume swing.
+      All bounds-only (ADR-0012). Machine-local config is on aec_backend=apm now.
 - [ ] **Adopt the 2026-06-10 gap-analysis roadmap (45 verified findings, P0–P5).**
       `docs/review_2026-06-10_gap_analysis.md` — security/PII first, then real-time
       correctness (rc-2 _on_final off the audio thread DONE via turn_merge; rc-1

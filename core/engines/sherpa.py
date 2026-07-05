@@ -26,6 +26,13 @@ _COH_REF_Q_MAX = 256
 # queued sentence is still waiting for its own first audio. Past this, a stale
 # playback-level EWMA is not evidence of an audible tail.
 _BARGE_TAIL_FRESH_SEC = 0.30
+# Fix 5b self-sizing playback FIFO: growth factor on a starved reply, decay factor
+# on a clean one, and the UX latency CEILING the buffer may grow to. These are
+# bounds (a control-loop rate + a max-added-latency ceiling), NOT per-machine
+# operating values -- the operating depth is measured from this box's underruns.
+_FIFO_GROW = 1.5
+_FIFO_DECAY = 0.9
+_FIFO_SEC_MAX = 4.0
 
 
 def _auto_threads() -> int:
@@ -733,6 +740,15 @@ class SherpaConfig:
     barge_confirm_min_words: int = 2
     barge_confirm_duck_gain: float = 0.15
     barge_confirm_retry_suppress_sec: float = 2.0
+    # ADR-0011 LOOSE DUCK, masking-canceller (_resid_blind) path. On an open
+    # speaker the strict DTD gate can't clear K on the raw mic (the uncancelled
+    # echo dominates the chart), so a real talk-over is rejected. When the word
+    # gate is on, open the DUCK on looser evidence -- voiced speech during playback
+    # AND the DTD raw D at this FRACTION of K -- then let transcribed WORDS confirm
+    # (a false duck self-heals in ~window_sec). Dimensionless fraction of the
+    # already-self-calibrating K (unit-variance z-scores), so device-independent;
+    # NOT a per-machine RMS/dB. 1.0 = as strict as the hard-fire; lower = looser duck.
+    barge_confirm_duck_k_frac: float = 0.5
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -990,6 +1006,12 @@ class SherpaOnnxEngine(AudioEngine):
         # NS/AGC/HPF; suppresses_noise => it owns NS, so skip the GTCRN denoiser.
         self._apm_always_on = False
         self._apm_owns_ns = False
+        # The active canceller MASKS/suppresses the near-end user during double-talk
+        # (the always-on APM's NS, or DTLN's spectral mask) -> the post-AEC residual
+        # goes blind to a real talk-over, so the DTD reads the RAW pre-AEC mic + its
+        # floor instead. False for a genuinely LINEAR canceller (nlms/headphones)
+        # that leaves the user in the residual. Set in _build.
+        self._resid_blind = False
         # Parallel NS-OFF APM tap for the recognizer under _apm_owns_ns (fix 2):
         # AEC+RES+HPF on, ML NS off, so near-end words survive for ASR. None on
         # every other backend/profile -> the ASR path aliases the NS-on samples
@@ -1073,6 +1095,13 @@ class SherpaOnnxEngine(AudioEngine):
         # off-thread. Plain ints -> GIL-atomic, alloc-free, real-time safe.
         self._underrun_blocks: int = 0
         self._underrun_at_reply_start: int = 0
+        # Fix 5b: self-sizing playback FIFO lead. Seeded from playback_fifo_sec and
+        # then DERIVED at runtime from the measured per-reply underrun count -- grow
+        # the buffer when a reply starved (the leveler forces whole-clip synth, so a
+        # long next sentence can out-run a shallow FIFO -> inter-sentence gaps),
+        # slow-decay on clean replies. No per-machine constant: it converges to just
+        # above THIS box's worst inter-sentence synth spike, bounded by a UX ceiling.
+        self._playback_fifo_sec_cur: float = float(config.playback_fifo_sec)
         # Input-clipping diagnostic (one-shot WARNING): a mic gain so hot that the
         # ADC rails shreds the waveform -> garbled STT. Detected in the capture
         # heartbeat from the per-block clipped-sample fraction.
@@ -1338,6 +1367,11 @@ class SherpaOnnxEngine(AudioEngine):
             self._apm_always_on = bool(getattr(self._aec, "always_on", False))
             self._apm_owns_ns = self._apm_always_on and bool(
                 getattr(self._aec, "suppresses_noise", False)
+            )
+            # A masking canceller (APM-NS or DTLN) suppresses the near-end user in
+            # the residual, so the DTD residual feature + floor read the raw mic.
+            self._resid_blind = self._apm_owns_ns or bool(
+                getattr(self._aec, "suppresses_nearend", False)
             )
             # Fix 2: when the always-on APM owns NS, build a second AEC tap with the
             # ML NS OFF, for the recognizer only. Its echo model converges to the
@@ -2503,6 +2537,10 @@ class SherpaOnnxEngine(AudioEngine):
                                     not self._barge_in_fired_this_run
                                     and self._vad.is_speech_detected()
                                 ):
+                                    # (Reverted 2026-07-04: the loose duck here opened
+                                    # on a fraction of K and PUMPED the volume on echo
+                                    # without cutting -- see the permanent-plan doc. The
+                                    # real fix is the capture path, not a looser trigger.)
                                     rejected_run += block_sec
                                     if (
                                         rejected_run >= self.config.barge_in_min_speech_sec
@@ -3002,7 +3040,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # outdata are both play_sr. The audio callback may already
                         # be firing (zero-filling) before this assignment -- that's
                         # fine: it checks `self._fifo is None` and emits silence.
-                        self._fifo = PlaybackFIFO(int(self._play_sr * self.config.playback_fifo_sec))
+                        self._fifo = PlaybackFIFO(int(self._play_sr * self._playback_fifo_sec_cur))
                         with self._out_lock:
                             self._out_stream = out
                     elif not out.active:
@@ -3042,6 +3080,23 @@ class SherpaOnnxEngine(AudioEngine):
                                 "ASR/second-pass worker?); raises buzzy/glitchy artifacts", _ur,
                             )
                             self._cb.on_metric("playback_underrun")
+                        # Fix 5b: self-size the FIFO lead from THIS reply's underrun
+                        # count -- grow when it starved, slow-decay toward the seed
+                        # when clean. Recreated HERE only: the queue is empty and the
+                        # drain wait above completed, so the old FIFO is spent and the
+                        # audio callback (which snapshots self._fifo then zero-fills an
+                        # empty one) is safe across the swap. Takes effect next reply.
+                        seed = float(self.config.playback_fifo_sec)
+                        prev = self._playback_fifo_sec_cur
+                        self._playback_fifo_sec_cur = self._next_fifo_sec(prev, _ur, seed)
+                        if (abs(self._playback_fifo_sec_cur - prev) > 1e-3
+                                and self._play_sr > 0):
+                            self._fifo = PlaybackFIFO(
+                                int(self._play_sr * self._playback_fifo_sec_cur))
+                            log.info(
+                                "playback FIFO lead -> %.2fs (seed %.2fs, underran %d)",
+                                self._playback_fifo_sec_cur, seed, _ur,
+                            )
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         self._last_playback_at = 0.0
                         self._last_speaking_end = time.monotonic()  # arm the L2 refractory
@@ -3140,6 +3195,22 @@ class SherpaOnnxEngine(AudioEngine):
             except Exception:  # noqa: BLE001 - metric is best-effort
                 pass
         return False
+
+    @staticmethod
+    def _next_fifo_sec(prev: float, ur: int, seed: float) -> float:
+        """Self-size the playback FIFO lead from a reply's underrun count (fix 5b).
+
+        Grow (multiplicatively, fast converge) when the reply STARVED (ur>2 -- 1-2
+        is the benign end-of-utterance straddle), slow-decay toward the ``seed``
+        floor when clean, bounded by the ``_FIFO_SEC_MAX`` UX-latency ceiling. Pure
+        + static so the control law is unit-tested without driving the audio loop.
+        No per-machine operating value: the ceiling/rates are bounds, the operating
+        depth is derived from THIS box's measured underruns."""
+        if ur > 2:
+            return min(_FIFO_SEC_MAX, prev * _FIFO_GROW)
+        if prev > seed:
+            return max(seed, prev * _FIFO_DECAY)
+        return prev
 
     def _dc_block(self, samples, sr: int):
         """DC-block a synth chunk/clip with the long-lived one-pole high-pass.
@@ -3448,8 +3519,15 @@ class SherpaOnnxEngine(AudioEngine):
         (``observe_echo`` in the capture loop), so the chart the DTD calibrates
         and the value it scores against it always come from the SAME signal --
         otherwise a chart learned on the near-silent post-NS floor would make the
-        raw-mic level a z-outlier and self-interrupt on echo-only."""
-        return rms(mic_raw) if self._apm_owns_ns else rms(samples)
+        raw-mic level a z-outlier and self-interrupt on echo-only.
+
+        NOTE: DTLN is NOT linear -- it is a spectral-MASKING canceller that, like
+        the APM's NS, attenuates the near-end user during double-talk (live proof:
+        run-20260704-143112 z_resid pinned at 0 on a loud talk-over -> D capped
+        ~1.5 < K, barge never fired). So ``_resid_blind`` covers DTLN + APM-NS, not
+        just ``_apm_owns_ns``; only a genuinely linear canceller (nlms/headphones)
+        leaves the user in the residual and reads ``samples``."""
+        return rms(mic_raw) if getattr(self, "_resid_blind", False) else rms(samples)
 
     def _looks_like_user(self, samples, mic_raw=None) -> bool:
         # Is playback-time mic voice a genuine barge-in (vs the assistant's own TTS
@@ -3510,7 +3588,7 @@ class SherpaOnnxEngine(AudioEngine):
             # byte-identical: ``_apm_owns_ns`` is False.)
             resid_rms = self._dtd_residual_level(samples, mic_raw)
             resid_floor = (
-                self._raw_playback_floor_rms if self._apm_owns_ns
+                self._raw_playback_floor_rms if getattr(self, "_resid_blind", False)
                 else self._playback_floor_rms
             )
             fired = self._dtd.decide(
@@ -3523,6 +3601,11 @@ class SherpaOnnxEngine(AudioEngine):
             # echo-only. Honor that explicit False only as a veto: True and None
             # keep the prior DTD behavior, so a real coherence-confirmed talk-over
             # still cuts and no-reference moments still fall back to the DTD.
+            # Coherence echo veto: honor an explicit echo-only verdict as a veto.
+            # (Reverted 2026-07-04: disabling it under _resid_blind removed the only
+            # echo guard on the raw-mic path and caused the APM self-interrupt --
+            # the raw-mic DTD collapses to a loudness gate that fires on the
+            # assistant's own loud narration syllables. See the permanent-plan doc.)
             coh_veto = bool(
                 fired
                 and getattr(self.config, "dtd_coherence_echo_veto", True)
@@ -3756,7 +3839,12 @@ class SherpaOnnxEngine(AudioEngine):
             )
         text = ""
         try:
-            stream.accept_waveform(self.config.sample_rate, samples)
+            # C (masking-canceller path): decode the RAW mic, not the DTLN/NS-masked
+            # residual. Playback is ducked to barge_confirm_duck_gain during the
+            # window, so the raw mic is user-dominated and the words SURVIVE -- the
+            # masked residual would erase them and the window could never confirm.
+            decode_src = mic_raw if getattr(self, "_resid_blind", False) else samples
+            stream.accept_waveform(self.config.sample_rate, decode_src)
             while recognizer.is_ready(stream):
                 recognizer.decode_stream(stream)
             text = (recognizer.get_result(stream) or "").strip()

@@ -3,21 +3,34 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-04 (Linux Mint boot; full logic suite 2290 passed, 24
-skipped; branch feat/auto-calibrated-audio-pipeline — the 5 auto-calibrating
-audio fixes, ADR-0012). Prior: 2026-07-03 (feat/diagnose-barge-funnel-autotest-
-kokoro), 2026-07-02 (feat/barge-duck-confirm, Windows boot live session).
+Last verified: 2026-07-05 (Linux Mint boot; full logic suite 2295 passed, 24
+skipped; branch fix/live-barge-dtln-and-underruns, merged to main). Prior:
+2026-07-04 (feat/auto-calibrated-audio-pipeline, ADR-0012, 5 auto-calibrating fixes).
 
-**AUDIO PIPELINE SELF-CALIBRATION (2026-07-04, ADR-0012, branch above — committed,
-NOT merged).** Real-usage forensics found the STT/barge bottleneck is the AEC/APM
-pipeline, not the mic (aec_ref_delay_ms hard-set to 40 ms vs true 106–220 ms). Five
-runtime-self-calibrating fixes landed (no per-machine hard-coded values): (1) AEC
-delay measured on-device by cross-correlation — VALIDATED on a real recording
-(40→~120 ms); (2) relaxed-NS ASR tap under _apm_owns_ns; (3) cleaner anti-
-fabrication; (4) learned endpoint floor; (5) TTS DC blocker (underrun prebuffer
-deferred). Headless-green; **fixes 2 + barge-cut still need a live-mic A/B on the
-open_speaker profile** (autotest loopback can't judge them). Then re-run the
-forensics replay to confirm garble/fragmentation drop on real audio.
+**★★★ LIVE-TEST OUTCOME + PERMANENT PLAN (2026-07-05) — READ FIRST.** Multiple live
+open-speaker tests + a multi-agent study (3 adversarial verifiers) concluded:
+**there is NO clean single-mic acoustic fix for open-speaker barge-in** (user voice
+and own-echo overlap in every acoustic feature on a nonlinear laptop speaker). This
+session's barge attempts (raw-mic DTD re-source under _resid_blind, coh-veto
+disable, loose duck, APM switch) all failed live — DTLN misses talk-overs, APM
+SELF-INTERRUPTS, the loose duck PUMPS. Those net-negative changes were REVERTED
+(Phase A: coh-veto guard restored, loose duck removed; suite green). The full
+history + the survived-verification plan is in
+**`docs/session_2026-07-04_permanent_voice_barge_plan.md`** (also memory
+`barge-voice-no-acoustic-fix-2026-07-04`). The real levers: (1) CAPTURE PATH — the
+built-in mic ADC clips at +30 dB (fix + HOLD it at 52%/7.5 dB via `amixer -c 1 sset
+Capture 52%` against PipeWire's reset; the clip fell 11–16%→0% live), and OS
+voice-comm AEC (Linux module-echo-cancel / Windows WASAPI communications) is why
+Teams + the Android app sound clean on this laptop; (2) ADR-0011 word gate as the
+open-speaker hard-cut authority but KEEP the acoustic hard-cut as a scoped fallback.
+STILL SOLID from ADR-0012: fix-1 AEC-delay auto-calib (validated 40→~120 ms), fix-2
+relaxed-NS ASR tap (improved live STT on APM: "tell me a story about friends" clean),
+fix-3 cleaner, fix-4 endpoint, fix-5a DC + 5b self-sizing FIFO (underruns 18→4 live).
+Voice muffling fixed (tts_output_lowpass_hz 7000→0). **NEXT (Phase B, next session):**
+resume the measured APM+clean-mic live test — is STT clean + does it stop
+self-interrupting? — then decide if OS voice-comm is still needed. Machine-local
+config now: aec_backend=apm, apm_always_on=true, lowpass=0 (config.local.json,
+gitignored); the mic ADC pin does NOT persist — re-pin before any live run.
 
 ## What this is
 

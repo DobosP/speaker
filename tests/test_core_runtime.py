@@ -12,7 +12,7 @@ import time
 from typing import Iterator, Optional, Sequence
 
 from always_on_agent.continuation import ContinuationConfig
-from always_on_agent.events import Mode
+from always_on_agent.events import AgentEvent, EventKind, Mode
 
 from core.engines.scripted import ScriptedEngine
 from core.llm import EchoLLM
@@ -37,6 +37,21 @@ def test_assistant_reply_is_spoken():
     engine.final("what time is it")
     assert runtime.wait_idle()
     assert engine.spoken == ["The time is noon."]
+
+
+def test_stop_drops_tts_request_racing_shutdown():
+    """A queued TTS_REQUEST must never start speaking once stop() has begun:
+    the threaded bus keeps dispatching between stop()'s first line and
+    bus.stop() (dispatcher/watchdog/supervisor teardown sit in between), so the
+    gate lives in _on_event. Calling _on_event directly models the late
+    dispatch deterministically -- no thread timing."""
+    runtime, engine = _runtime()
+    event = AgentEvent(EventKind.TTS_REQUEST, {"text": "late reply"})
+    runtime._on_event(event)
+    assert engine.spoken == ["late reply"]  # sanity: allowed before stop
+    runtime.stop()
+    runtime._on_event(event)
+    assert engine.spoken == ["late reply"]  # dropped during/after shutdown
 
 
 def test_llm_task_does_not_mark_handled_local():

@@ -1,7 +1,9 @@
 # ADR-0013: OS voice-comm capture (module-echo-cancel) + no-duck word-cut barge for the open speaker
 
 Date: 2026-07-06
-Status: proposed (Phase B live experiment; opt-in, off by default)
+Status: accepted (2026-07-06: merged to main, live-validated on the Linux/PipeWire
+box — no pumping, no false cut on echo, clean near-end STT; still opt-in / off by
+default, and the real-talk-over batch cut-rate remains open)
 
 ## Decision
 
@@ -84,3 +86,13 @@ review:
   is byte-identical; full suite 2295 passed / 24 skipped. Supersedes nothing yet
   (experimental); if it holds across more live runs it becomes the open-speaker
   barge authority and the Windows equivalent is WASAPI communications capture.
+- **Windows equivalent (2026-07-06 addendum):** the OS-canceller hop is already
+  wired — set `capture_voice_comm=true` (`sounddevice.WasapiSettings(
+  communications=True)`, the AEC/NS Communications category; fails open to the
+  raw stream) plus the same config flips (`aec_enabled=false,
+  apm_always_on=false, barge_word_cut_enabled=true`). Phase-B-on-Windows is a
+  config repoint + live measurement, not new core code. The word-cut state
+  machine gained its headless regression net the same day
+  (`tests/test_barge_word_cut.py`: 4-word floor vs garbled 2-word echo,
+  per-burst stream reset, no-duck invariant, suppress guards, `self._aec is
+  None` scoping).

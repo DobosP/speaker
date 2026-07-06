@@ -23,6 +23,7 @@ from tools.diagnose_run import (
     parse_log,
     self_interrupt_summary,
     to_json,
+    word_cut_funnel,
 )
 
 
@@ -799,3 +800,103 @@ def test_live_audio_ab_missing_file(tmp_path, capsys):
     from tools.live_audio_ab import main as ab_main
     rc = ab_main([str(tmp_path / "nonexistent.txt")])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# Word-Cut Funnel (ADR-0013) — the telemetry added after run-20260706-231226
+# shipped ZERO word-cut signal and the live failure was undiagnosable post-hoc.
+# ---------------------------------------------------------------------------
+
+WORD_CUT_FUNNEL_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260707-120020 started (debug=True) -> logs/runs/run-20260707-120020.txt",
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'A long spoken reply about the sea.' (queue depth=0)",
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    # Quiet window at the calibrated floor, then a voiced window (>=2x floor).
+    "12:00:12.000 INFO  speaker.sherpa | word-cut near-end: rms_avg=0.0021 rms_peak=0.0034 vad_frac=0.00 floor=0.0040 blocks=20",
+    "12:00:13.000 INFO  speaker.sherpa | word-cut trace: 2 word(s) 'what are'",
+    "12:00:13.500 INFO  speaker.sherpa | word-cut burst reset: dropped 2 word(s) 'what are'",
+    "12:00:14.000 INFO  speaker.sherpa | word-cut near-end: rms_avg=0.0150 rms_peak=0.0300 vad_frac=0.60 floor=0.0040 blocks=20",
+    "12:00:15.000 INFO  speaker.sherpa | word-cut trace: 5 word(s) 'actually tell me the time'",
+    "12:00:15.100 INFO  speaker.sherpa | barge-in confirmed by speech (word-cut): 'actually tell me the time'",
+    "12:00:15.100 INFO  speaker.sherpa | barge-in detected",
+    "12:00:16.000 INFO  speaker.sherpa | word-cut funnel: fed=40 skipped_quiet=12 resets=1 dropped_words=2 max_words=5 own_folds=3 guard_suppressed=2 decode_errors=0 cuts=1 nearend_rms_p50=0.0080 nearend_rms_p95=0.0150",
+]
+
+
+def test_word_cut_lines_parse(tmp_path):
+    run = parse_log(_write_log(tmp_path, WORD_CUT_FUNNEL_LINES))
+    assert len(run.word_cut_replies) == 1
+    r = run.word_cut_replies[0]
+    assert (r.fed, r.skipped_quiet, r.resets, r.dropped_words) == (40, 12, 1, 2)
+    assert (r.max_words, r.own_folds, r.guard_suppressed) == (5, 3, 2)
+    assert (r.decode_errors, r.cuts) == (0, 1)
+    assert abs(r.nearend_rms_p95 - 0.0150) < 1e-9
+    assert len(run.word_cut_windows) == 2
+    assert run.word_cut_traces == [
+        (pytest.approx(43213.0), 2, "'what are'"),
+        (pytest.approx(43215.0), 5, "'actually tell me the time'"),
+    ]
+    assert len(run.word_cut_resets) == 1
+    assert run.word_cut_confirmed == 1
+    # The word-cut confirm must NOT leak into the ADR-0011 duck-confirm funnel
+    # (nothing ever ducked on this path).
+    assert run.barge_confirmed == 0
+    # The paired legacy "barge-in detected" line still lands as a BargeEvent.
+    assert sum(1 for be in run.barge_events if be.kind == "detected") == 1
+
+
+def test_word_cut_funnel_aggregation(tmp_path):
+    run = parse_log(_write_log(tmp_path, WORD_CUT_FUNNEL_LINES))
+    wcf = word_cut_funnel(run)
+    assert wcf["present"] is True
+    assert wcf["replies"] == 1
+    assert wcf["fed"] == 40
+    assert wcf["cuts"] == 1
+    assert wcf["max_words"] == 5
+    assert wcf["dropped_words"] == 2
+    assert wcf["windows"] == 2
+    assert wcf["voiced_windows"] == 1          # 0.0150 >= 2 * 0.0040
+    assert wcf["starved_replies"] == 0
+    assert wcf["voice_present_zero_words"] == 0  # words WERE transcribed
+
+
+def test_word_cut_report_and_json(tmp_path):
+    run = parse_log(_write_log(tmp_path, WORD_CUT_FUNNEL_LINES))
+    report = format_report(run)
+    assert "--- Word-Cut Funnel (ADR-0013) ---" in report
+    assert "dropped_by_reset=2" in report
+    out = to_json(run)
+    assert out["word_cut_funnel"]["present"] is True
+    assert out["word_cut_funnel"]["cuts"] == 1
+
+
+def test_word_cut_absent_on_legacy_runs(tmp_path):
+    run = parse_log(_write_log(tmp_path, CLEAN_RUN_LINES))
+    assert word_cut_funnel(run) == {"present": False}
+    assert "Word-Cut Funnel" not in format_report(run)
+    assert to_json(run)["word_cut_funnel"] == {"present": False}
+
+
+def test_word_cut_starved_reply_flagged(tmp_path):
+    # fed=0: the VAD gate starved the recognizer for the whole reply -- the
+    # run-20260706-231226 defect class. Must be loudly flagged.
+    lines = WORD_CUT_FUNNEL_LINES[:3] + [
+        "12:00:16.000 INFO  speaker.sherpa | word-cut funnel: fed=0 skipped_quiet=52 resets=0 dropped_words=0 max_words=0 own_folds=0 guard_suppressed=0 decode_errors=0 cuts=0 nearend_rms_p50=0.0000 nearend_rms_p95=0.0000",
+    ]
+    run = parse_log(_write_log(tmp_path, lines))
+    wcf = word_cut_funnel(run)
+    assert wcf["starved_replies"] == 1
+    assert "fed=0 -- the VAD gate starved the recognizer" in format_report(run)
+
+
+def test_word_cut_voice_present_zero_words_flagged(tmp_path):
+    # Energy well above the floor but ZERO words all run: the canceller passed
+    # the voice yet nothing transcribed -- the other smoking gun.
+    lines = WORD_CUT_FUNNEL_LINES[:3] + [
+        "12:00:12.000 INFO  speaker.sherpa | word-cut near-end: rms_avg=0.0150 rms_peak=0.0300 vad_frac=0.10 floor=0.0040 blocks=20",
+        "12:00:16.000 INFO  speaker.sherpa | word-cut funnel: fed=38 skipped_quiet=14 resets=0 dropped_words=0 max_words=0 own_folds=0 guard_suppressed=0 decode_errors=0 cuts=0 nearend_rms_p50=0.0120 nearend_rms_p95=0.0150",
+    ]
+    run = parse_log(_write_log(tmp_path, lines))
+    wcf = word_cut_funnel(run)
+    assert wcf["voice_present_zero_words"] == 1
+    assert "ZERO words transcribed" in format_report(run)

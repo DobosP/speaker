@@ -271,13 +271,14 @@ def check_audio_frontend(
     # Mirror the capture_voice_comm rule below: an unselected apm profile is
     # ADVISORY (never blocks READY).
     sherpa = config.get("sherpa", {}) if isinstance(config, dict) else {}
+    active_sherpa = sherpa
     active_backend = str(sherpa.get("aec_backend", "")).lower()
     try:  # resolve the device the way core.app does; best-effort
         from core.config import apply_device_profile, resolve_device
         dev, _rationale = resolve_device(config, config.get("device", "auto"))
+        active_sherpa = apply_device_profile(config, dev).get("sherpa", {}) or sherpa
         active_backend = str(
-            (apply_device_profile(config, dev).get("sherpa", {}) or {}).get(
-                "aec_backend", active_backend)
+            active_sherpa.get("aec_backend", active_backend)
         ).lower()
     except Exception:  # noqa: BLE001 - fall back to the base backend
         pass
@@ -335,6 +336,32 @@ def check_audio_frontend(
                 "module-echo-cancel loaded" if loaded else "not loaded (raw mic; no OS AEC/NS/AGC)",
                 "" if loaded
                 else "pactl load-module module-echo-cancel aec_method=webrtc  (see docs/audio_pipeline.md)",
+            ))
+    # ADR-0013 word-cut barge preflight: the word-cut path (barge_word_cut_enabled
+    # with the in-app AEC OFF) is only viable when the OS canceller cleans the
+    # near-end during playback -- without it the recognizer sees raw echo with the
+    # user drowned underneath, the word gate has nothing to cut on, and the run
+    # degrades SILENTLY (exactly how the 2026-07-06 live batch shipped:
+    # run-20260706-231226 launched with no module-echo-cancel check anywhere).
+    # Only checked when the ACTIVE resolved config selects that path on Linux.
+    wants_word_cut = bool(active_sherpa.get("barge_word_cut_enabled", False)) and not bool(
+        active_sherpa.get("aec_enabled", False)
+    )
+    if platform.startswith("linux") and wants_word_cut:
+        loaded = _pipewire_echo_cancel_loaded(modules_text)
+        if loaded is not None:
+            out.append(Check(
+                "OS echo-cancel for word-cut barge (ADR-0013)", loaded,
+                "module-echo-cancel loaded" if loaded
+                else "barge_word_cut_enabled=true + aec_enabled=false but NO "
+                "module-echo-cancel is loaded: the near-end user won't survive "
+                "playback, so the word-cut has nothing to cut on",
+                "" if loaded else (
+                    "pactl load-module module-echo-cancel aec_method=webrtc "
+                    "source_name=echo-cancel-source sink_name=echo-cancel-sink "
+                    'aec_args="webrtc.noise_suppression=false webrtc.gain_control=false"'
+                    " then set both echo-cancel nodes as defaults (ADR-0013)"
+                ),
             ))
     return out
 

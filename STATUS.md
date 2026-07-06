@@ -34,13 +34,28 @@ flushed), among: (a) the OS webrtc canceller over-suppresses the near-end during
 double-talk (classic AEC double-talk suppression → Phase B is a dead end here,
 consistent with [[barge-voice-no-acoustic-fix-2026-07-04]]); (b) the 13% mic is too
 quiet under double-talk (fixable via level/AGC); (c) the per-speech-burst streaming
-reset + own-speech filter swallow the near-end text. **NEXT (measure-first):** one
-diagnostic re-run that **preserves** the cancelled-mic + reference WAV (Ctrl-C exit)
-plus 1–2 deliberate talk-overs → inspect whether the owner's voice is
-present-but-quiet vs gone, which decides whether Phase B is tunable or dead on this
-box. Until distinguished, Phase B stays experimental/opt-in and is **not** the
-open-speaker barge authority. Qualifies the ADR-0013 "validated live" claim (see the
-ADR-0013 2026-07-06-evening addendum).
+reset + own-speech filter swallow the near-end text. **→ RESOLVED same night
+(branch `fix/barge-wordcut-live-diagnostics`): a deterministic (c)-class
+state-machine defect was FOUND that fully explains the zero-word outcome.**
+`_barge_word_cut_step` consults `vad.is_speech_detected()` but **nothing feeds the
+VAD during playback** — the word-cut branch `continue`s before the acoustic path's
+`accept_waveform`, so the VAD stayed frozen at its pre-reply quiet state and the
+recognizer was never fed a single block. Zero words was guaranteed, no acoustics
+required. **FIXED:** the step now feeds the VAD every playback block, and the
+burst reset is debounced (`barge_word_cut_reset_quiet_blocks=3` — the old 1-quiet-
+block hair trigger wiped a talk-over's accumulated words on VAD flicker). Whether
+(a)/(b) ALSO degrade the near-end is exactly what the next run now measures:
+shipped alongside — full word-cut funnel telemetry (`word-cut trace / burst reset
+/ near-end / funnel` INFO lines, one summary per reply), kill-safe WAV recording
+(RIFF header patched+flushed every 2 s → audio survives SIGTERM/SIGKILL), a
+SIGTERM→Ctrl-C shutdown bridge, a doctor FAIL when word-cut is configured on
+Linux without `module-echo-cancel` loaded, and a "Word-Cut Funnel (ADR-0013)"
+section in `tools.diagnose_run`. **Correction:** the missing WAV was also because
+the run never passed `--record` (recording needs the CLI flag; the config knob
+alone does nothing) — the next live run MUST launch with `--record`. Suite 2341
+passed / 24 skipped. Until the fix is live-validated, Phase B stays
+experimental/opt-in and is **not** the open-speaker barge authority. Qualifies
+the ADR-0013 "validated live" claim (see the ADR-0013 addenda).
 
 **★★ 2026-07-06 (WINDOWS BOX) — STABILITY RECON + ADR-0013 WINDOWS PREP (branch
 `fix/stability-recon-followups` → main, 2026-07-06).** A 6-dimension codex-fleet recon

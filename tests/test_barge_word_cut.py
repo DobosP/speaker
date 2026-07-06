@@ -55,10 +55,16 @@ class _FakeRecognizer:
 
 
 class _FakeVad:
-    """The step only calls ``is_speech_detected()`` on it."""
+    """The step feeds it every block (``accept_waveform``) then consults
+    ``is_speech_detected()`` -- the live run-20260706-231226 failure was exactly
+    a step that consulted WITHOUT feeding, so the fake counts the feeds."""
 
     def __init__(self, speech: bool = True) -> None:
         self._speech = bool(speech)
+        self.accepted = 0
+
+    def accept_waveform(self, samples) -> None:
+        self.accepted += 1
 
     def is_speech_detected(self) -> bool:
         return self._speech
@@ -105,14 +111,20 @@ def test_word_cut_disabled_by_default():
     c = SherpaConfig()
     assert c.barge_word_cut_enabled is False  # shipped default: legacy paths intact
     assert c.barge_word_cut_min_words == 4    # the garbled-echo no-false-cut floor
+    assert c.barge_word_cut_reset_quiet_blocks == 3  # flicker-proof burst reset
 
 
 def test_config_from_dict_roundtrip():
     c = SherpaConfig.from_dict(
-        {"barge_word_cut_enabled": True, "barge_word_cut_min_words": 3}
+        {
+            "barge_word_cut_enabled": True,
+            "barge_word_cut_min_words": 3,
+            "barge_word_cut_reset_quiet_blocks": 5,
+        }
     )
     assert c.barge_word_cut_enabled is True
     assert c.barge_word_cut_min_words == 3
+    assert c.barge_word_cut_reset_quiet_blocks == 5
 
 
 def test_active_only_when_flag_set_and_no_inapp_aec():
@@ -195,20 +207,157 @@ def test_own_echo_folds_into_base_then_user_words_cut():
 # --- per-speech-burst stream reset (the second no-false-cut gate) ----------------
 
 
-def test_vad_quiet_block_resets_stream_and_base():
+def test_vad_quiet_run_resets_stream_and_base_after_debounce():
+    # Default debounce = 3 consecutive quiet blocks (~300 ms). A single quiet
+    # block is VAD flicker on OS-cancelled double-talk, NOT a burst boundary --
+    # the live batch (run-20260706-231226) lost its accumulated talk-over words
+    # to exactly that hair trigger.
     rec = _Rec()
     eng = _engine(rec, vad_speech=False)
     eng._word_cut_fed_stream = True     # a prior burst fed the recognizer
     eng._word_cut_base = "stale burst text"
     r, s = _FakeRecognizer(["anything"]), _FakeStream()
-    assert eng._barge_word_cut_step(r, s, _BLOCK, time.monotonic()) is False
+    now = time.monotonic()
+    # Two quiet blocks: still inside the debounce -> NO reset yet.
+    assert eng._barge_word_cut_step(r, s, _BLOCK, now) is False
+    assert eng._barge_word_cut_step(r, s, _BLOCK, now + 0.1) is False
+    assert r.resets == 0
+    assert eng._word_cut_base == "stale burst text"
+    # Third consecutive quiet block: a real burst boundary -> reset fires.
+    assert eng._barge_word_cut_step(r, s, _BLOCK, now + 0.2) is False
     assert r.resets == 1                # recognizer state cleared...
     assert eng._word_cut_base == ""     # ...and the novelty base with it
     assert eng._word_cut_fed_stream is False
     assert s.fed_blocks == 0            # quiet blocks are never fed
     # Idempotent: further quiet blocks don't keep resetting.
+    assert eng._barge_word_cut_step(r, s, _BLOCK, now + 0.3) is False
+    assert r.resets == 1
+
+
+def test_reset_quiet_blocks_one_restores_hair_trigger():
+    # Knob parity: 1 restores the original single-quiet-block semantics.
+    eng = _engine(vad_speech=False, barge_word_cut_reset_quiet_blocks=1)
+    eng._word_cut_fed_stream = True
+    eng._word_cut_base = "stale"
+    r, s = _FakeRecognizer(["anything"]), _FakeStream()
     assert eng._barge_word_cut_step(r, s, _BLOCK, time.monotonic()) is False
     assert r.resets == 1
+    assert eng._word_cut_base == ""
+
+
+def test_speech_block_between_quiets_defuses_the_debounce():
+    # quiet, quiet, SPEECH, quiet, quiet: the run never reaches 3 consecutive
+    # -> no reset, and the burst's accumulated text survives the flicker.
+    eng = _engine(vad_speech=False)
+    eng._word_cut_fed_stream = True
+    eng._word_cut_base = "kept"
+    r, s = _FakeRecognizer(["kept and more user words here"]), _FakeStream()
+    now = time.monotonic()
+    eng._barge_word_cut_step(r, s, _BLOCK, now)
+    eng._barge_word_cut_step(r, s, _BLOCK, now + 0.1)
+    eng._vad.set_speech(True)           # flicker ends: user is audible again
+    eng._barge_word_cut_step(r, s, _BLOCK, now + 0.2)
+    eng._vad.set_speech(False)
+    eng._barge_word_cut_step(r, s, _BLOCK, now + 0.3)
+    eng._barge_word_cut_step(r, s, _BLOCK, now + 0.4)
+    assert r.resets == 0
+    assert eng._word_cut_base == "kept"
+
+
+# --- the live-failure regression: the step must FEED the VAD it consults ---------
+
+
+def test_step_feeds_vad_every_block():
+    # run-20260706-231226: nothing fed the VAD during playback, so
+    # is_speech_detected() stayed frozen quiet and the recognizer was starved
+    # for the whole reply (zero words -> the talk-over batch could not cut).
+    # The step must accept THIS block into the VAD before consulting it.
+    eng = _engine(vad_speech=True)
+    r, s = _FakeRecognizer([""]), _FakeStream()
+    now = time.monotonic()
+    for i in range(3):
+        eng._barge_word_cut_step(r, s, _BLOCK, now + i * 0.1)
+    assert eng._vad.accepted == 3       # fed on speech blocks...
+    eng._vad.set_speech(False)
+    eng._barge_word_cut_step(r, s, _BLOCK, now + 0.3)
+    assert eng._vad.accepted == 4       # ...and on quiet blocks alike
+
+
+# --- funnel telemetry (ADR-0013 post-hoc scoring) ---------------------------------
+
+
+def test_funnel_counters_and_emission(caplog):
+    import logging
+
+    eng = _engine(vad_speech=True)
+    r = _FakeRecognizer(["what are", "what are you doing today"])
+    s = _FakeStream()
+    now = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
+        eng._barge_word_cut_step(r, s, _BLOCK, now)          # 2 words: trace
+        eng._barge_word_cut_step(r, s, _BLOCK, now + 0.1)    # 5 words: cut
+        assert eng._wc_stats.get("fed") == 2
+        assert eng._wc_stats.get("max_words") == 5
+        assert eng._wc_stats.get("cuts") == 1
+        eng._wc_reply_active = True
+        eng._emit_word_cut_funnel()
+    text = caplog.text
+    assert "word-cut trace: 2 word(s)" in text
+    assert "word-cut funnel: fed=2" in text
+    assert "max_words=5" in text
+    assert "cuts=1" in text
+    assert eng._wc_stats == {}           # stats are per-reply, cleared on emit
+
+
+def test_burst_reset_logs_dropped_words(caplog):
+    import logging
+
+    # A debounced reset that wipes accumulated NOVEL words must say so -- it is
+    # the smoking gun for "user words swallowed by the burst reset".
+    eng = _engine(vad_speech=False)
+    eng._word_cut_fed_stream = True
+    r, s = _FakeRecognizer(["tell me something else"]), _FakeStream()
+    now = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
+        for i in range(3):
+            eng._barge_word_cut_step(r, s, _BLOCK, now + i * 0.1)
+    assert "word-cut burst reset: dropped 4 word(s)" in caplog.text
+    assert eng._wc_stats.get("dropped_words") == 4
+    assert eng._wc_stats.get("resets") == 1
+
+
+def test_decode_error_counted_and_warned_once(caplog):
+    import logging
+
+    class _BoomRecognizer(_FakeRecognizer):
+        def get_result(self, stream):
+            raise RuntimeError("decoder crashed")
+
+    eng = _engine(vad_speech=True)
+    r, s = _BoomRecognizer([]), _FakeStream()
+    now = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="speaker.sherpa"):
+        assert eng._barge_word_cut_step(r, s, _BLOCK, now) is False
+        assert eng._barge_word_cut_step(r, s, _BLOCK, now + 0.1) is False
+    assert eng._wc_stats.get("decode_errors") == 2
+    # Warn once per reply, then count silently (no per-block log spam).
+    assert caplog.text.count("word-cut: recognizer decode failed") == 1
+
+
+def test_near_end_window_emits_after_two_seconds(caplog):
+    import logging
+
+    eng = _engine(vad_speech=True)
+    r, s = _FakeRecognizer([""]), _FakeStream()
+    now = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
+        eng._barge_word_cut_step(r, s, _BLOCK, now)         # opens the window
+        eng._barge_word_cut_step(r, s, _BLOCK, now + 2.1)   # crosses 2s -> emits
+    assert "word-cut near-end: rms_avg=" in caplog.text
+    assert "vad_frac=1.00" in caplog.text
+    # The window fed the per-reply percentile accumulator and reset itself.
+    assert eng._wc_stats.get("win_rms")
+    assert eng._wc_win == {}
 
 
 # --- suppress guards (shared with the acoustic path) ------------------------------

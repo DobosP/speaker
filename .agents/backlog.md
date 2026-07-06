@@ -39,13 +39,28 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       playback → ADR-0013's "clean near-end during playback" premise did **NOT**
       reproduce on a real batch (see ADR-0013 2026-07-06-evening addendum).
       Pipeline otherwise healthy (pre-playback STT clean, `clip=0.0%`, 2316 tests
-      green); **NOT** a regression from the Windows session. **NEXT
-      (measure-first, still):** one re-run that **PRESERVES** the cancelled-mic +
-      reference WAV (Ctrl-C exit so `record_playback_reference` flushes) + 1–2
-      deliberate talk-overs, then inspect whether the owner's voice is
-      present-but-quiet (fixable: level/AGC) or fully suppressed (AEC double-talk →
-      Phase B dead here, matches `barge-voice-no-acoustic-fix-2026-07-04`). Do NOT
-      declare Phase B the barge authority until this is distinguished.
+      green); **NOT** a regression from the Windows session. **→ ROOT CAUSE FOUND
+      + FIXED same night (branch `fix/barge-wordcut-live-diagnostics`, 2341/24
+      green):** `_barge_word_cut_step` consulted `vad.is_speech_detected()` but
+      NOTHING fed the VAD during playback (the word-cut branch `continue`s before
+      the acoustic path's `accept_waveform`) → VAD frozen quiet → recognizer
+      never fed → zero words, deterministically. Fixed (step feeds the VAD every
+      block) + debounced burst reset (`barge_word_cut_reset_quiet_blocks=3`).
+      Also shipped: word-cut funnel telemetry (trace/burst-reset/near-end/funnel
+      lines), kill-safe WAV recording (survives SIGTERM/SIGKILL), SIGTERM→Ctrl-C
+      shutdown bridge, doctor FAIL on missing module-echo-cancel, diagnose_run
+      "Word-Cut Funnel (ADR-0013)" section. **NEXT — the decisive live re-run
+      (needs the owner at the mic):** (1) load module-echo-cancel + set defaults
+      (ADR-0013; `python -m tools.doctor` now FAILS if missing); (2) launch
+      **with `--record`** (`.venv/bin/python -m core --engine sherpa
+      --input-device pipewire --output-device pipewire --record` — the failed run
+      had no `--record`, so no WAV existed at all; the config knob alone does
+      nothing); (3) talk-over batch + bare "stop" + silent control; (4) score via
+      `python -m tools.diagnose_run logs/runs/run-<id>.txt` → the Word-Cut
+      Funnel section now says explicitly whether words were transcribed-and-cut,
+      starved (`fed=0`), wiped by resets, or never survived the canceller
+      (voiced windows vs floor) — i.e. it distinguishes tunable-vs-dead Phase B
+      in one run. Do NOT declare Phase B the barge authority until this passes.
 - [ ] **Adopt the 2026-06-10 gap-analysis roadmap (45 verified findings, P0–P5).**
       `docs/review_2026-06-10_gap_analysis.md` — security/PII first, then real-time
       correctness (rc-2 _on_final off the audio thread DONE via turn_merge; rc-1

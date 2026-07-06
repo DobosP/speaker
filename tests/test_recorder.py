@@ -62,3 +62,61 @@ def test_close_is_idempotent(tmp_path):
     rec.close()  # no error
     rec.write(np.array([0.1], dtype="float32"))  # ignored after close
     assert rec.frames == 0
+
+
+def test_file_is_valid_wav_mid_recording_without_close(tmp_path):
+    # Kill-safety (2026-07-06, run-20260706-231226): a SIGTERM/SIGKILL'd run
+    # never reaches close(), so the on-disk file must already be a valid WAV
+    # after the periodic flush -- audio evidence must survive any exit.
+    import time as _time
+
+    path = tmp_path / "killed.wav"
+    rec = WavRecorder(str(path), sample_rate=16000, flush_sec=0.1)
+    rec.write(np.linspace(-1.0, 1.0, 1600, dtype="float32"))  # 0.1 s
+    deadline = _time.monotonic() + 3.0
+    frames_seen = 0
+    while _time.monotonic() < deadline:
+        _time.sleep(0.05)
+        try:  # read WITHOUT closing the recorder (simulates a killed process)
+            with wave.open(str(path), "rb") as wf:
+                frames_seen = wf.getnframes()
+            if frames_seen >= 1600:
+                break
+        except (wave.Error, EOFError):
+            continue  # header not flushed yet -- keep polling
+    assert frames_seen == 1600, "flushed WAV must be readable before close()"
+    with wave.open(str(path), "rb") as wf:
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+        assert wf.getframerate() == 16000
+    rec.close()  # normal close still finalizes cleanly on top
+
+
+def test_writes_after_flush_are_kept_by_close(tmp_path):
+    # A flush mid-stream must not corrupt the append position: frames written
+    # after a header patch land after the existing payload, not over it.
+    import time as _time
+
+    path = tmp_path / "appended.wav"
+    rec = WavRecorder(str(path), sample_rate=16000, flush_sec=0.1)
+    first = np.full(800, 0.25, dtype="float32")
+    rec.write(first)
+    _time.sleep(0.4)  # let the writer flush + patch the header
+    second = np.full(800, -0.25, dtype="float32")
+    rec.write(second)
+    rec.close()
+    with wave.open(str(path), "rb") as wf:
+        assert wf.getnframes() == 1600
+        data = np.frombuffer(wf.readframes(1600), dtype="<i2")
+    assert data[0] > 0 and data[-1] < 0  # both halves present, in order
+
+
+def test_sigterm_handler_raises_keyboard_interrupt():
+    # The app installs SIGTERM -> KeyboardInterrupt so a `kill` reuses the
+    # exact Ctrl-C teardown (runtime.stop() -> recorder close -> summary).
+    import pytest
+
+    from core.app import _sigterm_to_keyboard_interrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        _sigterm_to_keyboard_interrupt(15, None)

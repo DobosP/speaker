@@ -497,7 +497,23 @@ def build_runtime(
     return runtime
 
 
+def _sigterm_to_keyboard_interrupt(signum, frame):  # noqa: ARG001 - signal ABI
+    """Turn SIGTERM into the Ctrl-C shutdown path. Without this a killed run
+    dies mid-flight and every ``finally`` is skipped: ``runtime.stop()`` never
+    flushes the WAV recorders and ``runlog.finalize()`` never writes the
+    summary -- exactly how run-20260706-231226 lost its audio evidence."""
+    raise KeyboardInterrupt
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Best-effort: handlers may only be installed from the main thread, and
+    # some embedders run main() elsewhere -- shutdown then relies on Ctrl-C.
+    try:
+        import signal
+
+        signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
+    except (ValueError, OSError):  # noqa: PERF203 - non-main thread / platform quirk
+        pass
     parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
     parser.add_argument(
         "--engine", choices=["console", "sherpa", "livekit", "replay"], default="console"

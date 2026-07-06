@@ -773,6 +773,17 @@ class SherpaConfig:
     # sentence clears it; a garbled 2-3 word echo hallucination does not) is the
     # primary no-false-cut gate; a bare "stop" still cuts alone via is_stop_command.
     barge_word_cut_min_words: int = 4
+    # Word-cut burst-reset debounce (2026-07-06, live run-20260706-231226). The
+    # per-burst stream reset guards the word floor against echo accumulating
+    # across bursts, but a SINGLE VAD-quiet block is a hair trigger: the OS
+    # canceller gates the near-end in and out during double-talk, so one quiet
+    # block mid-sentence is VAD flicker, not a burst boundary -- and the reset
+    # wipes the very words a real talk-over accumulated toward the floor.
+    # Require this many CONSECUTIVE quiet blocks (~100 ms each) before the
+    # reset; 1 restores the original hair-trigger semantics. Real inter-burst
+    # gaps are far longer than 3 blocks (Silero's own release hysteresis alone
+    # exceeds it), so echo still cannot accumulate across bursts.
+    barge_word_cut_reset_quiet_blocks: int = 3
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -1201,6 +1212,17 @@ class SherpaOnnxEngine(AudioEngine):
         # cleared so the user's words stay as free pre-roll. Capture-thread only.
         self._word_cut_base: str = ""
         self._word_cut_fed_stream: bool = False
+        # Consecutive VAD-quiet playback blocks (word-cut burst-reset debounce).
+        self._word_cut_quiet_run: int = 0
+        # ADR-0013 word-cut funnel telemetry, per reply (capture-thread only).
+        # Counters accumulate in _barge_word_cut_step and are emitted as ONE
+        # "word-cut funnel:" INFO line at reply end -- the live failure
+        # run-20260706-231226 was undiagnosable because this path was silent:
+        # zero words could mean canceller-suppressed voice, a starved VAD gate,
+        # or a decode failure, and the bundle couldn't tell them apart.
+        self._wc_stats: dict = {}
+        self._wc_win: dict = {}
+        self._wc_reply_active: bool = False
         # Recently ENQUEUED sentences (post-markup, what will be synthesized) +
         # the one audibly playing right now: the echo filter for confirm-window
         # partials -- transcribed text that reads like these is the assistant's
@@ -2439,6 +2461,12 @@ class SherpaOnnxEngine(AudioEngine):
                             except Exception:  # noqa: BLE001 - stream hiccup != crash
                                 self._word_cut_base = ""
                             self._word_cut_fed_stream = False
+                            # Fresh reply -> fresh funnel window (emitted at
+                            # reply end as one "word-cut funnel:" line).
+                            self._word_cut_quiet_run = 0
+                            self._wc_stats = {}
+                            self._wc_win = {}
+                            self._wc_reply_active = True
                     # The playback worker marks _speaking at synth start, before the
                     # first audible block necessarily reaches PortAudio. Until a real
                     # playback reference exists, DTD/coherence/ref-floor decisions are
@@ -2664,6 +2692,13 @@ class SherpaOnnxEngine(AudioEngine):
                 # next reply. Idempotent; stop_speaking() also restores.
                 if self._barge_confirm_active():
                     self._end_barge_confirm()
+                # One-shot ADR-0013 funnel summary for the reply that just ended:
+                # everything the word-cut path saw (or didn't) in a single line,
+                # so a live run scores from the bundle alone -- run-20260706-231226
+                # produced ZERO word-cut signal and was undiagnosable post-hoc.
+                if getattr(self, "_wc_reply_active", False):
+                    self._wc_reply_active = False
+                    self._emit_word_cut_funnel()
                 # Word-cut fed the recognizer during playback (mostly the assistant's
                 # own echo). If the reply ended with NO cut, drop that accumulated
                 # text so it can't prefix the next real final. After a cut the flag
@@ -4044,21 +4079,73 @@ class SherpaOnnxEngine(AudioEngine):
         hard-cuts the instant enough NEW non-own-speech words appear since the burst
         started -- or a stop command. No ducking / no volume change: word CONTENT
         decides, not level. Returns True when it fired the cut."""
-        # Bound accumulation to ONE speech burst: on a VAD-quiet block reset the
-        # stream + base so a prior burst's echo/user text can't pile up toward the
-        # word floor and streaming prefix-revision can't flip text.startswith(base)
+        st = self._wc_stats
+        # Feed the VAD THIS block BEFORE consulting it (live fix, run-20260706-
+        # 231226): the word-cut branch `continue`s before the acoustic path's
+        # accept_waveform, so nothing else updates the VAD during playback.
+        # is_speech_detected() stayed frozen at its pre-reply (quiet) state and
+        # the burst gate below starved the recognizer for the WHOLE reply --
+        # zero words ever fed, so the live talk-over batch could not cut.
+        # Mirrors the acoustic path's per-block accept.
+        if self._vad is not None:
+            self._vad.accept_waveform(samples)
+        # Near-end evidence window (post-EC mic RMS + VAD fraction while the
+        # assistant speaks): the only signal that can separate "voice never
+        # survived the canceller" from "voice arrived but was never transcribed"
+        # after the fact.
+        self._wc_window_update(samples, now)
+        # Bound accumulation to ONE speech burst: after ENOUGH CONSECUTIVE
+        # VAD-quiet blocks (barge_word_cut_reset_quiet_blocks) reset the stream +
+        # base so a prior burst's echo/user text can't pile up toward the word
+        # floor and streaming prefix-revision can't flip text.startswith(base)
         # into feeding the whole reply's echo blob (the streaming recognizer never
-        # self-resets during a reply). Do NOT feed quiet blocks.
+        # self-resets during a reply). Debounced because the OS canceller gates
+        # the near-end in and out during double-talk: a single quiet block is VAD
+        # flicker mid-sentence, not a burst boundary, and the old hair-trigger
+        # wiped the very words a talk-over had accumulated. Quiet blocks are
+        # never fed.
         if self._vad is not None and not self._vad.is_speech_detected():
-            if self._word_cut_fed_stream:
+            st["skipped_quiet"] = st.get("skipped_quiet", 0) + 1
+            self._word_cut_quiet_run += 1
+            debounce = max(
+                1, int(getattr(self.config, "barge_word_cut_reset_quiet_blocks", 3))
+            )
+            if self._word_cut_fed_stream and self._word_cut_quiet_run >= debounce:
+                lost = ""
+                try:
+                    txt = (recognizer.get_result(stream) or "").strip()
+                    base = self._word_cut_base
+                    lost = (
+                        txt[len(base):].strip()
+                        if base and txt.startswith(base)
+                        else txt
+                    )
+                except Exception:  # noqa: BLE001 - telemetry is best-effort
+                    pass
                 try:
                     recognizer.reset(stream)
                 except Exception:  # noqa: BLE001 - reset is best-effort
                     pass
                 self._word_cut_fed_stream = False
                 self._word_cut_base = ""
+                st["resets"] = st.get("resets", 0) + 1
+                lost_words = [
+                    w for w in lost.split() if any(ch.isalpha() for ch in w)
+                ]
+                if lost_words:
+                    # A burst boundary wiped words a cut could have used -- the
+                    # smoking gun for "user words swallowed by the reset".
+                    st["dropped_words"] = (
+                        st.get("dropped_words", 0) + len(lost_words)
+                    )
+                    log.info(
+                        "word-cut burst reset: dropped %d word(s) %r",
+                        len(lost_words), lost[:60],
+                    )
             return False
+        self._word_cut_quiet_run = 0
         self._word_cut_fed_stream = True
+        st["fed"] = st.get("fed", 0) + 1
         text = ""
         try:
             stream.accept_waveform(self.config.sample_rate, samples)
@@ -4066,7 +4153,23 @@ class SherpaOnnxEngine(AudioEngine):
                 recognizer.decode_stream(stream)
             text = (recognizer.get_result(stream) or "").strip()
         except Exception:  # noqa: BLE001 - decode errors must not break capture
+            # Without this trace a recognizer failure is indistinguishable from
+            # "no user words" (the run-20260706-231226 lesson). Warn once per
+            # reply; keep counting silently after that.
+            st["decode_errors"] = st.get("decode_errors", 0) + 1
+            if not st.get("_decode_warned"):
+                st["_decode_warned"] = True
+                log.warning("word-cut: recognizer decode failed during playback")
             return False
+        base = self._word_cut_base
+        new_text = text[len(base):].strip() if base and text.startswith(base) else text
+        words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
+        if len(words) > st.get("max_words", 0):
+            # Novel words appeared on the cancelled mic during playback -- the
+            # positive half of the funnel. One line per per-reply high-water
+            # mark, so a long reply cannot spam the bundle.
+            st["max_words"] = len(words)
+            log.info("word-cut trace: %d word(s) %r", len(words), new_text[:80])
         # SAME guards the acoustic path honours -- suppress the CUT only: one-cut-
         # per-run latch, debounce suppress window, post-speaking refractory (just-
         # cancelled tail), 0.4s playback-onset grace (reply-onset echo transient).
@@ -4078,10 +4181,8 @@ class SherpaOnnxEngine(AudioEngine):
             or self._in_post_speaking_refractory(now)
             or (grace > 0.0 and onset > 0.0 and now < onset + grace)
         ):
+            st["guard_suppressed"] = st.get("guard_suppressed", 0) + 1
             return False
-        base = self._word_cut_base
-        new_text = text[len(base):].strip() if base and text.startswith(base) else text
-        words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
         # WORD-CUT floor (barge_word_cut_min_words, default 4) -- higher than the
         # shared min_words=2 because nonlinear-speaker echo transcribes as garbled
         # 2-3 word fragments that don't match the played text (so _reads_like_own_
@@ -4097,8 +4198,10 @@ class SherpaOnnxEngine(AudioEngine):
             # pile up and swamp the next block's novelty test; a real user (novel)
             # is NOT folded -> their words accumulate toward the floor.
             if new_text and self._reads_like_own_speech(new_text):
+                st["own_folds"] = st.get("own_folds", 0) + 1
                 self._word_cut_base = text
             return False
+        st["cuts"] = st.get("cuts", 0) + 1
         # Fire the SAME cut the duck-confirm path uses. Keep the user's words in the
         # stream as free pre-roll -> clear the fed-stream flag so the reply-end
         # transition won't reset them out.
@@ -4114,6 +4217,68 @@ class SherpaOnnxEngine(AudioEngine):
         log.info("barge-in detected")
         self._cb.on_barge_in()
         return True
+
+    def _wc_window_update(self, samples, now: float) -> None:
+        """Accumulate the ~2s near-end evidence window while word-cut is live and
+        emit one "word-cut near-end:" INFO line per window: post-EC mic RMS
+        (avg + peak), the VAD-active fraction, and the calibrated noise floor.
+        This is the capture-side ground truth the failed live batch lacked --
+        rms above floor with vad_frac ~0 says the canceller passed energy the
+        VAD never accepted as speech; rms at the floor says the near-end never
+        survived capture at all. Capture-thread only; scalar math per block."""
+        w = self._wc_win
+        if not w:
+            w.update(start=now, rms_sum=0.0, rms_peak=0.0, blocks=0, vad=0)
+        r = float(rms(samples))
+        w["rms_sum"] += r
+        w["rms_peak"] = max(w["rms_peak"], r)
+        w["blocks"] += 1
+        if self._vad is not None and self._vad.is_speech_detected():
+            w["vad"] += 1
+        if now - w["start"] < 2.0:
+            return
+        blocks = max(1, int(w["blocks"]))
+        avg = w["rms_sum"] / blocks
+        vad_frac = w["vad"] / blocks
+        cal = self._last_calibration or {}
+        floor = float(cal.get("noise_floor_rms", 0.0) or 0.0)
+        log.info(
+            "word-cut near-end: rms_avg=%.4f rms_peak=%.4f vad_frac=%.2f "
+            "floor=%.4f blocks=%d",
+            avg, w["rms_peak"], vad_frac, floor, blocks,
+        )
+        st = self._wc_stats
+        st.setdefault("win_rms", []).append(round(avg, 5))
+        if len(st["win_rms"]) > 300:  # a very long reply can't grow unbounded
+            del st["win_rms"][:100]
+        self._wc_win = {}
+
+    def _emit_word_cut_funnel(self) -> None:
+        """One INFO line per reply summarizing the ADR-0013 word-cut funnel:
+        blocks fed vs VAD-skipped, burst resets (+ words they dropped), the
+        per-reply word high-water mark, own-speech folds, guard suppressions,
+        decode errors, cuts, and near-end RMS percentiles. Every count of zero
+        is meaningful: fed=0 means the VAD gate starved the recognizer (the
+        run-20260706-231226 failure mode); max_words=0 with rms above floor
+        means the recognizer transcribed nothing from real energy."""
+        st = self._wc_stats
+        wins = st.get("win_rms") or []
+        p50 = p95 = 0.0
+        if wins:
+            ordered = sorted(wins)
+            p50 = ordered[len(ordered) // 2]
+            p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+        log.info(
+            "word-cut funnel: fed=%d skipped_quiet=%d resets=%d dropped_words=%d "
+            "max_words=%d own_folds=%d guard_suppressed=%d decode_errors=%d "
+            "cuts=%d nearend_rms_p50=%.4f nearend_rms_p95=%.4f",
+            st.get("fed", 0), st.get("skipped_quiet", 0), st.get("resets", 0),
+            st.get("dropped_words", 0), st.get("max_words", 0),
+            st.get("own_folds", 0), st.get("guard_suppressed", 0),
+            st.get("decode_errors", 0), st.get("cuts", 0), p50, p95,
+        )
+        self._wc_stats = {}
+        self._wc_win = {}
 
     def _reads_like_own_speech(self, text: str) -> bool:
         """Does confirm-window text read as the assistant's own (ducked) echo?

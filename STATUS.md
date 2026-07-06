@@ -6,7 +6,41 @@ STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 Last verified: 2026-07-06 (Windows i9/4090 box, later the same day; full logic
 suite 2316 passed, 24 skipped on branch fix/stability-recon-followups). Prior:
 2026-07-06 (Linux Mint boot; 2295 passed; ADR-0013 merged to main); 2026-07-05
-(fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012).
+(fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012). Live: 2026-07-06
+(Linux boot, evening) — Phase B open-speaker barge live talk-over batch **FAILED**
+(see the block directly below).
+
+**★★★ 2026-07-06 (LINUX BOOT, evening) — PHASE B (ADR-0013) LIVE TALK-OVER BATCH
+FAILED — READ FIRST.** The first real *sustained* talk-over batch of the OS-capture +
+word-cut barge ran on the bare ROG speaker (Linux Mint, PipeWire 1.0.5;
+`module-echo-cancel` webrtc loaded + PipeWire defaults repointed to the virtual
+nodes; `aec_enabled=false, apm_always_on=false, barge_word_cut_enabled=true,
+barge_confirm_enabled=false`; LLM gemma3:12b/4b; kokoro-int8) — and **it never cut.**
+The assistant played a ~3-min story, the owner talked over it repeatedly, and the
+reply ran to completion. Root, straight from the bundle (`run-20260706-231226`):
+**zero multi-word ASR finals for the entire playback** — only two stray single-word
+`'AND'` echo fragments (correctly below the 4-word floor). The word-cut barge is a
+**text authority**; it got no words during playback, so it could not fire. This is
+**not** the word-count logic and **not** a regression from the Windows session (that
+touched tests/docs/shutdown-gate, never the barge acoustics): everything else was
+healthy — clean *pre*-playback STT, mic never clipped (`clip=0.0%`), no crash, 2316
+tests green. The single failure is that **the near-end user voice did not survive
+capture during playback**, i.e. ADR-0013's core premise ("clean near-end STT during
+playback") did **NOT reproduce** on a real sustained talk-over here — which is
+exactly the "cut-rate on a real talk-over batch" item ADR-0013 flagged as *not yet
+validated*, now answered negatively for this box. **Undetermined** (no audio saved —
+the run was killed, not Ctrl-C'd, so the `record_playback_reference` WAV never
+flushed), among: (a) the OS webrtc canceller over-suppresses the near-end during
+double-talk (classic AEC double-talk suppression → Phase B is a dead end here,
+consistent with [[barge-voice-no-acoustic-fix-2026-07-04]]); (b) the 13% mic is too
+quiet under double-talk (fixable via level/AGC); (c) the per-speech-burst streaming
+reset + own-speech filter swallow the near-end text. **NEXT (measure-first):** one
+diagnostic re-run that **preserves** the cancelled-mic + reference WAV (Ctrl-C exit)
+plus 1–2 deliberate talk-overs → inspect whether the owner's voice is
+present-but-quiet vs gone, which decides whether Phase B is tunable or dead on this
+box. Until distinguished, Phase B stays experimental/opt-in and is **not** the
+open-speaker barge authority. Qualifies the ADR-0013 "validated live" claim (see the
+ADR-0013 2026-07-06-evening addendum).
 
 **★★ 2026-07-06 (WINDOWS BOX) — STABILITY RECON + ADR-0013 WINDOWS PREP (branch
 `fix/stability-recon-followups` → main, 2026-07-06).** A 6-dimension codex-fleet recon

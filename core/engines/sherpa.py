@@ -740,6 +740,18 @@ class SherpaConfig:
     barge_confirm_min_words: int = 2
     barge_confirm_duck_gain: float = 0.15
     barge_confirm_retry_suppress_sec: float = 2.0
+    # OS-capture duck-open level gate (2026-07-05). Only consulted when the word
+    # gate opens the duck from sustained voiced-speech-during-playback (the OS
+    # echo-cancel path, aec_enabled=false, where the acoustic eligibility gate has
+    # no user/echo discriminant). The triggering block must sit within this many
+    # dB of the running playback reference (_playback_level) to open the duck --
+    # i.e. LOUD enough to be the near user, not the far residual-echo floor the OS
+    # canceller leaves. Measured run-20260705-230222: OS-cancelled echo ~-26 dB
+    # below the TTS reference, a real talk-over ~-14 dB, so -18 dB splits them. A
+    # dB margin vs playback (device-relative, NOT a hardcoded RMS); more-negative
+    # = looser (admits quieter speech -> more pumping); a very negative value
+    # (e.g. -60) effectively disables it. Unused on the legacy path.
+    barge_confirm_duck_margin_db: float = -18.0
     # ADR-0011 LOOSE DUCK, masking-canceller (_resid_blind) path. On an open
     # speaker the strict DTD gate can't clear K on the raw mic (the uncancelled
     # echo dominates the chart), so a real talk-over is rejected. When the word
@@ -749,6 +761,27 @@ class SherpaConfig:
     # already-self-calibrating K (unit-variance z-scores), so device-independent;
     # NOT a per-machine RMS/dB. 1.0 = as strict as the hard-fire; lower = looser duck.
     barge_confirm_duck_k_frac: float = 0.5
+    # CONTINUOUS no-duck WORD-CUT for the OS echo-cancel path (2026-07-05). When
+    # the in-app AEC/APM are OFF (aec_enabled=false -> self._aec is None) the OS
+    # voice-comm canceller keeps the near-end USER clean but leaves residual-echo
+    # BURSTS as loud as the user, so no LEVEL gate has a discriminant (the duck-
+    # then-confirm path then PUMPS: echo opens the duck). With this ON, the
+    # streaming recognizer is fed EVERY playback block on the OS-cancelled mic and
+    # the barge hard-cuts the instant >= barge_word_cut_min_words NEW non-own-speech
+    # words appear since the reply started (or a stop command, which cuts alone) --
+    # WORD content is the discriminant, not level. No ducking, so playback level
+    # never changes until the cut (no pumping). Live-scoped to self._aec is None so
+    # legacy (flag off) AND every in-app AEC/APM path stay byte-identical. False
+    # (default) -> inert.
+    barge_word_cut_enabled: bool = False
+    # Word-cut CUT floor (2026-07-05, distinct from barge_confirm_min_words so the
+    # shared duck-confirm path is untouched). On a nonlinear speaker the residual
+    # echo transcribes as GARBLED short fragments that don't match the clean played
+    # text, so a 2-word fragment ("YOU'RE ANY") would slip past _reads_like_own_speech
+    # and false-cut. Requiring >= this many NEW non-own words (a real talk-over
+    # sentence clears it; a garbled 2-3 word echo hallucination does not) is the
+    # primary no-false-cut gate; a bare "stop" still cuts alone via is_stop_command.
+    barge_word_cut_min_words: int = 4
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -1168,6 +1201,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._duck_gain: float = 1.0
         self._confirm_until: float = 0.0
         self._confirm_base_text: str = ""
+        # Continuous no-duck word-cut state (barge_word_cut_enabled). _word_cut_base
+        # is the recognizer result snapshotted at a speech-burst boundary so only
+        # NEW words can cut; it advances to fold pure-echo text so a real talk-over
+        # is never swamped. _word_cut_fed_stream records the recognizer was fed
+        # during playback (mostly echo): if the burst/reply ends with NO cut the
+        # stream is reset so echo can't prefix the next final; after a cut it's
+        # cleared so the user's words stay as free pre-roll. Capture-thread only.
+        self._word_cut_base: str = ""
+        self._word_cut_fed_stream: bool = False
         # Recently ENQUEUED sentences (post-markup, what will be synthesized) +
         # the one audibly playing right now: the echo filter for confirm-window
         # partials -- transcribed text that reads like these is the assistant's
@@ -2394,6 +2436,18 @@ class SherpaOnnxEngine(AudioEngine):
                         self._barge_sustain_reset_pending = False
                         barge_sustain.reset()
                         rejected_run = 0.0
+                        # Word-cut: snapshot the recognizer base at this reply's
+                        # first speaking block so only words transcribed AFTER the
+                        # reply started can cut (the prior final was reset out of the
+                        # stream at reply-end, so usually empty; robust to residue).
+                        if self._barge_word_cut_active():
+                            try:
+                                self._word_cut_base = (
+                                    recognizer.get_result(stream) or ""
+                                ).strip()
+                            except Exception:  # noqa: BLE001 - stream hiccup != crash
+                                self._word_cut_base = ""
+                            self._word_cut_fed_stream = False
                     # The playback worker marks _speaking at synth start, before the
                     # first audible block necessarily reaches PortAudio. Until a real
                     # playback reference exists, DTD/coherence/ref-floor decisions are
@@ -2406,6 +2460,29 @@ class SherpaOnnxEngine(AudioEngine):
                         barge_sustain.reset()
                         rejected_run = 0.0
                         rejected_flagged = False
+                        continue
+                    # CONTINUOUS no-duck word-cut (OS echo-cancel path). Feed THIS
+                    # playback block to the streaming recognizer on the OS-cancelled
+                    # mic and hard-cut the moment enough NEW non-own-speech words (or
+                    # a stop command) appear since the reply started. No duck is ever
+                    # opened, so playback can't pump; word content -- not level --
+                    # decides. continue BEFORE the acoustic duck/sustain machinery so
+                    # that path (incl. its RC-5 rejected-branch duck-open) is fully
+                    # bypassed here; _duck_gain stays 1.0. Legacy/APM paths never
+                    # enter (flag off or self._aec is not None) -> byte-identical.
+                    if (
+                        self.config.barge_in_enabled
+                        and self._barge_word_cut_active()
+                        and recognizer is not None
+                        and stream is not None
+                    ):
+                        self._barge_word_cut_step(
+                            recognizer, stream,
+                            asr_samples if asr_samples is not None else samples,
+                            now,
+                        )
+                        barge_sustain.reset()
+                        rejected_run = 0.0
                         continue
                     # Duck-then-confirm: a prior acoustic trigger ducked playback
                     # and opened a confirm window. Feed THIS block to the streaming
@@ -2542,7 +2619,39 @@ class SherpaOnnxEngine(AudioEngine):
                                     # without cutting -- see the permanent-plan doc. The
                                     # real fix is the capture path, not a looser trigger.)
                                     rejected_run += block_sec
+                                    # OS-capture word-gate duck-open (2026-07-05): when
+                                    # the in-app AEC/DTD are OFF (OS echo-cancel owns
+                                    # cancellation) the acoustic eligibility gate has no
+                                    # user/echo discriminant, so a real talk-over lands
+                                    # HERE as "rejected" voiced speech. If the word gate
+                                    # is on, treat SUSTAINED, loud-enough voiced speech
+                                    # during playback as a loose DUCK trigger and let
+                                    # transcribed words confirm-or-restore. The
+                                    # passes_output_margin check is the ANTI-PUMP key:
+                                    # the OS canceller leaves a residual echo ~-26 dB
+                                    # below the TTS reference (measured run-230222) which
+                                    # the VAD reads as speech; requiring the block within
+                                    # barge_confirm_duck_margin_db of the playback level
+                                    # admits the near user (~-14 dB) and rejects that echo
+                                    # floor, so echo no longer opens a (pumping) duck.
+                                    # Retry-suppress + the confirm word gate bound the
+                                    # rest. Decoupled from rejected_flagged so an early
+                                    # echo can't latch out a later real talk-over. Legacy
+                                    # path (word gate off) is byte-identical.
                                     if (
+                                        rejected_run >= self.config.barge_in_min_speech_sec
+                                        and self.config.barge_confirm_enabled
+                                        and recognizer is not None
+                                        and stream is not None
+                                        and not self._barge_confirm_active()
+                                        and passes_output_margin(
+                                            rms(samples), self._playback_level,
+                                            margin_db=self.config.barge_confirm_duck_margin_db,
+                                        )
+                                    ):
+                                        self._begin_barge_confirm(recognizer, stream, now)
+                                        rejected_run = 0.0
+                                    elif (
                                         rejected_run >= self.config.barge_in_min_speech_sec
                                         and not rejected_flagged
                                     ):
@@ -2564,6 +2673,20 @@ class SherpaOnnxEngine(AudioEngine):
                 # next reply. Idempotent; stop_speaking() also restores.
                 if self._barge_confirm_active():
                     self._end_barge_confirm()
+                # Word-cut fed the recognizer during playback (mostly the assistant's
+                # own echo). If the reply ended with NO cut, drop that accumulated
+                # text so it can't prefix the next real final. After a cut the flag
+                # was cleared in _barge_word_cut_step (user's words stay as pre-roll),
+                # so this is a no-op then.
+                if getattr(self, "_word_cut_fed_stream", False):
+                    self._word_cut_fed_stream = False
+                    self._word_cut_base = ""
+                    try:
+                        recognizer.reset(stream)
+                    except Exception:  # noqa: BLE001 - reset is best-effort
+                        pass
+                    last_partial = ""
+                    last_voiced_ts = None
 
                 try:
                     utterance.append(samples)
@@ -3913,6 +4036,93 @@ class SherpaOnnxEngine(AudioEngine):
         obs = getattr(self, "_confirm_echo_obs", None)
         if obs:
             obs.clear()
+
+    def _barge_word_cut_active(self) -> bool:
+        """Whether the continuous no-duck word-cut path is live. Scoped to the OS
+        echo-cancel path: the flag AND self._aec is None (no in-app AEC/APM). With
+        an in-app canceller the acoustic DTD path owns the decision, so this stays
+        inert and that path is byte-identical. getattr keeps fixtures inert."""
+        return (
+            bool(getattr(self.config, "barge_word_cut_enabled", False))
+            and self._aec is None
+        )
+
+    def _barge_word_cut_step(self, recognizer, stream, samples, now: float) -> bool:
+        """One playback block on the continuous no-duck word-cut path. Feeds the
+        recognizer THIS block (OS-cancelled mic, clean of the assistant's echo) and
+        hard-cuts the instant enough NEW non-own-speech words appear since the burst
+        started -- or a stop command. No ducking / no volume change: word CONTENT
+        decides, not level. Returns True when it fired the cut."""
+        # Bound accumulation to ONE speech burst: on a VAD-quiet block reset the
+        # stream + base so a prior burst's echo/user text can't pile up toward the
+        # word floor and streaming prefix-revision can't flip text.startswith(base)
+        # into feeding the whole reply's echo blob (the streaming recognizer never
+        # self-resets during a reply). Do NOT feed quiet blocks.
+        if self._vad is not None and not self._vad.is_speech_detected():
+            if self._word_cut_fed_stream:
+                try:
+                    recognizer.reset(stream)
+                except Exception:  # noqa: BLE001 - reset is best-effort
+                    pass
+                self._word_cut_fed_stream = False
+                self._word_cut_base = ""
+            return False
+        self._word_cut_fed_stream = True
+        text = ""
+        try:
+            stream.accept_waveform(self.config.sample_rate, samples)
+            while recognizer.is_ready(stream):
+                recognizer.decode_stream(stream)
+            text = (recognizer.get_result(stream) or "").strip()
+        except Exception:  # noqa: BLE001 - decode errors must not break capture
+            return False
+        # SAME guards the acoustic path honours -- suppress the CUT only: one-cut-
+        # per-run latch, debounce suppress window, post-speaking refractory (just-
+        # cancelled tail), 0.4s playback-onset grace (reply-onset echo transient).
+        grace = self.config.barge_in_playback_onset_grace_sec
+        onset = getattr(self, "_playback_onset_at", 0.0)
+        if (
+            self._barge_in_fired_this_run
+            or now < self._barge_in_suppressed_until
+            or self._in_post_speaking_refractory(now)
+            or (grace > 0.0 and onset > 0.0 and now < onset + grace)
+        ):
+            return False
+        base = self._word_cut_base
+        new_text = text[len(base):].strip() if base and text.startswith(base) else text
+        words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
+        # WORD-CUT floor (barge_word_cut_min_words, default 4) -- higher than the
+        # shared min_words=2 because nonlinear-speaker echo transcribes as garbled
+        # 2-3 word fragments that don't match the played text (so _reads_like_own_
+        # speech can't reject them). A real talk-over sentence clears 4; a bare
+        # "stop" cuts alone via is_stop_command.
+        floor = max(1, int(getattr(self.config, "barge_word_cut_min_words", 4)))
+        confirmed = bool(new_text) and (
+            is_stop_command(new_text)
+            or (len(words) >= floor and not self._reads_like_own_speech(new_text))
+        )
+        if not confirmed:
+            # Fold pure-echo text (reads as own speech) into the base so it can't
+            # pile up and swamp the next block's novelty test; a real user (novel)
+            # is NOT folded -> their words accumulate toward the floor.
+            if new_text and self._reads_like_own_speech(new_text):
+                self._word_cut_base = text
+            return False
+        # Fire the SAME cut the duck-confirm path uses. Keep the user's words in the
+        # stream as free pre-roll -> clear the fed-stream flag so the reply-end
+        # transition won't reset them out.
+        self._word_cut_fed_stream = False
+        self._barge_in_fired_this_run = True
+        self._barge_in_suppressed_until = (
+            now + max(0.0, self.config.barge_in_suppress_sec)
+        )
+        log.info("barge-in confirmed by speech (word-cut): %r", new_text[:80])
+        self._cb.on_metric("barge_in_confirmed")
+        # Keep the exact legacy log line so run-bundle tooling (grep
+        # "barge-in detected") sees word-cut barges too.
+        log.info("barge-in detected")
+        self._cb.on_barge_in()
+        return True
 
     def _reads_like_own_speech(self, text: str) -> bool:
         """Does confirm-window text read as the assistant's own (ducked) echo?

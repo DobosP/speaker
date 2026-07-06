@@ -29,6 +29,23 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       scoped fallback (do NOT delete it). **Phase D** voice: per-voice loudness
       offsets (offline) + K-weighted leveler for the inter-sentence volume swing.
       All bounds-only (ADR-0012). Machine-local config is on aec_backend=apm now.
+      **UPDATE 2026-07-06 (Linux live batch, run-20260706-231226):** Phase B
+      (OS-capture `module-echo-cancel` + word-cut) was run live for the first
+      *sustained* talk-over batch and **FAILED** — the assistant played a ~3-min
+      story, the owner talked over it repeatedly, and it never cut. Bundle shows
+      **ZERO multi-word ASR finals for the whole playback** (only 2 stray
+      single-word `'AND'` echo fragments), so the text-authority word-cut had
+      nothing to fire on. The near-end user voice did not survive capture during
+      playback → ADR-0013's "clean near-end during playback" premise did **NOT**
+      reproduce on a real batch (see ADR-0013 2026-07-06-evening addendum).
+      Pipeline otherwise healthy (pre-playback STT clean, `clip=0.0%`, 2316 tests
+      green); **NOT** a regression from the Windows session. **NEXT
+      (measure-first, still):** one re-run that **PRESERVES** the cancelled-mic +
+      reference WAV (Ctrl-C exit so `record_playback_reference` flushes) + 1–2
+      deliberate talk-overs, then inspect whether the owner's voice is
+      present-but-quiet (fixable: level/AGC) or fully suppressed (AEC double-talk →
+      Phase B dead here, matches `barge-voice-no-acoustic-fix-2026-07-04`). Do NOT
+      declare Phase B the barge authority until this is distinguished.
 - [ ] **Adopt the 2026-06-10 gap-analysis roadmap (45 verified findings, P0–P5).**
       `docs/review_2026-06-10_gap_analysis.md` — security/PII first, then real-time
       correctness (rc-2 _on_final off the audio thread DONE via turn_merge; rc-1

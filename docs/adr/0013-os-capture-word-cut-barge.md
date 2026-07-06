@@ -3,7 +3,9 @@
 Date: 2026-07-06
 Status: accepted (2026-07-06: merged to main, live-validated on the Linux/PipeWire
 box — no pumping, no false cut on echo, clean near-end STT; still opt-in / off by
-default, and the real-talk-over batch cut-rate remains open)
+default, and the real-talk-over batch cut-rate remains open — but see the
+2026-07-06 (evening) addendum below: the FIRST real *sustained* talk-over batch did
+NOT reproduce the clean near-end and the barge did not fire)
 
 ## Decision
 
@@ -96,3 +98,34 @@ review:
   (`tests/test_barge_word_cut.py`: 4-word floor vs garbled 2-word echo,
   per-burst stream reset, no-duck invariant, suppress guards, `self._aec is
   None` scoping).
+
+## Addendum — 2026-07-06 (evening): first real sustained talk-over batch did NOT reproduce Phase B
+
+The first live **sustained** talk-over batch on the Linux/PipeWire box (owner at the
+bare ROG speaker; `module-echo-cancel` webrtc loaded + PipeWire defaults repointed;
+`aec_enabled=false, apm_always_on=false, barge_word_cut_enabled=true,
+barge_confirm_enabled=false`; LLM gemma3:12b/4b; run `run-20260706-231226`) **did not
+fire the word-cut barge.** The assistant played a ~3-minute story and the owner
+talked over it repeatedly; the bundle shows **zero multi-word ASR finals for the
+entire playback** — only two stray single-word `'AND'` echo fragments (correctly
+below the 4-word floor). The word-cut path is a *text* authority, so with no
+transcribed words it could not cut. Everything else was healthy: clean pre-playback
+STT, `clip=0.0%`, no crash, 2316 tests green.
+
+This directly qualifies the "**Validated live:** ... clean near-end STT during
+playback" line above. On a **sustained** talk-over the near-end user voice did
+**not** survive capture during playback. The earlier same-day validation observed
+`raw 'STOP'` during playback, so the premise appears to hold for **short utterances
+in gaps** but **not** across a continuous double-talk batch — which is exactly the
+"NOT yet validated" cut-rate item, now answered negatively for this box.
+
+Root cause is **undetermined** because no audio was saved (the run was killed, not
+Ctrl-C'd, so the `record_playback_reference` WAV never flushed). Three candidates, to
+be distinguished by one diagnostic re-run that **keeps** the cancelled-mic + ref WAV:
+(1) the OS webrtc canceller over-suppresses the near-end during double-talk (classic
+AEC double-talk suppression) → Phase B is a dead end on this box, consistent with the
+2026-07-05 "no clean acoustic fix" conclusion (`barge-voice-no-acoustic-fix`);
+(2) the 13% mic is too quiet under double-talk (fixable via level/AGC); (3) the
+per-speech-burst streaming reset + `_reads_like_own_speech` swallow the near-end
+text. **Until distinguished, Phase B stays experimental/opt-in and is NOT the
+open-speaker barge authority.**

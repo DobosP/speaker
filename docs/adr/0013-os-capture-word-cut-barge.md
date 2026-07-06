@@ -160,3 +160,20 @@ requires the CLI flag, not just `record_playback_reference=true`; the next live
 run must launch with `--record`. Whether the OS canceller ALSO suppresses the
 near-end during sustained double-talk (root candidates 1/2) is measurable now
 and remains open until that run.
+
+### Live validation — 2026-07-07 (run-20260707-002943)
+
+The fixed path **cut a real talk-over on the bare speaker** — the first
+successful ADR-0013 word-cut ever: near-end words transcribed during playback,
+4-word floor reached ~0.35 s after the first trace, hard cut, user's sentence
+preserved as pre-roll and answered. Session funnel (5 replies):
+fed=90 / skipped_quiet=164 / resets=1 / dropped_words=0 / own_folds=1 /
+decode_errors=0 / cuts=1 / **false cuts=0**; own-echo transcribed ≈zero words
+throughout. Root candidates (1)/(2) from the addendum above are thereby
+answered for this box: the near-end DOES survive the canceller once the VAD is
+actually fed — the failure was purely the class-(3) defect. Known limits
+confirmed live: short replies end before the 4-word floor fills (uncuttable
+except "stop" — untested), and playback-fed words are dropped at reply end
+when no cut fired. The diagnose_run self-interrupt classifier needs a truth-up
+(flags a word-cut barge SUSPECT:NO-DTD). Cut-rate over a LARGER batch — and
+"stop" — still wanted before default-on is considered.

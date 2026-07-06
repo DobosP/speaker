@@ -752,15 +752,6 @@ class SherpaConfig:
     # = looser (admits quieter speech -> more pumping); a very negative value
     # (e.g. -60) effectively disables it. Unused on the legacy path.
     barge_confirm_duck_margin_db: float = -18.0
-    # ADR-0011 LOOSE DUCK, masking-canceller (_resid_blind) path. On an open
-    # speaker the strict DTD gate can't clear K on the raw mic (the uncancelled
-    # echo dominates the chart), so a real talk-over is rejected. When the word
-    # gate is on, open the DUCK on looser evidence -- voiced speech during playback
-    # AND the DTD raw D at this FRACTION of K -- then let transcribed WORDS confirm
-    # (a false duck self-heals in ~window_sec). Dimensionless fraction of the
-    # already-self-calibrating K (unit-variance z-scores), so device-independent;
-    # NOT a per-machine RMS/dB. 1.0 = as strict as the hard-fire; lower = looser duck.
-    barge_confirm_duck_k_frac: float = 0.5
     # CONTINUOUS no-duck WORD-CUT for the OS echo-cancel path (2026-07-05). When
     # the in-app AEC/APM are OFF (aec_enabled=false -> self._aec is None) the OS
     # voice-comm canceller keeps the near-end USER clean but leaves residual-echo

@@ -3,8 +3,18 @@
 How the capture and playback paths are cleaned today, **why Microsoft Teams
 sounds better than a raw-mic app on the same laptop**, and the concrete knobs to
 close that gap on desktop and mobile. This is the current-truth companion to
-`docs/TTS.md`; barge-in decisions live in `docs/adr/0004`–`0006` (the DTLN-era
-internals doc is archived at `docs/archive/open_speaker_barge_in.md`).
+`docs/TTS.md`; barge-in decisions live in `docs/adr/0004`–`0006` and
+`0011`–`0013` (the DTLN-era internals doc is archived at
+`docs/archive/open_speaker_barge_in.md`).
+
+> **2026-07-06 (ADR-0013, live-validated):** for the bare-open-speaker path the
+> answer to "why Teams is better" below is now the shipped design — capture
+> routes through the **OS voice-comm canceller** (PipeWire `module-echo-cancel`
+> / WASAPI Communications) **instead of** the in-app APM (`aec_enabled=false`),
+> and barge-in is the continuous no-duck **word-cut**
+> (`barge_word_cut_enabled=true`). The in-app APM remains the in-app
+> fallback and the `open_speaker` profile still selects it; see
+> `docs/adr/0013` for the recipe and what is (and isn't) validated.
 
 ## TL;DR — why Teams is better, and the three highest-leverage moves
 
@@ -21,17 +31,23 @@ Teams thing — `mobile/lib/assistant.dart` uses the `voiceCommunication` source
 2. **Make TTS fluid** — `tts_target_rms` (per-sentence loudness normalization) is
    now on by default in `config.json`; a raised-cosine fade de-clicks barge-in
    cuts.
-3. **Production echo cancellation** — `aec_backend="apm"` runs the WebRTC
+3. **In-app fallback echo cancellation** — `aec_backend="apm"` runs the WebRTC
    AudioProcessingModule (AEC3 + RES + NS + AGC2 + HPF), which tolerates a
-   nonlinear open laptop speaker where the linear NLMS filter measures ~0 dB ERLE.
+   nonlinear open laptop speaker where the linear NLMS filter measures ~0 dB
+   ERLE (use it when the ADR-0013 OS voice-comm path isn't set up).
 
 ## The capture chain (per 0.1 s block, `core/engines/sherpa.py`)
 
 ```
 mic ─► InputAGC / input_gain ─► anti-alias resample (soxr→16 kHz)
-     ─► [tee mic_raw → coherence/DTD barge detector]
+     ─► [tee mic_raw → coherence/DTD barge detector]   (in-app AEC paths only)
      ─► AEC / WebRTC APM ─► GTCRN denoiser ─► recorder ─► VAD / ASR / speaker-ID
 ```
+
+On the ADR-0013 OS-capture path the OS canceller runs *before* "mic" above
+(`aec_enabled=false` → the in-app AEC hop and the coherence/DTD tee are
+bypassed) and barge-in is the ASR **word-cut** on the OS-cancelled capture — no
+acoustic gate is in the loop.
 
 - **Anti-alias resampler** (`core/audio_frontend.py::AudioResampler`) prefers
   `soxr` (stateful, no per-block seam) → `scipy.resample_poly` → naive linear.
@@ -40,8 +56,10 @@ mic ─► InputAGC / input_gain ─► anti-alias resample (soxr→16 kHz)
   `python -m tools.doctor` flags a missing `soxr`.
 - **AEC runs only while the assistant is speaking** (the far-end reference has
   energy). This is intentional: the deep cancellers distort clean near-end speech,
-  and barge-in keys off `mic_raw` (pre-AEC) anyway. The exception is the WebRTC
-  APM with `apm_always_on=true`, which runs every block (see below).
+  and on the in-app AEC paths barge-in keys off `mic_raw` (pre-AEC). The
+  exceptions: the WebRTC APM with `apm_always_on=true` runs every block (see
+  below), and the ADR-0013 OS-capture path has no in-app AEC at all — its
+  word-cut barge reads the OS-cancelled stream, not `mic_raw`.
 - **GTCRN denoiser** is off by default and not shipped. Fetch + enable:
   `python -m tools.setup_models --denoise-model`, then `denoise_enabled=true` +
   `denoise_model=<path>`. **Re-enroll your voice afterward** (the speaker
@@ -61,9 +79,14 @@ silent STT-garbler, and the boost-only AGC can't fix it — the OS level must co
 down). Off by default (adds the calibration window to startup); only moves the
 AGC floor when `input_agc` is also on, otherwise it just logs the measurement.
 Steady-state clipping during a run surfaces the same `input_clipping` metric from
-the capture heartbeat. Note: don't pair `input_agc=true` with open-speaker
-barge-in — its time-varying gain perturbs the coherence detector; let the APM's
-AGC2 own gain there instead.
+the capture heartbeat. Gain-ownership rules per path: on the **in-app APM
+fallback** don't pair `input_agc=true` with open-speaker barge-in — its
+time-varying gain perturbs the coherence detector; let the APM's AGC2 own gain.
+On the **ADR-0013 OS-capture path** no coherence detector is in the loop:
+Linux `module-echo-cancel` is loaded AEC-only (NS+AGC off), so keep
+`input_agc=true` + `input_calibrate=true` or the VAD goes deaf; Windows WASAPI
+Communications applies the OS's own AGC, so leave `input_agc` off and
+`input_gain` at 1.0 (stacking gain stages is the double-AGC/pumping lesson).
 
 ## Echo cancellation backends (`aec_backend`)
 
@@ -71,9 +94,10 @@ AGC2 own gain there instead.
 | --- | --- | --- | --- |
 | `nlms` (default) | dependency-free NumPy adaptive filter | ~10–20 dB on a headset/near-field; **~0 dB and diverges on a nonlinear open speaker** | none |
 | `dtln` | deep ONNX canceller | +6 dB ERLE, handles nonlinearity | `tools.setup_models --aec-model` |
-| **`apm`** | **WebRTC AudioProcessingModule (AEC3 + RES + NS + AGC2 + HPF)** | **40–53 dB ERLE in-vitro; the production path** | `pip install livekit` |
+| **`apm`** | **WebRTC AudioProcessingModule (AEC3 + RES + NS + AGC2 + HPF)** | **40–53 dB ERLE in-vitro; the in-app fallback** (the validated open-speaker path is OS voice-comm capture + word-cut, ADR-0013) | `pip install livekit` |
 
-The **APM** is the recommended open-speaker backend. It conforms to the same
+The **APM** is the recommended **in-app fallback** for the open speaker (when
+the ADR-0013 OS voice-comm path isn't set up). It conforms to the same
 `process_16k(near, far)` seam as the other cancellers (`core/engines/_apm.py`),
 fed the time-aligned far-end reference from the existing `FarEndRing`. It fails
 **open**: if `livekit` is missing, `build_aec` returns `None` and the path is
@@ -86,18 +110,26 @@ byte-identical to no-AEC.
   utterance — the desktop analog of the OS voice-comm path. When the assistant is
   silent the far reference is ~zeros, so the echo canceller self-cancels to a
   no-op (measured ~93 % idle passthrough).
-- `aec_auto_delay=true` (default) feeds the coherence detector's measured
-  speaker→mic lag back into the far-end read delay, so a mis-set
-  `aec_ref_delay_ms` self-corrects during the run.
+- `aec_auto_delay=true` (default) measures the speaker→mic lag **on-device by
+  normalized cross-correlation** (`AecDelayCalibrator`, ADR-0012) and feeds it
+  back into the far-end read delay, demoting `aec_ref_delay_ms` to a seed —
+  a mis-set delay self-corrects during the run (validated 40→~120 ms on
+  run-20260702-004345).
 
-**Reproducible open-speaker config:** select the committed `open_speaker` device
-profile — `python -m core --engine sherpa --device open_speaker` — instead of
-hand-editing `config.local.json`. It turns on `aec_backend="apm"` +
-`apm_always_on`.
+**Reproducible open-speaker config:** the live-validated path is the OS
+voice-comm capture + no-duck word-cut recipe in **ADR-0013** (`aec_enabled=false`,
+`apm_always_on=false`, `barge_word_cut_enabled=true`, plus PipeWire
+`module-echo-cancel` on Linux / `capture_voice_comm=true` on Windows). The
+committed `open_speaker` device profile — `python -m core --engine sherpa
+--device open_speaker` — remains the **in-app fallback**: it turns on
+`aec_backend="apm"` + `apm_always_on` (no OS setup needed, but the APM's
+always-on NS is what smeared the near-end user during double-talk; see
+ADR-0013's context).
 
-## The OS voice-comm path (optional, the Teams-equivalent)
+## The OS voice-comm path (the Teams-equivalent — the validated open-speaker path per ADR-0013, still opt-in)
 
-An alternative to the in-app APM — let the OS do the DSP:
+Replaces the in-app APM on the open-speaker path (run with `aec_enabled=false`
+so the word-cut barge is live) — let the OS do the DSP:
 
 - **Linux (PipeWire):** load the WebRTC echo-cancel module once and point capture
   at the virtual source:
@@ -147,8 +179,21 @@ never fired in a committed run.
 ## Quick reference — enabling everything on a Linux laptop
 
 ```bash
-pip install soxr livekit                       # resampler + WebRTC APM
-python -m tools.setup_models --denoise-model   # optional GTCRN (or rely on the APM)
+pip install soxr                                # resampler (always)
+# Validated open-speaker path (ADR-0013): OS echo-cancel + no-duck word-cut
+pactl load-module module-echo-cancel aec_method=webrtc \
+    source_name=ec_source sink_name=ec_sink \
+    aec_args="webrtc.noise_suppression=false webrtc.gain_control=false"
+# config.local.json: aec_enabled=false, apm_always_on=false,
+#                    barge_word_cut_enabled=true, input_agc=true, input_calibrate=true
+python -m core --engine sherpa --input-device pipewire --output-device pipewire
+python -m tools.doctor                          # checks the EC module is loaded
+
+# In-app APM fallback (no OS setup; NS smears the near-end during double-talk):
+pip install livekit
 python -m core --engine sherpa --device open_speaker --enroll   # re-enroll post-cleanup
-python -m tools.doctor                          # verify soxr + livekit APM are READY
 ```
+
+On Windows the OS-capture hop is `capture_voice_comm=true` (WASAPI
+Communications) with the same `aec_enabled=false` + `barge_word_cut_enabled=true`
+flips — see ADR-0013's Windows addendum.

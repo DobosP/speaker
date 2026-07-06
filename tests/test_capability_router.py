@@ -20,6 +20,7 @@ from core.capability_router import (
     escalate_predicate,
 )
 from core.routing import FAST, MAIN
+from core.routing import LatencyPolicy
 
 # A long, marker-free utterance: the heuristic routes it SIMPLE with LOW
 # confidence (>=12 words, no gather/act markers) -- the exact case the LLM
@@ -89,6 +90,16 @@ def test_control_tier_is_fast_research_tier_is_main():
     assert r.route("stop", {}).tier == FAST
     assert r.route("compare a and b step by step", {}).tier == MAIN
     assert r.route("set a timer for ten minutes", {}).tier == MAIN
+
+
+def test_route_decision_carries_latency_policy():
+    r = HeuristicCapabilityRouter()
+    assert r.route("stop", {}).latency_policy == LatencyPolicy.INSTANT_CONTROL.value
+    assert (
+        r.route("compare the latest options", {}).latency_policy
+        == LatencyPolicy.ACK_THEN_THINK.value
+    )
+    assert r.route("what time is it", {}).latency_policy == LatencyPolicy.SNAPPY_ANSWER.value
 
 
 def test_empty_text_is_safe_simple():

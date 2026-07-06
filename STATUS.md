@@ -3,9 +3,33 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-06 (Linux Mint boot; full logic suite 2295 passed, 24
-skipped; branch fix/os-echo-cancel-word-cut-barge → merged to main; ADR-0013).
-Prior: 2026-07-05 (fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012).
+Last verified: 2026-07-06 (Windows i9/4090 box, later the same day; full logic
+suite 2316 passed, 24 skipped on branch fix/stability-recon-followups). Prior:
+2026-07-06 (Linux Mint boot; 2295 passed; ADR-0013 merged to main); 2026-07-05
+(fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012).
+
+**★★ 2026-07-06 (WINDOWS BOX) — STABILITY RECON + ADR-0013 WINDOWS PREP (branch
+`fix/stability-recon-followups` → main, 2026-07-06).** A 6-dimension codex-fleet recon
+(20 agents, high-severity findings adversarially verified) drove: (1) the
+ADR-0013 word-cut state machine got its first headless net
+(`tests/test_barge_word_cut.py`: 4-word floor vs garbled echo, burst reset,
+no-duck invariant, guards, `_aec is None` scoping); (2) `python -m
+tools.setup_models --kokoro` now EXISTS (the runtime warning referenced a
+fictional flag) — Kokoro fetch on THIS box still BLOCKED on disk (~1.0 GB free
+after temp+pip cleanup; needs ~0.7 GB peak — free more, then one command);
+(3) `VoiceRuntime.stop()` shutdown gate — a TTS_REQUEST racing teardown can no
+longer start speaking (codex-review finding) + EventBus explicit
+discard-on-stop contract + backlog high-water warn; (4) doc truth-ups
+(ADR-0013 → accepted + Windows addendum; audio_pipeline.md now presents
+OS-capture+word-cut as the validated open-speaker path, APM as in-app
+fallback; two stale backlog P1/P2 items corrected — the `_resid_blind` mic_raw
+tap WAS already implemented 2026-07-04). Machine-local `config.local.json`
+flipped to the ADR-0013 WINDOWS recipe (`capture_voice_comm=true,
+aec_enabled=false, apm_always_on=false, barge_word_cut_enabled=true,
+barge_confirm_enabled=false, input_gain 4.0→1.0, input_calibrate=true`;
+backup + rollback line in the file). **The next `python -m core` live run on
+this box IS the Phase-B-on-Windows measurement** — see the checklist in the
+`_os_capture_note_2026_07_06` config comment.
 
 **★★★ PHASE B OUTCOME — OS-CAPTURE + WORD-CUT BARGE (2026-07-06, ADR-0013) — READ
 FIRST.** The Phase B experiment ran live on the bare laptop speaker and it WORKS

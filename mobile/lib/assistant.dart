@@ -188,6 +188,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     AsrService.instance.onEndpoint = _onEndpoint;
     await AsrService.instance.ensureReady();
     AsrService.instance.reset(); // fresh recognizer stream for this session
+    _quietGate.resetAsr();
 
     // voiceCommunication + echoCancel let the mic stay open during playback
     // without the recognizer transcribing the assistant's own TTS. The config is
@@ -211,7 +212,10 @@ class _AssistantScreenState extends State<AssistantScreen> {
   void _onPartial(String partial) {
     if (partial.isEmpty) return;
     _tLastVoice = DateTime.now();
-    _quietGate.noteVoice(_tLastVoice!);
+    // TODO(recovered): ASR isolate has no explicit speech-start callback; a
+    // non-empty partial is the earliest reliable signal that an utterance is
+    // in flight, so calibration stays blocked until the endpoint callback.
+    _quietGate.noteAsrStarted(_tLastVoice!);
     // Barge-in via transcription (complements the energy path): the user talking
     // — or saying a stop word — while the assistant speaks cuts it off.
     if (_speaking) {
@@ -231,8 +235,8 @@ class _AssistantScreenState extends State<AssistantScreen> {
 
   // A finished utterance from the ASR worker.
   void _onEndpoint(String utterance) {
+    _quietGate.noteAsrFinished(DateTime.now(), hadSpeech: utterance.isNotEmpty);
     if (utterance.isEmpty) return;
-    _quietGate.noteVoice(DateTime.now());
     // A completed utterance supersedes any in-flight reply (its tokens stop
     // feeding TTS) and silences whatever is still playing.
     _turn++;
@@ -254,6 +258,7 @@ class _AssistantScreenState extends State<AssistantScreen> {
     await _audioSub?.cancel();
     _audioSub = null;
     await _recorder.stop();
+    _quietGate.resetAsr();
     await _stopSpeaking();
     if (mounted) setState(() => _listening = false);
   }

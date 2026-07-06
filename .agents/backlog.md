@@ -342,6 +342,35 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       the capture/worker thread, like `FarEndRing`) before `coherence_ring_ms` is
       raised materially. Documented inline in `_audio_cb`'s docstring.
 
+## P2 — runtime robustness (2026-07-06 codex-fleet recon; every item below adversarially verified against the code)
+> Context: the 6-dimension stability recon (branch `fix/stability-recon-followups`).
+> FIXED that session: EventBus discard-on-stop contract + high-water WARN
+> (always_on_agent/event_bus.py + tests/test_event_bus.py) and the shutdown TTS race
+> (`VoiceRuntime.stop()` `_stopping` gate — a queued TTS_REQUEST can no longer start
+> speaking mid-teardown; tests/test_core_runtime.py). Remaining verified findings:
+- [ ] **Pending confirmations have no TTL** (always_on_agent/supervisor.py ~414-417,
+      ~778-807): pending-confirmation state only clears on confirm/deny/cancel_all(),
+      so an abandoned "should I do X?" wedges that slot indefinitely. Add a TTL sweep
+      (e.g. expire with a spoken "never mind" after N minutes).
+- [ ] **Follow-up timer + watch poller not joined/guarded on shutdown**
+      (always_on_agent/supervisor.py ~287-303; core/watch.py ~313-326): the follow-up
+      timer is cancelled but publish() has no stopped-guard (a firing timer can publish
+      into a stopping bus); the watch poller clears active watches but never joins the
+      daemon poller thread. S effort.
+- [ ] **`builtins.input` shim race under concurrent tasks** (core/agent.py ~341-353 +
+      always_on_agent/tasks.py ~68-73): core.agent temporarily replaces the
+      process-global `builtins.input` while the task runtime allows multiple concurrent
+      daemon tasks — serialize stream_run()/_auto_answer() or guard the shim with a lock.
+- [ ] **Task worker can outlive its supervisor reap** (always_on_agent/supervisor.py
+      ~479-484 + tasks.py `_reap`): reap pops active_tasks + sets cancel_event but never
+      joins the worker thread; bounded by daemon=True (dies at process exit) and
+      documented inline as intentional — revisit if leaked workers show up in bundles.
+- [ ] **Unbounded queued_tasks list + runlog logging queue** (supervisor.py ~64-66,
+      ~418-420; core/runlog.py ~266-268, ~295-304): add a max-queued policy with
+      drop/supersede semantics for stale queued turns; bound or coalesce the log queue
+      under log storms. (The HedgeLLM loser-thread join-budget leak is ALREADY tracked
+      in the routing-polish section above — WARN-only observability shipped 2026-06-08d.)
+
 ## Smart routing — phase-2 audit (2026-06-08, 6-dimension fan-out: 28 findings, 19 confirmed)
 > Verdict: smart routing is largely HEALTHY + fail-safe (no P0, no active §9.7
 > boundary leak, every risky path double-bounded toward the more-private/conservative

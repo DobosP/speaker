@@ -9,7 +9,7 @@ suite 2316 passed, 24 skipped on branch fix/stability-recon-followups). Prior:
 (fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012).
 
 **★★ 2026-07-06 (WINDOWS BOX) — STABILITY RECON + ADR-0013 WINDOWS PREP (branch
-`fix/stability-recon-followups`, unmerged).** A 6-dimension codex-fleet recon
+`fix/stability-recon-followups` → main, 2026-07-06).** A 6-dimension codex-fleet recon
 (20 agents, high-severity findings adversarially verified) drove: (1) the
 ADR-0013 word-cut state machine got its first headless net
 (`tests/test_barge_word_cut.py`: 4-word floor vs garbled echo, burst reset,

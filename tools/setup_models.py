@@ -108,6 +108,17 @@ SENSE_VOICE_MODEL_URL = (
     "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
 )
 
+# Optional Kokoro TTS (ADR-0010: the adopted desktop voice). Ships as a
+# sherpa-onnx tts-models release .tar.bz2 bundling model.int8.onnx + voices.bin
+# + tokens.txt + lexicon-*.txt + espeak-ng-data/ (+ dict/), so unlike the
+# single-file assets the WHOLE package is unpacked (into <dest>/tts_kokoro/).
+# build_tts keys the Kokoro path on tts_voices being set. Override with
+# --kokoro-url or the KOKORO_TTS_URL env var.
+KOKORO_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/"
+    "kokoro-int8-multi-lang-v1_1.tar.bz2"
+)
+
 
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
@@ -185,6 +196,90 @@ def fetch_punct_model(dest_dir: str, url: str, *, force: bool = False) -> str:
         pass
     _ = archive_name  # (kept for clarity; download already named it)
     return model_path
+
+
+def fetch_kokoro_package(dest_dir: str, url: str, *, force: bool = False) -> dict:
+    """Download + unpack the Kokoro TTS package, returning its config paths.
+
+    Returns ``{tts_model, tts_voices, tts_tokens, tts_data_dir, tts_lexicon}``
+    (``tts_data_dir``/``tts_lexicon`` empty when the package ships none). The
+    release .tar.bz2 nests everything under one top-level dir; members are
+    re-rooted past that prefix into ``dest_dir`` with the same path-traversal
+    guard as ``extract_member`` (each file is written via ``extractfile``,
+    never ``tar.extract``). Idempotent: when the model + voices already exist
+    the download and unpack are skipped (unless ``force``). The archive is
+    removed after a successful unpack."""
+    import shutil
+    import tarfile
+
+    os.makedirs(dest_dir, exist_ok=True)
+
+    def _resolve() -> dict:
+        model = ""
+        for name in ("model.int8.onnx", "model.onnx"):
+            cand = os.path.join(dest_dir, name)
+            if os.path.exists(cand):
+                model = cand
+                break
+        voices = os.path.join(dest_dir, "voices.bin")
+        tokens = os.path.join(dest_dir, "tokens.txt")
+        data_dir = os.path.join(dest_dir, "espeak-ng-data")
+        lexicon = os.path.join(dest_dir, "lexicon-us-en.txt")
+        if not os.path.exists(lexicon):
+            others = sorted(
+                f for f in os.listdir(dest_dir)
+                if f.startswith("lexicon") and f.endswith(".txt")
+            )
+            lexicon = os.path.join(dest_dir, others[0]) if others else ""
+        return {
+            "tts_model": model,
+            "tts_voices": voices if os.path.exists(voices) else "",
+            "tts_tokens": tokens if os.path.exists(tokens) else "",
+            "tts_data_dir": data_dir if os.path.isdir(data_dir) else "",
+            "tts_lexicon": lexicon,
+        }
+
+    have = _resolve()
+    # All three REQUIRED files must exist for the skip -- a partial prior unpack
+    # (e.g. missing tokens.txt) must re-fetch, or wire_sherpa_paths would keep a
+    # stale Piper tokens path beside Kokoro voices (codex-review 2026-07-06).
+    if have["tts_model"] and have["tts_voices"] and have["tts_tokens"] and not force:
+        return have
+
+    archive = fetch_speaker_model(dest_dir, url, force=force)
+    dest_root = os.path.realpath(dest_dir)
+    with tarfile.open(archive, "r:*") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            parts = [
+                p for p in member.name.replace("\\", "/").split("/") if p and p != "."
+            ]
+            if any(p == ".." for p in parts):
+                raise ValueError(f"unsafe member path in {archive}: {member.name}")
+            # Strip the package's top-level dir; tolerate root-level members.
+            rel = parts[1:] if len(parts) > 1 else parts
+            if not rel:
+                continue
+            out_path = os.path.join(dest_dir, *rel)
+            if not os.path.realpath(out_path).startswith(dest_root + os.sep):
+                raise ValueError(f"unsafe member path in {archive}: {member.name}")
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            src = tar.extractfile(member)
+            if src is None:
+                continue
+            with src, open(out_path, "wb") as out:
+                shutil.copyfileobj(src, out)
+    try:
+        os.remove(archive)  # the .tar.bz2 is no longer needed once unpacked
+    except OSError:
+        pass
+    got = _resolve()
+    if not (got["tts_model"] and got["tts_voices"] and got["tts_tokens"]):
+        raise FileNotFoundError(
+            f"Kokoro package from {url} lacked model/voices.bin/tokens.txt after unpack"
+        )
+    return got
 
 
 def apply_accuracy(manifest: dict, accuracy: str) -> dict:
@@ -332,6 +427,21 @@ def main(argv: list[str] | None = None) -> int:
         help="also download the optional SenseVoice offline second-pass ASR (~230 MB) "
         "and wire asr_final_backend=sense_voice in config; off by default. Robust on "
         "run-on/casual speech (the streaming zipformer garbles it).",
+    )
+    parser.add_argument(
+        "--kokoro-url",
+        dest="kokoro_url",
+        default=os.environ.get("KOKORO_TTS_URL", KOKORO_URL),
+        help="URL of the Kokoro TTS package .tar.bz2 (override or set KOKORO_TTS_URL)",
+    )
+    parser.add_argument(
+        "--kokoro",
+        dest="kokoro",
+        action="store_true",
+        help="also download the Kokoro TTS package (ADR-0010 adopted desktop voice, "
+        "~330 MB unpacked) and wire tts_model/tts_voices/tts_tokens/tts_data_dir/"
+        "tts_lexicon in config; off by default. build_tts keys on tts_voices, so a "
+        "successful fetch switches synthesis from the Piper/VITS voice to Kokoro.",
     )
     parser.add_argument(
         "--aec-model",
@@ -489,6 +599,25 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"[models] SenseVoice not fetched ({exc}); continuing without it. "
                 "The final transcript stays on the streaming model until you re-run.",
+                file=sys.stderr,
+            )
+
+    # Kokoro TTS (optional, opt-in): the ADR-0010 adopted desktop voice -- a whole
+    # package (model + voices.bin + tokens + espeak-ng-data + lexicon), not a
+    # single file. Same non-fatal contract: a failed fetch leaves synthesis on the
+    # Piper/VITS voice (tts_voices stays unset). Runs AFTER the Piper paths were
+    # resolved above so its tts_* entries overwrite them in wire_sherpa_paths.
+    if args.kokoro:
+        kokoro_dest = os.path.join(args.dest, "tts_kokoro")
+        print(f"[models] fetching Kokoro TTS package: {args.kokoro_url} -> {kokoro_dest}")
+        try:
+            resolved.update(
+                fetch_kokoro_package(kokoro_dest, args.kokoro_url, force=args.force)
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] Kokoro not fetched ({exc}); continuing on the Piper/VITS "
+                "voice. tts_voices stays unset until you re-run.",
                 file=sys.stderr,
             )
 

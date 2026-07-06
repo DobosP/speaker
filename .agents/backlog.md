@@ -75,10 +75,14 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 - [ ] **★★ Audio output quality on the Windows box.** The box still synthesizes
       with Piper `en_US-libritts_r-medium` — `config.local.json` `tts_model` was
       never repointed at the adopted Kokoro (ADR-0010) because C: was 100% full
-      (the `gemma3:4b` pull died mid-download; ~4 GB free after cleanup). Fix:
-      free disk → fetch the Kokoro int8 package → set `tts_model`/`tts_voices`/
-      `tts_tokens` (+ `tts_lexicon`) in config.local.json → listen; then apply
-      the voice-plan P2 items (per-device `tts_output_lowpass_hz` for the cheap
+      (the `gemma3:4b` pull died mid-download; ~4 GB free after cleanup).
+      **2026-07-06 update:** `python -m tools.setup_models --kokoro` now exists
+      (fetches + auto-wires tts_model/tts_voices/tts_tokens/tts_data_dir/
+      tts_lexicon; tests in tests/test_setup_kokoro.py). Fetch attempted this
+      session but still DISK-BLOCKED: only ~1.0 GB free after temp+pip cleanup
+      vs ~0.7 GB peak needed (owner declined the Docker-WSL prune for now).
+      Fix: free ~1 GB more → run the one command → listen; then apply the
+      voice-plan P2 items (per-device `tts_output_lowpass_hz` for the cheap
       open speaker, named-voice set). Until then "audio quality is bad" on this
       machine is EXPECTED — it is the old voice.
 - [ ] **★★ STT quality on the Windows box (the conversation ceiling).** Evidence
@@ -254,22 +258,18 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > The items below are the UNFIXED findings — left for a focused/live session because
 > they change the hard-requirement barge gate (must validate at the mic) or are Dart
 > (no SDK on the desktop box). Full review: logs of run wf_6f5da8f6 / session handoff.
-- [ ] **★★ P1 — DTD barge gate reads the APM-NS-suppressed residual under `open_speaker`
-      (the headline finding; CORROBORATED by the 2026-06-21 barge_stress subset:
-      tp_rate=0.50, "voiced did not trip the gate").** The June-8 DTD weights (raw 0.2,
-      **resid 1.0**, coh 0.0) + the 12 dB `dtd_residual_floor_margin_db` gate assume the
-      post-AEC residual CONTAINS the user's voice (NLMS/DTLN can't cancel the near-end
-      user — not in the reference — so they land in the residual). But `open_speaker`
-      sets `apm_always_on=true` + NS, so the APM's ML noise-suppression runs on EVERY
-      block and attenuates the near-end USER during double-talk — the SAME failure mode
-      the project already documents at sherpa.py ("DTLN suppresses the near-end voice →
-      gate rejected EVERY barge / user had to scream"). The 2026-06-10 raw-mic fix only
-      covers the COHERENCE-confirm path, which is dead under the DTD branch. **Fix
-      (needs live mic A/B — risks re-opening self-interrupt if done blindly):** when
-      `_apm_owns_ns`, feed the DTD `resid` feature + the floor gate from a NON-NS source
-      (mic_raw, or a pre-NS APM tap), or shift the DTD weight onto z_raw/z_coh (the only
-      features that still see the user once NS has run). Add a double-talk regression at
-      the production config (NS=true, always_on=true) asserting a real talk-over fires.
+- [~] **★★ P1 — DTD barge gate under `open_speaker`/`_apm_owns_ns` — CODE FIX LANDED
+      2026-07-04, LIVE A/B STILL OPEN (wording refreshed 2026-07-06 after a verified
+      recon caught this entry stale).** The originally-proposed fix — feed the DTD
+      `resid` feature + the floor gate from a NON-NS source when the canceller blinds
+      the residual — **is implemented**: `_apm_owns_ns`/`_resid_blind` are derived at
+      sherpa.py ~1410 and the DTD residual feature + floor read `mic_raw` under
+      `_resid_blind` (sherpa.py ~3623-3653, ~3712-3718; commits 3b994b7/55dfdb9).
+      REMAINING: (a) the live-mic A/B on the APM profile that validates it (risks
+      re-opening self-interrupt — cannot be judged headless); (b) the P2 double-talk
+      regression below. NOTE the open-speaker barge authority is now the ADR-0013
+      OS-capture + word-cut path (aec_enabled=false → the DTD never runs); this item
+      only governs the in-app-APM FALLBACK path (`open_speaker` profile).
 - [ ] **P2 — Mobile BargeCalibrator ambient floor is contaminated** (mobile/lib/assistant.dart):
       `observeQuiet` is fed on every `!_speaking` chunk, which includes the user's own
       request speech AND the TTS-echo tail (because `_speaking` clears before `_player.stop()`
@@ -281,15 +281,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       user-voice-survival test builds the APM with NS=FALSE (opposite of `open_speaker`).
       Add a NS=true echo+near-end mix test asserting the residual the DTD reads keeps enough
       near-end energy — this is the headless guardrail for the P1 above.
-- [ ] **P2/P3 — test gaps locking the APM behavior** (live-unvalidated code, tests are the
-      only net): (a) the headline `aec_auto_delay` capture-loop feedback (sherpa.py ~2056)
-      has NO test — add an engine-level test driving `_capture_loop` that asserts
-      `_aec_ref_delay` updates after ≥10 playback blocks, ignores out-of-range, no-ops when
-      off; (b) `_apm_owns_ns` AND-guard derivation in `start()` is bypassed (test sets the
-      flags by hand) — assert always_on=False+NS=True ⇒ `_apm_owns_ns`=False (denoiser still
-      runs on idle); (c) `apm_stream_delay_ms`→APM + the reverse/delay/forward call order is
-      untested — monkeypatch a fake rtc.APM and assert order; (d) pin that `tts_target_rms>0`
-      forces non-streaming TTS and `=0` keeps streaming (couples loudness-norm to whole-clip).
+- [~] **P2/P3 — test gaps locking the APM behavior** (live-unvalidated code, tests are the
+      only net; statuses refreshed 2026-07-06): (a) `aec_auto_delay` — the calibrator
+      accept/reject + wiring ARE covered (tests/test_aec_seam.py:621-680,
+      tests/test_denoise.py:366-407) but the single engine-level capture-loop test the
+      original wording asked for (≥10 playback blocks → `_aec_ref_delay` updates /
+      out-of-range ignored / no-op when off) is still missing; (b) `_apm_owns_ns`
+      AND-guard derivation in `start()` still bypassed — OPEN; (c) `apm_stream_delay_ms`
+      call order still untested — OPEN; (d) `tts_target_rms` streaming pin: STALE — the
+      shipped behavior changed (streams once a carried gain exists, sherpa.py ~3413) and
+      is pinned by tests/test_sherpa_playback.py:671-720; drop this sub-item.
 - [ ] **P3 — defaults-safe / doc nits:** `barge_fade_ms=4.0` is a SECOND clean-clone default
       deviation beyond `tts_target_rms` (de-click on barge flush) — either sanction it in the
       invariant doc or default the dataclass to 0.0 and set 4.0 only in config.json.

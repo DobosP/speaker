@@ -111,6 +111,9 @@ class VoiceRuntime:
         # corrections before the brain sees it. See core/cleanup.py.
         self._cleaner = cleaner
         self.bus = EventBus()
+        # Set by stop() before any teardown step; _on_event drops
+        # action-producing events (TTS_REQUEST) once true.
+        self._stopping = False
         # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
         # and the LLM capability (llm_first_token). Read via ``runtime.metrics``.
@@ -476,6 +479,11 @@ class VoiceRuntime:
             self.warm_ready.set()
 
     def stop(self) -> None:
+        # Shutdown gate FIRST: the threaded bus keeps dispatching until
+        # bus.stop() below, so a queued TTS_REQUEST could otherwise start
+        # speaking mid-teardown (codex-review 2026-07-06). _on_event drops
+        # action-producing events once this is set.
+        self._stopping = True
         # Guard each step so a teardown error never prevents the engine from
         # stopping -- that is what flushes the session recording to disk.
         if self._dispatcher is not None:
@@ -782,6 +790,12 @@ class VoiceRuntime:
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
             if not text:
+                return
+            # Shutdown gate: stop() sets _stopping before the bus thread is
+            # joined, so a reply racing teardown is dropped here instead of
+            # starting playback that engine.stop() then has to kill.
+            if self._stopping:
+                log.debug("dropping TTS_REQUEST during shutdown: %r", text)
                 return
             # Deterministic barge-in (realtime-concurrency-1): a sentence that
             # was queued or emitted just before an interrupt belongs to a turn

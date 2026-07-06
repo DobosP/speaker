@@ -331,6 +331,60 @@ def test_audio_frontend_no_apm_anywhere_emits_no_livekit_check():
     assert _apm_check(check_audio_frontend(config, import_fn=_no_livekit)) is None
 
 
+# --- ADR-0013 word-cut EC preflight (run-20260706-231226 launched degraded with
+# --- no module-echo-cancel loaded and nothing said so) ---------------------------
+
+
+def _word_cut_check(checks):
+    for c in checks:
+        if "word-cut" in c.name.lower():
+            return c
+    return None
+
+
+def test_word_cut_ec_check_fails_when_module_missing():
+    config = {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}}
+    checks = check_audio_frontend(
+        config, import_fn=_no_livekit, platform="linux", modules_text=""
+    )
+    c = _word_cut_check(checks)
+    assert c is not None and c.ok is False
+    assert "module-echo-cancel" in c.hint  # the exact fix, not just a complaint
+
+
+def test_word_cut_ec_check_passes_when_module_loaded():
+    config = {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}}
+    checks = check_audio_frontend(
+        config, import_fn=_no_livekit, platform="linux",
+        modules_text="536870913\tmodule-echo-cancel\taec_method=webrtc",
+    )
+    c = _word_cut_check(checks)
+    assert c is not None and c.ok is True
+
+
+def test_word_cut_ec_check_absent_when_path_not_selected():
+    # In-app AEC on -> word-cut inert (ADR-0013 scoping) -> no check; flag off
+    # -> no check. The preflight must never nag configs that don't use the path.
+    for sherpa in (
+        {"barge_word_cut_enabled": True, "aec_enabled": True},
+        {"barge_word_cut_enabled": False, "aec_enabled": False},
+    ):
+        checks = check_audio_frontend(
+            {"sherpa": sherpa}, import_fn=_no_livekit,
+            platform="linux", modules_text="",
+        )
+        assert _word_cut_check(checks) is None
+
+
+def test_word_cut_ec_check_absent_off_linux():
+    # Windows uses WASAPI communications capture, not PipeWire -- no pactl check.
+    config = {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}}
+    checks = check_audio_frontend(
+        config, import_fn=_no_livekit, platform="win32", modules_text=""
+    )
+    assert _word_cut_check(checks) is None
+
+
 # --- doctor validates the SELECTED profile's ollama models (gemma3:1b gap) ------
 
 

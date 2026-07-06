@@ -75,6 +75,24 @@ _BARGE_REJECTED_PAT = re.compile(r"barge-in REJECTED:\s+(.*)")
 _BARGE_DUCK_PAT = re.compile(r"barge-in: acoustic trigger")
 _BARGE_CONFIRMED_PAT = re.compile(r"barge-in confirmed by speech")
 _BARGE_UNCONFIRMED_PAT = re.compile(r"barge-in NOT confirmed")
+# ADR-0013 continuous no-duck WORD-CUT funnel (OS echo-cancel path). The engine
+# emits these only while barge_word_cut_enabled is live, so legacy bundles carry
+# none and the section stays absent. The confirmed line MUST be matched before
+# the generic ADR-0011 "barge-in confirmed by speech" counter or every word-cut
+# would be miscounted into the duck-confirm funnel (which never ducked).
+_WC_CONFIRMED_PAT = re.compile(r"barge-in confirmed by speech \(word-cut\)")
+_WC_TRACE_PAT = re.compile(r"word-cut trace:\s+(\d+) word\(s\)\s+(.*)")
+_WC_RESET_PAT = re.compile(r"word-cut burst reset: dropped (\d+) word\(s\)\s+(.*)")
+_WC_NEAREND_PAT = re.compile(
+    rf"word-cut near-end: rms_avg=({_NUM}) rms_peak=({_NUM}) vad_frac=({_NUM})"
+    rf" floor=({_NUM}) blocks=(\d+)"
+)
+_WC_FUNNEL_PAT = re.compile(
+    r"word-cut funnel: fed=(\d+) skipped_quiet=(\d+) resets=(\d+)"
+    r" dropped_words=(\d+) max_words=(\d+) own_folds=(\d+) guard_suppressed=(\d+)"
+    rf" decode_errors=(\d+) cuts=(\d+) nearend_rms_p50=({_NUM})"
+    rf" nearend_rms_p95=({_NUM})"
+)
 _DTD_PAT = re.compile(
     rf"dtd:\s+D=({_NUM})\s+K=({_NUM})\s+fired=(True|False)\s+gated=(True|False)"
     rf"\s+\(z_raw=({_NUM})\s+z_resid=({_NUM})\s+z_coh=({_NUM})\)"
@@ -160,6 +178,35 @@ class Heartbeat:
 
 
 @dataclass
+class WordCutReply:
+    """One "word-cut funnel:" line = one reply's ADR-0013 word-cut summary."""
+    t: float
+    fed: int
+    skipped_quiet: int
+    resets: int
+    dropped_words: int
+    max_words: int
+    own_folds: int
+    guard_suppressed: int
+    decode_errors: int
+    cuts: int
+    nearend_rms_p50: float
+    nearend_rms_p95: float
+    sentence_idx: Optional[int] = None
+
+
+@dataclass
+class WordCutWindow:
+    """One "word-cut near-end:" ~2s evidence window during playback."""
+    t: float
+    rms_avg: float
+    rms_peak: float
+    vad_frac: float
+    floor: float
+    blocks: int
+
+
+@dataclass
 class ParsedRun:
     run_id: str
     run_start_t: Optional[float]
@@ -178,6 +225,12 @@ class ParsedRun:
     barge_duck: int = 0
     barge_confirmed: int = 0
     barge_unconfirmed: int = 0
+    # ADR-0013 word-cut funnel (log-derived; empty on runs without the path).
+    word_cut_replies: list = field(default_factory=list)
+    word_cut_windows: list = field(default_factory=list)
+    word_cut_traces: list = field(default_factory=list)   # (t, words, text)
+    word_cut_resets: list = field(default_factory=list)   # (t, words, text)
+    word_cut_confirmed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +250,11 @@ def parse_log(txt_path: str) -> ParsedRun:
     aec_config_ref_delay_ms: Optional[float] = None
     apm_always_on: Optional[bool] = None
     barge_duck = barge_confirmed = barge_unconfirmed = 0
+    word_cut_replies: list[WordCutReply] = []
+    word_cut_windows: list[WordCutWindow] = []
+    word_cut_traces: list[tuple] = []
+    word_cut_resets: list[tuple] = []
+    word_cut_confirmed = 0
     pending_tts_sanitize: Optional[dict] = None
     last_playback_sample_rate: Optional[int] = None
 
@@ -351,6 +409,52 @@ def parse_log(txt_path: str) -> ParsedRun:
                     sentences[-1].barge_events.append(be)
                 continue
 
+            # ADR-0013 word-cut funnel lines. Matched BEFORE the ADR-0011
+            # counters: the word-cut confirmed line contains the generic
+            # "barge-in confirmed by speech" substring and would otherwise be
+            # miscounted into the duck-confirm funnel (which never ducked).
+            if "speaker.sherpa" in logger:
+                if _WC_CONFIRMED_PAT.search(msg):
+                    word_cut_confirmed += 1
+                    continue
+                mwf = _WC_FUNNEL_PAT.search(msg)
+                if mwf:
+                    word_cut_replies.append(WordCutReply(
+                        t=t,
+                        fed=int(mwf.group(1)),
+                        skipped_quiet=int(mwf.group(2)),
+                        resets=int(mwf.group(3)),
+                        dropped_words=int(mwf.group(4)),
+                        max_words=int(mwf.group(5)),
+                        own_folds=int(mwf.group(6)),
+                        guard_suppressed=int(mwf.group(7)),
+                        decode_errors=int(mwf.group(8)),
+                        cuts=int(mwf.group(9)),
+                        nearend_rms_p50=float(mwf.group(10)),
+                        nearend_rms_p95=float(mwf.group(11)),
+                        sentence_idx=len(sentences) - 1 if sentences else None,
+                    ))
+                    continue
+                mwn = _WC_NEAREND_PAT.search(msg)
+                if mwn:
+                    word_cut_windows.append(WordCutWindow(
+                        t=t,
+                        rms_avg=float(mwn.group(1)),
+                        rms_peak=float(mwn.group(2)),
+                        vad_frac=float(mwn.group(3)),
+                        floor=float(mwn.group(4)),
+                        blocks=int(mwn.group(5)),
+                    ))
+                    continue
+                mwt = _WC_TRACE_PAT.search(msg)
+                if mwt:
+                    word_cut_traces.append((t, int(mwt.group(1)), mwt.group(2)))
+                    continue
+                mwr = _WC_RESET_PAT.search(msg)
+                if mwr:
+                    word_cut_resets.append((t, int(mwr.group(1)), mwr.group(2)))
+                    continue
+
             # Barge-in confirm-window funnel (ADR-0011). These lines carry no
             # detected/REJECTED marker, so they fall through to here; count them
             # directly. A confirmed window ALSO logs "barge-in detected" (handled
@@ -381,6 +485,11 @@ def parse_log(txt_path: str) -> ParsedRun:
         barge_duck=barge_duck,
         barge_confirmed=barge_confirmed,
         barge_unconfirmed=barge_unconfirmed,
+        word_cut_replies=word_cut_replies,
+        word_cut_windows=word_cut_windows,
+        word_cut_traces=word_cut_traces,
+        word_cut_resets=word_cut_resets,
+        word_cut_confirmed=word_cut_confirmed,
     )
 
 
@@ -706,6 +815,54 @@ def classify_barge_event(be: BargeEvent) -> str:
     if avg_incoh >= 0.70:
         return "suspect:echo-high-incoh"
     return "suspect:speaking"
+
+
+def word_cut_funnel(run: ParsedRun) -> dict:
+    """Aggregate the ADR-0013 word-cut funnel across the run and derive the
+    live-failure verdict signals. Every zero is diagnostic (run-20260706-231226
+    had NO word-cut telemetry and was undiagnosable):
+
+    - ``starved_replies``  (fed=0): the VAD gate never fed the recognizer -- the
+      state-machine defect class, nothing acoustic.
+    - ``voice_present_zero_words``: near-end windows with energy well above the
+      calibrated floor while the run transcribed no words -- energy survived the
+      canceller but the recognizer/VAD produced nothing from it.
+    - ``max rms_avg ~ floor`` (voiced_windows=0 with windows present): the
+      near-end never survived capture -- the canceller suppressed the user.
+    - ``dropped_words``: burst resets wiped accumulated talk-over words.
+    """
+    replies = run.word_cut_replies
+    if not (replies or run.word_cut_windows or run.word_cut_confirmed):
+        return {"present": False}
+
+    def _tot(key: str) -> int:
+        return sum(getattr(r, key) for r in replies)
+
+    voiced = [
+        w for w in run.word_cut_windows
+        if w.floor > 0 and w.rms_avg >= 2.0 * w.floor
+    ]
+    max_words = max((r.max_words for r in replies), default=0)
+    if run.word_cut_traces:
+        max_words = max(max_words, max(t[1] for t in run.word_cut_traces))
+    return {
+        "present": True,
+        "replies": len(replies),
+        "fed": _tot("fed"),
+        "skipped_quiet": _tot("skipped_quiet"),
+        "resets": _tot("resets"),
+        "dropped_words": _tot("dropped_words"),
+        "max_words": max_words,
+        "own_folds": _tot("own_folds"),
+        "guard_suppressed": _tot("guard_suppressed"),
+        "decode_errors": _tot("decode_errors"),
+        "cuts": _tot("cuts"),
+        "confirmed_lines": run.word_cut_confirmed,
+        "windows": len(run.word_cut_windows),
+        "voiced_windows": len(voiced),
+        "starved_replies": sum(1 for r in replies if r.fed == 0),
+        "voice_present_zero_words": len(voiced) if max_words == 0 else 0,
+    }
 
 
 def self_interrupt_summary(run: ParsedRun) -> dict:
@@ -1154,6 +1311,49 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
         if be.dtd_context:
             lines.append(_dtd_context_str(be.dtd_context))
 
+    # --- Word-Cut Funnel (ADR-0013) ---
+    # Only rendered when the continuous word-cut path emitted telemetry, so a
+    # legacy / APM run stays quiet instead of showing a zero block.
+    wcf = word_cut_funnel(run)
+    if wcf.get("present"):
+        lines.append("\n--- Word-Cut Funnel (ADR-0013) ---")
+        lines.append(
+            f"  replies watched: {wcf['replies']}  fed={wcf['fed']} "
+            f"skipped_quiet={wcf['skipped_quiet']} resets={wcf['resets']}"
+        )
+        lines.append(
+            f"  words: max_seen={wcf['max_words']} dropped_by_reset={wcf['dropped_words']} "
+            f"own_folds={wcf['own_folds']}"
+        )
+        lines.append(
+            f"  cuts: {wcf['cuts']} (confirmed lines: {wcf['confirmed_lines']})  "
+            f"guard_suppressed={wcf['guard_suppressed']} decode_errors={wcf['decode_errors']}"
+        )
+        lines.append(
+            f"  near-end windows: {wcf['windows']} total, {wcf['voiced_windows']} "
+            "with energy >=2x floor"
+        )
+        if wcf["starved_replies"]:
+            lines.append(
+                f"  [!] {wcf['starved_replies']} reply(ies) with fed=0 -- the VAD "
+                "gate starved the recognizer (state-machine, not acoustics)"
+            )
+        if wcf["voice_present_zero_words"]:
+            lines.append(
+                f"  [!] {wcf['voice_present_zero_words']} voiced window(s) but ZERO "
+                "words transcribed -- energy survived the canceller, text did not"
+            )
+        if wcf["windows"] and not wcf["voiced_windows"]:
+            lines.append(
+                "  [!] near-end never rose >=2x above the floor -- the OS "
+                "canceller suppressed the user during playback"
+            )
+        if wcf["dropped_words"]:
+            lines.append(
+                f"  [~] burst resets wiped {wcf['dropped_words']} accumulated "
+                "word(s) -- check barge_word_cut_reset_quiet_blocks"
+            )
+
     # --- Barge Confirm Funnel (ADR-0011) ---
     # Only rendered when the word-gated duck-then-confirm path was active, so a
     # legacy run without it stays quiet instead of showing a zero block.
@@ -1247,6 +1447,7 @@ def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dic
             "barge_in_confirmed": run.barge_confirmed,
             "barge_in_unconfirmed": run.barge_unconfirmed,
         },
+        "word_cut_funnel": word_cut_funnel(run),
         "pass_fail": pf,
         "findings": diagnostic_findings(run, wav_metrics, delay_metrics),
         "sentences": [

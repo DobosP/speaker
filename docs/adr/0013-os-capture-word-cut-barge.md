@@ -129,3 +129,34 @@ AEC double-talk suppression) → Phase B is a dead end on this box, consistent w
 per-speech-burst streaming reset + `_reads_like_own_speech` swallow the near-end
 text. **Until distinguished, Phase B stays experimental/opt-in and is NOT the
 open-speaker barge authority.**
+
+### Resolution addendum — 2026-07-06 (late): root cause found in code, class (3)
+
+Code recon (multi-agent, verified against the source) found a **deterministic
+state-machine defect** that fully explains the zero-word outcome without any
+acoustics: `_barge_word_cut_step` gates all recognizer feeding on
+`vad.is_speech_detected()`, but **nothing feeds the VAD during playback** — the
+word-cut branch `continue`s before the acoustic path's `accept_waveform` call,
+which was the only playback-time VAD update. The VAD therefore stays frozen at
+its pre-reply state (quiet, since the user's request just ended), every playback
+block short-circuits at the quiet gate, and the recognizer is never fed. The
+same-day "validated live" observations (`raw 'STOP'` transcribing) most likely
+rode inter-sentence gaps or a stale-true VAD — flaky, not the path working.
+
+**Fixes (branch `fix/barge-wordcut-live-diagnostics`, suite 2341/24):** the step
+now feeds the VAD every playback block before consulting it; the burst reset is
+debounced (`barge_word_cut_reset_quiet_blocks=3`, knob, 1 = legacy hair-trigger)
+because OS-cancelled double-talk flickers the VAD and a single quiet block wiped
+a talk-over's accumulated words. Shipped with it so the next live run is
+decisive regardless of outcome: word-cut funnel telemetry (`word-cut trace /
+burst reset / near-end / funnel` lines + a per-reply summary; decode errors are
+now counted+warned instead of swallowed), kill-safe WAV recording (header
+patched+flushed every 2 s — survives SIGTERM/SIGKILL), a SIGTERM→Ctrl-C
+shutdown bridge, a doctor FAIL when word-cut is configured on Linux with no
+`module-echo-cancel` loaded, and a "Word-Cut Funnel (ADR-0013)" section in
+`tools.diagnose_run` (flags `fed=0` starvation and voiced-windows-but-zero-words
+explicitly). Note the failed run also never passed `--record` — recording
+requires the CLI flag, not just `record_playback_reference=true`; the next live
+run must launch with `--record`. Whether the OS canceller ALSO suppresses the
+near-end during sustained double-talk (root candidates 1/2) is measurable now
+and remains open until that run.

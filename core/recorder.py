@@ -7,30 +7,64 @@ Concurrency: the real-time capture thread only enqueues a copy of each block
 disk writes, so audio I/O never stalls the hot path. The two threads talk over
 a bounded :class:`queue.Queue`.
 
+Kill-safe on purpose (2026-07-06, run-20260706-231226): the writer patches the
+RIFF/data sizes and flushes every ``flush_sec``, so the file on disk is a VALID
+WAV at (almost) every instant. A run that dies to SIGTERM/SIGKILL -- which never
+reaches ``close()`` -- still leaves playable audio up to the last flush. Stdlib
+``wave`` could not do this (it only patches sizes in ``close()``), which is how
+that run's diagnosis-critical audio evidence was lost; hence the manual header.
+
 WAV (not MP3) on purpose: the replay engine needs lossless PCM, and 16 kHz mono
-int16 is already compact (~32 KB/s). Stdlib ``wave`` only -- no new dependency.
+int16 is already compact (~32 KB/s). No new dependency.
 """
 from __future__ import annotations
 
 import queue
+import struct
 import threading
-import wave
+import time
 from typing import Optional
 
 
-class WavRecorder:
-    """Background-threaded 16-bit PCM WAV writer fed float32 blocks."""
+def _wav_header(sample_rate: int, data_bytes: int) -> bytes:
+    """44-byte canonical PCM WAV header: mono, int16, ``sample_rate``."""
+    return b"".join(
+        (
+            b"RIFF",
+            struct.pack("<I", 36 + data_bytes),
+            b"WAVE",
+            b"fmt ",
+            struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16),
+            b"data",
+            struct.pack("<I", data_bytes),
+        )
+    )
 
-    def __init__(self, path: str, sample_rate: int = 16000, *, queue_max: int = 4096):
+
+class WavRecorder:
+    """Background-threaded 16-bit PCM WAV writer fed float32 blocks.
+
+    The on-disk file stays a valid WAV throughout the recording (header patched
+    + flushed every ``flush_sec``), so audio evidence survives a killed run."""
+
+    def __init__(
+        self,
+        path: str,
+        sample_rate: int = 16000,
+        *,
+        queue_max: int = 4096,
+        flush_sec: float = 2.0,
+    ):
         self.path = path
         self.sample_rate = sample_rate
         self.frames = 0  # frames accepted for writing (updated on the hot path)
         self.dropped = 0  # frames dropped if the writer ever falls behind
         self._closed = False
-        self._wf: Optional[wave.Wave_write] = wave.open(path, "wb")
-        self._wf.setnchannels(1)
-        self._wf.setsampwidth(2)  # int16
-        self._wf.setframerate(sample_rate)
+        self._flush_sec = max(0.1, float(flush_sec))
+        self._fh: Optional[object] = open(path, "wb")
+        self._fh.write(_wav_header(sample_rate, 0))
+        self._data_bytes = 0
+        self._last_flush = time.monotonic()
         self._q: "queue.Queue" = queue.Queue(maxsize=queue_max)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="wav-recorder", daemon=True)
@@ -59,11 +93,35 @@ class WavRecorder:
             except queue.Empty:
                 if self._stop.is_set():
                     break
+                self._maybe_flush()  # keep the header fresh through silence too
                 continue
-            if self._wf is None:
+            if self._fh is None:
                 continue
             pcm = np.clip(block, -1.0, 1.0)
-            self._wf.writeframes((pcm * 32767.0).astype("<i2").tobytes())
+            payload = (pcm * 32767.0).astype("<i2").tobytes()
+            self._fh.write(payload)
+            self._data_bytes += len(payload)
+            self._maybe_flush()
+
+    def _maybe_flush(self) -> None:
+        """Patch the RIFF/data sizes and flush, at most once per ``flush_sec``.
+        Writer-thread only. After this the file is a valid WAV up to every byte
+        written so far -- the whole point: a SIGTERM/SIGKILL between flushes
+        costs at most ``flush_sec`` of tail audio, never the file."""
+        now = time.monotonic()
+        if now - self._last_flush < self._flush_sec or self._fh is None:
+            return
+        self._patch_sizes()
+        self._fh.flush()
+        self._last_flush = now
+
+    def _patch_sizes(self) -> None:
+        fh = self._fh
+        fh.seek(4)
+        fh.write(struct.pack("<I", 36 + self._data_bytes))
+        fh.seek(40)
+        fh.write(struct.pack("<I", self._data_bytes))
+        fh.seek(0, 2)  # back to the append position
 
     @property
     def seconds(self) -> float:
@@ -75,6 +133,8 @@ class WavRecorder:
         self._closed = True
         self._stop.set()
         self._thread.join(timeout=3.0)  # drains remaining queued blocks first
-        if self._wf is not None:
-            self._wf.close()
-            self._wf = None
+        if self._fh is not None:
+            self._patch_sizes()
+            self._fh.flush()
+            self._fh.close()
+            self._fh = None

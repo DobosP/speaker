@@ -78,9 +78,25 @@ class QuietObservationGate {
 
   DateTime? _lastVoiceAt;
   DateTime? _playbackQuietAfter;
+  bool _asrInFlight = false;
 
   void noteVoice(DateTime now) {
     _lastVoiceAt = now;
+  }
+
+  void noteAsrStarted(DateTime now) {
+    _asrInFlight = true;
+    noteVoice(now);
+  }
+
+  void noteAsrFinished(DateTime now, {bool hadSpeech = true}) {
+    final wasInFlight = _asrInFlight;
+    _asrInFlight = false;
+    if (wasInFlight || hadSpeech) noteVoice(now);
+  }
+
+  void resetAsr() {
+    _asrInFlight = false;
   }
 
   void notePlaybackStopped(DateTime now) {
@@ -88,6 +104,7 @@ class QuietObservationGate {
   }
 
   bool canObserveQuiet(DateTime now) {
+    if (_asrInFlight) return false;
     final lastVoice = _lastVoiceAt;
     if (lastVoice != null && now.difference(lastVoice) < speechCooldown) {
       return false;
@@ -98,4 +115,6 @@ class QuietObservationGate {
     }
     return true;
   }
+
+  bool get asrInFlight => _asrInFlight;
 }

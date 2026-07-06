@@ -88,4 +88,43 @@ void main() {
       isTrue,
     );
   });
+
+  test('quiet observation gate rejects samples while ASR is in flight', () {
+    final gate = QuietObservationGate(
+      speechCooldown: const Duration(milliseconds: 500),
+      playbackCooldown: const Duration(milliseconds: 400),
+    );
+    final t0 = DateTime(2026, 1, 1, 12);
+
+    gate.noteAsrStarted(t0);
+    expect(gate.asrInFlight, isTrue);
+    expect(gate.canObserveQuiet(t0.add(const Duration(seconds: 10))), isFalse);
+
+    gate.noteAsrFinished(t0.add(const Duration(seconds: 10)));
+    expect(gate.asrInFlight, isFalse);
+    expect(
+      gate.canObserveQuiet(
+        t0.add(const Duration(seconds: 10, milliseconds: 499)),
+      ),
+      isFalse,
+    );
+    expect(
+      gate.canObserveQuiet(
+        t0.add(const Duration(seconds: 10, milliseconds: 500)),
+      ),
+      isTrue,
+    );
+  });
+
+  test('empty ASR endpoint without active speech does not reset cooldown', () {
+    final gate = QuietObservationGate(
+      speechCooldown: const Duration(milliseconds: 500),
+    );
+    final t0 = DateTime(2026, 1, 1, 12);
+
+    gate.noteAsrFinished(t0, hadSpeech: false);
+
+    expect(gate.asrInFlight, isFalse);
+    expect(gate.canObserveQuiet(t0), isTrue);
+  });
 }

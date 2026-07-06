@@ -60,7 +60,31 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       Funnel section now says explicitly whether words were transcribed-and-cut,
       starved (`fed=0`), wiped by resets, or never survived the canceller
       (voiced windows vs floor) — i.e. it distinguishes tunable-vs-dead Phase B
-      in one run. Do NOT declare Phase B the barge authority until this passes.
+      in one run. **→ RAN 2026-07-07 (run-20260707-002943): PASSED — first real
+      word-cut CUT ever** (talk-over "I DON'T TO FEAR" → hard cut ~0.35 s,
+      pre-roll answered; 5-reply funnel cuts=1 / false cuts=0 / own-echo ≈0
+      words). Near-end survives the OS canceller; the 2026-07-06 failure was
+      purely the VAD-starvation defect. STILL WANTED before default-on: a
+      larger talk-over batch + bare-"stop" cuts + a deliberate silent-control
+      story. NEW FOLLOW-UPS from the run (P2 unless noted): (a) short replies
+      end before the 4-word floor fills → uncuttable except "stop"; consider a
+      lower floor for short replies or stop-word emphasis; (b) playback-fed
+      words are DROPPED at reply end when no cut fired → a tail talk-over loses
+      its opening words; consider keeping NOVEL (non-own) words as pre-roll;
+      (c) diagnose_run self-interrupt classifier stale-flags word-cut barges
+      SUSPECT:NO-DTD → OVERALL FAIL (word-cut bypasses the DTD by design) —
+      classifier truth-up; (d) TTS voice flips mid-story: `[voice:...]` applies
+      only to the tagged first sentence (rest → sid 0) and unknown names
+      (`gentle`) silently default → make the reply voice sticky + warn on
+      unknown names; (e) SIGTERM→Ctrl-C bridge still not live-exercised (the
+      2026-07-07 kill hit the bash wrapper; python died hard — kill-safe WAVs
+      survived and are hereby VALIDATED). **OWNER-DIRECTED NEXT (2026-07-07,
+      P1): STT quality on the Linux boot** — garbled raw finals all session
+      ("TANE MADE LONG STORY", "CAN WE A NICE STORY ABOUT MY CAT BICKIE" — the
+      latter caused an addressing INGEST miss that ate a real request). Joins
+      the existing Windows STT P1; levers already on file: SenseVoice second
+      pass tuning, prosody/endpoint thresholds, R14 Parakeet finalizer branch,
+      and the run-20260707-002943 WAV pair as replay evidence.
 - [ ] **Adopt the 2026-06-10 gap-analysis roadmap (45 verified findings, P0–P5).**
       `docs/review_2026-06-10_gap_analysis.md` — security/PII first, then real-time
       correctness (rc-2 _on_final off the audio thread DONE via turn_merge; rc-1

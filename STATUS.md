@@ -53,9 +53,31 @@ Linux without `module-echo-cancel` loaded, and a "Word-Cut Funnel (ADR-0013)"
 section in `tools.diagnose_run`. **Correction:** the missing WAV was also because
 the run never passed `--record` (recording needs the CLI flag; the config knob
 alone does nothing) — the next live run MUST launch with `--record`. Suite 2341
-passed / 24 skipped. Until the fix is live-validated, Phase B stays
-experimental/opt-in and is **not** the open-speaker barge authority. Qualifies
-the ADR-0013 "validated live" claim (see the ADR-0013 addenda).
+passed / 24 skipped. **→ LIVE-VALIDATED 2026-07-07 00:29–00:50 (run-20260707-002943,
+same rig):** the fixed word-cut **CUT a real talk-over for the first time ever** —
+near-end words transcribed DURING playback (`word-cut trace: "I DON'"` →
+`"I DON'T TO FEAR"`), hard-cut at the 4-word floor ~0.35 s after the first trace,
+and the user's full sentence survived as pre-roll and was answered. Funnel across
+5 watched replies: fed=90 / skipped_quiet=164 / resets=1 / dropped_words=0 /
+own_folds=1 / decode_errors=0 / **cuts=1, false cuts=0** — own-echo transcribed
+≈zero words all session (the OS canceller + quiet gate are doing their job).
+**Real limits found:** (1) SHORT conversational replies are effectively
+uncuttable — two talk-overs reached only 2 words before the reply ended on its
+own (4-word floor can't fill; bare "stop" untested tonight); (2) words fed
+during playback are DROPPED at reply end unless a cut fired, so a talk-over
+near the reply tail loses its opening words from the following final; (3) the
+diagnose_run self-interrupt classifier stale-flags a word-cut barge as
+SUSPECT:NO-DTD → OVERALL FAIL (word-cut bypasses the DTD by design) — tool
+truth-up needed. **Kill-safe recorder LIVE-validated** by an accidental hard
+kill (wrapper PID killed → python died with no teardown): both 1209 s WAVs
+still valid on disk. The SIGTERM→Ctrl-C bridge itself is unit-tested but NOT
+yet live-exercised (no summary.json for this run). Also observed, separate
+thread: TTS voice flips mid-story — the LLM's `[voice:...]` tag applies only to
+the first sentence (rest fall back to sid 0) and unknown names (`gentle`)
+silently default. Machine config stays on the word-cut recipe
+(`barge_confirm_enabled=false`). **NEXT (owner-directed 2026-07-07): STT
+quality** — tonight's raw finals were garbled ("TANE MADE LONG STORY", "MY CAT
+BICKIE" → an addressing INGEST miss ate a real request).
 
 **★★ 2026-07-06 (WINDOWS BOX) — STABILITY RECON + ADR-0013 WINDOWS PREP (branch
 `fix/stability-recon-followups` → main, 2026-07-06).** A 6-dimension codex-fleet recon

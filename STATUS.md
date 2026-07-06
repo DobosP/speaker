@@ -3,9 +3,35 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-05 (Linux Mint boot; full logic suite 2295 passed, 24
-skipped; branch fix/live-barge-dtln-and-underruns, merged to main). Prior:
-2026-07-04 (feat/auto-calibrated-audio-pipeline, ADR-0012, 5 auto-calibrating fixes).
+Last verified: 2026-07-06 (Linux Mint boot; full logic suite 2295 passed, 24
+skipped; branch fix/os-echo-cancel-word-cut-barge → merged to main; ADR-0013).
+Prior: 2026-07-05 (fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012).
+
+**★★★ PHASE B OUTCOME — OS-CAPTURE + WORD-CUT BARGE (2026-07-06, ADR-0013) — READ
+FIRST.** The Phase B experiment ran live on the bare laptop speaker and it WORKS
+where every acoustic approach failed. Route capture through the **OS/PipeWire
+echo-canceller** (`module-echo-cancel`, webrtc, NS+AGC off) **instead of** the
+in-app APM (`aec_enabled=false`), and the near-end user is finally **CLEAN during
+playback** — the ASR transcribes a talk-over *while the assistant speaks* (`raw
+'STOP'`). Barge-in is then a **continuous no-duck WORD-CUT**: cut on ≥4 new
+non-own-speech words (or a bare "stop"), no acoustic/level gate, no duck.
+Why not the alternatives, proven live this session: a **LEVEL** gate can't work
+(the nonlinear speaker's residual-echo bursts are as loud as the user — 6/7 false
+ducks at −18 dB); the **DUCK** itself is the "volume fluctuation"/pumping the owner
+heard. Three adversarial verifiers caught that garbled echo transcribes as 2-word
+junk → the 4-word floor + a per-burst stream reset are the no-false-cut gates.
+**VALIDATED live:** no pumping, no false cut on echo, clean near-end STT. **NOT yet
+validated:** the cut-rate on a real talk-over batch (needs more live runs; loopback
+can't judge nonlinear echo). Everything is OFF by default (byte-identical); enable
+per ADR-0013 (load module-echo-cancel via `pactl`, config `aec_enabled=false,
+apm_always_on=false, barge_word_cut_enabled=true`, launch `--input-device pipewire
+--output-device pipewire`). **Capture gotcha:** keep the PipeWire source volume LOW
+(~13% → ADC ~6.75 dB); it maps source volume → hardware ADC gain, so a high source
+volume drives +30 dB and CLIPS (memory `capture-gain-source-volume-mechanism-2026-07-05`).
+LLM this session was `gemma4:e4b` (owner pick; it fires an `llm stuck` watchdog —
+the tested tier is gemma3:12b+4b). The int8 Kokoro model drops the English "-er"
+vowel (robotic on answer/refers); durable TTS fix = `kokoro-en-v0_19` (deferred,
+owner "test first") — memory `voice-quality-diagnosis-2026-07-05`.
 
 **★★★ LIVE-TEST OUTCOME + PERMANENT PLAN (2026-07-05) — READ FIRST.** Multiple live
 open-speaker tests + a multi-agent study (3 adversarial verifiers) concluded:

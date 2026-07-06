@@ -21,7 +21,9 @@ from core.routing import (
     HEDGE_DELAY_FLOOR_MS,
     MAIN,
     HeuristicRouter,
+    LatencyPolicy,
     build_router,
+    classify_latency_policy,
     dynamic_hedge_delay_ms,
     live_nudge,
     order_presets_by_cost,
@@ -142,6 +144,26 @@ def test_contextful_followup_respects_phone_threshold():
     router = HeuristicRouter(threshold=0.55)
     ctx = {"recent_conversation": "=== Recent conversation ===\nUser: tell me about apm\nYou: ..."}
     assert router.choose("tell me more about that", ctx) == FAST
+
+
+def test_latency_policy_keeps_instant_control_snappy_and_acks_slow_turns():
+    assert classify_latency_policy("stop", {}) == LatencyPolicy.INSTANT_CONTROL
+    assert classify_latency_policy("what time is it", {}) == LatencyPolicy.SNAPPY_ANSWER
+    assert (
+        classify_latency_policy("compare the latest local speech engines", {})
+        == LatencyPolicy.ACK_THEN_THINK
+    )
+    assert (
+        classify_latency_policy(
+            "explain how endpointing works and compare the tradeoffs in detail",
+            {},
+        )
+        == LatencyPolicy.ACK_THEN_THINK
+    )
+
+
+def test_latency_policy_does_not_ack_generation_only_story_requests():
+    assert classify_latency_policy("tell me a story", {}) == LatencyPolicy.SNAPPY_ANSWER
 
 
 def test_build_router_defaults_to_heuristic():

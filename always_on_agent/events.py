@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 import time
-from typing import Any
+from typing import Any, Mapping
 
 
 class EventKind(str, Enum):
@@ -52,15 +52,30 @@ class AgentEvent:
         return cls(EventKind.STT_PARTIAL, {"text": text, "is_final": False}, priority=90)
 
     @classmethod
-    def final(cls, text: str, *, owner_verified: bool = False, origin: str = "unknown") -> "AgentEvent":
+    def final(
+        cls,
+        text: str,
+        *,
+        owner_verified: bool = False,
+        origin: str = "unknown",
+        metadata: Mapping[str, Any] | None = None,
+    ) -> "AgentEvent":
         # owner_verified/origin carry the speaker-ID trust of this utterance for the
         # action chokepoint (always_on_agent.origin). Default FAIL-CLOSED (not the
         # owner, unknown origin) so a final published without a verdict can never
         # authorize a real action -- only an explicit owner-verified live-audio final
         # may. Set by the runtime from the SpeakerGate.
+        payload = {
+            "text": text,
+            "is_final": True,
+            "owner_verified": bool(owner_verified),
+            "origin": origin,
+        }
+        if metadata:
+            payload["metadata"] = dict(metadata)
         return cls(
             EventKind.STT_FINAL,
-            {"text": text, "is_final": True, "owner_verified": bool(owner_verified), "origin": origin},
+            payload,
             priority=50,
         )
 

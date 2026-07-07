@@ -299,7 +299,9 @@ git diff --check
    speaker while recording (double-talk test; APM presets get the played frames
    as far-end via FarEndRing + AecDelayCalibrator). Selftest: GTCRN lifted
    synthetic SNR 26.9→42.9 dB; APM AGC2 leveled 0.106→0.176 RMS. Round-2 ear
-   grades pending — **NEXT (owner continues on the LINUX box, 2026-07-07):**
+   grades pending — **owner decision 2026-07-07 (late): round-2 runs in its OWN
+   dedicated session** (live mic + ear-grading work; do not fold it into
+   unrelated coding sessions). **NEXT (owner, LINUX box, dedicated session):**
    (a) fetch the denoiser there (machine-local): `python -m tools.setup_models
    --denoise-model` (523 KB); (b) quiet-room sweep, READING the printed phrase
    verbatim so WER is real: `python -m tools.calibration_suite --play`;

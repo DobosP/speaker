@@ -267,6 +267,62 @@ def _wait_until(predicate, timeout: float = 2.0) -> bool:
     return predicate()
 
 
+def test_clarify_latency_policy_short_circuits_to_spoken_prompt():
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine, EchoLLM(reply="should not run"), start_mode=Mode.ASSISTANT
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final("why?")
+        assert runtime.wait_idle()
+        assert engine.spoken == ["Could you say a bit more?"]
+        [record] = runtime.metrics.records()
+        assert LLM_FIRST_TOKEN not in record.stamps
+    finally:
+        runtime.stop()
+
+
+def test_stream_latency_policy_enables_per_turn_tts_streaming_when_global_off():
+    llm = _GatedStreamLLM(["First sentence.", "Second sentence."])
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine, llm, start_mode=Mode.ASSISTANT, stream_tts=False
+    )
+    runtime.start(run_bus=True)
+    try:
+        runtime.bus.publish(
+            AgentEvent.final(
+                "tell me the plan", metadata={"latency_policy": "stream_main"}
+            )
+        )
+        assert _wait_until(lambda: llm.first_emitted.is_set())
+        assert _wait_until(lambda: engine.spoken == ["First sentence."])
+        llm.gate.set()
+        assert runtime.wait_idle()
+        assert engine.spoken == ["First sentence.", "Second sentence."]
+    finally:
+        runtime.stop()
+
+
+def test_silent_ingest_latency_policy_suppresses_spoken_output():
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine, EchoLLM(reply="stored silently"), start_mode=Mode.ASSISTANT
+    )
+    runtime.start(run_bus=False)
+    try:
+        runtime.bus.publish(
+            AgentEvent.final(
+                "ambient note", metadata={"latency_policy": "silent_ingest"}
+            )
+        )
+        assert runtime.wait_idle()
+        assert engine.spoken == []
+    finally:
+        runtime.stop()
+
+
 def test_barge_in_drops_streaming_sentences_after_stop_on_threaded_bus():
     """Regression for realtime-concurrency-1.
 

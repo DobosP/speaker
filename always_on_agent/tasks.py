@@ -245,7 +245,7 @@ class TaskRuntime:
             time.sleep(0.01)
             extra: dict[str, object] = {"previous_steps": step_results}
             if (
-                self._stream_tts
+                (self._stream_tts or task.metadata.get("stream_tts"))
                 and step.speak_result
                 and task.metadata.get("speak", True)
             ):

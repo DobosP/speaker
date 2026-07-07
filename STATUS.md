@@ -3,8 +3,12 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-06 (Windows i9/4090 box, later the same day; full logic
-suite 2316 passed, 24 skipped on branch fix/stability-recon-followups). Prior:
+Last verified: 2026-07-07 (Windows workspace; merge-audit headless subset:
+`tests/test_core_runtime.py` 22 passed, `tests/test_core_routing.py` +
+`tests/test_capability_router.py` 83 passed, `git diff --check` clean; mobile
+Flutter/Dart toolchain unavailable on PATH, so mobile tests were authored but not
+run). Prior: 2026-07-06 (Windows i9/4090 box, later the same day; full logic
+suite 2316 passed, 24 skipped on branch fix/stability-recon-followups);
 2026-07-06 (Linux Mint boot; 2295 passed; ADR-0013 merged to main); 2026-07-05
 (fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012). Live: 2026-07-06
 (Linux boot, evening) — Phase B open-speaker barge live talk-over batch **FAILED**
@@ -173,6 +177,15 @@ legacy `main.py` monolith was deleted 2026-05-26, ADR-0002). One portable core
 
 ## Current state (2026-07-02)
 
+- **2026-07-07 merge-audit P1/P2:** mobile ASR now emits a pre-partial
+  speech-start edge from the ASR worker so the quiet-observation gate stops
+  training on the user's early speech frames before the first partial; regression
+  detector tests live in `mobile/test/asr_speech_start_test.dart` (Flutter not
+  available on this workspace to execute them). Latency policies are consumed at
+  the supervisor/task boundary: `clarify` gives a short clarification prompt,
+  `stream_main`/`stream_research` opt the turn into streaming TTS, and
+  `silent_ingest` suppresses spoken output while preserving existing silent
+  side-effect tasks.
 - **2026-07-07: ack/continuation invariant fixed** — the ack_then_think latency
   acknowledgement no longer flips `started_speaking` (new `AgentTask.ack_spoken`
   field), so an add-on spoken after the ack but before the answer MERGEs into

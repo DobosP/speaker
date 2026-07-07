@@ -34,6 +34,10 @@ _TIMEOUT_APOLOGY = "Sorry, that took too long -- let's try again."
 _FAILURE_APOLOGY = "Sorry, I ran into a problem with that -- let's try again."
 
 _ACK_THEN_THINK_POLICY = "ack_then_think"
+_STREAM_POLICIES = {"stream_main", "stream_research"}
+_CLARIFY_POLICY = "clarify"
+_CLARIFY_TEXT = "Could you say a bit more?"
+_SILENT_INGEST_POLICY = "silent_ingest"
 _ACK_THEN_THINK_TEXT = "I'll check that now."
 
 from .capabilities import CapabilityRegistry, create_default_capabilities
@@ -423,6 +427,8 @@ class AgentSupervisor:
         if self._maybe_continue(decision):
             return
         task = self._create_task(decision)
+        if self._handle_latency_policy(task):
+            return
         if task.metadata.get("requires_confirmation"):
             self.state.pending_confirmations[task.task_id] = task
             self.state.spoken_outputs.append(f"Confirm command: {task.input_text}")
@@ -432,6 +438,32 @@ class AgentSupervisor:
             self.state.spoken_outputs.append(f"Queued {task.mode.value}: {task.input_text}")
             return
         self._start_task(task)
+
+    def _handle_latency_policy(self, task: AgentTask) -> bool:
+        policy = str(task.metadata.get("latency_policy", "") or "")
+        if policy == _SILENT_INGEST_POLICY:
+            task.metadata["speak"] = False
+            return False
+        if policy in _STREAM_POLICIES:
+            task.metadata["stream_tts"] = True
+            return False
+        if policy != _CLARIFY_POLICY:
+            return False
+        if not task.metadata.get("speak", True) or task.metadata.get("followup"):
+            return False
+        self.state.spoken_outputs.append(_CLARIFY_TEXT)
+        self.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": task.task_id,
+                    "text": _CLARIFY_TEXT,
+                    "epoch": self.speech_epoch,
+                    "latency_clarify": True,
+                },
+            )
+        )
+        return True
 
     def _start_task(self, task: AgentTask, expected_epoch: int | None = None) -> None:
         # Capture the current speech epoch and register the task atomically with

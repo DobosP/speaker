@@ -298,25 +298,35 @@ git diff --check
    candidate); **`--talk-over`** plays the configured TTS voice through the
    speaker while recording (double-talk test; APM presets get the played frames
    as far-end via FarEndRing + AecDelayCalibrator). Selftest: GTCRN lifted
-   synthetic SNR 26.9→42.9 dB; APM AGC2 leveled 0.106→0.176 RMS. Round-2 ear
-   grades pending — **owner decision 2026-07-07 (late): round-2 runs in its OWN
-   dedicated session** (live mic + ear-grading work; do not fold it into
-   unrelated coding sessions). **NEXT (owner, LINUX box, dedicated session):**
-   (a) fetch the denoiser there (machine-local): `python -m tools.setup_models
-   --denoise-model` (523 KB); (b) quiet-room sweep, READING the printed phrase
-   verbatim so WER is real: `python -m tools.calibration_suite --play`;
-   (c) double-talk sweep: `python -m tools.calibration_suite --talk-over`;
-   (d) ear-grade both runs via `--listen` and record grades. **Linux gotchas:**
-   the `voice_comm` presets are WASAPI-only in-tool — on Linux load PipeWire
-   `module-echo-cancel` first and pass `--input-device <EC source>` (else the
-   preset silently runs as raw mic); keep the PipeWire source volume LOW
-   (~13% — high source volume drives the ADC +30 dB and clips, memory
-   `capture-gain-source-volume-mechanism-2026-07-05`); use the repo venv
-   `/home/dobo/work/speaker/.venv/bin/python`. Round-1 verdict to carry over:
-   InputAGC presets are ruled out by ear (noise pumping); the open candidates
-   are `denoise`, `apm`, `voice_comm_denoise` vs the `raw` control. If a
-   denoise preset wins, adoption = `denoise_enabled=true` + **re-enroll the
-   voice** (embedding shifts post-denoise).
+   synthetic SNR 26.9→42.9 dB; APM AGC2 leveled 0.106→0.176 RMS.
+   **ROUND-2 DONE (owner, LINUX ROG box, dedicated session, 2026-07-08) —
+   `denoise` WINS; ADOPTED `sherpa.denoise_enabled=true`.** The quiet `--play`
+   sweep was ear-ambiguous (presets ~equal in quiet). The **double-talk test was
+   decisive**: assistant clip (`logs/kokoro_voice_audition.wav`, 104 s) played
+   through the laptop speaker while the owner talked over it, 5 s/preset
+   (`--talk-over <WAV>` — the full phrase is too long to speak identically in the
+   window, and the configured `kokoro-int8-multi-lang-v1_1` TTS crashes synth on
+   `'style_dim' does not exist in the metadata`, so feed a WAV; WER meaningless,
+   EAR is the verdict). Loudness-matched `--listen` ear grade: **denoise 5
+   ("considerably the best") > raw 3 > apm 2.** denoise suppressed the assistant
+   echo (est_SNR 39.2 vs raw 18.9) while keeping the near-end words intact; apm
+   (AEC3) cancelled most echo but *garbled* the near-end on the open speaker
+   (test→taste, cat→heart, lap→lungs) — the known open-speaker AEC3 distortion.
+   Grades in `calib_runs/20260708-010952/GRADES.md`. **REMAINING (owner, at the
+   mic): re-enroll the voice on a quiet system** — `python -m core --enroll`
+   (embedding shifts post-denoise; this box's prior enrollment was already
+   rejected and needs a redo). Session-2 prep done: faster-whisper installed
+   (WER now real), denoiser fetched, `module-echo-cancel` loaded as
+   `ec_source`/`ec_sink` (defaults untouched) for any future `voice_comm*` pass
+   via a default-source repoint, `tools/calib_round2.sh` wrapper added. Linux
+   gotchas retained: `voice_comm` presets are WASAPI-only in-tool (on Linux they
+   only cancel through the EC source, via default-source repoint, not
+   `--input-device` which PortAudio's pipewire bridge ignores); keep the PipeWire
+   source volume LOW (~13% — memory `capture-gain-source-volume-mechanism-2026-07-05`);
+   use `/home/dobo/work/speaker/.venv/bin/python`. voice_comm dropped from the
+   ear test (round-1 already showed it doesn't beat raw). Follow-up: the broken
+   `kokoro-int8-multi-lang-v1_1` TTS (style_dim) still needs the durable fix
+   (`kokoro-en-v0_19`, memory `voice-quality-diagnosis-2026-07-05`).
 3. Open + headless: R05 routing lever, R09 dead-air, R10 cleaner guard,
    R14 Parakeet ASR branch; voice-plan P2 bundle (`setup_models --kokoro`,
    per-device roll-off, Kokoro-vs-Piper profile gate).

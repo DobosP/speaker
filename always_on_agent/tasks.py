@@ -53,6 +53,13 @@ class AgentTask:
     # in the streaming emitter; the bool write is atomic under the GIL and any
     # narrow read race is covered by the epoch gate (see _maybe_continue).
     started_speaking: bool = False
+    # Set True when this task's ack_then_think latency acknowledgement has been
+    # voiced. Deliberately SEPARATE from ``started_speaking``: the ack is generic
+    # filler, not answer audio, so an add-on landing after the ack but before the
+    # first real sentence must still take the MERGE branch of the continuation
+    # gate (cancel + one combined prompt), not queue behind an answer the user
+    # has not heard yet.
+    ack_spoken: bool = False
     # Monotonic wall-clock deadline (time.monotonic) stamped when the task is
     # started; 0.0 means "no deadline". The supervisor's periodic reap cancels +
     # removes any active task past its deadline so a capability that blocks

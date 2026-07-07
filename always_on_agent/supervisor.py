@@ -469,7 +469,16 @@ class AgentSupervisor:
             return
         if not task.metadata.get("speak", True) or task.metadata.get("followup"):
             return
-        task.started_speaking = True
+        if task.metadata.get("continuation_of"):
+            # A merged turn's lineage was already acknowledged once; re-acking
+            # the same filler after every add-on sounds robotic.
+            return
+        # ack_spoken, NOT started_speaking: the ack is filler, not answer audio.
+        # started_speaking's contract ("first real spoken sentence", tasks.py)
+        # gates the continuation MERGE in _maybe_continue -- flipping it here
+        # made an add-on during a slow acked turn queue behind the unheard
+        # answer instead of merging into it.
+        task.ack_spoken = True
         self.state.spoken_outputs.append(_ACK_THEN_THINK_TEXT)
         self.publish(
             AgentEvent(

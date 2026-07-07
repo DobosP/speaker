@@ -135,3 +135,8 @@ pretrained_models/**/sherpa-onnx-*/
 models/
 *.gguf
 tmp/
+
+# Mic-calibration recording sessions (tools/calibration_suite.py): raw voice
+# WAVs + free-speech transcripts in summary.json/GRADES.md -- PII, never commit
+# (SS 9.7). The *.wav rule above already catches the audio; this catches the rest.
+calib_runs/

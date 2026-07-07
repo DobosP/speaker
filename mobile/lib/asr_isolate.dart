@@ -8,7 +8,6 @@
 // decodes and sends back partial transcripts + endpoint events.
 import 'dart:async';
 import 'dart:isolate';
-import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa_onnx;
@@ -29,8 +28,7 @@ class AsrService {
   bool _starting = false;
   _AsrInit? _initData;
 
-  // Set by the UI before listening: speech start, live partials, and finals.
-  void Function()? onSpeechStart;
+  // Set by the UI before listening: live partials and finalized utterances.
   void Function(String partial)? onPartial;
   void Function(String text)? onEndpoint;
 
@@ -64,8 +62,6 @@ class AsrService {
       _toWorker!.send(_initData);
     } else if (msg == 'ready') {
       if (!_ready.isCompleted) _ready.complete();
-    } else if (msg is _AsrSpeechStart) {
-      onSpeechStart?.call();
     } else if (msg is _AsrPartial) {
       onPartial?.call(msg.text);
     } else if (msg is _AsrEndpoint) {
@@ -121,8 +117,6 @@ class _AsrPartial {
   _AsrPartial(this.text);
 }
 
-class _AsrSpeechStart {}
-
 class _AsrEndpoint {
   final String text;
   _AsrEndpoint(this.text);
@@ -139,50 +133,12 @@ Float32List _toFloat32(Uint8List bytes) {
   return values;
 }
 
-const _speechStartRmsFloor = 0.018;
-const _speechStartPeakFloor = 0.045;
-
-/// Cheap pre-partial speech-start detector for PCM16 mic chunks.
-///
-/// The recognizer can take several frames before it emits its first non-empty
-/// partial. This detector runs in the ASR worker before decoding so the UI can
-/// stop treating those early speech frames as ambient room tone.
-bool pcm16LikelySpeechStart(
-  Uint8List bytes, {
-  double rmsFloor = _speechStartRmsFloor,
-  double peakFloor = _speechStartPeakFloor,
-}) {
-  return _samplesLikelySpeechStart(
-    _toFloat32(bytes),
-    rmsFloor: rmsFloor,
-    peakFloor: peakFloor,
-  );
-}
-
-bool _samplesLikelySpeechStart(
-  Float32List samples, {
-  double rmsFloor = _speechStartRmsFloor,
-  double peakFloor = _speechStartPeakFloor,
-}) {
-  if (samples.isEmpty) return false;
-  var sumSq = 0.0;
-  var peak = 0.0;
-  for (final sample in samples) {
-    final v = sample.abs();
-    if (v > peak) peak = v;
-    sumSq += sample * sample;
-  }
-  final rms = math.sqrt(sumSq / samples.length);
-  return rms >= rmsFloor || peak >= peakFloor;
-}
-
 void _asrWorkerMain(SendPort toMain) {
   final fromMain = ReceivePort();
   toMain.send(fromMain.sendPort);
   sherpa_onnx.OnlineRecognizer? rec;
   sherpa_onnx.OnlineStream? stream;
   var lastPartial = '';
-  var speechInFlight = false;
 
   fromMain.listen((msg) {
     if (msg is _AsrInit) {
@@ -210,12 +166,7 @@ void _asrWorkerMain(SendPort toMain) {
       final r = rec;
       final s = stream;
       if (r == null || s == null) return;
-      final samples = _toFloat32(msg.bytes);
-      if (!speechInFlight && _samplesLikelySpeechStart(samples)) {
-        speechInFlight = true;
-        toMain.send(_AsrSpeechStart());
-      }
-      s.acceptWaveform(samples: samples, sampleRate: 16000);
+      s.acceptWaveform(samples: _toFloat32(msg.bytes), sampleRate: 16000);
       while (r.isReady(s)) {
         r.decode(s);
       }
@@ -224,7 +175,6 @@ void _asrWorkerMain(SendPort toMain) {
         final text = r.getResult(s).text.trim();
         r.reset(s);
         lastPartial = '';
-        speechInFlight = false;
         toMain.send(_AsrEndpoint(text));
       } else if (partial != lastPartial) {
         lastPartial = partial;
@@ -233,7 +183,6 @@ void _asrWorkerMain(SendPort toMain) {
     } else if (msg == 'reset') {
       stream = rec?.createStream();
       lastPartial = '';
-      speechInFlight = false;
     }
   });
 }

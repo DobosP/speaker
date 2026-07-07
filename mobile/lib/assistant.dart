@@ -184,7 +184,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
     unawaited(TtsService.instance.ensureReady()); // warm the TTS worker isolate
 
     // The recognizer lives on a worker isolate; wire its callbacks and start it.
-    AsrService.instance.onSpeechStart = _onSpeechStart;
     AsrService.instance.onPartial = _onPartial;
     AsrService.instance.onEndpoint = _onEndpoint;
     await AsrService.instance.ensureReady();
@@ -207,22 +206,15 @@ class _AssistantScreenState extends State<AssistantScreen> {
     _audioSub = audioStream.listen(_onMicChunk);
   }
 
-  // Speech-start arrives from the ASR worker before the first partial, so
-  // pre-partial user speech cannot train the quiet-room floor.
-  void _onSpeechStart() {
-    final now = DateTime.now();
-    _quietGate.noteAsrStarted(now);
-    _tLastVoice ??= now;
-  }
-
   // Live partial from the ASR worker. The worker emits only on change, so this
   // is where "last voice" advances (drives the silence-wait metric) and where
   // barge-in fires.
   void _onPartial(String partial) {
     if (partial.isEmpty) return;
     _tLastVoice = DateTime.now();
-    // Reinforce the in-flight state if a platform misses the pre-partial
-    // speech-start edge; the worker event is the normal path.
+    // TODO(recovered): ASR isolate has no explicit speech-start callback; a
+    // non-empty partial is the earliest reliable signal that an utterance is
+    // in flight, so calibration stays blocked until the endpoint callback.
     _quietGate.noteAsrStarted(_tLastVoice!);
     // Barge-in via transcription (complements the energy path): the user talking
     // — or saying a stop word — while the assistant speaks cuts it off.
@@ -265,7 +257,6 @@ class _AssistantScreenState extends State<AssistantScreen> {
   Future<void> _stopListening() async {
     await _audioSub?.cancel();
     _audioSub = null;
-    AsrService.instance.onSpeechStart = null;
     await _recorder.stop();
     _quietGate.resetAsr();
     await _stopSpeaking();

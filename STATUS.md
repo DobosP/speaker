@@ -3,8 +3,21 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-07 (Windows workspace; merge-audit sweep: full logic
-suite 2345 passed, 24 skipped; `git diff --check` clean). Prior: 2026-07-06 (Windows i9/4090 box, later the same day; full logic
+Last verified: 2026-07-07 late (Linux ROG box; P2 robustness cluster landed: full
+logic suite 2387 passed, 24 skipped; `git diff --check` clean. Shipped in one
+commit: ① diagnose_run word-cut verdict truth-up — a word-cut-confirmed barge is
+no longer stale-flagged `suspect:no-dtd` (run-level exemption keyed on the confirm
+line; classification stays strict otherwise); ② staged-confirmation TTL
+(`confirmation_ttl_sec`, default 180 s) swept off the watchdog tick with a spoken
+"Confirmation expired: ..."; ③ shutdown guards — supervisor `_stopped` latch for the
+follow-up timer + WatchManager poller Event-wake + bounded join; ④ process-global
+`builtins.input` shim serialized via module lock; ⑤ bounded queues —
+`queued_tasks` drop-oldest cap (32) with once-per-storm notice, runlog queue
+bounded 8192 with count-and-coalesce overflow, WARNING+ grace put. Tail talk-over
+pre-roll preservation DEFERRED — needs live-batch audio validation; the headless
+harness can't model near-end-words-vs-own-echo separation.) Prior: 2026-07-07
+(Windows workspace; merge-audit sweep: full logic
+suite 2345 passed, 24 skipped; `git diff --check` clean); 2026-07-06 (Windows i9/4090 box, later the same day; full logic
 suite 2316 passed, 24 skipped on branch fix/stability-recon-followups);
 2026-07-06 (Linux Mint boot; 2295 passed; ADR-0013 merged to main); 2026-07-05
 (fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012). Live: 2026-07-06
@@ -68,8 +81,9 @@ own (4-word floor can't fill; bare "stop" untested tonight); (2) words fed
 during playback are DROPPED at reply end unless a cut fired, so a talk-over
 near the reply tail loses its opening words from the following final; (3) the
 diagnose_run self-interrupt classifier stale-flags a word-cut barge as
-SUSPECT:NO-DTD → OVERALL FAIL (word-cut bypasses the DTD by design) — tool
-truth-up needed. **Kill-safe recorder LIVE-validated** by an accidental hard
+SUSPECT:NO-DTD → OVERALL FAIL (word-cut bypasses the DTD by design) —
+**FIXED 2026-07-07 late** (run-level exemption keyed on the confirm line;
+tests/test_diagnose_run.py pins PASS for confirmed cuts, suspect otherwise). **Kill-safe recorder LIVE-validated** by an accidental hard
 kill (wrapper PID killed → python died with no teardown): both 1209 s WAVs
 still valid on disk. The SIGTERM→Ctrl-C bridge itself is unit-tested but NOT
 yet live-exercised (no summary.json for this run). Also observed, separate

@@ -900,3 +900,49 @@ def test_word_cut_voice_present_zero_words_flagged(tmp_path):
     wcf = word_cut_funnel(run)
     assert wcf["voice_present_zero_words"] == 1
     assert "ZERO words transcribed" in format_report(run)
+
+
+# ---------------------------------------------------------------------------
+# ADR-0013 word-cut confirm must not read as a self-interrupt suspect
+# ---------------------------------------------------------------------------
+
+WORD_CUT_CONFIRMED_BARGE_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260707-120100 started (debug=True) -> logs/runs/run-20260707-120100.txt",
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'A long reply about the weather.' (queue depth=0)",
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    # speaking=True at the cut instant, and deliberately NO dtd lines: the word-cut
+    # path bypasses DTD by design, which used to yield suspect:no-dtd.
+    "12:00:11.000 DEBUG speaker.sherpa | capture heartbeat: blocks=200 avg_rms=0.0200 clip=0.0% underruns=0 partials=0 finals=0 speaking=True",
+    "12:00:15.100 INFO  speaker.sherpa | barge-in confirmed by speech (word-cut): 'actually tell me the time'",
+    "12:00:15.100 INFO  speaker.sherpa | barge-in detected",
+    "12:00:16.000 DEBUG speaker.sherpa | capture heartbeat: blocks=300 avg_rms=0.0100 clip=0.0% underruns=0 partials=0 finals=0 speaking=False",
+]
+
+
+def test_word_cut_confirmed_detected_barge_not_self_interrupt(tmp_path):
+    from tools.diagnose_run import pass_fail_verdict
+
+    run = parse_log(_write_log(tmp_path, WORD_CUT_CONFIRMED_BARGE_LINES))
+    assert run.word_cut_confirm_times  # confirm time captured
+
+    si = self_interrupt_summary(run)
+    assert si["suspect_count"] == 0
+    assert si["verdict"] == "clean"
+
+    pf = pass_fail_verdict(run)
+    assert pf["self_interrupt"] == "PASS"
+    assert pf["overall"] != "FAIL"
+
+
+def test_unconfirmed_no_dtd_barge_still_suspect(tmp_path):
+    # Same shape WITHOUT the confirm line: the strict no-dtd suspicion must survive
+    # (the exemption is keyed on the confirm evidence, not on the word-cut era).
+    lines = [
+        line
+        for line in WORD_CUT_CONFIRMED_BARGE_LINES
+        if "confirmed by speech" not in line
+    ]
+    run = parse_log(_write_log(tmp_path, lines))
+    si = self_interrupt_summary(run)
+    assert si["suspect_count"] == 1
+    assert si["suspects"][0]["label"] == "suspect:no-dtd"

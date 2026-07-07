@@ -211,11 +211,14 @@ class WatchManager:
         self._min_poll_sec = max(1.0, float(min_poll_sec))
         self._autostart = autostart
         self._clock = clock
-        self._sleep = sleep
+        self._sleep = sleep  # legacy seam, no longer used by the poller loop
         self._active: dict[str, ActiveWatch] = {}
         self._lock = threading.Lock()
         self._poller: Optional[threading.Thread] = None
         self._shutdown = False
+        # Interruptible cadence: shutdown() sets this so the poller wakes NOW and
+        # exits instead of finishing a full min_poll sleep (mirrors StuckWatchdog).
+        self._wake = threading.Event()
         self._seq = 0
 
     # -- arming / disarming --
@@ -312,7 +315,7 @@ class WatchManager:
 
     def _run(self) -> None:
         while not self._shutdown:
-            self._sleep(self._min_poll_sec)
+            self._wake.wait(self._min_poll_sec)
             if self._shutdown:
                 break
             try:
@@ -321,7 +324,15 @@ class WatchManager:
                 log.exception("watch poller tick failed")
 
     def shutdown(self) -> None:
+        """Stop the poller CLEANLY: wake it out of its cadence wait, join it (bounded),
+        and only then clear the active set — a late tick can no longer race a
+        half-torn-down manager (backlog: poller shutdown guard)."""
         self._shutdown = True
+        self._wake.set()
+        with self._lock:
+            poller, self._poller = self._poller, None
+        if poller is not None and poller.is_alive() and poller is not threading.current_thread():
+            poller.join(timeout=2.0)
         with self._lock:
             self._active.clear()
 

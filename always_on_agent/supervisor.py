@@ -97,6 +97,8 @@ class AgentSupervisor:
         continuation_config: ContinuationConfig | None = None,
         continuation: ContinuationClassifier | None = None,
         task_timeouts: Mapping[str, float] | None = None,
+        confirmation_ttl_sec: float = 180.0,
+        max_queued_tasks: int = 32,
         load_fraction: Optional[Callable[[], Optional[float]]] = None,
         admission_load_ceiling: float = 0.85,
         on_turn_merged: Optional[Callable[[], None]] = None,
@@ -137,10 +139,27 @@ class AgentSupervisor:
                     self._task_timeouts[str(key)] = float(value)
                 except (TypeError, ValueError):
                     continue
+        # TTL for staged owner confirmations (never-stuck backstop, same family as
+        # task_timeouts): an abandoned "Confirm command: ..." used to wait forever,
+        # so a stray later "yes" could approve a long-forgotten action. 0 disables.
+        try:
+            self._confirmation_ttl_sec = max(0.0, float(confirmation_ttl_sec))
+        except (TypeError, ValueError):
+            self._confirmation_ttl_sec = 180.0
+        # Bounded queued-task admission (backlog: unbounded queue under an input
+        # storm). Every queue append funnels through _queue_task, which drops the
+        # OLDEST droppable turn past this cap. Mirrors the bounded-deque histories
+        # above and the playback queue's drop-oldest overflow (sherpa).
+        self._max_queued_tasks = max(1, int(max_queued_tasks))
+        self._queue_overflow_announced = False
         self._followup_state = FollowupState(
             markers=self.followups.markers, max_followups=self.followups.max_followups
         )
         self._followup_timer: Timer | None = None
+        # Set by shutdown(): a Timer callback that was already in flight when the
+        # runtime stopped must not publish a late FOLLOWUP_TICK into a dead bus,
+        # and nothing may arm a new timer afterwards (backlog: shutdown guard).
+        self._stopped = False
         # Barge-in determinism (realtime-concurrency-1): cancellation can be
         # requested from the audio thread (runtime barge-in/stop) *and* the bus
         # thread (CONTROL_STOP). This lock makes the cancel atomic and guards
@@ -225,7 +244,9 @@ class AgentSupervisor:
         return self.bus.drain()
 
     def shutdown(self) -> None:
-        """Cancel background timers (called on runtime stop)."""
+        """Cancel background timers (called on runtime stop). Idempotent; after
+        this, follow-up scheduling and the timer callback are permanently inert."""
+        self._stopped = True
         self._cancel_followup()
 
     def cancel_all(self) -> None:
@@ -289,6 +310,8 @@ class AgentSupervisor:
     # --- proactive follow-ups ------------------------------------------------
     def _schedule_followup(self) -> None:
         """Arm a timer that, after a silent delay, nudges the conversation."""
+        if self._stopped:
+            return
         if not self.followups.enabled or not self._followup_state.can_continue():
             return
         self._cancel_followup()
@@ -309,6 +332,8 @@ class AgentSupervisor:
 
     def _tick_followup(self) -> None:
         """Timer-thread callback: hand control back to the bus thread."""
+        if self._stopped:
+            return  # Timer fired concurrently with shutdown(): swallow the late tick.
         self.publish(AgentEvent(EventKind.FOLLOWUP_TICK, priority=95))
 
     def _emit_followup(self) -> None:
@@ -430,11 +455,15 @@ class AgentSupervisor:
         if self._handle_latency_policy(task):
             return
         if task.metadata.get("requires_confirmation"):
+            if self._confirmation_ttl_sec > 0:
+                task.metadata["confirmation_expires_at"] = (
+                    time.monotonic() + self._confirmation_ttl_sec
+                )
             self.state.pending_confirmations[task.task_id] = task
             self.state.spoken_outputs.append(f"Confirm command: {task.input_text}")
             return
         if self._should_queue(task):
-            self.state.queued_tasks.append(task)
+            self._queue_task(task)
             self.state.spoken_outputs.append(f"Queued {task.mode.value}: {task.input_text}")
             return
         self._start_task(task)
@@ -587,6 +616,44 @@ class AgentSupervisor:
             )
         return len(reaped)
 
+    def sweep_expired_confirmations(self, now: float | None = None) -> int:
+        """Drop staged confirmations past their TTL and say so (never-stuck backstop,
+        the pending-confirmation sibling of ``reap_overdue_tasks``).
+
+        Without this an abandoned "Confirm command: ..." waited forever, so a stray
+        "yes" minutes later could approve a long-forgotten action — the TTL closes
+        that window. Safe from the watchdog tick thread: the dict mutation happens
+        under ``_cancel_lock`` exactly like ``cancel_all``; the spoken cancellation
+        is published outside the lock, stamped with the current epoch so a barge-in
+        still suppresses it."""
+        if self._confirmation_ttl_sec <= 0:
+            return 0
+        now = time.monotonic() if now is None else now
+        expired: list[AgentTask] = []
+        with self._cancel_lock:
+            for task_id, task in list(self.state.pending_confirmations.items()):
+                deadline = task.metadata.get("confirmation_expires_at")
+                if deadline is not None and now >= float(deadline):
+                    self.state.pending_confirmations.pop(task_id, None)
+                    task.cancel()
+                    expired.append(task)
+            epoch = self.speech_epoch
+        for task in expired:
+            log.info(
+                "expired pending confirmation %s after %.0fs: %r",
+                task.task_id, self._confirmation_ttl_sec, task.input_text,
+            )
+            text = f"Confirmation expired: {task.input_text}"
+            self.state.spoken_outputs.append(text)
+            if task.metadata.get("speak", True):
+                self.publish(
+                    AgentEvent(
+                        EventKind.TTS_REQUEST,
+                        {"task_id": task.task_id, "text": text, "epoch": epoch},
+                    )
+                )
+        return len(expired)
+
     def looks_like_continuation(self, text: str) -> bool:
         """Whether ``text`` would extend the single in-flight assistant turn.
 
@@ -736,7 +803,7 @@ class AgentSupervisor:
         task.metadata["continuation_addons"] = addons
         task.metadata["skip_user_memory"] = True
         self._record_addon(addon)
-        self.state.queued_tasks.append(task)
+        self._queue_task(task)
         log.info(
             "continuation QUEUE: %s queued behind speaking turn %s",
             task.task_id, victim.task_id,
@@ -809,6 +876,39 @@ class AgentSupervisor:
         )
         return active_research >= self.analyzer.policy.research_parallel_tasks
 
+    def _queue_task(self, task: AgentTask) -> None:
+        """Bounded FIFO admission for ``queued_tasks`` (backlog: unbounded queue).
+
+        Past the cap, the OLDEST droppable turn is cancelled and removed —
+        drop-oldest keeps the newest input (voice UX: the user's latest request
+        wins), matching the playback queue's overflow policy. A continuation task
+        extends the live turn, so a stale cold task is preferred as the victim.
+        Mutation under ``_cancel_lock`` like every other queued_tasks writer; the
+        spoken notice is once-per-storm (reset when a drain empties the queue)."""
+        dropped: AgentTask | None = None
+        with self._cancel_lock:
+            self.state.queued_tasks.append(task)
+            if len(self.state.queued_tasks) > self._max_queued_tasks:
+                idx = next(
+                    (i for i, t in enumerate(self.state.queued_tasks)
+                     if not t.metadata.get("continuation_of")),
+                    0,
+                )
+                dropped = self.state.queued_tasks.pop(idx)
+                dropped.cancel()
+        if dropped is None:
+            return
+        log.warning(
+            "queued-task overflow: dropped oldest %s (mode=%s, %r); cap=%d",
+            dropped.task_id, dropped.mode.value, dropped.input_text, self._max_queued_tasks,
+        )
+        self.state.failures.append(f"task {dropped.task_id} dropped (queue full)")
+        if not self._queue_overflow_announced:
+            self._queue_overflow_announced = True
+            self.state.spoken_outputs.append(
+                "I'm at capacity — dropping the oldest queued request."
+            )
+
     def _start_queued_tasks(self) -> None:
         # Snapshot + swap the queue under the cancel lock so a concurrent
         # cancel_all (audio thread) cannot clear queued_tasks mid-iteration and
@@ -848,6 +948,9 @@ class AgentSupervisor:
             # Re-queue the not-yet-runnable tasks AHEAD of anything appended
             # while we were unlocked, preserving FIFO order.
             self.state.queued_tasks = remaining + self.state.queued_tasks
+            if not self.state.queued_tasks:
+                # Storm over: the next overflow may speak its one-line notice again.
+                self._queue_overflow_announced = False
 
     def _confirm_next(self, owner_verified: bool = False) -> None:
         if not self.state.pending_confirmations:

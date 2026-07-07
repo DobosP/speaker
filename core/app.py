@@ -492,6 +492,10 @@ def build_runtime(
         # Per-mode wall-clock task deadlines (never-stuck backstop). Optional --
         # the supervisor bakes in sensible defaults; config overrides per mode.
         task_timeouts=config.get("task_timeouts"),
+        # TTL for staged owner confirmations (same never-stuck family): an
+        # abandoned "Confirm command: ..." expires with a spoken notice instead
+        # of waiting forever for a stray "yes". 0 disables.
+        confirmation_ttl_sec=float(config.get("confirmation_ttl_sec", 180.0)),
     )
 
     return runtime

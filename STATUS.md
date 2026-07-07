@@ -268,6 +268,39 @@ git diff --check
    Raise the Windows OS mic level/boost, re-tune SenseVoice + prosody
    thresholds, consider R14 (Parakeet finalizer). Speaker-ID enrollment on
    this box also needs a redo on a quiet system (tonight's rejected the owner).
+   **Tool (2026-07-07): `python -m tools.calibration_suite`** records the same
+   phrase under N capture calibrations into one folder, each the exact 16 kHz
+   the ASR would hear; scores every clip by independent faster-whisper WER +
+   reference-free confidence + audio metrics and prints the winning
+   `config.local.json` block. `--listen` loudness-matches a run's clips for
+   fair ear-grading; `--selftest` self-checks with no mic. **Round-1 ear grades
+   (owner, this box): raw=4 > voice_comm=3.5 = gain_boost=3.5 > agc=2 =
+   voice_comm_agc=2** — the boost-only InputAGC audibly pumps the floor (ruled
+   out as a quality lever) and WASAPI voice-comm alone doesn't beat raw; capture
+   was CLEAN on every preset (the old avg_rms 0.0007 quiet-mic condition is gone
+   on this box). Round-2 default sweep now targets the remaining Teams gap:
+   `denoise` (GTCRN deep NS, model fetched 523 KB), `apm` (WebRTC APM always-on:
+   AEC3+NS+AGC2+HPF), `voice_comm_denoise` (OS path + ML NS — the Teams-parity
+   candidate); **`--talk-over`** plays the configured TTS voice through the
+   speaker while recording (double-talk test; APM presets get the played frames
+   as far-end via FarEndRing + AecDelayCalibrator). Selftest: GTCRN lifted
+   synthetic SNR 26.9→42.9 dB; APM AGC2 leveled 0.106→0.176 RMS. Round-2 ear
+   grades pending — **NEXT (owner continues on the LINUX box, 2026-07-07):**
+   (a) fetch the denoiser there (machine-local): `python -m tools.setup_models
+   --denoise-model` (523 KB); (b) quiet-room sweep, READING the printed phrase
+   verbatim so WER is real: `python -m tools.calibration_suite --play`;
+   (c) double-talk sweep: `python -m tools.calibration_suite --talk-over`;
+   (d) ear-grade both runs via `--listen` and record grades. **Linux gotchas:**
+   the `voice_comm` presets are WASAPI-only in-tool — on Linux load PipeWire
+   `module-echo-cancel` first and pass `--input-device <EC source>` (else the
+   preset silently runs as raw mic); keep the PipeWire source volume LOW
+   (~13% — high source volume drives the ADC +30 dB and clips, memory
+   `capture-gain-source-volume-mechanism-2026-07-05`); use the repo venv
+   `/home/dobo/work/speaker/.venv/bin/python`. Round-1 verdict to carry over:
+   InputAGC presets are ruled out by ear (noise pumping); the open candidates
+   are `denoise`, `apm`, `voice_comm_denoise` vs the `raw` control. If a
+   denoise preset wins, adoption = `denoise_enabled=true` + **re-enroll the
+   voice** (embedding shifts post-denoise).
 3. Open + headless: R05 routing lever, R09 dead-air, R10 cleaner guard,
    R14 Parakeet ASR branch; voice-plan P2 bundle (`setup_models --kokoro`,
    per-device roll-off, Kokoro-vs-Piper profile gate).

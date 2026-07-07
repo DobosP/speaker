@@ -390,6 +390,72 @@ def test_addon_before_audio_merges_into_single_answer():
         runtime.stop()
 
 
+class _PromptRecordingBlockingLLM:
+    """Non-streaming fake that blocks inside generate() and records prompts.
+    ack_then_think only fires on the non-streaming path (streaming turns get
+    STREAM_* policies instead), so the ack/merge regression needs generate()."""
+
+    def __init__(self):
+        self.gate = threading.Event()
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str, *, system=None, images=None) -> str:
+        self.prompts.append(prompt)
+        self.gate.wait(timeout=2.0)
+        return prompt  # echo so the test sees which turn produced the answer
+
+    def stream(self, prompt: str, *, system=None, images=None) -> Iterator[str]:
+        yield self.generate(prompt, system=system)
+
+
+def test_addon_after_latency_ack_still_merges():
+    """Regression: the ack_then_think acknowledgement is filler, not answer
+    audio. An add-on that lands AFTER the ack but BEFORE the answer must still
+    take the continuation MERGE branch (one combined answer), not queue behind
+    a reply the user has not heard. The ack used to flip started_speaking and
+    silently disable the merge."""
+    from core.metrics import MERGED, SUPERSEDED
+
+    llm = _PromptRecordingBlockingLLM()
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine,
+        llm,
+        start_mode=Mode.ASSISTANT,
+        continuation_config=ContinuationConfig(enabled=True),
+    )
+    runtime.start(run_bus=True)
+    try:
+        # Slow-thinker phrasing -> classified ack_then_think on the
+        # non-streaming path, so the ack plays while generate() is blocked.
+        engine.final("compare the latest local speech to text engines")
+        assert _wait_until(lambda: "I'll check that now." in engine.spoken)
+        assert _wait_until(lambda: len(llm.prompts) >= 1)
+        active = list(runtime.supervisor.state.active_tasks.values())
+        assert active and active[0].ack_spoken
+        assert not active[0].started_speaking  # the ack is not answer audio
+
+        # Add-on after the ack, before any answer audio -> must MERGE.
+        engine.final("and also their licenses")
+        assert _wait_until(lambda: len(llm.prompts) >= 2)
+        llm.gate.set()
+
+        assert runtime.wait_idle()
+        assert any(
+            "compare the latest local speech to text engines" in p
+            and "and also their licenses" in p
+            for p in llm.prompts
+        ), llm.prompts
+        # The lineage is acknowledged exactly once -- the merged turn must not
+        # re-speak the same filler after the add-on.
+        assert engine.spoken.count("I'll check that now.") == 1, engine.spoken
+        records = runtime.metrics.records()
+        assert MERGED in records[0].stamps
+        assert SUPERSEDED in records[0].stamps
+    finally:
+        runtime.stop()
+
+
 def test_addon_passes_input_gate_while_turn_in_flight():
     """A short add-on the addressing gate would INGEST as ambient must still reach
     the brain (and merge) while a turn is in flight -- otherwise the default-ON

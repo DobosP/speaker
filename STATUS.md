@@ -173,6 +173,12 @@ legacy `main.py` monolith was deleted 2026-05-26, ADR-0002). One portable core
 
 ## Current state (2026-07-02)
 
+- **2026-07-07: ack/continuation invariant fixed** — the ack_then_think latency
+  acknowledgement no longer flips `started_speaking` (new `AgentTask.ack_spoken`
+  field), so an add-on spoken after the ack but before the answer MERGEs into
+  one combined turn instead of queueing behind the unheard reply; merged
+  continuation turns are not re-acked. Regression:
+  `tests/test_core_runtime.py::test_addon_after_latency_ack_still_merges`.
 - `main` = c732c14 (R11 structured-history + R06b prompt-order merged).
 - PR `fix/asr-guard-test-and-kokoro-fallback` must land to restore green CI
   (fixes a deterministically-red asr-guard test + Kokoro `build_tts` fallback).

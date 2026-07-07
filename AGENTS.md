@@ -18,7 +18,8 @@
 - Never read or print secret values.
 - Do not delete logs unless Paul explicitly asks.
 - Do not claim live hardware validation unless it actually ran.
-- Do not push or merge unless Paul explicitly asks.
+- Direct merge + push to `main` is allowed once the test gate is green (owner
+  decision 2026-07-07, development phase). Never land a red suite.
 
 ## Commands
 - APM/DTD regression: `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q`

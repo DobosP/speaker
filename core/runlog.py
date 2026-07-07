@@ -27,6 +27,7 @@ import atexit
 import json
 import logging
 import queue
+import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -165,10 +166,58 @@ class _ThreadQueueHandler(QueueHandler):
     record allocation + a lock-free-ish ``deque.append`` -- no interpolation,
     no I/O. Safe because our log args are immutable (str/num) or freshly-built
     dicts that are never mutated after the call.
+
+    Backpressure (backlog: unbounded runlog queue): the queue is BOUNDED now, so
+    a debug-log storm can no longer grow memory without limit while the listener
+    is behind. Overflow policy: DEBUG/INFO records are dropped and COUNTED; a
+    WARNING+ record first tries a short blocking put (never dropped if the
+    listener recovers within the grace window). The next successful enqueue
+    injects one coalesced ``runlog dropped N record(s)`` WARNING — the storm is
+    visible in the log without amplifying it.
     """
+
+    _WARN_PUT_TIMEOUT_SEC = 0.25
+
+    def __init__(self, log_queue: "queue.Queue") -> None:
+        super().__init__(log_queue)
+        self._dropped = 0
+        self._drop_lock = threading.Lock()
 
     def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
         return record
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        if record.levelno >= logging.WARNING:
+            try:
+                self.queue.put(record, timeout=self._WARN_PUT_TIMEOUT_SEC)
+            except queue.Full:
+                with self._drop_lock:
+                    self._dropped += 1
+                return
+            self._flush_drop_summary()
+            return
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            with self._drop_lock:
+                self._dropped += 1
+            return
+        self._flush_drop_summary()
+
+    def _flush_drop_summary(self) -> None:
+        with self._drop_lock:
+            n, self._dropped = self._dropped, 0
+        if not n:
+            return
+        summary = logging.LogRecord(
+            "speaker.runlog", logging.WARNING, __file__, 0,
+            "runlog dropped %d record(s) under backpressure", (n,), None,
+        )
+        try:
+            self.queue.put_nowait(summary)
+        except queue.Full:
+            with self._drop_lock:
+                self._dropped += n  # still saturated -- retry on a later enqueue
 
 
 @dataclass
@@ -292,7 +341,10 @@ def setup_logging(
     summary = RunSummary(run_id=run_id, log_path=log_path)
     handlers.append(_SummaryHandler(summary))
 
-    log_q: "queue.Queue" = queue.Queue(-1)  # unbounded; enqueue is cheap
+    # Bounded (backlog: log-storm backpressure): deep enough that only a genuine
+    # storm with a stalled listener ever fills it; overflow policy lives in
+    # _ThreadQueueHandler.enqueue (count + coalesce, WARNING+ gets a grace put).
+    log_q: "queue.Queue" = queue.Queue(maxsize=8192)
     listener = QueueListener(log_q, *handlers, respect_handler_level=True)
     listener.start()
 

@@ -266,3 +266,66 @@ def test_detect_display_server():
 def test_os_preflight_headless_warns():
     warnings = os_mode_preflight(env={}, platform="linux", which=lambda _x: None)
     assert any("headless" in w for w in warnings)
+
+
+# -- input-shim serialization (backlog: process-global builtins.input race) ----
+
+
+class BlockingInterpreter(FakeInterpreter):
+    """Calls builtins.input() mid-chat (like OI's approval prompt) and blocks on an
+    Event so a second concurrent run can try to race the shim swap."""
+
+    def __init__(self, chunks, entered: Event, release: Event):
+        super().__init__(chunks)
+        self._entered = entered
+        self._release = release
+
+    def chat(self, message, stream=True, display=False):
+        import builtins
+
+        self._entered.set()
+        assert not self._release.wait(0)  # not yet released — we're mid-run
+        builtins.input("run this code?")  # exercises the shim
+        self._release.wait(timeout=5)
+        yield from super().chat(message, stream=stream, display=display)
+
+
+def test_input_shim_serialized_and_restored_across_concurrent_runs():
+    import builtins
+    import threading
+
+    pristine = builtins.input
+    entered_a, release_a = Event(), Event()
+    brain_a = AgentBrain(AgentBrainConfig(allowlist=("^ls",), denylist=("rm -rf",)))
+    brain_a._interpreter = BlockingInterpreter([_msg("done A", end=True)], entered_a, release_a)
+
+    order: list[str] = []
+
+    def run_a():
+        list(brain_a.stream_run("task a"))
+        order.append("a-done")
+
+    t_a = threading.Thread(target=run_a, daemon=True)
+    t_a.start()
+    assert entered_a.wait(timeout=5)  # A is mid-run, shim installed, lock held
+
+    # B must NOT be able to enter its own shim window while A holds the lock.
+    brain_b = _brain([_msg("done B", end=True)])
+    done_b = Event()
+
+    def run_b():
+        list(brain_b.stream_run("task b"))
+        order.append("b-done")
+        done_b.set()
+
+    t_b = threading.Thread(target=run_b, daemon=True)
+    t_b.start()
+    assert not done_b.wait(timeout=0.3)  # serialized behind A
+
+    release_a.set()
+    t_a.join(timeout=5)
+    assert done_b.wait(timeout=5)
+    t_b.join(timeout=5)
+
+    assert order == ["a-done", "b-done"]
+    assert builtins.input is pristine  # no stale shim left installed

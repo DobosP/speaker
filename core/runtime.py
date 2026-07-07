@@ -86,6 +86,7 @@ class VoiceRuntime:
         warm_on_start: bool = False,
         persona: Optional[PersonaConfig] = None,
         task_timeouts: Optional[Mapping[str, float]] = None,
+        confirmation_ttl_sec: float = 180.0,
         admission_load: Optional[Callable[[], Optional[float]]] = None,
     ):
         self.engine = engine
@@ -251,6 +252,7 @@ class VoiceRuntime:
             followup_config=followup_config,
             continuation_config=continuation_config,
             task_timeouts=task_timeouts,
+            confirmation_ttl_sec=confirmation_ttl_sec,
             # control-plane-2: load-elastic admission. Ungated (unlike the
             # routing-only load_snapshot, which is live_routing-gated), since
             # tightening the concurrency ceiling under load is always safe.
@@ -394,11 +396,17 @@ class VoiceRuntime:
 
     def _on_watchdog_tick(self) -> None:
         """Periodic maintenance on the watchdog's cadence: reap hung tasks so the
-        controller never stays blocked on a capability that won't return."""
+        controller never stays blocked on a capability that won't return, and
+        expire abandoned staged confirmations so a stray later "yes" can't approve
+        a forgotten action."""
         try:
             self.supervisor.reap_overdue_tasks()
         except Exception:  # noqa: BLE001 - maintenance must never kill the watchdog
             log.exception("overdue-task reap failed")
+        try:
+            self.supervisor.sweep_expired_confirmations()
+        except Exception:  # noqa: BLE001 - maintenance must never kill the watchdog
+            log.exception("confirmation-TTL sweep failed")
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:

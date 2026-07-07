@@ -231,6 +231,10 @@ class ParsedRun:
     word_cut_traces: list = field(default_factory=list)   # (t, words, text)
     word_cut_resets: list = field(default_factory=list)   # (t, words, text)
     word_cut_confirmed: int = 0
+    # Times of the ADR-0013 confirm lines: a word-cut proves the barge with SPEECH, so a
+    # detected event at one of these instants must not be judged by DTD evidence at all
+    # (the word-cut path bypasses DTD by design — see self_interrupt_summary).
+    word_cut_confirm_times: list = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +259,7 @@ def parse_log(txt_path: str) -> ParsedRun:
     word_cut_traces: list[tuple] = []
     word_cut_resets: list[tuple] = []
     word_cut_confirmed = 0
+    word_cut_confirm_times: list[float] = []
     pending_tts_sanitize: Optional[dict] = None
     last_playback_sample_rate: Optional[int] = None
 
@@ -416,6 +421,7 @@ def parse_log(txt_path: str) -> ParsedRun:
             if "speaker.sherpa" in logger:
                 if _WC_CONFIRMED_PAT.search(msg):
                     word_cut_confirmed += 1
+                    word_cut_confirm_times.append(t)
                     continue
                 mwf = _WC_FUNNEL_PAT.search(msg)
                 if mwf:
@@ -490,6 +496,7 @@ def parse_log(txt_path: str) -> ParsedRun:
         word_cut_traces=word_cut_traces,
         word_cut_resets=word_cut_resets,
         word_cut_confirmed=word_cut_confirmed,
+        word_cut_confirm_times=word_cut_confirm_times,
     )
 
 
@@ -867,10 +874,20 @@ def word_cut_funnel(run: ParsedRun) -> dict:
 
 def self_interrupt_summary(run: ParsedRun) -> dict:
     """High-level self-interrupt verdict for the run."""
+
+    def _word_cut_confirmed_at(be: BargeEvent) -> bool:
+        # ADR-0013: a word-cut confirm proves the barge with SPEECH (novel non-own
+        # words), deliberately bypassing DTD — so a detected event at a confirm
+        # instant must not be tallied as `suspect:no-dtd`/`suspect:*`. Run-level
+        # exemption only: classify_barge_event stays strict for every other event.
+        return any(abs(be.t - tc) <= 0.5 for tc in run.word_cut_confirm_times)
+
     total_detected = sum(1 for be in run.barge_events if be.kind == "detected")
     suspects = []
     for be in run.barge_events:
         label = classify_barge_event(be)
+        if label.startswith("suspect") and _word_cut_confirmed_at(be):
+            continue
         if label.startswith("suspect"):
             suspects.append({"t": be.t, "label": label, "sentence": be.sentence_idx})
 

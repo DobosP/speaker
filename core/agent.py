@@ -21,6 +21,7 @@ import builtins
 import contextlib
 import os
 import re
+import threading
 from dataclasses import dataclass
 from typing import Callable, Iterator, Optional
 
@@ -128,6 +129,11 @@ _NEVER_AUTO_SAFE = [
 # affirmative answers fed to Open Interpreter's execution prompt
 _OI_YES = "y"
 _OI_NO = "n"
+
+# Serializes the process-global ``builtins.input`` swap in ``_auto_answer`` — module
+# level (not per-instance) because the swapped global is process-wide. RLock so a
+# same-thread re-entry can never deadlock.
+_INPUT_SHIM_LOCK = threading.RLock()
 
 # LiteLLM model-string prefixes that run on-device (no cloud round-trip)
 _LOCAL_MODEL_PREFIXES = ("ollama/", "ollama_chat/", "local/")
@@ -334,23 +340,32 @@ class AgentBrain:
 
     @contextlib.contextmanager
     def _auto_answer(self, last_code: dict, on_confirm):
-        """Temporarily answer OI's interactive 'run this code?' prompt."""
+        """Temporarily answer OI's interactive 'run this code?' prompt.
+
+        Holds a process-wide lock for the whole swap window: ``builtins.input`` is
+        process-GLOBAL, so two concurrent tasks doing the save/shim/restore dance
+        unserialized can capture each other's shim as "original" and leave a stale
+        shim installed after both finish (backlog: input-shim race). Serializing
+        here is correct rather than merely safe — the underlying interpreter
+        instance is shared too, so concurrent ``oi.chat`` was never sound.
+        """
         if self.config.auto_run:
             yield
             return
-        original = builtins.input
+        with _INPUT_SHIM_LOCK:
+            original = builtins.input
 
-        def shim(prompt: str = "") -> str:
-            code = last_code.get("code", "")
-            language = last_code.get("language", "")
-            verdict = self.classify(code)
-            return _OI_YES if self.decide(verdict, code, language, on_confirm) else _OI_NO
+            def shim(prompt: str = "") -> str:
+                code = last_code.get("code", "")
+                language = last_code.get("language", "")
+                verdict = self.classify(code)
+                return _OI_YES if self.decide(verdict, code, language, on_confirm) else _OI_NO
 
-        builtins.input = shim
-        try:
-            yield
-        finally:
-            builtins.input = original
+            builtins.input = shim
+            try:
+                yield
+            finally:
+                builtins.input = original
 
     def _reset(self):
         with contextlib.suppress(Exception):

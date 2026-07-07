@@ -46,15 +46,15 @@ python -m tools.doctor                       # preflight when a run won't start
 
 ## Hard policies
 
-- **Git (fleet standard 2026-06-24, `docs/adr/0007`; see AGENTS.md).** `main` is
-  the integration branch; do feature work on a short-lived branch. Commit
-  locally when the work is complete and the logic suite is green. **Never push,
-  merge to `main`, or delete branches without Paul's explicit ask.** The older
-  2026-05-30 "standing session workflow" authorization is revoked; do not
-  resurrect it from prior session notes.
-- **On the Windows box**, the guard hook (`.claude/hooks/guard.ps1`) blocks the
-  work identity and (since 2026-07-02) pushes targeting `main`/`master` — land
-  via a PR; procedure + guard limits in `docs/windows_landing_workflow.md`.
+- **Git (fleet standard 2026-07-07, `docs/adr/0014`; see AGENTS.md).** `main` is
+  the integration branch; do feature work on a short-lived branch. When the work
+  is complete and the logic suite is green, **direct merge + push to `main` is
+  allowed** (owner decision 2026-07-07, partially superseding ADR-0007's PR-only
+  landing). Don't delete branches that aren't yours or fully merged.
+- **On the Windows box**, the guard hook (`.claude/hooks/guard.ps1`) still blocks
+  touching the work git/SSH identity; the main-push block was removed 2026-07-07
+  (ADR-0014). `docs/windows_landing_workflow.md` describes the old PR flow for
+  when the guard returns at release hardening.
 - **Secrets live in [`CREDENTIALS.md`](CREDENTIALS.md)** — single source of
   truth for every credential. **Golden rule:** read from the env at runtime;
   **never** hard-code, echo, or commit a token — reference it only as `$VAR`.

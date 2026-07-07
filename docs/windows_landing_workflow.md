@@ -1,9 +1,15 @@
 # Landing work from the Windows box (personal SSH key + PR flow)
 
+> **2026-07-07 (ADR-0014):** the guard's main-push block is REMOVED for the
+> development phase — direct merge + push to `main` is allowed when the logic
+> suite is green. The PR flow below stays documented for release hardening,
+> when the guard rule should be reinstated. The work-identity protections in
+> the guard remain active.
+
 How to push and land `speaker` work from this Windows machine. The repo guard
 (`.claude/hooks/guard.ps1`, a Claude Code PreToolUse hook) intentionally stops an
-autonomous session from pushing to `main` or touching the **work** identity — so
-landing always goes through a **pull request**, never a direct `main` push.
+autonomous session from touching the **work** identity; historically it also
+blocked `main` pushes so landing went through a **pull request**.
 
 ## Git identity (SSH)
 

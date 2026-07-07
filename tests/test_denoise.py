@@ -38,7 +38,13 @@ def test_denoise_fields_parse_from_dict():
     assert c.denoise_model == "/m/gtcrn.onnx"
 
 
-def test_shipped_config_has_denoise_off():
+def test_shipped_config_has_denoise_on():
+    # Fleet-default DECISION 2026-07-08 (owner): denoise ships ON after it won the
+    # round-2 capture-calibration double-talk test on the Linux ROG box (STATUS.md +
+    # calib_runs/20260708-010952/GRADES.md). A model path ships too so it is live on
+    # a machine that has fetched the 523KB GTCRN model; build_denoiser FAILS OPEN, so
+    # a machine WITHOUT the model degrades to no-denoise (see the fail-open tests
+    # below), never a crash.
     import json
     import os
 
@@ -46,8 +52,8 @@ def test_shipped_config_has_denoise_off():
     with open(os.path.join(here, "config.json"), encoding="utf-8") as fh:
         cfg = json.load(fh)
     sherpa = cfg["sherpa"]
-    assert sherpa["denoise_enabled"] is False
-    assert sherpa["denoise_model"] == ""
+    assert sherpa["denoise_enabled"] is True
+    assert sherpa["denoise_model"].endswith("gtcrn_simple.onnx")
 
 
 # --- build_denoiser factory (no model -> None) -------------------------------

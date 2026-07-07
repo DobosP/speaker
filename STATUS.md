@@ -327,6 +327,20 @@ git diff --check
    ear test (round-1 already showed it doesn't beat raw). Follow-up: the broken
    `kokoro-int8-multi-lang-v1_1` TTS (style_dim) still needs the durable fix
    (`kokoro-en-v0_19`, memory `voice-quality-diagnosis-2026-07-05`).
+   **PROMOTED TO FLEET DEFAULT (owner decision 2026-07-08):** the validated
+   pipeline decisions now ship in the tracked `config.json` (cross-machine, deep-
+   merged so a machine's `config.local.json` still overrides): `denoise_enabled=true`
+   + relative `denoise_model` path, `tts_output_leveler=true`, `tts_markup=true`
+   (`asr_final_async`/`tts_declick` were already code-default true). Deliberately NOT
+   promoted (stay per-machine): `input_agc` (superseded by denoise), `barge_word_cut_enabled`
+   (ADR-0013, failed the sustained talk-over test), `speaker_gate_input=false` (the
+   base identity gate stays `true` — do not weaken it fleet-wide), Kokoro `tts_speaker_voices`
+   (model-specific). `build_denoiser` fails open, so a machine without the 523KB model
+   just runs no-denoise + a warning. Guard test `test_denoise` updated to the new
+   default. NOTE: the other machine (Windows boot) also still carries the broken
+   Kokoro TTS mapping in ITS `config.local.json` (`tts_voices`→kokoro + VITS `tts_model`
+   = the `style_dim` crash) — clear `tts_voices`/`tts_lexicon` there (or fetch
+   `kokoro-en-v0_19`) before an `--enroll`/live run.
 3. Open + headless: R05 routing lever, R09 dead-air, R10 cleaner guard,
    R14 Parakeet ASR branch; voice-plan P2 bundle (`setup_models --kokoro`,
    per-device roll-off, Kokoro-vs-Piper profile gate).

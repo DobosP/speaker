@@ -65,6 +65,7 @@ from ..audio_frontend import (
 from ..engine import AudioEngine, EngineCallbacks
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ..tts_markup import parse_tts_markup, resolve_tts_params
+from ._asr_segment import ASRSegment
 from ._denoiser import build_denoiser
 from ._aec import AecDelayCalibrator, FarEndRing, PlaybackFIFO, build_aec
 from ._sherpa_models import (
@@ -211,6 +212,11 @@ class SherpaConfig:
     # built; off = the legacy inline path (kept for A/B + as the queue-full
     # fallback). asr-tts-2.
     asr_final_async: bool = True
+    # Audio owned by the offline finalizer before the first VAD speech block.
+    # This is a model-lookback bound (not a machine operating value): preserve
+    # the leading phoneme without making a short request inherit minutes of idle
+    # silence in SenseVoice, the floor gate, and speaker-ID.
+    asr_final_preroll_sec: float = 0.8
     # ASR decoding method: "modified_beam_search" (more accurate, the default)
     # or "greedy_search" (slightly faster, lower accuracy). Beam search also
     # enables contextual biasing via ``asr_hotwords``.
@@ -1955,7 +1961,9 @@ class SherpaOnnxEngine(AudioEngine):
             result = restore_casing(result, force=self._punct is not None)
         return result
 
-    def _final_transcribe(self, seg, raw_final: str) -> str:
+    def _final_transcribe(
+        self, seg, raw_final: str, *, speech_sec: Optional[float] = None
+    ) -> str:
         """The FINAL transcript for ``seg``. When a second-pass offline recognizer
         is configured, RE-transcribe the endpointed utterance with it (robust on
         run-on speech; punctuation+casing+ITN already applied -> no _postprocess).
@@ -1966,7 +1974,12 @@ class SherpaOnnxEngine(AudioEngine):
             import numpy as np
 
             n = int(np.asarray(seg).size)
-            if n >= int(self.config.asr_final_min_sec * self.config.sample_rate):
+            observed_sec = (
+                float(speech_sec)
+                if speech_sec is not None
+                else n / self.config.sample_rate
+            )
+            if observed_sec >= float(self.config.asr_final_min_sec):
                 try:
                     st = rec.create_stream()
                     st.accept_waveform(self.config.sample_rate, np.asarray(seg, dtype="float32"))
@@ -1982,13 +1995,24 @@ class SherpaOnnxEngine(AudioEngine):
                         return agreement_guard(
                             self._postprocess_final(raw_final),
                             text,
-                            segment_sec=n / self.config.sample_rate,
+                            # The owned PCM deliberately includes model pre-roll
+                            # and endpoint tail. Hallucination risk keys on actual
+                            # VAD speech duration, not that padding. Direct callers
+                            # retain the historical array-duration fallback.
+                            segment_sec=observed_sec,
                         )
                 except Exception:  # noqa: BLE001 - fall back to the streaming final
                     log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
         return self._postprocess_final(raw_final)
 
-    def _finalize_and_dispatch(self, seg, raw_final: str, speech_end_ts, asr_seg=None) -> None:
+    def _finalize_and_dispatch(
+        self,
+        seg,
+        raw_final: str,
+        speech_end_ts,
+        asr_seg=None,
+        speech_sec: Optional[float] = None,
+    ) -> None:
         """Produce the FINAL transcript and deliver it (or its drop metric).
 
         Pulled out of the capture loop so the SAME logic can run either inline
@@ -2008,7 +2032,14 @@ class SherpaOnnxEngine(AudioEngine):
         embedding live in the NS-on domain; the louder NS-off signal would clear
         the floor too easily and re-open the echo-final cascade). ``None`` (every
         non-apm-owns-ns path) -> decode ``seg``, byte-identical."""
-        final_text = self._final_transcribe(asr_seg if asr_seg is not None else seg, raw_final)
+        decode_seg = asr_seg if asr_seg is not None else seg
+        final_text = (
+            self._final_transcribe(decode_seg, raw_final)
+            if speech_sec is None
+            else self._final_transcribe(
+                decode_seg, raw_final, speech_sec=speech_sec
+            )
+        )
         log.info("asr final: %r (raw %r)", final_text, raw_final)
         if not self._final_above_floor(seg):
             # L1: at/near the device's learned echo/quiet floor -- the assistant's
@@ -2037,7 +2068,14 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_q = queue.Queue(maxsize=8)
             log.info("second-pass final ASR runs ASYNC (off the capture thread)")
 
-    def _enqueue_final(self, seg, raw_final: str, speech_end_ts, asr_seg=None) -> None:
+    def _enqueue_final(
+        self,
+        seg,
+        raw_final: str,
+        speech_end_ts,
+        asr_seg=None,
+        speech_sec: Optional[float] = None,
+    ) -> None:
         """Hand an endpointed utterance to the second-pass worker WITHOUT ever
         blocking the capture loop. On overflow (the worker is wedged/very slow --
         normally the queue sits near-empty), drop the OLDEST queued utterance to
@@ -2047,7 +2085,9 @@ class SherpaOnnxEngine(AudioEngine):
         after a newer one would wrongly cancel the newer turn. Single producer
         (this capture thread), so after one ``get_nowait`` a slot is free."""
         try:
-            self._final_q.put_nowait((seg, raw_final, speech_end_ts, asr_seg))
+            self._final_q.put_nowait(
+                (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
+            )
             return
         except queue.Full:
             pass
@@ -2060,11 +2100,15 @@ class SherpaOnnxEngine(AudioEngine):
         except queue.Empty:
             pass  # the worker just drained one; a slot is free now
         try:
-            self._final_q.put_nowait((seg, raw_final, speech_end_ts, asr_seg))
+            self._final_q.put_nowait(
+                (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
+            )
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
             log.warning("second-pass queue still full; finalizing inline")
-            self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
+            self._finalize_and_dispatch(
+                seg, raw_final, speech_end_ts, asr_seg, speech_sec
+            )
 
     def _final_worker(self) -> None:
         """Drain the second-pass work queue, finalizing one utterance at a time.
@@ -2083,9 +2127,18 @@ class SherpaOnnxEngine(AudioEngine):
                 continue
             if item is None:  # shutdown sentinel
                 break
-            seg, raw_final, speech_end_ts, asr_seg = item
+            # Four-field items existed before VAD-backed duration ownership;
+            # accepting them keeps shutdown/tests and any in-process producer
+            # rolling across the additive queue schema change.
+            if len(item) == 4:
+                seg, raw_final, speech_end_ts, asr_seg = item
+                speech_sec = None
+            else:
+                seg, raw_final, speech_end_ts, asr_seg, speech_sec = item
             try:
-                self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
+                self._finalize_and_dispatch(
+                    seg, raw_final, speech_end_ts, asr_seg, speech_sec
+                )
             except Exception:  # noqa: BLE001 - never let the worker die on one turn
                 log.exception("second-pass finalize failed; dropping this turn")
 
@@ -2119,7 +2172,13 @@ class SherpaOnnxEngine(AudioEngine):
         return LexicalTurnCompletionDetector()
 
     def _decide_endpoint(
-        self, *, acoustic_endpoint: bool, partial: str, silence_sec: float, samples=None
+        self,
+        *,
+        acoustic_endpoint: bool,
+        partial: str,
+        silence_sec: float,
+        samples=None,
+        allow_early: bool = True,
     ) -> bool:
         """Combine the acoustic endpoint with a semantic turn-completion decision.
 
@@ -2134,6 +2193,13 @@ class SherpaOnnxEngine(AudioEngine):
         text = (partial or "").strip()
         if not text:
             return acoustic_endpoint
+        # A semantic completion score may HOLD a real acoustic endpoint, but it
+        # may only create an EARLY endpoint after a load-bearing acoustic source
+        # (the live VAD) has observed speech and then quiet. Decoder text not
+        # changing is not silence: a long word, compute stall, or stable partial
+        # can otherwise reset the recognizer in the middle of ongoing speech.
+        if not acoustic_endpoint and not allow_early:
+            return False
         # An audio (prosody) detector is expensive (~10-25ms); consult it only once
         # trailing silence has reached the decision window. During active speech the
         # acoustic endpoint is False, so skipping it is behaviour-identical but free.
@@ -2203,14 +2269,6 @@ class SherpaOnnxEngine(AudioEngine):
         import numpy as np
 
         last_partial = ""
-        # perf_counter of the most recent block that advanced the ASR result --
-        # i.e. the recognizer's own notion of "speech is still arriving". When
-        # the endpoint later fires (after rule2's trailing silence), this is the
-        # true speech-end instant, so SPEECH_END is stamped here rather than at
-        # endpoint time -- otherwise endpoint_latency reads ~0 and the fixed
-        # ~0.8s trailing-silence wait is invisible to every metric (lat-1).
-        # ``None`` -> no speech seen this segment; SPEECH_END falls back to now.
-        last_voiced_ts: float | None = None
         recognizer = self._recognizer
         if recognizer is None:
             log.error("no recognizer built (ASR model paths missing in config?); "
@@ -2231,16 +2289,26 @@ class SherpaOnnxEngine(AudioEngine):
             block_sec=block_sec,
             min_voiced_sec=self.config.barge_in_min_speech_sec,
         )
-        # Rolling buffer of the current (non-speaking) ASR segment, used to embed
-        # the speaker when an endpoint fires so input can be gated on identity.
-        # Capped so a long monologue can't grow memory; the tail is what the
-        # speaker model needs. Reset on every endpoint and on decode-recovery.
-        utterance: list = []
-        # fix 2: parallel NS-off utterance (populated only under the relaxed-NS
-        # tap) so the offline 2nd pass decodes the NS-relaxed audio too.
-        asr_utterance: list = []
-        utterance_len = 0
-        max_utterance = int(self.config.sample_rate * 10)
+        # The finalizer owns bounded model-lookback while idle, then the COMPLETE
+        # utterance through rule3 + endpoint tail. The old unconditional 10 s
+        # rolling buffer made a 0.4 s request after idle look 10 s long and cut
+        # the head off valid 15–20 s turns. VAD is also the acoustic clock used by
+        # semantic endpointing and final admission; without a model, admission
+        # fails open but early semantic commits stay disabled.
+        pre_roll_sec = max(0.0, float(self.config.asr_final_preroll_sec))
+        owned_sec = max(
+            pre_roll_sec + block_sec,
+            float(self.config.asr_rule3_min_utterance_length)
+            + float(self.config.endpoint_max_silence_sec)
+            + pre_roll_sec,
+        )
+        segment = ASRSegment(
+            sample_rate=self.config.sample_rate,
+            pre_roll_sec=pre_roll_sec,
+            max_utterance_sec=owned_sec,
+            vad_available=self._vad is not None,
+            block_sec=block_sec,
+        )
         # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
         total_blocks = partials = finals = 0
         beat_blocks = 0
@@ -2712,22 +2780,29 @@ class SherpaOnnxEngine(AudioEngine):
                     except Exception:  # noqa: BLE001 - reset is best-effort
                         pass
                     last_partial = ""
-                    last_voiced_ts = None
+                    segment.reset()
 
                 try:
-                    utterance.append(samples)
-                    utterance_len += samples.size
-                    if self._aec_asr is not None:
-                        asr_utterance.append(
-                            asr_samples if asr_samples is not None else samples
+                    # Normal listening uses the same post-front-end samples as
+                    # ASR. Feed the already-built VAD on EVERY non-playback block
+                    # and turn its speech/quiet transitions into the endpoint
+                    # clock + genuine mid-utterance pause samples.
+                    clock_now = time.perf_counter()
+                    if self._vad is not None:
+                        self._vad.accept_waveform(samples)
+                        pause = segment.observe_vad(
+                            bool(self._vad.is_speech_detected()), clock_now
                         )
-                    while utterance_len > max_utterance and len(utterance) > 1:
-                        utterance_len -= utterance[0].size
-                        utterance.pop(0)
-                        if self._aec_asr is not None and asr_utterance:
-                            asr_utterance.pop(0)  # keep the NS-off buffer aligned
+                        if pause is not None and self._endpoint_policy is not None:
+                            self._endpoint_policy.observe_pause(pause)
+                    segment.append(
+                        samples,
+                        (
+                            asr_samples if asr_samples is not None else samples
+                        ) if self._aec_asr is not None else None,
+                    )
                     # fix 2: the streaming recognizer reads the NS-off tap so
-                    # near-end words survive; the utterance buffer (seg) + the
+                    # near-end words survive; the owned primary segment + the
                     # floor/speaker gates keep the NS-on ``samples``.
                     stream.accept_waveform(
                         self.config.sample_rate,
@@ -2738,18 +2813,12 @@ class SherpaOnnxEngine(AudioEngine):
                     text = recognizer.get_result(stream)
                     if text and text != last_partial:
                         last_partial = text
-                        # The result advanced -> speech is actively arriving.
-                        # Record the instant (perf_counter, matching the metrics
-                        # clock) so a later endpoint can backdate SPEECH_END to
-                        # here, exposing the trailing-silence wait (lat-1).
                         _now = time.perf_counter()
-                        # Feed the inter-partial gap (a MID-utterance pause, not the
-                        # final end-of-turn silence) to the adaptive endpoint
-                        # learner: it learns THIS speaker's pause distribution so the
-                        # commit floor adapts per session instead of a fixed number.
-                        if last_voiced_ts is not None and self._endpoint_policy is not None:
-                            self._endpoint_policy.observe_pause(_now - last_voiced_ts)
-                        last_voiced_ts = _now
+                        # Decoder advancement remains useful observability and is
+                        # the fail-open speech clock when no VAD model exists. With
+                        # VAD present it is NOT acoustic evidence: stable tokens
+                        # during a long spoken word must not look like silence.
+                        segment.observe_text(_now)
                         partials += 1
                         # Casing only on partials (cheap, every block); the
                         # heavier punctuation model is reserved for the final.
@@ -2757,40 +2826,48 @@ class SherpaOnnxEngine(AudioEngine):
                         log.debug("asr partial: %r", shown)
                         self._cb.on_partial(shown)
                     acoustic_endpoint = recognizer.is_endpoint(stream)
-                    endpoint_silence = (
-                        time.perf_counter() - last_voiced_ts
-                        if last_voiced_ts is not None else 0.0
-                    )
+                    decision_now = time.perf_counter()
+                    endpoint_silence = segment.trailing_silence(decision_now)
+                    owned_primary = owned_asr = None
+                    if self._endpoint_wants_audio:
+                        owned_primary, owned_asr = segment.arrays()
                     endpoint_samples = (
-                        np.concatenate(utterance)
-                        if (self._endpoint_wants_audio and utterance) else None
+                        owned_primary
+                        if (owned_primary is not None and owned_primary.size)
+                        else None
                     )
                     if self._decide_endpoint(
                         acoustic_endpoint=acoustic_endpoint,
                         partial=last_partial,
                         silence_sec=endpoint_silence,
                         samples=endpoint_samples,
+                        allow_early=segment.early_endpoint_allowed,
                     ):
                         raw_final = recognizer.get_result(stream)
                         recognizer.reset(stream)
                         last_partial = ""
-                        # Capture this segment's true speech-end instant (the last
-                        # block that advanced the result) and reset for the next
-                        # segment. Stamping SPEECH_END here -- not at endpoint time
-                        # -- makes endpoint_latency reflect the real trailing
-                        # silence instead of reading ~0 (lat-1). ``None`` (no
-                        # partial ever fired) falls back to now inside mark().
-                        speech_end_ts, last_voiced_ts = last_voiced_ts, None
-                        seg = np.concatenate(utterance) if utterance else samples
-                        # fix 2: NS-off segment for the 2nd pass. None off the
-                        # relaxed-NS path -> _finalize decodes `seg` (byte-identical).
-                        asr_seg = (
-                            np.concatenate(asr_utterance)
-                            if (self._aec_asr is not None and asr_utterance) else None
-                        )
-                        utterance, utterance_len = [], 0
-                        asr_utterance = []
-                        if raw_final.strip():
+                        if owned_primary is None:
+                            owned_primary, owned_asr = segment.arrays()
+                        # VAD supplies the real speech-end instant and duration;
+                        # they drive latency metrics + the short-clip hallucination
+                        # guard independently of pre-roll/endpoint padding.
+                        speech_end_ts = segment.speech_end_at
+                        speech_sec = segment.speech_duration_sec
+                        admitted = segment.final_admitted
+                        seg = owned_primary if owned_primary.size else samples
+                        asr_seg = owned_asr if self._aec_asr is not None else None
+                        segment.reset()
+                        # sherpa VAD also retains completed segments for its
+                        # front()/pop() API. This runtime consumes only the live
+                        # speech state, so clear that queue/state at the same ASR
+                        # ownership boundary; otherwise it grows across turns.
+                        vad_reset = getattr(self._vad, "reset", None)
+                        if callable(vad_reset):
+                            try:
+                                vad_reset()
+                            except Exception:  # noqa: BLE001 - ASR final still wins
+                                pass
+                        if raw_final.strip() and admitted:
                             finals += 1
                             # Finalize (second-pass re-transcription, when
                             # configured, + the echo-floor/speaker gates) and
@@ -2799,9 +2876,31 @@ class SherpaOnnxEngine(AudioEngine):
                             # offline decode never stalls this real-time loop;
                             # otherwise finalize inline (legacy, byte-identical).
                             if self._final_q is not None:
-                                self._enqueue_final(seg, raw_final, speech_end_ts, asr_seg)
+                                self._enqueue_final(
+                                    seg,
+                                    raw_final,
+                                    speech_end_ts,
+                                    asr_seg,
+                                    speech_sec,
+                                )
                             else:
-                                self._finalize_and_dispatch(seg, raw_final, speech_end_ts, asr_seg)
+                                self._finalize_and_dispatch(
+                                    seg,
+                                    raw_final,
+                                    speech_end_ts,
+                                    asr_seg,
+                                    speech_sec,
+                                )
+                        elif raw_final.strip():
+                            # Live 2026-07-10: near-zero idle capture emitted
+                            # raw/final 'AND' every ~2 s and burned addressing LLM
+                            # calls. A configured VAD observed no speech, so fail
+                            # closed at the final seam before SenseVoice/brain.
+                            log.info(
+                                "dropping final %r -- VAD observed no speech in segment",
+                                raw_final,
+                            )
+                            self._cb.on_metric("vad_rejected_final")
                     asr_errors = 0
                 except Exception:
                     # Recover from a transient decode error by resetting the
@@ -2812,9 +2911,13 @@ class SherpaOnnxEngine(AudioEngine):
                     log.warning("ASR decode error #%d (resetting stream)", asr_errors,
                                 exc_info=(asr_errors == 1))
                     last_partial = ""
-                    last_voiced_ts = None
-                    utterance, utterance_len = [], 0
-                    asr_utterance = []
+                    segment.reset()
+                    vad_reset = getattr(self._vad, "reset", None)
+                    if callable(vad_reset):
+                        try:
+                            vad_reset()
+                        except Exception:  # noqa: BLE001 - decode recovery is best-effort
+                            pass
                     # Clear the denoiser's streaming state too, so a recovered
                     # stream starts the front-end fresh (best-effort; no-op when
                     # there's no denoiser).

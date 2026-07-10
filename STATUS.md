@@ -3,7 +3,18 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-07 late (Linux ROG box; P2 robustness cluster landed: full
+Last verified: 2026-07-10 (Linux ROG box; ADR-0017 VAD-backed ASR segment
+ownership: idle PCM is bounded to 0.8 s pre-roll until real speech, full
+utterances are retained through the configured rule-3 + endpoint bound, VAD
+transitions drive semantic silence/pause timing, and a final is rejected before
+SenseVoice/identity/addressing when a configured VAD observed no speech. Full
+headless logic suite: 2393 passed, 30 skipped; `git diff --check` clean. Live
+diagnostic before the fix: `run-20260710-084939` opened the real EC-routed mic,
+models, denoiser, SenseVoice and Ollama but emitted idle raw/final `AND` every
+~2 s at near-zero input; no audio was recorded. The post-fix owner-voice A/B is
+still REQUIRED; do not claim quiet-speech or pause behavior live-validated.)
+
+Prior verified: 2026-07-07 late (Linux ROG box; P2 robustness cluster landed: full
 logic suite 2387 passed, 24 skipped; `git diff --check` clean. Shipped in one
 commit: ① diagnose_run word-cut verdict truth-up — a word-cut-confirmed barge is
 no longer stale-flagged `suspect:no-dtd` (run-level exemption keyed on the confirm

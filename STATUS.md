@@ -3,7 +3,17 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-07 late (Linux ROG box; P2 robustness cluster landed: full
+Last verified: 2026-07-10 (headless; ADR-0016 runtime-readiness slice: doctor,
+live-session preflight, and normal native-voice startup now consume one resolved
+device profile and one shared readiness contract. Normal `--engine sherpa`
+fails before model/device construction when load-bearing prerequisites are red;
+console/replay/enrollment remain outside that gate and `--llm echo` does not
+require Ollama. Active word-cut now requires an existing VAD model and, on Linux,
+a loaded AND actively routed PipeWire/Pulse echo-cancel source+sink; APM requires
+LiveKit only when AEC is actually enabled. Full logic suite: 2396 passed, 30
+skipped; targeted doctor/live/app: 155 passed; no live hardware validation was
+run.) Prior: 2026-07-07 late (Linux ROG
+box; P2 robustness cluster landed: full
 logic suite 2387 passed, 24 skipped; `git diff --check` clean. Shipped in one
 commit: ① diagnose_run word-cut verdict truth-up — a word-cut-confirmed barge is
 no longer stale-flagged `suspect:no-dtd` (run-level exemption keyed on the confirm

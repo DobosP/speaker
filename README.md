@@ -64,8 +64,8 @@ created (`source .venv/bin/activate`, or `.venv\Scripts\Activate.ps1` on Windows
 and add the local LLM:
 
 ```bash
-ollama pull gemma3:12b && ollama pull gemma3:4b    # https://ollama.com
-# newer tiers (e.g. gemma4:12b) can be pinned per machine in config.local.json
+ollama pull gemma3:12b                              # vision/complex main tier
+python -m tools.setup_minicpm                       # MiniCPM5-1B answering tier
 ```
 
 Not sure what's missing? `python -m tools.doctor` prints a READY/NOT-READY

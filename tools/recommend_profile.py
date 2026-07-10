@@ -173,26 +173,26 @@ def recommend(info: HostInfo) -> tuple[str, str]:
     whether a low-RAM host is a phone or a small CPU laptop."""
     if info.gpu_kind == "nvidia" and _at_least(info.gpu_mem_gb, 16, _VRAM_MARGIN_GB):
         return ("desktop_gpu_4090",
-                "NVIDIA GPU >= 16 GB VRAM fits gemma3:12b comfortably; both input gates ON")
+                "NVIDIA GPU >= 16 GB VRAM fits Gemma vision/main plus MiniCPM5 answering; both input gates ON")
     if info.gpu_kind == "nvidia" and _at_least(info.gpu_mem_gb, 8, _VRAM_MARGIN_GB):
         return ("desktop",
-                "NVIDIA GPU 8-16 GB VRAM: gemma3:12b on the edge; use the 'desktop' default")
+                "NVIDIA GPU 8-16 GB VRAM: Gemma main plus MiniCPM5 answering; use the 'desktop' default")
     if info.gpu_kind == "apple" and _at_least(info.ram_gb, 16, _RAM_MARGIN_GB):
         return ("macbook_m_series",
-                "Apple Silicon with >= 16 GB unified memory; gemma3:4b on Metal + 1b fast tier")
+                "Apple Silicon with >= 16 GB unified memory; Gemma vision/main + MiniCPM5 answering")
     if info.mobile:
         if _at_least(info.ram_gb, 8, _RAM_MARGIN_GB):
             return ("phone",
-                    "Android/iOS class, 8+ GB RAM: llamacpp + gemma3:4b GGUF main, 1b fast")
+                    "Android/iOS class, 8+ GB RAM: shared MiniCPM5-1B Q4 llama.cpp tier")
         return ("phone_lite",
-                "Android/iOS class, < 8 GB RAM: single-tier gemma3:1b GGUF; cloud REQUIRED")
+                "Android/iOS class, < 8 GB RAM: shared MiniCPM5-1B Q4 tier; cloud REQUIRED")
     # Desktop / laptop CPU path.
     if _at_least(info.ram_gb, 8, _RAM_MARGIN_GB):
         return ("cpu_laptop",
-                "CPU-only laptop, 8+ GB RAM: gemma3:4b main; enable cloud hedge for paragraph answers")
+                "CPU-only laptop, 8+ GB RAM: MiniCPM5 answering + Gemma main; enable cloud hedge for paragraph answers")
     if info.ram_gb >= 4:
         return ("phone_lite",
-                "< 8 GB RAM on a desktop OS: borrow the lite profile (gemma3:1b GGUF); cloud REQUIRED")
+                "< 8 GB RAM on a desktop OS: borrow the MiniCPM5 Q4 lite profile; cloud REQUIRED")
     return ("phone_lite",
             "very constrained host; the lite profile is the only realistic on-device option")
 

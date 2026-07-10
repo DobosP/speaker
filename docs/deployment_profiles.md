@@ -13,22 +13,26 @@ How the runtime is sized per machine and deployed per platform. Config lives in
 `config.device` picks the active profile — the committed default is `"auto"`,
 which probes the host (cores/RAM/GPU/mobile, via `tools.recommend_profile`) and
 applies the matching profile at launch; `--device <name>` overrides it.
-`device_profiles[<name>]` is **shallow-merged over the base config per section**,
-so a profile only states what differs. Profiles shipped in `config.json`
-(2026-07-02):
+`device_profiles[<name>]` is recursively merged over the base config (with
+backend-specific option bags replaced wholesale), so a profile only states what
+differs. Profiles shipped in `config.json` (2026-07-10):
 
 | Profile  | LLM backend | Models | Notes |
 |----------|-------------|--------|-------|
-| `desktop` | `ollama` (GPU) | `gemma3:12b` main + `gemma3:4b` fast | Ollama is desktop-only |
-| `desktop_gpu_4090` | `ollama` (GPU) | `gemma3:12b` + `gemma3:4b` | input gate + cleanup + capability router all on |
-| `macbook_m_series` | `ollama` (Metal) | `gemma3:4b` + `gemma3:1b` | US-only cloud chains available, **default off** |
-| `cpu_laptop` | `ollama` (CPU) | `gemma3:4b` + `gemma3:1b` | gates off (no fast-tier headroom); cloud default off |
-| `open_speaker` | `ollama` | `gemma3:4b` + `gemma3:1b` | **explicit, never auto-picked**: WebRTC APM AEC for no-headphones barge-in (`docs/adr/0006`) |
-| `phone`   | `llamacpp` (GGUF) | `gemma-3-4b` + `gemma-3-1b` | `n_gpu_layers: 0`, `n_ctx: 2048`, STT/TTS threads dialed down |
-| `phone_lite` | `llamacpp` (GGUF) | `gemma-3-1b` single-tier | streaming-only ASR finals + greedy decode |
+| `desktop` | `ollama` (GPU) | `gemma3:12b` main + MiniCPM5-1B Q8 fast | MiniCPM is the text/answering tier; Gemma keeps vision/complex turns |
+| `desktop_gpu_4090` | `ollama` (GPU) | `gemma3:12b` + MiniCPM5-1B Q8 | input gate + cleanup + capability router all on |
+| `macbook_m_series` | `ollama` (Metal) | `gemma3:4b` + MiniCPM5-1B Q8 | cloud chains available, **default off** |
+| `cpu_laptop` | `ollama` (CPU) | `gemma3:4b` + MiniCPM5-1B Q8 | gates off when CPU headroom is limited; cloud default off |
+| `open_speaker` | `ollama` | `gemma3:4b` + MiniCPM5-1B Q8 | **explicit, never auto-picked**: WebRTC APM fallback for no-headphones barge-in (`docs/adr/0006`) |
+| `phone`   | `llamacpp` (GGUF) | MiniCPM5-1B Q4 shared single tier | one context for main/fast; `n_gpu_layers: 0`, `n_ctx: 2048` |
+| `phone_lite` | `llamacpp` (GGUF) | MiniCPM5-1B Q4 shared single tier | streaming-only ASR finals + greedy decode |
 
 Newer model tiers (e.g. `gemma4:12b`) are pinned per machine in the gitignored
 `config.local.json`, not in the committed profiles.
+
+Provision the supported Ollama alias with `python -m tools.setup_minicpm`; the
+helper installs the committed ChatML template rather than relying on Ollama's
+auto-generated template for a direct Hugging Face import.
 
 The `phone` profile runs the **Python core** under phone-like limits (for
 simulation / low-power desktops). The **shipped Flutter app** (`mobile/`) is a
@@ -40,8 +44,8 @@ see [`../mobile/README.md`](../mobile/README.md).
 ```jsonc
 "llm": {
   "backend": "ollama",        // or "llamacpp" (on-device GGUF)
-  "main_model": "gemma3:12b",  // large / multimodal
-  "fast_model": "gemma3:4b",   // snappy replies
+  "main_model": "gemma3:12b",      // complex / multimodal
+  "fast_model": "minicpm5-1b:q8",  // local text / spoken replies
   "router": { "backend": "heuristic", "threshold": 0.3 }  // or "learned"
 }
 ```

@@ -1,4 +1,4 @@
-"""Catalog of target machine specs and Gemma model-fit logic.
+"""Catalog of target machine specs and local-model fit logic.
 
 A ``MachineSpec`` is a *model* of a real device: hardware summary plus the
 latency numbers that make a simulation "feel" like that machine (in the spirit
@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Approx on-disk/VRAM footprint of Gemma 3 at q4_k_m, in GB.
+# Approx on-disk/VRAM weight footprint for the supported local artifacts, in GB.
 MODEL_FOOTPRINTS_GB: dict[str, float] = {
+    "minicpm5-1b:q4": 0.688,
+    "minicpm5-1b:q8": 1.15,
     "gemma3:1b": 0.9,
     "gemma3:4b": 3.3,
     "gemma3:12b": 8.1,
@@ -121,7 +123,7 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=8,
         ram_gb=12,
         model_budget_gb=5.0,
-        configured_model="gemma3:4b",
+        configured_model="minicpm5-1b:q4",
         stt_partial_interval_sec=0.25,
         stt_endpoint_delay_sec=0.80,
         llm_ttft_sec=1.20,
@@ -137,7 +139,7 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=6,
         ram_gb=6,
         model_budget_gb=2.2,
-        configured_model="gemma3:1b",
+        configured_model="minicpm5-1b:q4",
         stt_partial_interval_sec=0.30,
         stt_endpoint_delay_sec=0.90,
         llm_ttft_sec=1.50,
@@ -153,7 +155,7 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=4,
         ram_gb=4,
         model_budget_gb=1.5,
-        configured_model="gemma3:1b",
+        configured_model="minicpm5-1b:q4",
         stt_partial_interval_sec=0.35,
         stt_endpoint_delay_sec=0.90,
         llm_ttft_sec=3.00,

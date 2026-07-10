@@ -242,7 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     print("Try it with no audio/models first:")
     print("    python -m core --engine console --llm echo\n")
     print("The LLM runs in Ollama (separate; https://ollama.com). Then:")
-    print("    ollama pull gemma3:12b && ollama pull gemma3:4b")
+    print("    ollama pull gemma3:12b")
+    print("    python -m tools.setup_minicpm")
     return 0
 
 

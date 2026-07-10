@@ -13,8 +13,8 @@ from typing import Optional
 #   * a JSON manifest file passed via --models-manifest / $SPEAKER_BENCH_MANIFEST
 #   * per-artifact env overrides: $SPEAKER_BENCH_<ARTIFACT>_REPO / _FILE
 #
-# Gemma is gated -- pass a token (read from $HUGGINGFACE_TOKEN by the CLI).
-# Sherpa ASR/VAD/TTS models are public.
+# MiniCPM5 and the sherpa ASR/VAD/TTS models are public.  A Hugging Face token
+# remains optional for private mirrors/overrides.
 
 # Small, on-device-representative defaults (phone tier). These are best-effort
 # public coordinates; if a pull 404s, override via the manifest rather than
@@ -39,12 +39,12 @@ DEFAULT_MANIFEST: dict[str, dict[str, str]] = {
         "file": "tokens.txt",
     },
     "fast_gguf": {
-        "repo": "unsloth/gemma-3-1b-it-GGUF",
-        "file": "gemma-3-1b-it-Q4_K_M.gguf",
+        "repo": "openbmb/MiniCPM5-1B-GGUF",
+        "file": "MiniCPM5-1B-Q4_K_M.gguf",
     },
     "main_gguf": {
-        "repo": "unsloth/gemma-3-4b-it-GGUF",
-        "file": "gemma-3-4b-it-Q4_K_M.gguf",
+        "repo": "openbmb/MiniCPM5-1B-GGUF",
+        "file": "MiniCPM5-1B-Q4_K_M.gguf",
     },
 }
 

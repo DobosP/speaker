@@ -1,0 +1,18 @@
+FROM hf.co/openbmb/MiniCPM5-1B-GGUF:Q8_0
+
+# OpenBMB's MiniCPM5 ChatML template.  Keep this explicit: Ollama's
+# auto-generated template for a direct Hugging Face import adds extra stop
+# tokens and does not behave reliably with the voice agent's system prompt.
+TEMPLATE """{{- if .Messages -}}
+{{- range .Messages -}}
+<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end -}}
+<|im_start|>assistant
+{{ end -}}"""
+
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "</s>"
+PARAMETER temperature 0.7
+PARAMETER top_p 0.95
+PARAMETER num_ctx 8192

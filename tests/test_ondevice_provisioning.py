@@ -1,7 +1,7 @@
 """llm-inference-5: the on-device (llamacpp) LLM path is provisionable.
 
 Covers the three pieces that made the phone tier unrunnable as shipped:
-  * `setup_models --gguf` fetches the Gemma GGUFs from the shared manifest;
+  * `setup_models --gguf` fetches the MiniCPM5 GGUF from the shared manifest;
   * the phone/phone_lite profiles point at exactly those filenames;
   * build_llms gives an actionable acquisition hint instead of a dead-end exit;
   * requirements-ondevice.txt declares the runtime dep.
@@ -36,12 +36,12 @@ def test_fetch_gguf_models_uses_manifest_coords(tmp_path):
     out = fetch_gguf_models(manifest, str(tmp_path), token="tok", download=fake_download)
 
     assert set(out) == set(GGUF_KEYS)
-    # Resolved to the Gemma Q4_K_M files the phone profiles expect.
-    assert out["main_gguf"].endswith("gemma-3-4b-it-Q4_K_M.gguf")
-    assert out["fast_gguf"].endswith("gemma-3-1b-it-Q4_K_M.gguf")
+    # Both logical roles resolve to the one public MiniCPM5 Q4 artifact.
+    assert out["main_gguf"].endswith("MiniCPM5-1B-Q4_K_M.gguf")
+    assert out["fast_gguf"].endswith("MiniCPM5-1B-Q4_K_M.gguf")
     # Files actually landed in the requested dir.
-    assert (tmp_path / "gemma-3-4b-it-Q4_K_M.gguf").exists()
-    assert len(calls) == 2
+    assert (tmp_path / "MiniCPM5-1B-Q4_K_M.gguf").exists()
+    assert len(calls) == 1  # identical main/fast artifact is fetched once
 
 
 def test_phone_profile_paths_match_gguf_manifest_filenames():

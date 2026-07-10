@@ -233,7 +233,7 @@ def main(argv=None) -> int:
     ap.add_argument("tier", choices=["memory", "voice", "replay", "suite", "all", "record"])
     ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama",
                     help="small LLM for the in-loop tiers (default ollama/gemma3:4b)")
-    ap.add_argument("--model", default="gemma3:4b", help="ollama model (small by default)")
+    ap.add_argument("--model", default="minicpm5-1b:q8", help="Ollama answering model")
     ap.add_argument("--bundle", default=None, help="replay: explicit run-<id>.wav")
     ap.add_argument("--acoustics", choices=["cable", "delay", "speaker"], default="cable",
                     help="voice: cable=silent null-sink loopback (default); "

@@ -38,6 +38,7 @@ def _spec(**kw) -> MachineSpec:
 
 
 def test_fit_status_good_tight_fail():
+    assert _spec(model_budget_gb=2.0).fit_status("minicpm5-1b:q8") == "good"
     assert _spec(model_budget_gb=10.0).fit_status("gemma3:4b") == "good"  # 3.3 of 10
     assert _spec(model_budget_gb=9.0).fit_status("gemma3:12b") == "tight"  # 8.1 of 9 (>80%)
     assert _spec(model_budget_gb=5.0).fit_status("gemma3:12b") == "fail"  # 8.1 > 5
@@ -45,7 +46,7 @@ def test_fit_status_good_tight_fail():
 
 def test_largest_fitting_model_tracks_budget():
     assert _spec(model_budget_gb=16).largest_fitting_model() == "gemma3:12b"
-    assert _spec(model_budget_gb=2.0).largest_fitting_model() == "gemma3:1b"
+    assert _spec(model_budget_gb=2.0).largest_fitting_model() == "minicpm5-1b:q8"
     assert _spec(model_budget_gb=0.5).largest_fitting_model() is None
 
 

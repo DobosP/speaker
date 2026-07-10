@@ -218,12 +218,12 @@ def test_remote_worker_imports_from_public_modules():
     assert callable(cfg_apply) and callable(cfg_load) and callable(factory_build)
 
 
-def test_shipped_config_phone_profile_uses_small_gemma_on_llamacpp():
+def test_shipped_config_phone_profile_uses_shared_minicpm_on_llamacpp():
     config = _apply_device_profile(_load_config(), "phone")
     llm_cfg = config["llm"]
     assert llm_cfg["backend"] == "llamacpp"
-    assert "gemma-3-4b" in llm_cfg["main_model_path"]
-    assert "gemma-3-1b" in llm_cfg["fast_model_path"]
+    assert llm_cfg["main_model_path"].endswith("MiniCPM5-1B-Q4_K_M.gguf")
+    assert llm_cfg["fast_model_path"] == llm_cfg["main_model_path"]
     # STT/TTS threads dialed down for a phone CPU
     assert config["sherpa"]["num_threads"] == 2
 
@@ -282,8 +282,8 @@ def test_build_llms_phone_profile_builds_llamacpp_clients():
     config = _apply_device_profile(_load_config(), "phone")
     main, fast = _build_llms(_args(), config)
     assert isinstance(main, LlamaCppLLM) and isinstance(fast, LlamaCppLLM)
-    assert main.model_path.endswith("gemma-3-4b-it-Q4_K_M.gguf")
-    assert fast.model_path.endswith("gemma-3-1b-it-Q4_K_M.gguf")
+    assert main.model_path.endswith("MiniCPM5-1B-Q4_K_M.gguf")
+    assert fast is main  # identical GGUF must not allocate weights/KV twice
     assert main.n_ctx == 2048 and main.n_gpu_layers == 0
 
 
@@ -301,7 +301,7 @@ def test_build_llms_desktop_profile_builds_ollama_clients():
     config = _apply_device_profile(_load_config(), "desktop")
     main, fast = _build_llms(_args(), config)
     assert isinstance(main, OllamaLLM) and isinstance(fast, OllamaLLM)
-    assert main.model == "gemma3:12b" and fast.model == "gemma3:4b"
+    assert main.model == "gemma3:12b" and fast.model == "minicpm5-1b:q8"
 
 
 def test_build_llms_defaults_think_off():

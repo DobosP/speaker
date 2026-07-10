@@ -2,7 +2,7 @@
 #
 # What this gives you: an interactive ``python -m core --engine console``
 # running inside a tiny container, with ``--llm ollama`` for the FAST
-# tier (gemma3:4b on your 4090) and HedgeLLM + SensitivityRouterLLM
+# tier (MiniCPM5-1B Q8) and HedgeLLM + SensitivityRouterLLM
 # racing it against the four cloud providers (PR-1) for the MAIN tier.
 # Type a question into stdin; tokens stream back from whichever path
 # wins. Set zero API keys and you get pure local; set one and the
@@ -14,8 +14,7 @@
 #
 #     cd docker && cp .env.example .env && $EDITOR .env   # paste your keys
 #     docker compose -f docker/docker-compose.yml up -d ollama
-#     docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma3:4b
-#     docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma3:1b
+#     # Then follow docs/docker_quickstart.md to install the MiniCPM alias.
 #     docker compose -f docker/docker-compose.yml run --rm speaker
 #
 # See docs/docker_quickstart.md for the full command sequence + why each
@@ -26,7 +25,8 @@
 # different command + a different overlay here).
 
 services:
-  # GPU-resident LLM server. Pulls gemma3 models on first ``ollama pull``;
+  # GPU-resident LLM server. The quickstart provisions Gemma main + the
+  # template-pinned MiniCPM answering alias; the named volume persists them.
   # the named volume persists them across runs.
   ollama:
     image: ollama/ollama:latest

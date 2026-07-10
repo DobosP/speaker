@@ -502,6 +502,13 @@ def test_check_ollama_models_present_and_missing():
     assert by_name["ollama model gemma3:12b"].hint == "ollama pull gemma3:12b"
 
 
+def test_check_ollama_minicpm_uses_template_aware_setup_hint():
+    checks = check_ollama(("minicpm5-1b:q8",), lister=lambda: [])
+    model = next(c for c in checks if c.name == "ollama model minicpm5-1b:q8")
+    assert not model.ok
+    assert model.hint == "python -m tools.setup_minicpm"
+
+
 def test_check_ollama_unreachable():
     def boom():
         raise RuntimeError("connection refused")
@@ -1119,7 +1126,7 @@ def test_run_all_ready_when_everything_passes():
     checks = run_all(
         {"sherpa": paths},
         sd=FakeSD(),
-        ollama_lister=lambda: ["gemma3:12b", "gemma3:4b"],
+        ollama_lister=lambda: ["gemma3:12b", "minicpm5-1b:q8"],
         import_fn=lambda name: object(),
         exists=lambda p: True,
     )

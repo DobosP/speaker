@@ -39,12 +39,12 @@
   "llm": {
     "backend": "ollama",
     "main_model": "gemma3:12b",
-    "fast_model": "gemma3:4b",
+    "fast_model": "minicpm5-1b:q8",
     "_router_model_comment": "P3 (optional, default unset -> uses fast_model): a dedicated LOCAL model for the CAPABILITY-ROUTER's one-word ACT/SIMPLE/RESEARCH disambiguator slot. Generic small instruct models are weak at it; a function-calling/instruction-tuned small model (e.g. a pulled xLAM-2-3b or Qwen3-4B) does it more reliably. Stays on-device (sees the raw query, §9.7) -- never cloud-wrapped. NOTE: affects only the router's disambiguator; the ReAct planner's tool calls run on the MAIN tier (a multi-step reasoner wants the bigger model). Owner: `ollama pull <model>` then set router_model. Ollama backend only.",
     "router_model": null,
     "host": null,
     "keep_alive": "30m",
-    "_think_comment": "false (default): skip a reasoning model's silent chain-of-thought on the voice path. gemma4 streams 'thinking' into a separate field BEFORE any spoken content; measured ~9s of dead air before the first word of a story on gemma4:12b (vs ~1.9s with think off). Set true to opt back in (e.g. for a deliberate, non-real-time research tier).",
+    "_think_comment": "false (default): skip silent chain-of-thought on the voice path. MiniCPM5 must be provisioned through python -m tools.setup_minicpm so its supported ChatML template is installed; the direct Hugging Face Ollama import is not the shipped runtime identity. Set true only for a deliberate, non-real-time reasoning tier.",
     "think": false,
     "options": {
       "num_ctx": 4096
@@ -150,11 +150,11 @@
   },
   "device_profiles": {
     "desktop": {
-      "_comment": "router.threshold=0.3 + the generation/long-form markers (core/routing.py) so reasoning + 'tell me a story' turns escalate to gemma3:12b (fast on this GPU, previously never used). num_predict=768 gives long-form answers room (a story isn't 384 tokens). asr_num_threads=2: a small streaming zipformer doesn't speed up past 2 CPU threads. input_gate ON (core/addressing.py): the fast tier has headroom here, so gate ambient/read-aloud speech instead of answering disfluency fragments. cleanup left OFF -- it adds a second fast-LLM call on the capture thread per final (see docs/archive/perf_audit_2026-05_goal_alignment.md H8). See docs/archive/flow_control_intelligence_2026-05.md.",
+      "_comment": "MiniCPM5-1B Q8 is the local text/answering tier; the vision-capable gemma3:12b main remains for complex, long-form, research, and image turns. router.threshold=0.3 escalates reasoning and generation requests. num_predict=768 leaves long-form room. input_gate is enabled; cleanup stays off to avoid a second fast-model call per final.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:12b",
-        "fast_model": "gemma3:4b",
+        "fast_model": "minicpm5-1b:q8",
         "keep_alive": -1,
         "router": {
           "threshold": 0.3
@@ -175,11 +175,11 @@
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "desktop_gpu_4090": {
-      "_comment": "RTX 4090 / 5090 / equivalent: gemma3:12b on GPU + gemma3:4b fast tier; input_gate + cleanup + the unified capability_router all ON (fast tier has plenty of headroom). The capability_router mirrors base 'desktop' (was missing here, so the most-capable profile had LESS routing intelligence than the weaker base): action classification CONTROL/SIMPLE/RESEARCH/ACT drives tier+escalate, with fast-LLM disambiguation only on LOW-confidence long turns (set llm_assist=false to drop that extra call if latency matters). Specsim quick TTFA 0.96s. Cloud chains off by default -- local 12b is fast enough; enable in config.local.json for paragraph-length research-mode answers.",
+      "_comment": "RTX 4090 / 5090: MiniCPM5-1B Q8 answers local text turns; gemma3:12b remains the vision/complex main tier. Input gate, cleanup, and capability routing are enabled. Cloud chains remain off by default.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:12b",
-        "fast_model": "gemma3:4b",
+        "fast_model": "minicpm5-1b:q8",
         "keep_alive": -1,
         "options": {
           "num_ctx": 8192,
@@ -199,11 +199,11 @@
       "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
     },
     "macbook_m_series": {
-      "_comment": "Apple Silicon (M2/M3/M4 + 16GB+ unified RAM): gemma3:4b main on Metal + gemma3:1b fast. Both gates ON. Specsim quick TTFA 1.46s. Sensitivity-routed cloud chains (hedge strategy): private turns -> Cerebras+Groq (US); code turns -> Cerebras Coder+Kimi; public turns -> OpenRouter+Cerebras (US-only, no CN by default). Provide the US-provider API keys via env to activate; missing keys disable that chain individually. (A CN preset is opt-in only: add it to a chain AND set allow_prc.)",
+      "_comment": "Apple Silicon (16GB+): MiniCPM5-1B Q8 is the local answering tier and gemma3:4b remains the vision/complex main. Both gates are enabled; sensitivity-routed cloud chains are available but default off.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",
-        "fast_model": "gemma3:1b",
+        "fast_model": "minicpm5-1b:q8",
         "keep_alive": "30m",
         "options": {
           "num_ctx": 4096,
@@ -220,11 +220,11 @@
       "cleanup": {"enabled": true, "max_context": 3}
     },
     "cpu_laptop": {
-      "_comment": "Mid-range Windows/Linux laptop, no dedicated GPU (8 cores, 16GB). Local gemma3:1b only -- the 4b main is too slow on pure CPU (specsim quick TTFA would be ~3.5s+). Sensitivity-routed cloud chains AVAILABLE (hedge_delay_ms=0 = kick cloud immediately) but DEFAULT OFF (cloud.enabled=false) -- enable deliberately; on CPU the cloud is the practical answer tier, but it must be an explicit opt-in, not silent on key-presence. Both gates OFF (no fast-tier headroom on CPU).",
+      "_comment": "CPU laptop: MiniCPM5-1B Q8 is the compact local answering tier; gemma3:4b remains the opt-in complex/vision main. Cloud hedging is available but default off. Input/cleanup gates stay off when CPU headroom is limited.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",
-        "fast_model": "gemma3:1b",
+        "fast_model": "minicpm5-1b:q8",
         "keep_alive": "10m",
         "options": {
           "num_ctx": 2048,
@@ -240,11 +240,11 @@
       "cleanup": {"enabled": false, "max_context": 3}
     },
     "open_speaker": {
-      "_comment": "EXPLICIT (non-auto) profile for open-speaker barge-in WITHOUT headphones (the owner HARD REQUIREMENT). Select with `--device open_speaker`. Turns on the production WebRTC AudioProcessingModule (AEC3 + residual-echo suppressor + ML noise suppression + AGC2 + high-pass filter) for the capture path -- it tolerates the NONLINEAR open laptop speaker where the linear NLMS filter measures ~0 dB ERLE and diverges. Needs `pip install livekit` (build_aec fails OPEN to no-AEC if absent) -- it exposes rtc.AudioProcessingModule and runs standalone (no room). Inherits everything else from the base profile; layers gemma3:4b/1b like cpu_laptop so it runs on a real laptop. apm_always_on runs the APM on every block so its NS/AGC also clean the user's own idle utterance (the desktop analog of the OS voice-comm path the Android app already uses). This makes the working open-speaker config reproducible from a CLEAN CLONE instead of living only in a machine-local config.local.json. Re-enroll your voice after enabling (the speaker embedding shifts post-cleanup). VALIDATE live at the mic (barge_stress) before trusting it.",
+      "_comment": "EXPLICIT (non-auto) profile for open-speaker barge-in WITHOUT headphones. MiniCPM5-1B Q8 handles local text turns while gemma3:4b remains the complex/vision main. The profile enables WebRTC APM as the in-app fallback; the current Linux host uses the OS echo-cancel route recorded in STATUS.md. Re-enroll after changing the capture frontend and validate barge behavior live before trusting hardware-specific results.",
       "llm": {
         "backend": "ollama",
         "main_model": "gemma3:4b",
-        "fast_model": "gemma3:1b",
+        "fast_model": "minicpm5-1b:q8",
         "keep_alive": "10m",
         "options": {"num_ctx": 2048, "num_predict": 256}
       },
@@ -263,11 +263,11 @@
       "input_gate": {"enabled": false, "unsure_acts": true, "max_context": 4}
     },
     "phone": {
-      "_comment": "router.threshold=0.55 overrides the base 0.3: on phone the 'main' tier is gemma-3-4b GGUF on CPU (n_gpu_layers=0), so over-escalating idiom/borderline turns onto it is a real latency hit. Keep escalation reserved for clearly heavy turns here (the doc-prescribed phone safety valve, docs/archive/flow_control_intelligence_2026-05.md).",
+      "_comment": "Phone-class Python core: one public MiniCPM5-1B Q4 GGUF is shared by main and fast roles so weights/KV are loaded once. router.threshold=0.55 avoids unnecessary heavy-path work on mobile CPUs.",
       "llm": {
         "backend": "llamacpp",
-        "main_model_path": "models/gemma-3-4b-it-Q4_K_M.gguf",
-        "fast_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
+        "main_model_path": "models/MiniCPM5-1B-Q4_K_M.gguf",
+        "fast_model_path": "models/MiniCPM5-1B-Q4_K_M.gguf",
         "n_ctx": 2048,
         "n_gpu_layers": 0,
         "_kv_cache_comment": "llm-inference-9: q8_0 on the K cache (V left at f16) ~halves the K-cache memory at near-lossless quality WITHOUT needing flash-attention (V-cache quant does, which isn't validated on this hardware). Validate on-device before trusting absolutes.",
@@ -288,11 +288,11 @@
       }
     },
     "phone_lite": {
-      "_comment": "Low-end phone (6GB RAM, mid-range SoC): single-tier gemma3:1b GGUF Q4 only. The 4b model thrashes RAM at this tier. Cloud chains AVAILABLE with fallback strategy (cloud-first w/ ttft_deadline, local-only last resort) but DEFAULT OFF (cloud.enabled=false) -- enable deliberately, never silently on key-presence. Specsim quick TTFA on-device 5s; with cloud 1-2s. Gates OFF.",
+      "_comment": "Low-end phone: a single shared MiniCPM5-1B Q4 GGUF keeps the local tier within memory. Cloud fallback is available but default off; input/cleanup gates stay off.",
       "llm": {
         "backend": "llamacpp",
-        "main_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
-        "fast_model_path": "models/gemma-3-1b-it-Q4_K_M.gguf",
+        "main_model_path": "models/MiniCPM5-1B-Q4_K_M.gguf",
+        "fast_model_path": "models/MiniCPM5-1B-Q4_K_M.gguf",
         "n_ctx": 1536,
         "n_gpu_layers": 0,
         "type_k": "q8_0",

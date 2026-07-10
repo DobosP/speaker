@@ -24,7 +24,7 @@ For the on-device desktop runtime (with audio), skip Docker and run
                 ▼
   ┌───────────────────────────────────┐
   │ container: speaker-ollama (GPU)   │
-  │   gemma3:4b (fast tier)           │
+  │   MiniCPM5-1B Q8 (fast/text tier) │
   │   gemma3:12b (main, hedged)       │
   └───────────────────────────────────┘
 ```
@@ -65,17 +65,21 @@ docker compose -f docker/docker-compose.yml build
 # 4. Start ollama and wait for healthcheck.
 docker compose -f docker/docker-compose.yml up -d ollama
 
-# 5. Pull the local models (one-time; cached in the named volume across runs).
-#    desktop_gpu_4090 config uses 12b main + 4b fast. ~9 GB combined.
+# 5. Pull the vision/main model and provision the template-pinned MiniCPM alias
+#    (one-time; cached in the named volume across runs).
 docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma3:12b
-docker compose -f docker/docker-compose.yml exec ollama ollama pull gemma3:4b
+docker compose -f docker/docker-compose.yml exec ollama \
+  ollama pull hf.co/openbmb/MiniCPM5-1B-GGUF:Q8_0
+docker compose -f docker/docker-compose.yml cp \
+  deploy/ollama/Modelfile.minicpm5-1b-q8 ollama:/tmp/Modelfile.minicpm5
+docker compose -f docker/docker-compose.yml exec ollama \
+  ollama create minicpm5-1b:q8 -f /tmp/Modelfile.minicpm5
 ```
 
-If you'd rather skip the 12b pull (cloud should win the race anyway on
-this profile), you can pull just `gemma3:4b` -- but the
-`desktop_gpu_4090` profile is configured for 12b main, so `--device
-macbook_m_series` is a better fit for a 4b-only setup (and works fine
-on a 4090).
+Do not skip the MiniCPM alias creation: the committed fast tier references that
+exact identity so Ollama uses the validated ChatML template. The 12b model is
+also required by this profile for local complex/vision turns even when cloud
+hedging is enabled.
 
 ## Run an interactive session
 

@@ -218,7 +218,7 @@ def run_voice_loop(
     repo_root: str,
     sherpa_cfg: dict,
     llm_kind: str = "ollama",
-    model: str = "gemma3:4b",
+    model: str = "minicpm5-1b:q8",
     out_dir: str,
     acoustics_mode: str = "cable",
     latency_ms: int = 260,

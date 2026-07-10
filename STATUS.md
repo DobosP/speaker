@@ -4,17 +4,21 @@ Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
 Last verified: 2026-07-10 on Linux ROG, branch
-`fix/voice-reliability-integration`. Full headless suite: 2514 passed, 27
-skipped, 9 existing warnings. Real-model tier: 5 passed, 12 skipped. Required
-APM/DTD gate: 6 passed; whitespace gate passed. Host doctor reported READY with the actual
-audio route, selected models, and local Ollama. No human-speech A/B was run.
+`feat/minicpm5-answering-tier`. Full headless suite: 2527 passed, 24 skipped,
+9 existing warnings. Real-model/replay tier: 5 passed, 12 skipped. Required
+APM/DTD gate: 6 passed; whitespace gate passed. Host doctor reported READY with
+the actual EC audio route, selected models, and local Ollama. No human-speech
+A/B was run.
 
 ## Runtime
 
 - Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
-- Current host resolves `desktop_gpu_4090`; local LLMs are gemma3:12b main and
-  gemma3:4b fast. Streaming ASR is followed by asynchronous SenseVoice finals.
+- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local
+  text/answering tier and gemma3:12b remains the complex/vision main tier
+  (ADR-0020). The resolved console path passed simple/long-form routing; the
+  model probe measured warm MiniCPM TTFT at 0.10–0.11 s and 1.1 GB VRAM.
+  Streaming ASR is followed by asynchronous SenseVoice finals.
 - Current host capture is routed through PipeWire `echo-cancel-source` and output
   through `echo-cancel-sink`. GTCRN denoise is active. Word-cut is the active
   open-speaker barge path; in-app AEC/APM are off on this host (ADR-0013).

@@ -2,7 +2,7 @@
 
 Two modes coexist:
 
-- **Local fast-GGUF sanity** (legacy ``main()``): downloads the fast Gemma 1B
+- **Local fast-GGUF sanity** (legacy ``main()``): downloads MiniCPM5-1B Q4
   GGUF and runs a few prompts on CPU, asserting the answers are distinct and
   non-degenerate. Guards against the "Gemma answering the same canned line"
   bug. Run by ``.github/workflows/llm-sanity.yml``.
@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.provider or args.all or args.smoke:
         return _run_cloud_probe(args)
 
-    # Legacy local-sanity path: download fast Gemma + run distinctness checks.
+    # Legacy local-sanity path: download MiniCPM5 Q4 + run distinctness checks.
     from huggingface_hub import hf_hub_download
 
     from core.llm import LlamaCppLLM

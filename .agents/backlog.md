@@ -247,6 +247,17 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       re-run the forensics replay (diagnose_run) to confirm the garble/fragmentation
       actually drop on real audio; implement fix 5b if underruns persist.
 
+## P1 — MiniCPM5 migration and model/runtime follow-ups
+- [~] **MiniCPM5-1B local answering tier (ADR-0020).** Desktop Ollama profiles
+      now use the template-pinned Q8 alias for ordinary text, addressing,
+      cleanup, and routing assistance; Gemma remains the complex/vision main.
+      Phone-class Python profiles share one Q4 llama.cpp context. Headless model
+      probes, resolved console turns, replay, logic, and APM/DTD gates passed.
+      REMAINING: bare-speaker human A/B for answer quality, first audio, sustained
+      talk-over, silent control, and reply-tail continuity; provider-native
+      pre-first-token cancellation; evaluate MiniCPM native XML tools behind a
+      dedicated adapter; Flutter stays Gemma until a validated runtime exists.
+
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds
 > fixed: AEC ref-delay (19→105ms calibrated, 30.3dB ERLE), DTD chart persistence,

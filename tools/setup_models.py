@@ -317,7 +317,7 @@ def fetch_gguf_models(
     force: bool = False,
     download: "Callable | None" = None,
 ) -> dict:
-    """Fetch the on-device Gemma GGUF weights (llamacpp backend) into ``gguf_dir``.
+    """Fetch the on-device MiniCPM5 GGUF weights into ``gguf_dir``.
 
     Returns ``{key: local_path}`` for each of ``GGUF_KEYS``. Coordinates come
     from the shared bench manifest (one source of truth); the phone / phone_lite
@@ -326,19 +326,23 @@ def fetch_gguf_models(
     with no config rewrite. ``download`` defaults to ``huggingface_hub``'s
     ``hf_hub_download`` (injected in tests)."""
     if download is None:
-        from huggingface_hub import hf_hub_download as download  # gated -> needs token
+        from huggingface_hub import hf_hub_download as download
     os.makedirs(gguf_dir, exist_ok=True)
     resolved: dict = {}
+    fetched: dict[tuple[str, str], str] = {}
     for key in GGUF_KEYS:
         coords = manifest[key]
-        print(f"[models] fetching {key}: {coords['repo']}/{coords['file']} -> {gguf_dir}")
-        resolved[key] = download(
-            repo_id=coords["repo"],
-            filename=coords["file"],
-            local_dir=gguf_dir,
-            token=token,
-            force_download=force,
-        )
+        identity = (coords["repo"], coords["file"])
+        if identity not in fetched:
+            print(f"[models] fetching {key}: {coords['repo']}/{coords['file']} -> {gguf_dir}")
+            fetched[identity] = download(
+                repo_id=coords["repo"],
+                filename=coords["file"],
+                local_dir=gguf_dir,
+                token=token,
+                force_download=force,
+            )
+        resolved[key] = fetched[identity]
     return resolved
 
 
@@ -463,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--gguf",
         action="store_true",
-        help="also fetch the on-device Gemma GGUF weights (llamacpp backend; "
+        help="also fetch the on-device MiniCPM5 GGUF weights (llamacpp backend; "
              "phone/phone_lite profiles) into --gguf-dir",
     )
     parser.add_argument(

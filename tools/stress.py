@@ -333,7 +333,7 @@ def main(argv: Optional[list] = None) -> int:
     p = sub.add_parser("real")
     p.add_argument("--replay-dir", default="tests/fixture_audio")
     p.add_argument("--rounds", type=int, default=5)
-    p.add_argument("--model", default="gemma3:4b")
+    p.add_argument("--model", default="minicpm5-1b:q8")
     args = ap.parse_args(argv)
 
     results: list[_Result] = []

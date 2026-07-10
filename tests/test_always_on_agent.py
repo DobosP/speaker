@@ -14,7 +14,11 @@ from always_on_agent.bridge import TranscriptBridge
 from always_on_agent.models import IntentDecision, IntentKind
 from always_on_agent.replay import replay_records
 from always_on_agent.runtime import AlwaysOnAgentRuntime
-from always_on_agent.speech_analyzer import LiveSpeechAnalyzer, ModePolicy
+from always_on_agent.speech_analyzer import (
+    LiveSpeechAnalyzer,
+    ModePolicy,
+    is_assistant_mode_final_candidate,
+)
 from always_on_agent.supervisor import AgentSupervisor
 
 
@@ -58,6 +62,23 @@ def test_event_log_evicts_oldest_past_maxlen():
     for i in range(1100):
         supervisor.state.event_log.append(AgentEvent.final(f"m{i}"))
     assert len(supervisor.state.event_log) == 1024
+
+
+def test_assistant_mode_final_candidate_excludes_builtin_nonassistant_intents():
+    assert is_assistant_mode_final_candidate("explain the moon", Mode.ASSISTANT)
+    assert is_assistant_mode_final_candidate("yes", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate("stop", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate("research quantum", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate("search quantum", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate("dictate a note", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate("open the browser", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate("research mode", Mode.ASSISTANT)
+    assert not is_assistant_mode_final_candidate(
+        "yes",
+        Mode.ASSISTANT,
+        has_pending_confirmation=True,
+    )
+    assert not is_assistant_mode_final_candidate("explain the moon", Mode.RESEARCH)
 
 
 def test_mode_switch_then_assistant_task_emits_tts_request():

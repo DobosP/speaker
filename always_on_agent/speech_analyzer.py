@@ -36,6 +36,39 @@ _MODE_ALIASES = {
     "mod dictare": Mode.DICTATION,
 }
 
+_EXPLICIT_NON_ASSISTANT_PREFIXES = (
+    "research ", "cerceteaza ",
+    "search ", "cauta ",
+    "dictate ", "scrie ",
+    "run ", "open ", "execute ",
+)
+
+
+def is_assistant_mode_final_candidate(
+    text: str,
+    current_mode: Mode,
+    *,
+    has_pending_confirmation: bool = False,
+) -> bool:
+    """Whether assistant-mode default analysis can resolve ``text`` as ASSISTANT.
+
+    This is a bounded, stateless preview for runtime handoff bookkeeping before
+    the supervisor has parsed a queued final. It is deliberately scoped to an
+    already-active ASSISTANT mode and recognizes only decisive built-in
+    exclusions; passive wake activation and custom analyzers are outside this
+    contract.
+    """
+    normalized = normalize_text(text)
+    if current_mode != Mode.ASSISTANT or not normalized:
+        return False
+    if normalized in _STOP_PHRASES or normalized in _MODE_ALIASES:
+        return False
+    if has_pending_confirmation and normalized in (
+        _CONFIRM_PHRASES | _DENY_PHRASES
+    ):
+        return False
+    return not normalized.startswith(_EXPLICIT_NON_ASSISTANT_PREFIXES)
+
 
 @dataclass(frozen=True)
 class ModePolicy:

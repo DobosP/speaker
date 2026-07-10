@@ -13,6 +13,10 @@ from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
+from always_on_agent.speech_analyzer import (
+    LiveSpeechAnalyzer,
+    is_assistant_mode_final_candidate,
+)
 from always_on_agent.supervisor import AgentSupervisor, ArrivalContinuation
 
 from always_on_agent.text import normalize_text
@@ -1256,6 +1260,18 @@ class VoiceRuntime:
             # available its non-simple actions give the stronger exclusion.
             if (
                 self.mode == Mode.ASSISTANT
+                # A custom analyzer may define private non-assistant intents
+                # which this pure default preview cannot know. Fail closed: the
+                # publish-gap continuation optimization is available only for
+                # the exact shipped deterministic analyzer.
+                and type(self.supervisor.analyzer) is LiveSpeechAnalyzer
+                and is_assistant_mode_final_candidate(
+                    final_text,
+                    self.mode,
+                    has_pending_confirmation=bool(
+                        self.supervisor.state.pending_confirmations
+                    ),
+                )
                 and (
                     route_decision is None
                     or route_decision.action == "simple"

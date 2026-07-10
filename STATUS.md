@@ -3,8 +3,8 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/command-shaped-act-routing`;
-full headless: 2676 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `fix/published-unheard-intent-eligibility`;
+full headless: 2682 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
 outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
 
@@ -59,9 +59,9 @@ outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ra
   no-mic MiniCPM cancel ended in 135.9 ms with zero pieces and healthy follow-up
   (ADR-0022); sync generate, arbitrary providers, and llama.cpp remain bounded.
 - Addressing, cleanup, and both routing layers now run behind a separate bounded
-  cancellable final-preprocessing lease before any AgentTask exists (ADR-0023).
-  Partial/final/direct input fences every unheard output; assistant add-ons retain
-  lineage across gates, bus backlog, completion, and actual playback admission.
+  cancellable final-preprocessing lease before any AgentTask exists (ADR-0023/0025).
+  Partial/final/direct input fences every unheard output; only assistant-eligible
+  add-ons retain lineage across gates, bus backlog, completion, and playback admission.
   Queued stream/aux audio, controls, confirmations, follow-ups, memory writes, and
   shutdown have generation/epoch ownership and cannot resurrect stale work. A
   real no-mic MiniCPM gate cancel took 157.9 ms with zero old pieces and a healthy

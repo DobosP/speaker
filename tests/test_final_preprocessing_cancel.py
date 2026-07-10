@@ -17,6 +17,7 @@ from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.memory import SessionMemory
 from always_on_agent.models import IntentDecision, IntentKind
+from always_on_agent.speech_analyzer import LiveSpeechAnalyzer
 from always_on_agent.supervisor import AgentSupervisor
 from core.addressing import ACT, LLMAddressingClassifier
 from core.capability_router import (
@@ -1666,6 +1667,84 @@ def test_final_only_continues_a_committed_final_still_waiting_on_the_bus():
         assert "explain the moon phases" in engine.spoken[0]
         assert engine.spoken[0].count("make it shorter") == 1
         assert runtime._published_unheard == {}
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "first_final",
+    [
+        "research quantum computing",
+        "search quantum computing",
+        "dictate a note about quantum computing",
+        "open the browser",
+    ],
+)
+def test_backlogged_nonassistant_final_cannot_become_continuation_origin(
+    first_final,
+):
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        continuation_config=ContinuationConfig(enabled=True),
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final(first_final)
+        assert runtime._published_unheard == {}
+
+        engine.final("make it shorter")
+
+        assert runtime.wait_idle(timeout=2.0)
+        assert engine.spoken == ["You said: make it shorter"]
+        assert not any(
+            "The user first asked:" in output for output in engine.spoken
+        )
+    finally:
+        runtime.stop()
+
+
+class _ArchiveResearchAnalyzer(LiveSpeechAnalyzer):
+    def decide(
+        self,
+        observation,
+        current_mode,
+        *,
+        has_pending_confirmation=False,
+    ):
+        if observation.normalized == "archive this":
+            return IntentDecision(
+                IntentKind.RESEARCH,
+                1.0,
+                observation.text,
+                "custom_research",
+                mode=Mode.RESEARCH,
+            )
+        return super().decide(
+            observation,
+            current_mode,
+            has_pending_confirmation=has_pending_confirmation,
+        )
+
+
+def test_custom_analyzer_fails_closed_for_published_unheard_lineage():
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        continuation_config=ContinuationConfig(enabled=True),
+    )
+    runtime.supervisor.analyzer = _ArchiveResearchAnalyzer()
+    runtime.start(run_bus=False)
+    try:
+        engine.final("archive this")
+        assert runtime._published_unheard == {}
+
+        engine.final("make it shorter")
+
+        assert runtime.wait_idle(timeout=2.0)
+        assert engine.spoken == ["You said: make it shorter"]
     finally:
         runtime.stop()
 

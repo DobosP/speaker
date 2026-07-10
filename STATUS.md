@@ -14,8 +14,18 @@ LiveKit only when AEC is actually enabled. Full logic suite: 2396 passed, 30
 skipped; targeted doctor/live/app: 155 passed. ADR-0015 enrollment parity also
 runs the active idle capture front end blockwise, persists versioned provenance,
 and makes stale model/front-end enrollment fail open; its focused suite passed
-93 tests with 1 skip. No live re-enrollment was run.) Prior: 2026-07-07 late
-(Linux ROG box; P2 robustness cluster landed: full
+93 tests with 1 skip. ADR-0013 word-cut reliability also changed:
+playback-time recognition now runs before the acoustic-reference watch, fails
+closed unless OS-capture intent + runtime/VAD state agree, and uses a dedicated
+stream with bounded current-burst PCM. Confirmed cuts reset+replay only candidate
+user PCM into normal ASR and splice the same audio into SenseVoice/floor/speaker-ID.
+The 4-word mid-playback floor remains authoritative: a novel 1–3-word reply tail is
+staged until VAD-active post-playback continuation adds a word; silence/endpoint,
+own speech, empty text, and stale bursts are discarded. Full logic suite 2395
+passed, 30 skipped; `git diff --check` clean. **LIVE bare-speaker A/B still required**
+for cut rate, false tails, tail-word continuity, and re-enrollment; no live
+human-speech validation was run.) Prior: 2026-07-07 late (Linux ROG box; P2
+robustness cluster landed: full
 logic suite 2387 passed, 24 skipped; `git diff --check` clean. Shipped in one
 commit: ① diagnose_run word-cut verdict truth-up — a word-cut-confirmed barge is
 no longer stale-flagged `suspect:no-dtd` (run-level exemption keyed on the confirm

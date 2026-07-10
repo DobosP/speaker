@@ -9,11 +9,12 @@ coverage (the exact green-headless/failed-live pattern that sank prior barge
 phases), so these pin the no-false-cut gates the three adversarial verifiers
 demanded -- the 4-word floor (garbled 2-word echo fragments must NOT cut) and
 the per-speech-burst stream reset -- plus the fire path, its suppress guards,
-and the ``self._aec is None`` scoping. State-machine fakes only: no audio
-device, no models, no threads (Tier 0), mirroring ``test_barge_confirm``.
+and the OS-path scoping. State-machine fakes only except one finite capture-loop
+thread: no audio device or models (Tier 0), mirroring ``test_barge_confirm``.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -25,9 +26,11 @@ from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 class _FakeStream:
     def __init__(self):
         self.fed_blocks = 0
+        self.blocks: list[np.ndarray] = []
 
     def accept_waveform(self, sr, samples):
         self.fed_blocks += 1
+        self.blocks.append(np.asarray(samples, dtype="float32").copy())
 
 
 class _FakeRecognizer:
@@ -37,6 +40,8 @@ class _FakeRecognizer:
         self._partials = list(partials)
         self._i = -1
         self.resets = 0
+        self.reset_streams: list[_FakeStream] = []
+        self.endpoint = False
 
     def is_ready(self, stream):
         return False  # decode loop is a no-op for the fake
@@ -52,6 +57,10 @@ class _FakeRecognizer:
 
     def reset(self, stream):
         self.resets += 1
+        self.reset_streams.append(stream)
+
+    def is_endpoint(self, stream):
+        return self.endpoint
 
 
 class _FakeVad:
@@ -139,6 +148,23 @@ def test_active_only_when_flag_set_and_no_inapp_aec():
     assert eng._barge_word_cut_active() is False
 
 
+def test_word_cut_fails_closed_when_configured_aec_failed_to_build():
+    # Runtime _aec=None can mean either "OS owns cancellation" OR "the selected
+    # in-app AEC failed to build". Config intent distinguishes them; never turn a
+    # failed APM/DTLN setup into raw-mic word-cut by accident.
+    eng = _engine(aec_enabled=True)
+    eng._aec = None
+    assert eng._barge_word_cut_active() is False
+
+
+def test_word_cut_fails_closed_without_vad():
+    # VAD defines burst boundaries. Without it, short garbled echo fragments
+    # could accumulate across a whole reply and defeat the four-word floor.
+    eng = _engine()
+    eng._vad = None
+    assert eng._barge_word_cut_active() is False
+
+
 # --- the cut: word content decides, never level, never a duck --------------------
 
 
@@ -204,6 +230,60 @@ def test_own_echo_folds_into_base_then_user_words_cut():
     assert rec.barges == 1
 
 
+def test_cut_replays_only_candidate_pcm_not_folded_own_echo_prefix():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._now_playing = "once upon a time there was"
+    detect = _FakeStream()
+    normal = _FakeStream()
+    r = _FakeRecognizer(
+        ["upon a time", "upon a time what are you doing there"]
+    )
+    echo_block = np.full(1600, 0.1, dtype="float32")
+    user_block = np.full(1600, 0.7, dtype="float32")
+    now = time.monotonic()
+
+    assert eng._barge_word_cut_step(
+        r, detect, echo_block, now, normal_stream=normal
+    ) is False
+    assert eng._word_cut_base == "upon a time"
+    assert eng._word_cut_candidate_samples == 0  # own PCM folded out
+
+    assert eng._barge_word_cut_step(
+        r, detect, user_block, now + 0.1, normal_stream=normal
+    ) is True
+    assert rec.barges == 1
+    # The throw-away detector saw echo + user, but normal ASR was reset and
+    # seeded from ONLY the candidate user block.
+    assert len(detect.blocks) == 2
+    assert len(normal.blocks) == 1
+    np.testing.assert_array_equal(normal.blocks[0], user_block)
+    assert normal in r.reset_streams and detect in r.reset_streams
+    assert eng._word_cut_pending_samples == user_block.size
+    np.testing.assert_array_equal(eng._word_cut_pending_pcm[0], user_block)
+
+
+def test_cut_replay_failure_is_telemetry_visible_and_keeps_finalizer_pcm(caplog):
+    import logging
+
+    class _BrokenNormal(_FakeStream):
+        def accept_waveform(self, sr, samples):
+            raise RuntimeError("normal stream failed")
+
+    caplog.set_level(logging.WARNING, logger="speaker.sherpa")
+    eng = _engine(_Rec())
+    detect, normal = _FakeStream(), _BrokenNormal()
+    r = _FakeRecognizer(["what are you doing"])
+    block = np.full(1600, 0.6, dtype="float32")
+
+    assert eng._barge_word_cut_step(
+        r, detect, block, time.monotonic(), normal_stream=normal
+    ) is True
+    assert eng._wc_stats["handoff_replay_errors"] == 1
+    assert eng._word_cut_pending_samples == block.size
+    assert "normal-stream replay failed" in caplog.text
+
+
 # --- per-speech-burst stream reset (the second no-false-cut gate) ----------------
 
 
@@ -216,6 +296,7 @@ def test_vad_quiet_run_resets_stream_and_base_after_debounce():
     eng = _engine(rec, vad_speech=False)
     eng._word_cut_fed_stream = True     # a prior burst fed the recognizer
     eng._word_cut_base = "stale burst text"
+    eng._append_word_cut_candidate(np.ones(1600, dtype="float32"))
     r, s = _FakeRecognizer(["anything"]), _FakeStream()
     now = time.monotonic()
     # Two quiet blocks: still inside the debounce -> NO reset yet.
@@ -228,6 +309,7 @@ def test_vad_quiet_run_resets_stream_and_base_after_debounce():
     assert r.resets == 1                # recognizer state cleared...
     assert eng._word_cut_base == ""     # ...and the novelty base with it
     assert eng._word_cut_fed_stream is False
+    assert eng._word_cut_candidate_samples == 0
     assert s.fed_blocks == 0            # quiet blocks are never fed
     # Idempotent: further quiet blocks don't keep resetting.
     assert eng._barge_word_cut_step(r, s, _BLOCK, now + 0.3) is False
@@ -251,7 +333,7 @@ def test_speech_block_between_quiets_defuses_the_debounce():
     eng = _engine(vad_speech=False)
     eng._word_cut_fed_stream = True
     eng._word_cut_base = "kept"
-    r, s = _FakeRecognizer(["kept and more user words here"]), _FakeStream()
+    r, s = _FakeRecognizer(["kept and more"]), _FakeStream()
     now = time.monotonic()
     eng._barge_word_cut_step(r, s, _BLOCK, now)
     eng._barge_word_cut_step(r, s, _BLOCK, now + 0.1)
@@ -262,6 +344,199 @@ def test_speech_block_between_quiets_defuses_the_debounce():
     eng._barge_word_cut_step(r, s, _BLOCK, now + 0.4)
     assert r.resets == 0
     assert eng._word_cut_base == "kept"
+
+
+# --- natural reply-tail handoff + PCM finalizer pre-roll --------------------------
+
+
+def test_novel_short_tail_requires_postplay_word_before_handoff(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+    eng = _engine(vad_speech=True)
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    tail_block = np.full(1600, 0.35, dtype="float32")
+    continuation_block = np.full(1600, 0.45, dtype="float32")
+    now = time.monotonic()
+
+    # Two words remain below the four-word MID-PLAYBACK safety floor.
+    assert eng._barge_word_cut_step(r, detect, tail_block, now) is False
+    assert eng.config.barge_word_cut_min_words == 4
+    # Reply end alone is NOT authority: stage it and keep normal ASR clean.
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
+    assert eng._word_cut_tail_staged is True
+    assert normal.fed_blocks == 0
+    # The same VAD-active burst gains one post-playback word -> replay tail +
+    # continuation into normal ASR and hand off to ordinary endpointing.
+    assert eng._word_cut_tail_probation_step(
+        r, detect, normal, continuation_block, now + 0.1
+    ) == "promoted"
+    assert len(normal.blocks) == 2
+    np.testing.assert_array_equal(normal.blocks[0], tail_block)
+    np.testing.assert_array_equal(normal.blocks[1], continuation_block)
+    assert eng._wc_stats["tail_handoffs"] == 1
+    assert eng._wc_stats.get("tail_drops", 0) == 0
+    assert eng._wc_stats["tail_continuations"] == 1
+    assert "word-cut tail staged: words=2" in caplog.text
+    assert "word-cut tail handoff: words=3 pcm_ms=200 replay=True" in caplog.text
+
+
+def test_garbled_two_word_tail_plus_silence_is_never_handed_to_normal_asr():
+    eng = _engine(vad_speech=True)
+    eng._now_playing = "once upon a time there was a dragon"
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["you're any", "you're any", "you're any"])
+    now = time.monotonic()
+
+    # The known nonlinear-speaker failure shape: novel-looking two-word junk.
+    assert eng._barge_word_cut_step(r, detect, _BLOCK, now) is False
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
+    assert eng._word_cut_tail_staged is True
+    assert normal.fed_blocks == 0
+
+    eng._vad.set_speech(False)
+    r.endpoint = True
+    assert eng._word_cut_tail_probation_step(
+        r, detect, normal, np.zeros_like(_BLOCK), now + 0.1
+    ) == "dropped"
+    assert normal.fed_blocks == 0
+    assert eng._word_cut_pending_samples == 0
+    assert eng._wc_stats.get("handoffs", 0) == 0
+    assert eng._wc_stats["tail_drop_no_continuation"] == 1
+
+
+def test_floor_clearing_tail_hands_off_immediately_when_cut_was_guarded():
+    eng = _engine(vad_speech=True)
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["what are you doing", "what are you doing"])
+    now = time.monotonic()
+    eng._barge_in_suppressed_until = now + 10.0
+
+    # The suppress guard delays the cut, but it does not revoke the four-word
+    # transcript's authority once playback naturally ends.
+    assert eng._barge_word_cut_step(r, detect, _BLOCK, now) is False
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now + 0.1) is True
+    assert eng._word_cut_tail_staged is False
+    assert normal.fed_blocks == 1
+    assert eng._wc_stats["tail_handoffs"] == 1
+
+
+def test_natural_tail_discards_own_empty_and_stale_bursts():
+    # Own speech: it was folded into the detection base and its PCM cleared.
+    own = _engine(vad_speech=True)
+    own._now_playing = "once upon a time there was"
+    r_own = _FakeRecognizer(["upon a time"])
+    d_own, n_own = _FakeStream(), _FakeStream()
+    own._barge_word_cut_step(r_own, d_own, _BLOCK, time.monotonic())
+    assert own._finish_word_cut_reply(r_own, d_own, n_own) is False
+    assert n_own.fed_blocks == 0
+    assert own._wc_stats["tail_drop_own"] == 1
+
+    # Empty recognizer result: energy alone is never tail authority.
+    empty = _engine(vad_speech=True)
+    r_empty = _FakeRecognizer([""])
+    d_empty, n_empty = _FakeStream(), _FakeStream()
+    empty._barge_word_cut_step(r_empty, d_empty, _BLOCK, time.monotonic())
+    assert empty._finish_word_cut_reply(r_empty, d_empty, n_empty) is False
+    assert n_empty.fed_blocks == 0
+    assert empty._wc_stats["tail_drop_empty"] == 1
+
+    # A debounce-expired burst is stale even if a fixture leaves text/PCM behind.
+    stale = _engine(vad_speech=True)
+    r_stale = _FakeRecognizer(["please wait"])
+    d_stale, n_stale = _FakeStream(), _FakeStream()
+    stale._barge_word_cut_step(r_stale, d_stale, _BLOCK, time.monotonic())
+    stale._word_cut_quiet_run = stale.config.barge_word_cut_reset_quiet_blocks
+    assert stale._finish_word_cut_reply(r_stale, d_stale, n_stale) is False
+    assert n_stale.fed_blocks == 0
+    assert stale._wc_stats["tail_drop_stale"] == 1
+
+
+def test_pending_preroll_splices_once_into_both_finalizer_segments():
+    eng = _engine(vad_speech=True)
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    block = np.full(1600, 0.42, dtype="float32")
+    now = time.monotonic()
+    eng._barge_word_cut_step(r, detect, block, now)
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
+    assert eng._word_cut_tail_probation_step(
+        r, detect, normal, block, now + 0.1
+    ) == "promoted"
+
+    utterance: list[np.ndarray] = []
+    asr_utterance: list[np.ndarray] = []
+    assert eng._splice_word_cut_preroll(utterance, asr_utterance) == 2 * block.size
+    assert eng._splice_word_cut_preroll(utterance, asr_utterance) == 0
+    assert len(utterance) == len(asr_utterance) == 2
+    np.testing.assert_array_equal(utterance[0], block)
+    np.testing.assert_array_equal(asr_utterance[1], block)
+
+
+def test_preroll_pcm_reaches_second_pass_floor_and_speaker_gate():
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    block = np.full(1600, 0.51, dtype="float32")
+    now = time.monotonic()
+    eng._barge_word_cut_step(r, detect, block, now)
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
+    assert eng._word_cut_tail_probation_step(
+        r, detect, normal, block, now + 0.1
+    ) == "promoted"
+    utterance: list[np.ndarray] = []
+    eng._splice_word_cut_preroll(utterance)
+    seg = np.concatenate(utterance)
+
+    seen: dict[str, np.ndarray] = {}
+
+    def final_transcribe(samples, raw):
+        seen["second_pass"] = np.asarray(samples).copy()
+        return raw
+
+    def floor(samples):
+        seen["floor"] = np.asarray(samples).copy()
+        return True
+
+    def speaker(samples):
+        seen["speaker"] = np.asarray(samples).copy()
+        return True
+
+    eng._final_transcribe = final_transcribe
+    eng._final_above_floor = floor
+    eng._should_act_on_final = speaker
+    eng._finalize_and_dispatch(seg, "please wait", 1.0)
+
+    for consumer in ("second_pass", "floor", "speaker"):
+        np.testing.assert_array_equal(
+            seen[consumer], np.concatenate([block, block])
+        )
+
+
+def test_word_cut_candidate_pcm_bound_derives_from_rule3_and_endpoint_config():
+    eng = _engine(
+        vad_speech=True,
+        asr_rule3_min_utterance_length=2.0,
+        endpoint_max_silence_sec=0.5,
+        barge_confirm_window_sec=0.25,
+    )
+    limit = int(eng.config.sample_rate * 2.5)
+    assert eng._asr_utterance_limit_samples() == limit
+    # One oversized append exercises partial oldest-block trimming precisely.
+    block = np.arange(limit + 123, dtype="float32")
+    eng._append_word_cut_candidate(block)
+    assert eng._word_cut_candidate_samples == limit
+    assert sum(b.size for b in eng._word_cut_candidate_pcm) == limit
+    np.testing.assert_array_equal(eng._word_cut_candidate_pcm[0], block[-limit:])
+    assert eng._wc_stats["pcm_trimmed_samples"] == 123
+
+
+def test_default_utterance_bound_covers_configured_twenty_second_rule3():
+    eng = _engine(vad_speech=True)
+    assert eng.config.asr_rule3_min_utterance_length == 20.0
+    assert eng._asr_utterance_limit_samples() > 20 * eng.config.sample_rate
 
 
 # --- the live-failure regression: the step must FEED the VAD it consults ---------
@@ -281,6 +556,143 @@ def test_step_feeds_vad_every_block():
     eng._vad.set_speech(False)
     eng._barge_word_cut_step(r, s, _BLOCK, now + 0.3)
     assert eng._vad.accepted == 4       # ...and on quiet blocks alike
+
+
+def test_capture_feeds_word_cut_before_acoustic_reference_watch():
+    class _CaptureRecognizer:
+        def __init__(self):
+            self.streams: list[_FakeStream] = []
+
+        def create_stream(self, **kwargs):
+            stream = _FakeStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, stream):
+            return False
+
+        def decode_stream(self, stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            return ""
+
+        def reset(self, stream):
+            pass
+
+        def is_endpoint(self, stream):
+            return False
+
+    class _OneBlockInput:
+        def __init__(self, engine, block):
+            self.engine = engine
+            self.block = block
+
+        def read(self, n):
+            # The current iteration still processes this block, then exits.
+            self.engine._running.clear()
+            return self.block.copy(), False
+
+    eng = _engine(vad_speech=True)
+    recognizer = _CaptureRecognizer()
+    eng._recognizer = recognizer
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _OneBlockInput(eng, _BLOCK)
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+    eng._first_audio_pending = True
+    eng._playback_level = 0.0
+    assert eng._barge_watch_active() is False  # acoustic DTD has no reference
+
+    eng._running.set()
+    thread = threading.Thread(target=eng._capture_loop)
+    thread.start()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    # Stream 0 is normal ASR and remains clean; stream 1 is the dedicated
+    # word-cut detector and receives the synth-lead-in block despite ref-empty.
+    assert len(recognizer.streams) == 2
+    assert recognizer.streams[0].fed_blocks == 0
+    assert recognizer.streams[1].fed_blocks == 1
+    assert eng._vad.accepted == 1
+
+
+def test_capture_tail_continuation_replays_current_block_once(caplog):
+    import logging
+
+    class _LifecycleRecognizer:
+        def __init__(self):
+            self.streams: list[_FakeStream] = []
+            self.detect_results = iter(
+                ["please wait", "please wait", "please wait now"]
+            )
+
+        def create_stream(self, **kwargs):
+            stream = _FakeStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, stream):
+            return False
+
+        def decode_stream(self, stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            if len(self.streams) > 1 and stream is self.streams[1]:
+                return next(self.detect_results, "please wait now")
+            return "please wait now" if stream.blocks else ""
+
+        def reset(self, stream):
+            if stream is self.streams[0]:
+                stream.blocks.clear()
+                stream.fed_blocks = 0
+
+        def is_endpoint(self, stream):
+            return False
+
+    class _TwoBlockInput:
+        def __init__(self, engine, first, second):
+            self.engine = engine
+            self.blocks = [first, second]
+            self.index = 0
+
+        def read(self, n):
+            block = self.blocks[self.index]
+            self.index += 1
+            if self.index == 2:
+                self.engine._speaking.clear()  # natural reply boundary
+                self.engine._running.clear()
+            return block.copy(), False
+
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+    eng = _engine(vad_speech=True)
+    recognizer = _LifecycleRecognizer()
+    tail = np.full(1600, 0.3, dtype="float32")
+    continuation = np.full(1600, 0.5, dtype="float32")
+    partials: list[str] = []
+    eng._recognizer = recognizer
+    eng._cb = EngineCallbacks(on_partial=partials.append)
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _TwoBlockInput(eng, tail, continuation)
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+    eng._first_audio_pending = True
+
+    eng._running.set()
+    thread = threading.Thread(target=eng._capture_loop)
+    thread.start()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    normal = recognizer.streams[0]
+    assert len(normal.blocks) == 2  # tail + continuation, no duplicate current block
+    np.testing.assert_array_equal(normal.blocks[0], tail)
+    np.testing.assert_array_equal(normal.blocks[1], continuation)
+    assert partials == ["Please wait now"]
+    assert "tail_continuations=1" in caplog.text
+    assert "spliced_samples=3200" in caplog.text
 
 
 # --- funnel telemetry (ADR-0013 post-hoc scoring) ---------------------------------
@@ -306,6 +718,10 @@ def test_funnel_counters_and_emission(caplog):
     assert "word-cut funnel: fed=2" in text
     assert "max_words=5" in text
     assert "cuts=1" in text
+    assert "handoffs=1" in text
+    assert "tail_handoffs=0 tail_drops=0" in text
+    assert "preroll_samples=3200" in text
+    assert "replay_errors=0" in text
     assert eng._wc_stats == {}           # stats are per-reply, cleared on emit
 
 

@@ -4,7 +4,7 @@
 #
 # Prereqs on the host:
 #   - Ollama running:  `ollama serve`  (or the systemd service)
-#   - Models pulled:   `ollama pull gemma3:12b && ollama pull gemma3:4b`
+#   - Models ready:    `ollama pull gemma3:12b && python -m tools.setup_minicpm`
 #   - NVIDIA driver (Ollama uses the GPU directly on the host)
 #
 # First run:

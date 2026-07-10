@@ -290,7 +290,7 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    stays desktop-first (`utils/memory.py` Postgres+pgvector), optional on phones.
 7. **Local/cloud boundary — local-first with a hybrid cloud thinking tier**
    (resolved 2026-05-28). *Local:* STT, TTS, VAD, speaker-ID, the always-on
-   capture loop, the fast/answering LLM tier (gemma3:4b-class), conversation
+   capture loop, the fast/answering LLM tier (MiniCPM5-1B on the Python core), conversation
    memory. *Cloud (optional, opt-in):* the *thinking* tier (main planner,
    research, multimodal summarize) and **web search**. *Invariant:* raw audio
    never leaves the device — only post-ASR text + screen captures + files
@@ -380,12 +380,12 @@ to add a cloud hedge without editing the committed template.
 
 | Profile | Models on-device | Gates ON? | Cloud hedge | Notes |
 |---|---|---|---|---|
-| `desktop_gpu_4090` | gemma3:12b + 4b | both | off | The fully-local north-star config. |
-| `desktop` | gemma3:12b + 4b | off (compat) | off | The existing profile; left alone for backward-compat. |
-| `macbook_m_series` | gemma3:4b + 1b on Metal | both | off (recommended for research mode) | M-series Macs hit ~50 tok/s on Metal — fast tier has headroom for the gates. |
-| `cpu_laptop` | gemma3:4b + 1b on CPU (Ollama) | **off** | **on, strongly recommended** | CPU LLM TTFT (~0.8 s) leaves no slack for the gates. Cloud hedge keeps research-mode under 3 s. |
-| `phone` | gemma3:4b + 1b GGUF | off | optional | Android/iOS class; same cost story as `cpu_laptop`. |
-| `phone_lite` | gemma3:1b GGUF only (single-tier) | off | **required for research** | Sub-8 GB hosts thrash on the 4b model. |
+| `desktop_gpu_4090` | gemma3:12b main + MiniCPM5-1B Q8 fast | both | off | MiniCPM handles ordinary text/voice; Gemma keeps complex/vision work (ADR-0020). |
+| `desktop` | gemma3:12b main + MiniCPM5-1B Q8 fast | input gate on | off | Same role split with a smaller ASR thread budget. |
+| `macbook_m_series` | gemma3:4b main + MiniCPM5-1B Q8 fast on Metal | both | off | The main model retains vision; cloud remains deliberate opt-in. |
+| `cpu_laptop` | gemma3:4b main + MiniCPM5-1B Q8 fast on CPU | **off** | optional | MiniCPM keeps ordinary local turns compact; cloud/main is for heavier work. |
+| `phone` | MiniCPM5-1B Q4 GGUF, shared single context | off | optional | Python-core phone profile; the Flutter runtime remains Gemma pending a validated backend. |
+| `phone_lite` | MiniCPM5-1B Q4 GGUF, shared single context | off | **required for research** | Tightest local memory tier. |
 
 ### 10.4 Cloud middle layer — providers and pricing (verified May 2026)
 

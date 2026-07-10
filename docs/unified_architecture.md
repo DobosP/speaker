@@ -350,7 +350,7 @@ Matched intents execute directly (speak the time, set a timer) and return. A mis
 
 ### Gate 3: Which model tier? (heuristic + live headroom routing)
 
-`core/routing.py` (`HeuristicRouter`, the tier router) scores the query on `[0, 1]`; a threshold (default `0.3` in base config, raised to `0.55` on slow devices) selects **fast** (small, snappy, e.g. `gemma3:4b`) or **main** (large/multimodal, slower, e.g. `gemma3:12b`). See [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97) for the tier definitions.
+`core/routing.py` (`HeuristicRouter`, the tier router) scores the query on `[0, 1]`; a threshold (default `0.3` in base config, raised to `0.55` on slow devices) selects **fast** (MiniCPM5-1B, local text/answering) or **main** (Gemma 3, complex/multimodal). See [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97) for the tier definitions.
 
 **Signals (all lexical, no model):**
 - **Mode** (`context['mode']`): research/search/meeting → +0.6 (main); dictation → −0.3 (fast).
@@ -415,8 +415,8 @@ All LLM surfaces conform to a single `LLMClient` protocol (`core/llm.py:70-92`):
 
 `core/llm_factory.py::build_llms` returns `(main_llm, fast_llm)`:
 
-- **main_llm** — the larger/multimodal model (`gemma3:12b` default on Ollama; `gemma3:4b` GGUF on phone). Wrapped by `_wrap_cloud` so it hedges or falls back to cloud.
-- **fast_llm** — optional small model (`gemma3:1b`/`4b`, separate path on mobile). Stays local; never calls cloud. Used for input-gate cleanup, spoken confirmations, and snappy replies where the local model has headroom.
+- **main_llm** — the complex/multimodal Gemma model on Ollama. It is retained because MiniCPM5-1B is text-only, and is wrapped by `_wrap_cloud` so it can hedge or fall back to cloud.
+- **fast_llm** — MiniCPM5-1B Q8 on desktop Ollama. It stays local and handles input gating, cleanup, routing assistance, spoken confirmations, and ordinary spoken replies. Phone-class Python profiles use the public Q4 GGUF as a shared single tier so llama.cpp loads one context rather than duplicate weights/KV.
 
 When `--llm echo`, both are the deterministic fake (for tests).
 
@@ -964,8 +964,8 @@ The recorder is lock-guarded; the hot path computes nothing beyond a dict write.
 
 | Profile | LLM backend | Models | Notes |
 |---------|-------------|--------|-------|
-| `desktop` | `ollama` (GPU) | `gemma3:12b` main + `gemma3:4b` fast | Ollama is desktop-only |
-| `phone` | `llamacpp` (GGUF) | `gemma-3-4b` main + `gemma-3-1b` fast | `n_gpu_layers: 0`, `n_ctx: 2048`, STT/TTS threads dialed down; simulates phone-like limits on the Python core |
+| `desktop` | `ollama` (GPU) | `gemma3:12b` main + MiniCPM5-1B Q8 fast | MiniCPM handles text/voice; Gemma preserves vision/complex turns |
+| `phone` | `llamacpp` (GGUF) | MiniCPM5-1B Q4 shared single tier | one llama.cpp context, `n_gpu_layers: 0`, `n_ctx: 2048`; simulates phone-like limits on the Python core |
 
 **The shipped Flutter app** (`mobile/`) is a separate shell and uses `flutter_gemma` (MediaPipe/LiteRT), not these profiles (see [§10](#10--cross-platform-contract--mobile)).
 
@@ -1181,4 +1181,3 @@ Ranked by field impact:
 ---
 
 *Note: This log supersedes historical rationale scattered across `docs/archive/ultracode_scope.md` (phase scope), `docs/archive/review_ultracode.md` (audit findings), `docs/archive/p2_memory_design.md` (R1–R12), and `docs/archive/p3_design.md` (BR1–BR8). All decisions herein have been verified against live code and config as of 2026-06-02.*
-

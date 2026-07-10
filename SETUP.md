@@ -249,12 +249,11 @@ Note: History will be lost when you restart the application.
 
 Once setup is complete:
 
-1. **Start Ollama** and pull the models named in `config.json`'s `llm` block
-   (gemma3/gemma4 tiering; e.g. `gemma3:4b`, or `gemma4:12b` on a big-GPU box
-   via `config.local.json`):
+1. **Start Ollama** and provision the models named in `config.json`'s `llm` block:
    ```bash
    ollama serve
-   ollama pull gemma3:4b
+   ollama pull gemma3:12b
+   python -m tools.setup_minicpm
    ```
 
 2. **Run the assistant** (the legacy `main.py` was deleted 2026-05-26 —
@@ -280,4 +279,3 @@ Once setup is complete:
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)
 - [pgvector GitHub](https://github.com/pgvector/pgvector)
 - [Ollama Documentation](https://ollama.ai/docs)
-

@@ -365,7 +365,7 @@ class LlamaCppLLM:
 
     Ollama is a desktop daemon and does not exist on Android/iOS, so on phone we
     run a quantized GGUF directly through ``llama-cpp-python`` -- same process,
-    no server. Use a *small* Gemma 3 here (e.g. gemma3:1b/4b GGUF): on a 12 GB
+    no server. Use a compact GGUF such as MiniCPM5-1B: on a 12 GB
     phone with no dedicated VRAM, that small model is the intelligence tier.
 
     The ``llama_cpp`` package is imported lazily so the runtime and tests work

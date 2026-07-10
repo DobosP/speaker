@@ -5,8 +5,9 @@ swap is decided by evidence, not by a model card.
 Reports, per model: the real resident **VRAM** (GPU vs CPU split, from
 ``/api/ps``), **text** answer correctness + time-to-first-token on a few canonical
 probes, and **multimodal** -- whether the model actually sees an image (a solid
-red square -> "what colour is this?"). Built to compare candidates (e.g.
-gemma4:12b vs gemma4:e4b vs the current gemma3:4b) before committing a config swap.
+red square -> "what colour is this?"). ``--require-vision`` turns that probe
+into a hard gate for a main/vision model; a text-only answering model may report
+vision as unsupported without being mislabeled as a failed text model.
 
     python -m tools.model_probe gemma3:4b
     python -m tools.model_probe gemma4:12b gemma4:e4b
@@ -78,7 +79,21 @@ def _red_png() -> bytes:
     return buf.getvalue()
 
 
-def probe(model: str, *, pull: bool = False, num_ctx: int = 4096) -> dict:
+def _final_status(text_rows: list[dict], multimodal: dict, *, require_vision: bool) -> str:
+    if not text_rows or any(not row.get("ok") for row in text_rows):
+        return "fail"
+    if require_vision and not multimodal.get("sees_image"):
+        return "fail"
+    return "ok"
+
+
+def probe(
+    model: str,
+    *,
+    pull: bool = False,
+    num_ctx: int = 4096,
+    require_vision: bool = False,
+) -> dict:
     out: dict = {"model": model}
     if model not in _installed():
         if not pull:
@@ -93,7 +108,10 @@ def probe(model: str, *, pull: bool = False, num_ctx: int = 4096) -> dict:
 
     from core.llm import OllamaLLM
 
-    llm = OllamaLLM(model=model, options={"num_ctx": num_ctx}, keep_alive="5m")
+    # Match the latency-sensitive voice path: hidden reasoning is disabled.
+    llm = OllamaLLM(
+        model=model, options={"num_ctx": num_ctx}, keep_alive="5m", think=False
+    )
 
     # Warm + architecture check: a load that fails here usually means Ollama is too
     # old for this model's architecture -> report it instead of crashing.
@@ -124,7 +142,7 @@ def probe(model: str, *, pull: bool = False, num_ctx: int = 4096) -> dict:
         text_rows.append({
             "prompt": prompt[:30],
             "ttft_s": ttft,
-            "ok": (expect is None) or (expect in ans.lower()),
+            "ok": bool(ans) and ((expect is None) or (expect in ans.lower())),
             "answer": ans[:70],
         })
     out["text"] = text_rows
@@ -140,8 +158,13 @@ def probe(model: str, *, pull: bool = False, num_ctx: int = 4096) -> dict:
             "answer": ans.strip()[:60],
         }
     except Exception as exc:  # noqa: BLE001
-        out["multimodal"] = {"error": str(exc)[:80]}
-    out["status"] = "ok"
+        out["multimodal"] = {
+            "supported": False,
+            "error": str(exc)[:80],
+        }
+    out["status"] = _final_status(
+        text_rows, out["multimodal"], require_vision=require_vision
+    )
     return out
 
 
@@ -150,9 +173,22 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("models", nargs="+", help="ollama model tags to probe")
     p.add_argument("--pull", action="store_true", help="pull a missing model first (needs disk)")
     p.add_argument("--num-ctx", type=int, default=4096)
+    p.add_argument(
+        "--require-vision",
+        action="store_true",
+        help="fail unless every probed model correctly reads the test image",
+    )
     args = p.parse_args(argv)
 
-    results = [probe(m, pull=args.pull, num_ctx=args.num_ctx) for m in args.models]
+    results = [
+        probe(
+            m,
+            pull=args.pull,
+            num_ctx=args.num_ctx,
+            require_vision=args.require_vision,
+        )
+        for m in args.models
+    ]
 
     print("\n" + "=" * 78)
     print(f"{'model':16} {'status':10} {'vram':>10} {'warm':>6} {'text ok':>8} {'sees img':>9}")
@@ -163,14 +199,14 @@ def main(argv: Optional[list] = None) -> int:
         text = r.get("text") or []
         ok = sum(1 for t in text if t.get("ok"))
         mm = r.get("multimodal") or {}
-        sees = "yes" if mm.get("sees_image") else ("err" if mm.get("error") else "no")
+        sees = "yes" if mm.get("sees_image") else ("unsupported" if mm.get("error") else "no")
         print(f"{r['model']:16} {r.get('status','?')[:10]:10} {vram:>10} "
               f"{str(r.get('warm_load_s','-')):>6} {ok}/{len(text):>6} {sees:>9}")
     print("=" * 78)
     print("(vram = GPU/CPU GB resident; text ok = correct answers; sees img = multimodal works)\n")
     for r in results:
         print(json.dumps(r, indent=2, default=str))
-    return 0
+    return 0 if all(r.get("status") == "ok" for r in results) else 1
 
 
 if __name__ == "__main__":

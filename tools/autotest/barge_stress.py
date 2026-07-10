@@ -174,7 +174,7 @@ def run_barge_stress(
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="tools.autotest.barge_stress", description=__doc__)
     ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
-    ap.add_argument("--model", default="gemma3:4b")
+    ap.add_argument("--model", default="minicpm5-1b:q8")
     ap.add_argument("--utterances", default="recordings/owner")
     ap.add_argument("--n-self", type=int, default=5, dest="n_self")
     ap.add_argument("--n-barge", type=int, default=8, dest="n_barge")

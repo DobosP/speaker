@@ -38,6 +38,14 @@ Piper / VITS TTS
             config.json, with the espeak-ng-data phoneme tables), run through
             sherpa-onnx.
 
+MiniCPM5-1B (model weights)
+  Project:  https://github.com/OpenBMB/MiniCPM
+  Author:   OpenBMB / ModelBest / THUNLP and collaborators
+  License:  Apache License 2.0
+  Use:      Local text/answering LLM tier through Ollama on desktop and the
+            official GGUF through llama.cpp on Python phone-class profiles.
+            Weights are downloaded by the user and are not bundled here.
+
 Gemma (model weights)
   Project:  https://ai.google.dev/gemma
   Author:   Google DeepMind
@@ -45,8 +53,8 @@ Gemma (model weights)
             OSI-approved open-source license. Distribution and use of the model
             weights are governed by Google's Gemma Prohibited Use Policy and
             Terms of Use, separate from this project's MIT License.
-  Use:      Local LLM tier (gemma3 via Ollama / llama.cpp on desktop, and
-            flutter_gemma / MediaPipe on the mobile app). The weights are NOT
+  Use:      Local complex/vision main tier through Ollama on desktop, and
+            flutter_gemma / MediaPipe on the mobile app. The weights are NOT
             bundled with this repository; they are downloaded by the user.
 
 ================================================================================

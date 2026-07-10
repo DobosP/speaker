@@ -107,11 +107,18 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
                 "is set. Provision the on-device weights (llm-inference-5):\n"
                 "  pip install -r requirements-ondevice.txt\n"
                 "  python -m tools.setup_models --gguf   "
-                "# fetch Gemma GGUF into models/ ($HUGGINGFACE_TOKEN for the gated repo)\n"
+                "# fetch the shipped MiniCPM GGUF into models/\n"
                 "or pass --model <path/to/model.gguf>."
             )
         main = LlamaCppLLM(main_path, **common)
-        fast = LlamaCppLLM(fast_path, **common) if fast_path else None
+        # A single-tier profile may deliberately use the same compact GGUF for
+        # main + fast.  Share one in-process llama.cpp context in that case:
+        # loading identical weights/KV twice wastes RAM and CPU headroom that
+        # the always-on capture/barge path needs.
+        if fast_path and os.path.abspath(fast_path) == os.path.abspath(main_path):
+            fast = main
+        else:
+            fast = LlamaCppLLM(fast_path, **common) if fast_path else None
         return _tag_local_main(_wrap_cloud(main, llm_cfg), main), fast
 
     host = llm_cfg.get("host")

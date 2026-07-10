@@ -1,6 +1,6 @@
 # On-device LLM tier (llamacpp backend) -- the phone / phone_lite device
 # profiles run the Python core under phone-like limits with small Gemma GGUFs
-# in-process. The DESKTOP default serves the LLM via Ollama and needs NONE of
+# in-process. The DESKTOP default serves MiniCPM/Gemma via Ollama and needs NONE of
 # this (see requirements.txt). Install only when running an on-device profile:
 #
 #   pip install -r requirements-ondevice.txt

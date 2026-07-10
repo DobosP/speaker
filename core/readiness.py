@@ -22,7 +22,7 @@ SHERPA_REQUIRED = (
     "tts_model",
     "tts_tokens",
 )
-DEFAULT_OLLAMA_MODELS = ("gemma3:12b", "gemma3:4b")
+DEFAULT_OLLAMA_MODELS = ("gemma3:12b", "minicpm5-1b:q8")
 _PIP_NAME = {
     "sherpa_onnx": "sherpa-onnx",
     "llama_cpp": "llama-cpp-python",
@@ -233,11 +233,15 @@ def check_ollama(
     out = [Check("ollama", True, f"{len(available)} model(s) installed")]
     for needed in models_needed:
         ok = needed in available
+        if needed == "minicpm5-1b:q8":
+            hint = "python -m tools.setup_minicpm"
+        else:
+            hint = f"ollama pull {needed}"
         out.append(Check(
             f"ollama model {needed}",
             ok,
             "" if ok else "not pulled",
-            "" if ok else f"ollama pull {needed}",
+            "" if ok else hint,
         ))
     return out
 

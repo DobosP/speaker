@@ -67,7 +67,7 @@ class MemoryResult:
 def run_memory_probe(
     *,
     llm_kind: str = "ollama",
-    model: str = "gemma3:4b",
+    model: str = "minicpm5-1b:q8",
     fact: str = "my favorite color is teal",
     keyword: str = "teal",
     question: str = "what is my favorite color?",

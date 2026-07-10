@@ -1203,17 +1203,34 @@ class SherpaOnnxEngine(AudioEngine):
         self._duck_gain: float = 1.0
         self._confirm_until: float = 0.0
         self._confirm_base_text: str = ""
-        # Continuous no-duck word-cut state (barge_word_cut_enabled). _word_cut_base
-        # is the recognizer result snapshotted at a speech-burst boundary so only
-        # NEW words can cut; it advances to fold pure-echo text so a real talk-over
-        # is never swamped. _word_cut_fed_stream records the recognizer was fed
-        # during playback (mostly echo): if the burst/reply ends with NO cut the
-        # stream is reset so echo can't prefix the next final; after a cut it's
-        # cleared so the user's words stay as free pre-roll. Capture-thread only.
+        # Continuous no-duck word-cut state (barge_word_cut_enabled). Detection
+        # uses a DEDICATED playback-time recognizer stream; the normal ASR stream
+        # is never contaminated by own echo. _word_cut_base advances when a
+        # partial reads like own speech, so only NEW text can cut.
         self._word_cut_base: str = ""
         self._word_cut_fed_stream: bool = False
         # Consecutive VAD-quiet playback blocks (word-cut burst-reset debounce).
         self._word_cut_quiet_run: int = 0
+        # PCM for the CURRENT VAD speech burst only, in the exact post-EC/
+        # denoised domain handed to the streaming recognizer. Own-speech folds
+        # and real burst boundaries clear it. A confirmed cut (or safe natural
+        # reply-tail handoff) moves it to _word_cut_pending_pcm, resets the normal
+        # ASR stream, and replays ONLY these candidate blocks into it. The pending
+        # copy is then spliced once into the normal utterance buffer so the
+        # second-pass recognizer, floor gate, and speaker-ID see the same pre-roll.
+        self._word_cut_candidate_pcm: deque = deque()
+        self._word_cut_candidate_samples: int = 0
+        self._word_cut_pending_pcm: deque = deque()
+        self._word_cut_pending_samples: int = 0
+        self._word_cut_last_replay_ok: bool = False
+        # A natural reply boundary is not permission to bypass the four-word
+        # echo-safety floor. Novel sub-floor text is staged here and promoted
+        # only if the SAME speech burst gains another word on VAD-active audio
+        # after playback. Endpoint/silence without continuation discards it.
+        self._word_cut_tail_staged: bool = False
+        self._word_cut_tail_words: int = 0
+        self._word_cut_tail_text: str = ""
+        self._word_cut_tail_deadline: float = 0.0
         # ADR-0013 word-cut funnel telemetry, per reply (capture-thread only).
         # Counters accumulate in _barge_word_cut_step and are emitted as ONE
         # "word-cut funnel:" INFO line at reply end -- the live failure
@@ -2217,6 +2234,9 @@ class SherpaOnnxEngine(AudioEngine):
                       "capture loop idle -- the assistant will never hear you")
             return
         stream = self._new_asr_stream()
+        # ADR-0013 uses a dedicated playback-time stream. It may ingest residual
+        # own echo freely; only candidate PCM is ever replayed into ``stream``.
+        word_cut_stream = None
         # RC-5 observability: track voiced speech DURING playback that the barge
         # gate rejected, so a "user kept talking but nothing fired" failure is
         # visible in the run bundle instead of being silently dropped.
@@ -2240,7 +2260,7 @@ class SherpaOnnxEngine(AudioEngine):
         # tap) so the offline 2nd pass decodes the NS-relaxed audio too.
         asr_utterance: list = []
         utterance_len = 0
-        max_utterance = int(self.config.sample_rate * 10)
+        max_utterance = self._asr_utterance_limit_samples()
         # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
         total_blocks = partials = finals = 0
         beat_blocks = 0
@@ -2449,24 +2469,48 @@ class SherpaOnnxEngine(AudioEngine):
                         self._barge_sustain_reset_pending = False
                         barge_sustain.reset()
                         rejected_run = 0.0
-                        # Word-cut: snapshot the recognizer base at this reply's
-                        # first speaking block so only words transcribed AFTER the
-                        # reply started can cut (the prior final was reset out of the
-                        # stream at reply-end, so usually empty; robust to residue).
+                        # Word-cut gets a fresh DEDICATED playback stream per reply.
+                        # The normal stream remains echo-free until a confirmed cut
+                        # or a safe natural-tail handoff replays candidate user PCM.
                         if self._barge_word_cut_active():
                             try:
-                                self._word_cut_base = (
-                                    recognizer.get_result(stream) or ""
-                                ).strip()
-                            except Exception:  # noqa: BLE001 - stream hiccup != crash
-                                self._word_cut_base = ""
+                                word_cut_stream = self._new_asr_stream()
+                            except Exception:  # noqa: BLE001 - fail closed this reply
+                                word_cut_stream = None
+                                log.warning(
+                                    "word-cut: could not create playback recognizer stream; "
+                                    "barge disabled for this reply"
+                                )
+                            self._word_cut_base = ""
                             self._word_cut_fed_stream = False
+                            self._clear_word_cut_candidate()
+                            self._clear_word_cut_tail_stage()
                             # Fresh reply -> fresh funnel window (emitted at
                             # reply end as one "word-cut funnel:" line).
                             self._word_cut_quiet_run = 0
                             self._wc_stats = {}
                             self._wc_win = {}
                             self._wc_reply_active = True
+                        else:
+                            word_cut_stream = None
+                    # CONTINUOUS no-duck word-cut (OS echo-cancel path) does NOT
+                    # need an acoustic playback reference. Run it before the
+                    # DTD/coherence watch guard so user speech during first-audio
+                    # synthesis lead-in or a true inter-sentence gap is still fed.
+                    # The onset/suppress guards below may delay a CUT, never ingest.
+                    if (
+                        self.config.barge_in_enabled
+                        and self._barge_word_cut_active()
+                    ):
+                        if word_cut_stream is not None:
+                            self._barge_word_cut_step(
+                                recognizer, word_cut_stream,
+                                asr_samples if asr_samples is not None else samples,
+                                now, normal_stream=stream,
+                            )
+                        barge_sustain.reset()
+                        rejected_run = 0.0
+                        continue
                     # The playback worker marks _speaking at synth start, before the
                     # first audible block necessarily reaches PortAudio. Until a real
                     # playback reference exists, DTD/coherence/ref-floor decisions are
@@ -2479,29 +2523,6 @@ class SherpaOnnxEngine(AudioEngine):
                         barge_sustain.reset()
                         rejected_run = 0.0
                         rejected_flagged = False
-                        continue
-                    # CONTINUOUS no-duck word-cut (OS echo-cancel path). Feed THIS
-                    # playback block to the streaming recognizer on the OS-cancelled
-                    # mic and hard-cut the moment enough NEW non-own-speech words (or
-                    # a stop command) appear since the reply started. No duck is ever
-                    # opened, so playback can't pump; word content -- not level --
-                    # decides. continue BEFORE the acoustic duck/sustain machinery so
-                    # that path (incl. its RC-5 rejected-branch duck-open) is fully
-                    # bypassed here; _duck_gain stays 1.0. Legacy/APM paths never
-                    # enter (flag off or self._aec is not None) -> byte-identical.
-                    if (
-                        self.config.barge_in_enabled
-                        and self._barge_word_cut_active()
-                        and recognizer is not None
-                        and stream is not None
-                    ):
-                        self._barge_word_cut_step(
-                            recognizer, stream,
-                            asr_samples if asr_samples is not None else samples,
-                            now,
-                        )
-                        barge_sustain.reset()
-                        rejected_run = 0.0
                         continue
                     # Duck-then-confirm: a prior acoustic trigger ducked playback
                     # and opened a confirm window. Feed THIS block to the streaming
@@ -2687,40 +2708,54 @@ class SherpaOnnxEngine(AudioEngine):
                 # Not speaking -> reset the rejected-talk-over episode tracking.
                 rejected_run = 0.0
                 rejected_flagged = False
+                word_cut_pcm_includes_current = False
+                word_cut_asr_includes_current = False
                 # Playback ended (naturally or via stop) while a confirm window
                 # was still open: close it so the duck gain never leaks into the
                 # next reply. Idempotent; stop_speaking() also restores.
                 if self._barge_confirm_active():
                     self._end_barge_confirm()
-                # One-shot ADR-0013 funnel summary for the reply that just ended:
-                # everything the word-cut path saw (or didn't) in a single line,
-                # so a live run scores from the bundle alone -- run-20260706-231226
-                # produced ZERO word-cut signal and was undiagnosable post-hoc.
+                # Finish the dedicated playback stream BEFORE emitting its funnel.
+                # A sub-floor novel tail is staged until post-playback continuation;
+                # own/empty/stale text is discarded. A confirmed-cut handoff already
+                # cleared _word_cut_fed_stream, so this is then an idempotent no-op.
                 if getattr(self, "_wc_reply_active", False):
+                    if not self._word_cut_tail_staged:
+                        self._finish_word_cut_reply(
+                            recognizer, word_cut_stream, stream, now=now
+                        )
+                    if self._word_cut_tail_staged:
+                        resolution = self._word_cut_tail_probation_step(
+                            recognizer, word_cut_stream, stream, samples, now
+                        )
+                        if resolution == "waiting":
+                            # Keep probation audio isolated from normal ASR until
+                            # continuation earns the tail handoff.
+                            continue
+                        word_cut_pcm_includes_current = resolution == "promoted"
+                        word_cut_asr_includes_current = (
+                            resolution == "promoted" and self._word_cut_last_replay_ok
+                        )
+                    word_cut_stream = None
+                    # The SAME candidate PCM replayed into normal ASR must reach
+                    # SenseVoice/floor/speaker-ID. Splice it once before this first
+                    # post-playback block; keep the optional relaxed-ASR segment in
+                    # lockstep when present.
+                    utterance_len += self._splice_word_cut_preroll(
+                        utterance,
+                        asr_utterance if self._aec_asr is not None else None,
+                    )
                     self._wc_reply_active = False
                     self._emit_word_cut_funnel()
-                # Word-cut fed the recognizer during playback (mostly the assistant's
-                # own echo). If the reply ended with NO cut, drop that accumulated
-                # text so it can't prefix the next real final. After a cut the flag
-                # was cleared in _barge_word_cut_step (user's words stay as pre-roll),
-                # so this is a no-op then.
-                if getattr(self, "_word_cut_fed_stream", False):
-                    self._word_cut_fed_stream = False
-                    self._word_cut_base = ""
-                    try:
-                        recognizer.reset(stream)
-                    except Exception:  # noqa: BLE001 - reset is best-effort
-                        pass
-                    last_partial = ""
-                    last_voiced_ts = None
 
                 try:
-                    utterance.append(samples)
-                    utterance_len += samples.size
-                    if self._aec_asr is not None:
-                        asr_utterance.append(
-                            asr_samples if asr_samples is not None else samples
-                        )
+                    if not word_cut_pcm_includes_current:
+                        utterance.append(samples)
+                        utterance_len += samples.size
+                        if self._aec_asr is not None:
+                            asr_utterance.append(
+                                asr_samples if asr_samples is not None else samples
+                            )
                     while utterance_len > max_utterance and len(utterance) > 1:
                         utterance_len -= utterance[0].size
                         utterance.pop(0)
@@ -2729,12 +2764,13 @@ class SherpaOnnxEngine(AudioEngine):
                     # fix 2: the streaming recognizer reads the NS-off tap so
                     # near-end words survive; the utterance buffer (seg) + the
                     # floor/speaker gates keep the NS-on ``samples``.
-                    stream.accept_waveform(
-                        self.config.sample_rate,
-                        asr_samples if asr_samples is not None else samples,
-                    )
-                    while recognizer.is_ready(stream):
-                        recognizer.decode_stream(stream)
+                    if not word_cut_asr_includes_current:
+                        stream.accept_waveform(
+                            self.config.sample_rate,
+                            asr_samples if asr_samples is not None else samples,
+                        )
+                        while recognizer.is_ready(stream):
+                            recognizer.decode_stream(stream)
                     text = recognizer.get_result(stream)
                     if text and text != last_partial:
                         last_partial = text
@@ -4064,16 +4100,343 @@ class SherpaOnnxEngine(AudioEngine):
             obs.clear()
 
     def _barge_word_cut_active(self) -> bool:
-        """Whether the continuous no-duck word-cut path is live. Scoped to the OS
-        echo-cancel path: the flag AND self._aec is None (no in-app AEC/APM). With
-        an in-app canceller the acoustic DTD path owns the decision, so this stays
-        inert and that path is byte-identical. getattr keeps fixtures inert."""
+        """Whether the continuous no-duck word-cut path is safely live.
+
+        This is an explicitly configured OS-capture path, not a fallback for an
+        in-app AEC that failed to build: both the configured AEC intent and the
+        runtime object must be absent. Silero VAD is load-bearing too -- without
+        it the recognizer would ingest every playback block and could accumulate
+        short garbled echo fragments across an entire reply. Fail closed unless
+        all three invariants hold. ``getattr`` keeps partial fixtures inert.
+        """
         return (
             bool(getattr(self.config, "barge_word_cut_enabled", False))
+            and not bool(getattr(self.config, "aec_enabled", False))
             and self._aec is None
+            and self._vad is not None
         )
 
-    def _barge_word_cut_step(self, recognizer, stream, samples, now: float) -> bool:
+    def _clear_word_cut_candidate(self) -> None:
+        """Discard the current playback-time speech-burst PCM (capture thread)."""
+        self._word_cut_candidate_pcm.clear()
+        self._word_cut_candidate_samples = 0
+
+    def _asr_utterance_limit_samples(self) -> int:
+        """Configured rule-3 speech span plus configured endpoint/pre-roll room.
+
+        Rule 3 is the recognizer's forced long-utterance boundary. The segment and
+        word-cut PCM bounds must hold at least that much speech, plus the larger of
+        the configured endpoint tail and barge pre-roll windows. Deriving the cap
+        keeps a 20 s rule-3 setup from being silently truncated by an unrelated
+        fixed 10 s buffer while remaining bounded on every profile.
+        """
+        speech_sec = max(
+            float(self.config.block_sec),
+            float(getattr(self.config, "asr_rule3_min_utterance_length", 0.0) or 0.0),
+        )
+        tail_sec = max(
+            float(self.config.block_sec),
+            float(getattr(self.config, "endpoint_max_silence_sec", 0.0) or 0.0),
+            float(getattr(self.config, "barge_confirm_window_sec", 0.0) or 0.0),
+        )
+        return max(1, int(self.config.sample_rate * (speech_sec + tail_sec)))
+
+    def _append_word_cut_candidate(self, samples) -> None:
+        """Append one VAD-speech block to the bounded current-burst PCM buffer."""
+        block = np.asarray(samples, dtype="float32").reshape(-1)
+        if not block.size:
+            return
+        block = block.copy()
+        limit = self._asr_utterance_limit_samples()
+        self._word_cut_candidate_pcm.append(block)
+        self._word_cut_candidate_samples += int(block.size)
+        trimmed = 0
+        while self._word_cut_candidate_samples > limit:
+            excess = self._word_cut_candidate_samples - limit
+            first = self._word_cut_candidate_pcm[0]
+            if first.size <= excess:
+                self._word_cut_candidate_pcm.popleft()
+                self._word_cut_candidate_samples -= int(first.size)
+                trimmed += int(first.size)
+            else:
+                self._word_cut_candidate_pcm[0] = first[excess:].copy()
+                self._word_cut_candidate_samples -= int(excess)
+                trimmed += int(excess)
+        st = self._wc_stats
+        st["candidate_peak_samples"] = max(
+            st.get("candidate_peak_samples", 0), self._word_cut_candidate_samples
+        )
+        if trimmed:
+            st["pcm_trimmed_samples"] = st.get("pcm_trimmed_samples", 0) + trimmed
+
+    def _word_cut_new_text(self, text: str) -> str:
+        """Text added after the most recent own-speech fold/burst boundary."""
+        base = self._word_cut_base
+        return text[len(base):].strip() if base and text.startswith(base) else text
+
+    def _clear_word_cut_tail_stage(self) -> None:
+        self._word_cut_tail_staged = False
+        self._word_cut_tail_words = 0
+        self._word_cut_tail_text = ""
+        self._word_cut_tail_deadline = 0.0
+
+    def _drop_word_cut_tail(
+        self, recognizer, detect_stream, *, reason: str, text: str = ""
+    ) -> None:
+        """Discard a non-authoritative playback tail and its throw-away stream."""
+        try:
+            if detect_stream is not None:
+                recognizer.reset(detect_stream)
+        except Exception:  # noqa: BLE001 - stream is discarded regardless
+            pass
+        self._clear_word_cut_candidate()
+        self._clear_word_cut_tail_stage()
+        self._word_cut_fed_stream = False
+        self._word_cut_base = ""
+        self._word_cut_quiet_run = 0
+        words = [w for w in text.split() if any(ch.isalpha() for ch in w)]
+        st = self._wc_stats
+        st["tail_drops"] = st.get("tail_drops", 0) + 1
+        key = f"tail_drop_{reason}"
+        st[key] = st.get(key, 0) + 1
+        log.info(
+            "word-cut tail drop: reason=%s words=%d %r",
+            reason, len(words), text[:80],
+        )
+
+    def _promote_word_cut_candidate(
+        self,
+        recognizer,
+        detect_stream,
+        normal_stream,
+        *,
+        reason: str,
+        text: str,
+    ) -> bool:
+        """Move current-burst PCM into normal ASR + pending finalizer pre-roll.
+
+        ``detect_stream`` is the dedicated playback stream, which may contain an
+        own-echo prefix. The normal stream is reset and seeded exclusively from
+        candidate PCM, so the final transcript cannot inherit that prefix. The
+        same blocks remain pending for a one-shot splice into ``utterance``.
+        """
+        if not self._word_cut_candidate_pcm or self._word_cut_candidate_samples <= 0:
+            return False
+        blocks = list(self._word_cut_candidate_pcm)
+        samples_n = self._word_cut_candidate_samples
+        self._clear_word_cut_candidate()
+
+        replay_ok = normal_stream is not None
+        if normal_stream is not None:
+            try:
+                recognizer.reset(normal_stream)
+                for block in blocks:
+                    normal_stream.accept_waveform(self.config.sample_rate, block)
+                    while recognizer.is_ready(normal_stream):
+                        recognizer.decode_stream(normal_stream)
+            except Exception:  # noqa: BLE001 - the cut still wins; PCM reaches 2nd pass
+                replay_ok = False
+                self._wc_stats["handoff_replay_errors"] = (
+                    self._wc_stats.get("handoff_replay_errors", 0) + 1
+                )
+                log.warning("word-cut %s handoff: normal-stream replay failed", reason)
+                try:
+                    recognizer.reset(normal_stream)
+                except Exception:  # noqa: BLE001 - next live block may still recover
+                    pass
+        self._word_cut_last_replay_ok = replay_ok
+
+        # The detection stream is throw-away. Never reset it when a direct unit
+        # caller supplied the same object as the normal stream.
+        if (
+            normal_stream is not None
+            and detect_stream is not None
+            and detect_stream is not normal_stream
+        ):
+            try:
+                recognizer.reset(detect_stream)
+            except Exception:  # noqa: BLE001 - it is discarded after this reply
+                pass
+
+        if self._word_cut_pending_pcm:
+            # This should be impossible (one handoff per reply), but replacing a
+            # stale pending copy is safer than joining two users/turns together.
+            self._wc_stats["pending_overwrites"] = (
+                self._wc_stats.get("pending_overwrites", 0) + 1
+            )
+        self._word_cut_pending_pcm = deque(blocks)
+        self._word_cut_pending_samples = samples_n
+        self._clear_word_cut_tail_stage()
+        self._word_cut_fed_stream = False
+        self._word_cut_base = ""
+        self._word_cut_quiet_run = 0
+
+        words = [w for w in text.split() if any(ch.isalpha() for ch in w)]
+        st = self._wc_stats
+        st["handoffs"] = st.get("handoffs", 0) + 1
+        st["preroll_samples"] = st.get("preroll_samples", 0) + samples_n
+        if reason == "tail":
+            st["tail_handoffs"] = st.get("tail_handoffs", 0) + 1
+        log.info(
+            "word-cut %s handoff: words=%d pcm_ms=%d replay=%s %r",
+            reason, len(words), round(1000 * samples_n / self.config.sample_rate),
+            replay_ok, text[:80],
+        )
+        return True
+
+    def _finish_word_cut_reply(
+        self, recognizer, detect_stream, normal_stream, *, now: Optional[float] = None
+    ) -> bool:
+        """Resolve playback-end state without weakening the four-word floor.
+
+        Stop-class or floor-clearing text can hand off immediately. Novel 1-3-word
+        text is only STAGED: the dedicated stream and PCM survive briefly, but
+        normal ASR remains untouched until a VAD-active post-playback block adds
+        another word. Empty, own, stale, or non-continuing tails are discarded.
+        Returns True only for an immediate authoritative handoff.
+        """
+        if not self._word_cut_fed_stream:
+            self._clear_word_cut_candidate()
+            self._clear_word_cut_tail_stage()
+            self._word_cut_base = ""
+            self._word_cut_quiet_run = 0
+            return False
+
+        text = ""
+        try:
+            text = (recognizer.get_result(detect_stream) or "").strip()
+        except Exception:  # noqa: BLE001 - treat an unreadable tail as unsafe
+            self._wc_stats["decode_errors"] = self._wc_stats.get("decode_errors", 0) + 1
+        new_text = self._word_cut_new_text(text)
+        words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
+        debounce = max(
+            1, int(getattr(self.config, "barge_word_cut_reset_quiet_blocks", 3))
+        )
+        if self._word_cut_quiet_run >= debounce:
+            drop_reason = "stale"
+        elif not words:
+            # A fully folded own-speech partial has no NEW words by design; keep
+            # that distinct from a recognizer that emitted nothing at all.
+            drop_reason = "own" if text and self._word_cut_base else "empty"
+        elif self._reads_like_own_speech(new_text):
+            drop_reason = "own"
+        elif not self._word_cut_candidate_pcm:
+            drop_reason = "empty"
+        else:
+            floor = max(
+                1, int(getattr(self.config, "barge_word_cut_min_words", 4))
+            )
+            if is_stop_command(new_text) or len(words) >= floor:
+                return self._promote_word_cut_candidate(
+                    recognizer, detect_stream, normal_stream,
+                    reason="tail", text=new_text,
+                )
+            now = time.monotonic() if now is None else float(now)
+            probation_sec = max(
+                float(self.config.block_sec),
+                float(getattr(self.config, "endpoint_max_silence_sec", 0.0) or 0.0),
+            )
+            self._word_cut_tail_staged = True
+            self._word_cut_tail_words = len(words)
+            self._word_cut_tail_text = new_text
+            self._word_cut_tail_deadline = now + probation_sec
+            self._wc_stats["tail_stages"] = self._wc_stats.get("tail_stages", 0) + 1
+            log.info(
+                "word-cut tail staged: words=%d await_postplay_continuation %r",
+                len(words), new_text[:80],
+            )
+            return False
+
+        self._drop_word_cut_tail(
+            recognizer, detect_stream, reason=drop_reason, text=new_text
+        )
+        return False
+
+    def _word_cut_tail_probation_step(
+        self,
+        recognizer,
+        detect_stream,
+        normal_stream,
+        samples,
+        now: float,
+    ) -> str:
+        """Resolve a staged sub-floor tail from post-playback continuation.
+
+        Returns ``waiting``, ``promoted``, or ``dropped``. Every block reaches the
+        dedicated stream so its endpoint can fire; only VAD-active PCM joins the
+        candidate. Promotion requires at least one additional word on such a block.
+        """
+        if not self._word_cut_tail_staged:
+            return "dropped"
+        self._vad.accept_waveform(samples)
+        voiced = bool(self._vad.is_speech_detected())
+        if voiced:
+            self._append_word_cut_candidate(samples)
+        text = ""
+        decode_ok = True
+        try:
+            detect_stream.accept_waveform(self.config.sample_rate, samples)
+            while recognizer.is_ready(detect_stream):
+                recognizer.decode_stream(detect_stream)
+            text = (recognizer.get_result(detect_stream) or "").strip()
+        except Exception:  # noqa: BLE001 - endpoint/deadline still resolve safely
+            decode_ok = False
+            self._wc_stats["decode_errors"] = self._wc_stats.get("decode_errors", 0) + 1
+        new_text = self._word_cut_new_text(text)
+        words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
+        if (
+            decode_ok
+            and voiced
+            and len(words) > self._word_cut_tail_words
+            and not self._reads_like_own_speech(new_text)
+        ):
+            self._wc_stats["tail_continuations"] = (
+                self._wc_stats.get("tail_continuations", 0) + 1
+            )
+            self._promote_word_cut_candidate(
+                recognizer, detect_stream, normal_stream,
+                reason="tail", text=new_text,
+            )
+            return "promoted"
+
+        endpoint = False
+        try:
+            endpoint = bool(recognizer.is_endpoint(detect_stream))
+        except Exception:  # noqa: BLE001 - deadline is the bounded fallback
+            pass
+        if endpoint or (not voiced and now >= self._word_cut_tail_deadline):
+            self._drop_word_cut_tail(
+                recognizer, detect_stream,
+                reason="no_continuation", text=self._word_cut_tail_text,
+            )
+            return "dropped"
+        return "waiting"
+
+    def _splice_word_cut_preroll(
+        self, utterance: list, asr_utterance: Optional[list] = None
+    ) -> int:
+        """Splice pending pre-roll into finalizer PCM exactly once."""
+        if not self._word_cut_pending_pcm:
+            return 0
+        blocks = list(self._word_cut_pending_pcm)
+        samples_n = self._word_cut_pending_samples
+        self._word_cut_pending_pcm.clear()
+        self._word_cut_pending_samples = 0
+        utterance.extend(blocks)
+        if asr_utterance is not None:
+            asr_utterance.extend(blocks)
+        self._wc_stats["spliced_samples"] = (
+            self._wc_stats.get("spliced_samples", 0) + samples_n
+        )
+        log.info(
+            "word-cut pre-roll splice: pcm_ms=%d blocks=%d",
+            round(1000 * samples_n / self.config.sample_rate), len(blocks),
+        )
+        return samples_n
+
+    def _barge_word_cut_step(
+        self, recognizer, stream, samples, now: float, *, normal_stream=None
+    ) -> bool:
         """One playback block on the continuous no-duck word-cut path. Feeds the
         recognizer THIS block (OS-cancelled mic, clean of the assistant's echo) and
         hard-cuts the instant enough NEW non-own-speech words appear since the burst
@@ -4128,6 +4491,7 @@ class SherpaOnnxEngine(AudioEngine):
                     pass
                 self._word_cut_fed_stream = False
                 self._word_cut_base = ""
+                self._clear_word_cut_candidate()
                 st["resets"] = st.get("resets", 0) + 1
                 lost_words = [
                     w for w in lost.split() if any(ch.isalpha() for ch in w)
@@ -4145,6 +4509,7 @@ class SherpaOnnxEngine(AudioEngine):
             return False
         self._word_cut_quiet_run = 0
         self._word_cut_fed_stream = True
+        self._append_word_cut_candidate(samples)
         st["fed"] = st.get("fed", 0) + 1
         text = ""
         try:
@@ -4161,8 +4526,7 @@ class SherpaOnnxEngine(AudioEngine):
                 st["_decode_warned"] = True
                 log.warning("word-cut: recognizer decode failed during playback")
             return False
-        base = self._word_cut_base
-        new_text = text[len(base):].strip() if base and text.startswith(base) else text
+        new_text = self._word_cut_new_text(text)
         words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
         if len(words) > st.get("max_words", 0):
             # Novel words appeared on the cancelled mic during playback -- the
@@ -4200,12 +4564,19 @@ class SherpaOnnxEngine(AudioEngine):
             if new_text and self._reads_like_own_speech(new_text):
                 st["own_folds"] = st.get("own_folds", 0) + 1
                 self._word_cut_base = text
+                # The detection stream may retain this echo as a prefix, but PCM
+                # promoted into normal ASR must begin AFTER the fold.
+                if self._word_cut_candidate_pcm:
+                    st["candidate_clears"] = st.get("candidate_clears", 0) + 1
+                self._clear_word_cut_candidate()
             return False
         st["cuts"] = st.get("cuts", 0) + 1
-        # Fire the SAME cut the duck-confirm path uses. Keep the user's words in the
-        # stream as free pre-roll -> clear the fed-stream flag so the reply-end
-        # transition won't reset them out.
-        self._word_cut_fed_stream = False
+        # Seed the CLEAN normal stream from candidate USER PCM before firing. The
+        # dedicated detection stream may contain a folded own-echo prefix and is
+        # discarded by the handoff.
+        self._promote_word_cut_candidate(
+            recognizer, stream, normal_stream, reason="cut", text=new_text
+        )
         self._barge_in_fired_this_run = True
         self._barge_in_suppressed_until = (
             now + max(0.0, self.config.barge_in_suppress_sec)
@@ -4271,11 +4642,19 @@ class SherpaOnnxEngine(AudioEngine):
         log.info(
             "word-cut funnel: fed=%d skipped_quiet=%d resets=%d dropped_words=%d "
             "max_words=%d own_folds=%d guard_suppressed=%d decode_errors=%d "
-            "cuts=%d nearend_rms_p50=%.4f nearend_rms_p95=%.4f",
+            "cuts=%d nearend_rms_p50=%.4f nearend_rms_p95=%.4f "
+            "handoffs=%d tail_handoffs=%d tail_drops=%d tail_stages=%d "
+            "tail_continuations=%d preroll_samples=%d spliced_samples=%d "
+            "pcm_trimmed_samples=%d replay_errors=%d",
             st.get("fed", 0), st.get("skipped_quiet", 0), st.get("resets", 0),
             st.get("dropped_words", 0), st.get("max_words", 0),
             st.get("own_folds", 0), st.get("guard_suppressed", 0),
             st.get("decode_errors", 0), st.get("cuts", 0), p50, p95,
+            st.get("handoffs", 0), st.get("tail_handoffs", 0),
+            st.get("tail_drops", 0), st.get("tail_stages", 0),
+            st.get("tail_continuations", 0), st.get("preroll_samples", 0),
+            st.get("spliced_samples", 0), st.get("pcm_trimmed_samples", 0),
+            st.get("handoff_replay_errors", 0),
         )
         self._wc_stats = {}
         self._wc_win = {}

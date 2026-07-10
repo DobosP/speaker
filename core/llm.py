@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
 import os
 import queue
 import threading
 import time
+import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
@@ -153,6 +156,313 @@ class EchoLLM:
         yield self.generate(prompt, system=system, images=images, history=history)
 
 
+@dataclass(frozen=True)
+class _OllamaStreamFailure:
+    error: BaseException
+
+
+class _OllamaAsyncStreamProducer:
+    """Own one async request without retaining its public sync iterator."""
+
+    def __init__(
+        self,
+        owner: "OllamaLLM",
+        prompt: str,
+        system: Optional[str],
+        kwargs: dict,
+        cancel_event: object | None,
+        *,
+        queue_capacity: int,
+    ) -> None:
+        self.owner = owner
+        self.prompt = prompt
+        self.system = system
+        self.kwargs = kwargs
+        self.cancel_event = cancel_event
+        self.items: "queue.Queue[object]" = queue.Queue(maxsize=queue_capacity)
+        self.lock = threading.Lock()
+        self.cancel_requested = False
+        self.done = threading.Event()
+        self.cancel_poll_sec = 0.01
+        self.queue_poll_sec = 0.005
+        self.queue_full_timeout_sec = 5.0
+
+    @staticmethod
+    def event_is_set(event: object | None) -> bool:
+        check = getattr(event, "is_set", None)
+        if not callable(check):
+            return False
+        try:
+            return bool(check())
+        except Exception:
+            return False
+
+    def is_cancelled(self) -> bool:
+        with self.lock:
+            return self.cancel_requested
+
+    def cancel(self) -> None:
+        """Request cancellation without waiting for provider teardown."""
+        with self.lock:
+            self.cancel_requested = True
+
+    def sync_external_cancel(self) -> bool:
+        if self.event_is_set(self.cancel_event):
+            self.cancel()
+        return self.is_cancelled()
+
+    async def enqueue(self, item: object) -> bool:
+        """Bounded async-to-sync put that keeps cancellation schedulable."""
+        full_since: Optional[float] = None
+        while True:
+            if self.is_cancelled():
+                return False
+            try:
+                self.items.put_nowait(item)
+                return True
+            except queue.Full:
+                if full_since is None:
+                    full_since = time.monotonic()
+                elif time.monotonic() - full_since >= self.queue_full_timeout_sec:
+                    self.cancel()
+                    return False
+                # Never block the event loop in Queue.put: its cancellation
+                # watcher must stay runnable while a consumer applies pressure.
+                await asyncio.sleep(self.queue_poll_sec)
+
+    def thread_main(self) -> None:
+        try:
+            asyncio.run(self.produce())
+        except BaseException as exc:
+            # asyncio.run itself should only fail outside the guarded producer.
+            try:
+                self.items.put_nowait(_OllamaStreamFailure(exc))
+            except queue.Full:
+                pass
+            finally:
+                self.done.set()
+
+    async def watch_cancel(self, request_task: asyncio.Task) -> None:
+        while True:
+            if self.sync_external_cancel():
+                # Cancel only the child that owns chat and async iteration. The
+                # parent stays alive to close the response and owned client.
+                request_task.cancel()
+                return
+            await asyncio.sleep(self.cancel_poll_sec)
+
+    @staticmethod
+    async def close_resource(resource: object, method: str) -> None:
+        closer = getattr(resource, method, None)
+        if not callable(closer):
+            return
+        try:
+            result = closer()
+            if inspect.isawaitable(result):
+                await result
+        except (Exception, asyncio.CancelledError):
+            # Cleanup failure must not suppress the original provider failure or
+            # prevent later client-close and done signaling.
+            pass
+
+    async def produce(self) -> None:
+        t0 = time.perf_counter()
+        ttft: Optional[float] = None
+        token_count = 0
+        out_chars = 0
+        natural = False
+        failure: Optional[BaseException] = None
+        client = None
+        stream_holder: dict[str, object] = {}
+        watcher: Optional[asyncio.Task] = None
+
+        async def consume() -> None:
+            nonlocal ttft, token_count, out_chars
+            # Let the watcher observe an already-set task Event before chat.
+            await asyncio.sleep(0)
+            if self.sync_external_cancel():
+                raise asyncio.CancelledError
+            response = client.chat(**self.kwargs)
+            sdk_stream = await response if inspect.isawaitable(response) else response
+            stream_holder["stream"] = sdk_stream
+            async for chunk in sdk_stream:
+                if self.sync_external_cancel():
+                    raise asyncio.CancelledError
+                piece = chunk.get("message", {}).get("content", "")
+                if not piece:
+                    continue
+                if ttft is None:
+                    ttft = time.perf_counter() - t0
+                token_count += 1
+                out_chars += len(piece)
+                if not await self.enqueue(piece):
+                    raise asyncio.CancelledError
+
+        try:
+            if self.sync_external_cancel():
+                return
+            client = self.owner._make_async_client()
+            # Client construction is request-free but synchronous. Recheck both
+            # cancellation sources so a slow factory cannot start a retired turn.
+            if self.sync_external_cancel():
+                return
+            request_task = asyncio.create_task(consume())
+            watcher = asyncio.create_task(self.watch_cancel(request_task))
+            await request_task
+            natural = True
+        except asyncio.CancelledError:
+            pass
+        except BaseException as exc:
+            failure = exc
+        finally:
+            if watcher is not None:
+                watcher.cancel()
+                try:
+                    await watcher
+                except (Exception, asyncio.CancelledError):
+                    pass
+            sdk_stream = stream_holder.get("stream")
+            if sdk_stream is not None:
+                await self.close_resource(sdk_stream, "aclose")
+            if client is not None:
+                await self.close_resource(client, "close")
+            try:
+                _log_llm_request(
+                    _ollama_log,
+                    self.owner.model,
+                    self.prompt,
+                    self.system,
+                    dt=time.perf_counter() - t0,
+                    out_chars=out_chars,
+                    tokens=token_count,
+                    ttft=ttft,
+                    streamed=True,
+                    cancelled=not natural,
+                )
+            except Exception:
+                pass
+            try:
+                if failure is not None:
+                    await self.enqueue(_OllamaStreamFailure(failure))
+            finally:
+                self.done.set()
+
+
+class _OllamaAsyncTokenStream:
+    """Sync iterator backed by one cancellable async Ollama request.
+
+    The synchronous Ollama generator cannot be closed safely while a different
+    thread executes its pre-first-token next call. The official async client can
+    be cancelled there by cancelling the Task that owns its async iteration.
+    Each stream owns a short-lived daemon loop thread and client; dropping or
+    closing the public iterator cancels its detached producer.
+    """
+
+    _QUEUE_CAPACITY = 64
+    _CANCEL_POLL_SEC = 0.01
+    _QUEUE_POLL_SEC = 0.005
+    _QUEUE_FULL_TIMEOUT_SEC = 5.0
+
+    # Nominal opt-in consumed by HedgeLLM before invoking cancel from another
+    # thread. A cancel method by itself is not a thread-safety contract.
+    _cross_thread_cancel_safe = True
+
+    def __init__(
+        self,
+        owner: "OllamaLLM",
+        prompt: str,
+        system: Optional[str],
+        kwargs: dict,
+        cancel_event: object | None,
+    ) -> None:
+        self._producer = _OllamaAsyncStreamProducer(
+            owner,
+            prompt,
+            system,
+            kwargs,
+            cancel_event,
+            queue_capacity=self._QUEUE_CAPACITY,
+        )
+        self._lock = threading.Lock()
+        self._started = False
+        self._terminal_seen = False
+        self._thread: Optional[threading.Thread] = None
+        # The thread owns the producer, not this iterator. Dropping a partially
+        # consumed iterator therefore cancels even when its queue never fills.
+        self._finalizer = weakref.finalize(self, self._producer.cancel)
+
+    def __iter__(self) -> "_OllamaAsyncTokenStream":
+        return self
+
+    def _ensure_started(self) -> None:
+        with self._lock:
+            if self._terminal_seen or self._started:
+                return
+            if self._producer.sync_external_cancel():
+                return
+            self._producer.cancel_poll_sec = self._CANCEL_POLL_SEC
+            self._producer.queue_poll_sec = self._QUEUE_POLL_SEC
+            self._producer.queue_full_timeout_sec = self._QUEUE_FULL_TIMEOUT_SEC
+            self._started = True
+            thread = threading.Thread(
+                target=self._producer.thread_main,
+                name=f"ollama-stream-{self._producer.owner.model}",
+                daemon=True,
+            )
+            self._thread = thread
+            try:
+                thread.start()
+            except BaseException:
+                self._started = False
+                self._thread = None
+                raise
+
+    def _mark_terminal(self) -> None:
+        with self._lock:
+            self._terminal_seen = True
+
+    def __next__(self) -> str:
+        self._ensure_started()
+        with self._lock:
+            if self._terminal_seen or not self._started:
+                raise StopIteration
+        while True:
+            if self._producer.sync_external_cancel():
+                # Discard queued pre-cancel output, but hold the provider slot
+                # until the request/client cleanup has really completed.
+                if self._producer.done.wait(timeout=0.05):
+                    self._mark_terminal()
+                    raise StopIteration
+                continue
+            try:
+                item = self._producer.items.get(timeout=0.05)
+            except queue.Empty:
+                if self._producer.done.is_set():
+                    self._mark_terminal()
+                    raise StopIteration
+                continue
+            if self._producer.sync_external_cancel():
+                continue
+            if isinstance(item, _OllamaStreamFailure):
+                self._mark_terminal()
+                raise item.error
+            return str(item)
+
+    def cancel(self) -> None:
+        self._producer.cancel()
+
+    def close(self) -> None:
+        self.cancel()
+        # close() is the owning-consumer teardown path: do not let that provider
+        # invocation release its bulkhead slot before cooperative SDK cleanup.
+        # Hedge's cross-thread path calls the deliberately nonblocking cancel().
+        with self._lock:
+            started = self._started
+            producer_thread = self._thread
+        if started and threading.current_thread() is not producer_thread:
+            self._producer.done.wait()
+
+
 class OllamaLLM:
     """Local LLM via Ollama (GPU-accelerated for Gemma 3 on a CUDA host).
 
@@ -187,6 +497,7 @@ class OllamaLLM:
         timeout: Optional[float] = 60.0,
         think: Optional[bool] = None,
         client=None,
+        async_client_factory=None,
     ):
         self.model = model
         self._host = host
@@ -204,6 +515,21 @@ class OllamaLLM:
         # past). ``None`` disables the timeout (the old behaviour).
         self._timeout = timeout
         self._client = client
+        self._client_injected = client is not None
+        self._async_client_factory = async_client_factory
+        # Hedge may use this eager marker before stream construction completes.
+        # The injected sync compatibility path has no cross-thread cancel seam.
+        self._stream_cross_thread_cancel_safe = not (
+            self._client_injected and self._async_client_factory is None
+        )
+
+    def _client_kwargs(self) -> dict:
+        kwargs: dict = {}
+        if self._host:
+            kwargs["host"] = self._host
+        if self._timeout is not None:
+            kwargs["timeout"] = self._timeout
+        return kwargs
 
     def _ensure(self):
         if self._client is None:
@@ -212,13 +538,16 @@ class OllamaLLM:
             # Always build an explicit Client so the read timeout is applied;
             # the bare ``ollama`` module client has no timeout (hangs forever
             # on a stalled connection).
-            kwargs: dict = {}
-            if self._host:
-                kwargs["host"] = self._host
-            if self._timeout is not None:
-                kwargs["timeout"] = self._timeout
-            self._client = ollama.Client(**kwargs)
+            self._client = ollama.Client(**self._client_kwargs())
         return self._client
+
+    def _make_async_client(self):
+        factory = self._async_client_factory
+        if factory is None:
+            import ollama  # lazy
+
+            factory = ollama.AsyncClient
+        return factory(**self._client_kwargs())
 
     def _messages(
         self, prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]],
@@ -268,6 +597,33 @@ class OllamaLLM:
         return out
 
     def stream(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
+    ) -> Iterator[str]:
+        # Preserve injected sync-client compatibility for existing embedders and
+        # deterministic tests. Production (or an explicitly injected async
+        # factory) uses the cancellable official AsyncClient bridge.
+        if self._client_injected and self._async_client_factory is None:
+            return self._stream_sync(
+                prompt,
+                system=system,
+                images=images,
+                history=history,
+            )
+        context = capability_context.get()
+        return _OllamaAsyncTokenStream(
+            self,
+            prompt,
+            system,
+            self._chat_kwargs(prompt, system, images, stream=True, history=history),
+            context.get("cancel_event"),
+        )
+
+    def _stream_sync(
         self,
         prompt: str,
         *,
@@ -926,7 +1282,33 @@ class HedgeLLM:
         ).strip()
 
     @staticmethod
-    def _worker(client, tag, prompt, system, images, history, q, stop) -> None:
+    def _is_cross_thread_cancel_safe(stream: object) -> bool:
+        """Return whether ``stream.cancel()`` may run from the coordinator.
+
+        The marker is deliberately nominal: an incidental ``cancel`` method on
+        a third-party iterator does not advertise thread safety or nonblocking
+        behavior. Known-safe implementations must opt in explicitly.
+        """
+        return (
+            getattr(stream, "_cross_thread_cancel_safe", False) is True
+            and callable(getattr(stream, "cancel", None))
+        )
+
+    @staticmethod
+    def _worker(
+        client,
+        tag,
+        prompt,
+        system,
+        images,
+        history,
+        q,
+        stop,
+        context,
+        active_streams,
+        cancellable_tags,
+        active_streams_lock,
+    ) -> None:
         # Hold the underlying stream so a stop can close it at the next token
         # boundary -- that propagates GeneratorExit into the client's stream(),
         # running its ``finally`` (socket close, metric log) promptly instead
@@ -934,11 +1316,29 @@ class HedgeLLM:
         # ``history`` is forwarded ONLY when present (like ``hedge_delay_ms``), so
         # a wrapped client / test fake that predates the multi-turn param is still
         # called with the byte-identical single-turn signature by default.
-        kw: dict = {"system": system, "images": images}
-        if history:
-            kw["history"] = history
-        stream = client.stream(prompt, **kw)
+        context_token = capability_context.set(context)
+        stream = None
         try:
+            if stop.is_set():
+                q.put((tag, "done", None))
+                return
+            kw: dict = {"system": system, "images": images}
+            if history:
+                kw["history"] = history
+            stream = client.stream(prompt, **kw)
+            # Only iterators that explicitly advertise a thread-safe,
+            # nonblocking cancel seam may be touched by Hedge.shutdown from a
+            # different thread. Arbitrary generator.close() while next() is
+            # executing raises and is unsafe (notably sync Ollama pre-TTFT).
+            if HedgeLLM._is_cross_thread_cancel_safe(stream):
+                with active_streams_lock:
+                    active_streams[tag] = stream
+                    cancellable_tags.add(tag)
+            if stop.is_set():
+                if HedgeLLM._is_cross_thread_cancel_safe(stream):
+                    stream.cancel()
+                q.put((tag, "done", None))
+                return
             for token in stream:
                 if stop.is_set():
                     break
@@ -947,6 +1347,8 @@ class HedgeLLM:
         except Exception as exc:  # cloud down / rate-limited -> chain advances
             q.put((tag, "err", str(exc)))
         finally:
+            with active_streams_lock:
+                active_streams.pop(tag, None)
             # Best-effort close: list/iterator fakes lack .close(); a generator
             # raising on close shouldn't take the worker down.
             closer = getattr(stream, "close", None)
@@ -955,6 +1357,7 @@ class HedgeLLM:
                     closer()
                 except Exception:
                     pass
+            capability_context.reset(context_token)
 
     def _winner_select_budget(self) -> float:
         """Bounded wall-clock window for the pre-first-token wait.
@@ -978,6 +1381,30 @@ class HedgeLLM:
         history: Optional[Sequence[HistoryTurn]] = None,
         hedge_delay_ms: Optional[int] = None,
     ) -> Iterator[str]:
+        # ``stream`` used to be a generator, which delayed this ContextVar read
+        # until first iteration. Bind it at call time so an iterator created in a
+        # task context keeps that turn's cancellation/routing metadata when a
+        # different thread consumes it after the caller resets its ContextVar.
+        turn_context = dict(capability_context.get())
+        return self._stream_captured(
+            prompt,
+            system=system,
+            images=images,
+            history=history,
+            hedge_delay_ms=hedge_delay_ms,
+            turn_context=turn_context,
+        )
+
+    def _stream_captured(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str],
+        images: Optional[Sequence[ImageInput]],
+        history: Optional[Sequence[HistoryTurn]],
+        hedge_delay_ms: Optional[int],
+        turn_context: Mapping[str, object],
+    ) -> Iterator[str]:
         # Per-turn hedge-delay override (PINNED CONTRACT). ``None`` keeps the
         # constructor's ``self.hedge_delay`` so default behaviour is byte-
         # identical; an int overrides the local-vs-cloud start gap for THIS turn
@@ -993,7 +1420,11 @@ class HedgeLLM:
             local_kw: dict = {"system": system, "images": images}
             if history:
                 local_kw["history"] = history
-            yield from self.local.stream(prompt, **local_kw)
+            context_token = capability_context.set(turn_context)
+            try:
+                yield from self.local.stream(prompt, **local_kw)
+            finally:
+                capability_context.reset(context_token)
             return
 
         # Reset the egress receipt at the START of the race so a no-winner turn
@@ -1012,6 +1443,11 @@ class HedgeLLM:
         started: set[str] = set()
         dead: set[str] = set()
         threads: dict[str, threading.Thread] = {}
+        active_streams: dict[str, Iterator[str]] = {}
+        # Sticky after registration: a worker removes its active stream before
+        # owning close(), but shutdown must still wait for that cleanup.
+        cancellable_tags: set[str] = set()
+        active_streams_lock = threading.Lock()
 
         def launch(tag: str) -> None:
             if tag in started:
@@ -1019,25 +1455,69 @@ class HedgeLLM:
             started.add(tag)
             t = threading.Thread(
                 target=self._worker,
-                args=(clients[tag], tag, prompt, system, images, history, q, stops[tag]),
+                args=(
+                    clients[tag], tag, prompt, system, images, history, q, stops[tag],
+                    turn_context, active_streams, cancellable_tags,
+                    active_streams_lock,
+                ),
                 daemon=True,
             )
             threads[tag] = t
             t.start()
 
+        def cancel_active(tags: Optional[set[str]] = None) -> None:
+            """Cancel explicitly thread-safe streams by tag."""
+            with active_streams_lock:
+                cancellable = [
+                    stream
+                    for tag, stream in active_streams.items()
+                    if tags is None or tag in tags
+                ]
+            for stream in cancellable:
+                cancel_stream = getattr(stream, "cancel", None)
+                if callable(cancel_stream):
+                    try:
+                        cancel_stream()
+                    except Exception:
+                        pass
+
         def shutdown() -> None:
-            """Signal every worker to stop and bound-join them so the
-            generator never leaks threads -- runs on normal completion AND
-            when the consumer closes the generator early (barge-in / cancel /
-            ``del`` the iterator -> GeneratorExit). Each worker stops at its
-            next token boundary or when its socket read timeout fires, then
-            closes its underlying stream in _worker's finally. The join shares
-            one bounded budget across all workers so a multi-cloud chain can't
-            multiply the wait."""
+            """Signal every worker and share one bounded join budget.
+
+            Explicitly cancellable streams unwind promptly; an arbitrary sync
+            worker can outlive the join until its next token or timeout. This
+            runs on natural completion and early generator close alike.
+            """
             for ev in stops.values():
                 ev.set()
+            # Native cancellation for streams that explicitly guarantee
+            # cross-thread cancellation (Ollama's async bridge). Snapshot
+            # outside callbacks:
+            # cancel() is nonblocking, but it may complete the worker and mutate
+            # this registry immediately.
+            cancel_active()
+            with active_streams_lock:
+                cleanup_owned = set(cancellable_tags)
+            # Ollama advertises the stream contract eagerly, closing the narrow
+            # race in which shutdown arrives before its worker registers the
+            # returned iterator.
+            cleanup_owned.update(
+                tag
+                for tag, client in clients.items()
+                if getattr(client, "_stream_cross_thread_cancel_safe", False) is True
+            )
+            # A cooperative provider slot must not be released while its owned
+            # request/client is still cleaning up. If an advertised provider
+            # violates that contract and hangs, ADR-0021 intentionally keeps the
+            # outer bulkhead slot occupied instead of spawning unbounded work.
+            for tag in cleanup_owned:
+                worker = threads.get(tag)
+                if worker is not None and worker.is_alive():
+                    worker.join()
             join_deadline = time.monotonic() + self.WORKER_JOIN_TIMEOUT
-            for t in threads.values():
+            for tag, t in threads.items():
+                if tag in cleanup_owned:
+                    continue
                 if t.is_alive():
                     remaining = join_deadline - time.monotonic()
                     if remaining <= 0:
@@ -1153,11 +1633,18 @@ class HedgeLLM:
                         continue
                     if self.strategy == "fallback" and current_cloud is not None:
                         stops[current_cloud].set()
+                        cancel_active({current_cloud})
                         dead.add(current_cloud)
                         current_cloud = next_cloud()
                     kick_chain()
                     continue
                 if kind == "tok":
+                    # A fallback source can pass the worker's stop check just
+                    # before its deadline, then enqueue after the coordinator
+                    # retires it. Never resurrect that cancelled source as the
+                    # winner from a late queue message.
+                    if tag in dead:
+                        continue
                     winner = tag
                     self.last_source = tag  # egress receipt: this source served the turn
                     buffered.append(str(val))
@@ -1177,6 +1664,7 @@ class HedgeLLM:
             for tag, ev in stops.items():
                 if tag != winner:
                     ev.set()
+            cancel_active(set(stops) - {winner})
             for token in buffered:
                 yield token
             while True:
@@ -1188,6 +1676,7 @@ class HedgeLLM:
                     tag, kind, val = q.get(timeout=self.DRAIN_IDLE_TIMEOUT)
                 except queue.Empty:
                     stops[winner].set()
+                    cancel_active({winner})
                     break
                 if tag != winner:
                     continue  # drain the loser's late tokens

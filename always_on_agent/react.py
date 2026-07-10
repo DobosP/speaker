@@ -241,16 +241,29 @@ class ReactPlanner:
     ) -> str:
         parts: list[str] = []
         hook = first_token_hook or self._first_token_hook
-        for token in tokens:
-            if _cancelled(cancel):
-                break
-            if not parts and hook is not None:
-                # First model token of this drain -> mark the turn alive.
-                try:
-                    hook()
-                except Exception:  # noqa: BLE001 - metrics stamping is best-effort
-                    pass
-            parts.append(token)
+        cancelled = False
+        try:
+            for token in tokens:
+                if _cancelled(cancel):
+                    cancelled = True
+                    break
+                if not parts and hook is not None:
+                    # First model token of this drain -> mark the turn alive.
+                    try:
+                        hook()
+                    except Exception:  # noqa: BLE001 - metrics stamping is best-effort
+                        pass
+                parts.append(token)
+        finally:
+            if cancelled:
+                # Propagate a between-token barge to the actual provider; for
+                # Ollama this waits for cooperative request/client cleanup.
+                closer = getattr(tokens, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:  # noqa: BLE001 - abandoned stream teardown
+                        pass
         return "".join(parts).strip()
 
     def _final(

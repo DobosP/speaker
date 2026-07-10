@@ -6,12 +6,13 @@ hedger races them in sequence with local always as the final safety net.
 """
 from __future__ import annotations
 
+import logging
+import queue as stdlib_queue
 import threading
 import time
 from typing import Iterator
 
-import logging
-
+import core.llm as llm_module
 from core.llm import HedgeLLM, SensitivityRouterLLM, capability_context
 from core.routing import ChainSelector
 
@@ -106,6 +107,50 @@ def test_fallback_chain_falls_back_to_local_when_all_clouds_fail():
     assert c0.started and c1.started
 
 
+def test_fallback_discards_token_enqueued_after_source_was_retired(monkeypatch):
+    """A deadline loser cannot come back from the dead via a late queue put.
+
+    The queue gate pauses cloud_0 after HedgeLLM's worker has passed its stop
+    check but before it publishes the token. The deadline retires cloud_0 and
+    starts cloud_1; only then do we publish cloud_0's stale token first.
+    """
+    late_put_entered = threading.Event()
+    allow_late_put = threading.Event()
+    late_put_complete = threading.Event()
+    real_queue = stdlib_queue.Queue
+
+    class GatedQueue(real_queue):
+        def put(self, item, block=True, timeout=None):
+            if item[:2] == ("cloud_0", "tok"):
+                late_put_entered.set()
+                assert allow_late_put.wait(timeout=2.0)
+                result = super().put(item, block=block, timeout=timeout)
+                late_put_complete.set()
+                return result
+            return super().put(item, block=block, timeout=timeout)
+
+    class FreshCloud(FakeStreamLLM):
+        def stream(self, prompt, *, system=None, images=None) -> Iterator[str]:
+            self.started = True
+            allow_late_put.set()
+            assert late_put_complete.wait(timeout=2.0)
+            yield "fresh"
+
+    monkeypatch.setattr(llm_module.queue, "Queue", GatedQueue)
+    retired = FakeStreamLLM(["retired"])
+    fresh = FreshCloud([])
+    hedge = HedgeLLM(
+        local=FakeStreamLLM(["local"]),
+        cloud=[retired, fresh],
+        strategy="fallback",
+        ttft_deadline_ms=30,
+    )
+
+    assert "".join(hedge.stream("q")) == "fresh"
+    assert late_put_entered.is_set()
+    assert hedge.last_source == "cloud_1"
+
+
 def test_hedge_chain_advances_past_failing_cloud_keeping_local_race():
     """In hedge strategy: cloud_0 errors -> cloud_1 is brought up; whichever
     of {local, cloud_1} produces first wins."""
@@ -143,6 +188,138 @@ def test_chain_normalizes_none_cloud_to_empty_list():
     assert h.clouds == []
     assert h.cloud is None
     assert "".join(h.stream("q")) == "L"
+
+
+def test_stream_binds_context_before_cross_thread_hedge_consumption():
+    """Resetting the caller's ContextVar cannot strip a worker's turn event."""
+    cancel = threading.Event()
+    release = threading.Event()
+    started = threading.Event()
+    observed: dict[str, object] = {}
+    outcome: list[str] = []
+    errors: list[BaseException] = []
+
+    class ContextBlockingLLM:
+        def stream(self, prompt, *, system=None, images=None) -> Iterator[str]:
+            observed.update(capability_context.get())
+            started.set()
+            event = observed.get("cancel_event")
+            if isinstance(event, threading.Event):
+                event.wait(timeout=2.0)
+            else:
+                release.wait(timeout=2.0)
+            return
+            yield  # pragma: no cover - make this a generator
+
+    hedge = HedgeLLM(
+        local=ContextBlockingLLM(),
+        cloud=[FakeStreamLLM([], error="cloud down")],
+        hedge_delay_ms=0,
+    )
+    token = capability_context.set({"cancel_event": cancel, "turn": "captured"})
+    try:
+        stream = hedge.stream("q")
+    finally:
+        capability_context.reset(token)
+
+    def consume() -> None:
+        try:
+            outcome.extend(stream)
+        except BaseException as exc:
+            errors.append(exc)
+
+    consumer = threading.Thread(target=consume, daemon=True)
+    consumer.start()
+    try:
+        assert started.wait(timeout=1.0)
+        assert observed.get("cancel_event") is cancel
+        assert observed.get("turn") == "captured"
+    finally:
+        cancel.set()
+        release.set()
+        consumer.join(timeout=2.0)
+
+    assert not consumer.is_alive()
+    assert outcome == []
+    assert errors == []
+
+
+def test_stream_binds_context_for_cross_thread_local_passthrough():
+    """The no-cloud fast path observes the same eagerly captured context."""
+    seen: dict[str, object] = {}
+
+    class ContextEchoLLM:
+        def stream(self, prompt, *, system=None, images=None) -> Iterator[str]:
+            seen.update(capability_context.get())
+            yield "local"
+
+    hedge = HedgeLLM(local=ContextEchoLLM(), cloud=None)
+    marker = object()
+    token = capability_context.set({"marker": marker})
+    try:
+        stream = hedge.stream("q")
+    finally:
+        capability_context.reset(token)
+
+    outcome: list[str] = []
+    consumer = threading.Thread(target=lambda: outcome.extend(stream), daemon=True)
+    consumer.start()
+    consumer.join(timeout=2.0)
+
+    assert not consumer.is_alive()
+    assert outcome == ["local"]
+    assert seen.get("marker") is marker
+
+
+def test_incidental_cancel_method_is_not_called_cross_thread():
+    """Only explicitly marked iterators enter HedgeLLM's cancel registry."""
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    class OwningThreadIterator:
+        def __init__(self) -> None:
+            self.cancel_calls = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> str:
+            started.set()
+            release.wait(timeout=2.0)
+            finished.set()
+            raise StopIteration
+
+        def cancel(self) -> None:
+            # This method exists for same-thread callers only. Its presence must
+            # not be mistaken for HedgeLLM's explicit cross-thread-safe marker.
+            self.cancel_calls += 1
+            release.set()
+
+    unsafe_stream = OwningThreadIterator()
+
+    class UnsafeCancelLLM:
+        def stream(self, prompt, *, system=None, images=None):
+            return unsafe_stream
+
+    class GatedWinnerLLM:
+        def stream(self, prompt, *, system=None, images=None) -> Iterator[str]:
+            assert started.wait(timeout=1.0)
+            yield "winner"
+
+    hedge = HedgeLLM(
+        local=GatedWinnerLLM(),
+        cloud=[UnsafeCancelLLM()],
+        strategy="hedge",
+        hedge_delay_ms=0,
+    )
+    hedge.WORKER_JOIN_TIMEOUT = 0.0
+    try:
+        assert "".join(hedge.stream("q")) == "winner"
+        assert unsafe_stream.cancel_calls == 0
+    finally:
+        release.set()
+        assert finished.wait(timeout=1.0)
 
 
 # --- pre-first-token wall-clock budget (P1 low) ----------------------------

@@ -4,7 +4,7 @@ Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
 Last verified: 2026-07-10 on Linux ROG, branch
-`fix/pretoken-llm-cancellation`. Full headless suite: 2538 passed, 24 skipped,
+`fix/ollama-native-stream-cancel`. Full headless suite: 2564 passed, 24 skipped,
 9 existing warnings; real-model/replay tier: 5 passed, 12 skipped; required
 APM/DTD gate: 6 passed; whitespace passed. Host doctor reported READY this
 session with the actual EC route/models/Ollama. No human-speech A/B was run.
@@ -55,17 +55,17 @@ session with the actual EC route/models/Ollama. No human-speech A/B was run.
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
   Windows voice-communications/word-cut is unavailable until a constructible,
   verified capture API replaces the unsupported setting (ADR-0019).
-- Synchronous capabilities run behind bounded cancellable task coordinators.
-  Barge/timeout retires a pre-token task, stale TTS/TTFT and duplicate terminals
-  are blocked; abandoned providers cap at the configured limit, six here (ADR-0021). Native
-  compute is bounded but not force-killed; transport hard-abort remains open.
+- Synchronous capabilities run behind bounded cancellable task coordinators;
+  barge/timeout blocks stale output and caps abandoned providers at six (ADR-0021).
+  Production Ollama streams additionally cancel an owned async request. A real,
+  no-mic MiniCPM cancel ended in 135.9 ms with zero pieces and healthy follow-up
+  (ADR-0022); sync generate, arbitrary providers, and llama.cpp remain bounded.
 
 ## Live evidence and limits
 
-- Pre-fix run `20260710-084939` opened the real EC-routed mic/models but, with
-  nobody speaking, emitted raw/final `AND` about every two seconds.
-- Post-fix runs `20260710-093305`/`100432` used the real route/models for
-  near-silence: no final/`AND` storm in the latest 20 s; no audio was recorded.
+- Pre-fix run `20260710-084939` opened the real EC-routed mic/models and emitted
+  raw/final `AND` about every two seconds; post-fix runs `093305`/`100432` had no
+  final/`AND` storm in the latest 20 s of near-silence. No audio was recorded.
 - Capture reopen, fallback, and changed-domain recalibration have deterministic
   headless coverage only; no live device unplug/switch validation was run.
 - A real word-cut occurred once on this rig on 2026-07-07, but the merged tail and

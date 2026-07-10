@@ -118,6 +118,34 @@ def test_planner_cancels_before_first_step():
     assert result.data.get("cancelled") is True
 
 
+def test_drain_closes_provider_when_cancel_arrives_with_a_token():
+    cancel = Event()
+
+    class CancelOnNext:
+        def __init__(self) -> None:
+            self.closed = False
+            self.returned = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.returned:
+                raise StopIteration
+            self.returned = True
+            cancel.set()
+            return "late token"
+
+        def close(self) -> None:
+            self.closed = True
+
+    tokens = CancelOnNext()
+    planner = ReactPlanner(ScriptLLM([]), create_default_capabilities())
+
+    assert planner._drain(tokens, cancel) == ""
+    assert tokens.closed is True
+
+
 def test_tool_cancellation_cannot_launch_post_budget_final_model_call():
     cancel = Event()
     registry = CapabilityRegistry()

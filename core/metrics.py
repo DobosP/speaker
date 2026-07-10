@@ -323,26 +323,36 @@ def mark_first_token(
     (P4 low). ``cancel`` prevents a token from an abandoned provider from
     stamping whichever newer turn is currently open in the shared recorder.
     The default preserves the historical fold-always behaviour."""
-    if cancel is not None and cancel.is_set():
-        return
-    if recorder is None:
-        for token in tokens:
-            if cancel is not None and cancel.is_set():
-                return
-            yield token
-        return
-    first = True
-    for token in tokens:
-        # A provider can wake long after its task was cancelled and after a new
-        # turn became MetricsRecorder.current.  Gate *before* the stamp/yield so
-        # that stale token cannot poison the replacement turn's TTFT or watchdog.
+    try:
         if cancel is not None and cancel.is_set():
             return
-        if first:
-            recorder.mark(
-                LLM_FIRST_TOKEN,
-                fold_local_ttft=fold_local_ttft,
-                turn_token=turn_token,
-            )
-            first = False
-        yield token
+        if recorder is None:
+            for token in tokens:
+                if cancel is not None and cancel.is_set():
+                    return
+                yield token
+            return
+        first = True
+        for token in tokens:
+            # A provider can wake long after its task was cancelled and after a new
+            # turn became MetricsRecorder.current.  Gate *before* the stamp/yield so
+            # that stale token cannot poison the replacement turn's TTFT or watchdog.
+            if cancel is not None and cancel.is_set():
+                return
+            if first:
+                recorder.mark(
+                    LLM_FIRST_TOKEN,
+                    fold_local_ttft=fold_local_ttft,
+                    turn_token=turn_token,
+                )
+                first = False
+            yield token
+    finally:
+        # Closing this wrapper on barge-in must deterministically reach the
+        # provider iterator instead of relying on refcounting/GC of our frame.
+        closer = getattr(tokens, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass

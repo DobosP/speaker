@@ -273,6 +273,25 @@ def test_engine_shortens_on_complete_partial():
     assert det.calls == ["what time is it"]
 
 
+def test_engine_never_early_endpoints_without_verified_vad_silence():
+    """A stable decoder hypothesis is not acoustic silence."""
+    det = ScriptedTurnCompletionDetector({"tell me a complete story": 0.9})
+    e = _engine(detector=det, endpoint_enabled=True, endpoint_min_silence_sec=0.3)
+    assert e._decide_endpoint(
+        acoustic_endpoint=False,
+        partial="tell me a complete story",
+        silence_sec=5.0,
+        allow_early=False,
+    ) is False
+    # A real acoustic endpoint can still pass through semantic accept/hold.
+    assert e._decide_endpoint(
+        acoustic_endpoint=True,
+        partial="tell me a complete story",
+        silence_sec=5.0,
+        allow_early=False,
+    ) is True
+
+
 def test_engine_passes_audio_to_an_audio_detector():
     # The seam for a prosodic (Smart Turn) model: samples reach the detector.
     seen = {}

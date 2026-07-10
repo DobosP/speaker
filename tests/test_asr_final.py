@@ -133,13 +133,26 @@ def test_final_transcribe_keeps_long_garbled_correction():
     assert eng._final_transcribe(seg, "Ario der") == "are you there"
 
 
+def test_final_transcribe_uses_vad_speech_duration_not_idle_padded_pcm_length():
+    eng = _engine()
+    eng._final_recognizer = _FakeOffline("are you there")
+    # The owned clip may contain pre-roll/tail, but only 0.4 s was real speech.
+    # Treat it as a short clip so the low-overlap second pass cannot take the
+    # long-utterance escape hatch merely because padding made the array 2 s.
+    seg = np.ones(2 * 16000, dtype="float32")
+    out = eng._final_transcribe(seg, "Ario der", speech_sec=0.4)
+    assert out == "Ario der"
+
+
 def test_config_parses_final_fields():
     c = SherpaConfig.from_dict({
         "asr_final_backend": "sense_voice", "asr_final_model": "/m.onnx",
         "asr_final_tokens": "/t.txt", "asr_final_use_itn": False, "asr_final_min_sec": 0.5,
+        "asr_final_preroll_sec": 0.6,
     })
     assert c.asr_final_backend == "sense_voice" and c.asr_final_model == "/m.onnx"
     assert c.asr_final_use_itn is False and c.asr_final_min_sec == 0.5
+    assert c.asr_final_preroll_sec == 0.6
 
 
 def _capture_sense_voice(monkeypatch):

@@ -23,8 +23,17 @@ The 4-word mid-playback floor remains authoritative: a novel 1–3-word reply ta
 staged until VAD-active post-playback continuation adds a word; silence/endpoint,
 own speech, empty text, and stale bursts are discarded. Full logic suite 2395
 passed, 30 skipped; `git diff --check` clean. **LIVE bare-speaker A/B still required**
-for cut rate, false tails, tail-word continuity, and re-enrollment; no live
-human-speech validation was run.) Prior: 2026-07-07 late (Linux ROG box; P2
+ADR-0017 VAD-backed ASR segment ownership also changed: idle PCM is bounded to
+0.8 s pre-roll until real speech, full
+utterances are retained through the configured rule-3 + endpoint bound, VAD
+transitions drive semantic silence/pause timing, and a final is rejected before
+SenseVoice/identity/addressing when a configured VAD observed no speech. Full
+headless logic suite: 2393 passed, 30 skipped; `git diff --check` clean. Live
+diagnostic before the fix: `run-20260710-084939` opened the real EC-routed mic,
+models, denoiser, SenseVoice and Ollama but emitted idle raw/final `AND` every
+~2 s at near-zero input; no audio was recorded. The post-fix owner-voice A/B is
+still REQUIRED for cut rate, false tails, tail continuity, enrollment, quiet
+speech and pause behavior.) Prior verified: 2026-07-07 late (Linux ROG box; P2
 robustness cluster landed: full
 logic suite 2387 passed, 24 skipped; `git diff --check` clean. Shipped in one
 commit: ① diagnose_run word-cut verdict truth-up — a word-cut-confirmed barge is

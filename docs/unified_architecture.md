@@ -236,13 +236,24 @@ This contract is **not** a binary core passed around; it is **reimplemented fait
 
 The planner chooses *which* capability (e.g., `assistant.answer` vs. `web.search` vs. `command.stage`); the ReAct loop is the implementation of `assistant.answer` when enabled. (The decision/escalation ladder that triggers escalation is in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
 
-**Task lifecycle:** `LiveSpeechAnalyzer.decide()` emits an intent → `TaskPlanner.plan()` builds a `TaskPlan` → `AgentSupervisor` queues or starts the task → `TaskRuntime.start()` spawns a coordinator → `_run_plan()` executes steps and emits `TASK_PROGRESS`/`TASK_COMPLETED`/`TASK_FAILED`. Each synchronous capability runs in a daemon provider thread behind a `max_active_tasks` semaphore. Barge-in (`cancel_all`) sets the task's `cancel_event`; the coordinator retires without waiting for a pre-first-result provider, while that provider retains its bounded slot until it returns (ADR-0021). Task output is stamped with the `speech_epoch` at start; a later barge-in advances the epoch and stale `TTS_REQUEST`s drop via `tts_request_allowed()`.
+**Task lifecycle:** Before an intent exists, `FinalDispatcher` runs addressing, cleanup, and routing through cancellable leases behind a separate six-slot provider bulkhead; only the lease that wins terminal commit may publish a final (ADR-0023). `LiveSpeechAnalyzer.decide()` then emits an intent → `TaskPlanner.plan()` builds a `TaskPlan` → `AgentSupervisor` queues or starts the task → `TaskRuntime.start()` spawns a coordinator → `_run_plan()` executes steps and emits `TASK_PROGRESS`/`TASK_COMPLETED`/`TASK_FAILED`. Each synchronous capability runs in a daemon provider thread behind a `max_active_tasks` semaphore. Barge-in (`cancel_all`) sets the task's `cancel_event`; the coordinator retires without waiting for a pre-first-result provider, while that provider retains its bounded slot until it returns (ADR-0021). Task output is stamped with the `speech_epoch` at start; a later barge-in advances the epoch and stale `TTS_REQUEST`s drop via `tts_request_allowed()`.
 
 **Continuation (add-ons):** When enabled (config `continuation.enabled: true`), a follow-up to a live ASSISTANT turn is:
 - **merged** if not yet speaking (one combined reply, one stream),
 - **queued behind** if already speaking (strict sequential dependency).
 
-Gated at `_maybe_continue` after control phrases (STOP/CONFIRM/MODE_SWITCH) so real commands cannot be misread.
+The realtime-safe classifier reserves lineage at final arrival. Before audio it
+also advances the speech epoch and cancels unheard tasks immediately; after
+audio it preserves the parent. A committed final waiting on the bus remains an
+unheard lineage candidate until supervisor resolution. The winning lease materializes the
+merged/contextual prompt, so a slow gate cannot leak stale audio or lose context
+after the parent finishes. `_maybe_continue` still runs after control phrases,
+so real commands cannot be misread. "Before audio" changes only when runtime
+admits a real answer sentence to `engine.speak`, not when a worker queues TTS;
+completed tasks with queued audio retain lineage until that boundary. Dispatcher
+coalescing provenance prevents fragmented finals from duplicating add-ons, and
+synthetic prompt trust is the intersection of every origin/owner verdict
+(ADR-0023).
 
 **AlwaysOnAgentRuntime:** Thin ~30-line facade over `AgentSupervisor` for audio integration. Methods: `ingest_partial(text)`, `ingest_final(text)`, `stop(reason)`, `snapshot()`, `wait_idle()`. Polls the bus drain synchronously; does not spawn its own thread.
 
@@ -250,7 +261,7 @@ Gated at `_maybe_continue` after control phrases (STOP/CONFIRM/MODE_SWITCH) so r
 
 **Timeouts and reaping:** Per-mode wall-clock deadlines (ASSISTANT 25s, RESEARCH 120s, default 60s). The watchdog tick calls `reap_overdue_tasks()` (safe from the watchdog thread: uses `_cancel_lock`, never joins). A reaped task emits a timeout apology and unblocks the queue; its coordinator exits promptly, though an uncooperative bounded provider may remain until its own timeout (ADR-0021). (The watchdog itself lives in `core/`; see [§7](#7--real-time-quality-subsystems).)
 
-**Speech epoch invariant (realtime-concurrency-1):** Every `TTS_REQUEST` carries the epoch captured when the task started. A barge-in advances the global epoch under `_cancel_lock` atomically; the supervisor drops any `TTS_REQUEST` stamped with a stale epoch, even if `TASK_COMPLETED` (priority 60) has already removed the task from `active_tasks` before the trailing sentence (priority 100) dequeues. This decouples the liveness check from active-task membership, preventing race-condition audio bleed.
+**Cancellation identities (realtime-concurrency-1):** Every `TTS_REQUEST` carries the speech epoch captured when the task started. Barge-in and pre-audio merge advance that epoch under `_cancel_lock`; stale requests drop even if task completion dequeued first. Failed/cancelled task IDs retire queued stream sentences, while unique auxiliary IDs carry input generation/epoch. Completed streams remain playback-pending until a lower-priority stream-end marker drains, and only admitted fragments enter memory. A separate input epoch—captured at final submission—invalidates dequeued-but-unadmitted finals on external stop/barge/shutdown. Substantive partials/finals/direct controls allocate an arrival generation before preprocessing, while committed finals publish a task-admission generation; together they fence claim-to-publish, publish-to-task, control-effect, and check-to-speak races. Punctuation and recognized self-echo allocate neither (ADR-0023).
 
 ---
 
@@ -337,6 +348,9 @@ A user utterance flows through four escalating gates, each able to short-circuit
 - **Enabled in the desktop profile** (`input_gate.enabled=true`) where the fast tier has GPU headroom.
 - `unsure_acts=true` answers on ambiguity (legacy behavior); `false` is conservative (silent ingest).
 - Requires `llm.fast_model` to run (see [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97)).
+- The LLM gate is collected through `LLMClient.stream()` inside a cancellable
+  final-dispatch lease. A newer final/control retires it before token one; an
+  uncooperative provider remains bounded by the preprocessing bulkhead (ADR-0023).
 
 ### Gate 2: Is it a control phrase? (deterministic command fast-path)
 
@@ -696,6 +710,11 @@ The supervisor had no wall-clock deadlines — a hung capability (a blocked `gen
 
 - **Per-mode task deadlines + reap:** Each `AgentTask` gets a `deadline_at` stamped at `_start_task` from `DEFAULT_TASK_TIMEOUTS` (assistant 25 s, search/command/dictation/meeting 30 s, research 120 s; overridable via `task_timeouts` config; `0` disables a mode). `reap_overdue_tasks()` runs on the watchdog's 1 s tick, cancels and removes any task past its deadline, and republishes `TASK_CANCELLED` to the bus thread (so the supervisor moves on). A reaped turn that would have spoken says "Sorry, that took too long — let's try again." A long-running capability (e.g. the ReAct planner) can renew its deadline via a `renew_deadline` hook in the task context.
 - **Cancellable invocation bulkhead:** The registered task thread coordinates each synchronous capability through a daemon provider thread and a `max_active_tasks` semaphore. It checks cancellation on a 10 ms polling cadence without waiting for token one; an uncooperative provider retains its slot until it actually returns, bounding abandoned calls. Provider admission and the single terminal event are atomic against cancellation; delayed token metrics carry the originating turn token so stale work cannot mark a replacement turn (ADR-0021). Production Ollama streams additionally cancel their owned async request and close its transport before releasing that slot (ADR-0022).
+- **Cancellable final-preprocessing bulkhead:** A separate `FinalDispatcher`
+  coordinator gives addressing, cleanup, capability routing, and custom tier
+  routing cancellation leases plus one terminal commit. Six provider slots bound
+  cancellation-ignoring pre-task calls; input epoch/generation checks prevent a
+  late lease or bus event from registering stale work (ADR-0023).
 - **Watchdog heals:** `StuckWatchdog` has an `on_tick` hook; the runtime wires it to `reap_overdue_tasks()` so a hung task coordinator is retired on the watchdog's existing 1 s cadence.
 - **ReAct first-token unblock:** An escalated (ReAct) turn does its LLM work inside the planner, which wasn't stamping `LLM_FIRST_TOKEN`, so the watchdog read it as stuck. The planner now fires a `first_token_hook` on its first streamed token; the runtime marks `LLM_FIRST_TOKEN` (idempotent).
 
@@ -1045,7 +1064,8 @@ This section reflects findings from five audit reports (production hardening, pe
 
 **Phase 1 — Reliability & first-impression latency (in progress):**
 - 🔄 **Move ASR decode off the capture thread** — not yet done; the phone-class cliff remains. Stress tests show RTF 0.07–0.10 on 4090 (adequate today; deferred pending CPU-constrained testing).
-- ✅ **Move addressing + cleaner off the capture thread** — done via async scheduling in `runtime.py`; the capture thread is no longer stalled.
+- ✅ **Move final preprocessing off the capture thread** — addressing, cleanup,
+  and routing use bounded cancellable dispatcher leases (ADR-0023).
 - ✅ **True speech-stop metric stamp** — `SPEECH_END` now stamped at VAD silence onset (the prerequisite for endpointing tuning landed).
 - 🔄 **Bounded local LLM generate** — `LlamaCppLLM` is still unbounded on phone, but desktop `OllamaLLM` has a 60 s wall-clock (closes the hang-forever case).
 - 🔄 **Surface FATAL capture state** — currently logs + publishes only; a spoken/visible notice + a bounded outer re-bring-up loop are still open.
@@ -1085,7 +1105,7 @@ Ranked by field impact:
 - **Barge-in detection is unvalidated in the field.** Stress tests and live replay show zero real LLM cancellations (only echo self-interrupts). The cut machinery is correct; the decision path is untested with real overlapping speech.
 - **The ASR confidence signal is not yet gated.** Low-confidence finals (`ys_probs` < threshold) feed the LLM unfiltered. Combined with the echo loop, this can drive TTS on garbage fragments.
 - **Full-pipeline resident memory** (~800 MB with Ollama; ~538 MB ASR/TTS only) does not leak (verified via stress) but is the sizing baseline for deployment.
-- **Only production Ollama streaming has provider-native cooperative cancellation.** Its owned async request is cancelled and cleaned up before its provider slot returns when the SDK cooperates (ADR-0022). Python still cannot force-kill a cancellation-suppressing task, hanging cleanup, or synchronous/native call such as `generate()`, an injected sync client, or llama.cpp: up to `max_active_tasks` such provider daemons can retain bulkhead slots, and exhausting every slot prevents inference until one returns or a future process/abort boundary intervenes (ADR-0021).
+- **Only production Ollama streaming has provider-native cooperative cancellation.** Its owned async request is cancelled and cleaned up before its provider slot returns when the SDK cooperates (ADR-0022). Python still cannot force-kill a cancellation-suppressing task, hanging cleanup, or synchronous/native call such as `generate()`, an injected sync client, or llama.cpp: up to six task providers and six final-preprocessing providers can retain their respective bulkhead slots, and exhausting either pool blocks that stage until one returns or a future process/abort boundary intervenes (ADR-0021, ADR-0023).
 
 ### Explicitly out of scope
 

@@ -32,13 +32,14 @@ byte-identical to before.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from always_on_agent.react import should_escalate
 
 from .contract import is_stop_command, normalize_command
-from .llm import LLMClient
+from .llm import LLMCallCancelled, LLMClient, collect_llm_text
 from .routing import (
     FAST,
     MAIN,
@@ -214,12 +215,16 @@ class LLMCapabilityRouter:
         self._threshold = float(confidence_threshold)
         self._cache_key: Optional[str] = None
         self._cache_action: Optional[str] = None
+        self._cache_lock = threading.Lock()
 
     def route(self, text: str, context: Mapping[str, object]) -> RouteDecision:
         base = self._base.route(text, context)
         if base.action == CONTROL or base.confidence >= self._threshold:
             return base
-        action = self._action_for(text)
+        action = self._action_for(
+            text,
+            cancel_event=context.get("cancel_event"),
+        )
         if action is None or action == base.action:
             return base
         tier = MAIN if action in (RESEARCH, ACT) else base.tier
@@ -232,19 +237,34 @@ class LLMCapabilityRouter:
             latency_policy=policy.value,
         )
 
-    def _action_for(self, text: str) -> Optional[str]:
+    def _action_for(
+        self,
+        text: str,
+        *,
+        cancel_event: object | None = None,
+    ) -> Optional[str]:
         key = (text or "").strip().lower()
-        if key and key == self._cache_key:
-            return self._cache_action
+        if key:
+            with self._cache_lock:
+                if key == self._cache_key:
+                    return self._cache_action
         action: Optional[str]
         try:
-            reply = self._llm.generate(self._prompt(text), system=_LLM_SYSTEM)
+            reply = collect_llm_text(
+                self._llm,
+                self._prompt(text),
+                system=_LLM_SYSTEM,
+                cancel_event=cancel_event,
+            )
             action = _parse_action(reply)
+        except LLMCallCancelled:
+            raise
         except Exception:  # noqa: BLE001 - routing must never break a turn
             log.exception("capability-router LLM failed; keeping the heuristic action")
             action = None
         if key:
-            self._cache_key, self._cache_action = key, action
+            with self._cache_lock:
+                self._cache_key, self._cache_action = key, action
         return action
 
     @staticmethod

@@ -3,36 +3,32 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-10 on Linux ROG, branch
-`fix/ollama-native-stream-cancel`. Full headless suite: 2564 passed, 24 skipped,
-9 existing warnings; real-model/replay tier: 5 passed, 12 skipped; required
-APM/DTD gate: 6 passed; whitespace passed. Host doctor reported READY this
-session with the actual EC route/models/Ollama. No human-speech A/B was run.
+Last verified: 2026-07-10 on Linux ROG, `fix/cancellable-final-preprocessing`;
+full headless: 2636 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+12 skipped; APM/DTD: 6 passed; whitespace passed; host doctor READY outside the
+sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
 
 ## Runtime
 
 - Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
-- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local
-  text/answering tier and gemma3:12b remains the complex/vision main tier
-  (ADR-0020). Resolved console routing passed; warm MiniCPM TTFT measured
-  0.10–0.11 s at 1.1 GB VRAM. Streaming ASR has asynchronous SenseVoice finals.
+- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local text tier
+  and gemma3:12b remains the complex/vision main tier (ADR-0020). Warm MiniCPM
+  TTFT measured 0.10–0.11 s at 1.1 GB VRAM; ASR has async SenseVoice finals.
 - Current host capture is routed through PipeWire `echo-cancel-source` and output
   through `echo-cancel-sink`. GTCRN denoise is active. Word-cut is the active
-  open-speaker barge path; in-app AEC/APM are off on this host (ADR-0013).
+  open-speaker barge path; in-app AEC/APM are off (ADR-0013). EC nodes and
+  Ollama are manually active for this session, not persistent boot services.
 - The host-local InputAGC flag remains on. Prior ear grading found pumping, while
   low-level word-cut evidence favored gain; do not flip it without a live A/B.
-- PipeWire EC nodes and the manually started Ollama daemon are active for this
-  session, not yet configured as persistent boot services.
 
 ## Voice reliability now implemented
 
 - VAD owns live ASR segments and the acoustic endpoint clock. Idle PCM is capped
   to 0.8 s pre-roll; complete speech is retained through the configured rule-3
   and endpoint bound. A configured VAD must observe speech before a final reaches
-  SenseVoice, identity, addressing, or the LLM (ADR-0017).
-- The no-VAD fallback remains bounded but keeps audio before a delayed first
-  partial and lets SenseVoice use owned-PCM duration.
+  SenseVoice, identity, addressing, or the LLM; the no-VAD fallback stays bounded
+  but retains audio before a delayed first partial (ADR-0017).
 - Word-cut uses an isolated playback recognizer and bounded candidate-only PCM.
   A confirmed cut replays/splices that PCM exactly once into normal ASR and the
   finalizer. A 300 ms onset ring preserves speech before delayed VAD activation.
@@ -60,6 +56,14 @@ session with the actual EC route/models/Ollama. No human-speech A/B was run.
   Production Ollama streams additionally cancel an owned async request. A real,
   no-mic MiniCPM cancel ended in 135.9 ms with zero pieces and healthy follow-up
   (ADR-0022); sync generate, arbitrary providers, and llama.cpp remain bounded.
+- Addressing, cleanup, and both routing layers now run behind a separate bounded
+  cancellable final-preprocessing lease before any AgentTask exists (ADR-0023).
+  Partial/final/direct input fences every unheard output; assistant add-ons retain
+  lineage across gates, bus backlog, completion, and actual playback admission.
+  Queued stream/aux audio, controls, confirmations, follow-ups, memory writes, and
+  shutdown have generation/epoch ownership and cannot resurrect stale work. A
+  real no-mic MiniCPM gate cancel took 157.9 ms with zero old pieces and a healthy
+  ACT/follow-up.
 
 ## Live evidence and limits
 
@@ -79,21 +83,17 @@ session with the actual EC route/models/Ollama. No human-speech A/B was run.
   claim these live-validated until they actually run.
 
 ## Standard verification
-
 ```bash
 /home/dobo/work/speaker/.venv/bin/python -m pytest tests -q
 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q
 git diff --check
 ```
 
-Real models: `python tools/run_tests.py real_model`. Host preflight:
-`python -m tools.doctor`.
+Real models: `python tools/run_tests.py real_model`; host: `python -m tools.doctor`.
 
 ## Operating policy
-
-- Current queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md`
-  and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.
+- Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and
+  `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.
 - Direct merge/push to `main` is authorized during development only after every
   required gate is green (ADR-0014). Never land a red suite.
-- Do not delete logs/expose secrets/claim unrun hardware validation. Public-history
-  PII cleanup stays owner-deferred (ADR-0008); do not rewrite history now.
+- Do not delete logs/expose secrets/claim unrun hardware validation; public-history PII cleanup stays owner-deferred with no history rewrite (ADR-0008).

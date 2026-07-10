@@ -264,7 +264,39 @@ class MetricsRecorder:
             if self._completed:
                 self._completed[-1].stamps.setdefault(SUPERSEDED, self._clock())
 
-    def mark_merged_turn(self) -> None:
+    def _turn_for_token_locked(self, turn_token: int) -> Optional[TurnRecord]:
+        if self._current is not None and self._current.turn_token == turn_token:
+            return self._current
+        return next(
+            (
+                record
+                for record in reversed(self._completed)
+                if record.turn_token == turn_token
+            ),
+            None,
+        )
+
+    def mark_arrival_superseded_turn(
+        self,
+        turn_token: Optional[int] = None,
+    ) -> None:
+        """Stamp work fenced at final arrival before the replacement opens.
+
+        Production usually already opened the replacement with ``SPEECH_END``,
+        so the victim is the last completed record. Scripted/no-engine-metric
+        paths may still have the victim open; use that only when nothing has
+        been banked yet.
+        """
+        with self._lock:
+            target = (
+                self._turn_for_token_locked(int(turn_token))
+                if turn_token is not None
+                else (self._completed[-1] if self._completed else self._current)
+            )
+            if target is not None:
+                target.stamps.setdefault(SUPERSEDED, self._clock())
+
+    def mark_merged_turn(self, turn_token: Optional[int] = None) -> None:
         """Stamp the most-recently-banked turn as folded into a merged follow-up.
 
         Continuation merge has the same metrics shape as newest-input-wins: the
@@ -275,10 +307,15 @@ class MetricsRecorder:
         checked normally.
         """
         with self._lock:
-            if self._completed:
+            target = (
+                self._turn_for_token_locked(int(turn_token))
+                if turn_token is not None
+                else (self._completed[-1] if self._completed else None)
+            )
+            if target is not None:
                 now = self._clock()
-                self._completed[-1].stamps.setdefault(MERGED, now)
-                self._completed[-1].stamps.setdefault(SUPERSEDED, now)
+                target.stamps.setdefault(MERGED, now)
+                target.stamps.setdefault(SUPERSEDED, now)
 
     def close_turn(self) -> None:
         """Bank the open turn (call once a replayed utterance has settled)."""

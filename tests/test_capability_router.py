@@ -42,6 +42,9 @@ class FakeLLM:
             raise RuntimeError("llm down")
         return self.reply
 
+    def stream(self, prompt: str, *, system: str | None = None):
+        yield self.generate(prompt, system=system)
+
 
 # --- heuristic floor ---------------------------------------------------------
 

@@ -187,10 +187,9 @@ class TaskRuntime:
         def emit(sentence: str) -> None:
             if task.cancel_event.is_set() or not sentence:
                 return
-            # First real spoken sentence: from here on a follow-up can no longer
-            # be merged into this turn (the audio is already out), so the
-            # continuation gate switches to "queue a continuation behind it".
-            task.started_speaking = True
+            # Runtime admission, not queue publication, marks started_speaking:
+            # a continuation can still cancel this unheard sentence while the
+            # TTS event waits behind higher-priority bus work.
             self._publish(
                 AgentEvent(
                     EventKind.TTS_REQUEST,
@@ -229,7 +228,14 @@ class TaskRuntime:
             # whose lifecycle event we never saw, so the dict can't creep.
             self._reap_dead_locked()
             self._threads[task.task_id] = thread
-        thread.start()
+            # Start while the registry lock is held. A just-created Thread is
+            # not alive yet; exposing it before start let active_count reap it
+            # and undercount a provider that then began running untracked.
+            try:
+                thread.start()
+            except BaseException:
+                self._threads.pop(task.task_id, None)
+                raise
 
     @property
     def active_count(self) -> int:
@@ -512,6 +518,10 @@ class TaskRuntime:
             task.task_id, time.time() - task.created_at, len(task.output_text or ""),
         )
         self._reap(task.task_id)
+        result_data = task.metadata.get("result_data", {})
+        streamed = bool(
+            isinstance(result_data, dict) and result_data.get("streamed")
+        )
         self._publish(
             AgentEvent(
                 EventKind.TASK_COMPLETED,
@@ -522,7 +532,7 @@ class TaskRuntime:
                     "text": task.output_text,
                     "speak": bool(task.metadata.get("speak", True)),
                     "followup": bool(task.metadata.get("followup")),
-                    "data": task.metadata.get("result_data", {}),
+                    "data": result_data,
                     "citations": task.metadata.get("citations", ()),
                     # Carry the epoch stamped when this task started so the
                     # supervisor can drop a completion whose turn was superseded
@@ -533,6 +543,17 @@ class TaskRuntime:
                 priority=60,
             )
         )
+        if streamed:
+            # All sentence TTS events were published before completion.  This
+            # lower-priority marker drains after them and releases the completed
+            # stream's queued-audio ownership in the supervisor.
+            self._publish(
+                AgentEvent(
+                    EventKind.TTS_STREAM_END,
+                    {"task_id": task.task_id, "epoch": task.speech_epoch},
+                    priority=110,
+                )
+            )
 
     def _publish_cancelled(self, task: AgentTask) -> None:
         terminal = task.claim_terminal(TaskState.CANCELLED)
@@ -579,6 +600,8 @@ class TaskRuntime:
                     "speak": bool(task.metadata.get("speak", True)),
                     "followup": bool(task.metadata.get("followup")),
                     "epoch": task.speech_epoch,
+                    "input_epoch": task.metadata.get("input_epoch"),
+                    "input_generation": task.metadata.get("input_generation"),
                 },
                 priority=25,
             )

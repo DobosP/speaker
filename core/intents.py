@@ -127,13 +127,25 @@ class LocalIntentHandler:
         self._schedule = scheduler or _default_scheduler
         self.enabled = enabled
         self._timers: list[Callable[[], None]] = []
+        self._lock = threading.Lock()
+        self._generation = 0
+
+    def bind_speak(self, speak: Callable[[str], None]) -> None:
+        """Rebind output to a runtime-owned admission seam."""
+        with self._lock:
+            self._speak = speak
+
+    def _emit(self, text: str) -> None:
+        with self._lock:
+            speak = self._speak
+        speak(text)
 
     def handle(self, text: str) -> bool:
         if not self.enabled or not text:
             return False
         phrase = self._phrases.get(text.lower().strip())
         if phrase is not None:
-            self._speak(phrase)
+            self._emit(phrase)
             return True
         match = self._grammar.match(text)
         if match is None:
@@ -143,23 +155,25 @@ class LocalIntentHandler:
 
     def cancel_all(self) -> None:
         """Cancel pending scheduled actions (called on stop / barge-in)."""
-        for cancel in self._timers:
+        with self._lock:
+            self._generation += 1
+            timers, self._timers = self._timers, []
+        for cancel in timers:
             try:
                 cancel()
             except Exception:
                 pass
-        self._timers.clear()
 
     def _do_time(self, _slots: dict) -> bool:
         now = self._clock()
         hour = now.hour % 12 or 12
         ampm = "AM" if now.hour < 12 else "PM"
-        self._speak(f"It's {hour}:{now.minute:02d} {ampm}.")
+        self._emit(f"It's {hour}:{now.minute:02d} {ampm}.")
         return True
 
     def _do_date(self, _slots: dict) -> bool:
         now = self._clock()
-        self._speak(now.strftime("Today is %A, %B ") + f"{now.day}.")
+        self._emit(now.strftime("Today is %A, %B ") + f"{now.day}.")
         return True
 
     def _do_timer(self, slots: dict) -> bool:
@@ -167,9 +181,22 @@ class LocalIntentHandler:
         if not seconds or seconds <= 0:
             return False  # unparseable duration -> let the normal path handle it
         label = human_duration(seconds)
-        cancel = self._schedule(
-            float(seconds), lambda: self._speak(f"Time's up. Your {label} timer is done.")
-        )
-        self._timers.append(cancel)
-        self._speak(f"Okay, timer set for {label}.")
+        with self._lock:
+            generation = self._generation
+
+        def fire() -> None:
+            with self._lock:
+                if generation != self._generation:
+                    return
+            # The runtime-bound emitter performs its own terminal/shutdown
+            # admission check, closing the callback-entered-before-stop race.
+            self._emit(f"Time's up. Your {label} timer is done.")
+
+        cancel = self._schedule(float(seconds), fire)
+        with self._lock:
+            if generation == self._generation:
+                self._timers.append(cancel)
+            else:
+                cancel()
+        self._emit(f"Okay, timer set for {label}.")
         return True

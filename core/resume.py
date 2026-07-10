@@ -214,6 +214,13 @@ class ResumeTracker:
         """True iff ``text`` is (almost certainly) the assistant's own TTS echo:
         it arrived within ``echo_window_sec`` of playback ending AND reads like
         a recently spoken sentence (or their concatenation)."""
+        return self._is_self_echo(text, record=True)
+
+    def preview_self_echo(self, text: str) -> bool:
+        """Non-mutating echo check for arrival-time newest-input fencing."""
+        return self._is_self_echo(text, record=False)
+
+    def _is_self_echo(self, text: str, *, record: bool) -> bool:
         if not self._c.echo_guard_enabled:
             return False
         tokens = normalize_text(text).split()
@@ -259,7 +266,7 @@ class ResumeTracker:
             )
         else:
             hit = overlap >= self._c.echo_min_overlap
-        if hit:
+        if hit and record:
             with self._lock:
                 self.echo_dropped += 1
         return hit
@@ -267,6 +274,13 @@ class ResumeTracker:
     def resume_prompt(self, text: str) -> Optional[str]:
         """The synthesized continue-prompt iff ``text`` is a resume request and
         the previous reply was CUT mid-way; ``None`` otherwise (normal flow)."""
+        return self._resume_prompt(text, consume=True)
+
+    def preview_resume_prompt(self, text: str) -> Optional[str]:
+        """Non-mutating resume check for pre-task dispatch commit guards."""
+        return self._resume_prompt(text, consume=False)
+
+    def _resume_prompt(self, text: str, *, consume: bool) -> Optional[str]:
         if not self._c.enabled:
             return None
         if normalize_text(text) not in self._phrases:
@@ -276,6 +290,8 @@ class ResumeTracker:
                 return None
             tail = self._spoken[-self._c.spoken_tail_chars:]
             query = self._query
-            self._cut = False  # consumed: a second "continue" continues the NEW turn
-            self.resumed += 1
+            if consume:
+                # Consumed: a second "continue" continues the NEW turn.
+                self._cut = False
+                self.resumed += 1
         return self._c.template.format(query=query, spoken_tail=tail)

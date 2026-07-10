@@ -233,23 +233,39 @@ class ReactPlanner:
             "Next step:"
         )
 
-    def _drain(self, tokens: Iterator[str], cancel: Optional[Event]) -> str:
+    def _drain(
+        self,
+        tokens: Iterator[str],
+        cancel: Optional[Event],
+        first_token_hook: Optional[Callable[[], None]] = None,
+    ) -> str:
         parts: list[str] = []
+        hook = first_token_hook or self._first_token_hook
         for token in tokens:
             if _cancelled(cancel):
                 break
-            if not parts and self._first_token_hook is not None:
+            if not parts and hook is not None:
                 # First model token of this drain -> mark the turn alive.
                 try:
-                    self._first_token_hook()
+                    hook()
                 except Exception:  # noqa: BLE001 - metrics stamping is best-effort
                     pass
             parts.append(token)
         return "".join(parts).strip()
 
     def _final(
-        self, query: str, observations: list[str], cancel: Optional[Event], recent: str = ""
+        self,
+        query: str,
+        observations: list[str],
+        cancel: Optional[Event],
+        recent: str = "",
+        first_token_hook: Optional[Callable[[], None]] = None,
+        claim_start: Optional[Callable[[], bool]] = None,
     ) -> str:
+        if _cancelled(cancel):
+            return ""
+        if claim_start is not None and not claim_start():
+            return ""
         gathered = "\n".join(observations) if observations else "(no findings)"
         # Prepend the recent conversation (when supplied) so the spoken answer keeps
         # the thread -- an escalated "tell me more about it" resolves "it".
@@ -261,10 +277,27 @@ class ReactPlanner:
             "Give the final spoken answer. If the findings do not actually help, "
             "ignore them and answer from your own knowledge."
         )
-        return self._drain(self._llm.stream(prompt, system=self._final_system()), cancel)
+        return self._drain(
+            self._llm.stream(prompt, system=self._final_system()),
+            cancel,
+            first_token_hook,
+        )
 
     def run(self, query: str, context: Mapping[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")  # type: ignore[assignment]
+        scoped_hook = context.get("first_token_hook")
+        first_token_hook = scoped_hook if callable(scoped_hook) else self._first_token_hook
+        scoped_claim = context.get("claim_provider_start")
+
+        def claim_start() -> bool:
+            if _cancelled(cancel):
+                return False
+            if not callable(scoped_claim):
+                return True
+            try:
+                return bool(scoped_claim())
+            except Exception:  # noqa: BLE001 - never start after a broken guard
+                return False
         # Bounded recent-conversation block the runtime publishes (core.capabilities
         # RECENT_CONVERSATION_KEY) so an escalated turn keeps the conversation
         # thread; absent on a bare/test invocation -> "" -> prompts unchanged.
@@ -291,11 +324,14 @@ class ReactPlanner:
             # barge-in/STOP between chunks aborts mid-planning instead of blocking
             # on ``generate()``. ``_drain`` strips, which is parse-neutral:
             # ``_parse_step`` strips again before matching TOOL/FINAL.
+            if not claim_start():
+                return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
             raw = self._drain(
                 self._llm.stream(
                     self._plan_prompt(query, observations, recent), system=PLANNER_SYSTEM
                 ),
                 cancel,
+                first_token_hook,
             )
             if _cancelled(cancel):
                 return CapabilityResult(
@@ -309,19 +345,33 @@ class ReactPlanner:
             # often complies on the reminder. Bounded to once per plan (latency).
             if action is None and reprompt_budget > 0:
                 reprompt_budget -= 1
+                if not claim_start():
+                    return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
                 raw = self._drain(
                     self._llm.stream(
                         self._plan_prompt(query, observations, recent) + "\n\n" + _FORMAT_REMINDER,
                         system=PLANNER_SYSTEM,
                     ),
                     cancel,
+                    first_token_hook,
                 )
                 if _cancelled(cancel):
                     return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
                 action, arg = _parse_step(raw)
 
             if action is None or action.upper() == "FINAL":
-                text = arg if (action and arg) else self._final(query, observations, cancel, recent)
+                text = (
+                    arg
+                    if (action and arg)
+                    else self._final(
+                        query,
+                        observations,
+                        cancel,
+                        recent,
+                        first_token_hook,
+                        claim_start,
+                    )
+                )
                 return CapabilityResult(
                     True,
                     text or "Sorry, I couldn't work that out.",
@@ -333,7 +383,11 @@ class ReactPlanner:
                 observations.append(f"(tool '{action}' is unavailable)")
                 continue
 
+            if not claim_start():
+                return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
             result = self._registry.invoke(action, arg or query, dict(context))
+            if _cancelled(cancel):
+                return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
             steps_taken.append(action)
             if result.ok:
                 # Prompt-injection hardening (OWASP LLM01): web/external (egress)
@@ -350,7 +404,14 @@ class ReactPlanner:
                 observations.append(f"{action} failed: {result.error}")
 
         # Step budget exhausted -> synthesize whatever we have.
-        text = self._final(query, observations, cancel, recent)
+        text = self._final(
+            query,
+            observations,
+            cancel,
+            recent,
+            first_token_hook,
+            claim_start,
+        )
         return CapabilityResult(
             True,
             text or "Sorry, I couldn't work that out.",

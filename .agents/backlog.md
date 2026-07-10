@@ -254,9 +254,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       Phone-class Python profiles share one Q4 llama.cpp context. Headless model
       probes, resolved console turns, replay, logic, and APM/DTD gates passed.
       REMAINING: bare-speaker human A/B for answer quality, first audio, sustained
-      talk-over, silent control, and reply-tail continuity; provider-native
-      pre-first-token cancellation; evaluate MiniCPM native XML tools behind a
-      dedicated adapter; Flutter stays Gemma until a validated runtime exists.
+      talk-over, silent control, and reply-tail continuity. Task-level pre-token
+      cancellation + bounded abandoned calls shipped in ADR-0021; transport hard
+      abort remains (async Ollama task cancellation / process-isolated llama.cpp).
+      Also evaluate MiniCPM native XML tools behind a dedicated adapter; Flutter
+      stays Gemma until a validated runtime exists.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds
@@ -433,10 +435,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       module-level `_INPUT_SHIM_LOCK` (RLock) held across the whole `_auto_answer`
       window serializes the process-global swap; also sound because the shared
       interpreter was never safe to drive concurrently (tests/test_core_agent.py).
-- [ ] **Task worker can outlive its supervisor reap** (always_on_agent/supervisor.py
-      ~479-484 + tasks.py `_reap`): reap pops active_tasks + sets cancel_event but never
-      joins the worker thread; bounded by daemon=True (dies at process exit) and
-      documented inline as intentional — revisit if leaked workers show up in bundles.
+- [~] **Task worker can outlive its supervisor reap** — task coordinators now
+      retire promptly on reap/barge and abandoned synchronous provider calls are
+      bulkhead-bounded (ADR-0021). REMAINING: provider compute itself cannot be
+      force-killed; add async Ollama task cancellation and a version-verified
+      llama.cpp abort/process boundary before claiming hard transport cancellation.
 - [x] **Unbounded queued_tasks list + runlog logging queue** — DONE 2026-07-07:
       `_queue_task` bounded admission (`max_queued_tasks=32` ctor default; drop-OLDEST
       non-continuation victim, cancelled + one spoken notice per storm); runlog queue

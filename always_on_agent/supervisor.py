@@ -373,8 +373,12 @@ class AgentSupervisor:
             self.state.turn_owner_verified = bool(owner_verified)
             self.state.turn_origin = str(origin)
             self.state.turn_metadata = (
-                {"latency_policy": metadata["latency_policy"]}
-                if isinstance(metadata, Mapping) and "latency_policy" in metadata
+                {
+                    key: metadata[key]
+                    for key in ("latency_policy", "metrics_turn_token")
+                    if key in metadata
+                }
+                if isinstance(metadata, Mapping)
                 else {}
             )
         observation = self.analyzer.observe(text, is_final=is_final)
@@ -562,9 +566,9 @@ class AgentSupervisor:
         The controller's "never get stuck waiting for output" backstop: a
         capability that blocks uninterruptibly inside a step (a hung generate, a
         network read with no timeout) is cancelled and dropped from active_tasks
-        here, so the supervisor stops treating it as live -- even though the
-        daemon worker may still be blocked (it exits when its own I/O finally
-        returns, or it leaks harmlessly as a daemon).
+        here, so the supervisor stops treating it as live.  TaskRuntime's
+        registered coordinator exits promptly; its bounded daemon provider may
+        remain blocked until its own I/O returns or times out.
 
         Safe to call from the watchdog tick thread: the active_tasks mutation is
         done under ``_cancel_lock`` exactly like ``cancel_all`` and ``cancel``
@@ -583,8 +587,12 @@ class AgentSupervisor:
             for task in list(self.state.active_tasks.values()):
                 if task.deadline_at and now >= task.deadline_at:
                     self.state.active_tasks.pop(task.task_id, None)
-                    task.cancel()
-                    reaped.append(task)
+                    # Reserve the sole terminal event atomically with cancel so
+                    # the now-responsive task coordinator cannot publish a
+                    # duplicate TASK_CANCELLED while the watchdog is preparing
+                    # the authoritative ``reaped`` event below.
+                    if task.cancel_and_claim_terminal():
+                        reaped.append(task)
             epoch = self.speech_epoch
         for task in reaped:
             log.warning(
@@ -792,6 +800,16 @@ class AgentSupervisor:
             if not self.state.turn_owner_verified:
                 pending.metadata["owner_verified"] = False
                 pending.metadata["origin"] = self.state.turn_origin
+            # FOLD mutates an already-created queued task, so bind its delayed
+            # first-token metrics to the newest add-on's ASR turn just as
+            # _create_task would. Otherwise a valid future token is rejected as
+            # belonging to the older add-on and the watchdog sees a false stall.
+            if "metrics_turn_token" in self.state.turn_metadata:
+                pending.metadata["metrics_turn_token"] = self.state.turn_metadata[
+                    "metrics_turn_token"
+                ]
+            else:
+                pending.metadata.pop("metrics_turn_token", None)
             self._record_addon(addon)
             log.info("continuation FOLD: add-on merged into queued %s", pending.task_id)
             return True

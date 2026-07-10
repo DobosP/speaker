@@ -43,12 +43,14 @@ class ScriptLLM:
         self._plan = list(plan_replies)
         self._final = final
         self.plan_prompts: list[str] = []
+        self.stream_calls = 0
 
     def generate(self, prompt: str, *, system=None) -> str:
         self.plan_prompts.append(prompt)
         return self._plan.pop(0) if self._plan else "FINAL: fallback"
 
     def stream(self, prompt: str, *, system=None) -> Iterator[str]:
+        self.stream_calls += 1
         if system == FINAL_SYSTEM:
             yield self._final
             return
@@ -114,6 +116,24 @@ def test_planner_cancels_before_first_step():
     cancel.set()
     result = planner.run("q", {"cancel_event": cancel})
     assert result.data.get("cancelled") is True
+
+
+def test_tool_cancellation_cannot_launch_post_budget_final_model_call():
+    cancel = Event()
+    registry = CapabilityRegistry()
+
+    def cancelling_tool(query, context):
+        cancel.set()
+        return CapabilityResult(True, "late tool result")
+
+    registry.register("cancel.tool", cancelling_tool)
+    llm = ScriptLLM(["TOOL cancel.tool: x"], final="must not run")
+    planner = ReactPlanner(llm, registry, max_steps=1, tools=("cancel.tool",))
+
+    result = planner.run("q", {"cancel_event": cancel})
+
+    assert result.data.get("cancelled") is True
+    assert llm.stream_calls == 1
 
 
 def test_should_escalate_distinguishes_gathering_from_chitchat():

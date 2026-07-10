@@ -4,11 +4,10 @@ Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
 Last verified: 2026-07-10 on Linux ROG, branch
-`feat/minicpm5-answering-tier`. Full headless suite: 2527 passed, 24 skipped,
-9 existing warnings. Real-model/replay tier: 5 passed, 12 skipped. Required
-APM/DTD gate: 6 passed; whitespace gate passed. Host doctor reported READY with
-the actual EC audio route, selected models, and local Ollama. No human-speech
-A/B was run.
+`fix/pretoken-llm-cancellation`. Full headless suite: 2538 passed, 24 skipped,
+9 existing warnings; real-model/replay tier: 5 passed, 12 skipped; required
+APM/DTD gate: 6 passed; whitespace passed. Host doctor reported READY this
+session with the actual EC route/models/Ollama. No human-speech A/B was run.
 
 ## Runtime
 
@@ -16,9 +15,8 @@ A/B was run.
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
 - Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local
   text/answering tier and gemma3:12b remains the complex/vision main tier
-  (ADR-0020). The resolved console path passed simple/long-form routing; the
-  model probe measured warm MiniCPM TTFT at 0.10–0.11 s and 1.1 GB VRAM.
-  Streaming ASR is followed by asynchronous SenseVoice finals.
+  (ADR-0020). Resolved console routing passed; warm MiniCPM TTFT measured
+  0.10–0.11 s at 1.1 GB VRAM. Streaming ASR has asynchronous SenseVoice finals.
 - Current host capture is routed through PipeWire `echo-cancel-source` and output
   through `echo-cancel-sink`. GTCRN denoise is active. Word-cut is the active
   open-speaker barge path; in-app AEC/APM are off on this host (ADR-0013).
@@ -57,14 +55,17 @@ A/B was run.
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
   Windows voice-communications/word-cut is unavailable until a constructible,
   verified capture API replaces the unsupported setting (ADR-0019).
+- Synchronous capabilities run behind bounded cancellable task coordinators.
+  Barge/timeout retires a pre-token task, stale TTS/TTFT and duplicate terminals
+  are blocked; abandoned providers cap at the configured limit, six here (ADR-0021). Native
+  compute is bounded but not force-killed; transport hard-abort remains open.
 
 ## Live evidence and limits
 
-- Pre-fix run `20260710-084939` opened the real EC-routed mic and all models but,
-  with nobody speaking, emitted raw/final `AND` about every two seconds.
-- Post-fix runs `20260710-093305` and `20260710-100432` used the real route/models
-  for near-silence and emitted no ASR final or `AND` storm. The latest exercised
-  the integrated route/runtime build for 20 s. No audio was recorded.
+- Pre-fix run `20260710-084939` opened the real EC-routed mic/models but, with
+  nobody speaking, emitted raw/final `AND` about every two seconds.
+- Post-fix runs `20260710-093305`/`100432` used the real route/models for
+  near-silence: no final/`AND` storm in the latest 20 s; no audio was recorded.
 - Capture reopen, fallback, and changed-domain recalibration have deterministic
   headless coverage only; no live device unplug/switch validation was run.
 - A real word-cut occurred once on this rig on 2026-07-07, but the merged tail and
@@ -94,6 +95,5 @@ Real models: `python tools/run_tests.py real_model`. Host preflight:
   and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.
 - Direct merge/push to `main` is authorized during development only after every
   required gate is green (ADR-0014). Never land a red suite.
-- Do not delete logs, expose secrets, or claim hardware validation that did not
-  run. Public-history/PII cleanup remains owner-deferred at the release gate
-  (ADR-0008); do not force-push or run history rewriting now.
+- Do not delete logs/expose secrets/claim unrun hardware validation. Public-history
+  PII cleanup stays owner-deferred (ADR-0008); do not rewrite history now.

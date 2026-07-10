@@ -145,6 +145,30 @@ def test_mark_first_token_passes_through_without_recorder():
     assert list(mark_first_token(iter(["a", "b"]), None)) == ["a", "b"]
 
 
+def test_task_scoped_first_token_cannot_stamp_a_replacement_turn():
+    rec = MetricsRecorder()
+    rec.mark(ASR_FINAL)
+    old_turn = rec.current_turn_token()
+    rec.mark(ASR_FINAL)  # bank old + open replacement
+
+    rec.mark(LLM_FIRST_TOKEN, turn_token=old_turn)
+
+    assert LLM_FIRST_TOKEN not in rec.records()[-1].stamps
+    assert rec.recent_ttft_ms() is None
+
+
+def test_reset_does_not_reuse_turn_token_held_by_abandoned_provider():
+    rec = MetricsRecorder()
+    rec.mark(ASR_FINAL)
+    stale_token = rec.current_turn_token()
+    rec.reset()
+    rec.mark(ASR_FINAL)
+
+    assert rec.current_turn_token() != stale_token
+    rec.mark(LLM_FIRST_TOKEN, turn_token=stale_token)
+    assert LLM_FIRST_TOKEN not in rec.records()[-1].stamps
+
+
 # --- control-plane-3: the TTS first-audio EWMA the watchdog scales off ---------
 
 

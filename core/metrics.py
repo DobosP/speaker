@@ -31,6 +31,10 @@ SUPERSEDED = "superseded"          # turn preempted by a newer final (newest-inp
 # A new utterance begins at whichever of these we see first (speech_end leads
 # asr_final, but the real streaming engine only knows the latter).
 _TURN_START = (SPEECH_END, ASR_FINAL)
+# Sentinel meaning "do not bind this stamp to a particular open turn".  ``None``
+# is a real token value: it represents the absence of an open turn at capture
+# time and must not later attach to a newly opened one.
+_ANY_TURN = object()
 
 
 def _delta(stamps: dict[str, float], a: str, b: str) -> Optional[float]:
@@ -44,6 +48,9 @@ class TurnRecord:
     """Stage stamps for one turn (seconds, ``perf_counter`` epoch) + deltas."""
 
     stamps: dict[str, float] = field(default_factory=dict)
+    # Internal monotonic identity used to bind delayed provider stamps to the
+    # turn that launched them. Excluded from serialized metrics via as_dict().
+    turn_token: int = 0
 
     @property
     def _anchor(self) -> Optional[str]:
@@ -108,6 +115,7 @@ class MetricsRecorder:
         self._lock = threading.Lock()
         self._current: Optional[TurnRecord] = None
         self._completed: list[TurnRecord] = []
+        self._next_turn_token = 1
         # Rolling local time-to-first-token estimate (milliseconds), updated as
         # ``llm_first_token`` is stamped against the open turn's ASR_FINAL
         # anchor. ``None`` until the first measurable turn -- the router treats
@@ -118,7 +126,14 @@ class MetricsRecorder:
         # adaptive "tts stuck" deadline (control-plane-3). None until first sample.
         self._tts_ewma_ms: Optional[float] = None
 
-    def mark(self, stage: str, *, fold_local_ttft: bool = True, at: Optional[float] = None) -> None:
+    def mark(
+        self,
+        stage: str,
+        *,
+        fold_local_ttft: bool = True,
+        at: Optional[float] = None,
+        turn_token: object = _ANY_TURN,
+    ) -> None:
         """Stamp ``stage`` on the open turn.
 
         ``fold_local_ttft`` (default True) controls only the LOCAL TTFT EWMA
@@ -136,9 +151,21 @@ class MetricsRecorder:
         true silence onset rather than when the endpointer fires ~0.8s later,
         so ``endpoint_latency`` stops reading 0 and the fixed trailing-silence
         cost becomes visible (lat-1). Must be a ``perf_counter`` value; a value
-        in any other clock epoch would corrupt the deltas."""
+        in any other clock epoch would corrupt the deltas.
+
+        ``turn_token`` optionally binds a delayed stamp to the opaque identity
+        returned by :meth:`current_turn_token`; if another turn is now open the
+        stale stamp is ignored atomically under the recorder lock."""
         now = self._clock() if at is None else float(at)
         with self._lock:
+            # Provider threads can outlive a cancelled turn.  A task-scoped
+            # first-token stamp is valid only while the monotonic turn token
+            # that launched it is still current; this closes check-then-mark
+            # races without coupling the recorder to AgentTask IDs.
+            if turn_token is not _ANY_TURN:
+                current_token = self._current.turn_token if self._current is not None else None
+                if current_token != turn_token:
+                    return
             if stage in _TURN_START:
                 # A repeat of the same start stage signals the next utterance:
                 # bank the open turn before opening a fresh one.
@@ -146,7 +173,8 @@ class MetricsRecorder:
                     self._completed.append(self._current)
                     self._current = None
                 if self._current is None:
-                    self._current = TurnRecord()
+                    self._current = TurnRecord(turn_token=self._next_turn_token)
+                    self._next_turn_token += 1
                 self._current.stamps.setdefault(stage, now)
             else:
                 # Mid-turn stamps only count once and only inside an open turn;
@@ -266,6 +294,11 @@ class MetricsRecorder:
                 out.append(self._current)
             return out
 
+    def current_turn_token(self) -> int | None:
+        """Return an opaque identity token for task-scoped future stamps."""
+        with self._lock:
+            return self._current.turn_token if self._current is not None else None
+
     def reset(self) -> None:
         with self._lock:
             self._current = None
@@ -279,19 +312,37 @@ def mark_first_token(
     recorder: Optional[MetricsRecorder],
     *,
     fold_local_ttft: bool = True,
+    cancel: Optional[threading.Event] = None,
+    turn_token: object = _ANY_TURN,
 ) -> Iterator[str]:
     """Wrap an LLM token stream to stamp ``llm_first_token`` on the first token.
 
     ``fold_local_ttft`` (default True) is forwarded to :meth:`MetricsRecorder.mark`
     so a caller that answered from a non-local source (a cloud hedge winner) can
     still stamp the turn while keeping the sample out of the LOCAL TTFT EWMA
-    (P4 low). The default preserves the historical fold-always behaviour."""
+    (P4 low). ``cancel`` prevents a token from an abandoned provider from
+    stamping whichever newer turn is currently open in the shared recorder.
+    The default preserves the historical fold-always behaviour."""
+    if cancel is not None and cancel.is_set():
+        return
     if recorder is None:
-        yield from tokens
+        for token in tokens:
+            if cancel is not None and cancel.is_set():
+                return
+            yield token
         return
     first = True
     for token in tokens:
+        # A provider can wake long after its task was cancelled and after a new
+        # turn became MetricsRecorder.current.  Gate *before* the stamp/yield so
+        # that stale token cannot poison the replacement turn's TTFT or watchdog.
+        if cancel is not None and cancel.is_set():
+            return
         if first:
-            recorder.mark(LLM_FIRST_TOKEN, fold_local_ttft=fold_local_ttft)
+            recorder.mark(
+                LLM_FIRST_TOKEN,
+                fold_local_ttft=fold_local_ttft,
+                turn_token=turn_token,
+            )
             first = False
         yield token

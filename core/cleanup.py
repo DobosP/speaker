@@ -27,7 +27,7 @@ import logging
 import re
 from typing import Iterable, Optional, Protocol, runtime_checkable
 
-from .llm import LLMClient
+from .llm import LLMCallCancelled, LLMClient, collect_llm_text
 
 log = logging.getLogger("speaker.cleanup")
 
@@ -112,7 +112,13 @@ class LLMTranscriptCleaner:
         signals = detect_signals(text)
         prompt = self._build_prompt(text, recent, signals)
         try:
-            reply = self._llm.generate(prompt, system=_SYSTEM_PROMPT)
+            reply = collect_llm_text(
+                self._llm,
+                prompt,
+                system=_SYSTEM_PROMPT,
+            )
+        except LLMCallCancelled:
+            raise
         except Exception:  # noqa: BLE001
             log.exception("cleanup LLM call failed; passing raw text through")
             return text

@@ -24,11 +24,13 @@ This module is the missing layer at the final-dispatch seam:
   capture thread (review finding rc-2: up to three blocking LLM calls per final
   ran on the capture thread, starving mic reads and the KWS poll).
 
-The decision logic (:class:`FinalCoalescer`) is pure + deterministic; the
-threading wrapper (:class:`FinalDispatcher`) is a single daemon worker + a
-condition variable, with a ``flush``/``stop`` contract for shutdown. Everything
-is config-gated (``turn_merge`` block; dataclass default OFF -> byte-identical
-behavior for programmatic construction; shipped config.json opts in).
+The decision logic (:class:`FinalCoalescer`) is pure + deterministic. The
+threading wrapper (:class:`FinalDispatcher`) uses one coordinator plus a bounded
+provider bulkhead: a newer final can retire an uncommitted preprocessing lease
+without letting cancellation-ignoring providers create unbounded threads.
+Hold-and-merge remains config-gated; runtimes with LLM preprocessing also use
+the cancellable dispatcher when merging is off so provider waits never block an
+engine callback.
 """
 from __future__ import annotations
 
@@ -43,6 +45,9 @@ from always_on_agent.text import normalize_text
 from .endpointing import DEFAULT_INCOMPLETE_ENDINGS
 
 log = logging.getLogger("speaker.turn_merge")
+
+DEFAULT_MAX_ACTIVE_DISPATCHES = 6
+_DISPATCH_CANCEL_POLL_SEC = 0.01
 
 # Words that, when they END a committed final, mean the thought very likely
 # continues. SUPERSET of the endpoint detector's conservative list: a false
@@ -142,37 +147,93 @@ class FinalCoalescer:
         return f"{prev.strip()} {addition.strip()}".strip()
 
 
+class FinalDispatchLease:
+    """Cancellation and terminal-commit token for one preprocessing chain.
+
+    A newer final can retire an uncommitted lease. ``claim_commit`` linearizes
+    the old terminal effects before or after that newer submission, preventing a
+    late gate result from publishing a stale task or mutating memory.
+    """
+
+    def __init__(
+        self,
+        owner: "FinalDispatcher",
+        generation: int,
+        *,
+        merge_next: bool = False,
+        coalesced: bool = False,
+        submitted_at: Optional[float] = None,
+        input_generation: Optional[int] = None,
+        input_epoch: Optional[int] = None,
+    ) -> None:
+        self._owner = owner
+        self.generation = generation
+        self.merge_next = bool(merge_next)
+        self.coalesced = bool(coalesced)
+        self.submitted_at = submitted_at
+        self.input_generation = input_generation
+        self.input_epoch = input_epoch
+        self.cancel_event = threading.Event()
+        self._committed = False
+
+    @property
+    def cancelled(self) -> bool:
+        return self.cancel_event.is_set()
+
+    def claim_commit(self) -> bool:
+        return self._owner._claim_lease_commit(self)
+
+
 class FinalDispatcher:
-    """Single-worker dispatch queue for finals, with hold-and-merge.
+    """Off-thread final dispatch with optional hold/merge and cancellation.
 
     ``submit`` is called from the engine/audio thread and only takes a lock +
     notifies (cheap, honoring core/engine.py's callback contract); the worker
     thread runs ``dispatch`` -- the full addressing/cleaner/router/publish
     chain -- when the hold window (0 for complete finals) expires. ``note_
     partial`` extends an open hold (the user resumed speaking; their next final
-    will merge), bounded by ``max_hold_sec``. ``stop`` flushes a pending final
-    through dispatch so shutdown never silently drops the user's words."""
+    will merge), bounded by ``max_hold_sec``. In cancellable mode, a coordinator
+    owns generation leases and provider calls run behind a bounded bulkhead;
+    shutdown retires uncommitted work instead of starting another LLM call."""
 
     def __init__(
         self,
-        dispatch: Callable[[str], None],
+        dispatch: Callable[..., None],
         config: Optional[TurnMergeConfig] = None,
         on_hold: Optional[Callable[[], None]] = None,
+        *,
+        cancellable: bool = False,
+        max_active_dispatches: int = DEFAULT_MAX_ACTIVE_DISPATCHES,
     ) -> None:
         self._dispatch = dispatch
         self._c = config or TurnMergeConfig()
         self._on_hold = on_hold
         self._coalescer = FinalCoalescer(self._c)
         self._cv = threading.Condition()
+        self._lifecycle_lock = threading.Lock()
+        self._stop_in_progress = False
         self._pending: Optional[str] = None
+        self._pending_submitted_at: Optional[float] = None
+        self._pending_input_generation: Optional[int] = None
+        self._pending_input_epoch: Optional[int] = None
         self._deadline = 0.0
         self._hold_started = 0.0
         self._dispatching = False
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._cancellable = bool(cancellable)
+        self._dispatch_slots = threading.BoundedSemaphore(
+            max(1, int(max_active_dispatches))
+        )
+        self._next_generation = 0
+        self._active_lease: Optional[FinalDispatchLease] = None
+        self._active_text: Optional[str] = None
+        self._pending_merge_next = False
+        self._pending_coalesced = False
         # Diagnostics (read by tests/run-bundle debugging).
         self.merged_count = 0
         self.held_count = 0
+        self.superseded_count = 0
 
     @property
     def has_pending(self) -> bool:
@@ -180,34 +241,111 @@ class FinalDispatcher:
             return self._pending is not None or self._dispatching
 
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._run, name="speaker-final-dispatch", daemon=True
-        )
-        self._thread.start()
+        with self._cv:
+            if self._stop_in_progress:
+                return
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._running = True
+            thread = threading.Thread(
+                target=self._run, name="speaker-final-dispatch", daemon=True
+            )
+            self._thread = thread
+            try:
+                # Publish + start atomically against stop()/a second start().
+                # The new coordinator simply waits on this condition until the
+                # lock is released.
+                thread.start()
+            except BaseException:
+                if self._thread is thread:
+                    self._thread = None
+                    self._running = False
+                raise
 
-    def submit(self, text: str) -> None:
+    def submit(
+        self,
+        text: str,
+        *,
+        submitted_at: Optional[float] = None,
+        input_generation: Optional[int] = None,
+        input_epoch: Optional[int] = None,
+    ) -> None:
         """Engine-thread entry: queue a final, merging into an open hold."""
         now = time.monotonic()
         with self._cv:
+            if not self._running:
+                log.debug("dropping final submitted to stopped dispatcher: %r", text)
+                return
+            active_hold_started: Optional[float] = None
+            coalesced_with_active = False
+            if (
+                self._cancellable
+                and self._active_lease is not None
+                and not self._active_lease._committed
+            ):
+                was_cancelled = self._active_lease.cancel_event.is_set()
+                self._active_lease.cancel_event.set()
+                active_text = self._active_text
+                if (
+                    not was_cancelled
+                    and self._pending is None
+                    and active_text
+                    and now <= self._hold_started + self._c.max_hold_sec
+                    and (
+                        self._active_lease.merge_next
+                        or (
+                            self._c.enabled
+                            and self._coalescer.should_hold(active_text)
+                        )
+                    )
+                ):
+                    text = self._coalescer.merge(active_text, text)
+                    active_hold_started = self._hold_started
+                    coalesced_with_active = True
+                    self.merged_count += 1
+                    log.info(
+                        "merged active fragment with continuation -> %r", text
+                    )
             if self._pending is None:
                 self._pending = text
-                self._hold_started = now
-                if self._coalescer.should_hold(text):
+                self._pending_submitted_at = submitted_at
+                self._pending_input_generation = input_generation
+                self._pending_input_epoch = input_epoch
+                self._pending_merge_next = False
+                self._pending_coalesced = coalesced_with_active
+                self._hold_started = (
+                    active_hold_started
+                    if active_hold_started is not None
+                    else now
+                )
+                if self._c.enabled and self._coalescer.should_hold(text):
                     self.held_count += 1
-                    self._deadline = now + self._c.hold_sec
+                    self._deadline = min(
+                        now + self._c.hold_sec,
+                        self._hold_started + self._c.max_hold_sec,
+                    )
                     self._note_hold()
                     log.debug("holding incomplete final %r for up to %.1fs",
                               text, self._c.hold_sec)
                 else:
                     self._deadline = now  # complete -> dispatch at once
-            else:
+            elif (
+                not self._cancellable
+                or self._pending_merge_next
+                or (
+                    self._c.enabled
+                    and self._coalescer.should_hold(self._pending)
+                )
+            ):
                 merged = self._coalescer.merge(self._pending, text)
                 self.merged_count += 1
                 log.info("merged held final with continuation -> %r", merged)
                 self._pending = merged
+                self._pending_submitted_at = submitted_at
+                self._pending_input_generation = input_generation
+                self._pending_input_epoch = input_epoch
+                self._pending_merge_next = False
+                self._pending_coalesced = True
                 extend = (
                     self._c.hold_sec if self._coalescer.should_hold(merged) else 0.0
                 )
@@ -216,19 +354,106 @@ class FinalDispatcher:
                 )
                 if extend > 0.0:
                     self._note_hold()
+            else:
+                # A complete final waiting only for preprocessing capacity is
+                # not a fragment. Newest input supersedes it; concatenating two
+                # complete utterances would manufacture a query the user never made.
+                self.superseded_count += 1
+                self._pending = text
+                self._pending_submitted_at = submitted_at
+                self._pending_input_generation = input_generation
+                self._pending_input_epoch = input_epoch
+                self._pending_merge_next = False
+                self._pending_coalesced = False
+                self._hold_started = now
+                if self._c.enabled and self._coalescer.should_hold(text):
+                    self.held_count += 1
+                    self._deadline = min(
+                        now + self._c.hold_sec,
+                        self._hold_started + self._c.max_hold_sec,
+                    )
+                    self._note_hold()
+                else:
+                    self._deadline = now
             self._cv.notify()
 
     def note_partial(self) -> None:
         """The user resumed speaking while a final is held: keep holding until
         their next final lands (bounded by ``max_hold_sec``)."""
         with self._cv:
+            if not self._running:
+                return
+            if not self._c.enabled:
+                # A dispatcher may exist solely to move LLM preprocessing off
+                # the audio thread. Without turn merging, resumed speech simply
+                # retires the premature final and waits for the next one.
+                if (
+                    self._cancellable
+                    and self._active_lease is not None
+                    and not self._active_lease._committed
+                ):
+                    self._active_lease.cancel_event.set()
+                self._pending = None
+                self._pending_submitted_at = None
+                self._pending_input_generation = None
+                self._pending_input_epoch = None
+                self._pending_merge_next = False
+                self._pending_coalesced = False
+                self._cv.notify_all()
+                return
+            if (
+                self._cancellable
+                and self._pending is None
+                and self._active_lease is not None
+                and not self._active_lease._committed
+                and not self._active_lease.cancel_event.is_set()
+                and self._active_text
+            ):
+                # Speech resumed before preprocessing committed. Retire that
+                # premature final and put its text back into the bounded hold so
+                # the next final can merge with it instead of losing the prefix.
+                self._active_lease.cancel_event.set()
+                self._pending = self._active_text
+                self._pending_submitted_at = self._active_lease.submitted_at
+                self._pending_input_generation = self._active_lease.input_generation
+                self._pending_input_epoch = self._active_lease.input_epoch
+                self._pending_merge_next = True
+                self._pending_coalesced = self._active_lease.coalesced
+                now = time.monotonic()
+                self._deadline = min(
+                    now + self._c.hold_sec,
+                    self._hold_started + self._c.max_hold_sec,
+                )
+                self.held_count += 1
+                self._note_hold()
             if self._pending is None:
                 return
+            self._pending_merge_next = True
             self._deadline = min(
                 time.monotonic() + self._c.hold_sec,
                 self._hold_started + self._c.max_hold_sec,
             )
             self._cv.notify()
+
+    def cancel_pending(self) -> None:
+        """Retire all pre-task work without blocking the caller.
+
+        Used by barge-in/stop control paths before they cut playback. Setting a
+        committed lease is still useful to downstream retirement checks; the
+        commit itself remains the point after which already-applied effects
+        cannot be rolled back.
+        """
+        with self._cv:
+            if self._active_lease is not None:
+                self._active_lease.cancel_event.set()
+            self._active_text = None
+            self._pending = None
+            self._pending_submitted_at = None
+            self._pending_input_generation = None
+            self._pending_input_epoch = None
+            self._pending_merge_next = False
+            self._pending_coalesced = False
+            self._cv.notify_all()
 
     def _note_hold(self) -> None:
         if self._on_hold is None:
@@ -245,18 +470,60 @@ class FinalDispatcher:
             self._cv.notify()
 
     def stop(self, timeout: float = 2.0) -> None:
-        """Flush + stop the worker. A pending final is dispatched, not dropped."""
+        """Stop the worker; reject a concurrent restart until stop returns."""
+        with self._lifecycle_lock:
+            with self._cv:
+                self._stop_in_progress = True
+            try:
+                self._stop_once(timeout)
+            finally:
+                with self._cv:
+                    self._stop_in_progress = False
+                    self._cv.notify_all()
+
+    def _stop_once(self, timeout: float) -> None:
+        """One serialized stop pass."""
+        if self._cancellable:
+            with self._cv:
+                self._running = False
+                if (
+                    self._active_lease is not None
+                    and not self._active_lease._committed
+                ):
+                    self._active_lease.cancel_event.set()
+                # Runtime shutdown must not start another potentially blocking
+                # LLM preprocessor. Uncommitted speech is retired with the session.
+                self._pending = None
+                self._pending_submitted_at = None
+                self._pending_input_generation = None
+                self._pending_input_epoch = None
+                self._pending_merge_next = False
+                self._pending_coalesced = False
+                self._cv.notify_all()
+            thread = self._thread
+            if thread is not None:
+                thread.join(timeout=timeout)
+                if not thread.is_alive() and self._thread is thread:
+                    self._thread = None
+            return
         self.flush()
         with self._cv:
             self._running = False
             self._cv.notify()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-            self._thread = None
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if not thread.is_alive() and self._thread is thread:
+                self._thread = None
         # The worker exited; if a straggler final is still pending (raced the
         # shutdown), dispatch it synchronously so the user's words aren't lost.
         with self._cv:
             text, self._pending = self._pending, None
+            self._pending_submitted_at = None
+            self._pending_input_generation = None
+            self._pending_input_epoch = None
+            self._pending_merge_next = False
+            self._pending_coalesced = False
         if text is not None:
             try:
                 self._dispatch(text)
@@ -264,6 +531,9 @@ class FinalDispatcher:
                 log.exception("final dispatch failed during stop()")
 
     def _run(self) -> None:
+        if self._cancellable:
+            self._run_cancellable()
+            return
         while True:
             with self._cv:
                 while self._running and self._pending is None:
@@ -277,6 +547,11 @@ class FinalDispatcher:
                     self._cv.wait(timeout=self._deadline - now)
                     continue
                 text, self._pending = self._pending, None
+                self._pending_submitted_at = None
+                self._pending_input_generation = None
+                self._pending_input_epoch = None
+                self._pending_merge_next = False
+                self._pending_coalesced = False
                 self._dispatching = True
             try:
                 self._dispatch(text)
@@ -284,5 +559,151 @@ class FinalDispatcher:
                 log.exception("final dispatch raised; turn dropped")
             finally:
                 with self._cv:
+                    self._dispatching = False
+                    self._cv.notify_all()
+
+    def _claim_lease_commit(self, lease: FinalDispatchLease) -> bool:
+        """Atomically linearize terminal effects against a newer submission."""
+        with self._cv:
+            if (
+                not self._running
+                or self._active_lease is not lease
+                or lease.cancel_event.is_set()
+                or lease._committed
+            ):
+                return False
+            lease._committed = True
+            return True
+
+    def _lease_can_start(self, lease: FinalDispatchLease) -> bool:
+        with self._cv:
+            return (
+                self._running
+                and self._active_lease is lease
+                and not lease.cancel_event.is_set()
+            )
+
+    def _run_cancellable(self) -> None:
+        """Coordinate bounded provider threads while newest input stays live."""
+        while True:
+            with self._cv:
+                while self._running and self._pending is None:
+                    self._cv.wait()
+                if not self._running:
+                    return
+                now = time.monotonic()
+                if now < self._deadline:
+                    self._cv.wait(timeout=self._deadline - now)
+                    continue
+                text, self._pending = self._pending, None
+                submitted_at, self._pending_submitted_at = (
+                    self._pending_submitted_at,
+                    None,
+                )
+                input_generation, self._pending_input_generation = (
+                    self._pending_input_generation,
+                    None,
+                )
+                input_epoch, self._pending_input_epoch = (
+                    self._pending_input_epoch,
+                    None,
+                )
+                merge_next, self._pending_merge_next = (
+                    self._pending_merge_next,
+                    False,
+                )
+                coalesced, self._pending_coalesced = (
+                    self._pending_coalesced,
+                    False,
+                )
+                self._next_generation += 1
+                lease = FinalDispatchLease(
+                    self,
+                    self._next_generation,
+                    merge_next=merge_next,
+                    coalesced=coalesced,
+                    submitted_at=submitted_at,
+                    input_generation=input_generation,
+                    input_epoch=input_epoch,
+                )
+                self._active_lease = lease
+                self._active_text = text
+                self._dispatching = True
+
+            acquired = False
+            while not acquired:
+                if not self._lease_can_start(lease):
+                    break
+                acquired = self._dispatch_slots.acquire(
+                    timeout=_DISPATCH_CANCEL_POLL_SEC
+                )
+            if not acquired or not self._lease_can_start(lease):
+                if acquired:
+                    self._dispatch_slots.release()
+                with self._cv:
+                    if self._active_lease is lease:
+                        self._active_lease = None
+                        self._active_text = None
+                        self._dispatching = False
+                        self._cv.notify_all()
+                continue
+
+            done = threading.Event()
+
+            def run_provider(
+                provider_text: str,
+                provider_lease: FinalDispatchLease,
+                provider_done: threading.Event,
+            ) -> None:
+                from .llm import LLMCallCancelled, capability_context
+
+                context = dict(capability_context.get())
+                context["cancel_event"] = provider_lease.cancel_event
+                context["final_dispatch_generation"] = provider_lease.generation
+                context_token = capability_context.set(context)
+                try:
+                    if not self._lease_can_start(provider_lease):
+                        return
+                    self._dispatch(provider_text, provider_lease)
+                except LLMCallCancelled:
+                    # Normal newest-input/shutdown control flow.
+                    pass
+                except Exception:  # noqa: BLE001 - one final must not kill dispatch
+                    log.exception("final dispatch raised; turn dropped")
+                finally:
+                    capability_context.reset(context_token)
+                    self._dispatch_slots.release()
+                    provider_done.set()
+                    with self._cv:
+                        self._cv.notify_all()
+
+            provider = threading.Thread(
+                target=run_provider,
+                args=(text, lease, done),
+                name=f"speaker-final-provider-{lease.generation}",
+                daemon=True,
+            )
+            try:
+                provider.start()
+            except BaseException:  # noqa: BLE001 - keep the coordinator alive
+                self._dispatch_slots.release()
+                log.exception("failed to start final provider thread")
+                done.set()
+
+            with self._cv:
+                while (
+                    not done.is_set()
+                    and (
+                        lease._committed
+                        or not lease.cancel_event.is_set()
+                    )
+                    and (self._running or lease._committed)
+                ):
+                    self._cv.wait(timeout=_DISPATCH_CANCEL_POLL_SEC)
+                if not self._running and not lease._committed:
+                    lease.cancel_event.set()
+                if self._active_lease is lease:
+                    self._active_lease = None
+                    self._active_text = None
                     self._dispatching = False
                     self._cv.notify_all()

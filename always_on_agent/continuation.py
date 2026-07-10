@@ -158,6 +158,8 @@ class HeuristicContinuationClassifier:
     classifiers) but the heuristic decides from the add-on alone.
     """
 
+    realtime_safe = True
+
     def __init__(self, config: Optional[ContinuationConfig] = None) -> None:
         cfg = config or ContinuationConfig()
         self._max_words = max(1, int(cfg.addon_max_words))
@@ -208,6 +210,8 @@ class HeuristicContinuationClassifier:
 class ScriptedContinuationClassifier:
     """Test fake: maps add-on text -> decision. Anything not in the map is
     ``default`` (defaults to :data:`NEW`). Records ``.calls`` for assertions."""
+
+    realtime_safe = True
 
     def __init__(
         self, mapping: Optional[dict[str, str]] = None, *, default: str = NEW

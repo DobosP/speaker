@@ -47,6 +47,31 @@ def test_mark_merged_turn_stamps_the_just_banked_turn():
     assert MERGED not in records[1].stamps
 
 
+def test_continuation_metrics_target_original_token_across_intermediate_turns():
+    rec = MetricsRecorder(clock=lambda: 1.0)
+    rec.mark(ASR_FINAL)
+    victim_token = rec.current_turn_token()
+    assert victim_token is not None
+    rec.mark(SPEECH_END)
+
+    # Later speech starts bank/open intermediate records before the delayed
+    # replacement task admits. Token targeting must still mark the true victim.
+    rec.mark(SPEECH_END)
+    rec.mark_arrival_superseded_turn(victim_token)
+    rec.mark(SPEECH_END)
+    rec.mark_merged_turn(victim_token)
+
+    records = rec.records()
+    victim = next(record for record in records if record.turn_token == victim_token)
+    assert MERGED in victim.stamps
+    assert SUPERSEDED in victim.stamps
+    assert all(
+        MERGED not in record.stamps
+        for record in records
+        if record.turn_token != victim_token
+    )
+
+
 class FakeClock:
     """Deterministic monotonic clock advanced by hand."""
 

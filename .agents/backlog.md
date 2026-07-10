@@ -256,10 +256,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       REMAINING: bare-speaker human A/B for answer quality, first audio, sustained
       talk-over, silent control, and reply-tail continuity. Task-level pre-token
       cancellation + bounded abandoned calls shipped in ADR-0021; production
-      Ollama streams now cancel their async request task (ADR-0022). A verified
-      llama.cpp abort/process boundary remains for phone-class native inference.
-      Also evaluate MiniCPM native XML tools behind a dedicated adapter; Flutter
-      stays Gemma until a validated runtime exists.
+      Ollama streams now cancel their async request task (ADR-0022). Pre-task
+      addressing/cleanup/routing leases, arrival-time output fencing, and
+      continuation reservations shipped in ADR-0023. A verified llama.cpp
+      abort/process boundary remains for phone-class native inference. Also
+      evaluate MiniCPM native XML tools behind a dedicated adapter; Flutter stays
+      Gemma until a validated runtime exists.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds

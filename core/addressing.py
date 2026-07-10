@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from typing import Iterable, Optional, Protocol, runtime_checkable
 
-from .llm import LLMClient
+from .llm import LLMCallCancelled, LLMClient, collect_llm_text
 
 log = logging.getLogger("speaker.addressing")
 
@@ -97,7 +97,13 @@ class LLMAddressingClassifier:
     def classify(self, text: str, recent: Iterable[str] = ()) -> str:
         prompt = self._build_prompt(text, recent)
         try:
-            reply = self._llm.generate(prompt, system=_SYSTEM_PROMPT)
+            reply = collect_llm_text(
+                self._llm,
+                prompt,
+                system=_SYSTEM_PROMPT,
+            )
+        except LLMCallCancelled:
+            raise
         except Exception:  # noqa: BLE001
             log.exception("addressing classifier LLM call failed; defaulting to UNSURE")
             return UNSURE

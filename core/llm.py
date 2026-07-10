@@ -124,6 +124,94 @@ class LLMClient(Protocol):
     ) -> Iterator[str]: ...
 
 
+class LLMCallCancelled(RuntimeError):
+    """Control-flow signal for a retired cancellable LLM invocation."""
+
+
+class _CombinedCancelEvent:
+    """Event-like OR over explicit and inherited cancellation sources."""
+
+    def __init__(self, *events: object) -> None:
+        self._events = tuple(event for event in events if event is not None)
+
+    def is_set(self) -> bool:
+        for event in self._events:
+            check = getattr(event, "is_set", None)
+            if not callable(check):
+                continue
+            try:
+                if check():
+                    return True
+            except Exception:
+                continue
+        return False
+
+
+def collect_llm_text(
+    llm: LLMClient,
+    prompt: str,
+    *,
+    system: Optional[str] = None,
+    cancel_event: object | None = None,
+) -> str:
+    """Collect a stream while preserving the provider's cancellation seam.
+
+    Pre-task classifiers historically called blocking ``generate()``. This
+    helper keeps their string-returning API but uses ``stream()`` so Ollama can
+    cancel before token one. Cancellation is distinct from provider failure and
+    never returns a partial classification/rewrite.
+    """
+    inherited = capability_context.get()
+    inherited_cancel = inherited.get("cancel_event")
+    if cancel_event is None:
+        effective_cancel = inherited_cancel
+    elif inherited_cancel is None or inherited_cancel is cancel_event:
+        effective_cancel = cancel_event
+    else:
+        effective_cancel = _CombinedCancelEvent(
+            inherited_cancel,
+            cancel_event,
+        )
+    context = dict(inherited)
+    if effective_cancel is not None:
+        context["cancel_event"] = effective_cancel
+    context_token = capability_context.set(context)
+    cancel_is_set = _CombinedCancelEvent(effective_cancel).is_set
+    stream = None
+    try:
+        if cancel_is_set():
+            raise LLMCallCancelled("LLM call cancelled before stream start")
+        stream = llm.stream(prompt, system=system)
+        pieces: list[str] = []
+        for piece in stream:
+            if cancel_is_set():
+                raise LLMCallCancelled("LLM call cancelled during stream")
+            if piece:
+                pieces.append(str(piece))
+        # Cancellation wins a simultaneous natural completion.
+        if cancel_is_set():
+            raise LLMCallCancelled("LLM call cancelled at stream completion")
+        return "".join(pieces)
+    except (Exception, asyncio.CancelledError) as exc:
+        # A provider commonly surfaces its own cancellation as an exception.
+        # If our retirement signal won the race, preserve the dedicated control
+        # flow instead of letting a gate mistake it for an ordinary failure and
+        # cache/fall back from a stale call.
+        if cancel_is_set() and not isinstance(exc, LLMCallCancelled):
+            raise LLMCallCancelled("LLM call cancelled during provider failure") from exc
+        raise
+    finally:
+        try:
+            closer = getattr(stream, "close", None)
+            if callable(closer):
+                try:
+                    closer()
+                except (Exception, asyncio.CancelledError):
+                    pass
+        finally:
+            capability_context.reset(context_token)
+
+
 class EchoLLM:
     """Deterministic fake LLM for tests and the offline console demo."""
 

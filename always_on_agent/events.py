@@ -21,6 +21,7 @@ class EventKind(str, Enum):
     TASK_CANCELLED = "task.cancelled"
     TASK_FAILED = "task.failed"
     TTS_REQUEST = "tts.request"
+    TTS_STREAM_END = "tts.stream_end"
     MEMORY_COMMIT = "memory.commit"
     FOLLOWUP_TICK = "followup.tick"
     # Engine -> brain: input-stream lifecycle. ``payload`` carries
@@ -80,28 +81,81 @@ class AgentEvent:
         )
 
     @classmethod
-    def stop(cls, reason: str = "voice") -> "AgentEvent":
-        return cls(EventKind.CONTROL_STOP, {"reason": reason}, priority=0)
+    def stop(
+        cls,
+        reason: str = "voice",
+        *,
+        already_cancelled: bool = False,
+        input_generation: int | None = None,
+        input_epoch: int | None = None,
+    ) -> "AgentEvent":
+        payload: dict[str, Any] = {
+            "reason": reason,
+            "already_cancelled": bool(already_cancelled),
+        }
+        if input_generation is not None:
+            payload["input_generation"] = int(input_generation)
+        if input_epoch is not None:
+            payload["input_epoch"] = int(input_epoch)
+        return cls(
+            EventKind.CONTROL_STOP,
+            payload,
+            priority=0,
+        )
 
     @classmethod
-    def mode(cls, mode: Mode, source: str = "voice") -> "AgentEvent":
+    def mode(
+        cls,
+        mode: Mode,
+        source: str = "voice",
+        *,
+        input_generation: int | None = None,
+        input_epoch: int | None = None,
+    ) -> "AgentEvent":
+        payload: dict[str, Any] = {"mode": mode.value, "source": source}
+        if input_generation is not None:
+            payload["input_generation"] = int(input_generation)
+        if input_epoch is not None:
+            payload["input_epoch"] = int(input_epoch)
         return cls(
             EventKind.CONTROL_MODE,
-            {"mode": mode.value, "source": source},
+            payload,
             priority=10,
         )
 
     @classmethod
-    def confirm(cls, source: str = "voice", *, owner_verified: bool = False) -> "AgentEvent":
+    def confirm(
+        cls,
+        source: str = "voice",
+        *,
+        owner_verified: bool = False,
+        input_generation: int | None = None,
+        input_epoch: int | None = None,
+    ) -> "AgentEvent":
         # A confirmation is itself a consequential action -- approving a staged
         # command. owner_verified defaults FAIL-CLOSED so an ambient/leaked "yes"
         # cannot approve a side-effecting task; only an owner-verified confirm can.
-        return cls(
-            EventKind.CONTROL_CONFIRM,
-            {"source": source, "owner_verified": bool(owner_verified)},
-            priority=5,
-        )
+        payload: dict[str, Any] = {
+            "source": source,
+            "owner_verified": bool(owner_verified),
+        }
+        if input_generation is not None:
+            payload["input_generation"] = int(input_generation)
+        if input_epoch is not None:
+            payload["input_epoch"] = int(input_epoch)
+        return cls(EventKind.CONTROL_CONFIRM, payload, priority=5)
 
     @classmethod
-    def deny(cls, source: str = "voice") -> "AgentEvent":
-        return cls(EventKind.CONTROL_DENY, {"source": source}, priority=5)
+    def deny(
+        cls,
+        source: str = "voice",
+        *,
+        input_generation: int | None = None,
+        input_epoch: int | None = None,
+    ) -> "AgentEvent":
+        payload: dict[str, Any] = {"source": source}
+        if input_generation is not None:
+            payload["input_generation"] = int(input_generation)
+        if input_epoch is not None:
+            payload["input_epoch"] = int(input_epoch)
+        return cls(EventKind.CONTROL_DENY, payload, priority=5)

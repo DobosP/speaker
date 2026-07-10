@@ -74,6 +74,160 @@ _ACT_MARKERS: tuple[str, ...] = (
     "volume", "brightness",
 )
 
+# Phrases that may introduce a genuine request before its action verb.  Strip
+# only complete leading phrases: an informational question such as "can you
+# explain how email works" then starts with ``explain`` and cannot be promoted
+# merely because ``email`` appears later.
+_EXPLICIT_ACTION_REQUEST_PREFIXES = frozenset({
+    "i would like you to", "i would like to", "i want you to", "i need you to",
+    "id like you to", "i want to", "i need to", "id like to",
+    "could you", "would you", "can you", "will you", "would you mind",
+    "do you mind", "help me", "please", "kindly",
+})
+_ACTION_REQUEST_PREFIXES: tuple[str, ...] = tuple(sorted(
+    (*_EXPLICIT_ACTION_REQUEST_PREFIXES, "just", "quickly"),
+    key=len,
+    reverse=True,
+))
+
+# A request prefix commonly selects the gerund ("would you mind turning the
+# lights off"). Rewrite only supported action verbs after such a prefix; this
+# must not become a general stemmer for informational prose.
+_REQUEST_GERUNDS = {
+    "turning": "turn", "switching": "switch", "setting": "set",
+    "opening": "open", "playing": "play", "pausing": "pause",
+    "resuming": "resume", "skipping": "skip", "muting": "mute",
+    "unmuting": "unmute", "sending": "send", "emailing": "email",
+    "texting": "text", "calling": "call", "scheduling": "schedule",
+    "creating": "create", "deleting": "delete", "removing": "remove",
+    "renaming": "rename",
+}
+
+# English phrasal verbs can place their particle after the object ("turn the
+# lights off").  These are the only action markers for which that separated
+# shape is accepted; keeping the set explicit avoids turning arbitrary words in
+# the middle of an informational question into an action.
+_SEPARABLE_ACT_MARKERS = frozenset({
+    "turn on", "turn off", "turn up", "turn down",
+    "switch on", "switch off",
+})
+
+# These leading terms can be terse commands ("volume down", "open calendar")
+# or topic fragments ("alarm fatigue", "open source"). Keep conservative ACT
+# fallback, but make it low-confidence so the configured fast model gets the
+# chance to disambiguate it.
+_AMBIGUOUS_ACT_MARKERS = frozenset({
+    "open", "play", "pause", "resume", "skip", "mute", "unmute",
+    "send", "email", "text", "call", "message", "schedule",
+    "delete", "remove", "rename",
+    "reminder", "timer", "alarm", "volume", "brightness",
+})
+
+# Explicit verb + device/object grammars that the old substring matcher caught
+# but a leading-marker matcher otherwise loses ("set timer", "lower volume").
+# The target must immediately follow bounded determiners, so informational text
+# such as "show me what alarm fatigue means" cannot match.
+_TARGETED_ACTION_VERBS = {
+    "timer": frozenset(
+        {"set", "start", "stop", "cancel", "reset", "create", "delete"}
+    ),
+    "alarm": frozenset(
+        {
+            "set", "start", "stop", "cancel", "reset", "create", "delete",
+            "snooze",
+        }
+    ),
+    "reminder": frozenset(
+        {"set", "add", "cancel", "create", "delete", "remove", "show", "list"}
+    ),
+    "volume": frozenset(
+        {"set", "change", "adjust", "raise", "lower", "increase", "decrease"}
+    ),
+    "brightness": frozenset(
+        {"set", "change", "adjust", "raise", "lower", "increase", "decrease"}
+    ),
+}
+_TARGET_ALIASES = {
+    "timers": "timer", "alarms": "alarm", "reminders": "reminder",
+}
+_TARGET_DETERMINERS = frozenset({"a", "an", "the", "my", "that", "this", "me"})
+
+
+def _normalize_action_text(text: str) -> str:
+    """Lowercase/collapse speech punctuation while retaining marker identity.
+
+    Control-command normalization deliberately removes digits and punctuation;
+    action routing cannot use it because ``call 911`` and custom markers such as
+    ``c++`` or ``open:`` need those characters to remain meaningful.
+    """
+    normalized = (text or "").casefold().replace("'", "").replace("’", "")
+    for separator in ",.?!;":
+        normalized = normalized.replace(separator, " ")
+    return " ".join(normalized.split())
+
+
+def _action_request_body(text: str) -> tuple[str, bool]:
+    """Normalized body plus whether an explicit request prefix was present."""
+    body = _normalize_action_text(text)
+    explicit_request = False
+    while body:
+        prefix = next(
+            (p for p in _ACTION_REQUEST_PREFIXES if body.startswith(f"{p} ")),
+            None,
+        )
+        if prefix is None:
+            break
+        body = body[len(prefix):].lstrip()
+        explicit_request = bool(
+            explicit_request or prefix in _EXPLICIT_ACTION_REQUEST_PREFIXES
+        )
+    if explicit_request and body:
+        first, separator, tail = body.partition(" ")
+        replacement = _REQUEST_GERUNDS.get(first)
+        if replacement is not None:
+            body = replacement + (separator + tail if separator else "")
+    return body, explicit_request
+
+
+def _command_action_marker(
+    body: str,
+    markers: Sequence[tuple[str, bool]],
+) -> Optional[str]:
+    """Return the leading command marker, never a mid-question substring.
+
+    ``bool`` records whether the configured marker ended in a space and
+    therefore historically required an argument (``"open "`` must not make a
+    bare ``"open"`` actionable).
+    """
+    words = body.split()
+    marker_requirements = dict(markers)
+    if len(words) >= 2:
+        verb = words[0]
+        index = 1
+        while index < len(words) and words[index] in _TARGET_DETERMINERS:
+            index += 1
+        if index < len(words):
+            target = _TARGET_ALIASES.get(words[index], words[index])
+            if (
+                target in marker_requirements
+                and verb in _TARGETED_ACTION_VERBS.get(target, ())
+                and (
+                    not marker_requirements[target]
+                    or index + 1 < len(words)
+                )
+            ):
+                return f"{verb} {target}"
+    for marker, requires_argument in markers:
+        if body.startswith(f"{marker} "):
+            return marker
+        if body == marker and not requires_argument:
+            return marker
+        if marker in _SEPARABLE_ACT_MARKERS and len(words) > 1:
+            verb, particle = marker.split()
+            if words[0] == verb and particle in words[1:]:
+                return marker
+    return None
+
 
 @dataclass(frozen=True)
 class RouteDecision:
@@ -118,7 +272,14 @@ class HeuristicCapabilityRouter:
     ) -> None:
         self._tier = tier_router or HeuristicRouter()
         self._commands = {normalize_command(p) for p in command_phrases if p}
-        self._act_markers = tuple(act_markers)
+        prepared = (
+            (_normalize_action_text(marker), marker.endswith(" "))
+            for marker in act_markers
+            if _normalize_action_text(marker)
+        )
+        self._act_markers = tuple(
+            sorted(prepared, key=lambda item: len(item[0]), reverse=True)
+        )
 
     def route(self, text: str, context: Mapping[str, object]) -> RouteDecision:
         q = (text or "").strip()
@@ -134,17 +295,36 @@ class HeuristicCapabilityRouter:
         #    so routing here never diverges from what the brain would have done.
         research = should_escalate(q, ctx)
 
-        # 3. ACT: an imperative that wants something DONE (not just answered).
-        act = any(m in ql for m in self._act_markers)
-        if act and not research:
-            return self._decision(q, ctx, ACT, MAIN, 0.7, "action marker")
+        # 3. ACT: a command-shaped imperative that wants something DONE (not an
+        #    informational question which merely contains an action noun/verb).
+        action_body, explicit_request = _action_request_body(q)
+        act_marker = _command_action_marker(
+            action_body,
+            self._act_markers,
+        )
+        if act_marker is not None and not research:
+            ambiguous = bool(
+                act_marker in _AMBIGUOUS_ACT_MARKERS and not explicit_request
+            )
+            return self._decision(
+                q,
+                ctx,
+                ACT,
+                MAIN,
+                0.5 if ambiguous else 0.7,
+                (
+                    "ambiguous leading action term"
+                    if ambiguous
+                    else "command-shaped action marker"
+                ),
+            )
         if research:
             return self._decision(q, ctx, RESEARCH, MAIN, 0.7, "gather/multi-step marker")
 
         # 4. SIMPLE: ordinary reply. Tier from the existing heuristic; confidence
         #    reflects how sure we are it ISN'T really a gather/act turn -- a long
         #    marker-free utterance is the ambiguous case the LLM should reconsider.
-        tier = self._tier.choose(q, ctx)
+        tier = self.answer_tier(q, ctx)
         n = len(ql.split())
         if n <= 4:
             conf = 0.85
@@ -153,6 +333,15 @@ class HeuristicCapabilityRouter:
         else:
             conf = 0.7
         return self._decision(q, ctx, SIMPLE, tier, conf, "no gather/action markers")
+
+    def answer_tier(self, text: str, context: Mapping[str, object]) -> str:
+        """Tier an ordinary answer independently of an ACT/RESEARCH decision.
+
+        The LLM disambiguator uses this when it demotes a low-confidence action
+        noun back to SIMPLE; otherwise the provisional ACT decision's MAIN tier
+        would leak into the corrected answer and still bypass the fast model.
+        """
+        return self._tier.choose(text, context)
 
     @staticmethod
     def _decision(
@@ -227,7 +416,17 @@ class LLMCapabilityRouter:
         )
         if action is None or action == base.action:
             return base
-        tier = MAIN if action in (RESEARCH, ACT) else base.tier
+        if action in (RESEARCH, ACT):
+            tier = MAIN
+        elif action == SIMPLE:
+            answer_tier = getattr(self._base, "answer_tier", None)
+            tier = (
+                answer_tier(text, context)
+                if callable(answer_tier)
+                else base.tier
+            )
+        else:
+            tier = base.tier
         policy = classify_latency_policy(
             text,
             {**dict(context), "route_action": action, "tier": tier},

@@ -20,8 +20,10 @@ import time
 
 import pytest
 
+from always_on_agent.react import PlannerConfig
 from core.config import apply_device_profile
 from core.capabilities import DEFAULT_SYSTEM, _answers_locally
+from core.capability_router import build_capability_router
 from core.engines.scripted import ScriptedEngine
 from core.llm import HedgeLLM
 from core.metrics import (
@@ -250,6 +252,39 @@ def test_input_gate_enabled_on_active_desktop_profile():
 
 def test_react_planner_enabled_in_shipped_config():
     assert CONFIG.get("agent", {}).get("planner", {}).get("enabled") is True
+
+
+def test_informational_action_word_stays_fast_without_ack_or_planner():
+    """An action noun inside a question must not bypass the MiniCPM tier."""
+    cfg = apply_device_profile(CONFIG, "desktop_gpu_4090")
+    tier_router = build_router(cfg)
+    main = RecordingLLM("MAIN SHOULD NOT RUN")
+    fast = RecordingLLM("FAST ANSWER")
+    capability_router = build_capability_router(
+        cfg,
+        tier_router=tier_router,
+        fast_llm=fast,
+    )
+    planner = PlannerConfig.from_dict(cfg["agent"]["planner"])
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(
+        engine,
+        main,
+        fast_llm=fast,
+        router=tier_router,
+        capability_router=capability_router,
+        planner_config=planner,
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final("What is open source software?")
+        assert runtime.wait_idle()
+
+        assert engine.spoken == ["FAST ANSWER"]
+        assert main.call_count == 0
+        assert fast.call_count >= 1
+    finally:
+        runtime.stop()
 
 
 def test_continuation_enabled_in_shipped_config():

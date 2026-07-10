@@ -3,8 +3,8 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/attested-short-interrupt-repair`;
-full headless: 2694 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `test/device-free-duplex-overlap-gate`;
+full headless: 2695 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
 outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
 
@@ -69,13 +69,13 @@ outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ra
 
 ## Live evidence and limits
 
-- Pre-fix run `20260710-084939` opened the real EC-routed mic/models and emitted
-  raw/final `AND` about every two seconds; post-fix runs `093305`/`100432` had no
-  final/`AND` storm in the latest 20 s of near-silence. No audio was recorded.
+- Pre-fix run `20260710-084939` emitted raw/final `AND` every ~2 s; post-fix
+  runs `093305`/`100432` had no `AND` storm in 20 s. No audio was recorded.
 - Capture reopen, fallback, and changed-domain recalibration have deterministic
   headless coverage only; no live device unplug/switch validation was run.
-- A real word-cut occurred once on this rig on 2026-07-07, but the merged tail and
-  PCM-ownership changes have only deterministic headless validation.
+- One real word-cut occurred on 2026-07-07. Device-free concurrent I/O now covers
+  the real capture/playback workers, FIFO cut, and stale-provider fencing; tail/PCM
+  handling stays headless, and acoustic echo/owner-mic behavior is not live-validated.
 - Current v1/legacy speaker enrollment is intentionally rejected by v2 provenance;
   local `speaker_gate_input` remains off until live re-enrollment succeeds.
 - Still required with the owner at the mic: (1) `python -m core --enroll` on the

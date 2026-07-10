@@ -37,6 +37,16 @@ def test_short_hallucination_w_story_old_to_o():
     assert agreement_guard("W STORY OLD", "O.", segment_sec=0.5) == "W STORY OLD"
 
 
+def test_generic_guard_still_rejects_attested_engine_only_repair():
+    # The owner-corpus exception belongs at the SenseVoice engine seam, where
+    # backend identity and owned live-segment duration are available. Do not weaken
+    # this dependency-free guard for arbitrary callers or backends.
+    assert (
+        agreement_guard("CASTLE DEATH", "Cancel that.", segment_sec=0.6)
+        == "CASTLE DEATH"
+    )
+
+
 # --- legit long garbled-correction accepted (take the 2nd pass) --------------
 
 def test_long_low_overlap_correction_accepted():

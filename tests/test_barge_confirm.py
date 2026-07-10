@@ -144,6 +144,16 @@ def test_stop_command_confirms_alone():
     assert rec.barges == 1
 
 
+def test_cancel_that_command_confirms_below_word_floor():
+    rec = _Rec()
+    eng = _engine(rec, barge_confirm_min_words=4)
+    r, s = _FakeRecognizer(["", "cancel that"]), _FakeStream()
+    now = time.monotonic()
+    eng._begin_barge_confirm(r, s, now)
+    assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.1) is True
+    assert rec.barges == 1
+
+
 # --- reject: echo / silence restores volume ------------------------------------
 
 

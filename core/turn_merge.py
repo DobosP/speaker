@@ -69,7 +69,7 @@ DEFAULT_HOLD_ENDINGS: frozenset[str] = DEFAULT_INCOMPLETE_ENDINGS | frozenset({
 # a CONFIRM prompt or a "stop" must act immediately. EN + RO.
 DEFAULT_EXEMPT_PHRASES: tuple[str, ...] = (
     "yes", "no", "yeah", "yep", "nope", "ok", "okay", "sure", "stop",
-    "cancel", "thanks", "thank you", "never mind", "nevermind",
+    "cancel", "cancel that", "thanks", "thank you", "never mind", "nevermind",
     "start again", "start over", "hello", "hi", "hey", "go on", "continue",
     "why", "how", "what", "really",
     # Romanian

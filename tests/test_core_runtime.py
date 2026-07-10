@@ -146,6 +146,21 @@ def test_stop_phrase_cancels_and_halts_playback():
     assert not engine.is_speaking
 
 
+def test_cancel_that_final_cancels_and_halts_playback():
+    runtime, engine = _runtime(hold_speech=True, reply="a long winded answer")
+    engine.final("tell me a story")
+    assert runtime.wait_idle()
+    assert engine.is_speaking
+    spoken_before = list(engine.spoken)
+
+    # This is the text produced by the attested SenseVoice repair.  It must take
+    # the existing deterministic STOP path without a response from the LLM.
+    engine.final("cancel that")
+    runtime.wait_idle()
+    assert not engine.is_speaking
+    assert engine.spoken == spoken_before
+
+
 def test_barge_in_stops_playback():
     runtime, engine = _runtime(hold_speech=True, reply="assistant talking")
     engine.final("hello")

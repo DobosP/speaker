@@ -3,8 +3,8 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/published-unheard-intent-eligibility`;
-full headless: 2682 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `fix/attested-short-interrupt-repair`;
+full headless: 2694 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
 outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
 
@@ -27,16 +27,16 @@ outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ra
 ## Voice reliability now implemented
 
 - VAD owns live ASR segments and the acoustic endpoint clock. Idle PCM is capped
-  to 0.8 s pre-roll; complete speech is retained through the configured rule-3
-  and endpoint bound. A configured VAD must observe speech before a final reaches
-  SenseVoice, identity, addressing, or the LLM; the no-VAD fallback stays bounded
-  but retains audio before a delayed first partial (ADR-0017).
-- Word-cut uses an isolated playback recognizer and bounded candidate-only PCM.
-  A confirmed cut replays/splices that PCM exactly once into normal ASR and the
-  finalizer. A 300 ms onset ring preserves speech before delayed VAD activation.
-  A 1–3-word reply tail needs a fresh post-playback VAD epoch and is bounded by a
-  deadline; own/empty/stale/silent tails are dropped. The four-word/`stop`
-  authority remains unchanged (ADR-0013).
+  to 0.8 s pre-roll; complete speech is retained through the rule-3/endpoint bound.
+  Finals need observed speech before SenseVoice/identity/LLM; no-VAD keeps bounded
+  pre-partial audio (ADR-0017). The 0.900 s owner clip yields `CASTLE DEATH`
+  streaming and `Cancel that.` in SenseVoice; selection requires owned speech
+  timing, while all unlisted short rewrites remain fail-closed (ADR-0026).
+- Word-cut uses isolated recognition and bounded candidate PCM; a confirmed cut
+  replays it exactly once into normal ASR/finalization. A 300 ms ring preserves
+  onset before delayed VAD. A 1–3-word reply tail needs fresh post-playback VAD
+  and a bounded deadline; own/empty/stale/silent tails drop. Four novel words or
+  a canonical stop (including `cancel that`) cut immediately (ADR-0013/0026).
 - Capture recovery rebinds the actual rate/resampler, resets rate- and
   echo-dependent state, preserves the first correctly timed recovered block, and
   revalidates the actual fallback route. Same-domain recovery preserves its

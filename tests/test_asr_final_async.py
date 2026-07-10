@@ -179,6 +179,24 @@ def test_finalize_drops_below_echo_floor():
     assert all(name != SPEECH_END for name, _ in rec.metrics)
 
 
+def test_attested_short_interrupt_repair_still_obeys_echo_floor_gate():
+    rec = _Rec()
+    eng = _engine(rec, asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    eng._final_above_floor = lambda seg: False
+    # The repair happens inside transcription only.  The common finalizer must
+    # still reject a below-floor carrier before the recovered control reaches
+    # the runtime.
+    eng._finalize_and_dispatch(
+        np.ones(2 * 16000, dtype="float32"),
+        "CASTLE DEATH",
+        2.0,
+        speech_sec=0.6,
+    )
+    assert rec.finals == []
+    assert ("echo_floor_rejected_final", {}) in rec.metrics
+
+
 def test_finalize_drops_on_speaker_reject():
     rec = _Rec()
     eng = _engine(rec)

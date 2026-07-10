@@ -94,7 +94,9 @@ _SPACE_RUN = re.compile(r" +")
 
 # The stop-class control phrases both runtimes recognize. Mode/confirm/deny
 # commands are config-driven and desktop-only, so they are not listed here.
-STOP_COMMANDS = frozenset({"stop", "cancel", "quiet", "stop talking", "be quiet"})
+STOP_COMMANDS = frozenset({
+    "stop", "cancel", "cancel that", "quiet", "stop talking", "be quiet",
+})
 
 
 def normalize_command(text: str) -> str:

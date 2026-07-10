@@ -15,6 +15,10 @@ import re
 
 # Sentence terminators after which the next letter is capitalized.
 _TERMINATORS = ".!?"
+# Shared boundary for conservative short-clip final selection.  The generic
+# agreement guard and the engine's narrowly attested repair must agree on what
+# "short" means.
+DEFAULT_SHORT_CLIP_SEC = 1.2
 # Standalone lowercase pronoun "i" (incl. contractions like "i'm", "i'll");
 # always uppercased. Case-sensitive so it never touches an already-correct "I".
 _I_WORD = re.compile(r"\bi\b")
@@ -190,7 +194,7 @@ def agreement_guard(
     second_pass: str,
     *,
     segment_sec: float | None = None,
-    short_sec: float = 1.2,
+    short_sec: float = DEFAULT_SHORT_CLIP_SEC,
     short_words: int = 2,
 ) -> str:
     """Pick the final transcript, guarding against short-clip 2nd-pass hallucination.

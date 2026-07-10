@@ -46,7 +46,7 @@ def _auto_threads() -> int:
     cores = os.cpu_count() or 4
     return max(2, min(4, cores // 2))
 
-from ..asr_text import agreement_guard, restore_casing
+from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
 from ..contract import is_stop_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
@@ -87,6 +87,66 @@ from .speaker_gate import (
 )
 from ._dtd import AdaptiveDTD, BargeSustain
 from .echo_coherence import EchoCoherenceDetector
+
+
+# Owner-corpus evidence for a real short interrupt whose streaming transcript
+# and SenseVoice final disagree.  Keep this exact and data-backed: the generic
+# agreement guard must remain fail-closed for every unlisted rewrite.
+_ATTESTED_SHORT_INTERRUPT_REPAIRS = frozenset({
+    (("castle", "death"), ("cancel", "that")),
+})
+
+
+def _attested_repair_words(text: str) -> tuple[str, ...]:
+    """Case-folded Unicode alphanumeric words; punctuation is insignificant."""
+    words: list[str] = []
+    current: list[str] = []
+    for char in text.casefold():
+        if char.isalnum():
+            current.append(char)
+        elif current:
+            words.append("".join(current))
+            current.clear()
+    if current:
+        words.append("".join(current))
+    return tuple(words)
+
+
+def _attested_short_interrupt_repair(
+    streaming_final: str,
+    second_pass: str,
+    guarded_final: str,
+    *,
+    backend: str,
+    speech_sec: Optional[float],
+    short_sec: float = DEFAULT_SHORT_CLIP_SEC,
+) -> str:
+    """Admit one exact owner-attested repair after the generic guard rejects it.
+
+    The exception exists only for explicit short-speech timing owned by the live
+    segment (VAD observation or confirmed word-cut PCM). Array duration is
+    deliberately insufficient because it includes unverified pre-roll and tail.
+    """
+    if guarded_final != streaming_final:
+        return guarded_final
+    if backend != "sense_voice" or speech_sec is None:
+        return guarded_final
+    try:
+        duration = float(speech_sec)
+    except (TypeError, ValueError):
+        return guarded_final
+    if not math.isfinite(duration) or not 0.0 < duration < short_sec:
+        return guarded_final
+
+    # Compare complete word sequences.  Unlike command normalization, retain
+    # every Unicode alphanumeric token so unlisted multilingual/digit content
+    # cannot disappear into an otherwise allowlisted pair; only casing and
+    # punctuation are ignored.
+    pair = tuple(
+        _attested_repair_words(text)
+        for text in (streaming_final, second_pass)
+    )
+    return second_pass if pair in _ATTESTED_SHORT_INTERRUPT_REPAIRS else guarded_final
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
@@ -2206,14 +2266,26 @@ class SherpaOnnxEngine(AudioEngine):
                         # final; the discriminator keys on clip LENGTH, not energy. A
                         # rejected hallucination falls back to the (post-processed)
                         # streaming final, which the L1 echo-floor gate then drops.
-                        return agreement_guard(
-                            self._postprocess_final(raw_final),
+                        streaming_final = self._postprocess_final(raw_final)
+                        guarded_final = agreement_guard(
+                            streaming_final,
                             text,
                             # The owned PCM deliberately includes model pre-roll
                             # and endpoint tail. Hallucination risk keys on actual
-                            # VAD speech duration, not that padding. Direct callers
-                            # retain the historical array-duration fallback.
+                            # owned-speech duration, not that padding. Direct
+                            # callers retain the historical array-duration fallback.
                             segment_sec=observed_sec,
+                        )
+                        # The generic guard deliberately rejects low-overlap
+                        # short rewrites. Recover only an exact owner-attested
+                        # interrupt pair, and only when live segment timing (VAD
+                        # or confirmed word-cut ownership) proves it was short.
+                        return _attested_short_interrupt_repair(
+                            streaming_final,
+                            text,
+                            guarded_final,
+                            backend=self.config.asr_final_backend,
+                            speech_sec=speech_sec,
                         )
                 except Exception:  # noqa: BLE001 - fall back to the streaming final
                     log.debug("second-pass recognizer failed; using streaming final", exc_info=True)

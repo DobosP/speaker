@@ -45,8 +45,8 @@ def test_complete_finals_are_not_held():
 
 def test_control_words_are_exempt_even_though_short():
     c = FinalCoalescer()
-    for phrase in ("yes", "No", "stop", "Okay", "never mind", "Start again",
-                   "thank you", "da", "opreste"):
+    for phrase in ("yes", "No", "stop", "cancel that", "Okay", "never mind",
+                   "Start again", "thank you", "da", "opreste"):
         assert not c.should_hold(phrase), f"{phrase!r} must dispatch immediately"
 
 

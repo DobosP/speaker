@@ -209,6 +209,15 @@ def test_bare_stop_command_cuts_alone():
     assert rec.barges == 1
 
 
+def test_cancel_that_command_cuts_below_four_word_floor():
+    rec = _Rec()
+    eng = _engine(rec)
+    assert eng.config.barge_word_cut_min_words == 4
+    r, s = _FakeRecognizer(["cancel that"]), _FakeStream()
+    assert eng._barge_word_cut_step(r, s, _BLOCK, time.monotonic()) is True
+    assert rec.barges == 1
+
+
 def test_vad_onset_preroll_preserves_first_word_and_bare_stop():
     class _DelayedVad(_FakeVad):
         def __init__(self):

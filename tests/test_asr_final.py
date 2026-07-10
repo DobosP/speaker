@@ -145,6 +145,106 @@ def test_final_transcribe_uses_vad_speech_duration_not_idle_padded_pcm_length():
     assert out == "Ario der"
 
 
+# --- exact owner-attested short interrupt repair -----------------------------
+
+
+def test_sense_voice_recovers_attested_short_cancel_with_owned_speech_duration():
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    # Owned PCM includes pre-roll/tail and is deliberately long. Independent
+    # live-segment timing proves the spoken command itself was short.
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=0.6)
+        == "Cancel that."
+    )
+
+
+def test_attested_short_repair_requires_explicit_owned_speech_duration():
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    seg = np.ones(int(0.6 * 16000), dtype="float32")
+    assert eng._final_transcribe(seg, "CASTLE DEATH") == "Castle death"
+
+
+def test_attested_short_repair_accepts_confirmed_word_cut_owned_timing():
+    segment = ASRSegment(
+        sample_rate=16000,
+        pre_roll_sec=0.8,
+        max_utterance_sec=3.0,
+        vad_available=True,
+        block_sec=0.1,
+    )
+    # Word-cut confirmation owns this playback-time user PCM before a post-cut
+    # VAD observation. Its bounded timestamps are valid speech timing, not a
+    # padded-array-duration fallback.
+    segment.prepend(
+        [np.ones(1600, dtype="float32") for _ in range(3)],
+        speech_at=4.0,
+        speech_end_at=4.2,
+    )
+    owned, _ = segment.arrays()
+    assert segment.speech_duration_sec is not None
+
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    assert (
+        eng._final_transcribe(
+            owned,
+            "CASTLE DEATH",
+            speech_sec=segment.speech_duration_sec,
+        )
+        == "Cancel that."
+    )
+
+
+def test_attested_short_repair_requires_sense_voice_backend():
+    eng = _engine(asr_final_backend="whisper")
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    seg = np.ones(16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=0.6)
+        == "Castle death"
+    )
+
+
+def test_attested_short_repair_rejects_long_vad_utterance_at_boundary():
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=1.2)
+        == "Castle death"
+    )
+
+
+def test_attested_short_repair_rejects_unlisted_rewrites():
+    eng = _engine(asr_final_backend="sense_voice")
+    seg = np.ones(16000, dtype="float32")
+
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    assert eng._final_transcribe(seg, "BEING", speech_sec=0.6) == "Being"
+
+    eng._final_recognizer = _FakeOffline("Okay.")
+    assert eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=0.6) == "Castle death"
+
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    assert (
+        eng._final_transcribe(seg, "CASTLE 123 DEATH", speech_sec=0.6)
+        == "Castle 123 death"
+    )
+
+    eng._final_recognizer = _FakeOffline("Cancel that system.")
+    assert eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=0.6) == "Castle death"
+
+    eng._final_recognizer = _FakeOffline("Cancel that 系统.")
+    assert eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=0.6) == "Castle death"
+
+    eng._final_recognizer = _FakeOffline("Cancel that.")
+    out = eng._final_transcribe(seg, "系统 CASTLE DEATH", speech_sec=0.6)
+    assert out != "Cancel that." and "系统" in out
+
+
 def test_no_vad_segment_uses_owned_pcm_duration_for_second_pass():
     segment = ASRSegment(
         sample_rate=16000,

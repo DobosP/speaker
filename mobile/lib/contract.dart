@@ -70,6 +70,7 @@ final RegExp _spaceRun = RegExp(r' +');
 const Set<String> stopCommands = {
   'stop',
   'cancel',
+  'cancel that',
   'quiet',
   'stop talking',
   'be quiet',

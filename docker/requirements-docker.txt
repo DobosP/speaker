@@ -10,7 +10,7 @@ fastapi>=0.110         # token server + /chat + static web hosting
 uvicorn>=0.29          # ASGI server for the token/web server
 sherpa-onnx            # on-device streaming ASR + VITS TTS (CPU, int8)
 numpy>=1.24.0          # audio resample / PCM conversion
-ollama>=0.1.0          # LLM client -> the GPU Ollama service (fast + local main)
+ollama>=0.6.2          # AsyncClient task cancellation -> GPU Ollama service
 openai>=1.0            # OpenAI-compat HTTP client for the cloud middle layer
                        # (Cerebras / Groq / DeepSeek / Moonshot all share this shape;
                        # see core.llm.OpenAICompatLLM + tools/llm_sanity.py).

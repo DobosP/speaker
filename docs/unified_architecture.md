@@ -404,10 +404,10 @@ The LLM stack is two-tiered: a small fast model for snappy spoken replies (local
 
 ### LLMClient protocol and implementations
 
-All LLM surfaces conform to a single `LLMClient` protocol (`core/llm.py:70-92`): `generate(prompt, *, system, images)` and `stream(prompt, *, system, images)`. This unifies:
+All LLM surfaces conform to the `LLMClient` protocol in `core/llm.py`: `generate(prompt, *, system, images)` and `stream(prompt, *, system, images)`. This unifies:
 
 - **EchoLLM** — deterministic fake for tests and the offline console demo.
-- **OllamaLLM** — GPU-accelerated Ollama daemon on desktop (default). Lazy `ollama` import; configurable `keep_alive` to minimize cold reloads; `timeout` on the socket/read to reap a hung server before the whole turn stalls.
+- **OllamaLLM** — GPU-accelerated Ollama daemon on desktop (default). Production streams use one per-request `AsyncClient` and a synchronous bounded-queue bridge so task/barge cancellation aborts a blocked async request; configurable `keep_alive` minimizes cold reloads and `timeout` bounds a hung server. Injected sync clients and non-streaming `generate()` retain the compatibility path (ADR-0022).
 - **LlamaCppLLM** — on-device GGUF on phones and headless machines (no daemon). Lazy `llama-cpp-python` import; thread-locked context so one quantized model can't run two inferences concurrently.
 - **OpenAICompatLLM** — streams any OpenAI-compatible `/v1/chat/completions` endpoint (Groq, Cerebras, Together, DeepSeek, Moonshot, OpenRouter, `llama-server`). Lazy `openai` import; built only when `llm.cloud.enabled` or `cloud_providers` is populated.
 
@@ -422,7 +422,7 @@ When `--llm echo`, both are the deterministic fake (for tests).
 
 ### HedgeLLM: local-first racing with failover chains
 
-`HedgeLLM` (`core/llm.py:616-955`) races the local main LLM against an optional cloud chain:
+`HedgeLLM` in `core/llm.py` races the local main LLM against an optional cloud chain:
 
 - **hedge** (default) — local starts now; if it doesn't produce a token within `hedge_delay_ms` (~150 ms), also launch the first cloud in parallel. Whichever yields the first token wins; the loser is stopped. Caps cloud spend while racing when local is slow.
 - **fallback** — cloud-first with a `ttft_deadline_ms` (default ~1.2 s) first-token deadline. On timeout or error, advance to the next cloud in the failover chain; after exhaustion, fall back to local.
@@ -431,13 +431,15 @@ The cloud parameter accepts either a single client (back-compat) or a list (fail
 
 **Hard-close and timeout (BR1):** `OpenAICompatLLM.stream` binds the SDK stream inside the generator body (not before). On cancel/barge-in (consumer closes the generator early), `GeneratorExit` runs the `finally`, calling `sdk_stream.close()` to stop billing and release the socket immediately. A pre-first-token close is a no-op (sdk_stream unbound). A short socket timeout `llm.cloud.timeout_s` (default 5 s, configurable) reaps a losing worker stuck in its first-token read before the client-level 30 s timeout would.
 
-**Worker management:** HedgeLLM runs each source (local + each cloud) in a daemon thread, signalling all losers to stop after a winner produces its first token. A bounded join (`WORKER_JOIN_TIMEOUT` 0.5 s) reaps daemon threads promptly so the generator never leaks them on cancel. An unbounded drain idle timeout (`DRAIN_IDLE_TIMEOUT` 30 s) guards against a winner whose connection stalls mid-stream (TCP black-hole), and a wall-clock budget (`_winner_select_budget`) scaled by the chain length bounds the pre-first-token wait so hung sources (e.g., in-process `LlamaCppLLM` native calls with no socket timeout) are reaped before the turn indefinitely blocks.
+**Local Ollama cancellation (ADR-0022):** `OllamaLLM.stream` snapshots the task cancellation event and returns a synchronous iterator backed by one async request task. Explicit close, task/barge cancellation, a dropped iterator or full stalled queue, Hedge loser selection, and winner drain timeout converge on the same thread-safe cancel seam. Queued tokens lose to cancellation, and the response/client close before the provider invocation releases its bulkhead slot. The Ollama SDK and cleanup hooks must cooperate; this is not a transport hard-kill and does not kill arbitrary synchronous/native work. A retained sparse iterator still needs close/task cancellation or its configured read timeout.
+
+**Worker management:** HedgeLLM runs each source (local + each cloud) in a daemon thread, signalling all losers to stop after a winner produces its first token. It invokes cross-thread cancellation only on explicitly marked safe streams and joins those workers through cooperative cleanup before returning the outer provider invocation. Unknown synchronous/native workers share a bounded join (`WORKER_JOIN_TIMEOUT` 0.5 s); a survivor is surfaced by a warning until its timeout/provider returns. A bounded drain idle timeout (`DRAIN_IDLE_TIMEOUT` 30 s) guards against a winner whose connection stalls mid-stream, and a wall-clock budget (`_winner_select_budget`) scaled by chain length bounds winner selection. A timed-out fallback source is terminal: late queued tokens cannot resurrect it as the winner.
 
 **Per-turn max_tokens ceiling (BR4):** injected into the merged request kwargs *before* the provider-cap block (e.g., Cerebras free tier's 8192 limit) so `min()` composition keeps the profile cap authoritative. Plumbed via `llm.cloud.max_tokens` (default `None`, set ~512 in cloud-enabled voice profiles).
 
 ### SensitivityRouterLLM: context-driven chain selection
 
-`SensitivityRouterLLM` (`core/llm.py:958-1022`) dispatches `generate`/`stream` to one of several backing LLMs based on the turn's data-sensitivity tag, read from a `ContextVar` (`capability_context` at `core/llm.py:16`) set by the capability layer before invoking the LLM. This keeps the `LLMClient` protocol unchanged while letting the routing decision flow from the brain's per-turn context.
+`SensitivityRouterLLM` in `core/llm.py` dispatches `generate`/`stream` to one of several backing LLMs based on the turn's data-sensitivity tag, read from the module's `capability_context` `ContextVar` set by the capability layer before invoking the LLM. This keeps the `LLMClient` protocol unchanged while letting the routing decision flow from the brain's per-turn context.
 
 **Back-compat:** the `cloud` parameter can be a single `LLMClient` (which HedgeLLM wraps) or a list (failover chain). When a list is given, HedgeLLM is built once per chain, and each chain is wrapped in a separate `HedgeLLM`. Only the multi-provider path is fully implemented in the current config; the single-cloud back-compat site in `_wrap_cloud` still works.
 
@@ -693,7 +695,7 @@ The streaming zipformer (k2-fsa, `sherpa-onnx`) emits low-latency partials and d
 The supervisor had no wall-clock deadlines — a hung capability (a blocked `generate`, a network read with no timeout) sat "active" forever. `always_on_agent/supervisor.py` + `core/watchdog.py` add:
 
 - **Per-mode task deadlines + reap:** Each `AgentTask` gets a `deadline_at` stamped at `_start_task` from `DEFAULT_TASK_TIMEOUTS` (assistant 25 s, search/command/dictation/meeting 30 s, research 120 s; overridable via `task_timeouts` config; `0` disables a mode). `reap_overdue_tasks()` runs on the watchdog's 1 s tick, cancels and removes any task past its deadline, and republishes `TASK_CANCELLED` to the bus thread (so the supervisor moves on). A reaped turn that would have spoken says "Sorry, that took too long — let's try again." A long-running capability (e.g. the ReAct planner) can renew its deadline via a `renew_deadline` hook in the task context.
-- **Cancellable invocation bulkhead:** The registered task thread coordinates each synchronous capability through a daemon provider thread and a `max_active_tasks` semaphore. It checks cancellation on a 10 ms polling cadence without waiting for token one; an uncooperative provider retains its slot until it actually returns, bounding abandoned calls. Provider admission and the single terminal event are atomic against cancellation; delayed token metrics carry the originating turn token so stale work cannot mark a replacement turn (ADR-0021).
+- **Cancellable invocation bulkhead:** The registered task thread coordinates each synchronous capability through a daemon provider thread and a `max_active_tasks` semaphore. It checks cancellation on a 10 ms polling cadence without waiting for token one; an uncooperative provider retains its slot until it actually returns, bounding abandoned calls. Provider admission and the single terminal event are atomic against cancellation; delayed token metrics carry the originating turn token so stale work cannot mark a replacement turn (ADR-0021). Production Ollama streams additionally cancel their owned async request and close its transport before releasing that slot (ADR-0022).
 - **Watchdog heals:** `StuckWatchdog` has an `on_tick` hook; the runtime wires it to `reap_overdue_tasks()` so a hung task coordinator is retired on the watchdog's existing 1 s cadence.
 - **ReAct first-token unblock:** An escalated (ReAct) turn does its LLM work inside the planner, which wasn't stamping `LLM_FIRST_TOKEN`, so the watchdog read it as stuck. The planner now fires a `first_token_hook` on its first streamed token; the runtime marks `LLM_FIRST_TOKEN` (idempotent).
 
@@ -1083,7 +1085,7 @@ Ranked by field impact:
 - **Barge-in detection is unvalidated in the field.** Stress tests and live replay show zero real LLM cancellations (only echo self-interrupts). The cut machinery is correct; the decision path is untested with real overlapping speech.
 - **The ASR confidence signal is not yet gated.** Low-confidence finals (`ys_probs` < threshold) feed the LLM unfiltered. Combined with the echo loop, this can drive TTS on garbage fragments.
 - **Full-pipeline resident memory** (~800 MB with Ollama; ~538 MB ASR/TTS only) does not leak (verified via stress) but is the sizing baseline for deployment.
-- **Provider compute is bounded, not force-killed.** Task coordinators no longer remain active after cancellation, but Python cannot kill an arbitrary synchronous/native call. Up to `max_active_tasks` provider daemons can retain their bulkhead slots; if every provider wedges permanently, inference cannot resume until one returns. Hard abort requires transport-native async cancellation or process isolation (ADR-0021).
+- **Only production Ollama streaming has provider-native cooperative cancellation.** Its owned async request is cancelled and cleaned up before its provider slot returns when the SDK cooperates (ADR-0022). Python still cannot force-kill a cancellation-suppressing task, hanging cleanup, or synchronous/native call such as `generate()`, an injected sync client, or llama.cpp: up to `max_active_tasks` such provider daemons can retain bulkhead slots, and exhausting every slot prevents inference until one returns or a future process/abort boundary intervenes (ADR-0021).
 
 ### Explicitly out of scope
 

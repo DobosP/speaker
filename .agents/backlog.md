@@ -255,8 +255,9 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       probes, resolved console turns, replay, logic, and APM/DTD gates passed.
       REMAINING: bare-speaker human A/B for answer quality, first audio, sustained
       talk-over, silent control, and reply-tail continuity. Task-level pre-token
-      cancellation + bounded abandoned calls shipped in ADR-0021; transport hard
-      abort remains (async Ollama task cancellation / process-isolated llama.cpp).
+      cancellation + bounded abandoned calls shipped in ADR-0021; production
+      Ollama streams now cancel their async request task (ADR-0022). A verified
+      llama.cpp abort/process boundary remains for phone-class native inference.
       Also evaluate MiniCPM native XML tools behind a dedicated adapter; Flutter
       stays Gemma until a validated runtime exists.
 
@@ -437,9 +438,10 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       interpreter was never safe to drive concurrently (tests/test_core_agent.py).
 - [~] **Task worker can outlive its supervisor reap** — task coordinators now
       retire promptly on reap/barge and abandoned synchronous provider calls are
-      bulkhead-bounded (ADR-0021). REMAINING: provider compute itself cannot be
-      force-killed; add async Ollama task cancellation and a version-verified
-      llama.cpp abort/process boundary before claiming hard transport cancellation.
+      bulkhead-bounded (ADR-0021), and production Ollama streams cancel through
+      their per-request async task (ADR-0022). REMAINING: synchronous generate,
+      arbitrary providers, and llama.cpp cannot be force-killed; add a
+      version-verified llama.cpp abort/process boundary for the phone path.
 - [x] **Unbounded queued_tasks list + runlog logging queue** — DONE 2026-07-07:
       `_queue_task` bounded admission (`max_queued_tasks=32` ctor default; drop-OLDEST
       non-continuation victim, cancelled + one spoken notice per storm); runlog queue

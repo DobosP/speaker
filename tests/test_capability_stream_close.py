@@ -2,10 +2,9 @@
 
 When a turn is cancelled mid-stream, ``_collect`` / ``_stream_and_speak`` now
 close the token generator explicitly so the underlying HTTP body / SDK stream
-tears down at the barge point and the model SERVER stops generating -- instead of
-lingering until garbage collection (the wasted-compute leak the barge-in audit
-found). These tests pin that: a cancelled stream's ``finally`` (which is where the
-real clients close the socket) runs DURING the drain, with the generator still
+starts cleanup at the barge point instead of lingering until garbage collection.
+These tests pin that: a cancelled stream's ``finally`` (which is where the real
+clients request transport cleanup) runs DURING the drain, with the generator still
 referenced so GC cannot be what closed it. Pure: a fake generator + a real Event,
 no LLM, no network.
 """

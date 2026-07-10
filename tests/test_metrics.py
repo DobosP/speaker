@@ -145,6 +145,29 @@ def test_mark_first_token_passes_through_without_recorder():
     assert list(mark_first_token(iter(["a", "b"]), None)) == ["a", "b"]
 
 
+def test_mark_first_token_close_propagates_to_underlying_iterator():
+    class CloseAwareIterator:
+        def __init__(self):
+            self.closed = False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return "token"
+
+        def close(self):
+            self.closed = True
+
+    underlying = CloseAwareIterator()
+    wrapped = mark_first_token(underlying, None)
+
+    assert next(wrapped) == "token"
+    wrapped.close()
+
+    assert underlying.closed is True
+
+
 def test_task_scoped_first_token_cannot_stamp_a_replacement_turn():
     rec = MetricsRecorder()
     rec.mark(ASR_FINAL)

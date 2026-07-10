@@ -140,11 +140,11 @@ def _close_token_stream(tokens: Iterator[str]) -> None:
 
     The token chain is ``mark_first_token(model.stream(...))`` -- generators whose
     ``finally`` blocks tear down the underlying HTTP body / SDK stream (Ollama,
-    OpenAI-compat) so the SERVER stops generating. On a plain ``break`` those
-    ``finally`` blocks only run when the generator is garbage-collected, which is
-    not deterministic (and the ``mark_first_token`` wrapper adds a layer that must
-    ALSO be collected) -- so an interrupted turn could keep the model generating
-    (burning compute) until GC catches up. Calling ``close()`` here propagates
+    OpenAI-compat) so provider cancellation starts promptly. On a plain ``break``,
+    those ``finally`` blocks only run when the generator is garbage-collected,
+    which is not deterministic (and the ``mark_first_token`` wrapper adds a layer
+    that must ALSO be collected) -- so an interrupted provider request could
+    linger until GC catches up. Calling ``close()`` here propagates
     ``GeneratorExit`` down the chain immediately at the barge point. A plain
     iterator with no ``close()`` is a no-op; any teardown error is swallowed (the
     turn is already being abandoned)."""
@@ -161,8 +161,8 @@ def _collect(tokens: Iterator[str], cancel: Optional[Event]) -> tuple[str, bool]
 
     Returns ``(text, cancelled)``. Streaming (rather than a blocking
     ``generate``) is what makes a slow local model interruptible: barge-in cuts
-    generation off mid-stream instead of waiting for the whole answer. On a cut
-    the stream is closed explicitly so the model server stops generating at once
+    the local consumer off instead of waiting for the whole answer. On a cut
+    the stream is closed explicitly so SDK/provider cleanup begins immediately
     (see :func:`_close_token_stream`)."""
     parts: list[str] = []
     cancelled = False
@@ -202,8 +202,8 @@ def _stream_and_speak(
             for sentence in sentences:
                 emit(sentence)
     finally:
-        # Barge-in cut: close the stream so the model server stops generating
-        # immediately rather than at GC time (see :func:`_close_token_stream`).
+        # Barge-in cut: start provider cancellation/cleanup immediately rather
+        # than at GC time (see :func:`_close_token_stream`).
         if cancelled:
             _close_token_stream(tokens)
     tail = buffer.strip()

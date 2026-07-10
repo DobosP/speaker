@@ -1524,29 +1524,76 @@ class SherpaOnnxEngine(AudioEngine):
 
         Prefer the persisted embedding JSON (cheap, multi-pass averaged); fall
         back to extracting from ``speaker_enroll_wav``. A reference produced by a
-        different embedding model is skipped (incomparable vector space) rather
-        than trusted. Any failure leaves the gate unenrolled (fail-open)."""
+        different embedding model OR a different model-visible capture front end
+        is skipped rather than trusted. Any failure leaves the gate unenrolled
+        (fail-open), so stale enrollment can never lock the owner out."""
         c = self.config
         gate = self._speaker_gate
         if gate is None:
             return
+        from ..enroll import make_enrollment_frontend_provenance
+
+        active_frontend = make_enrollment_frontend_provenance(
+            c,
+            input_agc=self._input_agc,
+            idle_apm=self._aec if self._apm_always_on else None,
+            denoiser=self._denoiser,
+            apm_owns_ns=self._apm_owns_ns,
+        )
         if c.speaker_enroll_embedding and os.path.exists(c.speaker_enroll_embedding):
-            from ..enroll import enrollment_matches_model, load_enrollment
+            from ..enroll import (
+                enrollment_matches_frontend,
+                enrollment_matches_model,
+                load_enrollment,
+            )
 
             try:
                 enrollment = load_enrollment(c.speaker_enroll_embedding)
             except Exception as exc:  # noqa: BLE001 - corrupt/old file shouldn't crash boot
                 log.warning("could not load enrollment %s: %s", c.speaker_enroll_embedding, exc)
             else:
-                if enrollment_matches_model(enrollment, c.speaker_embedding_model):
+                model_matches = enrollment_matches_model(
+                    enrollment, c.speaker_embedding_model
+                )
+                frontend_matches = enrollment_matches_frontend(
+                    enrollment, active_frontend
+                )
+                if model_matches and frontend_matches:
                     gate.enroll_embedding(enrollment.embedding)
                     return
-                log.warning(
-                    "enrollment %s was made with a different model (%s); ignoring it -- "
-                    "re-run `python -m core --enroll`.",
-                    c.speaker_enroll_embedding, enrollment.model or "?",
-                )
+                if not model_matches:
+                    log.warning(
+                        "enrollment %s was made with a different model (%s); ignoring it -- "
+                        "re-run `python -m core --enroll`.",
+                        c.speaker_enroll_embedding, enrollment.model or "?",
+                    )
+                else:
+                    saved = enrollment.frontend
+                    if saved is None:
+                        detail = "legacy enrollment has no front-end provenance"
+                    else:
+                        detail = f"saved front end is {saved.summary!r}"
+                    log.warning(
+                        "enrollment %s does not match the active speaker-ID capture "
+                        "front end (%s; active=%r); ignoring it so speaker gating "
+                        "FAILS OPEN -- re-run `python -m core --enroll`.",
+                        c.speaker_enroll_embedding,
+                        detail,
+                        active_frontend.summary,
+                    )
         if c.speaker_enroll_wav:
+            # A legacy WAV has no front-end provenance and is embedded at boot.
+            # It is safe only on the raw baseline; feeding a raw reference into a
+            # denoised/AGC/APM live domain recreates the owner-lockout bug.
+            if not active_frontend.raw_baseline:
+                log.warning(
+                    "legacy speaker_enroll_wav=%s has no front-end provenance but "
+                    "the active speaker-ID front end is %r; ignoring it so speaker "
+                    "gating FAILS OPEN -- re-run `python -m core --enroll`.",
+                    c.speaker_enroll_wav,
+                    active_frontend.summary,
+                )
+                return
             import sherpa_onnx  # lazy
 
             samples, sr = sherpa_onnx.read_wave(c.speaker_enroll_wav)

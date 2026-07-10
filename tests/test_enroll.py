@@ -12,11 +12,14 @@ import pytest
 
 from core.enroll import (
     Enrollment,
+    EnrollmentFrontend,
     average_embeddings,
     enroll_from_recordings,
+    enrollment_matches_frontend,
     enrollment_matches_model,
     l2_normalize,
     load_enrollment,
+    make_enrollment_frontend_provenance,
     run_enrollment,
     save_enrollment,
 )
@@ -59,7 +62,20 @@ def test_average_embeddings_rejects_empty_and_mismatched():
 
 def test_save_load_round_trip(tmp_path):
     path = tmp_path / "sub" / "enroll.json"  # parent dir created on save
-    enr = Enrollment(model="/m/spk.onnx", embedding=[0.6, 0.8], sample_rate=16000, passes=3)
+    frontend = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000, "denoise_model": "/m/gtcrn.onnx"},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    enr = Enrollment(
+        model="/m/spk.onnx",
+        embedding=[0.6, 0.8],
+        sample_rate=16000,
+        passes=3,
+        frontend=frontend,
+    )
     save_enrollment(str(path), enr)
     loaded = load_enrollment(str(path))
     assert loaded.model == "/m/spk.onnx"
@@ -67,6 +83,7 @@ def test_save_load_round_trip(tmp_path):
     assert loaded.sample_rate == 16000
     assert loaded.passes == 3
     assert loaded.dim == 2
+    assert loaded.frontend == frontend
 
 
 def test_load_enrollment_rejects_missing_embedding(tmp_path):
@@ -84,6 +101,191 @@ def test_enrollment_matches_model():
     assert enrollment_matches_model(Enrollment(model="", embedding=USER), "/m/x.onnx") is True
 
 
+def test_frontend_fingerprint_is_stable_and_tracks_active_stages():
+    cfg = {
+        "sample_rate": 16000,
+        "input_agc_target_rms": 0.12,
+        "denoise_model": "/m/gtcrn.onnx",
+    }
+    first = make_enrollment_frontend_provenance(
+        cfg,
+        input_agc=object(),
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    same = make_enrollment_frontend_provenance(
+        dict(reversed(list(cfg.items()))),
+        input_agc=object(),
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    changed = make_enrollment_frontend_provenance(
+        {**cfg, "input_agc_target_rms": 0.2},
+        input_agc=object(),
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    assert first == same
+    assert first.fingerprint.startswith("sha256:")
+    assert first.fingerprint != changed.fingerprint
+    assert first.summary == "input-agc -> gtcrn"
+    assert first.raw_baseline is False
+
+
+def test_legacy_enrollment_matches_only_raw_frontend():
+    legacy = Enrollment(model="/m/spk.onnx", embedding=USER)
+    raw = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    denoised = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000, "denoise_model": "/m/gtcrn.onnx"},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    gained = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000, "input_gain": 2.0},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    assert enrollment_matches_frontend(legacy, raw) is True
+    assert enrollment_matches_frontend(legacy, denoised) is False
+    assert enrollment_matches_frontend(legacy, gained) is False
+
+
+def test_versioned_enrollment_requires_exact_frontend_fingerprint():
+    raw = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    denoised = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000, "denoise_model": "/m/gtcrn.onnx"},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    saved = Enrollment(model="/m/spk.onnx", embedding=USER, frontend=denoised)
+    assert enrollment_matches_frontend(saved, denoised) is True
+    assert enrollment_matches_frontend(saved, raw) is False
+
+
+# --- blockwise enrollment front end -----------------------------------------
+
+
+class _FakeAGC:
+    def __init__(self, scale: float = 2.0):
+        self.scale = scale
+        self.blocks = []
+
+    def process(self, block):
+        import numpy as np
+
+        a = np.asarray(block, dtype="float32")
+        self.blocks.append(a.copy())
+        return a * self.scale
+
+
+class _FakeDenoiser:
+    def __init__(self, offset: float = 1.0):
+        self.offset = offset
+        self.blocks = []
+
+    def process_16k(self, block):
+        import numpy as np
+
+        a = np.asarray(block, dtype="float32")
+        self.blocks.append(a.copy())
+        return a + self.offset
+
+
+def _frontend(*, config=None, agc=None, apm=None, denoiser=None, owns_ns=False, **kw):
+    cfg = {"sample_rate": 10, "block_sec": 0.2, **(config or {})}
+    provenance = make_enrollment_frontend_provenance(
+        cfg,
+        input_agc=agc,
+        idle_apm=apm,
+        denoiser=denoiser,
+        apm_owns_ns=owns_ns,
+    )
+    return EnrollmentFrontend(
+        sample_rate=10,
+        block_sec=0.2,
+        input_agc=agc,
+        idle_apm=apm,
+        denoiser=denoiser,
+        apm_owns_ns=owns_ns,
+        provenance=provenance,
+        **kw,
+    )
+
+
+def test_frontend_agc_precedes_static_gain_and_denoises_blockwise():
+    import numpy as np
+
+    agc = _FakeAGC(scale=2.0)
+    denoiser = _FakeDenoiser(offset=1.0)
+    front = _frontend(agc=agc, denoiser=denoiser, input_gain=9.0)
+    captured = np.array([0.1, 0.2, 0.3, 0.4, 0.5], dtype="float32")
+
+    out = front.process(captured, capture_sample_rate=10)
+
+    # 0.2 s at 10 Hz -> [2, 2, 1] sample blocks. AGC wins over the deliberately
+    # huge static gain, then every resulting block goes through denoise.
+    assert [b.size for b in agc.blocks] == [2, 2, 1]
+    assert [b.size for b in denoiser.blocks] == [2, 2, 1]
+    np.testing.assert_allclose(out, captured * 2.0 + 1.0)
+
+
+def test_frontend_disabled_is_byte_identical():
+    import numpy as np
+
+    front = _frontend(input_gain=1.0)
+    captured = np.array([0.1, -0.2, 0.3, -0.4, 0.5], dtype="float32")
+    np.testing.assert_array_equal(
+        front.process(captured, capture_sample_rate=10), captured
+    )
+
+
+def test_frontend_always_on_apm_gets_zero_far_and_owns_ns():
+    import numpy as np
+
+    class _FakeAPM:
+        suppresses_noise = True
+
+        def __init__(self):
+            self.far = []
+
+        def process_16k(self, near, far):
+            self.far.append(np.asarray(far).copy())
+            return np.asarray(near, dtype="float32") * 0.5
+
+    apm = _FakeAPM()
+    denoiser = _FakeDenoiser()
+    front = _frontend(apm=apm, denoiser=denoiser, owns_ns=True)
+    captured = np.ones(5, dtype="float32")
+
+    out = front.process(captured, capture_sample_rate=10)
+
+    assert [f.size for f in apm.far] == [2, 2, 1]
+    assert all(np.count_nonzero(f) == 0 for f in apm.far)
+    assert denoiser.blocks == []  # APM owns NS; live capture skips double-NS.
+    np.testing.assert_allclose(out, captured * 0.5)
+
+
 # --- enroll_from_recordings --------------------------------------------------
 
 
@@ -96,6 +298,8 @@ def test_enroll_from_recordings_averages_and_records_provenance():
     assert enr.passes == 2
     assert enr.embedding == [1.0, 0.0, 0.0]
     assert enr.model.endswith("spk.onnx")
+    assert enr.frontend is not None
+    assert enr.frontend.raw_baseline is True
 
 
 def test_enroll_from_recordings_returns_none_when_no_usable_embedding():
@@ -134,6 +338,8 @@ def test_run_enrollment_saves_embedding_and_wires_config(tmp_path):
     enr = load_enrollment(str(tmp_path / "enroll.json"))
     assert enr.embedding == USER
     assert enr.passes == 3
+    assert enr.frontend is not None
+    assert enr.frontend.raw_baseline is True
     # The machine-local config now points at the model + the saved embedding.
     written = json.loads(config_path.read_text())
     assert written["sherpa"]["speaker_embedding_model"].endswith("spk.onnx")
@@ -164,6 +370,37 @@ def test_run_enrollment_reports_failure_when_no_embedding(tmp_path):
     )
     assert code == 3
     assert "Enrollment failed" in "\n".join(msgs)
+
+
+def test_run_enrollment_production_recorder_receives_built_frontend(monkeypatch, tmp_path):
+    provenance = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    frontend = EnrollmentFrontend(provenance=provenance)
+    seen = {}
+
+    def _record_once(seconds, sample_rate, **kwargs):
+        seen.update(seconds=seconds, sample_rate=sample_rate, **kwargs)
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr("core.enroll.record_once", _record_once)
+    code = run_enrollment(
+        _config(tmp_path),
+        passes=1,
+        seconds=1.0,
+        config_path=str(tmp_path / "c.json"),
+        gate=_gate(USER),
+        frontend=frontend,
+        out=lambda _line: None,
+    )
+
+    assert code == 0
+    assert seen["frontend"] is frontend
+    assert seen["sample_rate"] == 16000
 
 
 # --- record_once: pin capture_samplerate (the AT2020 self-mute fix) -----------
@@ -224,6 +461,37 @@ def test_record_once_legacy_probe_when_unpinned(monkeypatch):
 
     record_once(1.0, sample_rate=16000, capture_samplerate=0)
     assert opened == [16000, 44100]  # probed 16000 (rejected) then fell back
+
+
+def test_record_once_routes_selected_device_audio_through_injected_frontend(monkeypatch):
+    import sys
+    import types
+
+    import numpy as np
+
+    fake_sd = types.SimpleNamespace()
+    fake_sd.PortAudioError = type("PortAudioError", (Exception,), {})
+    captured = np.ones((16000, 1), dtype="float32")
+    fake_sd.rec = lambda frames, **kwargs: captured[:frames]
+    fake_sd.wait = lambda: None
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    class _Frontend:
+        def __init__(self):
+            self.calls = []
+
+        def process(self, samples, capture_sample_rate):
+            self.calls.append((np.asarray(samples).copy(), capture_sample_rate))
+            return np.asarray(samples, dtype="float32") * 0.5
+
+    frontend = _Frontend()
+    from core.enroll import record_once
+
+    out = record_once(1.0, sample_rate=16000, device=7, frontend=frontend)
+
+    assert len(frontend.calls) == 1
+    assert frontend.calls[0][1] == 16000
+    np.testing.assert_array_equal(out, np.full(16000, 0.5, dtype="float32"))
 
 
 def test_vad_trim_cuts_silent_head_and_tail():

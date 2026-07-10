@@ -79,6 +79,69 @@ def test_enroll_speaker_gate_ignores_mismatched_model(tmp_path):
     assert not eng._speaker_gate.is_enrolled
 
 
+def test_enroll_speaker_gate_loads_matching_frontend_embedding(tmp_path):
+    from core.enroll import (
+        Enrollment,
+        make_enrollment_frontend_provenance,
+        save_enrollment,
+    )
+
+    model = "/m/spk.onnx"
+    path = tmp_path / "enroll.json"
+    cfg = SherpaConfig(
+        speaker_embedding_model=model,
+        speaker_enroll_embedding=str(path),
+        denoise_enabled=True,
+        denoise_model="/m/gtcrn.onnx",
+    )
+    eng = SherpaOnnxEngine(cfg)
+    eng._denoiser = object()  # actual built processor; no model needed
+    frontend = make_enrollment_frontend_provenance(
+        cfg,
+        input_agc=eng._input_agc,
+        idle_apm=None,
+        denoiser=eng._denoiser,
+        apm_owns_ns=False,
+    )
+    save_enrollment(
+        str(path), Enrollment(model=model, embedding=USER, frontend=frontend)
+    )
+    eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+
+    eng._enroll_speaker_gate()
+
+    assert eng._speaker_gate.is_enrolled
+
+
+def test_enroll_speaker_gate_frontend_mismatch_fails_open(tmp_path, caplog):
+    import logging
+
+    from core.enroll import Enrollment, save_enrollment
+
+    model = "/m/spk.onnx"
+    path = tmp_path / "legacy-enroll.json"
+    # Legacy raw enrollment: no front-end provenance.
+    save_enrollment(str(path), Enrollment(model=model, embedding=USER))
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            speaker_embedding_model=model,
+            speaker_enroll_embedding=str(path),
+            denoise_enabled=True,
+            denoise_model="/m/gtcrn.onnx",
+        )
+    )
+    eng._denoiser = object()  # runtime now sees a denoised speaker-ID domain
+    eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+
+    with caplog.at_level(logging.WARNING, logger="speaker.sherpa"):
+        eng._enroll_speaker_gate()
+
+    assert not eng._speaker_gate.is_enrolled  # fail OPEN: no stale rejecting gate
+    assert "does not match the active speaker-ID capture front end" in caplog.text
+    assert "FAILS OPEN" in caplog.text
+    assert "python -m core --enroll" in caplog.text
+
+
 # --- loudness gate: rescue a loud near-field user when identity dips -----------
 
 

@@ -30,24 +30,26 @@ from .scenarios import SCENARIOS, by_name, resolve_suite, suite_names
 log = logging.getLogger("speaker.live")
 
 
-def _preflight(config: dict) -> list[str]:
-    """Return a list of human-readable problems (empty == ready to run)."""
+def _preflight(config: dict, *, llm: str = "ollama", **check_kwargs) -> list[str]:
+    """Return shared runtime-readiness failures (empty == ready to run).
+
+    ``config`` is already device-profile merged by ``main``.  Reusing doctor's
+    selected-profile checks prevents this live gate from saying READY while the
+    same devices/word-cut route fail doctor or normal sherpa startup.
+    """
+    from core.readiness import run_runtime_checks
+
+    checks = run_runtime_checks(
+        config, resolved=True, llm_mode=llm, **check_kwargs
+    )
     problems: list[str] = []
-    try:
-        import sounddevice as sd  # noqa: F401
-    except Exception as exc:  # noqa: BLE001
-        problems.append(f"sounddevice not importable ({exc}); pip install sounddevice + a PortAudio backend")
-    sherpa = config.get("sherpa", {}) or {}
-    if not sherpa.get("asr_encoder") or not sherpa.get("asr_tokens"):
-        problems.append(
-            "sherpa.asr_encoder / asr_tokens not set -- no ASR model "
-            "(run `python -m tools.setup_models`; writes config.local.json)"
-        )
-    if not sherpa.get("tts_model"):
-        problems.append(
-            "sherpa.tts_model not set -- no TTS voice for the synthetic user / assistant "
-            "(run `python -m tools.setup_models`; writes config.local.json)"
-        )
+    for check in checks:
+        if check.ok:
+            continue
+        problem = f"{check.name}: {check.detail}".rstrip()
+        if check.hint:
+            problem += f"; fix: {check.hint}"
+        problems.append(problem)
     return problems
 
 
@@ -184,7 +186,11 @@ def main(argv: list[str] | None = None) -> int:
 
     config = _load_config()
     device = args.device or config.get("device", "desktop")
-    config = _apply_device_profile(config, device)
+    try:
+        config = _apply_device_profile(config, device, strict=True)
+    except ValueError as exc:
+        print(f"invalid device profile: {exc}")
+        return 2
     for key in ("input_device", "output_device"):
         val = getattr(args, key)
         if val is not None:
@@ -237,7 +243,27 @@ def main(argv: list[str] | None = None) -> int:
     if args.denoise:
         config.setdefault("sherpa", {})["denoise_enabled"] = True
 
-    problems = _preflight(config)
+    llm_cfg = config.get("llm", {}) or {}
+    requested_models = None
+    if args.llm != "echo" and str(llm_cfg.get("backend", "ollama")).lower() == "ollama":
+        requested_models = tuple(dict.fromkeys(
+            str(value) for value in (
+                args.model or llm_cfg.get("main_model"),
+                args.fast_model or llm_cfg.get("fast_model"),
+                llm_cfg.get("router_model"),
+            )
+            if value
+        ))
+    problems = _preflight(
+        config,
+        llm=args.llm,
+        models_needed=requested_models,
+        # --inject explicitly replaces both device streams and has no acoustic
+        # echo route. It is the intentional headless exception; normal --check
+        # and acoustic runs still require real devices + verified OS EC routing.
+        require_audio_devices=not args.inject,
+        require_os_echo_route=not args.inject,
+    )
     if args.check or problems:
         if problems:
             print("PREFLIGHT PROBLEMS:")

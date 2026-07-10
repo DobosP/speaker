@@ -102,11 +102,50 @@ def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):
     # the setup_models instruction rather than starting a deaf engine.
     monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
     with pytest.raises(SystemExit) as exc:
-        app.main(["--engine", "sherpa"])
+        app.main(["--engine", "sherpa", "--llm", "echo"])
     msg = str(exc.value)
     assert "tools.setup_models" in msg
-    assert "no sherpa model paths" in msg.lower()
+    assert "sherpa models" in msg.lower()
     assert "config.local.json" in msg
+    # Preflight runs before the main runtime try/finally, but must still close
+    # telemetry and finalize the diagnostic bundle.
+    assert len(list(tmp_path.glob("run-*.summary.json"))) == 1
+
+
+def test_sherpa_readiness_failure_is_actionable_and_echo_mode_is_forwarded():
+    from tools.doctor import Check
+
+    captured = {}
+
+    def checks(config, **kwargs):
+        captured.update(kwargs)
+        return [Check("word-cut VAD model", False, "vad_model missing", "setup vad")]
+
+    with pytest.raises(SystemExit) as exc:
+        app._require_sherpa_runtime_ready(
+            {"sherpa": {}}, "echo", run_checks=checks
+        )
+    text = str(exc.value)
+    assert "runtime preflight failed" in text
+    assert "word-cut VAD model" in text
+    assert "setup vad" in text
+    assert captured["resolved"] is True
+    assert captured["llm_mode"] == "echo"
+
+
+def test_enrollment_bypasses_normal_sherpa_runtime_preflight(tmp_path, monkeypatch):
+    import core.enroll as enroll
+
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(enroll, "run_enrollment", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        app,
+        "_require_sherpa_runtime_ready",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("normal runtime preflight ran during enrollment")
+        ),
+    )
+    assert app.main(["--engine", "sherpa", "--llm", "echo", "--enroll"]) == 0
 
 
 def test_load_config_merges_config_local(tmp_path, monkeypatch):

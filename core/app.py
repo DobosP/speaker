@@ -61,6 +61,45 @@ def _require_asr_models(sherpa_cfg, engine_name: str) -> None:
         )
 
 
+def _require_sherpa_runtime_ready(
+    config: dict,
+    llm_mode: str,
+    *,
+    models_needed=None,
+    run_checks=None,
+) -> None:
+    """Fail before model/device construction when sherpa cannot run correctly.
+
+    Kept as a narrow CLI seam: console/replay/livekit and one-shot enrollment do
+    not call it. ``run_checks`` is injectable so the control-plane decision is
+    unit-tested without probing this test runner's audio devices.
+    """
+    if run_checks is None:
+        from .readiness import run_runtime_checks
+
+        run_checks = run_runtime_checks
+    checks = run_checks(
+        config,
+        resolved=True,
+        llm_mode=llm_mode,
+        models_needed=models_needed,
+    )
+    failures = [check for check in checks if not check.ok]
+    if not failures:
+        return
+    lines = []
+    for check in failures:
+        line = f"  - {check.name}: {check.detail}".rstrip()
+        if check.hint:
+            line += f"\n      fix: {check.hint}"
+        lines.append(line)
+    raise SystemExit(
+        "\n--engine sherpa runtime preflight failed:\n"
+        + "\n".join(lines)
+        + "\n\nRun `python -m tools.doctor` after fixing these prerequisites."
+    )
+
+
 def _build_engine(args, config: dict) -> AudioEngine:
     if args.engine == "sherpa":
         from .engines.sherpa import SherpaConfig, SherpaOnnxEngine
@@ -709,6 +748,42 @@ def main(argv: list[str] | None = None) -> int:
             pass
         runlog.finalize(None)
         return code
+
+    # Native voice is the only normal CLI path that needs physical audio and
+    # open-speaker routing. Fail before constructing models/streams so an active
+    # word-cut recipe cannot silently run without its VAD or OS EC route. EchoLLM
+    # deliberately skips Ollama readiness; console/replay/enroll never enter.
+    if args.engine == "sherpa":
+        llm_cfg = config.get("llm", {}) or {}
+        requested_models = None
+        if (
+            args.llm != "echo"
+            and str(llm_cfg.get("backend", "ollama")).lower() == "ollama"
+        ):
+            requested_models = tuple(dict.fromkeys(
+                str(value) for value in (
+                    args.model or llm_cfg.get("main_model"),
+                    args.fast_model or llm_cfg.get("fast_model"),
+                    llm_cfg.get("router_model"),
+                )
+                if value
+            ))
+        try:
+            _require_sherpa_runtime_ready(
+                config, args.llm, models_needed=requested_models
+            )
+        except BaseException:
+            # This check runs before the main runtime try/finally. Do not strand
+            # the telemetry thread or an unfinalized run bundle on fail-fast.
+            try:
+                monitor.stop()
+            except Exception:  # noqa: BLE001 - preserve the readiness error
+                pass
+            try:
+                runlog.finalize(None)
+            except Exception:  # noqa: BLE001 - preserve the readiness error
+                pass
+            raise
 
     llm, fast_llm = _build_llms(args, config)
     engine = _build_engine(args, config)

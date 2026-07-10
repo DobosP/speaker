@@ -380,9 +380,9 @@ def _run_main_capturing_config(monkeypatch, argv):
     monkeypatch.setattr(core_config, "_load_config",
                         lambda *a, **k: {"device": "desktop", "sherpa": {}})
     monkeypatch.setattr(core_config, "_apply_device_profile",
-                        lambda config, device: config)
+                        lambda config, device, **_kwargs: config)
 
-    def _stub_preflight(config):
+    def _stub_preflight(config, **_kwargs):
         captured["config"] = config
         return ["stop here -- captured config, do not build the live runtime"]
 
@@ -405,11 +405,124 @@ def test_no_smart_endpoint_flag_leaves_endpoint_untouched(monkeypatch):
     assert "endpoint_enabled" not in config.get("sherpa", {})
 
 
+def test_invalid_device_profile_fails_cleanly_before_preflight(monkeypatch, capsys):
+    import core.config as core_config
+
+    monkeypatch.setattr(core_config, "_load_config", lambda *args, **kwargs: {
+        "device": "desktop",
+        "device_profiles": {"desktop": {}},
+        "sherpa": {},
+    })
+    rc = live_main.main(["--device", "does-not-exist", "--check"])
+    assert rc == 2
+    text = capsys.readouterr().out.lower()
+    assert "invalid device profile" in text
+    assert "desktop" in text
+
+
 def test_preflight_missing_models_points_at_config_local():
     problems = live_main._preflight({"sherpa": {}})
     text = "\n".join(problems)
     assert "tools.setup_models" in text
     assert "config.local.json" in text
+
+
+def test_preflight_rejects_importable_sounddevice_with_no_usable_devices():
+    class _NoDevices:
+        def query_devices(self, *args, **kwargs):
+            raise RuntimeError("no default audio route")
+
+    required = {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens", "asr_encoder", "asr_decoder", "asr_joiner",
+            "tts_model", "tts_tokens",
+        )
+    }
+    problems = live_main._preflight(
+        {"sherpa": required},
+        llm="echo",
+        sd=_NoDevices(),
+        import_fn=lambda _name: object(),
+        exists=lambda _path: True,
+        platform="win32",
+    )
+    text = "\n".join(problems).lower()
+    assert "audio input" in text
+    assert "audio output" in text
+
+
+def test_preflight_rejects_word_cut_when_ec_module_is_not_routed():
+    from tools.doctor import PipeWireState
+
+    required = {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens", "asr_encoder", "asr_decoder", "asr_joiner",
+            "tts_model", "tts_tokens",
+        )
+    }
+
+    class _Devices:
+        def query_devices(self, *args, **kwargs):
+            return {"name": "pipewire", "default_samplerate": 48000.0}
+
+    state = PipeWireState(
+        modules=(
+            "42 module-echo-cancel source_name=ec_source sink_name=ec_sink"
+        ),
+        sources="51 ec_source PipeWire float32le RUNNING",
+        sinks="52 ec_sink PipeWire float32le RUNNING",
+        default_source="alsa_input.raw",
+        default_sink="alsa_output.raw",
+    )
+    problems = live_main._preflight(
+        {"sherpa": {
+            **required,
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        llm="echo",
+        sd=_Devices(),
+        import_fn=lambda _name: object(),
+        exists=lambda _path: True,
+        platform="linux",
+        pipewire_state=state,
+    )
+    text = "\n".join(problems).lower()
+    assert "echo-cancel route" in text
+    assert "capture" in text and "playback" in text
+
+
+def test_explicit_inject_preflight_skips_only_physical_devices_and_ec_route():
+    class _MustNotQueryDevices:
+        def query_devices(self, *args, **kwargs):
+            raise AssertionError("inject preflight queried physical audio")
+
+    required = {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens", "asr_encoder", "asr_decoder", "asr_joiner",
+            "tts_model", "tts_tokens",
+        )
+    }
+    problems = live_main._preflight(
+        {"sherpa": {
+            **required,
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        llm="echo",
+        sd=_MustNotQueryDevices(),
+        import_fn=lambda _name: object(),
+        exists=lambda _path: True,
+        platform="linux",
+        require_audio_devices=False,
+        require_os_echo_route=False,
+    )
+    assert problems == []
 
 
 def test_committed_config_endpoint_enabled_with_validated_min_silence():

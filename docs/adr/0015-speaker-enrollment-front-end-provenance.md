@@ -1,7 +1,7 @@
 # ADR-0015: Speaker enrollment matches and fingerprints the active capture front end
 
 Date: 2026-07-10
-Status: accepted
+Status: superseded-by ADR-0018
 
 ## Decision
 

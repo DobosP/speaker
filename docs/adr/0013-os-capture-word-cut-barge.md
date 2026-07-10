@@ -1,11 +1,7 @@
 # ADR-0013: OS voice-comm capture (module-echo-cancel) + no-duck word-cut barge for the open speaker
 
 Date: 2026-07-06
-Status: accepted (2026-07-06: merged to main, live-validated on the Linux/PipeWire
-box — no pumping, no false cut on echo, clean near-end STT; still opt-in / off by
-default, and the real-talk-over batch cut-rate remains open — but see the
-2026-07-06 (evening) addendum below: the FIRST real *sustained* talk-over batch did
-NOT reproduce the clean near-end and the barge did not fire)
+Status: accepted (Windows addendum superseded-by ADR-0019)
 
 ## Decision
 

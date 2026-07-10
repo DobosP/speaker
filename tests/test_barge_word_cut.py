@@ -71,15 +71,26 @@ class _FakeVad:
     def __init__(self, speech: bool = True) -> None:
         self._speech = bool(speech)
         self.accepted = 0
+        self.resets = 0
+        self._reactivate_on_accept = False
 
     def accept_waveform(self, samples) -> None:
         self.accepted += 1
+        if self._reactivate_on_accept:
+            self._speech = True
+            self._reactivate_on_accept = False
 
     def is_speech_detected(self) -> bool:
         return self._speech
 
     def set_speech(self, speech: bool) -> None:
         self._speech = bool(speech)
+        self._reactivate_on_accept = False
+
+    def reset(self) -> None:
+        self.resets += 1
+        self._reactivate_on_accept = self._speech
+        self._speech = False
 
 
 class _Rec:
@@ -105,6 +116,7 @@ def _engine(
     eng = SherpaOnnxEngine(SherpaConfig(barge_word_cut_enabled=True, **cfg))
     eng._aec = aec  # None = OS echo-cancel path -> word-cut live (ADR-0013)
     eng._vad = _FakeVad(vad_speech)
+    eng._word_cut_route_verified = True
     if rec is not None:
         eng._cb = rec.callbacks()
     return eng
@@ -129,11 +141,13 @@ def test_config_from_dict_roundtrip():
             "barge_word_cut_enabled": True,
             "barge_word_cut_min_words": 3,
             "barge_word_cut_reset_quiet_blocks": 5,
+            "barge_word_cut_vad_preroll_sec": 0.4,
         }
     )
     assert c.barge_word_cut_enabled is True
     assert c.barge_word_cut_min_words == 3
     assert c.barge_word_cut_reset_quiet_blocks == 5
+    assert c.barge_word_cut_vad_preroll_sec == 0.4
 
 
 def test_active_only_when_flag_set_and_no_inapp_aec():
@@ -192,6 +206,38 @@ def test_bare_stop_command_cuts_alone():
     eng = _engine(rec)
     r, s = _FakeRecognizer(["stop"]), _FakeStream()
     assert eng._barge_word_cut_step(r, s, _BLOCK, time.monotonic()) is True
+    assert rec.barges == 1
+
+
+def test_vad_onset_preroll_preserves_first_word_and_bare_stop():
+    class _DelayedVad(_FakeVad):
+        def __init__(self):
+            super().__init__(False)
+
+        def accept_waveform(self, samples):
+            self.accepted += 1
+            self._speech = self.accepted >= 3  # model confirms after 300 ms
+
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=False)
+    eng._vad = _DelayedVad()
+    r, stream, normal = _FakeRecognizer(["stop"]), _FakeStream(), _FakeStream()
+    blocks = [np.full(1600, value, dtype="float32") for value in (0.1, 0.2, 0.3)]
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(r, stream, blocks[0], now, normal_stream=normal)
+    assert not eng._barge_word_cut_step(
+        r, stream, blocks[1], now + 0.1, normal_stream=normal
+    )
+    assert eng._barge_word_cut_step(
+        r, stream, blocks[2], now + 0.2, normal_stream=normal
+    )
+
+    assert len(stream.blocks) == 3
+    assert len(normal.blocks) == 3
+    for actual, expected in zip(normal.blocks, blocks):
+        np.testing.assert_array_equal(actual, expected)
+    assert eng._wc_stats["vad_preroll_blocks"] == 2
     assert rec.barges == 1
 
 
@@ -406,6 +452,45 @@ def test_garbled_two_word_tail_plus_silence_is_never_handed_to_normal_asr():
     assert eng._wc_stats["tail_drop_no_continuation"] == 1
 
 
+def test_short_tail_probation_deadline_drops_even_if_vad_stays_active():
+    eng = _engine(vad_speech=True, endpoint_max_silence_sec=0.3)
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["please wait", "please wait", "please wait"])
+    now = time.monotonic()
+
+    assert eng._barge_word_cut_step(r, detect, _BLOCK, now) is False
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
+    assert eng._word_cut_tail_staged
+    assert eng._word_cut_tail_probation_step(
+        r, detect, normal, _BLOCK, now + 0.31
+    ) == "dropped"
+    assert not eng._word_cut_tail_staged
+    assert normal.fed_blocks == 0
+    assert eng._wc_stats["tail_drop_no_continuation"] == 1
+
+
+def test_tail_requires_fresh_vad_epoch_not_inherited_playback_hangover():
+    class _StickyVad(_FakeVad):
+        def reset(self):
+            self.resets += 1  # broken/hangover state remains active
+
+    eng = _engine(vad_speech=True)
+    eng._vad = _StickyVad(True)
+    detect, normal = _FakeStream(), _FakeStream()
+    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(r, detect, _BLOCK, now)
+    assert not eng._finish_word_cut_reply(r, detect, normal, now=now)
+    assert eng._vad.resets == 1
+    assert not eng._word_cut_tail_vad_reset_ok
+    assert eng._word_cut_tail_probation_step(
+        r, detect, normal, np.zeros_like(_BLOCK), now + 0.1
+    ) == "waiting"
+    assert normal.fed_blocks == 0
+    assert eng._word_cut_pending_samples == 0
+
+
 def test_floor_clearing_tail_hands_off_immediately_when_cut_was_guarded():
     eng = _engine(vad_speech=True)
     detect, normal = _FakeStream(), _FakeStream()
@@ -618,6 +703,55 @@ def test_capture_feeds_word_cut_before_acoustic_reference_watch():
     assert eng._vad.accepted == 1
 
 
+def test_capture_route_loss_blocks_playback_keyword_authority():
+    """A raw fallback must not turn echoed "stop" into a KWS command."""
+
+    class _CaptureRecognizer:
+        def create_stream(self, **kwargs):
+            return _FakeStream()
+
+        def is_ready(self, stream):
+            return False
+
+        def decode_stream(self, stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            return ""
+
+        def reset(self, stream):
+            pass
+
+        def is_endpoint(self, stream):
+            return False
+
+    class _OneBlockInput:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def read(self, _n):
+            self.engine._running.clear()
+            return _BLOCK.copy(), False
+
+    eng = _engine(vad_speech=True)
+    eng._recognizer = _CaptureRecognizer()
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _OneBlockInput(eng)
+    eng._speaking.set()
+    eng._word_cut_route_verified = False
+    eng._os_echo_route_verified = False
+    commands = []
+    eng._poll_keywords = lambda samples: commands.append(samples)
+
+    eng._running.set()
+    thread = threading.Thread(target=eng._capture_loop)
+    thread.start()
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    assert commands == []
+
+
 def test_capture_tail_continuation_replays_current_block_once(caplog):
     import logging
 
@@ -693,6 +827,186 @@ def test_capture_tail_continuation_replays_current_block_once(caplog):
     assert partials == ["Please wait now"]
     assert "tail_continuations=1" in caplog.text
     assert "spliced_samples=3200" in caplog.text
+
+
+def test_capture_dropped_tail_feeds_vad_once_per_physical_block():
+    class _LifecycleRecognizer:
+        def __init__(self):
+            self.streams: list[_FakeStream] = []
+
+        def create_stream(self, **kwargs):
+            stream = _FakeStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, stream):
+            return False
+
+        def decode_stream(self, stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            return (
+                "please wait"
+                if len(self.streams) > 1 and stream is self.streams[1]
+                else ""
+            )
+
+        def reset(self, stream):
+            pass
+
+        def is_endpoint(self, stream):
+            return len(self.streams) > 1 and stream is self.streams[1]
+
+    class _TwoBlockInput:
+        def __init__(self, engine):
+            self.engine = engine
+            self.index = 0
+
+        def read(self, _n):
+            self.index += 1
+            if self.index == 2:
+                self.engine._speaking.clear()
+                self.engine._vad.set_speech(False)
+                self.engine._running.clear()
+            return _BLOCK.copy(), False
+
+    eng = _engine(vad_speech=True)
+    eng._recognizer = _LifecycleRecognizer()
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _TwoBlockInput(eng)
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+
+    eng._running.set()
+    thread = threading.Thread(target=eng._capture_loop)
+    thread.start()
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    assert eng._vad.accepted == 2
+    assert not eng._word_cut_tail_staged
+
+
+def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
+    """The playback candidate survives the real ASRSegment handoff intact.
+
+    This is deliberately a finite capture-loop test, not a direct helper test:
+    it covers promotion into the normal recognizer, the one-shot pending splice,
+    ASRSegment ownership, endpoint extraction, and the finalizer work item.
+    """
+
+    class _LifecycleRecognizer:
+        def __init__(self):
+            self.streams: list[_FakeStream] = []
+            self.detect_results = iter(["please wait", "please wait for me"])
+            self.endpoint_blocks: list[np.ndarray] = []
+
+        def create_stream(self, **kwargs):
+            stream = _FakeStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, stream):
+            return False
+
+        def decode_stream(self, stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            if len(self.streams) > 1 and stream is self.streams[1]:
+                return next(self.detect_results, "please wait for me")
+            return "please wait for me" if stream.blocks else ""
+
+        def reset(self, stream):
+            # Promotion intentionally throws away any old normal-stream context
+            # before replaying only the confirmed user candidate.
+            if self.streams and stream is self.streams[0]:
+                stream.blocks.clear()
+                stream.fed_blocks = 0
+
+        def is_endpoint(self, stream):
+            endpoint = bool(
+                self.streams
+                and stream is self.streams[0]
+                and stream.fed_blocks >= 3
+            )
+            if endpoint:
+                self.endpoint_blocks = [block.copy() for block in stream.blocks]
+            return endpoint
+
+    class _ThreeBlockInput:
+        def __init__(self, engine, blocks):
+            self.engine = engine
+            self.blocks = blocks
+            self.index = 0
+
+        def read(self, n):
+            block = self.blocks[self.index]
+            self.index += 1
+            if self.index == len(self.blocks):
+                # The first listening block is endpoint silence. The current
+                # iteration still completes after stopping the finite loop.
+                self.engine._vad.set_speech(False)
+                self.engine._running.clear()
+            return block.copy(), False
+
+    eng = _engine(vad_speech=True)
+    recognizer = _LifecycleRecognizer()
+    first = np.full(1600, 0.11, dtype="float32")
+    second = np.full(1600, 0.22, dtype="float32")
+    endpoint_silence = np.zeros(1600, dtype="float32")
+    finalized: list[tuple[np.ndarray, str, object, object, object]] = []
+
+    def on_barge_in():
+        # Real coordination stops playback after the cut; make that boundary
+        # deterministic without involving a playback device/thread.
+        eng._speaking.clear()
+
+    def finalize(primary, raw, speech_end, alternate, speech_sec):
+        finalized.append(
+            (
+                np.asarray(primary).copy(),
+                raw,
+                speech_end,
+                None if alternate is None else np.asarray(alternate).copy(),
+                speech_sec,
+            )
+        )
+
+    eng._recognizer = recognizer
+    eng._cb = EngineCallbacks(on_barge_in=on_barge_in)
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _ThreeBlockInput(
+        eng, [first, second, endpoint_silence]
+    )
+    eng._finalize_and_dispatch = finalize
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+    eng._first_audio_pending = True
+
+    eng._running.set()
+    thread = threading.Thread(target=eng._capture_loop)
+    thread.start()
+    thread.join(timeout=3.0)
+    assert not thread.is_alive()
+
+    assert len(finalized) == 1
+    primary, raw, speech_end, alternate, speech_sec = finalized[0]
+    expected = np.concatenate([first, second, endpoint_silence])
+    np.testing.assert_array_equal(primary, expected)
+    assert raw == "please wait for me"
+    assert speech_end is not None
+    assert alternate is None  # OS echo-cancel word-cut has one capture domain
+    assert np.isclose(speech_sec, 2 * eng.config.block_sec)
+    assert eng._word_cut_pending_samples == 0
+
+    # The normal streaming recognizer sees the same two candidate blocks once,
+    # followed by the one endpoint-silence block -- no lost head or duplicate.
+    assert len(recognizer.endpoint_blocks) == 3
+    np.testing.assert_array_equal(recognizer.endpoint_blocks[0], first)
+    np.testing.assert_array_equal(recognizer.endpoint_blocks[1], second)
+    np.testing.assert_array_equal(recognizer.endpoint_blocks[2], endpoint_silence)
 
 
 # --- funnel telemetry (ADR-0013 post-hoc scoring) ---------------------------------

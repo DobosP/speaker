@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from core.engines._sherpa_models import build_final_recognizer
+from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
 
@@ -142,6 +143,29 @@ def test_final_transcribe_uses_vad_speech_duration_not_idle_padded_pcm_length():
     seg = np.ones(2 * 16000, dtype="float32")
     out = eng._final_transcribe(seg, "Ario der", speech_sec=0.4)
     assert out == "Ario der"
+
+
+def test_no_vad_segment_uses_owned_pcm_duration_for_second_pass():
+    segment = ASRSegment(
+        sample_rate=16000,
+        pre_roll_sec=0.8,
+        max_utterance_sec=3.0,
+        vad_available=False,
+        block_sec=0.1,
+    )
+    for _ in range(20):  # speech began two seconds before the first partial
+        segment.append(np.ones(1600, dtype="float32"))
+    segment.observe_text(2.0)
+    owned, _ = segment.arrays()
+
+    eng = _engine(asr_final_min_sec=0.5)
+    eng._final_recognizer = _FakeOffline("Garbled stream cleaned.")
+    assert segment.speech_duration_sec is None
+    assert eng._final_transcribe(
+        owned,
+        "garbled stream",
+        speech_sec=segment.speech_duration_sec,
+    ) == "Garbled stream cleaned."
 
 
 def test_config_parses_final_fields():

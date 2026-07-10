@@ -69,6 +69,18 @@ def test_missing_vad_fails_open_for_final_but_disables_early_endpoint():
     assert s.early_endpoint_allowed is False
 
 
+def test_missing_vad_keeps_audio_before_delayed_first_partial():
+    s = _segment(vad=False, pre=0.8, maximum=3.0)
+    blocks = [np.full(10, i, dtype="float32") for i in range(20)]
+    for block in blocks:  # two seconds before the decoder emits any text
+        s.append(block)
+    s.observe_text(2.0)
+    primary, _ = s.arrays()
+    assert primary.size == 200
+    np.testing.assert_array_equal(primary[:10], blocks[0])
+    assert s.speech_duration_sec is None  # finalizer uses owned-array duration
+
+
 def test_vad_activity_not_decoder_stability_controls_early_endpoint_clock():
     s = _segment(vad=True)
     s.observe_vad(True, 1.0)

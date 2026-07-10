@@ -367,7 +367,7 @@ def test_has_work_and_idle(tmp_path):
 # ON only for the live run, and its absence is byte-identical to before.
 
 
-def _run_main_capturing_config(monkeypatch, argv):
+def _run_main_capturing_config(monkeypatch, argv, *, initial_sherpa=None):
     """Drive main(argv) with a minimal stub config + a captured _preflight.
 
     Returns the config dict as it was when _preflight saw it (i.e. AFTER the
@@ -377,8 +377,14 @@ def _run_main_capturing_config(monkeypatch, argv):
 
     captured: dict = {}
 
-    monkeypatch.setattr(core_config, "_load_config",
-                        lambda *a, **k: {"device": "desktop", "sherpa": {}})
+    monkeypatch.setattr(
+        core_config,
+        "_load_config",
+        lambda *a, **k: {
+            "device": "desktop",
+            "sherpa": dict(initial_sherpa or {}),
+        },
+    )
     monkeypatch.setattr(core_config, "_apply_device_profile",
                         lambda config, device, **_kwargs: config)
 
@@ -403,6 +409,16 @@ def test_no_smart_endpoint_flag_leaves_endpoint_untouched(monkeypatch):
     # Default-OFF must be byte-identical to before: the flag's absence does not
     # introduce the key at all (the engine then defaults endpoint_enabled False).
     assert "endpoint_enabled" not in config.get("sherpa", {})
+
+
+def test_inject_disables_physical_aec_and_os_word_cut_authority(monkeypatch):
+    config = _run_main_capturing_config(
+        monkeypatch,
+        ["--inject"],
+        initial_sherpa={"aec_enabled": True, "barge_word_cut_enabled": True},
+    )
+    assert config["sherpa"]["aec_enabled"] is False
+    assert config["sherpa"]["barge_word_cut_enabled"] is False
 
 
 def test_invalid_device_profile_fails_cleanly_before_preflight(monkeypatch, capsys):

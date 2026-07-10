@@ -13,6 +13,17 @@ USER = [1.0, 0.0, 0.0]
 OTHER = [0.0, 1.0, 0.0]
 
 
+def _capture():
+    from core.enroll import CaptureResolution
+
+    return CaptureResolution(
+        route="test-mic",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+    )
+
+
 def _gate(embed, *, enrolled_to=USER):
     g = SpeakerGate(threshold=0.5, embed_fn=lambda samples, sr: embed)
     if enrolled_to is not None:
@@ -45,11 +56,63 @@ def test_enrolled_user_final_is_acted_on():
     assert _engine(gate=_gate(USER))._should_act_on_final([0.0]) is True
 
 
+def test_live_speaker_embedding_uses_same_voiced_envelope_as_enrollment():
+    import numpy as np
+
+    captured = []
+    gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda samples, sr: captured.append(np.asarray(samples)) or USER,
+    )
+    gate.enroll_embedding(USER)
+    eng = _engine(gate=gate)
+    clip = np.r_[
+        np.zeros(16000, dtype="float32"),
+        np.full(8000, 0.2, dtype="float32"),
+        np.zeros(16000, dtype="float32"),
+    ]
+
+    assert eng._should_act_on_final(clip) is True
+    assert len(captured) == 1
+    from core.enroll import _vad_trim
+
+    np.testing.assert_array_equal(captured[0], _vad_trim(clip, 16000))
+
+
 def test_enrolled_other_voice_final_is_dropped():
     assert _engine(gate=_gate(OTHER))._should_act_on_final([0.0]) is False
 
 
+def test_broken_speaker_embedder_fails_open_instead_of_dropping_turn():
+    def broken(_samples, _sr):
+        raise RuntimeError("embedding backend failed")
+
+    gate = SpeakerGate(threshold=0.5, embed_fn=broken)
+    gate.enroll_embedding(USER)
+    assert _engine(gate=gate)._should_act_on_final([0.2] * 1600) is True
+
+
 # --- _enroll_speaker_gate: load the persisted embedding into the gate --------
+
+
+def test_enrollment_load_is_deferred_until_capture_resolution(tmp_path, caplog):
+    import logging
+
+    from core.enroll import Enrollment, save_enrollment
+
+    model = "/m/spk.onnx"
+    path = tmp_path / "enroll.json"
+    save_enrollment(str(path), Enrollment(model=model, embedding=USER))
+    eng = SherpaOnnxEngine(
+        SherpaConfig(speaker_embedding_model=model, speaker_enroll_embedding=str(path))
+    )
+    eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+
+    with caplog.at_level(logging.WARNING, logger="speaker.sherpa"):
+        eng._enroll_speaker_gate()
+
+    assert not eng._speaker_gate.is_enrolled
+    assert "deferred until the capture route/rate" in caplog.text
 
 
 def test_enroll_speaker_gate_loads_matching_embedding(tmp_path):
@@ -62,6 +125,7 @@ def test_enroll_speaker_gate_loads_matching_embedding(tmp_path):
         SherpaConfig(speaker_embedding_model=model, speaker_enroll_embedding=str(path))
     )
     eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+    eng._capture_resolution = _capture()
     eng._enroll_speaker_gate()
     assert eng._speaker_gate.is_enrolled
 
@@ -75,6 +139,7 @@ def test_enroll_speaker_gate_ignores_mismatched_model(tmp_path):
         SherpaConfig(speaker_embedding_model="/m/spk.onnx", speaker_enroll_embedding=str(path))
     )
     eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+    eng._capture_resolution = _capture()
     eng._enroll_speaker_gate()
     assert not eng._speaker_gate.is_enrolled
 
@@ -102,11 +167,13 @@ def test_enroll_speaker_gate_loads_matching_frontend_embedding(tmp_path):
         idle_apm=None,
         denoiser=eng._denoiser,
         apm_owns_ns=False,
+        capture=_capture(),
     )
     save_enrollment(
         str(path), Enrollment(model=model, embedding=USER, frontend=frontend)
     )
     eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+    eng._capture_resolution = _capture()
 
     eng._enroll_speaker_gate()
 
@@ -132,6 +199,7 @@ def test_enroll_speaker_gate_frontend_mismatch_fails_open(tmp_path, caplog):
     )
     eng._denoiser = object()  # runtime now sees a denoised speaker-ID domain
     eng._speaker_gate = SpeakerGate(threshold=0.5, embed_fn=lambda s, sr: None)
+    eng._capture_resolution = _capture()
 
     with caplog.at_level(logging.WARNING, logger="speaker.sherpa"):
         eng._enroll_speaker_gate()

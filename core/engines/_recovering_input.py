@@ -36,6 +36,7 @@ always by enumeration, never by stale device index.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -160,9 +161,12 @@ class _RecoveringInputStream:
         self.channels = channels
         self.block_seconds = block_seconds
         self._sleep = sleep_fn
+        self._closed = threading.Event()
+        self._lifecycle_lock = threading.Lock()
         self._stream: Any = None
         self._current: Optional[OpenAttempt] = None
         self._state: StreamState = StreamState.OPEN
+        self._generation = 0
 
     # --- public surface ---------------------------------------------------
 
@@ -172,6 +176,18 @@ class _RecoveringInputStream:
         if self._current is None:
             raise RuntimeError("input stream is not open")
         return self._current.samplerate
+
+    @property
+    def actual_device(self):
+        """Selector of the attempt that is currently open (``None`` = default)."""
+        if self._current is None:
+            raise RuntimeError("input stream is not open")
+        return self._current.device
+
+    @property
+    def generation(self) -> int:
+        """Incremented after every successful initial open or reopen."""
+        return self._generation
 
     @property
     def state(self) -> StreamState:
@@ -185,15 +201,39 @@ class _RecoveringInputStream:
         is final after walking all backoffs) and to the initial caller
         in ``start()`` (whose first failed open should bubble as a
         startup error, not as a runtime FATAL)."""
+        if self._closed.is_set():
+            raise RuntimeError("input stream is closed")
         last_exc: Optional[Exception] = None
         for attempt in self._attempts:
+            if self._closed.is_set():
+                raise RuntimeError("input stream is closed")
+            candidate = None
             try:
-                self._stream = self._opener(attempt.device, attempt.samplerate)
-                self._stream.start()
-                self._current = attempt
+                candidate = self._opener(attempt.device, attempt.samplerate)
+                candidate.start()
+                with self._lifecycle_lock:
+                    if self._closed.is_set():
+                        cancelled = True
+                    else:
+                        cancelled = False
+                        self._stream = candidate
+                        self._current = attempt
+                        self._generation += 1
+                if cancelled:
+                    raise RuntimeError("input stream is closed")
+                if self._closed.is_set():
+                    self._retire_stream()
+                    raise RuntimeError("input stream is closed")
                 self._set_state(StreamState.OPEN, f"opened at {attempt.samplerate} Hz")
                 return
             except Exception as exc:  # noqa: BLE001
+                if candidate is not None and candidate is not self._stream:
+                    try:
+                        candidate.close()
+                    except Exception:
+                        pass
+                if self._closed.is_set():
+                    raise RuntimeError("input stream is closed") from exc
                 last_exc = exc
                 log.warning(
                     "open failed for device=%r sr=%d: %s",
@@ -208,8 +248,10 @@ class _RecoveringInputStream:
         errors. Returns ``(samples, overflowed)`` like ``sd.InputStream.read``.
 
         On TRANSIENT errors: returns a zero-filled block with
-        ``overflowed=True``. On REOPEN errors: invokes :meth:`_recover`
+        ``overflowed=True``. On REOPEN errors: invokes the bounded recovery path
         which may raise FATAL after the backoff budget is exhausted."""
+        if self._closed.is_set():
+            raise RuntimeError("read() on closed input stream")
         if self._stream is None:
             raise RuntimeError("read() before open()")
         try:
@@ -218,17 +260,20 @@ class _RecoveringInputStream:
             return self._handle_read_error(exc, frames)
 
     def close(self) -> None:
-        if self._stream is not None:
+        self._closed.set()
+        with self._lifecycle_lock:
+            stream = self._stream
+            self._stream = None
+            self._current = None
+        if stream is not None:
             try:
-                self._stream.stop()
+                stream.stop()
             except Exception:
                 pass
             try:
-                self._stream.close()
+                stream.close()
             except Exception:
                 pass
-        self._stream = None
-        self._current = None
 
     # --- error handling ---------------------------------------------------
 
@@ -238,41 +283,98 @@ class _RecoveringInputStream:
             log.warning("transient PortAudio error %d: %s -- dropping frame", code, exc)
             return self._silent_block(frames), True
         if code in REOPEN_CODES:
-            self._recover(reason=f"PortAudio error {code}: {exc}")
-            # After recovery, retry the read once.
-            return self.read(frames)
+            return self._recover_and_read(reason=f"PortAudio error {code}: {exc}")
         # Unknown shape -> bubble; the engine's outer except will surface it.
         log.error("unrecognized PortAudio error (code=%s): %s", code, exc)
         raise exc
 
-    def _recover(self, *, reason: str) -> None:
-        """Cycle through the backoff list, attempting to reopen on each tick.
+    def _recover_and_read(self, *, reason: str) -> tuple[Any, bool]:
+        """Reopen and validate candidates within one bounded recovery budget.
 
-        On success: state goes back to OPEN.
-        On full exhaust: state becomes FATAL and the original error is raised.
+        A stream is not considered recovered merely because ``start()`` worked:
+        some stale USB/host handles fail on their first read. Probe one correctly
+        timed block from each candidate, continue through the fallback chain on
+        failure, and publish OPEN/generation only after a usable read. This avoids
+        both premature fatal and recursive recovery-budget resets.
         """
         self._set_state(StreamState.RECOVERING, reason)
-        # Close the current stream so the device can be re-acquired.
-        try:
-            if self._stream is not None:
-                self._stream.close()
-        except Exception:
-            pass
-        self._stream = None
+        self._retire_stream()
 
         last_exc: Optional[Exception] = None
         for delay in self._backoffs:
+            if self._closed.is_set():
+                raise RuntimeError("input stream closed during recovery")
             if delay > 0:
-                self._sleep(delay)
-            try:
-                self.open()
-            except Exception as exc:  # noqa: BLE001
-                last_exc = exc
-                log.warning("reopen attempt failed after %.1fs: %s", delay, exc)
-                continue
-            # open() already set state to OPEN.
-            log.info("input stream recovered (sr=%d)", self.actual_samplerate)
-            return
+                if self._sleep is time.sleep:
+                    self._closed.wait(delay)
+                else:
+                    self._sleep(delay)
+            if self._closed.is_set():
+                raise RuntimeError("input stream closed during recovery")
+            for attempt in self._attempts:
+                if self._closed.is_set():
+                    raise RuntimeError("input stream closed during recovery")
+                candidate = None
+                try:
+                    candidate = self._opener(attempt.device, attempt.samplerate)
+                    candidate.start()
+                    with self._lifecycle_lock:
+                        if self._closed.is_set():
+                            cancelled = True
+                        else:
+                            cancelled = False
+                            self._stream = candidate
+                            self._current = attempt
+                    if cancelled:
+                        raise RuntimeError("input stream closed during recovery")
+                    recovered_frames = max(
+                        1, int(attempt.samplerate * self.block_seconds)
+                    )
+                    try:
+                        result = candidate.read(recovered_frames)
+                    except Exception as read_exc:  # noqa: BLE001
+                        if _err_code(read_exc) in TRANSIENT_CODES:
+                            result = self._silent_block(recovered_frames), True
+                        else:
+                            raise
+                    with self._lifecycle_lock:
+                        if self._closed.is_set() or self._stream is not candidate:
+                            committed = False
+                        else:
+                            self._generation += 1
+                            committed = True
+                    if not committed:
+                        raise RuntimeError("input stream closed during recovery")
+                    self._set_state(
+                        StreamState.OPEN,
+                        f"opened at {attempt.samplerate} Hz",
+                    )
+                    log.info(
+                        "input stream recovered (device=%r sr=%d)",
+                        attempt.device,
+                        attempt.samplerate,
+                    )
+                    return result
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    if candidate is self._stream:
+                        self._retire_stream()
+                    elif candidate is not None:
+                        try:
+                            candidate.close()
+                        except Exception:
+                            pass
+                    if self._closed.is_set():
+                        raise RuntimeError(
+                            "input stream closed during recovery"
+                        ) from exc
+                    log.warning(
+                        "reopen candidate failed after %.1fs device=%r sr=%d: %s",
+                        delay,
+                        attempt.device,
+                        attempt.samplerate,
+                        exc,
+                    )
 
         # All retries failed.
         self._set_state(StreamState.FATAL, f"recovery exhausted: {last_exc}")
@@ -285,6 +387,18 @@ class _RecoveringInputStream:
         imported because this module is otherwise dependency-free."""
         import numpy as np
         return np.zeros((frames, self.channels), dtype="float32")
+
+    def _retire_stream(self) -> None:
+        """Detach and close the current stream without closing the wrapper."""
+        with self._lifecycle_lock:
+            stream = self._stream
+            self._stream = None
+            self._current = None
+        if stream is not None:
+            try:
+                stream.close()
+            except Exception:
+                pass
 
     def _set_state(self, new_state: StreamState, message: str) -> None:
         if new_state != self._state:

@@ -172,6 +172,291 @@ def test_check_sherpa_models_path_set_but_file_absent():
     assert "config.local.json" in res.detail
 
 
+def _complete_sherpa_paths():
+    return {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens", "asr_encoder", "asr_decoder", "asr_joiner",
+            "tts_model", "tts_tokens",
+        )
+    }
+
+
+@pytest.mark.parametrize("missing_key", ("tts_voices", "tts_data_dir", "tts_lexicon"))
+def test_check_sherpa_models_validates_selected_kokoro_support(missing_key):
+    paths = {
+        **_complete_sherpa_paths(),
+        "tts_voices": "/m/voices.bin",
+        "tts_data_dir": "/m/espeak-ng-data",
+        "tts_lexicon": "/m/lexicon.txt",
+    }
+    present = set(paths.values()) - {paths[missing_key]}
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert missing_key in result.detail
+
+
+def test_check_sherpa_models_ignores_inactive_kokoro_lexicon():
+    paths = {**_complete_sherpa_paths(), "tts_lexicon": "/stale/missing.txt"}
+    present = set(_complete_sherpa_paths().values())
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+
+def test_check_sherpa_models_validates_each_kokoro_lexicon_path():
+    paths = {
+        **_complete_sherpa_paths(),
+        "tts_voices": "/m/voices.bin",
+        "tts_lexicon": "/m/lexicon-en.txt, /m/lexicon-zh.txt",
+    }
+    present = {
+        *set(_complete_sherpa_paths().values()),
+        "/m/voices.bin",
+        "/m/lexicon-en.txt",
+        "/m/lexicon-zh.txt",
+    }
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+    present.remove("/m/lexicon-zh.txt")
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "/m/lexicon-zh.txt" in result.detail
+
+
+@pytest.mark.parametrize(
+    ("backend", "missing_key"),
+    (
+        ("sense_voice", "asr_final_model"),
+        ("sense_voice", "asr_final_tokens"),
+        ("whisper", "asr_final_model"),
+        ("whisper", "asr_final_tokens"),
+        ("whisper", "asr_final_decoder"),
+    ),
+)
+def test_check_sherpa_models_validates_selected_final_asr(backend, missing_key):
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_backend": backend,
+        "asr_final_model": "/m/final-model.onnx",
+        "asr_final_tokens": "/m/final-tokens.txt",
+        "asr_final_decoder": "/m/final-decoder.onnx",
+    }
+    present = {
+        value for key, value in paths.items()
+        if key != "asr_final_backend" and key != missing_key
+    }
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert missing_key.removeprefix("asr_final_") in result.detail
+
+
+def test_check_sherpa_models_accepts_complete_selected_final_asr():
+    for backend in ("sense_voice", "whisper"):
+        paths = {
+            **_complete_sherpa_paths(),
+            "asr_final_backend": backend,
+            "asr_final_model": "/m/final-model.onnx",
+            "asr_final_tokens": "/m/final-tokens.txt",
+            "asr_final_decoder": "/m/final-decoder.onnx",
+        }
+        assert check_sherpa_models(
+            {"sherpa": paths}, exists=lambda _path: True
+        ).ok
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    (
+        "asr_final_hr_dict_dir",
+        "asr_final_hr_lexicon",
+        "asr_final_hr_rule_fsts",
+        "asr_final_rule_fsts",
+    ),
+)
+def test_check_sherpa_models_validates_selected_sensevoice_support(missing_key):
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_backend": "sense_voice",
+        "asr_final_model": "/m/final-model.onnx",
+        "asr_final_tokens": "/m/final-tokens.txt",
+        "asr_final_hr_dict_dir": "/m/hr-dict",
+        "asr_final_hr_lexicon": "/m/hr-lexicon.txt",
+        "asr_final_hr_rule_fsts": "/m/hr-one.fst",
+        "asr_final_rule_fsts": "/m/rule-one.fst",
+    }
+    present = {
+        value for key, value in paths.items()
+        if key != "asr_final_backend" and key != missing_key
+    }
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert missing_key in result.detail
+
+
+@pytest.mark.parametrize(
+    "key", ("asr_final_hr_rule_fsts", "asr_final_rule_fsts")
+)
+def test_check_sherpa_models_validates_each_final_rule_fst(key):
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_backend": "sense_voice",
+        "asr_final_model": "/m/final-model.onnx",
+        "asr_final_tokens": "/m/final-tokens.txt",
+        key: "/m/one.fst, /m/two.fst",
+    }
+    present = {
+        *set(_complete_sherpa_paths().values()),
+        "/m/final-model.onnx",
+        "/m/final-tokens.txt",
+        "/m/one.fst",
+        "/m/two.fst",
+    }
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+    present.remove("/m/two.fst")
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "/m/two.fst" in result.detail
+
+
+def test_check_sherpa_models_ignores_sensevoice_support_for_whisper():
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_backend": "whisper",
+        "asr_final_model": "/m/final-model.onnx",
+        "asr_final_tokens": "/m/final-tokens.txt",
+        "asr_final_decoder": "/m/final-decoder.onnx",
+        "asr_final_hr_dict_dir": "/stale/hr-dict",
+        "asr_final_rule_fsts": "/stale/rules.fst",
+    }
+    present = {
+        *set(_complete_sherpa_paths().values()),
+        "/m/final-model.onnx",
+        "/m/final-tokens.txt",
+        "/m/final-decoder.onnx",
+    }
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+
+def test_check_sherpa_models_ignores_inactive_final_asr_artifacts():
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_backend": "",
+        "asr_final_model": "/stale/model.onnx",
+        "asr_final_tokens": "/stale/tokens.txt",
+        "asr_final_decoder": "/stale/decoder.onnx",
+    }
+    present = set(_complete_sherpa_paths().values())
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+
+def test_check_sherpa_models_rejects_unknown_final_asr_backend():
+    paths = {**_complete_sherpa_paths(), "asr_final_backend": "mystery"}
+    result = check_sherpa_models({"sherpa": paths}, exists=lambda _path: True)
+    assert not result.ok
+    assert "unsupported" in result.detail
+
+
+def test_check_sherpa_models_validates_configured_vad():
+    paths = {**_complete_sherpa_paths(), "vad_model": "/m/vad.onnx"}
+    present = set(_complete_sherpa_paths().values())
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "vad_model missing" in result.detail
+
+
+def test_check_sherpa_models_validates_configured_punctuation_model():
+    paths = {**_complete_sherpa_paths(), "punct_model": "/m/punct.onnx"}
+    present = set(_complete_sherpa_paths().values())
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "punct_model missing" in result.detail
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    ("kws_tokens", "kws_encoder", "kws_decoder", "kws_joiner", "kws_keywords_file"),
+)
+def test_check_sherpa_models_validates_selected_kws_group(missing_key):
+    paths = {
+        **_complete_sherpa_paths(),
+        "kws_tokens": "/m/kws-tokens.txt",
+        "kws_encoder": "/m/kws-encoder.onnx",
+        "kws_decoder": "/m/kws-decoder.onnx",
+        "kws_joiner": "/m/kws-joiner.onnx",
+        "kws_keywords_file": "/m/keywords.txt",
+    }
+    # A configured-but-missing encoder selects KWS; it is not the same as an
+    # empty encoder, which deliberately leaves the whole optional group inert.
+    present = set(paths.values()) - {paths[missing_key]}
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert missing_key in result.detail
+
+
+def test_check_sherpa_models_ignores_inactive_kws_fields():
+    paths = {
+        **_complete_sherpa_paths(),
+        "kws_encoder": "",
+        "kws_tokens": "/stale/tokens.txt",
+        "kws_decoder": "/stale/decoder.onnx",
+        "kws_joiner": "/stale/joiner.onnx",
+        "kws_keywords_file": "/stale/keywords.txt",
+    }
+    present = set(_complete_sherpa_paths().values())
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+
+def test_check_sherpa_models_requires_denoiser_only_when_enabled():
+    base = _complete_sherpa_paths()
+    present = set(base.values())
+    disabled = {**base, "denoise_enabled": False, "denoise_model": "/stale.onnx"}
+    assert check_sherpa_models(
+        {"sherpa": disabled}, exists=lambda path: path in present
+    ).ok
+
+    enabled = {**base, "denoise_enabled": True, "denoise_model": "/missing.onnx"}
+    result = check_sherpa_models(
+        {"sherpa": enabled}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "denoise_model missing" in result.detail
+
+    unset = {**base, "denoise_enabled": True}
+    result = check_sherpa_models(
+        {"sherpa": unset}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "denoise_model unset" in result.detail
+
+
 def test_check_speaker_id_unconfigured_is_ok_advisory():
     # Optional feature: unset model is OK (never blocks readiness), just advised.
     c = check_speaker_id({"sherpa": {}})
@@ -204,7 +489,8 @@ def test_check_speaker_id_enrolled_is_ok():
     }
     c = check_speaker_id(cfg, exists=lambda p: True)
     assert c.ok
-    assert "enrollment present" in c.detail
+    assert "enrollment file present" in c.detail
+    assert "after the microphone opens" in c.detail
 
 
 def test_check_ollama_models_present_and_missing():
@@ -264,6 +550,31 @@ def test_run_all_and_summarize_reports_not_ready():
 # --- check_audio_frontend: apm/livekit gating (must not false-fail clean clones) ---
 
 
+def test_audio_frontend_accepts_scipy_antialias_fallback_without_soxr():
+    def imports(name):
+        if name == "soxr":
+            raise ImportError("not installed")
+        return object()
+
+    checks = check_audio_frontend(
+        {"sherpa": {}}, import_fn=imports, platform="test"
+    )
+    resampler = next(c for c in checks if "resampler" in c.name)
+    assert resampler.ok
+    assert "SciPy" in resampler.detail
+
+
+def test_audio_frontend_rejects_only_when_no_antialias_backend_exists():
+    checks = check_audio_frontend(
+        {"sherpa": {}},
+        import_fn=lambda _name: (_ for _ in ()).throw(ImportError("missing")),
+        platform="test",
+    )
+    resampler = next(c for c in checks if "resampler" in c.name)
+    assert not resampler.ok
+    assert "neither soxr nor SciPy" in resampler.detail
+
+
 def _no_livekit(name):
     if "livekit" in name:
         raise ImportError("simulated clean clone: livekit not installed")
@@ -312,6 +623,101 @@ def test_audio_frontend_no_apm_anywhere_emits_no_livekit_check():
         "device_profiles": {"desktop": {"sherpa": {"aec_backend": "nlms"}}},
     }
     assert _apm_check(check_audio_frontend(config, import_fn=_no_livekit)) is None
+
+
+def _aec_backend_check(checks, backend=None):
+    for check in checks:
+        if "aec backend" not in check.name.lower():
+            continue
+        if backend is None or backend in check.name.lower():
+            return check
+    return None
+
+
+def test_audio_frontend_active_numpy_aec_backend_is_ready():
+    for backend in ("nlms", "fdaf", "numpy"):
+        check = _aec_backend_check(check_audio_frontend(
+            {"sherpa": {"aec_enabled": True, "aec_backend": backend}},
+            import_fn=lambda _name: object(),
+        ), backend)
+        assert check is not None and check.ok
+
+
+def test_audio_frontend_unknown_active_aec_backend_fails():
+    check = _aec_backend_check(check_audio_frontend(
+        {"sherpa": {"aec_enabled": True, "aec_backend": "mystery"}},
+        import_fn=lambda _name: object(),
+    ))
+    assert check is not None and not check.ok
+    assert "unknown" in check.detail
+
+
+def test_audio_frontend_unknown_inactive_aec_backend_is_ignored():
+    checks = check_audio_frontend(
+        {"sherpa": {"aec_enabled": False, "aec_backend": "mystery"}},
+        import_fn=lambda _name: object(),
+    )
+    assert _aec_backend_check(checks) is None
+
+
+def test_audio_frontend_dtln_requires_both_stages():
+    model_dir = "/m/dtln"
+    stage1 = f"{model_dir}/dtln_aec_stage1.onnx"
+    check = _aec_backend_check(check_audio_frontend(
+        {"sherpa": {
+            "aec_enabled": True, "aec_backend": "dtln", "aec_model": model_dir,
+        }},
+        import_fn=lambda _name: object(),
+        exists=lambda path: path == stage1,
+    ), "dtln")
+    assert check is not None and not check.ok
+    assert "stage 2 missing" in check.detail
+    assert "setup_models --aec-model" in check.hint
+
+
+def test_audio_frontend_dtln_requires_onnxruntime():
+    def imports(name):
+        if name == "onnxruntime":
+            raise ImportError("not installed")
+        return object()
+
+    check = _aec_backend_check(check_audio_frontend(
+        {"sherpa": {
+            "aec_enabled": True, "aec_backend": "dtln", "aec_model": "/m/dtln",
+        }},
+        import_fn=imports,
+        exists=lambda _path: True,
+    ), "dtln")
+    assert check is not None and not check.ok
+    assert "onnxruntime unavailable" in check.detail
+
+
+@pytest.mark.parametrize(
+    "model",
+    ("/m/dtln", "/m/dtln_aec_stage1.onnx"),
+)
+def test_audio_frontend_dtln_ready_with_models_and_onnxruntime(model):
+    check = _aec_backend_check(check_audio_frontend(
+        {"sherpa": {
+            "aec_enabled": True, "aec_backend": "dtln", "aec_model": model,
+        }},
+        import_fn=lambda _name: object(),
+        exists=lambda _path: True,
+    ), "dtln")
+    assert check is not None and check.ok
+    assert "onnxruntime available" in check.detail
+
+
+def test_audio_frontend_dtln_rejects_ambiguous_direct_model_path():
+    check = _aec_backend_check(check_audio_frontend(
+        {"sherpa": {
+            "aec_enabled": True, "aec_backend": "dtln", "aec_model": "/m/model.onnx",
+        }},
+        import_fn=lambda _name: object(),
+        exists=lambda _path: True,
+    ), "dtln")
+    assert check is not None and not check.ok
+    assert "stage-1" in check.detail
 
 
 # --- ADR-0013 word-cut EC preflight (run-20260706-231226 launched degraded with
@@ -505,6 +911,60 @@ def test_word_cut_ec_check_absent_off_linux():
         platform="win32",
     )
     assert _word_cut_route_check(checks) is None
+
+
+def _wasapi_route_check(checks):
+    return next(
+        (c for c in checks if "wasapi communications" in c.name.lower()), None
+    )
+
+
+def test_windows_word_cut_fails_without_voice_communications_request():
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        import_fn=lambda _name: object(),
+        exists=lambda _p: True,
+        platform="win32",
+    )
+    route = _wasapi_route_check(checks)
+    assert route is not None and not route.ok
+    assert "capture_voice_comm=true" in route.detail
+
+
+def test_windows_selected_voice_path_must_be_constructible():
+    class FakeSD:
+        class WasapiSettings:
+            def __init__(self, **kwargs):
+                if "communications" in kwargs:
+                    raise TypeError("unexpected keyword argument 'communications'")
+
+    checks = check_audio_frontend(
+        {"sherpa": {"capture_voice_comm": True}},
+        import_fn=lambda name: FakeSD if name == "sounddevice" else object(),
+        platform="win32",
+    )
+    route = _wasapi_route_check(checks)
+    assert route is not None and not route.ok
+    assert "cannot request" in route.detail
+
+
+def test_windows_selected_voice_path_passes_when_constructible():
+    class FakeSD:
+        class WasapiSettings:
+            def __init__(self, *, communications):
+                assert communications is True
+
+    checks = check_audio_frontend(
+        {"sherpa": {"capture_voice_comm": True}},
+        import_fn=lambda name: FakeSD if name == "sounddevice" else object(),
+        platform="win32",
+    )
+    route = _wasapi_route_check(checks)
+    assert route is not None and route.ok
 
 
 # --- doctor validates the SELECTED profile's ollama models (gemma3:1b gap) ------

@@ -222,7 +222,13 @@ def main(argv: list[str] | None = None) -> int:
         # speech ... did not trip the gate"). Turn AEC off so barge-in gates on the
         # reference-coherence/level path over the clean injected audio -- the
         # injected barge is energy the (teed) playback can't explain, so it fires.
-        config.setdefault("sherpa", {})["aec_enabled"] = False
+        sherpa_cfg = config.setdefault("sherpa", {})
+        sherpa_cfg["aec_enabled"] = False
+        # The synthetic input is already echo-free and has no verifiable OS EC
+        # route. Disable the production word-cut authority explicitly so engine
+        # startup cannot mistake the injected stream for a raw open microphone;
+        # inject-mode barge grading uses the clean acoustic/reference path.
+        sherpa_cfg["barge_word_cut_enabled"] = False
     if args.barge_in:
         config.setdefault("sherpa", {})["barge_in_enabled"] = True
         if not args.inject:

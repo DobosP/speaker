@@ -216,7 +216,7 @@ This contract is **not** a binary core passed around; it is **reimplemented fait
 | `speech_analyzer.py` | Deterministic `LiveSpeechAnalyzer`: activates on keywords, normalizes text, decides intent (STOP/CONFIRM/MODE_SWITCH/ASSISTANT/SEARCH/RESEARCH/COMMAND/DICTATION/MEETING_NOTE). |
 | `event_bus.py` | `EventBus`: priority queue with `PriorityQueue`, daemon consumer thread, handler subscriptions. Priority order: CONTROL_STOP (0) → CONTROL_MODE/CONFIRM/DENY (5–10) → STT_FINAL (50) → TASK_COMPLETED (60) → TASK_PROGRESS (70) → STT_PARTIAL (90) → default (100). |
 | `supervisor.py` | `AgentSupervisor`: owns mode state, active/queued/pending-confirmation tasks, speech epoch (for barge-in). Handles event dispatch, task queueing, timeouts, followups, and continuation merging. |
-| `tasks.py` | `TaskRuntime`: spawns cancellable daemon threads per task; `AgentTask` wraps input_text → output_text with cancel events and deadline tracking. |
+| `tasks.py` | `TaskRuntime`: spawns a cancellable coordinator per task and runs synchronous capabilities behind a bounded provider bulkhead; `AgentTask` wraps input_text → output_text with cancel events and deadline tracking (ADR-0021). |
 | `planner.py` | `TaskPlanner`: builds explicit `TaskPlan` (step sequence + metadata) from intent decisions. Complementary to `react.py`. |
 | `react.py` | Bounded ReAct loop: LLM plans, capabilities are tools. Imports `CapabilityRegistry` but not `core/`. |
 | `continuation.py` | `ContinuationClassifier`: merges or queues follow-up utterances into a single in-flight ASSISTANT turn. |
@@ -236,7 +236,7 @@ This contract is **not** a binary core passed around; it is **reimplemented fait
 
 The planner chooses *which* capability (e.g., `assistant.answer` vs. `web.search` vs. `command.stage`); the ReAct loop is the implementation of `assistant.answer` when enabled. (The decision/escalation ladder that triggers escalation is in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
 
-**Task lifecycle:** `LiveSpeechAnalyzer.decide()` emits an intent → `TaskPlanner.plan()` builds a `TaskPlan` → `AgentSupervisor` queues or starts the task → `TaskRuntime.start()` spawns a daemon → `_run_plan()` executes steps and emits `TASK_PROGRESS`/`TASK_COMPLETED`/`TASK_FAILED`. Barge-in (`cancel_all`) sets the task's `cancel_event`, and stepping polls it. Task output is stamped with the `speech_epoch` at start; a later barge-in advances the epoch and stale `TTS_REQUEST`s drop via `tts_request_allowed()`.
+**Task lifecycle:** `LiveSpeechAnalyzer.decide()` emits an intent → `TaskPlanner.plan()` builds a `TaskPlan` → `AgentSupervisor` queues or starts the task → `TaskRuntime.start()` spawns a coordinator → `_run_plan()` executes steps and emits `TASK_PROGRESS`/`TASK_COMPLETED`/`TASK_FAILED`. Each synchronous capability runs in a daemon provider thread behind a `max_active_tasks` semaphore. Barge-in (`cancel_all`) sets the task's `cancel_event`; the coordinator retires without waiting for a pre-first-result provider, while that provider retains its bounded slot until it returns (ADR-0021). Task output is stamped with the `speech_epoch` at start; a later barge-in advances the epoch and stale `TTS_REQUEST`s drop via `tts_request_allowed()`.
 
 **Continuation (add-ons):** When enabled (config `continuation.enabled: true`), a follow-up to a live ASSISTANT turn is:
 - **merged** if not yet speaking (one combined reply, one stream),
@@ -248,7 +248,7 @@ Gated at `_maybe_continue` after control phrases (STOP/CONFIRM/MODE_SWITCH) so r
 
 **Confirmation staging:** `COMMAND` intent tasks are queued under `pending_confirmations` (not started). User says "confirm" → `CONTROL_CONFIRM` → `_confirm_next()` moves the first confirmation to active. User says "no"/"deny" → clears the queue.
 
-**Timeouts and reaping:** Per-mode wall-clock deadlines (ASSISTANT 25s, RESEARCH 120s, default 60s). The watchdog tick calls `reap_overdue_tasks()` (safe from the watchdog thread: uses `_cancel_lock`, never joins). A reaped task emits a timeout apology and unblocks the queue. (The watchdog itself lives in `core/`; see [§7](#7--real-time-quality-subsystems).)
+**Timeouts and reaping:** Per-mode wall-clock deadlines (ASSISTANT 25s, RESEARCH 120s, default 60s). The watchdog tick calls `reap_overdue_tasks()` (safe from the watchdog thread: uses `_cancel_lock`, never joins). A reaped task emits a timeout apology and unblocks the queue; its coordinator exits promptly, though an uncooperative bounded provider may remain until its own timeout (ADR-0021). (The watchdog itself lives in `core/`; see [§7](#7--real-time-quality-subsystems).)
 
 **Speech epoch invariant (realtime-concurrency-1):** Every `TTS_REQUEST` carries the epoch captured when the task started. A barge-in advances the global epoch under `_cancel_lock` atomically; the supervisor drops any `TTS_REQUEST` stamped with a stale epoch, even if `TASK_COMPLETED` (priority 60) has already removed the task from `active_tasks` before the trailing sentence (priority 100) dequeues. This decouples the liveness check from active-task membership, preventing race-condition audio bleed.
 
@@ -693,10 +693,11 @@ The streaming zipformer (k2-fsa, `sherpa-onnx`) emits low-latency partials and d
 The supervisor had no wall-clock deadlines — a hung capability (a blocked `generate`, a network read with no timeout) sat "active" forever. `always_on_agent/supervisor.py` + `core/watchdog.py` add:
 
 - **Per-mode task deadlines + reap:** Each `AgentTask` gets a `deadline_at` stamped at `_start_task` from `DEFAULT_TASK_TIMEOUTS` (assistant 25 s, search/command/dictation/meeting 30 s, research 120 s; overridable via `task_timeouts` config; `0` disables a mode). `reap_overdue_tasks()` runs on the watchdog's 1 s tick, cancels and removes any task past its deadline, and republishes `TASK_CANCELLED` to the bus thread (so the supervisor moves on). A reaped turn that would have spoken says "Sorry, that took too long — let's try again." A long-running capability (e.g. the ReAct planner) can renew its deadline via a `renew_deadline` hook in the task context.
-- **Watchdog heals:** `StuckWatchdog` has an `on_tick` hook; the runtime wires it to `reap_overdue_tasks()` so a hung task is killed on the watchdog's existing 1 s cadence.
+- **Cancellable invocation bulkhead:** The registered task thread coordinates each synchronous capability through a daemon provider thread and a `max_active_tasks` semaphore. It checks cancellation on a 10 ms polling cadence without waiting for token one; an uncooperative provider retains its slot until it actually returns, bounding abandoned calls. Provider admission and the single terminal event are atomic against cancellation; delayed token metrics carry the originating turn token so stale work cannot mark a replacement turn (ADR-0021).
+- **Watchdog heals:** `StuckWatchdog` has an `on_tick` hook; the runtime wires it to `reap_overdue_tasks()` so a hung task coordinator is retired on the watchdog's existing 1 s cadence.
 - **ReAct first-token unblock:** An escalated (ReAct) turn does its LLM work inside the planner, which wasn't stamping `LLM_FIRST_TOKEN`, so the watchdog read it as stuck. The planner now fires a `first_token_hook` on its first streamed token; the runtime marks `LLM_FIRST_TOKEN` (idempotent).
 
-The reap mutations happen under `_cancel_lock` exactly like `cancel_all`; `cancel()` only sets an `Event`. Reaped tasks do NOT bump the global speech epoch (that would strand concurrent siblings' TTS); the watchdog also guards all handlers with `try/except` so any future bug degrades to a dropped event, never a dead bus thread.
+The reap mutations happen under `_cancel_lock` exactly like `cancel_all`; `cancel()` only sets an `Event` and never waits for provider I/O. Reaped tasks do NOT bump the global speech epoch (that would strand concurrent siblings' TTS); the watchdog also guards all handlers with `try/except` so any future bug degrades to a dropped event, never a dead bus thread.
 
 ### Startup pre-warm
 
@@ -1082,7 +1083,7 @@ Ranked by field impact:
 - **Barge-in detection is unvalidated in the field.** Stress tests and live replay show zero real LLM cancellations (only echo self-interrupts). The cut machinery is correct; the decision path is untested with real overlapping speech.
 - **The ASR confidence signal is not yet gated.** Low-confidence finals (`ys_probs` < threshold) feed the LLM unfiltered. Combined with the echo loop, this can drive TTS on garbage fragments.
 - **Full-pipeline resident memory** (~800 MB with Ollama; ~538 MB ASR/TTS only) does not leak (verified via stress) but is the sizing baseline for deployment.
-- **Capacity counts liveness, not progress.** A thread wedged forever in a capability call counts as healthy; 6 such wedges would report "at capacity, queue the rest" while doing zero work. Not yet observed (peak concurrency 3/6) but untested under a non-returning capability.
+- **Provider compute is bounded, not force-killed.** Task coordinators no longer remain active after cancellation, but Python cannot kill an arbitrary synchronous/native call. Up to `max_active_tasks` provider daemons can retain their bulkhead slots; if every provider wedges permanently, inference cannot resume until one returns. Hard abort requires transport-native async cancellation or process isolation (ADR-0021).
 
 ### Explicitly out of scope
 

@@ -582,11 +582,17 @@ class VoiceRuntime:
         if resume_prompt is not None:
             log.info("resume request %r -> continuing the interrupted reply", text)
             self.metrics.mark(ASR_FINAL)
+            metrics_turn_token = self.metrics.current_turn_token()
             # The synthetic prompt is addressed by construction: skip the
             # addressing gate, cleaner, and intent fast-path. note_query is
             # deliberately NOT called -- the tracker keeps accumulating the
             # same turn's spoken text so a second cut+continue still works.
-            self.bus.publish(AgentEvent.final(resume_prompt))
+            self.bus.publish(
+                AgentEvent.final(
+                    resume_prompt,
+                    metadata={"metrics_turn_token": metrics_turn_token},
+                )
+            )
             return
         # Input gate: classify before opening a metrics turn so an INGEST'd
         # utterance doesn't trip the watchdog's "no llm_first_token" check.
@@ -611,6 +617,7 @@ class VoiceRuntime:
                     self.metrics.mark(HANDLED_LOCAL)
                     return
         self.metrics.mark(ASR_FINAL)
+        metrics_turn_token = self.metrics.current_turn_token()
         # Cleanup pass: rewrite disfluencies / self-corrections so the brain
         # acts on what the user meant, not on every "um" + word-repeat. The
         # raw text was already logged above; emit a second transcript entry
@@ -731,7 +738,10 @@ class VoiceRuntime:
         self.bus.publish(
             AgentEvent.final(
                 final_text,
-                metadata={"latency_policy": latency_policy},
+                metadata={
+                    "latency_policy": latency_policy,
+                    "metrics_turn_token": metrics_turn_token,
+                },
             )
         )
 

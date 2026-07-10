@@ -431,12 +431,15 @@ def test_chained_addons_fold_into_one_queued_continuation():
     supervisor.state.mode = Mode.ASSISTANT
     _seat_assistant_victim(supervisor, "whats the weather", started_speaking=True)
 
+    supervisor.state.turn_metadata = {"metrics_turn_token": 11}
     supervisor._execute_decision(_addon("and also the forecast"))
+    supervisor.state.turn_metadata = {"metrics_turn_token": 12}
     supervisor._execute_decision(_addon("and the humidity"))
 
     assert len(supervisor.state.queued_tasks) == 1  # folded, not two competitors
     cont = supervisor.state.queued_tasks[0]
     assert cont.metadata["continuation_addons"] == ["and also the forecast", "and the humidity"]
+    assert cont.metadata["metrics_turn_token"] == 12
     assert "and also the forecast" in cont.input_text
     assert "and the humidity" in cont.input_text
 

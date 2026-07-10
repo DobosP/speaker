@@ -7,6 +7,7 @@ single-tier config.
 """
 from __future__ import annotations
 
+import threading
 from typing import Iterator, Optional, Sequence
 
 from always_on_agent.capabilities import CapabilityRegistry
@@ -59,6 +60,23 @@ class _EmitThenRaiseLLM:
         self.stream_calls += 1
         yield "Partial sentence. "  # a complete sentence -> emitted
         raise RuntimeError(f"{self.tag} died mid-stream")
+
+
+class _GatedRaisingLLM(_RaisingLLM):
+    """Wait until cancellation, then surface the stale provider failure."""
+
+    def __init__(self, tag: str):
+        super().__init__(tag)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def stream(self, prompt: str, *, system: Optional[str] = None,
+               images: Optional[Sequence[object]] = None) -> Iterator[str]:
+        self.stream_calls += 1
+        self.started.set()
+        self.release.wait(timeout=2.0)
+        raise RuntimeError(f"{self.tag} stale backend failure")
+        yield ""  # pragma: no cover - marks this a generator
 
 
 # HeuristicRouter routes these deterministically (see tests/test_core_routing.py).
@@ -120,3 +138,66 @@ def test_no_retry_after_audio_emitted():
     assert spoken == ["Partial sentence."]
     assert fast.stream_calls == 1
     assert main.stream_calls == 0  # never retried after audio was emitted
+
+
+def test_cancelled_late_failure_does_not_start_other_tier():
+    """A detached provider must not launch fresh work after its task is gone."""
+    main = _HealthyLLM("main")
+    fast = _GatedRaisingLLM("fast")
+    registry = attach_llm_capabilities(CapabilityRegistry(), main, fast_llm=fast)
+    cancel = threading.Event()
+    holder: list[object] = []
+
+    worker = threading.Thread(
+        target=lambda: holder.append(
+            registry.invoke("assistant.answer", _SIMPLE, {"cancel_event": cancel})
+        ),
+        daemon=True,
+    )
+    worker.start()
+    assert fast.started.wait(timeout=1.0)
+    cancel.set()
+    fast.release.set()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert holder and not holder[0].ok  # type: ignore[union-attr]
+    assert fast.stream_calls == 1
+    assert main.stream_calls == 0
+
+
+def test_cancel_racing_retry_does_not_start_other_tier(monkeypatch):
+    """Cancellation after the handler's first check still blocks fallback."""
+    main = _HealthyLLM("main")
+    fast = _RaisingLLM("fast")
+    registry = attach_llm_capabilities(CapabilityRegistry(), main, fast_llm=fast)
+    cancel = threading.Event()
+    retry_announced = threading.Event()
+    release_retry = threading.Event()
+    holder: list[object] = []
+
+    def hold_retry_warning(*args: object, **kwargs: object) -> None:
+        # log.warning() is reached only after the exception handler's initial
+        # cancel check and immediately before it claims/starts the fallback.
+        retry_announced.set()
+        assert release_retry.wait(timeout=2.0)
+
+    monkeypatch.setattr("core.capabilities.log.warning", hold_retry_warning)
+    worker = threading.Thread(
+        target=lambda: holder.append(
+            registry.invoke("assistant.answer", _SIMPLE, {"cancel_event": cancel})
+        ),
+        daemon=True,
+    )
+    worker.start()
+    try:
+        assert retry_announced.wait(timeout=1.0)
+        cancel.set()
+    finally:
+        release_retry.set()
+    worker.join(timeout=1.0)
+
+    assert not worker.is_alive()
+    assert holder and not holder[0].ok  # type: ignore[union-attr]
+    assert fast.stream_calls == 1
+    assert main.stream_calls == 0

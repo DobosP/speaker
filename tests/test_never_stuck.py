@@ -216,6 +216,28 @@ def test_react_fires_first_token_hook_on_first_token():
     assert fired, "the ReAct planner did not stamp its first token"
 
 
+def test_react_prefers_task_scoped_first_token_hook():
+    default_fired = []
+    scoped_fired = []
+
+    class _LLM:
+        def generate(self, prompt, *, system=None):
+            return "FINAL: done"
+
+        def stream(self, prompt, *, system=None):
+            yield "FINAL: done"
+
+    planner = ReactPlanner(
+        _LLM(),
+        create_default_capabilities(),
+        first_token_hook=lambda: default_fired.append(1),
+    )
+    planner.run("do a thing", {"first_token_hook": lambda: scoped_fired.append(1)})
+
+    assert scoped_fired
+    assert not default_fired
+
+
 # --- end-to-end: a hung turn is reaped, the controller returns to idle -------
 
 
@@ -223,14 +245,20 @@ def test_runtime_reaps_a_hung_turn_so_the_controller_recovers():
     class _HangLLM:
         def __init__(self):
             self.release = threading.Event()
+            self.started = threading.Event()
+            self.finished = threading.Event()
 
         def generate(self, prompt, *, system=None, images=None):
             self.release.wait(timeout=5.0)
             return "late"
 
         def stream(self, prompt, *, system=None, images=None):
-            self.release.wait(timeout=5.0)  # blocks before any token
-            yield "late"
+            self.started.set()
+            try:
+                self.release.wait(timeout=5.0)  # blocks before any token
+                yield "late"
+            finally:
+                self.finished.set()
 
     llm = _HangLLM()
     engine = ScriptedEngine()
@@ -247,11 +275,43 @@ def test_runtime_reaps_a_hung_turn_so_the_controller_recovers():
             runtime.bus.drain()
             time.sleep(0.01)
         assert runtime.supervisor.state.active_tasks, "the hung task never started"
+        assert llm.started.wait(timeout=2.0), "the provider never reached its gate"
+        task_id, task = next(iter(runtime.supervisor.state.active_tasks.items()))
+        task_runtime = runtime.supervisor.tasks
+        with task_runtime._threads_lock:  # noqa: SLF001 - capture the real worker
+            coordinator = task_runtime._threads[task_id]  # noqa: SLF001
 
-        time.sleep(0.15)  # let the 0.1s deadline lapse
+        # Expire deterministically instead of sleeping past the configured
+        # deadline.  The watchdog still drives the production reap path.
+        task.deadline_at = time.monotonic() - 1.0
         runtime._watchdog.tick()  # -> on_tick -> reap (publishes TASK_CANCELLED)
-        runtime.bus.drain()  # process the cancellation
         assert runtime.supervisor.state.active_tasks == {}, "hung task was not reaped"
+
+        # Join the captured object, not merely the registry count: _reap removes
+        # the registry entry just before the coordinator actually returns.
+        coordinator.join(timeout=2.0)
+        assert not coordinator.is_alive(), "timed-out coordinator did not exit"
+        assert task_runtime.active_count == 0
+        assert not llm.release.is_set()
+        assert not llm.finished.is_set(), "provider completion caused coordinator exit"
+
+        # Drain only after the coordinator has exited, then inspect the complete
+        # lifecycle.  The watchdog owns the authoritative reaped cancellation;
+        # the coordinator must not publish a second terminal event while exiting.
+        runtime.bus.drain()
+        terminal_events = [
+            event
+            for event in runtime.supervisor.state.event_log
+            if event.payload.get("task_id") == task_id
+            and event.kind in {
+                EventKind.TASK_CANCELLED,
+                EventKind.TASK_COMPLETED,
+                EventKind.TASK_FAILED,
+            }
+        ]
+        assert [event.kind for event in terminal_events] == [EventKind.TASK_CANCELLED]
+        assert terminal_events[0].payload.get("reaped") is True
     finally:
         llm.release.set()
+        llm.finished.wait(timeout=2.0)
         runtime.stop()

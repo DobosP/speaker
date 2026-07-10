@@ -23,7 +23,7 @@ from .conversation import (
     history_messages,
 )
 from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
-from .metrics import MetricsRecorder, mark_first_token
+from .metrics import LLM_FIRST_TOKEN, MetricsRecorder, mark_first_token
 from .persona import DEFAULT_SYSTEM
 from .routing import (
     LIVE_CONTEXT_KEY,
@@ -276,6 +276,13 @@ def attach_llm_capabilities(
     # so this can never starve the local tier.
     live_routing = live_routing or bool(os.environ.get("SPEAKER_LIVE_ROUTING"))
 
+    def _metric_turn_token(context: Mapping[str, object]) -> object:
+        """Original ASR turn identity carried through queued/multistep work."""
+        meta = context.get("metadata")
+        if isinstance(meta, Mapping) and "metrics_turn_token" in meta:
+            return meta["metrics_turn_token"]
+        return recorder.current_turn_token() if recorder is not None else None
+
     def _enrich_context(query: str, context: dict[str, object]) -> dict[str, object]:
         """Add ``intent_kind`` + ``sensitivity`` to the context before routing.
 
@@ -304,6 +311,7 @@ def attach_llm_capabilities(
 
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
+        metric_turn = _metric_turn_token(context)
         # Classify intent + sensitivity once, up front, for BOTH the one-shot and
         # the escalated path (idempotent: only fills what's absent).
         _enrich_context(query, context)
@@ -384,6 +392,11 @@ def attach_llm_capabilities(
             # over the recent block above). Reset via finally so the ContextVar is
             # restored on EVERY return/raise out of the planner (a missed reset is a
             # cross-turn sensitivity LEAK -- the §9.7 risk the isolation tests guard).
+            if recorder is not None:
+                context["first_token_hook"] = lambda: recorder.mark(
+                    LLM_FIRST_TOKEN,
+                    turn_token=metric_turn,
+                )
             ctx_token = capability_context.set(context)
             try:
                 return registry.invoke(agent_capability, query, context)
@@ -577,6 +590,11 @@ def attach_llm_capabilities(
             emit(sentence)  # type: ignore[misc]
 
         def _attempt(attempt_model: LLMClient, attempt_tier: str) -> CapabilityResult:
+            # A retry can be entered after the primary failed but while barge-in
+            # races the exception handler.  Check again at attempt entry; the
+            # token wrapper below performs the definitive pre-yield gate.
+            if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                raise RuntimeError("task cancelled before model attempt")
             # Only fold this turn's first-token latency into the LOCAL TTFT EWMA
             # when the answering model is purely local; a cloud-hedge win would
             # otherwise mislabel the headroom signal (P4 low).
@@ -605,6 +623,8 @@ def attach_llm_capabilities(
             tokens = mark_first_token(
                 attempt_model.stream(query, **stream_kwargs), recorder,  # type: ignore[arg-type]
                 fold_local_ttft=fold_local,
+                cancel=cancel if isinstance(cancel, Event) else None,
+                turn_token=metric_turn,
             )
             if callable(emit):
                 text, cancelled = _stream_and_speak(tokens, cancel, _emit_tracked)  # type: ignore[arg-type]
@@ -649,6 +669,12 @@ def attach_llm_capabilities(
             try:
                 return _attempt(primary, tier)
             except Exception:  # noqa: BLE001 - cross-tier fallback (sr-2)
+                # The task coordinator may already have detached this provider
+                # after a barge-in.  If its blocked stream later wakes by
+                # raising, do not turn that stale failure into a brand-new call
+                # on the other tier.  The cancelled task has no consumer left.
+                if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                    raise
                 # If the chosen tier's backend errors (e.g. Ollama unreachable,
                 # fast-tier GGUF load failure), retry once on the OTHER tier
                 # before failing the turn -- but only when (a) the other tier is
@@ -660,11 +686,15 @@ def attach_llm_capabilities(
                 log.warning(
                     "%s tier failed; retrying on %s tier", tier, other_name, exc_info=True
                 )
+                claim_start = context.get("claim_provider_start")
+                if callable(claim_start) and not claim_start():
+                    raise
                 return _attempt(other, other_name)
         finally:
             capability_context.reset(ctx_token)
 
     def research_synth(query: str, context: dict[str, object]) -> CapabilityResult:
+        metric_turn = _metric_turn_token(context)
         previous = context.get("previous_steps", [])
         gathered_parts: list[str] = []
         for step in previous:
@@ -701,6 +731,8 @@ def attach_llm_capabilities(
             tokens = mark_first_token(
                 llm.stream(prompt, system=system), recorder,
                 fold_local_ttft=_answers_locally(llm),
+                cancel=cancel if isinstance(cancel, Event) else None,
+                turn_token=metric_turn,
             )
             if callable(emit):
                 text, cancelled = _stream_and_speak(tokens, cancel, emit)  # type: ignore[arg-type]

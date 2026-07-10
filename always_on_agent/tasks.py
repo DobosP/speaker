@@ -3,8 +3,9 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from threading import Event, Lock, Thread
+from threading import BoundedSemaphore, Event, Lock, Thread
 import time
+from typing import Callable
 import uuid
 
 log = logging.getLogger("speaker.tasks")
@@ -66,10 +67,73 @@ class AgentTask:
     # uninterruptibly (a hung generate / network read) can never leave the
     # controller waiting on it forever. See AgentSupervisor.reap_overdue_tasks.
     deadline_at: float = 0.0
+    # Serializes the two control-plane linearization points that must not race:
+    # provider-start vs cancellation, and the single terminal lifecycle event.
+    # Excluded from dataclass init/repr/equality; it is strictly runtime state.
+    _control_lock: Lock = field(
+        default_factory=Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _terminal_claimed: bool = field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def cancel(self) -> None:
-        self.cancel_event.set()
-        self.state = TaskState.CANCELLED
+        with self._control_lock:
+            self.cancel_event.set()
+            # A terminal transition that already won remains authoritative.
+            # The Event is still set so epoch/emitter gates suppress stale audio.
+            if not self._terminal_claimed:
+                self.state = TaskState.CANCELLED
+
+    def claim_invocation_start(self) -> bool:
+        """Atomically linearize provider start before or after cancellation."""
+        with self._control_lock:
+            return not self.cancel_event.is_set() and not self._terminal_claimed
+
+    def mark_running(self) -> bool:
+        """Enter RUNNING unless cancellation already won the start race."""
+        with self._control_lock:
+            if self.cancel_event.is_set() or self._terminal_claimed:
+                return False
+            self.state = TaskState.RUNNING
+            return True
+
+    def claim_terminal(self, desired: TaskState) -> TaskState | None:
+        """Reserve this task's one terminal lifecycle event.
+
+        Cancellation wins when its Event was set before this claim.  Once a
+        terminal state is claimed, later cancellation can still suppress audio
+        but cannot rewrite the already-linearized lifecycle result.
+        """
+        with self._control_lock:
+            if self._terminal_claimed:
+                return None
+            actual = (
+                TaskState.CANCELLED
+                if self.cancel_event.is_set() or desired == TaskState.CANCELLED
+                else desired
+            )
+            if actual == TaskState.CANCELLED:
+                self.cancel_event.set()
+            self._terminal_claimed = True
+            self.state = actual
+            return actual
+
+    def cancel_and_claim_terminal(self) -> bool:
+        """Atomically cancel and reserve the cancellation lifecycle event."""
+        with self._control_lock:
+            self.cancel_event.set()
+            if self._terminal_claimed:
+                return False
+            self._terminal_claimed = True
+            self.state = TaskState.CANCELLED
+            return True
 
 
 # Hard ceiling on concurrently running task threads. RESEARCH already has its
@@ -80,8 +144,20 @@ class AgentTask:
 DEFAULT_MAX_ACTIVE_TASKS = 6
 
 
+class _TaskCancelled(Exception):
+    """Control-flow signal used when a task is cancelled during an invocation."""
+
+
 class TaskRuntime:
     """Runs cancellable tasks and emits lifecycle events."""
+
+    # Arbitrary synchronous capability providers cannot be force-killed safely
+    # in Python.  Run them behind a cancellable coordinator and poll at a short
+    # interval so barge-in retires the *task* promptly even if the provider is
+    # still blocked before its first token.  The semaphore is deliberately held
+    # by the provider thread until it really exits: abandoned native/network
+    # calls therefore stay bounded instead of accumulating without limit.
+    _CANCEL_POLL_SEC = 0.01
 
     def __init__(
         self,
@@ -102,6 +178,7 @@ class TaskRuntime:
         self._threads_lock = Lock()
         self._stream_tts = stream_tts
         self._max_active_tasks = max(1, int(max_active_tasks))
+        self._invocation_slots = BoundedSemaphore(self._max_active_tasks)
 
     def _make_emitter(self, task: "AgentTask"):
         """A callback the speaking capability uses to play each sentence as it
@@ -194,11 +271,13 @@ class TaskRuntime:
             self._threads.pop(task_id, None)
 
     def _run_task(self, task: AgentTask) -> None:
+        if not task.mark_running():
+            self._publish_cancelled(task)
+            return
         log.info(
             "task %s started: mode=%s capability=%s input=%r",
             task.task_id, task.mode.value, task.capability, task.input_text,
         )
-        task.state = TaskState.RUNNING
         self._publish(
             AgentEvent(
                 EventKind.TASK_STARTED,
@@ -213,6 +292,8 @@ class TaskRuntime:
 
         try:
             self._run_plan(task)
+        except _TaskCancelled:
+            self._publish_cancelled(task)
         except Exception as exc:  # noqa: BLE001
             # Without this, a capability raising (e.g. Ollama unreachable) would
             # kill the daemon thread silently and the task would sit "active"
@@ -278,7 +359,6 @@ class TaskRuntime:
         task.metadata["step_results"] = step_results
         task.metadata["result_data"] = final_result.data
         task.metadata["citations"] = final_result.citations
-        task.state = TaskState.COMPLETED
         self._publish_completed(task)
 
     @staticmethod
@@ -305,6 +385,9 @@ class TaskRuntime:
             "mode": task.mode.value,
             "metadata": task.metadata,
             "cancel_event": task.cancel_event,
+            # Lets a capability atomically linearize a nested provider start
+            # (notably cross-tier retry) against task cancellation.
+            "claim_provider_start": task.claim_invocation_start,
             # Lets a long-running capability (e.g. the multi-step ReAct planner,
             # which runs under the short ASSISTANT budget) push its own wall-clock
             # deadline out so the supervisor's reap doesn't kill a turn that is
@@ -327,13 +410,103 @@ class TaskRuntime:
         # the trust verdict (defense-in-depth: the trust seam stays authoritative).
         context["owner_verified"] = bool(task.metadata.get("owner_verified", False))
         context["origin"] = str(task.metadata.get("origin", "unknown"))
-        return self._capabilities.invoke(
-            capability,
-            task.input_text,
-            context,
+        return self._invoke_cancellable(
+            task,
+            lambda: self._capabilities.invoke(
+                capability,
+                task.input_text,
+                context,
+            ),
         )
 
+    def _invoke_cancellable(
+        self,
+        task: AgentTask,
+        invoke: Callable[[], CapabilityResult],
+    ) -> CapabilityResult:
+        """Run one synchronous provider behind a cancellable task coordinator.
+
+        ``AgentTask.cancel_event`` cannot interrupt an arbitrary Python/native
+        call that is blocked before returning a first token.  The registered
+        task thread therefore coordinates a daemon provider thread instead of
+        becoming that provider thread itself.  Barge-in can retire the
+        coordinator immediately, while ``_invocation_slots`` remains owned by
+        any abandoned provider until it truly exits.  This is a bulkhead: at
+        most ``max_active_tasks`` uncooperative provider calls can survive a
+        cancellation storm.
+        """
+        acquired = False
+        while not acquired:
+            if task.cancel_event.is_set():
+                raise _TaskCancelled
+            acquired = self._invocation_slots.acquire(timeout=self._CANCEL_POLL_SEC)
+
+        # Cancellation wins the acquire race.  A coordinator cancelled while
+        # waiting for capacity must never launch a stale provider invocation.
+        if task.cancel_event.is_set():
+            self._invocation_slots.release()
+            raise _TaskCancelled
+
+        done = Event()
+        outcome: dict[str, object] = {}
+
+        def run_provider() -> None:
+            try:
+                # Definitive start/cancel linearization.  The coordinator's
+                # post-acquire check is only an early exit; cancellation can
+                # still land before this new thread is scheduled.  In that
+                # case no provider (especially no side effect) may be admitted late.
+                if not task.claim_invocation_start():
+                    outcome["error"] = _TaskCancelled()
+                    return
+                outcome["result"] = invoke()
+            except BaseException as exc:  # preserve the provider's normal failure
+                outcome["error"] = exc
+            finally:
+                self._invocation_slots.release()
+                done.set()
+
+        provider_thread = Thread(
+            target=run_provider,
+            name=f"speaker-capability-{task.task_id}",
+            daemon=True,
+        )
+        try:
+            provider_thread.start()
+        except BaseException:
+            # Ownership only transfers to ``run_provider`` after a successful
+            # start; otherwise release synchronously to avoid losing capacity.
+            self._invocation_slots.release()
+            raise
+
+        while True:
+            if task.cancel_event.is_set():
+                raise _TaskCancelled
+            if done.wait(self._CANCEL_POLL_SEC):
+                break
+
+        # Give cancellation precedence over a provider result that completed in
+        # the same scheduling window.  _run_plan performs a final guard too.
+        if task.cancel_event.is_set():
+            raise _TaskCancelled
+        error = outcome.get("error")
+        if isinstance(error, BaseException):
+            if isinstance(error, Exception):
+                raise error
+            raise RuntimeError(f"capability provider aborted: {type(error).__name__}")
+        result = outcome.get("result")
+        if not isinstance(result, CapabilityResult):
+            raise TypeError("capability provider returned no CapabilityResult")
+        return result
+
     def _publish_completed(self, task: AgentTask) -> None:
+        terminal = task.claim_terminal(TaskState.COMPLETED)
+        if terminal is None:
+            self._reap(task.task_id)
+            return
+        if terminal == TaskState.CANCELLED:
+            self._emit_cancelled_claimed(task)
+            return
         log.info(
             "task %s completed in %.2fs (%d chars)",
             task.task_id, time.time() - task.created_at, len(task.output_text or ""),
@@ -362,8 +535,17 @@ class TaskRuntime:
         )
 
     def _publish_cancelled(self, task: AgentTask) -> None:
+        terminal = task.claim_terminal(TaskState.CANCELLED)
+        if terminal is None:
+            # The watchdog can reserve + publish the one cancellation event.
+            # The coordinator still owns removal from the thread registry.
+            self._reap(task.task_id)
+            return
+        self._emit_cancelled_claimed(task)
+
+    def _emit_cancelled_claimed(self, task: AgentTask) -> None:
+        """Publish cancellation after this caller reserved the terminal event."""
         log.info("task %s cancelled after %.2fs", task.task_id, time.time() - task.created_at)
-        task.state = TaskState.CANCELLED
         self._reap(task.task_id)
         self._publish(
             AgentEvent(
@@ -374,9 +556,15 @@ class TaskRuntime:
         )
 
     def _publish_failed(self, task: AgentTask, error: str) -> None:
+        terminal = task.claim_terminal(TaskState.FAILED)
+        if terminal is None:
+            self._reap(task.task_id)
+            return
+        if terminal == TaskState.CANCELLED:
+            self._emit_cancelled_claimed(task)
+            return
         log.error("task %s FAILED after %.2fs: %s", task.task_id,
                   time.time() - task.created_at, error)
-        task.state = TaskState.FAILED
         self._reap(task.task_id)
         self._publish(
             AgentEvent(

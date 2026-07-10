@@ -3,7 +3,14 @@
 Single source of current truth for this repo. On any doc conflict:
 STATUS.md > newest-dated ADR in `docs/adr/` > everything else (see AGENTS.md).
 
-Last verified: 2026-07-07 late (Linux ROG box; P2 robustness cluster landed: full
+Last verified: 2026-07-10 (headless, branch `fix/enrollment-frontend-parity`:
+speaker enrollment now runs the active idle capture front end blockwise and
+persists versioned provenance; runtime ignores model/front-end mismatches so the
+speaker gate fails open with a re-enroll warning. Focused enrollment/audio/engine
+suite: 93 passed, 1 skipped; full logic suite: 2391 passed, 30 skipped;
+`git diff --check` clean. Live microphone re-enrollment is still REQUIRED after
+landing.) Prior:
+2026-07-07 late (Linux ROG box; P2 robustness cluster landed: full
 logic suite 2387 passed, 24 skipped; `git diff --check` clean. Shipped in one
 commit: ① diagnose_run word-cut verdict truth-up — a word-cut-confirmed barge is
 no longer stale-flagged `suspect:no-dtd` (run-level exemption keyed on the confirm
@@ -23,6 +30,17 @@ suite 2316 passed, 24 skipped on branch fix/stability-recon-followups);
 (fix/live-barge-dtln-and-underruns); 2026-07-04 (ADR-0012). Live: 2026-07-06
 (Linux boot, evening) — Phase B open-speaker barge live talk-over batch **FAILED**
 (see the block directly below).
+
+**2026-07-10 — speaker-ID enrollment front-end parity (ADR-0015).** `--enroll`
+now applies the same idle-speech stages as live capture (AGC-or-static-gain →
+resample → idle APM when active → GTCRN unless APM owns NS) and stores a stable
+versioned fingerprint of the stages that actually built. Runtime requires both
+the embedding model and front-end provenance to match; stale or legacy-nonraw
+references are ignored so gating fails open rather than rejecting the owner.
+Legacy enrollment remains compatible only on the raw baseline. **Owner/live step
+still required after landing:** run `python -m core --enroll` through the intended
+capture route, then verify the owner is accepted; no hardware validation is
+claimed by this branch.
 
 **★★★ 2026-07-06 (LINUX BOOT, evening) — PHASE B (ADR-0013) LIVE TALK-OVER BATCH
 FAILED — READ FIRST.** The first real *sustained* talk-over batch of the OS-capture +

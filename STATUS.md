@@ -3,10 +3,10 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in
 `docs/adr/` > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-10 on Linux ROG, `fix/cancellable-final-preprocessing`;
-full headless: 2636 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
-12 skipped; APM/DTD: 6 passed; whitespace passed; host doctor READY outside the
-sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
+Last verified: 2026-07-11 on Linux ROG, `fix/command-shaped-act-routing`;
+full headless: 2676 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
+outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
 
 ## Runtime
 
@@ -14,7 +14,9 @@ sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
 - Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local text tier
   and gemma3:12b remains the complex/vision main tier (ADR-0020). Warm MiniCPM
-  TTFT measured 0.10–0.11 s at 1.1 GB VRAM; ASR has async SenseVoice finals.
+  TTFT was 0.12–0.14 s at 1.1 GB VRAM and 4/4 text probes passed; ASR has async SenseVoice finals.
+- ACT routing now requires command-shaped markers; informational action-word
+  questions stay on MiniCPM and ambiguous terms use it to disambiguate (ADR-0024).
 - Current host capture is routed through PipeWire `echo-cancel-source` and output
   through `echo-cancel-sink`. GTCRN denoise is active. Word-cut is the active
   open-speaker barge path; in-app AEC/APM are off (ADR-0013). EC nodes and
@@ -92,8 +94,7 @@ git diff --check
 Real models: `python tools/run_tests.py real_model`; host: `python -m tools.doctor`.
 
 ## Operating policy
-- Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and
-  `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.
+- Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.
 - Direct merge/push to `main` is authorized during development only after every
   required gate is green (ADR-0014). Never land a red suite.
 - Do not delete logs/expose secrets/claim unrun hardware validation; public-history PII cleanup stays owner-deferred with no history rewrite (ADR-0008).

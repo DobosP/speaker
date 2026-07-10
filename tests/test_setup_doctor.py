@@ -9,6 +9,7 @@ import os
 import pytest
 
 from tools.doctor import (
+    PipeWireState,
     check_audio,
     check_audio_frontend,
     check_imports,
@@ -19,6 +20,7 @@ from tools.doctor import (
     check_speaker_id,
     profile_ollama_models,
     run_all,
+    run_runtime_checks,
     summarize,
 )
 
@@ -275,32 +277,17 @@ def _apm_check(checks):
     return None
 
 
-def test_audio_frontend_unselected_apm_profile_is_advisory_not_fail():
-    """The committed open_speaker profile DEFINES aec_backend=apm, but the active
-    (resolved) profile here is nlms. With livekit absent the apm check must be
-    ADVISORY (ok=True) so READY is never blocked on a healthy default box."""
-    config = {
-        "device": "desktop",
-        "sherpa": {"aec_backend": "nlms"},
-        "device_profiles": {
-            "desktop": {"sherpa": {"aec_backend": "nlms"}},
-            "open_speaker": {"sherpa": {"aec_backend": "apm"}},
-        },
-    }
+def test_audio_frontend_inert_apm_backend_never_requires_livekit():
+    """The backend string is inert while AEC is disabled."""
+    config = {"sherpa": {"aec_enabled": False, "aec_backend": "apm"}}
     checks = check_audio_frontend(config, import_fn=_no_livekit)
-    apm = _apm_check(checks)
-    assert apm is not None and apm.ok is True          # advisory, not a failure
-    assert not any(not c.ok for c in checks)           # nothing here blocks READY
+    assert _apm_check(checks) is None
 
 
 def test_audio_frontend_active_apm_backend_fails_without_livekit():
     """When the RESOLVED profile actually selects apm, livekit IS required: absent
     -> a real FAIL (AEC would silently fail open to no echo cancellation)."""
-    config = {
-        "device": "open_speaker",
-        "sherpa": {"aec_backend": "nlms"},
-        "device_profiles": {"open_speaker": {"sherpa": {"aec_backend": "apm"}}},
-    }
+    config = {"sherpa": {"aec_enabled": True, "aec_backend": "apm"}}
     checks = check_audio_frontend(config, import_fn=_no_livekit)
     apm = _apm_check(checks)
     assert apm is not None and apm.ok is False
@@ -313,11 +300,7 @@ def test_audio_frontend_active_apm_ok_when_livekit_present():
     def have_livekit(name):
         return _RTC() if "livekit" in name else object()
 
-    config = {
-        "device": "open_speaker",
-        "sherpa": {"aec_backend": "nlms"},
-        "device_profiles": {"open_speaker": {"sherpa": {"aec_backend": "apm"}}},
-    }
+    config = {"sherpa": {"aec_enabled": True, "aec_backend": "apm"}}
     apm = _apm_check(check_audio_frontend(config, import_fn=have_livekit))
     assert apm is not None and apm.ok is True
 
@@ -335,31 +318,163 @@ def test_audio_frontend_no_apm_anywhere_emits_no_livekit_check():
 # --- no module-echo-cancel loaded and nothing said so) ---------------------------
 
 
-def _word_cut_check(checks):
+def _word_cut_route_check(checks):
     for c in checks:
-        if "word-cut" in c.name.lower():
+        if "word-cut" in c.name.lower() and "route" in c.name.lower():
             return c
     return None
 
 
+def _word_cut_vad_check(checks):
+    for c in checks:
+        if "word-cut vad" in c.name.lower():
+            return c
+    return None
+
+
+_EC_ROUTED = PipeWireState(
+    modules=(
+        "42\tmodule-echo-cancel\taec_method=webrtc "
+        "source_name=ec_source sink_name=ec_sink"
+    ),
+    sources="51\tec_source\tPipeWire\tfloat32le 1ch 16000Hz\tRUNNING",
+    sinks="52\tec_sink\tPipeWire\tfloat32le 2ch 48000Hz\tRUNNING",
+    default_source="ec_source",
+    default_sink="ec_sink",
+)
+
+
 def test_word_cut_ec_check_fails_when_module_missing():
-    config = {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}}
+    config = {"sherpa": {
+        "barge_word_cut_enabled": True,
+        "aec_enabled": False,
+        "vad_model": "/m/vad.onnx",
+    }}
     checks = check_audio_frontend(
-        config, import_fn=_no_livekit, platform="linux", modules_text=""
+        config,
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=PipeWireState(),
     )
-    c = _word_cut_check(checks)
+    c = _word_cut_route_check(checks)
     assert c is not None and c.ok is False
     assert "module-echo-cancel" in c.hint  # the exact fix, not just a complaint
 
 
 def test_word_cut_ec_check_passes_when_module_loaded():
-    config = {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}}
+    config = {"sherpa": {
+        "barge_word_cut_enabled": True,
+        "aec_enabled": False,
+        "vad_model": "/m/vad.onnx",
+    }}
     checks = check_audio_frontend(
-        config, import_fn=_no_livekit, platform="linux",
-        modules_text="536870913\tmodule-echo-cancel\taec_method=webrtc",
+        config,
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=_EC_ROUTED,
     )
-    c = _word_cut_check(checks)
+    c = _word_cut_route_check(checks)
     assert c is not None and c.ok is True
+
+
+def test_word_cut_ec_module_loaded_but_raw_defaults_fails_route():
+    state = PipeWireState(
+        modules=_EC_ROUTED.modules,
+        sources=_EC_ROUTED.sources,
+        sinks=_EC_ROUTED.sinks,
+        default_source="alsa_input.raw",
+        default_sink="alsa_output.raw",
+    )
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=state,
+    )
+    route = _word_cut_route_check(checks)
+    assert route is not None and not route.ok
+    assert "capture" in route.detail and "playback" in route.detail
+
+
+def test_word_cut_explicit_ec_routes_do_not_require_ec_defaults():
+    state = PipeWireState(
+        modules=_EC_ROUTED.modules,
+        sources=_EC_ROUTED.sources,
+        sinks=_EC_ROUTED.sinks,
+        default_source="alsa_input.raw",
+        default_sink="alsa_output.raw",
+    )
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+            "input_device": "ec_source",
+            "output_device": "ec_sink",
+        }},
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=state,
+    )
+    route = _word_cut_route_check(checks)
+    assert route is not None and route.ok
+    assert "capture=ec_source" in route.detail
+    assert "playback=ec_sink" in route.detail
+
+
+def test_word_cut_module_arguments_do_not_count_as_existing_nodes():
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=PipeWireState(
+            modules=_EC_ROUTED.modules,
+            default_source="ec_source",
+            default_sink="ec_sink",
+        ),
+    )
+    route = _word_cut_route_check(checks)
+    assert route is not None and not route.ok
+    assert "nodes were not found" in route.detail
+
+
+def test_word_cut_requires_configured_existing_vad_model():
+    checks = check_audio_frontend(
+        {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}},
+        import_fn=_no_livekit,
+        platform="win32",
+    )
+    vad = _word_cut_vad_check(checks)
+    assert vad is not None and not vad.ok
+    assert "vad_model" in vad.detail
+
+
+def test_stale_word_cut_flag_is_inert_when_barge_is_globally_disabled():
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_in_enabled": False,
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+        }},
+        import_fn=_no_livekit,
+        platform="linux",
+        pipewire_state=PipeWireState(),
+    )
+    assert _word_cut_vad_check(checks) is None
+    assert _word_cut_route_check(checks) is None
 
 
 def test_word_cut_ec_check_absent_when_path_not_selected():
@@ -371,18 +486,25 @@ def test_word_cut_ec_check_absent_when_path_not_selected():
     ):
         checks = check_audio_frontend(
             {"sherpa": sherpa}, import_fn=_no_livekit,
-            platform="linux", modules_text="",
+            platform="linux", pipewire_state=PipeWireState(),
         )
-        assert _word_cut_check(checks) is None
+        assert _word_cut_route_check(checks) is None
 
 
 def test_word_cut_ec_check_absent_off_linux():
     # Windows uses WASAPI communications capture, not PipeWire -- no pactl check.
-    config = {"sherpa": {"barge_word_cut_enabled": True, "aec_enabled": False}}
+    config = {"sherpa": {
+        "barge_word_cut_enabled": True,
+        "aec_enabled": False,
+        "vad_model": "/m/vad.onnx",
+    }}
     checks = check_audio_frontend(
-        config, import_fn=_no_livekit, platform="win32", modules_text=""
+        config,
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="win32",
     )
-    assert _word_cut_check(checks) is None
+    assert _word_cut_route_check(checks) is None
 
 
 # --- doctor validates the SELECTED profile's ollama models (gemma3:1b gap) ------
@@ -430,6 +552,99 @@ def test_run_all_catches_a_missing_profile_model():
     )
     bad = [c for c in checks if c.name == "ollama model gemma3:1b"]
     assert bad and not bad[0].ok and "ollama pull gemma3:1b" in bad[0].hint
+
+
+def test_run_all_device_override_drives_audio_frontend_too():
+    """`doctor --device` must not select one profile for LLM and another for DSP."""
+    paths = {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens", "asr_encoder", "asr_decoder", "asr_joiner",
+            "tts_model", "tts_tokens",
+        )
+    }
+    cfg = {
+        "device": "desktop",
+        "sherpa": {
+            **paths,
+            "aec_enabled": False,
+            "aec_backend": "nlms",
+            "barge_word_cut_enabled": True,
+            "vad_model": "/m/vad.onnx",
+        },
+        "llm": {"backend": "ollama", "main_model": "gemma3:4b"},
+        "device_profiles": {
+            "desktop": {},
+            "open_speaker": {
+                "sherpa": {
+                    "aec_enabled": True,
+                    "aec_backend": "apm",
+                    "barge_word_cut_enabled": True,
+                }
+            },
+        },
+    }
+    checks = run_all(
+        cfg,
+        device="open_speaker",
+        sd=_FakeSD16k(),
+        ollama_lister=lambda: ["gemma3:4b"],
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        pipewire_state=PipeWireState(),
+    )
+    apm = _apm_check(checks)
+    assert apm is not None and not apm.ok
+    # The selected profile has in-app AEC, so word-cut is inert and OS EC/VAD
+    # are not required. Seeing either would prove profile resolution drift.
+    assert _word_cut_route_check(checks) is None
+    assert _word_cut_vad_check(checks) is None
+
+
+def test_doctor_invalid_device_is_a_clean_check_not_a_traceback(monkeypatch, capsys):
+    import core.app as app
+    import tools.doctor as doctor
+
+    monkeypatch.setattr(app, "_load_config", lambda *args, **kwargs: {
+        "device": "desktop",
+        "device_profiles": {"desktop": {}},
+        "sherpa": {},
+    })
+    assert doctor.main(["--device", "does-not-exist"]) == 1
+    text = capsys.readouterr().out.lower()
+    assert "[fail] device profile" in text
+    assert "desktop" in text
+
+
+def test_runtime_checks_echo_never_imports_or_contacts_ollama():
+    paths = {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens", "asr_encoder", "asr_decoder", "asr_joiner",
+            "tts_model", "tts_tokens",
+        )
+    }
+
+    def imports(name):
+        if name == "ollama":
+            raise AssertionError("EchoLLM readiness touched Ollama")
+        return object()
+
+    def list_ollama():
+        raise AssertionError("EchoLLM readiness contacted Ollama")
+
+    checks = run_runtime_checks(
+        {"sherpa": paths, "llm": {"backend": "ollama"}},
+        resolved=True,
+        llm_mode="echo",
+        sd=_FakeSD16k(),
+        ollama_lister=list_ollama,
+        import_fn=imports,
+        exists=lambda _p: True,
+        platform="win32",
+    )
+    assert all(check.ok for check in checks)
+    assert not any("ollama" in check.name for check in checks)
 
 
 def test_run_all_ready_when_everything_passes():

@@ -72,6 +72,7 @@ class _ScriptedStream:
     def __init__(self, plan):
         self._plan = list(plan)
         self._i = 0
+        self.read_frames: list[int] = []
         self.start_calls = 0
         self.stop_calls = 0
         self.close_calls = 0
@@ -89,6 +90,7 @@ class _ScriptedStream:
         self.close_calls += 1
 
     def read(self, frames):
+        self.read_frames.append(frames)
         if self._i >= len(self._plan):
             # Default to returning silence if we run out of script -- lets
             # tests assert specific results without exhaustively scripting.
@@ -138,6 +140,8 @@ def test_open_uses_first_attempt_that_succeeds():
     rs.open()
     assert opens == [("primary", 16000)]
     assert rs.actual_samplerate == 16000
+    assert rs.actual_device == "primary"
+    assert rs.generation == 1
     assert rs.state == StreamState.OPEN
 
 
@@ -163,6 +167,29 @@ def test_open_falls_through_to_next_attempt_on_failure():
     assert seen[0] == ("primary", 16000)
     assert seen[1] == ("primary", 48000)
     assert rs.actual_samplerate == 48000
+
+
+def test_open_closes_candidate_when_start_fails_before_fallback():
+    class _StartFails(_ScriptedStream):
+        def start(self):
+            super().start()
+            raise _make_err(PA_DEVICE_UNAVAILABLE)
+
+    bad = _StartFails([])
+    good = _ScriptedStream([])
+    streams = iter([bad, good])
+    rs = _RecoveringInputStream(
+        [
+            OpenAttempt(device="primary", samplerate=16000),
+            OpenAttempt(device=None, samplerate=16000),
+        ],
+        opener=lambda _device, _samplerate: next(streams),
+    )
+
+    rs.open()
+
+    assert bad.close_calls == 1
+    assert rs.actual_device is None
 
 
 def test_open_raises_when_all_attempts_fail():
@@ -282,6 +309,142 @@ def test_read_triggers_reopen_on_device_unavailable_then_succeeds():
     assert good_stream.start_calls == 1
 
 
+def test_reopen_retry_uses_recovered_rate_block_duration():
+    """A rate-changing fallback returns one correctly timed recovered block."""
+    attempts = [
+        OpenAttempt(device="usb", samplerate=48000),
+        OpenAttempt(device=None, samplerate=16000),
+    ]
+    bad = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    recovered = _ScriptedStream(
+        [(np.ones((1600, 1), dtype="float32"), False)]
+    )
+    opens = iter([bad, _make_err(PA_DEVICE_UNAVAILABLE), recovered])
+
+    def opener(device, samplerate):
+        result = next(opens)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    rs = _RecoveringInputStream(
+        attempts,
+        opener=opener,
+        backoffs=(0.0,),
+        block_seconds=0.1,
+        sleep_fn=lambda _t: None,
+    )
+    rs.open()
+    samples, overflowed = rs.read(4800)
+
+    assert not overflowed
+    assert samples.shape == (1600, 1)
+    assert bad.read_frames == [4800]
+    assert recovered.read_frames == [1600]
+    assert rs.actual_samplerate == 16000
+    assert rs.generation == 2
+
+
+def test_recovered_stream_first_read_failure_is_bounded_and_fatal():
+    attempts = [OpenAttempt(device=None, samplerate=16000)]
+    first = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    recovered = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    streams = iter([first, recovered])
+    rs = _RecoveringInputStream(
+        attempts,
+        opener=lambda _device, _samplerate: next(streams),
+        backoffs=(0.0,),
+        sleep_fn=lambda _delay: None,
+    )
+    rs.open()
+
+    with pytest.raises(Exception):
+        rs.read(1600)
+
+    assert rs.generation == 1
+    assert rs.state == StreamState.FATAL
+    assert recovered.read_frames == [1600]
+    assert recovered.close_calls == 1
+
+
+def test_recovery_skips_startable_but_unreadable_preferred_for_default():
+    attempts = [
+        OpenAttempt(device="preferred", samplerate=48000),
+        OpenAttempt(device=None, samplerate=16000),
+    ]
+    initial = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    unreadable = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    fallback = _ScriptedStream(
+        [(np.ones((1600, 1), dtype="float32"), False)]
+    )
+    streams = iter([initial, unreadable, fallback])
+    rs = _RecoveringInputStream(
+        attempts,
+        opener=lambda _device, _samplerate: next(streams),
+        backoffs=(0.0,),
+        sleep_fn=lambda _delay: None,
+    )
+    rs.open()
+
+    samples, overflowed = rs.read(4800)
+
+    assert not overflowed
+    assert samples.shape == (1600, 1)
+    assert (samples == 1.0).all()
+    assert unreadable.close_calls == 1
+    assert rs.actual_device is None
+    assert rs.actual_samplerate == 16000
+    assert rs.generation == 2
+    assert rs.state == StreamState.OPEN
+
+
+def test_close_during_recovery_backoff_prevents_late_reopen():
+    attempts = [OpenAttempt(device=None, samplerate=16000)]
+    failed = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    sleep_started = threading.Event()
+    release_sleep = threading.Event()
+    open_calls = 0
+
+    def opener(_device, _samplerate):
+        nonlocal open_calls
+        open_calls += 1
+        return failed if open_calls == 1 else _ScriptedStream([])
+
+    def sleeper(_delay):
+        sleep_started.set()
+        assert release_sleep.wait(timeout=2.0)
+
+    rs = _RecoveringInputStream(
+        attempts,
+        opener=opener,
+        backoffs=(3.2,),
+        sleep_fn=sleeper,
+    )
+    rs.open()
+    errors = []
+    reader = threading.Thread(
+        target=lambda: _read_error_into(rs, errors), daemon=True
+    )
+    reader.start()
+    assert sleep_started.wait(timeout=2.0)
+
+    rs.close()
+    release_sleep.set()
+    reader.join(timeout=2.0)
+
+    assert not reader.is_alive()
+    assert len(errors) == 1
+    assert "closed during recovery" in str(errors[0])
+    assert open_calls == 1
+
+
+def _read_error_into(stream, errors):
+    try:
+        stream.read(1600)
+    except Exception as exc:  # noqa: BLE001 - asserted by the caller
+        errors.append(exc)
+
+
 def test_read_raises_fatal_after_budget_exhausted():
     """Every reopen attempt fails -> FATAL state + the last exception is raised."""
     attempts = [OpenAttempt(device=None, samplerate=16000)]
@@ -348,6 +511,7 @@ def test_recover_walks_full_fallback_chain_on_each_attempt():
     )
     rs.open()
     rs.read(100)  # triggers reopen
+    assert rs.generation == 2
     devices = [d for d, _ in open_log]
     assert "hifi-usb" in devices
     assert None in devices  # fell back to default during recovery

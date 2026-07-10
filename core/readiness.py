@@ -72,12 +72,89 @@ def check_sherpa_models(
 ) -> Check:
     sherpa = (config or {}).get("sherpa", {}) or {}
     problems: list[str] = []
-    for key in SHERPA_REQUIRED:
+
+    def require(key: str, *, label: Optional[str] = None) -> None:
         path = sherpa.get(key, "")
+        name = label or key
         if not path:
-            problems.append(f"{key} unset")
+            problems.append(f"{name} unset")
         elif not exists(path):
-            problems.append(f"{key} missing on disk")
+            problems.append(f"{name} missing on disk")
+
+    def require_if_configured(
+        key: str, *, label: Optional[str] = None, comma_separated: bool = False
+    ) -> None:
+        value = sherpa.get(key, "")
+        if not value:
+            return
+        if comma_separated:
+            name = label or key
+            for path in (part.strip() for part in str(value).split(",")):
+                if not path:
+                    problems.append(f"{name} contains an empty path")
+                elif not exists(path):
+                    problems.append(f"{name} missing on disk: {path}")
+            return
+        require(key, label=label)
+
+    for key in SHERPA_REQUIRED:
+        require(key)
+
+    # ``tts_voices`` selects Kokoro instead of the VITS/Piper constructor.  Its
+    # native loader hard-aborts on a missing voices file; configured data/lexicon
+    # paths are also passed straight to that loader and therefore load-bearing.
+    if sherpa.get("tts_voices", ""):
+        require("tts_voices", label="Kokoro tts_voices")
+        require_if_configured("tts_data_dir")
+        require_if_configured("tts_lexicon", comma_separated=True)
+    else:
+        # VITS also consumes a configured espeak data directory.  A stale Kokoro
+        # lexicon is deliberately ignored when Kokoro is not selected.
+        require_if_configured("tts_data_dir")
+
+    # The second-pass recognizer owns the text sent to the LLM whenever a backend
+    # is selected.  Missing artifacts currently make the runtime silently fall
+    # back to the much weaker streaming transcript, so readiness must fail closed.
+    final_backend = str(sherpa.get("asr_final_backend", "") or "").strip().lower()
+    if final_backend in {"sense_voice", "whisper"}:
+        require("asr_final_model", label=f"{final_backend} model")
+        require("asr_final_tokens", label=f"{final_backend} tokens")
+        if final_backend == "whisper":
+            require("asr_final_decoder", label="whisper decoder")
+        else:
+            # These kwargs are added only to the SenseVoice constructor.  The
+            # two FST settings use sherpa-onnx's comma-separated path syntax.
+            require_if_configured("asr_final_hr_dict_dir")
+            require_if_configured("asr_final_hr_lexicon")
+            require_if_configured(
+                "asr_final_hr_rule_fsts", comma_separated=True
+            )
+            require_if_configured("asr_final_rule_fsts", comma_separated=True)
+    elif final_backend:
+        problems.append(
+            f"asr_final_backend={final_backend!r} unsupported "
+            "(expected sense_voice or whisper)"
+        )
+
+    # A configured VAD is eagerly built during engine start.  It remains optional
+    # when unset; feature-specific requirements (word-cut) are checked below.
+    require_if_configured("vad_model")
+
+    # Punctuation and keyword spotting are also constructed eagerly.  A partial
+    # KWS group is not a degraded optional path once its encoder selects it.
+    require_if_configured("punct_model")
+    if sherpa.get("kws_encoder", ""):
+        for key in (
+            "kws_tokens", "kws_encoder", "kws_decoder", "kws_joiner",
+            "kws_keywords_file",
+        ):
+            require(key, label=f"KWS {key}")
+
+    # Denoise is optional while disabled.  Once enabled, an unset/missing GTCRN
+    # model makes the selected frontend silently degrade to raw audio.
+    if bool(sherpa.get("denoise_enabled", False)):
+        require("denoise_model")
+
     if problems:
         return Check(
             "sherpa models",
@@ -85,7 +162,7 @@ def check_sherpa_models(
             "; ".join(problems) + " (config.json/config.local.json)",
             "python -m tools.setup_models  # writes config.local.json",
         )
-    return Check("sherpa models", True, "ASR + TTS paths set")
+    return Check("sherpa models", True, "selected ASR + TTS/frontend paths set")
 
 
 def check_speaker_id(
@@ -109,7 +186,12 @@ def check_speaker_id(
     enroll_emb = sherpa.get("speaker_enroll_embedding", "")
     enroll_wav = sherpa.get("speaker_enroll_wav", "")
     if (enroll_emb and exists(enroll_emb)) or (enroll_wav and exists(enroll_wav)):
-        return Check("speaker-ID", True, "model + enrollment present")
+        return Check(
+            "speaker-ID",
+            True,
+            "model + enrollment file present; capture-domain compatibility is "
+            "checked after the microphone opens",
+        )
     return Check(
         "speaker-ID",
         True,
@@ -360,21 +442,31 @@ def check_audio_frontend(
     pipewire_probe: Callable[[], Optional[PipeWireState]] = probe_pipewire_state,
     require_os_echo_route: bool = True,
 ) -> list[Check]:
-    """Check active resampler, APM, VAD, and OS echo-route prerequisites."""
+    """Check active resampler, AEC backend, VAD, and OS-route prerequisites."""
     out: list[Check] = []
     try:
         import_fn("soxr")
         out.append(Check("soxr anti-alias resampler", True))
     except Exception:
-        out.append(Check(
-            "soxr anti-alias resampler",
-            False,
-            "not installed -> per-block resampling aliases into the speech band",
-            "python -m pip install soxr",
-        ))
+        try:
+            import_fn("scipy")
+        except Exception:
+            out.append(Check(
+                "anti-alias resampler",
+                False,
+                "neither soxr nor SciPy is installed; rate fallback would be linear",
+                "python -m pip install soxr",
+            ))
+        else:
+            out.append(Check(
+                "anti-alias resampler",
+                True,
+                "soxr absent; SciPy polyphase fallback is available",
+                "python -m pip install soxr  # optional faster streaming backend",
+            ))
 
     sherpa = config.get("sherpa", {}) if isinstance(config, dict) else {}
-    backend = str(sherpa.get("aec_backend", "")).lower()
+    backend = str(sherpa.get("aec_backend", "nlms") or "nlms").lower()
     aec_enabled = bool(sherpa.get("aec_enabled", False))
     if aec_enabled and backend in ("apm", "webrtc"):
         try:
@@ -383,21 +475,74 @@ def check_audio_frontend(
         except Exception:  # noqa: BLE001
             have_apm = None
         if have_apm:
-            out.append(Check("livekit WebRTC APM (aec_backend=apm)", True))
+            out.append(Check(f"livekit WebRTC APM (aec_backend={backend})", True))
         elif have_apm is False:
             out.append(Check(
-                "livekit WebRTC APM (aec_backend=apm)",
+                f"livekit WebRTC APM (aec_backend={backend})",
                 False,
                 "livekit present but exposes no AudioProcessingModule",
                 "python -m pip install -U livekit",
             ))
         else:
             out.append(Check(
-                "livekit WebRTC APM (aec_backend=apm)",
+                f"livekit WebRTC APM (aec_backend={backend})",
                 False,
                 "AEC+APM selected but livekit is not installed",
                 "python -m pip install livekit",
             ))
+    elif aec_enabled and backend in ("nlms", "fdaf", "numpy"):
+        out.append(Check(
+            f"AEC backend {backend}", True, "dependency-free NumPy FDAF selected"
+        ))
+    elif aec_enabled and backend == "dtln":
+        import re
+
+        problems: list[str] = []
+        model = str(sherpa.get("aec_model", "") or "")
+        stage_paths: tuple[str, str] | None = None
+        if not model:
+            problems.append("aec_model unset")
+        elif model.lower().endswith(".onnx"):
+            stage2 = re.sub(r"(?<!\d)1(\.onnx)$", r"2\1", model)
+            if stage2 == model:
+                problems.append(
+                    "aec_model direct path must name the stage-1 ONNX model"
+                )
+            else:
+                stage_paths = (model, stage2)
+        else:
+            stage_paths = (
+                os.path.join(model, "dtln_aec_stage1.onnx"),
+                os.path.join(model, "dtln_aec_stage2.onnx"),
+            )
+        if stage_paths is not None:
+            for index, path in enumerate(stage_paths, start=1):
+                if not exists(path):
+                    problems.append(f"DTLN stage {index} missing on disk")
+        try:
+            import_fn("onnxruntime")
+        except Exception as exc:  # noqa: BLE001 - selected backend cannot build
+            problems.append(f"onnxruntime unavailable: {exc}")
+        out.append(Check(
+            "AEC backend dtln",
+            not problems,
+            (
+                f"stages={stage_paths[0]}, {stage_paths[1]}; onnxruntime available"
+                if not problems and stage_paths is not None
+                else "; ".join(problems)
+            ),
+            "" if not problems else (
+                "python -m tools.setup_models --aec-model; "
+                "python -m pip install onnxruntime"
+            ),
+        ))
+    elif aec_enabled:
+        out.append(Check(
+            "AEC backend",
+            False,
+            f"unknown aec_backend={backend!r}",
+            "choose one of: nlms, dtln, apm",
+        ))
 
     wants_word_cut = (
         bool(sherpa.get("barge_in_enabled", True))
@@ -437,6 +582,36 @@ def check_audio_frontend(
                 'aec_args="webrtc.noise_suppression=false webrtc.gain_control=false"'
                 " then set both echo-cancel nodes as defaults (ADR-0013)"
             ),
+        ))
+
+    wants_windows_voice = platform.startswith("win") and (
+        wants_word_cut or bool(sherpa.get("capture_voice_comm", False))
+    )
+    if wants_windows_voice:
+        voice_requested = bool(sherpa.get("capture_voice_comm", False))
+        supported = False
+        detail = ""
+        if not voice_requested:
+            detail = (
+                "active word-cut requires capture_voice_comm=true on Windows"
+            )
+        else:
+            try:
+                sd = import_fn("sounddevice")
+                sd.WasapiSettings(communications=True)
+                supported = True
+                detail = "WASAPI Communications stream setting is available"
+            except Exception as exc:  # noqa: BLE001 - selected path must construct
+                detail = (
+                    "sounddevice cannot request WASAPI Communications capture: "
+                    f"{exc}"
+                )
+        out.append(Check(
+            "OS echo-cancel route (WASAPI Communications)",
+            supported,
+            detail,
+            "disable word-cut or provide a verified Windows "
+            "voice-communications capture path",
         ))
     return out
 

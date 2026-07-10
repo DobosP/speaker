@@ -312,11 +312,56 @@ def test_engine_passes_audio_to_an_audio_detector():
     assert seen["sr"] == 16000
 
 
+def test_engine_only_assembles_prosody_audio_inside_decision_window():
+    class _AudioDetector:
+        needs_audio = True
+
+        def completion_score(self, text, *, samples=None, sample_rate=16000):
+            return 0.9
+
+    e = _engine(detector=_AudioDetector(), endpoint_enabled=True)
+    floor = e._endpoint_prosody_min_silence
+    assert not e._endpoint_audio_needed(
+        acoustic_endpoint=False,
+        partial="hello there",
+        silence_sec=max(0.0, floor - 0.01),
+        allow_early=True,
+    )
+    assert not e._endpoint_audio_needed(
+        acoustic_endpoint=False,
+        partial="hello there",
+        silence_sec=floor + 1.0,
+        allow_early=False,
+    )
+    assert e._endpoint_audio_needed(
+        acoustic_endpoint=False,
+        partial="hello there",
+        silence_sec=floor,
+        allow_early=True,
+    )
+
+
 def test_engine_extends_then_backstops_on_incomplete_partial():
     det = ScriptedTurnCompletionDetector({"and then": 0.05})
     e = _engine(detector=det, endpoint_enabled=True, endpoint_max_silence_sec=1.6)
     assert e._decide_endpoint(acoustic_endpoint=True, partial="and then", silence_sec=1.0) is False
     assert e._decide_endpoint(acoustic_endpoint=True, partial="and then", silence_sec=2.0) is True
+
+
+def test_engine_active_vad_makes_acoustic_rule3_endpoint_a_hard_boundary():
+    det = ScriptedTurnCompletionDetector({"and then": 0.05})
+    e = _engine(detector=det, endpoint_enabled=True, endpoint_max_silence_sec=1.6)
+
+    assert e._decide_endpoint(
+        acoustic_endpoint=True,
+        partial="and then",
+        silence_sec=0.0,
+        allow_early=False,
+        vad_active=True,
+    ) is True
+    # The hard boundary bypasses semantic scoring entirely; it is not merely a
+    # low-score HOLD that happens to time out later.
+    assert det.calls == []
 
 
 def test_engine_empty_partial_skips_the_detector():

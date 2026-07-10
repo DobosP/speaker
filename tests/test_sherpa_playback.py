@@ -502,6 +502,31 @@ def test_stop_flushes_and_closes_live_stream_before_join():
     assert eng._stop_speaking.is_set()
 
 
+def test_stop_closes_capture_before_joining_its_thread():
+    events = []
+
+    class _Input:
+        def close(self):
+            events.append("input-close")
+
+    class _CaptureThread:
+        def join(self, timeout):
+            events.append(("capture-join", timeout))
+
+        def is_alive(self):
+            return False
+
+    eng = _engine(_StreamingTts())
+    eng._stream_in = _Input()
+    eng._capture_thread = _CaptureThread()
+    eng._running.set()
+
+    eng.stop()
+
+    assert events == ["input-close", ("capture-join", 1.0)]
+    assert eng._stream_in is None
+
+
 def test_stop_without_live_stream_is_noop():
     # No live stream -> stop() must not raise and must still tear down cleanly.
     eng = _engine(_StreamingTts())

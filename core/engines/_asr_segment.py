@@ -100,7 +100,16 @@ class ASRSegment:
             if alt is not None:
                 self.alternate.append(alt)
             self.samples += int(block.size)
-        limit = self.max_samples if self.speech_seen else self.pre_roll_samples
+        # With no VAD there is no acoustic speech-onset signal. Decoder text may
+        # arrive seconds after the user began, so applying the idle pre-roll cap
+        # before the first partial would silently discard the utterance head.
+        # Keep the configured full (still bounded) window in the fail-open
+        # fallback; only a real VAD may switch between idle and utterance bounds.
+        limit = (
+            self.max_samples
+            if (not self.vad_available or self.speech_seen)
+            else self.pre_roll_samples
+        )
         self._trim_to(limit)
 
     def prepend(
@@ -195,6 +204,12 @@ class ASRSegment:
 
     @property
     def speech_duration_sec(self) -> Optional[float]:
+        # Decoder-change timestamps are not acoustic boundaries. Without VAD,
+        # let the finalizer fall back to the owned PCM duration so a delayed
+        # first/only partial cannot misclassify a multi-second utterance as a
+        # 100 ms clip and skip the configured second pass.
+        if not self.vad_available:
+            return None
         if self.first_speech_at is None or self.speech_end_at is None:
             return None
         return max(

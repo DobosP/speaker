@@ -37,6 +37,45 @@ def test_enrolled_user_voice_is_accepted_as_barge_in():
     assert gate.accept([0.0], 16000) is True
 
 
+def test_clear_enrollment_restores_fail_open_state():
+    gate = _gate_returning(ASSISTANT_TTS)
+    gate.enroll_embedding(USER)
+    assert not gate.accept([0.0], 16000)
+    gate.clear_enrollment()
+    assert not gate.is_enrolled
+    assert gate.accept([0.0], 16000)
+
+
+def test_clear_during_embedding_makes_inflight_decision_fail_open():
+    import threading
+
+    embedding_started = threading.Event()
+    release_embedding = threading.Event()
+
+    def embed(_samples, _sample_rate):
+        embedding_started.set()
+        if not release_embedding.wait(timeout=2.0):
+            raise RuntimeError("test did not release embedding")
+        return ASSISTANT_TTS
+
+    gate = SpeakerGate(threshold=0.5, embed_fn=embed)
+    gate.enroll_embedding(USER)
+    accepted: list[bool] = []
+    worker = threading.Thread(
+        target=lambda: accepted.append(gate.accept([0.0], 16000))
+    )
+
+    worker.start()
+    assert embedding_started.wait(timeout=2.0)
+    gate.clear_enrollment()
+    release_embedding.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert accepted == [True]
+    assert not gate.is_enrolled
+
+
 def test_assistant_voice_is_rejected():
     gate = _gate_returning(ASSISTANT_TTS)
     gate.enroll_embedding(USER)

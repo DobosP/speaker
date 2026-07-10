@@ -3,18 +3,20 @@
 How the capture and playback paths are cleaned today, **why Microsoft Teams
 sounds better than a raw-mic app on the same laptop**, and the concrete knobs to
 close that gap on desktop and mobile. This is the current-truth companion to
-`docs/TTS.md`; barge-in decisions live in `docs/adr/0004`–`0006` and
-`0011`–`0013` (the DTLN-era internals doc is archived at
+`docs/TTS.md`; barge-in decisions live in `docs/adr/0004`–`0006`,
+`0011`–`0013`, and `0019` (the DTLN-era internals doc is archived at
 `docs/archive/open_speaker_barge_in.md`).
 
 > **2026-07-06 (ADR-0013, live-validated):** for the bare-open-speaker path the
 > answer to "why Teams is better" below is now the shipped design — capture
-> routes through the **OS voice-comm canceller** (PipeWire `module-echo-cancel`
-> / WASAPI Communications) **instead of** the in-app APM (`aec_enabled=false`),
+> routes through the Linux **OS voice-comm canceller** (PipeWire
+> `module-echo-cancel`) **instead of** the in-app APM (`aec_enabled=false`),
 > and barge-in is the continuous no-duck **word-cut**
 > (`barge_word_cut_enabled=true`). The in-app APM remains the in-app
 > fallback and the `open_speaker` profile still selects it; see
-> `docs/adr/0013` for the recipe and what is (and isn't) validated.
+> `docs/adr/0013` for the recipe and what is (and isn't) validated. Desktop
+> Windows Communications capture is currently unavailable and fails readiness;
+> see `docs/adr/0019`.
 
 ## TL;DR — why Teams is better, and the three highest-leverage moves
 
@@ -25,9 +27,9 @@ mic** (`core/engines/sherpa.py::_open`) and ran no steady-state cleanup while th
 user was just talking. (Notably, this project's own Android app already does the
 Teams thing — `mobile/lib/assistant.dart` uses the `voiceCommunication` source.)
 
-1. **Get a clean input signal** — route capture through the OS voice-comm path
-   (PipeWire `module-echo-cancel` on Linux, WASAPI Communications on Windows) or
-   the in-app WebRTC APM, and/or enable the GTCRN denoiser.
+1. **Get a clean input signal** — route capture through PipeWire
+   `module-echo-cancel` on Linux or the in-app WebRTC APM, and/or enable the GTCRN
+   denoiser. The desktop Windows OS path is blocked by ADR-0019.
 2. **Make TTS fluid** — `tts_target_rms` (per-sentence loudness normalization) is
    now on by default in `config.json`; a raised-cosine fade de-clicks barge-in
    cuts.
@@ -50,21 +52,20 @@ bypassed) and barge-in is the ASR **word-cut** on the OS-cancelled capture — n
 acoustic gate is in the loop.
 
 - **Anti-alias resampler** (`core/audio_frontend.py::AudioResampler`) prefers
-  `soxr` (stateful, no per-block seam) → `scipy.resample_poly` → naive linear.
-  **Install `soxr`** (`pip install soxr`, it's in `requirements.txt`) or every
-  0.1 s block is refiltered independently — an aliasing seam that taxes sibilants.
-  `python -m tools.doctor` flags a missing `soxr`.
+  `soxr` (stateful, no per-block seam), then `scipy.resample_poly`. Readiness
+  accepts either anti-aliased backend and fails only when neither is available;
+  linear interpolation is diagnostic fallback, not a ready production path.
 - **AEC runs only while the assistant is speaking** (the far-end reference has
   energy). This is intentional: the deep cancellers distort clean near-end speech,
   and on the in-app AEC paths barge-in keys off `mic_raw` (pre-AEC). The
   exceptions: the WebRTC APM with `apm_always_on=true` runs every block (see
   below), and the ADR-0013 OS-capture path has no in-app AEC at all — its
   word-cut barge reads the OS-cancelled stream, not `mic_raw`.
-- **GTCRN denoiser** is off by default and not shipped. Fetch + enable:
-  `python -m tools.setup_models --denoise-model`, then `denoise_enabled=true` +
-  `denoise_model=<path>`. **Re-enroll your voice afterward** (the speaker
-  embedding shifts post-denoise). Skipped automatically when the always-on APM
-  already owns noise suppression.
+- **GTCRN denoiser** is enabled in tracked config and provisioned by
+  `python -m tools.setup_models --denoise-model`; readiness fails if the selected
+  model is missing. Speaker enrollment provenance includes the active denoiser,
+  so a changed front end requires re-enrollment (ADR-0018). It is skipped when
+  the always-on APM already owns noise suppression.
 
 ## Smart generic level calibration (`input_calibrate`)
 
@@ -82,11 +83,10 @@ Steady-state clipping during a run surfaces the same `input_clipping` metric fro
 the capture heartbeat. Gain-ownership rules per path: on the **in-app APM
 fallback** don't pair `input_agc=true` with open-speaker barge-in — its
 time-varying gain perturbs the coherence detector; let the APM's AGC2 own gain.
-On the **ADR-0013 OS-capture path** no coherence detector is in the loop:
+On the **ADR-0013 Linux OS-capture path** no coherence detector is in the loop:
 Linux `module-echo-cancel` is loaded AEC-only (NS+AGC off), so keep
-`input_agc=true` + `input_calibrate=true` or the VAD goes deaf; Windows WASAPI
-Communications applies the OS's own AGC, so leave `input_agc` off and
-`input_gain` at 1.0 (stacking gain stages is the double-AGC/pumping lesson).
+`input_agc=true` + `input_calibrate=true` or the VAD goes deaf. The former Windows
+WASAPI guidance is superseded by ADR-0019.
 
 ## Echo cancellation backends (`aec_backend`)
 
@@ -119,7 +119,7 @@ byte-identical to no-AEC.
 **Reproducible open-speaker config:** the live-validated path is the OS
 voice-comm capture + no-duck word-cut recipe in **ADR-0013** (`aec_enabled=false`,
 `apm_always_on=false`, `barge_word_cut_enabled=true`, plus PipeWire
-`module-echo-cancel` on Linux / `capture_voice_comm=true` on Windows). The
+`module-echo-cancel` on Linux). The
 committed `open_speaker` device profile — `python -m core --engine sherpa
 --device open_speaker` — remains the **in-app fallback**: it turns on
 `aec_backend="apm"` + `apm_always_on` (no OS setup needed, but the APM's
@@ -138,10 +138,11 @@ so the word-cut barge is live) — let the OS do the DSP:
       source_name=ec_source sink_name=ec_sink
   ```
   Then set `input_device` to the "Echo Cancellation Source" node.
-  `python -m tools.doctor` checks the module is loaded (only when
-  `capture_voice_comm` is requested).
-- **Windows:** set `capture_voice_comm=true` → the engine opens the stream with
-  `sd.WasapiSettings(communications=True)` (the AEC/NS Communications category).
+  `python -m tools.doctor` checks the active source and sink when word-cut or
+  `capture_voice_comm` selects the route.
+- **Windows:** the previously documented sounddevice Communications keyword is
+  unsupported. Profiles that select it fail readiness until a verified capture
+  implementation exists (ADR-0019).
 - **macOS/iOS:** the `VoiceProcessingIO` AudioUnit / `AVAudioSession .voiceChat`
   mode. Wired on Android (below); desktop macOS not yet.
 
@@ -179,7 +180,7 @@ never fired in a committed run.
 ## Quick reference — enabling everything on a Linux laptop
 
 ```bash
-pip install soxr                                # resampler (always)
+pip install soxr                                # optional faster resampler
 # Validated open-speaker path (ADR-0013): OS echo-cancel + no-duck word-cut
 pactl load-module module-echo-cancel aec_method=webrtc \
     source_name=ec_source sink_name=ec_sink \
@@ -194,6 +195,5 @@ pip install livekit
 python -m core --engine sherpa --device open_speaker --enroll   # re-enroll post-cleanup
 ```
 
-On Windows the OS-capture hop is `capture_voice_comm=true` (WASAPI
-Communications) with the same `aec_enabled=false` + `barge_word_cut_enabled=true`
-flips — see ADR-0013's Windows addendum.
+On Windows, selecting the former Communications/word-cut recipe reports NOT
+READY until a verified OS capture implementation exists; see ADR-0019.

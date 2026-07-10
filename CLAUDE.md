@@ -26,12 +26,12 @@ cross over, and only when invoked. This boundary supersedes the earlier blanket
 
 > **HARD REQUIREMENT — open-speaker barge-in, NO headphones (owner decision
 > 2026-06-05; D-A, `docs/adr/0008`).** Barge-in MUST work on the bare laptop
-> speaker; headphones must never be assumed or suggested as the fix. Status:
-> **DONE + live-validated** via the device-adaptive `AdaptiveDTD`
-> (`docs/adr/0004`). **Never hard-set `aec_ref_delay_ms` to 260 ms** — calibrate
+> speaker; headphones must never be assumed or suggested as the fix. The current
+> implementation, evidence, and remaining live A/B gate are in `STATUS.md` and
+> `docs/adr/0013`; the older AdaptiveDTD result is history, not current status.
+> **Never hard-set `aec_ref_delay_ms` to 260 ms** — calibrate
 > per machine with `tools/echo_probe.py` or use `aec_auto_delay`
-> (`docs/adr/0005`). Remaining open P1 (2026-06-21): the DTD barge gate reads
-> the APM-NS-suppressed residual under `open_speaker` — see `.agents/backlog.md`.
+> (`docs/adr/0005`).
 
 ## Quickstart
 

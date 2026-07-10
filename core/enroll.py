@@ -25,11 +25,16 @@ import json
 import logging
 import math
 import os
-from dataclasses import dataclass
+import sys
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Callable, Mapping, Optional, Sequence
 
-from .engines.speaker_gate import SpeakerGate, sherpa_speaker_gate
+from .engines.speaker_gate import (
+    SpeakerGate,
+    sherpa_speaker_gate,
+    trim_to_voiced_region,
+)
 
 log = logging.getLogger("speaker.enroll")
 
@@ -46,7 +51,48 @@ Recorder = Callable[[float], Sequence[float]]
 # Bump only when the model-visible enrollment capture chain changes semantics.
 # The fingerprint below covers the active stage configuration; this version covers
 # the implementation/order contract itself.
-ENROLLMENT_FRONTEND_VERSION = 1
+ENROLLMENT_FRONTEND_VERSION = 2
+
+
+def _agc_floor_bucket_db(value: float) -> int:
+    floor = max(1e-8, float(value))
+    return 3 * round((20.0 * math.log10(floor)) / 3.0)
+
+
+@dataclass(frozen=True)
+class CaptureResolution:
+    """The capture domain that actually produced model-visible samples.
+
+    Config intent is not enough here: PortAudio may fall back to another device
+    or rate, the resampler backend depends on installed libraries, and an OS
+    voice-processing request may fail to apply.  Enrollment and live gating only
+    compare domains after those facts are known.
+    """
+
+    route: str
+    capture_sample_rate: int
+    model_sample_rate: int
+    resampler: str
+    voice_comm: str = "none"
+    input_agc_noise_floor_rms: Optional[float] = None
+
+    def descriptor(self) -> dict[str, object]:
+        out: dict[str, object] = {
+            "route": self.route,
+            "capture_sample_rate": int(self.capture_sample_rate),
+            "model_sample_rate": int(self.model_sample_rate),
+            "resampler": self.resampler,
+            "voice_comm": self.voice_comm,
+        }
+        if self.input_agc_noise_floor_rms is not None:
+            # Startup ambient calibration is expected to move slightly between
+            # runs. Fingerprint a 3 dB operating bucket: material threshold
+            # changes invalidate enrollment, while sensor jitter does not disable
+            # identity gating on every boot.
+            out["input_agc_noise_floor_db_3"] = _agc_floor_bucket_db(
+                self.input_agc_noise_floor_rms
+            )
+        return out
 
 
 @dataclass(frozen=True)
@@ -107,6 +153,30 @@ def _artifact_id(path: object) -> str:
     return os.path.normcase(os.path.abspath(text)) if text else ""
 
 
+def _configured_capture_resolution(config: object) -> CaptureResolution:
+    """Conservative unresolved domain for pure helpers and legacy tests.
+
+    Production enrollment/live startup replace this with a resolution derived
+    from a successfully opened stream.  Keeping the marker in the fingerprint
+    prevents an unresolved injected capture from masquerading as production.
+    """
+    model_sr = int(_cfg(config, "sample_rate", 16000) or 16000)
+    configured_sr = int(_cfg(config, "capture_samplerate", 0) or 0)
+    capture_sr = configured_sr or model_sr
+    selector = _stable_value(_cfg(config, "input_device", None))
+    return CaptureResolution(
+        route=f"unresolved:{selector!r}",
+        capture_sample_rate=capture_sr,
+        model_sample_rate=model_sr,
+        resampler="identity" if capture_sr == model_sr else "unresolved",
+        voice_comm=(
+            "requested-unverified"
+            if bool(_cfg(config, "capture_voice_comm", False))
+            else "none"
+        ),
+    )
+
+
 def make_enrollment_frontend_provenance(
     config: object,
     *,
@@ -114,6 +184,7 @@ def make_enrollment_frontend_provenance(
     idle_apm: object | None,
     denoiser: object | None,
     apm_owns_ns: bool,
+    capture: Optional[CaptureResolution] = None,
 ) -> EnrollmentFrontendProvenance:
     """Describe the active idle-speech front end in a stable, hashable form.
 
@@ -127,17 +198,36 @@ def make_enrollment_frontend_provenance(
     idle_apm_active = idle_apm is not None
     denoise_active = denoiser is not None and not bool(apm_owns_ns)
     input_gain = float(_cfg(config, "input_gain", 1.0) or 1.0)
-    capture_voice_comm = bool(_cfg(config, "capture_voice_comm", False))
+    capture = capture or _configured_capture_resolution(config)
 
     gain: dict[str, object]
     if agc_active:
+        applied_floor = (
+            capture.input_agc_noise_floor_rms
+            if capture.input_agc_noise_floor_rms is not None
+            else float(
+                getattr(
+                    input_agc,
+                    "noise_floor_rms",
+                    _cfg(config, "input_agc_noise_floor_rms", 0.004),
+                )
+            )
+        )
         gain = {
             "kind": "input_agc",
-            "target_rms": float(_cfg(config, "input_agc_target_rms", 0.12)),
-            "max_gain": float(_cfg(config, "input_agc_max_gain", 12.0)),
-            "noise_floor_rms": float(_cfg(config, "input_agc_noise_floor_rms", 0.004)),
-            "rise": float(_cfg(config, "input_agc_rise", 0.08)),
-            "fall": float(_cfg(config, "input_agc_fall", 0.4)),
+            "target_rms": float(
+                getattr(input_agc, "target_rms", _cfg(config, "input_agc_target_rms", 0.12))
+            ),
+            "max_gain": float(
+                getattr(input_agc, "max_gain", _cfg(config, "input_agc_max_gain", 12.0))
+            ),
+            "noise_floor_db_3": _agc_floor_bucket_db(applied_floor),
+            "rise": float(
+                getattr(input_agc, "rise", _cfg(config, "input_agc_rise", 0.08))
+            ),
+            "fall": float(
+                getattr(input_agc, "fall", _cfg(config, "input_agc_fall", 0.4))
+            ),
         }
     else:
         gain = {"kind": "static", "gain": input_gain}
@@ -158,13 +248,7 @@ def make_enrollment_frontend_provenance(
     descriptor = {
         "schema": ENROLLMENT_FRONTEND_VERSION,
         "capture": {
-            # OS echo cancellation remains upstream in the selected/default input
-            # device. These fields identify that logical capture domain; Linux's
-            # externally-repointed default cannot be introspected from the app.
-            "input_device": _stable_value(_cfg(config, "input_device", None)),
-            "voice_comm": capture_voice_comm,
-            "sample_rate": int(_cfg(config, "sample_rate", 16000) or 16000),
-            "capture_samplerate": int(_cfg(config, "capture_samplerate", 0) or 0),
+            **capture.descriptor(),
             "resampler_quality": str(_cfg(config, "resampler_quality", "HQ") or "HQ"),
             "block_sec": float(_cfg(config, "block_sec", 0.1) or 0.1),
         },
@@ -176,8 +260,8 @@ def make_enrollment_frontend_provenance(
     fingerprint = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
     stages: list[str] = []
-    if capture_voice_comm:
-        stages.append("os-voice-comm")
+    if capture.voice_comm != "none":
+        stages.append(capture.voice_comm)
     if agc_active:
         stages.append("input-agc")
     elif input_gain != 1.0:
@@ -188,7 +272,9 @@ def make_enrollment_frontend_provenance(
         stages.append("gtcrn")
 
     raw_baseline = (
-        not capture_voice_comm
+        capture.voice_comm == "none"
+        and capture.capture_sample_rate == capture.model_sample_rate
+        and capture.resampler == "identity"
         and not agc_active
         and input_gain == 1.0
         and not idle_apm_active
@@ -223,6 +309,7 @@ class EnrollmentFrontend:
         denoiser: object | None = None,
         apm_owns_ns: bool = False,
         provenance: EnrollmentFrontendProvenance,
+        config: object | None = None,
     ) -> None:
         self.sample_rate = int(sample_rate)
         self.block_sec = float(block_sec)
@@ -233,6 +320,76 @@ class EnrollmentFrontend:
         self.denoiser = denoiser
         self.apm_owns_ns = bool(apm_owns_ns)
         self.provenance = provenance
+        self.config = config if config is not None else {
+            "sample_rate": self.sample_rate,
+            "block_sec": self.block_sec,
+            "resampler_quality": self.resampler_quality,
+            "input_gain": self.input_gain,
+        }
+        self.capture_resolution: Optional[CaptureResolution] = None
+
+    def bind_capture(self, capture: CaptureResolution) -> None:
+        """Bind once to the actual route/rate used for this enrollment run."""
+        if self.capture_resolution is not None and self.capture_resolution != capture:
+            raise RuntimeError(
+                "capture domain changed during enrollment: "
+                f"{self.capture_resolution.route}@{self.capture_resolution.capture_sample_rate} "
+                f"-> {capture.route}@{capture.capture_sample_rate}"
+            )
+        self.capture_resolution = capture
+        self.provenance = make_enrollment_frontend_provenance(
+            self.config,
+            input_agc=self.input_agc,
+            idle_apm=self.idle_apm,
+            denoiser=self.denoiser,
+            apm_owns_ns=self.apm_owns_ns,
+            capture=capture,
+        )
+
+    def _pre_gain_model_blocks(
+        self, samples: Sequence[float], capture_sample_rate: int
+    ) -> list:
+        """Return blockwise model-band PCM before gain or other processors."""
+        import numpy as np
+
+        from .audio_frontend import AudioResampler
+
+        captured = np.asarray(samples, dtype="float32").reshape(-1)
+        block = max(1, int(int(capture_sample_rate) * self.block_sec))
+        resampler = AudioResampler(
+            int(capture_sample_rate), self.sample_rate, quality=self.resampler_quality
+        )
+        blocks = []
+        for start in range(0, captured.size, block):
+            stop = min(captured.size, start + block)
+            out = resampler.process(captured[start:stop], last=stop >= captured.size)
+            arr = np.asarray(out, dtype="float32").reshape(-1)
+            if arr.size:
+                blocks.append(arr)
+        return blocks
+
+    def pre_gain_model_audio(
+        self, samples: Sequence[float], capture_sample_rate: int
+    ):
+        """Return the exact pre-gain frequency domain used by calibration."""
+        import numpy as np
+
+        blocks = self._pre_gain_model_blocks(samples, capture_sample_rate)
+        return (
+            np.concatenate(blocks)
+            if blocks
+            else np.zeros(0, dtype="float32")
+        )
+
+    def calibrate(self, samples: Sequence[float], capture_sample_rate: int) -> dict:
+        """Apply the live pre-AGC ambient calibration to this front end."""
+        from .audio_frontend import compute_input_calibration
+
+        blocks = self._pre_gain_model_blocks(samples, capture_sample_rate)
+        cal = compute_input_calibration(blocks)
+        if self.input_agc is not None:
+            self.input_agc.noise_floor_rms = cal["noise_floor_rms"]
+        return cal
 
     def process(self, samples: Sequence[float], capture_sample_rate: int):
         """Process one recorded clip in live-sized blocks; return model-rate audio."""
@@ -311,6 +468,7 @@ def build_enrollment_frontend(sherpa: Mapping[str, object]) -> EnrollmentFronten
         denoiser=denoiser,
         apm_owns_ns=apm_owns_ns,
         provenance=provenance,
+        config=config,
     )
 
 
@@ -488,6 +646,233 @@ def enroll_from_recordings(
 # --- microphone capture ------------------------------------------------------
 
 
+class EnrollmentCaptureError(RuntimeError):
+    """A production capture domain could not be opened or verified safely."""
+
+
+class EnrollmentVoiceError(RuntimeError):
+    """A production clip lacked enough pre-gain voice evidence to enroll."""
+
+
+def verify_required_os_echo_route(
+    sherpa: Mapping[str, object],
+    *,
+    platform: Optional[str] = None,
+    pipewire_probe: Optional[Callable[[], object]] = None,
+) -> str:
+    """Return the verified upstream voice-processing mode, or raise.
+
+    Linux word-cut relies on PipeWire's echo-cancel source *and* sink.  The
+    normal runtime readiness gate checks the same state, but ``--enroll`` is
+    intentionally outside that gate, so enrollment must refuse to persist an
+    unverifiable reference itself.
+    """
+    platform = platform or sys.platform
+    aec_enabled = bool(sherpa.get("aec_enabled", False))
+    wants_word_cut = (
+        bool(sherpa.get("barge_in_enabled", True))
+        and bool(sherpa.get("barge_word_cut_enabled", False))
+        and not aec_enabled
+    )
+    wants_voice_comm = bool(sherpa.get("capture_voice_comm", False))
+    if platform.startswith("linux"):
+        from .readiness import _check_pipewire_echo_route, probe_pipewire_state
+
+        probe = pipewire_probe or probe_pipewire_state
+        state = probe()
+        if wants_word_cut or wants_voice_comm:
+            ok, detail = _check_pipewire_echo_route(sherpa, state)
+            if not ok:
+                raise EnrollmentCaptureError(
+                    "required PipeWire echo-cancel route is not verifiable: " + detail
+                )
+            return "pipewire-echo-cancel:" + detail
+
+        # Even when OS EC is not required, a Linux PipeWire/Pulse *default* can
+        # be repointed between raw and echo-cancel nodes without changing the
+        # PortAudio selector. Record those actual defaults whenever pactl can
+        # inspect them so the two capture domains cannot share a fingerprint.
+        selector = str(sherpa.get("input_device", "") or "").strip().lower()
+        defaultish = not selector or selector in {"default", "pipewire", "pulse"}
+        if state is not None and defaultish:
+            return (
+                "pipewire-default:source=" + state.default_source
+                + ";sink=" + state.default_sink
+            )
+        if selector in {"pipewire", "pulse"} and state is None:
+            raise EnrollmentCaptureError(
+                "the selected PipeWire/Pulse default route could not be identified"
+            )
+        return "none"
+    if platform.startswith("win") and wants_voice_comm:
+        # The concrete WASAPI setting is verified when the stream is opened.
+        return "wasapi-pending"
+    if wants_voice_comm or wants_word_cut:
+        raise EnrollmentCaptureError(
+            "the configured OS echo-cancel capture route cannot be verified "
+            f"on platform {platform!r}"
+        )
+    return "none"
+
+
+def _capture_route_identity(sd, selector) -> str:
+    """Stable identity for the selected route after a successful open."""
+    selected = "default" if selector is None else repr(selector)
+    try:
+        info = sd.query_devices(selector, kind="input")
+    except Exception:
+        return f"selector={selected};device=unknown"
+    if isinstance(info, Mapping):
+        name = str(info.get("name", "?"))
+        hostapi = info.get("hostapi", "?")
+    else:
+        name = str(getattr(info, "name", "?"))
+        hostapi = getattr(info, "hostapi", "?")
+    host_name = str(hostapi)
+    try:
+        host = sd.query_hostapis(hostapi)
+        if isinstance(host, Mapping):
+            host_name = str(host.get("name", hostapi))
+        else:
+            host_name = str(getattr(host, "name", hostapi))
+    except Exception:
+        pass
+    return f"selector={selected};host={host_name};device={name}"
+
+
+def make_capture_resolution(
+    sd,
+    selector,
+    *,
+    capture_sample_rate: int,
+    model_sample_rate: int,
+    resampler_quality: str,
+    voice_comm: str,
+    input_agc: object | None,
+) -> CaptureResolution:
+    """Describe a successfully opened stream using the actual resampler."""
+    from .audio_frontend import AudioResampler
+
+    resampler = AudioResampler(
+        int(capture_sample_rate), int(model_sample_rate), quality=resampler_quality
+    )
+    floor = (
+        float(getattr(input_agc, "noise_floor_rms"))
+        if input_agc is not None
+        else None
+    )
+    return CaptureResolution(
+        route=_capture_route_identity(sd, selector),
+        capture_sample_rate=int(capture_sample_rate),
+        model_sample_rate=int(model_sample_rate),
+        resampler=resampler.kind,
+        voice_comm=voice_comm,
+        input_agc_noise_floor_rms=floor,
+    )
+
+
+def _capture_raw_once(
+    seconds: float,
+    sample_rate: int,
+    *,
+    device=None,
+    capture_samplerate: int = 0,
+    capture_voice_comm: bool = False,
+    resampler_quality: str = "HQ",
+    input_agc: object | None = None,
+    os_echo_mode: str = "none",
+    platform: Optional[str] = None,
+    route_config: Optional[Mapping[str, object]] = None,
+):
+    """Capture raw PCM through the same ordered open ladder as live runtime."""
+    import numpy as np
+    import sounddevice as sd
+
+    from .audio_frontend import CLEAN_CAPTURE_RATES
+    from .engines.sherpa import _capture_attempts, _norm_device
+
+    platform = platform or sys.platform
+    dev = _norm_device(device)
+    try:
+        dev_sr = int(sd.query_devices(dev, kind="input")["default_samplerate"])
+    except Exception:
+        dev_sr = int(sample_rate)
+
+    def _supports(candidate, rate: int) -> bool:
+        try:
+            sd.check_input_settings(
+                device=candidate, samplerate=rate, channels=1, dtype="float32"
+            )
+            return True
+        except Exception:
+            return False
+
+    attempts = _capture_attempts(
+        dev,
+        preferred_sr=int(sample_rate),
+        dev_sr_in=dev_sr,
+        pinned_sr=int(capture_samplerate or 0),
+        clean_rates=CLEAN_CAPTURE_RATES,
+        supports=_supports,
+    )
+    extra_settings = None
+    applied_voice_comm = os_echo_mode
+    if capture_voice_comm and platform.startswith("win"):
+        try:
+            extra_settings = sd.WasapiSettings(communications=True)
+        except Exception as exc:
+            raise EnrollmentCaptureError(
+                "capture_voice_comm is configured but WASAPI Communications "
+                f"could not be applied: {exc}"
+            ) from exc
+        applied_voice_comm = "wasapi-communications"
+    elif capture_voice_comm and os_echo_mode == "none":
+        raise EnrollmentCaptureError(
+            "capture_voice_comm is configured but no verified OS voice route was applied"
+        )
+
+    last_exc: Optional[Exception] = None
+    for attempt in attempts:
+        try:
+            kwargs = {
+                "samplerate": int(attempt.samplerate),
+                "channels": 1,
+                "dtype": "float32",
+                "device": attempt.device,
+            }
+            if extra_settings is not None:
+                kwargs["extra_settings"] = extra_settings
+            frames = int(float(seconds) * int(attempt.samplerate))
+            audio = sd.rec(frames, **kwargs)
+            sd.wait()
+        except Exception as exc:  # noqa: BLE001 - mirror live open fallback
+            last_exc = exc
+            continue
+        actual_voice_mode = applied_voice_comm
+        if route_config is not None and platform.startswith("linux"):
+            actual_route = dict(route_config)
+            actual_route["input_device"] = attempt.device
+            # A configured EC selector may have failed and fallen back to a raw
+            # default. Verify the successful attempt itself before labeling the
+            # audio as OS-cancelled.
+            actual_voice_mode = verify_required_os_echo_route(
+                actual_route, platform=platform
+            )
+        resolution = make_capture_resolution(
+            sd,
+            attempt.device,
+            capture_sample_rate=int(attempt.samplerate),
+            model_sample_rate=int(sample_rate),
+            resampler_quality=resampler_quality,
+            voice_comm=actual_voice_mode,
+            input_agc=input_agc,
+        )
+        return np.asarray(audio, dtype="float32").reshape(-1), resolution
+    raise EnrollmentCaptureError(
+        f"could not open the configured capture route: {last_exc or 'no attempts'}"
+    )
+
+
 def record_once(
     seconds: float,
     sample_rate: int = 16000,
@@ -497,6 +882,9 @@ def record_once(
     capture_samplerate: int = 0,
     capture_voice_comm: bool = False,
     frontend: Optional[EnrollmentFrontend] = None,
+    os_echo_mode: Optional[str] = None,
+    route_config: Optional[Mapping[str, object]] = None,
+    require_voice_evidence: bool = False,
 ):
     """Block for ``seconds`` and return mono float32 samples at ``sample_rate``.
 
@@ -509,49 +897,25 @@ def record_once(
     self-scored 0.76-0.94). When pinned we open ONLY at that rate (never probe), so
     the mic stays live and the enrolled embedding matches what the gate hears live.
     When 0, the legacy probe-then-fallback path is kept."""
-    import numpy as np
-    import sounddevice as sd
-
-    from .engines.sherpa import _norm_device
-
-    dev = _norm_device(device)
-    extra_settings = None
-    if capture_voice_comm:
-        try:
-            extra_settings = sd.WasapiSettings(communications=True)
-        except Exception as exc:  # noqa: BLE001 - same fail-open contract as live capture
-            log.info(
-                "capture_voice_comm set for enrollment but WASAPI Communications "
-                "is unavailable (%s); using the selected/default input device",
-                exc,
-            )
-
-    def _record(frames: int, rate: int):
-        kwargs = dict(
-            samplerate=rate, channels=1, dtype="float32", device=dev
+    if os_echo_mode is None:
+        os_echo_mode = verify_required_os_echo_route(
+            {
+                "input_device": device,
+                "capture_voice_comm": capture_voice_comm,
+            }
         )
-        if extra_settings is not None:
-            kwargs["extra_settings"] = extra_settings
-        return sd.rec(frames, **kwargs)
-
-    pinned = int(capture_samplerate or 0)
-    if pinned > 0:
-        capture_sr = pinned
-        frames = int(seconds * capture_sr)
-        audio = _record(frames, capture_sr)
-        sd.wait()
-    else:
-        try:
-            frames = int(seconds * sample_rate)
-            audio = _record(frames, sample_rate)
-            sd.wait()
-            capture_sr = sample_rate
-        except sd.PortAudioError:
-            capture_sr = int(sd.query_devices(dev, kind="input")["default_samplerate"])
-            frames = int(seconds * capture_sr)
-            audio = _record(frames, capture_sr)
-            sd.wait()
-    samples = np.asarray(audio, dtype="float32").reshape(-1)
+    input_agc = getattr(frontend, "input_agc", None)
+    samples, resolution = _capture_raw_once(
+        seconds,
+        sample_rate,
+        device=device,
+        capture_samplerate=capture_samplerate,
+        capture_voice_comm=capture_voice_comm,
+        resampler_quality=getattr(frontend, "resampler_quality", "HQ"),
+        input_agc=input_agc,
+        os_echo_mode=os_echo_mode,
+        route_config=route_config,
+    )
     # OS echo cancellation is already upstream in ``audio`` via the same selected
     # / default capture device (and WASAPI Communications request where supported).
     # The in-app stages below run blockwise in the same order as live idle speech.
@@ -568,33 +932,82 @@ def record_once(
             input_gain=input_gain,
             provenance=provenance,
         )
-    samples = frontend.process(samples, capture_sr)
+    if hasattr(frontend, "bind_capture"):
+        frontend.bind_capture(resolution)
+    if require_voice_evidence:
+        ambient_floor = None
+        input_agc = getattr(frontend, "input_agc", None)
+        if input_agc is not None:
+            ambient_floor = float(input_agc.noise_floor_rms)
+        admitted, voiced_sec = _has_enrollment_voice_evidence(
+            frontend.pre_gain_model_audio(
+                samples, resolution.capture_sample_rate
+            ),
+            frontend.sample_rate,
+            ambient_floor_rms=ambient_floor,
+        )
+        if not admitted:
+            raise EnrollmentVoiceError(
+                f"only {voiced_sec:.2f}s of pre-gain voice rose above the "
+                "capture floor; check the mic/route and speak naturally"
+            )
+    samples = frontend.process(samples, resolution.capture_sample_rate)
     return _vad_trim(samples, sample_rate)
 
 
 def _vad_trim(samples, sample_rate: int, *, win: float = 0.02,
               thresh_ratio: float = 0.15, pad: float = 0.1):
-    """Trim leading/trailing near-silence to the voiced region (+ a little pad), so
-    the enrolled embedding is of SPEECH, not the quiet head/tail of the fixed
-    record window -- silence content shifts the speaker embedding. Pure numpy;
-    returns the clip unchanged when it can't find a voiced region."""
+    """Backward-compatible alias for the shared speaker-embedding envelope."""
+    return trim_to_voiced_region(
+        samples,
+        sample_rate,
+        win=win,
+        thresh_ratio=thresh_ratio,
+        pad=pad,
+    )
+
+
+def _has_enrollment_voice_evidence(
+    samples: Sequence[float],
+    sample_rate: int,
+    *,
+    ambient_floor_rms: Optional[float],
+    min_voiced_sec: float = 0.35,
+    margin_db: float = 6.0,
+) -> tuple[bool, float]:
+    """Reject production clips that contain no sustained voice-like energy.
+
+    The calibrated capture floor is the primary operating point. When a profile
+    has no InputAGC/calibration floor, require within-clip dynamic contrast so a
+    constant silence/noise bed cannot enroll merely because an embedder returns
+    a vector for it. This is an enrollment admission check, not runtime VAD.
+    """
     import numpy as np
 
-    a = np.asarray(samples, dtype="float32").reshape(-1)
-    w = max(1, int(sample_rate * win))
-    if a.size < 2 * w:
-        return a
-    n = (a.size // w) * w
-    e = np.sqrt((a[:n].reshape(-1, w) ** 2).mean(axis=1))
-    peak = float(e.max()) if e.size else 0.0
-    if peak <= 0.0:
-        return a
-    voiced = np.where(e >= peak * thresh_ratio)[0]
-    if voiced.size == 0:
-        return a
-    start = max(0, int(voiced[0]) * w - int(pad * sample_rate))
-    end = min(a.size, (int(voiced[-1]) + 1) * w + int(pad * sample_rate))
-    return a[start:end]
+    audio = np.asarray(samples, dtype="float32").reshape(-1)
+    frame = max(1, int(round(max(1, sample_rate) * 0.02)))
+    if audio.size < frame:
+        return False, 0.0
+    levels = []
+    for start in range(0, audio.size - frame + 1, frame):
+        block = audio[start:start + frame].astype("float64")
+        levels.append(float(np.sqrt(np.mean(block * block))))
+    if not levels:
+        return False, 0.0
+
+    floor = float(ambient_floor_rms or 0.0)
+    if floor > 0.0:
+        threshold = floor * (10.0 ** (float(margin_db) / 20.0))
+    else:
+        # No calibrated absolute operating point: a natural spoken clip has
+        # pauses/phoneme dynamics, while steady silence or a constant noise bed
+        # does not. A small normalized-audio sanity floor prevents a padded
+        # numerical near-zero burst from becoming an enrollment.
+        quiet = float(np.percentile(levels, 10.0))
+        threshold = max(1e-4, quiet * 2.0)
+    voiced_frames = sum(level > threshold for level in levels)
+    voiced_sec = voiced_frames * frame / max(1, sample_rate)
+    return voiced_sec >= max(0.0, float(min_voiced_sec)), voiced_sec
 
 
 # --- config persistence (machine-local overrides) ----------------------------
@@ -649,8 +1062,76 @@ def run_enrollment(
         return 2
 
     sample_rate = int(sherpa.get("sample_rate", 16000))
-    if frontend is None:
-        frontend = build_enrollment_frontend(sherpa)
+    production_capture = recorder is None
+    os_echo_mode = "none"
+    enrollment_frontend: EnrollmentFrontendProvenance
+    if production_capture:
+        try:
+            os_echo_mode = verify_required_os_echo_route(sherpa)
+        except EnrollmentCaptureError as exc:
+            out(f"Enrollment aborted: {exc}")
+            out("  Fix the configured OS echo-cancel route, then re-run --enroll.")
+            return 4
+        if frontend is None:
+            frontend = build_enrollment_frontend(sherpa)
+        if bool(sherpa.get("input_calibrate", False)) and frontend.input_agc is not None:
+            cal_sec = float(sherpa.get("input_calibrate_sec", 1.5) or 0.0)
+            if cal_sec > 0.0:
+                out(f"Calibrating {cal_sec:.1f}s of room tone -- stay quiet...")
+                try:
+                    ambient, resolution = _capture_raw_once(
+                        cal_sec,
+                        sample_rate,
+                        device=sherpa.get("input_device"),
+                        capture_samplerate=int(
+                            sherpa.get("capture_samplerate", 0) or 0
+                        ),
+                        capture_voice_comm=bool(
+                            sherpa.get("capture_voice_comm", False)
+                        ),
+                        resampler_quality=str(
+                            sherpa.get("resampler_quality", "HQ") or "HQ"
+                        ),
+                        input_agc=frontend.input_agc,
+                        os_echo_mode=os_echo_mode,
+                        route_config=sherpa,
+                    )
+                    calibration = frontend.calibrate(
+                        ambient, resolution.capture_sample_rate
+                    )
+                    resolution = replace(
+                        resolution,
+                        input_agc_noise_floor_rms=float(
+                            frontend.input_agc.noise_floor_rms
+                        ),
+                    )
+                    frontend.bind_capture(resolution)
+                except (EnrollmentCaptureError, RuntimeError) as exc:
+                    out(f"Enrollment aborted: capture calibration failed: {exc}")
+                    return 4
+                out(
+                    "  ambient calibrated: "
+                    f"noise floor={calibration['noise_floor_rms']:.4f}"
+                )
+    else:
+        # A plain injected recorder has no evidence that it applied the configured
+        # processors or OS route. Persist a synthetic RAW domain, never the built
+        # production front end, so test/replay PCM cannot create a reference that
+        # later rejects the owner on a real mic.
+        injected_capture = CaptureResolution(
+            route="injected-raw",
+            capture_sample_rate=sample_rate,
+            model_sample_rate=sample_rate,
+            resampler="identity",
+        )
+        enrollment_frontend = make_enrollment_frontend_provenance(
+            {"sample_rate": sample_rate},
+            input_agc=None,
+            idle_apm=None,
+            denoiser=None,
+            apm_owns_ns=False,
+            capture=injected_capture,
+        )
     if gate is None:
         gate = sherpa_speaker_gate(
             model_path,
@@ -668,21 +1149,41 @@ def run_enrollment(
                 capture_samplerate=int(sherpa.get("capture_samplerate", 0) or 0),
                 capture_voice_comm=bool(sherpa.get("capture_voice_comm", False)),
                 frontend=frontend,
+                os_echo_mode=os_echo_mode,
+                route_config=sherpa,
+                require_voice_evidence=True,
             )
 
     out(f"Enrolling your voice: {passes} clip(s) of ~{seconds:.0f}s each.")
     recordings = []
-    for i in range(max(1, passes)):
-        out(f"  [{i + 1}/{passes}] Speak naturally now...")
-        recordings.append(recorder(seconds))
-        out("  ...captured.")
+    try:
+        for i in range(max(1, passes)):
+            out(f"  [{i + 1}/{passes}] Speak naturally now...")
+            recordings.append(recorder(seconds))
+            out("  ...captured.")
+    except EnrollmentVoiceError as exc:
+        out(f"Enrollment failed: {exc}; no reference was saved.")
+        return 3
+    except (EnrollmentCaptureError, RuntimeError) as exc:
+        out(f"Enrollment aborted: capture failed safely: {exc}")
+        return 4
+
+    if production_capture:
+        assert frontend is not None
+        if frontend.capture_resolution is None:
+            out(
+                "Enrollment aborted: recorder did not report an actual capture "
+                "route/rate; refusing to label raw audio as processed."
+            )
+            return 4
+        enrollment_frontend = frontend.provenance
 
     enrollment = enroll_from_recordings(
         gate,
         recordings,
         model_path=model_path,
         sample_rate=sample_rate,
-        frontend=frontend.provenance,
+        frontend=enrollment_frontend,
     )
     if enrollment is None:
         out(

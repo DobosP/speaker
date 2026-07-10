@@ -11,7 +11,9 @@ import json
 import pytest
 
 from core.enroll import (
+    CaptureResolution,
     Enrollment,
+    EnrollmentCaptureError,
     EnrollmentFrontend,
     average_embeddings,
     enroll_from_recordings,
@@ -22,6 +24,7 @@ from core.enroll import (
     make_enrollment_frontend_provenance,
     run_enrollment,
     save_enrollment,
+    verify_required_os_echo_route,
 )
 from core.engines.speaker_gate import SpeakerGate
 
@@ -133,6 +136,75 @@ def test_frontend_fingerprint_is_stable_and_tracks_active_stages():
     assert first.fingerprint != changed.fingerprint
     assert first.summary == "input-agc -> gtcrn"
     assert first.raw_baseline is False
+
+
+def test_frontend_fingerprint_tracks_resolved_capture_and_calibrated_agc():
+    from core.audio_frontend import InputAGC
+
+    agc = InputAGC(noise_floor_rms=0.011)
+    cfg = {"sample_rate": 16000, "input_agc": True}
+    capture = CaptureResolution(
+        route="default:PipeWire:echo-cancel-source",
+        capture_sample_rate=48000,
+        model_sample_rate=16000,
+        resampler="soxr",
+        voice_comm="pipewire-echo-cancel:capture=ec-source; playback=ec-sink",
+        input_agc_noise_floor_rms=0.011,
+    )
+
+    def provenance(resolution):
+        return make_enrollment_frontend_provenance(
+            cfg,
+            input_agc=agc,
+            idle_apm=None,
+            denoiser=None,
+            apm_owns_ns=False,
+            capture=resolution,
+        )
+
+    baseline = provenance(capture)
+    assert provenance(CaptureResolution(**{**capture.__dict__, "route": "other"})) != baseline
+    assert provenance(CaptureResolution(**{**capture.__dict__, "resampler": "scipy"})) != baseline
+    assert provenance(CaptureResolution(**{
+        **capture.__dict__, "input_agc_noise_floor_rms": 0.02
+    })) != baseline
+    assert provenance(CaptureResolution(**{
+        **capture.__dict__, "input_agc_noise_floor_rms": 0.0114
+    })) == baseline
+
+
+def test_default_pipewire_node_identity_distinguishes_raw_and_ec_routes():
+    from core.readiness import PipeWireState
+
+    raw = PipeWireState(
+        default_source="alsa_input.raw", default_sink="alsa_output.raw"
+    )
+    ec = PipeWireState(
+        default_source="echo-cancel-source", default_sink="echo-cancel-sink"
+    )
+    cfg = {"input_device": "pipewire"}
+    raw_id = verify_required_os_echo_route(
+        cfg, platform="linux", pipewire_probe=lambda: raw
+    )
+    ec_id = verify_required_os_echo_route(
+        cfg, platform="linux", pipewire_probe=lambda: ec
+    )
+    assert raw_id != ec_id
+    assert "alsa_input.raw" in raw_id
+    assert "echo-cancel-source" in ec_id
+
+
+def test_required_linux_os_echo_route_fails_closed_when_unverifiable():
+    with pytest.raises(EnrollmentCaptureError, match="not verifiable"):
+        verify_required_os_echo_route(
+            {
+                "barge_in_enabled": True,
+                "barge_word_cut_enabled": True,
+                "aec_enabled": False,
+            },
+            platform="linux",
+            pipewire_probe=lambda: None,
+        )
 
 
 def test_legacy_enrollment_matches_only_raw_frontend():
@@ -350,6 +422,26 @@ def test_run_enrollment_saves_embedding_and_wires_config(tmp_path):
     assert "WARNING" not in text
 
 
+def test_injected_raw_recorder_is_not_labeled_as_configured_denoise(tmp_path):
+    frontend = _frontend(denoiser=_FakeDenoiser())
+    code = run_enrollment(
+        _config(tmp_path, denoise_enabled=True, denoise_model="/m/gtcrn.onnx"),
+        passes=1,
+        config_path=str(tmp_path / "c.json"),
+        recorder=lambda _secs: [0.1, 0.2, 0.3],
+        gate=_gate(USER),
+        frontend=frontend,
+        out=lambda _line: None,
+    )
+
+    assert code == 0
+    saved = load_enrollment(str(tmp_path / "enroll.json"))
+    assert saved.frontend is not None
+    assert saved.frontend.raw_baseline is True
+    assert saved.frontend.summary == "raw baseline"
+    assert saved.frontend.fingerprint != frontend.provenance.fingerprint
+
+
 def test_run_enrollment_without_model_is_actionable(tmp_path):
     config = {"sherpa": {}}  # no speaker_embedding_model
     msgs: list[str] = []
@@ -373,6 +465,8 @@ def test_run_enrollment_reports_failure_when_no_embedding(tmp_path):
 
 
 def test_run_enrollment_production_recorder_receives_built_frontend(monkeypatch, tmp_path):
+    import numpy as np
+
     provenance = make_enrollment_frontend_provenance(
         {"sample_rate": 16000},
         input_agc=None,
@@ -385,7 +479,19 @@ def test_run_enrollment_production_recorder_receives_built_frontend(monkeypatch,
 
     def _record_once(seconds, sample_rate, **kwargs):
         seen.update(seconds=seconds, sample_rate=sample_rate, **kwargs)
-        return [0.1, 0.2, 0.3]
+        kwargs["frontend"].bind_capture(
+            CaptureResolution(
+                route="test-production-mic",
+                capture_sample_rate=sample_rate,
+                model_sample_rate=sample_rate,
+                resampler="identity",
+            )
+        )
+        return np.concatenate([
+            np.zeros(3200, dtype="float32"),
+            np.random.default_rng(7).normal(0.0, 0.15, 9600).astype("float32"),
+            np.zeros(3200, dtype="float32"),
+        ])
 
     monkeypatch.setattr("core.enroll.record_once", _record_once)
     code = run_enrollment(
@@ -401,9 +507,243 @@ def test_run_enrollment_production_recorder_receives_built_frontend(monkeypatch,
     assert code == 0
     assert seen["frontend"] is frontend
     assert seen["sample_rate"] == 16000
+    assert seen["require_voice_evidence"] is True
+
+
+def test_production_enrollment_rejects_silence_even_if_embedder_returns_vector(
+    monkeypatch, tmp_path
+):
+    import sys
+    import types
+
+    import numpy as np
+
+    provenance = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    frontend = EnrollmentFrontend(provenance=provenance)
+
+    near_zero = np.concatenate([
+        np.zeros(3200, dtype="float32"),
+        np.full(9600, 1e-6, dtype="float32"),
+        np.zeros(3200, dtype="float32"),
+    ])
+    fake_sd = types.SimpleNamespace(
+        rec=lambda frames, **_kwargs: near_zero[:frames, None],
+        wait=lambda: None,
+        check_input_settings=lambda **_kwargs: None,
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "test-production-mic",
+            "hostapi": 0,
+            "default_samplerate": 16000,
+        },
+        query_hostapis=lambda _index: {"name": "PipeWire"},
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setattr(
+        "core.enroll.verify_required_os_echo_route",
+        lambda _config, **_kwargs: "none",
+    )
+    messages = []
+
+    code = run_enrollment(
+        _config(tmp_path),
+        passes=1,
+        seconds=1.0,
+        config_path=str(tmp_path / "c.json"),
+        gate=_gate(USER),
+        frontend=frontend,
+        out=messages.append,
+    )
+
+    assert code == 3
+    assert not (tmp_path / "enroll.json").exists()
+    assert "pre-gain voice" in "\n".join(messages)
+
+
+def test_production_enrollment_rejects_noise_after_prior_clip_raised_agc_gain(
+    monkeypatch, tmp_path
+):
+    import sys
+    import types
+
+    import numpy as np
+
+    from core.audio_frontend import InputAGC
+
+    agc = InputAGC(noise_floor_rms=0.004)
+    config = {
+        "sample_rate": 16000,
+        "block_sec": 0.1,
+        "input_agc": True,
+        "input_agc_noise_floor_rms": 0.004,
+    }
+    provenance = make_enrollment_frontend_provenance(
+        config,
+        input_agc=agc,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    frontend = EnrollmentFrontend(
+        sample_rate=16000,
+        block_sec=0.1,
+        input_agc=agc,
+        provenance=provenance,
+        config=config,
+    )
+    rng = np.random.default_rng(11)
+    clips = iter([
+        rng.normal(0.0, 0.02, 64000).astype("float32"),
+        rng.normal(0.0, 0.0015, 64000).astype("float32"),
+    ])
+    fake_sd = types.SimpleNamespace(
+        rec=lambda _frames, **_kwargs: next(clips)[:, None],
+        wait=lambda: None,
+        check_input_settings=lambda **_kwargs: None,
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "test-production-mic",
+            "hostapi": 0,
+            "default_samplerate": 16000,
+        },
+        query_hostapis=lambda _index: {"name": "PipeWire"},
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setattr(
+        "core.enroll.verify_required_os_echo_route",
+        lambda _config, **_kwargs: "none",
+    )
+    messages = []
+
+    code = run_enrollment(
+        _config(tmp_path, input_agc=True),
+        passes=2,
+        seconds=4.0,
+        config_path=str(tmp_path / "c.json"),
+        gate=_gate(USER),
+        frontend=frontend,
+        out=messages.append,
+    )
+
+    assert agc.gain > 5.0  # pass 1 would amplify pass-2 noise above the old gate
+    assert code == 3
+    assert not (tmp_path / "enroll.json").exists()
+    assert "pre-gain voice" in "\n".join(messages)
+
+
+def test_production_enrollment_rejects_out_of_model_band_capture_energy(
+    monkeypatch, tmp_path
+):
+    import sys
+    import types
+
+    import numpy as np
+
+    provenance = make_enrollment_frontend_provenance(
+        {"sample_rate": 16000},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    frontend = EnrollmentFrontend(sample_rate=16000, provenance=provenance)
+
+    def rec(frames, *, samplerate, **_kwargs):
+        t = np.arange(frames, dtype="float64") / float(samplerate)
+        tone = 0.02 * np.sin(2.0 * np.pi * 12000.0 * t)
+        return tone.astype("float32")[:, None]
+
+    fake_sd = types.SimpleNamespace(
+        rec=rec,
+        wait=lambda: None,
+        check_input_settings=lambda **_kwargs: None,
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "48k-test-mic",
+            "hostapi": 0,
+            "default_samplerate": 48000,
+        },
+        query_hostapis=lambda _index: {"name": "PipeWire"},
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    monkeypatch.setattr(
+        "core.enroll.verify_required_os_echo_route",
+        lambda _config, **_kwargs: "none",
+    )
+    messages = []
+
+    code = run_enrollment(
+        _config(tmp_path, capture_samplerate=48000),
+        passes=1,
+        seconds=1.0,
+        config_path=str(tmp_path / "c.json"),
+        gate=_gate(USER),
+        frontend=frontend,
+        out=messages.append,
+    )
+
+    assert code == 3
+    assert not (tmp_path / "enroll.json").exists()
+    assert "pre-gain voice" in "\n".join(messages)
 
 
 # --- record_once: pin capture_samplerate (the AT2020 self-mute fix) -----------
+
+
+def test_capture_fallback_reverifies_actual_route_before_labeling_ec(
+    monkeypatch,
+):
+    import sys
+    import types
+
+    import numpy as np
+
+    fake_sd = types.SimpleNamespace()
+
+    def rec(frames, *, device=None, **kwargs):
+        if device == "configured-ec":
+            raise RuntimeError("configured route disappeared")
+        return np.zeros((frames, 1), dtype="float32")
+
+    fake_sd.rec = rec
+    fake_sd.wait = lambda: None
+    fake_sd.check_input_settings = lambda **kwargs: None
+    fake_sd.query_devices = lambda *args, **kwargs: {
+        "name": "default-input",
+        "hostapi": 0,
+        "default_samplerate": 48000,
+    }
+    fake_sd.query_hostapis = lambda _index: {"name": "PipeWire"}
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+
+    checked = []
+
+    def verify(config, **kwargs):
+        checked.append(config.get("input_device"))
+        if config.get("input_device") is None:
+            raise EnrollmentCaptureError("raw fallback is not EC-routed")
+        return "pipewire-echo-cancel:configured"
+
+    monkeypatch.setattr("core.enroll.verify_required_os_echo_route", verify)
+    from core.enroll import _capture_raw_once
+
+    with pytest.raises(EnrollmentCaptureError, match="raw fallback"):
+        _capture_raw_once(
+            0.1,
+            16000,
+            device="configured-ec",
+            os_echo_mode="pipewire-echo-cancel:configured",
+            platform="linux",
+            route_config={
+                "barge_in_enabled": True,
+                "barge_word_cut_enabled": True,
+                "aec_enabled": False,
+            },
+        )
+    assert checked == [None]
 
 
 def test_record_once_pins_capture_samplerate_and_never_probes(monkeypatch):

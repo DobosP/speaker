@@ -7,6 +7,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > design rationale now lives in [`docs/unified_architecture.md`](../docs/unified_architecture.md);
 > this file tracks only OPEN work. The session-bootstrap helper
 > (`python -m tools.session_bootstrap`) reads the OPEN P0 items below.
+>
+> Truth-up 2026-07-10: `STATUS.md` owns the active Linux route and verification
+> state. The phase narrative below is historical context inside an open live-A/B
+> item. Desktop Windows Communications capture is not wired; it fails closed
+> pending a verified implementation (ADR-0019).
 
 ## P0 — correctness / blocker
 - [ ] **★★★ PERMANENT open-speaker barge + voice fix (2026-07-05) — the live-test
@@ -24,11 +29,11 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       `Internal Mic Boost 0`, held against PipeWire's +30 dB reset — see
       `tools/autotest/ota_setup.py`). Then **Phase C** capture path: make OS
       voice-comm capture the open_speaker default + enforce it per-OS (Linux
-      module-echo-cancel auto-load, Windows WASAPI communications already wired) and
+      module-echo-cancel; Windows remains blocked by ADR-0019) and
       the ADR-0011 word gate the hard-cut authority WITH the acoustic path as a
       scoped fallback (do NOT delete it). **Phase D** voice: per-voice loudness
       offsets (offline) + K-weighted leveler for the inter-sentence volume swing.
-      All bounds-only (ADR-0012). Machine-local config is on aec_backend=apm now.
+      All bounds-only (ADR-0012). Current machine-local state is in `STATUS.md`.
       **UPDATE 2026-07-06 (Linux live batch, run-20260706-231226):** Phase B
       (OS-capture `module-echo-cancel` + word-cut) was run live for the first
       *sustained* talk-over batch and **FAILED** — the assistant played a ~3-min

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from typing import Callable, Optional, Sequence
 
 Embedding = Sequence[float]
@@ -24,6 +25,40 @@ def rms(samples: Sequence[float]) -> float:
     if n == 0:
         return 0.0
     return math.sqrt(sum(float(x) * float(x) for x in samples) / n)
+
+
+def trim_to_voiced_region(
+    samples: Sequence[float],
+    sample_rate: int,
+    *,
+    win: float = 0.02,
+    thresh_ratio: float = 0.15,
+    pad: float = 0.1,
+):
+    """Return the energy-voiced region plus a small symmetric pad.
+
+    Speaker embeddings shift when fixed recording silence or endpoint padding
+    dominates the clip. Enrollment and live final gating must therefore use the
+    same temporal envelope as well as the same capture front end. Pure silence
+    and clips too short to classify are returned unchanged (fail open).
+    """
+    import numpy as np
+
+    a = np.asarray(samples, dtype="float32").reshape(-1)
+    w = max(1, int(sample_rate * win))
+    if a.size < 2 * w:
+        return a
+    n = (a.size // w) * w
+    e = np.sqrt((a[:n].reshape(-1, w) ** 2).mean(axis=1))
+    peak = float(e.max()) if e.size else 0.0
+    if peak <= 0.0:
+        return a
+    voiced = np.where(e >= peak * thresh_ratio)[0]
+    if voiced.size == 0:
+        return a
+    start = max(0, int(voiced[0]) * w - int(pad * sample_rate))
+    end = min(a.size, (int(voiced[-1]) + 1) * w + int(pad * sample_rate))
+    return a[start:end]
 
 
 def loudness_admits(
@@ -83,21 +118,50 @@ class SpeakerGate:
         self.threshold = threshold
         self._embed_fn = embed_fn
         self._enrolled: Optional[list[float]] = None
+        # Embedding inference may run on the async final worker while capture
+        # recovery clears/reloads enrollment. Keep mutations short and versioned:
+        # inference stays outside the lock, then a changed version makes that
+        # in-flight decision fail open instead of comparing against stale state.
+        self._enrollment_lock = threading.Lock()
+        self._enrollment_generation = 0
 
     def set_embed_fn(self, embed_fn: EmbedFn) -> None:
         self._embed_fn = embed_fn
 
     @property
     def is_enrolled(self) -> bool:
-        return self._enrolled is not None
+        with self._enrollment_lock:
+            return self._enrolled is not None
 
     def enroll_embedding(self, embedding: Embedding) -> None:
-        self._enrolled = list(embedding)
+        enrolled = list(embedding)
+        with self._enrollment_lock:
+            self._enrolled = enrolled
+            self._enrollment_generation += 1
+
+    def clear_enrollment(self) -> None:
+        """Disable identity rejection until a compatible reference is loaded."""
+        with self._enrollment_lock:
+            self._enrolled = None
+            self._enrollment_generation += 1
+
+    def _enrollment_snapshot(self) -> tuple[Optional[list[float]], int]:
+        with self._enrollment_lock:
+            return self._enrolled, self._enrollment_generation
+
+    def _enrollment_is_current(
+        self, enrolled: list[float], generation: int
+    ) -> bool:
+        with self._enrollment_lock:
+            return (
+                self._enrollment_generation == generation
+                and self._enrolled is enrolled
+            )
 
     def enroll(self, samples: Sequence[float], sample_rate: int) -> bool:
         embedding = self._embed(samples, sample_rate)
         if embedding is not None:
-            self._enrolled = list(embedding)
+            self.enroll_embedding(embedding)
         return self.is_enrolled
 
     def accept(
@@ -122,7 +186,8 @@ class SpeakerGate:
         user talking over the assistant clears the margin; residual TTS echo
         does not. With nothing playing (or no margin configured) we still fail
         open so a real interrupt is never lost."""
-        if not self.is_enrolled:
+        enrolled, generation = self._enrollment_snapshot()
+        if enrolled is None:
             if output_margin_db <= 0.0:
                 return True  # no conservative guard requested -> legacy fail-open
             return passes_output_margin(
@@ -131,15 +196,20 @@ class SpeakerGate:
         embedding = self._embed(samples, sample_rate)
         if embedding is None:
             return True
-        return cosine_similarity(embedding, self._enrolled) >= self.threshold
+        if not self._enrollment_is_current(enrolled, generation):
+            return True
+        return cosine_similarity(embedding, enrolled) >= self.threshold
 
     def similarity(self, samples: Sequence[float], sample_rate: int) -> float:
-        if not self.is_enrolled:
+        enrolled, generation = self._enrollment_snapshot()
+        if enrolled is None:
             return 0.0
         embedding = self._embed(samples, sample_rate)
         if embedding is None:
             return 0.0
-        return cosine_similarity(embedding, self._enrolled)
+        if not self._enrollment_is_current(enrolled, generation):
+            return 0.0
+        return cosine_similarity(embedding, enrolled)
 
     def embed(self, samples: Sequence[float], sample_rate: int) -> Optional[Embedding]:
         """Public embedding accessor used by the enrollment flow (core.enroll).

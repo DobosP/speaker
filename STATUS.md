@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; focused: markup
-135 passed/1 skipped, calibration 56 passed. Prior full: 3100/30; live barge is red.
+Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
+24 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -53,11 +53,10 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; focused: markup
   llama.cpp cancellation clears native memory before shared-context release; a real
   Q4 pre-token cancel took 22.4 ms with healthy reuse (ADR-0030). Model load/warm,
   arbitrary providers, and cloud Hedge losers remain bulkhead-only.
-- Addressing, cleanup, and both routing layers use a separate bounded cancellable
-  final-preprocessing lease before any AgentTask (ADR-0023/0025). Input fences every
-  unheard output; only assistant-eligible add-ons retain lineage across gates and
-  playback. Audio/controls, confirmations, follow-ups, memory, and shutdown have
-  generation/epoch ownership; a real gate cancel took 157.9 ms with zero old pieces.
+- Addressing, cleanup, and routing use a bounded cancellable preprocessing lease.
+  A post-barge live final may bypass `INGEST` only for a direct answer; identity,
+  private context, tools, and continuation lineage stay stripped, and synthetic
+  resumes share that envelope (ADR-0023/0025/0039). Input effects remain fenced.
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
@@ -77,9 +76,9 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; focused: markup
   override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
 - Main `75b1717` run `144211` retained `sid=18`; the owner's “STOP” cut once
-  without a self-storm. Its garbled, INGESTed override's tags are fixed (ADR-0038).
-  Its first calibration had a suspicious 0.818 peak, but no raw PCM proves
-  inflation; the one-shot retry remains headless-only (ADR-0040). Live stays red.
+  without a self-storm. Its garbled override was INGESTed; tags and response-only
+  admission are headless-fixed (ADR-0038/0039). A suspicious 0.818 calibration
+  peak prompted a headless-only one-shot retry (ADR-0040). Live stays red.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

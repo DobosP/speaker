@@ -210,6 +210,26 @@ class ResumeTracker:
             self._cut = False
             self._cut_pending = False
 
+    def clear_resume_lineage(self) -> None:
+        """Forget resumable query/playback ownership but retain echo evidence.
+
+        A response-only post-barge transcript may be answered, but its text (or
+        the older interrupted query it displaced) must never be embedded into a
+        later synthetic ``continue`` prompt.  Keep ``_sentences`` and the last
+        playback-end timestamp so L4 self-echo rejection remains effective.
+        """
+
+        with self._lock:
+            self._query = ""
+            self._spoken = ""
+            self._staged_playback.clear()
+            self._playback_order.clear()
+            self._resolved_playback.clear()
+            self._started_playback.clear()
+            self._heard_any = False
+            self._cut = False
+            self._cut_pending = False
+
     def note_spoken(self, text: str) -> None:
         text = (text or "").strip()
         if not text:

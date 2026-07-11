@@ -332,6 +332,11 @@
     "unsure_acts": false,
     "max_context": 4
   },
+  "post_barge_response": {
+    "_comment": "A confirmed acoustic barge arms one response-only exception to an INGEST/UNSURE addressing verdict. It is live-audio provenance, not identity: the accepted final is owner-unverified, cannot enter controls/local intents/capability routing/ReAct/tools, and is not written as user memory. The monotonic window covers held+merged ASR finals; empty/self-echo/foreign-origin/expired finals fail closed.",
+    "enabled": true,
+    "window_sec": 8.0
+  },
   "cleanup": {
     "_comment": "Optional ASR transcript cleanup (core/cleanup.py). Disabled by default; enable to rewrite the raw final into the user's intended sentence -- drops fillers, resolves self-corrections, handles the word-repeat-at-end correction signal. Needs llm.fast_model. Adds one fast-tier LLM call per ACT'd final.",
     "enabled": false,

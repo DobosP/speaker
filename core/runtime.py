@@ -12,6 +12,7 @@ from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
+from always_on_agent.post_barge import PostBargeResponseGate
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.speech_analyzer import (
     LiveSpeechAnalyzer,
@@ -31,6 +32,7 @@ from .engine import (
     AudioEngine,
     EngineCallbacks,
     FinalTranscript,
+    OwnerVerification,
     PlaybackOutcome,
     PlaybackReceipt,
     TrackedSpeech,
@@ -46,7 +48,7 @@ from .tts_markup import (
     build_markup_guidance,
 )
 from .resume import ResumeConfig, ResumeTracker
-from .routing import Router, classify_latency_policy
+from .routing import LatencyPolicy, Router, classify_latency_policy
 from .turn_merge import FinalDispatcher, FinalDispatchLease, TurnMergeConfig
 from .watchdog import StuckWatchdog
 from .websearch import WebSearchConfig, attach_web_search_capability
@@ -54,6 +56,9 @@ from .websearch import WebSearchConfig, attach_web_search_capability
 log = logging.getLogger("speaker.runtime")
 
 _LLM_BACKED_TASK_CAPABILITIES = frozenset({"assistant.answer", "research.local"})
+# Internal marker for the legacy callback that carries text but no typed origin.
+# It is normalized back to ``unknown`` before any event leaves the runtime.
+_LEGACY_TEXT_ORIGIN = "__legacy_text__"
 
 
 class VoiceRuntime:
@@ -104,6 +109,7 @@ class VoiceRuntime:
         task_timeouts: Optional[Mapping[str, float]] = None,
         confirmation_ttl_sec: float = 180.0,
         admission_load: Optional[Callable[[], Optional[float]]] = None,
+        post_barge_response_window_sec: float = 8.0,
     ):
         self.engine = engine
         # Playout receipts are opt-in.  Legacy engines retain the established
@@ -166,6 +172,12 @@ class VoiceRuntime:
         # barge-in/stop. It is never held across an LLM/provider call; local
         # intents and bus publication are the only potentially visible effects.
         self._terminal_effect_lock = threading.RLock()
+        # A confirmed acoustic barge is conversational provenance, not speaker
+        # identity.  Keep exactly one bounded response-only grant across the
+        # final merger; it can never authorize controls, tools, or actions.
+        self._post_barge_response = PostBargeResponseGate(
+            post_barge_response_window_sec
+        )
         self._input_generation_lock = threading.Lock()
         self._next_input_generation = 0
         self._arrival_superseded_generations: set[int] = set()
@@ -578,6 +590,7 @@ class VoiceRuntime:
         # action-producing events once this is set.
         with self._terminal_effect_lock:
             self._stopping = True
+            self._post_barge_response.invalidate()
             if self._reply_voice_continuity is not None:
                 self._reply_voice_continuity.clear()
             self._clear_arrival_continuation()
@@ -993,6 +1006,20 @@ class VoiceRuntime:
 
     def _on_final_result(self, result: FinalTranscript) -> None:
         """Typed engine-final seam; text-only engines remain fail-closed."""
+        if result.owner_verification is OwnerVerification.REJECTED:
+            # Sherpa's loudness-rescue path intentionally admits REJECTED
+            # identity for ordinary unverified usability. Preserve that
+            # contract, but invalidate the response exception first: rejected
+            # identity can never claim post-barge conversational provenance as
+            # if it were merely UNKNOWN.
+            with self._terminal_effect_lock:
+                if self._stopping:
+                    return
+                self._post_barge_response.invalidate()
+            log.info(
+                "speaker-rejected final is ineligible for post-barge response: %r",
+                result.text,
+            )
         self._on_final(
             result.text,
             owner_verified=result.owner_verified,
@@ -1004,15 +1031,20 @@ class VoiceRuntime:
         text: str,
         *,
         owner_verified: bool = False,
-        origin: str = "unknown",
+        origin: str = _LEGACY_TEXT_ORIGIN,
     ) -> None:
         final_at = time.perf_counter()
         with self._terminal_effect_lock:
             if self._stopping:
                 return
+            post_barge_armed = self._post_barge_response.is_armed(
+                self.supervisor.input_epoch
+            )
             # Validate the carrier floor before newest-input cancellation. A
             # punctuation-only recognizer blip must not retire a valid question.
             if not normalize_text(text):
+                if post_barge_armed:
+                    self._post_barge_response.invalidate()
                 log.info("dropping empty/punctuation-only final: %r", text)
                 self.metrics.mark(HANDLED_LOCAL)
                 partial_generation = self._clear_partial_fence()
@@ -1020,10 +1052,15 @@ class VoiceRuntime:
                     self.supervisor.commit_input_generation(partial_generation)
                     self._clear_arrival_continuation(partial_generation)
                 return
-            if not owner_verified and self._resume.preview_self_echo(text):
+            if (
+                (not owner_verified or post_barge_armed)
+                and self._resume.preview_self_echo(text)
+            ):
                 # Like punctuation noise, a recognized self-echo must not enter
                 # the dispatcher and cancel valid preprocessing already in flight.
                 if self._resume.is_self_echo(text):
+                    if post_barge_armed:
+                        self._post_barge_response.invalidate()
                     log.info("dropping self-echo final (own TTS heard back): %r", text)
                     self.metrics.mark(HANDLED_LOCAL)
                     partial_generation = self._clear_partial_fence()
@@ -1143,6 +1180,16 @@ class VoiceRuntime:
 
         if retired():
             return
+        # Inspect only after the dispatcher has produced its current merged
+        # candidate.  This preserves the live run's multi-final override while
+        # avoiding consumption by a held lease that a newer partial can retire.
+        post_barge_observation = self._post_barge_response.inspect(
+            terminal_input_epoch,
+            "unknown" if origin == _LEGACY_TEXT_ORIGIN else origin,
+        )
+        legacy_text_final = origin == _LEGACY_TEXT_ORIGIN
+        if legacy_text_final:
+            origin = "unknown"
         if continuation is not None and continuation_propagated:
             if continuation.awaiting_addon:
                 continuation = self.supervisor.extend_arrival_continuation(
@@ -1181,6 +1228,8 @@ class VoiceRuntime:
         if not normalize_text(text):
             if not claim_terminal():
                 return
+            if post_barge_observation is not None:
+                self._post_barge_response.consume(post_barge_observation)
             with self._terminal_effect_lock:
                 if retired():
                     return
@@ -1196,9 +1245,14 @@ class VoiceRuntime:
         # can I help you today?" came back as a user turn and got answered).
         # Volume-independent -- the energy floors (L1-L3) cannot catch a loud
         # echo, the text match can. Dropped before addressing/ingest/metrics.
-        if not owner_verified and self._resume.is_self_echo(text):
+        if (
+            (not owner_verified or post_barge_observation is not None)
+            and self._resume.is_self_echo(text)
+        ):
             if not claim_terminal():
                 return
+            if post_barge_observation is not None:
+                self._post_barge_response.consume(post_barge_observation)
             with self._terminal_effect_lock:
                 if retired():
                     return
@@ -1219,8 +1273,36 @@ class VoiceRuntime:
         if resume_prompt is not None:
             if not claim_terminal():
                 return
+            post_barge_consumed = True
+            if post_barge_observation is not None:
+                post_barge_consumed = self._post_barge_response.consume(
+                    post_barge_observation
+                )
             with self._terminal_effect_lock:
                 if retired():
+                    return
+                invalid_observation = bool(
+                    post_barge_observation is not None
+                    and (
+                        (
+                            not post_barge_observation.response_eligible
+                            and not legacy_text_final
+                        )
+                        or not post_barge_consumed
+                    )
+                )
+                if self.mode != Mode.ASSISTANT or invalid_observation:
+                    # A foreign/replaced barge observation or mode transition
+                    # cannot use the synthetic bypass. Clear the abandoned
+                    # resume lineage so a second final cannot retry it after the
+                    # one-shot observation has been consumed.
+                    if not self.supervisor.commit_input_generation(
+                        input_generation
+                    ):
+                        return
+                    self._resume.clear_resume_lineage()
+                    self.metrics.mark(HANDLED_LOCAL)
+                    self._clear_arrival_continuation(input_generation)
                     return
                 if not self.supervisor.commit_input_generation(input_generation):
                     return
@@ -1231,17 +1313,22 @@ class VoiceRuntime:
                 if arrival_superseded:
                     self.metrics.mark_superseded_turn()
                 metrics_turn_token = self.metrics.current_turn_token()
-                # The synthetic prompt is addressed by construction: skip the
-                # addressing gate, cleaner, and intent fast-path. note_query is
-                # deliberately NOT called -- the tracker keeps accumulating the
-                # same turn's spoken text so a second cut+continue still works.
+                # Every synthetic resume is response-only: it embeds an older
+                # query but the current "continue" has no stored owner verdict.
+                # Keep tracker lineage for repeat cut/resume UX while making each
+                # future synthetic resume take this same no-tools path.
                 self.bus.publish(
                     AgentEvent.final(
                         resume_prompt,
+                        owner_verified=False,
+                        origin="unknown",
                         metadata={
+                            "latency_policy": LatencyPolicy.SNAPPY_ANSWER.value,
                             "metrics_turn_token": metrics_turn_token,
                             "input_epoch": terminal_input_epoch,
                             "input_generation": input_generation,
+                            "post_barge_response_only": True,
+                            "skip_user_memory": True,
                         },
                     )
                 )
@@ -1250,6 +1337,7 @@ class VoiceRuntime:
         # Input gate: classify before opening a metrics turn so an INGEST'd
         # utterance doesn't trip the watchdog's "no llm_first_token" check.
         # When no classifier is configured this is a no-op (legacy behavior).
+        post_barge_response_only = False
         if self._addressing is not None:
             # Conversation window only -- exclude non-conversational 'vision'
             # (screen) and 'procedural' (standing-rule) memories so a caption/OCR
@@ -1261,11 +1349,26 @@ class VoiceRuntime:
                 return
             log.info("addressing decision: %s for %r", decision, text)
             if decision == INGEST or (decision == UNSURE and not self._unsure_acts):
+                if (
+                    post_barge_observation is not None
+                    and post_barge_observation.response_eligible
+                    and self.mode == Mode.ASSISTANT
+                ):
+                    # The acoustic interruption proves conversational timing,
+                    # not identity.  Let this one final receive an answer while
+                    # stripping every action-trust bit and downstream action
+                    # route.  Terminal consumption below is still required.
+                    post_barge_response_only = True
+                    owner_verified = False
+                    origin = "unknown"
+                    log.info(
+                        "addressing override: bounded post-barge response-only final"
+                    )
                 # A short add-on to a turn that's still in flight ("make it
                 # shorter", "in spanish") reads as ambient to the addressing
                 # gate, but it IS addressed -- let a genuine continuation reach
                 # the brain so it can merge/continue instead of being dropped.
-                if (
+                elif (
                     continuation is not None
                     or self.supervisor.looks_like_continuation(text)
                 ):
@@ -1277,6 +1380,10 @@ class VoiceRuntime:
                     # one while its stale DB write still completed afterward.
                     if not claim_terminal():
                         return
+                    if post_barge_observation is not None:
+                        self._post_barge_response.consume(
+                            post_barge_observation
+                        )
                     with self._terminal_effect_lock:
                         if retired():
                             return
@@ -1321,6 +1428,10 @@ class VoiceRuntime:
                 if self._resume.is_self_echo(cleaned):
                     if not claim_terminal():
                         return
+                    if post_barge_observation is not None:
+                        self._post_barge_response.consume(
+                            post_barge_observation
+                        )
                     with self._terminal_effect_lock:
                         if retired():
                             return
@@ -1371,7 +1482,7 @@ class VoiceRuntime:
         # fast-LLM action cache, so the in-capability escalate/tier consults this
         # turn don't re-call the model. Best-effort: routing never breaks a turn.
         route_decision = None
-        if self._capability_router is not None:
+        if self._capability_router is not None and not post_barge_response_only:
             try:
                 route_context: dict[str, object] = {
                     "mode": self.mode.value,
@@ -1405,7 +1516,11 @@ class VoiceRuntime:
             "mode": self.mode.value,
             "stream_tts": self._stream_tts,
         }
-        if route_decision is not None:
+        if post_barge_response_only:
+            # Response-only means exactly that: do not ask either routing layer
+            # whether this transcript should control, act, search, or research.
+            latency_policy = LatencyPolicy.SNAPPY_ANSWER.value
+        elif route_decision is not None:
             latency_context.update({
                 "route_action": route_decision.action,
                 "tier": route_decision.tier,
@@ -1424,6 +1539,37 @@ class VoiceRuntime:
         # effect so a newer final cannot be followed by this stale turn.
         if not claim_terminal():
             return
+        post_barge_consumed = True
+        if post_barge_observation is not None:
+            post_barge_consumed = self._post_barge_response.consume(
+                post_barge_observation
+            )
+        if post_barge_response_only and not post_barge_consumed:
+            # A newer barge/invalidation replaced the inspected token. Resolve
+            # this stale lease locally and DROP its garble: do not answer it and
+            # do not preserve it as ambient memory.
+            with self._terminal_effect_lock:
+                if retired():
+                    return
+                if not self.supervisor.commit_input_generation(input_generation):
+                    return
+                self.metrics.mark(HANDLED_LOCAL)
+                if arrival_superseded:
+                    self.metrics.mark_arrival_superseded_turn()
+                self._clear_arrival_continuation(input_generation)
+            return
+        if post_barge_response_only and self.mode != Mode.ASSISTANT:
+            # A UI/external mode transition raced preprocessing after the grant
+            # was inspected. Resolve the old assistant-mode lease silently;
+            # never answer into the newly selected mode.
+            with self._terminal_effect_lock:
+                if retired():
+                    return
+                if not self.supervisor.commit_input_generation(input_generation):
+                    return
+                self.metrics.mark(HANDLED_LOCAL)
+                self._clear_arrival_continuation(input_generation)
+            return
         with self._terminal_effect_lock:
             if retired():
                 return
@@ -1437,7 +1583,11 @@ class VoiceRuntime:
                 self.metrics.mark(f"route_{route_decision.action}")
 
             # Try the no-LLM fast-path next; only fall through to the brain on a miss.
-            if self._intents is not None and self._intents.handle(final_text):
+            if (
+                not post_barge_response_only
+                and self._intents is not None
+                and self._intents.handle(final_text)
+            ):
                 self._clear_arrival_continuation(input_generation)
                 log.debug("handled by intent fast-path: %r", final_text)
                 if (
@@ -1483,6 +1633,9 @@ class VoiceRuntime:
                 self.metrics.mark_superseded_turn()
             # A NEW turn for the resume tracker (resets the spoken-text window; a
             # resume turn deliberately bypasses this above and keeps accumulating).
+            # Every later synthetic resume is forced through the same response-
+            # only path above, so this query remains resumable without gaining
+            # routing, tool, durable-memory, or owner authority.
             self._resume.note_query(final_text)
             published_origin = str(
                 continuation_metadata.get(
@@ -1495,7 +1648,8 @@ class VoiceRuntime:
             # still inside the runtime's terminal seam.  When unified routing is
             # available its non-simple actions give the stronger exclusion.
             if (
-                self.mode == Mode.ASSISTANT
+                not post_barge_response_only
+                and self.mode == Mode.ASSISTANT
                 # A custom analyzer may define private non-assistant intents
                 # which this pure default preview cannot know. Fail closed: the
                 # publish-gap continuation optimization is available only for
@@ -1529,6 +1683,11 @@ class VoiceRuntime:
                         "input_epoch": terminal_input_epoch,
                         "input_generation": input_generation,
                         **continuation_metadata,
+                        "post_barge_response_only": post_barge_response_only,
+                        "skip_user_memory": bool(
+                            post_barge_response_only
+                            or continuation_metadata.get("skip_user_memory", False)
+                        ),
                     },
                 )
             )
@@ -1553,6 +1712,7 @@ class VoiceRuntime:
             self.metrics.mark(BARGE_IN)
             self._watchdog.note_barge_in()
             self.supervisor.cancel_all()
+            self._post_barge_response.arm(self.supervisor.input_epoch)
             self._interrupt_playback_history()
             self.engine.stop_speaking()
             if self._intents is not None:
@@ -1581,6 +1741,9 @@ class VoiceRuntime:
             # an ASR final; bypassing that path left old active answers alive.
             self._on_final(keyword)
             return
+        # A deterministic command consumed the interruption itself; no later
+        # ambient final may inherit the post-barge conversational grant.
+        self._post_barge_response.invalidate()
         if action == "stop":
             # Same determinism as barge-in: set cancellation before playback is
             # cut so no stale sentence from the interrupted turn is spoken
@@ -1714,6 +1877,27 @@ class VoiceRuntime:
 
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:
+        if (
+            event.kind
+            in {
+                EventKind.CONTROL_MODE,
+                EventKind.CONTROL_CONFIRM,
+                EventKind.CONTROL_DENY,
+            }
+            or (
+                event.kind == EventKind.CONTROL_STOP
+                # The barge callback itself publishes this acknowledgement
+                # after arming the grant. Other stop boundaries invalidate it.
+                and not event.payload.get("already_cancelled", False)
+            )
+        ):
+            self._post_barge_response.invalidate()
+            if event.kind == EventKind.CONTROL_MODE:
+                # A queued response-only STT_FINAL may already have opened its
+                # ASR metrics turn before the higher-priority mode event fences
+                # it at the supervisor. Resolve that turn locally so watchdog
+                # diagnostics do not report a missing first token.
+                self.metrics.mark(HANDLED_LOCAL)
         if (
             event.kind == EventKind.MEMORY_COMMIT
             and event.payload.get("source")

@@ -335,7 +335,10 @@ class AgentSupervisor:
             if len(active) != 1:
                 return None
             victim = active[0]
-            if victim.mode != Mode.ASSISTANT:
+            if (
+                victim.mode != Mode.ASSISTANT
+                or victim.metadata.get("post_barge_response_only")
+            ):
                 return None
             queued_continuation = (
                 self._pending_continuation_behind(victim.task_id)
@@ -343,6 +346,8 @@ class AgentSupervisor:
                 else None
             )
             lineage_task = queued_continuation or victim
+            if lineage_task.metadata.get("post_barge_response_only"):
+                return None
             try:
                 continuation = (
                     self._continuation.classify(text, lineage_task.input_text)
@@ -457,7 +462,11 @@ class AgentSupervisor:
                 return None
             victim = candidates[0] if len(candidates) == 1 else None
             reservation: ArrivalContinuation | None = None
-            if victim is not None and victim.mode == Mode.ASSISTANT:
+            if (
+                victim is not None
+                and victim.mode == Mode.ASSISTANT
+                and not victim.metadata.get("post_barge_response_only")
+            ):
                 origin, prior_addons = self._continuation_lineage(victim)
                 token = victim.metadata.get("metrics_turn_token")
                 reservation = ArrivalContinuation(
@@ -1331,6 +1340,7 @@ class AgentSupervisor:
                         "continuation_victim_origin",
                         "continuation_victim_metrics_turn_token",
                         "skip_user_memory",
+                        "post_barge_response_only",
                     )
                     if key in metadata
                 }
@@ -1356,6 +1366,21 @@ class AgentSupervisor:
                         text,
                     )
                     return
+            if (
+                turn_metadata.get("post_barge_response_only")
+                and self.state.mode != Mode.ASSISTANT
+            ):
+                log.info(
+                    "dropping response-only final %r after mode changed to %s",
+                    text,
+                    self.state.mode.value,
+                )
+                return
+            if turn_metadata.get("post_barge_response_only"):
+                # Defense in depth: metadata controls decision scope; it can
+                # never carry caller-supplied speaker/action trust.
+                owner_verified = False
+                origin = "unknown"
             self.state.turn_owner_verified = bool(owner_verified)
             self.state.turn_origin = str(origin)
             self.state.turn_metadata = turn_metadata
@@ -1376,6 +1401,20 @@ class AgentSupervisor:
             self.state.mode,
             has_pending_confirmation=bool(self.state.pending_confirmations),
         )
+        if is_final and self.state.turn_metadata.get(
+            "post_barge_response_only"
+        ):
+            # The runtime admitted this transcript solely because it followed
+            # a confirmed acoustic interruption.  That provenance permits a
+            # conversational answer and nothing else: never reinterpret its
+            # words as stop/confirm/mode/search/research/command authority.
+            decision = IntentDecision(
+                IntentKind.ASSISTANT,
+                1.0,
+                observation.text,
+                "post_barge_response_only",
+                mode=Mode.ASSISTANT,
+            )
         if is_final and decision.kind in {
             IntentKind.STOP,
             IntentKind.CONFIRM,
@@ -1787,7 +1826,11 @@ class AgentSupervisor:
         if len(tasks) != 1:
             return False
         victim = tasks[0]
-        if victim.mode != Mode.ASSISTANT or victim.cancel_event.is_set():
+        if (
+            victim.mode != Mode.ASSISTANT
+            or victim.cancel_event.is_set()
+            or victim.metadata.get("post_barge_response_only")
+        ):
             return False
         return self._continuation.classify(text, victim.input_text) == CONTINUE
 
@@ -1844,6 +1887,10 @@ class AgentSupervisor:
         if self._continuation is None or not self._continuation_cfg.enabled:
             return False
         if decision.kind != IntentKind.ASSISTANT:
+            return False
+        if self.state.turn_metadata.get("post_barge_response_only"):
+            # This final itself may answer once, but can never enter a synthetic
+            # continuation lineage whose later task loses the restriction.
             return False
         if self.state.turn_metadata.get("reserved_continuation"):
             merged = self.state.turn_metadata.get("continuation_merged_text")
@@ -1919,7 +1966,11 @@ class AgentSupervisor:
         if len(active) != 1:
             return False
         victim = active[0]
-        if victim.mode != Mode.ASSISTANT or victim.cancel_event.is_set():
+        if (
+            victim.mode != Mode.ASSISTANT
+            or victim.cancel_event.is_set()
+            or victim.metadata.get("post_barge_response_only")
+        ):
             return False
         addon = decision.text
         if self._continuation.classify(addon, victim.input_text) != CONTINUE:

@@ -1469,6 +1469,11 @@ class SherpaOnnxEngine(AudioEngine):
         self._duck_gain: float = 1.0
         self._confirm_until: float = 0.0
         self._confirm_base_text: str = ""
+        # A confirmed duck-window command is deliberately left in the normal
+        # recognizer stream as its next-final head. The first post-playback VAD
+        # onset must consume this one-shot lineage instead of rebasing the stream
+        # and discarding the already-confirmed words.
+        self._confirm_handoff_stream_live: bool = False
         # Continuous no-duck word-cut state (barge_word_cut_enabled). Detection
         # uses a DEDICATED playback-time recognizer stream; the normal ASR stream
         # is never contaminated by own echo. _word_cut_base advances when a
@@ -2207,6 +2212,28 @@ class SherpaOnnxEngine(AudioEngine):
             epoch = getattr(self._capture_callback_context, "epoch", None)
         return epoch is None or self._capture_epoch_is_current(epoch)
 
+    def _publish_confirm_handoff_if_current(self) -> bool:
+        """Atomically publish confirmed-stream lineage against capture stop.
+
+        The external barge callback may itself stop playback and may overlap a
+        full engine stop. Check the originating capture epoch and publish the
+        one-shot handoff under the same condition lock that stop() uses to
+        invalidate/clear it, so either publication wins first and stop clears it,
+        or stop wins and the stale capture turn cannot resurrect it.
+        """
+        epoch = getattr(self._capture_callback_context, "epoch", None)
+        if epoch is None:
+            self._confirm_handoff_stream_live = True
+            return True
+        with self._capture_effect_condition:
+            if (
+                epoch != self._capture_epoch
+                or self._capture_stopping.is_set()
+            ):
+                return False
+            self._confirm_handoff_stream_live = True
+            return True
+
     def _emit_capture_callback(
         self,
         callback,
@@ -2314,6 +2341,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._capture_epoch += 1
             self._capture_stopping.clear()
             self._capture_resource_hold.clear()
+            self._confirm_handoff_stream_live = False
         import sounddevice as sd  # lazy
 
         self._cb = callbacks
@@ -2511,6 +2539,7 @@ class SherpaOnnxEngine(AudioEngine):
             # remain counted until their capture owner releases them.
             self._capture_epoch += 1
             self._capture_stopping.set()
+            self._confirm_handoff_stream_live = False
             self._capture_effect_condition.notify_all()
         self._running.clear()
         self._stop_speaking.set()
@@ -3659,6 +3688,27 @@ class SherpaOnnxEngine(AudioEngine):
             except Exception:  # noqa: BLE001 - metric is best-effort
                 pass
 
+    def _rebase_normal_asr_stream(
+        self, recognizer, stream, segment: ASRSegment
+    ) -> int:
+        """Reset normal ASR and replay only its bounded pre-VAD lookback.
+
+        The relaxed/NS-off alternate is the streaming recognizer's domain when
+        present; primary remains finalizer/floor/speaker authority. The current
+        onset block is intentionally absent from ``segment`` at this call site
+        and follows the ordinary append/feed path exactly once.
+        """
+        pre_primary, pre_alternate = segment.arrays()
+        recognizer.reset(stream)
+        replay = (
+            pre_alternate if pre_alternate is not None else pre_primary
+        )
+        if replay.size:
+            stream.accept_waveform(self.config.sample_rate, replay)
+            while recognizer.is_ready(stream):
+                recognizer.decode_stream(stream)
+        return int(replay.size)
+
     def _capture_loop(self) -> None:
         import numpy as np
 
@@ -4335,11 +4385,37 @@ class SherpaOnnxEngine(AudioEngine):
                     if self._vad is not None and not word_cut_pcm_includes_current:
                         if not word_cut_vad_includes_current:
                             self._vad.accept_waveform(samples)
+                        vad_active = bool(self._vad.is_speech_detected())
+                        first_vad_onset = vad_active and not segment.speech_seen
                         pause = segment.observe_vad(
-                            bool(self._vad.is_speech_detected()), clock_now
+                            vad_active, clock_now
                         )
                         if pause is not None and self._endpoint_policy is not None:
                             self._endpoint_policy.observe_pause(pause)
+                        if first_vad_onset and bool(
+                            getattr(self, "_confirm_handoff_stream_live", False)
+                        ):
+                            self._confirm_handoff_stream_live = False
+                            log.debug(
+                                "normal ASR epoch adopted confirmed barge stream"
+                            )
+                        elif first_vad_onset:
+                            # The normal recognizer listens continuously so it
+                            # can retain model lookback, but any hypothesis it
+                            # formed before independent VAD onset belongs to no
+                            # speech epoch. Rebase once at the first onset and
+                            # replay only ASRSegment's bounded pre-roll; the
+                            # current block still follows the ordinary path
+                            # below exactly once. A word-cut prepend already
+                            # marks speech_seen and therefore bypasses this reset.
+                            replayed = self._rebase_normal_asr_stream(
+                                recognizer, stream, segment
+                            )
+                            last_partial = ""
+                            log.debug(
+                                "normal ASR epoch rebased at VAD onset: preroll_ms=%d",
+                                round(1000 * replayed / self.config.sample_rate),
+                            )
                     if recovery_calibration_block is not None:
                         self._observe_recovery_calibration(
                             recovery_calibration_block,
@@ -4371,20 +4447,55 @@ class SherpaOnnxEngine(AudioEngine):
                         # during a long spoken word must not look like silence.
                         segment.observe_text(_now)
                         partials += 1
-                        # Casing only on partials (cheap, every block); the
-                        # heavier punctuation model is reserved for the final.
-                        shown = restore_casing(text) if self.config.asr_restore_casing else text
-                        log.debug("asr partial: %r", shown)
-                        if not self._capture_epoch_is_current(capture_epoch):
-                            continue
-                        self._emit_capture_callback(
-                            self._cb.on_partial,
-                            shown,
-                            capture_epoch=capture_epoch,
-                        )
+                        if self._vad is not None and not segment.speech_seen:
+                            # Do not leak idle decoder noise into the runtime's
+                            # cancellation/continuation machinery. The first VAD
+                            # onset resets this hypothesis before any fresh text
+                            # can be published or finalized.
+                            log.debug("suppressing pre-VAD ASR partial: %r", text)
+                        else:
+                            # Casing only on partials (cheap, every block); the
+                            # heavier punctuation model is reserved for the final.
+                            shown = (
+                                restore_casing(text)
+                                if self.config.asr_restore_casing
+                                else text
+                            )
+                            log.debug("asr partial: %r", shown)
+                            if not self._capture_epoch_is_current(capture_epoch):
+                                continue
+                            self._emit_capture_callback(
+                                self._cb.on_partial,
+                                shown,
+                                capture_epoch=capture_epoch,
+                            )
                     acoustic_endpoint = recognizer.is_endpoint(stream)
                     decision_now = time.perf_counter()
                     endpoint_silence = segment.trailing_silence(decision_now)
+                    if segment.abandoned_without_text(
+                        decision_now,
+                        quiet_limit_sec=float(
+                            getattr(
+                                self.config, "endpoint_max_silence_sec", 1.6
+                            )
+                        ),
+                    ):
+                        recognizer.reset(stream)
+                        self._confirm_handoff_stream_live = False
+                        last_partial = ""
+                        segment.reset()
+                        vad_reset = getattr(self._vad, "reset", None)
+                        if callable(vad_reset):
+                            vad_reset()
+                        log.info(
+                            "reset abandoned VAD episode with no current ASR text"
+                        )
+                        self._emit_capture_callback(
+                            self._cb.on_metric,
+                            "vad_abandoned_epoch_reset",
+                            capture_epoch=capture_epoch,
+                        )
+                        continue
                     owned_primary = owned_asr = None
                     if self._endpoint_audio_needed(
                         acoustic_endpoint=acoustic_endpoint,
@@ -4408,6 +4519,7 @@ class SherpaOnnxEngine(AudioEngine):
                     ):
                         raw_final = recognizer.get_result(stream)
                         recognizer.reset(stream)
+                        self._confirm_handoff_stream_live = False
                         last_partial = ""
                         if owned_primary is None:
                             owned_primary, owned_asr = segment.arrays()
@@ -4521,6 +4633,7 @@ class SherpaOnnxEngine(AudioEngine):
                     # (almost always an ASR model/tokens mismatch -- re-run
                     # `python -m tools.setup_models`).
                     asr_errors += 1
+                    self._confirm_handoff_stream_live = False
                     log.warning("ASR decode error #%d (resetting stream)", asr_errors,
                                 exc_info=(asr_errors == 1))
                     last_partial = ""
@@ -6011,6 +6124,7 @@ class SherpaOnnxEngine(AudioEngine):
         The base snapshot means only words transcribed AFTER the trigger count
         as confirmation -- residue already in the stream (a pre-reply partial
         tail) can't confirm by itself."""
+        self._confirm_handoff_stream_live = False
         self._confirm_until = now + max(0.1, self.config.barge_confirm_window_sec)
         base = ""
         try:
@@ -6092,6 +6206,8 @@ class SherpaOnnxEngine(AudioEngine):
             # The confirm-window audio is already IN the stream: the user's
             # first words become the head of the next final (free pre-roll)
             # once _speaking clears and the normal ASR path resumes.
+            if not self._publish_confirm_handoff_if_current():
+                return False
             return True
         if now >= self._confirm_until:
             # Echo (or a transient) tripped the acoustics but nobody is talking:
@@ -6112,6 +6228,7 @@ class SherpaOnnxEngine(AudioEngine):
                 recognizer.reset(stream)
             except Exception:  # noqa: BLE001 - reset is best-effort
                 pass
+            self._confirm_handoff_stream_live = False
             self._barge_in_suppressed_until = (
                 now + max(0.0, self.config.barge_confirm_retry_suppress_sec)
             )
@@ -6129,6 +6246,7 @@ class SherpaOnnxEngine(AudioEngine):
         """Close the window + restore full volume (idempotent, any thread)."""
         self._confirm_until = 0.0
         self._confirm_base_text = ""
+        self._confirm_handoff_stream_live = False
         self._duck_gain = 1.0
         obs = getattr(self, "_confirm_echo_obs", None)
         if obs:

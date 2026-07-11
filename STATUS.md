@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, word-cut safety stacked on `a8f2abb`;
-full: 3225 passed/30 skipped/9 warnings; focused: 108 passed; adjacent: 130
-passed/1 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, VAD-epoch safety stacked on `a050439`;
+full: 3236 passed/30 skipped/9 warnings; focused: 47 passed; adjacent: 306
+passed/4 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -25,10 +25,10 @@ passed/1 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Voice reliability now implemented
 
-- VAD owns live ASR segments/acoustic endpoint time. Idle PCM is capped to 0.8 s
-  pre-roll; complete speech is retained through rule-3/endpoint. Finals need
-  observed speech; no-VAD keeps bounded pre-partial audio (ADR-0017). The 0.900 s
-  owner clip's exact SenseVoice repair is allowed; other rewrites fail closed (ADR-0026).
+- VAD owns live ASR segments/acoustic time. At first onset the normal decoder
+  rebases to bounded pre-roll; pre-VAD text cannot publish/finalize, and no-text
+  ended episodes reset at the silence ceiling. Complete speech stays owned;
+  no-VAD fails open. SenseVoice rewrites remain exact and bounded (ADR-0026/0046).
 - Word-cut uses isolated recognition and bounded PCM. Production generic cuts
   need at least four novel words plus warmed compatible speaker authority; local
   zero-to-three-word floors cannot reopen audio-first promotion. Canonical

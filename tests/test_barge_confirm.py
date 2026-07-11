@@ -10,6 +10,7 @@ no models, no threads.
 """
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -144,6 +145,73 @@ def test_stop_command_confirms_alone():
     assert rec.barges == 1
 
 
+def test_stop_during_barge_callback_cannot_publish_handoff_into_next_epoch():
+    eng = _engine(barge_confirm_min_words=2)
+    metrics: list[str] = []
+
+    def _invalidate_capture_epoch():
+        with eng._capture_effect_condition:
+            eng._capture_epoch += 1
+            eng._capture_stopping.set()
+
+    eng._cb = EngineCallbacks(
+        on_barge_in=_invalidate_capture_epoch,
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+    )
+    eng._capture_callback_context.epoch = eng._capture_epoch
+    r, s = _FakeRecognizer(["", "stop"]), _FakeStream()
+    now = time.monotonic()
+
+    try:
+        eng._begin_barge_confirm(r, s, now)
+        assert not eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)
+    finally:
+        del eng._capture_callback_context.epoch
+
+    assert "barge_in_confirmed" in metrics
+    assert not eng._confirm_handoff_stream_live
+
+
+def test_stop_winning_after_barge_callback_entry_atomically_blocks_handoff():
+    eng = _engine(barge_confirm_min_words=2)
+    callback_entered = threading.Event()
+    release_callback = threading.Event()
+    result: list[bool] = []
+
+    def _blocking_barge_callback():
+        callback_entered.set()
+        assert release_callback.wait(timeout=2.0)
+
+    eng._cb = EngineCallbacks(on_barge_in=_blocking_barge_callback)
+    capture_epoch = eng._capture_epoch
+    r, s = _FakeRecognizer(["", "stop"]), _FakeStream()
+    now = time.monotonic()
+
+    def _confirm():
+        eng._capture_callback_context.epoch = capture_epoch
+        try:
+            eng._begin_barge_confirm(r, s, now)
+            result.append(
+                eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)
+            )
+        finally:
+            del eng._capture_callback_context.epoch
+
+    worker = threading.Thread(target=_confirm)
+    worker.start()
+    assert callback_entered.wait(timeout=1.0)
+    with eng._capture_effect_condition:
+        eng._capture_epoch += 1
+        eng._capture_stopping.set()
+        eng._confirm_handoff_stream_live = False
+    release_callback.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert result == [False]
+    assert not eng._confirm_handoff_stream_live
+
+
 def test_cancel_that_command_confirms_below_word_floor():
     rec = _Rec()
     eng = _engine(rec, barge_confirm_min_words=4)
@@ -200,6 +268,15 @@ def test_stop_speaking_closes_window_and_restores_duck():
     eng.stop_speaking()
     assert eng._duck_gain == 1.0
     assert not eng._barge_confirm_active()
+
+
+def test_engine_stop_clears_pending_confirm_handoff_before_reuse():
+    eng = _engine(_Rec())
+    eng._confirm_handoff_stream_live = True
+
+    eng.stop()
+
+    assert not eng._confirm_handoff_stream_live
 
 
 # --- the duck is applied by the audio callback ----------------------------------

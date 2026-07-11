@@ -59,6 +59,33 @@ def test_configured_vad_rejects_decoder_text_when_no_speech_was_seen():
     s.observe_text(0.1)  # e.g. the live idle hallucination raw 'AND'
     assert s.final_admitted is False
     assert s.early_endpoint_allowed is False
+    assert s.last_text_at is None
+
+
+def test_abandoned_vad_episode_expires_only_without_current_epoch_text():
+    s = _segment(vad=True)
+    s.observe_vad(True, 1.0)
+    s.append(np.ones(10, dtype="float32"))
+    s.observe_vad(False, 1.1)
+
+    assert not s.abandoned_without_text(1.19, quiet_limit_sec=0.2)
+    assert s.abandoned_without_text(1.21, quiet_limit_sec=0.2)
+
+    s.observe_text(1.3)
+    assert not s.abandoned_without_text(9.0, quiet_limit_sec=0.2)
+
+
+def test_word_cut_prefix_uses_its_own_endpoint_contract_not_abandon_reset():
+    s = _segment(vad=True)
+    s.prepend(
+        [np.ones(10, dtype="float32")],
+        speech_at=1.0,
+        speech_end_at=1.0,
+        offline_recovery_authorized=True,
+    )
+    s.observe_vad(False, 1.1)
+
+    assert not s.abandoned_without_text(9.0, quiet_limit_sec=0.2)
 
 
 def test_missing_vad_fails_open_for_final_but_disables_early_endpoint():

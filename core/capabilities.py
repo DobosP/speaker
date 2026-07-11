@@ -26,6 +26,7 @@ from .llm import HedgeLLM, LLMClient, SensitivityRouterLLM, capability_context
 from .metrics import LLM_FIRST_TOKEN, MetricsRecorder, mark_first_token
 from .persona import DEFAULT_SYSTEM
 from .routing import (
+    FAST,
     LIVE_CONTEXT_KEY,
     HeuristicRouter,
     Router,
@@ -322,19 +323,30 @@ def attach_llm_capabilities(
         # turn and the merged "prev + addon" prompt (the double-ingest the design
         # flagged), and its folded prompt already embeds the prior context.
         meta = context.get("metadata")
-        skip_user_memory = bool(meta.get("skip_user_memory")) if isinstance(meta, dict) else False
-        if not skip_user_memory and before_conversation_read is not None:
+        response_only = bool(
+            meta.get("post_barge_response_only")
+        ) if isinstance(meta, Mapping) else False
+        skip_user_memory = (
+            bool(meta.get("skip_user_memory")) if isinstance(meta, Mapping) else False
+        ) or response_only
+        # Response-only turns may read prior conversation to resolve an
+        # override ("...instead"), but never append this untrusted transcript.
+        # Ordinary synthetic continuations retain their historical no-read path.
+        allow_recent_context = not skip_user_memory or response_only
+        if allow_recent_context and before_conversation_read is not None:
             try:
                 if not before_conversation_read():
                     # Never append a newer user turn ahead of unresolved older
                     # playback. A broken receipt engine degrades by omitting
                     # this turn from conversation memory, not reversing roles.
                     skip_user_memory = True
+                    allow_recent_context = False
                     log.warning(
                         "skipping conversation memory after playback barrier timeout"
                     )
             except Exception:  # noqa: BLE001 - memory ordering is best-effort
                 skip_user_memory = True
+                allow_recent_context = False
                 log.exception(
                     "playback history barrier failed; skipping conversation memory"
                 )
@@ -377,7 +389,7 @@ def attach_llm_capabilities(
                 )
             recent_turns = (
                 collect_recent_turns(memory, collect_cfg, current_query=query)
-                if (memory is not None and not skip_user_memory)
+                if (memory is not None and allow_recent_context)
                 else []
             )
             if recent_turns:
@@ -398,7 +410,8 @@ def attach_llm_capabilities(
         # Smart-mode escalation: hand reasoning/gathering queries to the ReAct
         # planner (when registered) instead of a one-shot reply.
         if (
-            escalate is not None
+            not response_only
+            and escalate is not None
             and agent_capability in registry.names()
             and escalate(query, context)
         ):
@@ -429,6 +442,8 @@ def attach_llm_capabilities(
             try:
                 if not skip_user_memory:
                     memory.add(query, tags=("user",))
+                recall_block = ""
+                last_session_block = ""
                 # Episodic recall (default-OFF) brings the FULL memory context
                 # (recall + vision + profile, sharing one budget). When recall is
                 # OFF we still surface durable PROFILE facts alone (Recall-B:
@@ -437,11 +452,12 @@ def attach_llm_capabilities(
                 # defaults (recall off + profiles off), so the opening turn stays
                 # byte-identical. ``profile_block`` is getattr-guarded so a minimal
                 # duck-typed Memory double still works.
-                if recall_cfg.enabled:
-                    recall_block = memory.context_for_llm(query)
-                else:
-                    profile_fn = getattr(memory, "profile_block", None)
-                    recall_block = profile_fn() if callable(profile_fn) else ""
+                if not response_only:
+                    if recall_cfg.enabled:
+                        recall_block = memory.context_for_llm(query)
+                    else:
+                        profile_fn = getattr(memory, "profile_block", None)
+                        recall_block = profile_fn() if callable(profile_fn) else ""
                 # lm-2 Wire 3: a one-shot "Last session" recap, prepended on the
                 # FIRST one-shot answer turn since process start only (a
                 # process-start latch), ahead of recall. Empty unless
@@ -449,8 +465,10 @@ def attach_llm_capabilities(
                 # (Postgres-only) -- '' otherwise keeps the default-OFF opening turn
                 # byte-identical. The head is compressed (whole-word, never
                 # mid-word) to the recall token budget so it can't blow up TTFT.
-                last_session_block = ""
-                if not memory_state["last_session_injected"]:
+                if (
+                    not response_only
+                    and not memory_state["last_session_injected"]
+                ):
                     head_fn = getattr(memory, "last_session_summary", None)
                     head = head_fn() if callable(head_fn) else ""
                     if head:
@@ -512,7 +530,7 @@ def attach_llm_capabilities(
                 # they read as authoritative instructions. Empty (-> byte-identical)
                 # when procedural memory is off or no rules are stored.
                 procedural_block = ""
-                if recall_cfg.procedural_enabled:
+                if recall_cfg.procedural_enabled and not response_only:
                     rules_fn = getattr(memory, "procedural_rules", None)
                     rules = list(rules_fn()) if callable(rules_fn) else []
                     block = render_rules(rules)
@@ -569,17 +587,23 @@ def attach_llm_capabilities(
         # ignores or chokes on it -- so an image-bearing turn is forced to main,
         # and its sensitivity floats to PRIVATE so a screen capture never rides a
         # public cloud chain (docs/target_architecture.md §9.7).
-        images = context.get("images")
-        if not images and image_provider is not None:
-            try:
-                images = image_provider()
-            except Exception:  # noqa: BLE001 - the frame feed is best-effort, never fatal
-                images = None
+        images = None
+        if not response_only:
+            images = context.get("images")
+            if not images and image_provider is not None:
+                try:
+                    images = image_provider()
+                except Exception:  # noqa: BLE001 - the frame feed is best-effort, never fatal
+                    images = None
         if images:
             context["sensitivity"] = most_sensitive(
                 str(context.get("sensitivity") or PRIVATE), PRIVATE
             )
-        tier = router.choose(query, context)
+        # A post-barge addressing exception is response-only.  Bypass the
+        # unified capability router here too (the runtime already skipped its
+        # pre-brain pass): choose the direct fast answer tier without asking a
+        # router that may classify the words as ACT/RESEARCH/CONTROL.
+        tier = FAST if response_only else router.choose(query, context)
         if images:
             tier = "main"
         primary = llm if tier == "main" else fast

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import sys
 from typing import Callable, Optional
@@ -45,6 +46,19 @@ log = logging.getLogger("speaker.app")
 # ``core/llm_factory.py``. They are imported at module top and re-exported here so
 # existing callers/tests that reach for ``core.app._load_config`` /
 # ``core.app._build_llms`` / ``core.app._wrap_cloud`` keep working unchanged.
+
+
+def _post_barge_response_window(config: dict) -> float:
+    """Parse the optional response-only window, failing closed on bad config."""
+
+    block = config.get("post_barge_response", {}) or {}
+    if not isinstance(block, dict) or not block.get("enabled", True):
+        return 0.0
+    try:
+        value = float(block.get("window_sec", 8.0))
+    except (TypeError, ValueError):
+        return 0.0
+    return value if math.isfinite(value) and value > 0.0 else 0.0
 
 
 def _require_asr_models(sherpa_cfg, engine_name: str) -> None:
@@ -438,6 +452,7 @@ def build_runtime(
             fast_llm, max_context=int(input_gate_cfg.get("max_context", 4))
         )
     unsure_acts = bool(input_gate_cfg.get("unsure_acts", True))
+    post_barge_response_window_sec = _post_barge_response_window(config)
 
     # Transcript cleanup: optional LLM rewrite that drops fillers / resolves
     # self-corrections so the brain acts on the intended sentence. Same
@@ -535,6 +550,7 @@ def build_runtime(
         # abandoned "Confirm command: ..." expires with a spoken notice instead
         # of waiting forever for a stray "yes". 0 disables.
         confirmation_ttl_sec=float(config.get("confirmation_ttl_sec", 180.0)),
+        post_barge_response_window_sec=post_barge_response_window_sec,
     )
 
     return runtime

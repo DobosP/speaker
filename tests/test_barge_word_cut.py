@@ -744,6 +744,163 @@ def test_short_owner_stop_cuts_when_recent_tts_makes_text_ambiguous():
     assert eng._wc_stats["speaker_accepts"] == 1
 
 
+def test_live_noisy_prefix_then_owner_stop_cuts_before_quiet_reset():
+    """Headless replay of live run 20260711-154451's failed STOP burst.
+
+    Playback-time ASR retained two residual words before the owner's canonical
+    command.  The three-word ``OF HE STOP`` trace must cut on its last active
+    block instead of falling through to the following quiet-run reset.
+    """
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = (
+        "Silas could feel the tower swaying slightly with each monstrous wave."
+    )
+    recognizer = _FakeRecognizer(["OF", "OF HE", "OF HE STOP"])
+    stream = _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now
+    )
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.5, dtype="float32"), now + 0.1
+    )
+    assert eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.6, dtype="float32"), now + 0.2
+    )
+
+    assert rec.barges == 1
+    assert gate.calls == []  # canonical STOP cut is not general identity trust
+    assert eng._wc_stats["cuts"] == 1
+
+
+def test_own_tts_attested_stop_repair_requires_speaker_and_does_not_cut():
+    """Corrupted TTS containing STOP cannot use the attested repair to self-cut."""
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.16])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = "The app may stop responding while it reconnects."
+    recognizer = _FakeRecognizer(["OF", "OF HE", "OF HE STOP"])
+    stream = _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.2, dtype="float32"), now
+    )
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.2, dtype="float32"), now + 0.1
+    )
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.2, dtype="float32"), now + 0.2
+    )
+
+    assert rec.barges == 0
+    assert len(gate.calls) == 1
+    assert eng._wc_stats["speaker_rejects"] == 1
+    assert eng._wc_stats.get("cuts", 0) == 0
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "BUS STOP",
+        "NEXT STOP",
+        "FULL STOP",
+        "IT WILL STOP",
+        "DO NOT STOP",
+        "DON'T STOP",
+        "NEVER STOP",
+        "NO STOP",
+        "NU STOP",
+        "CAN'T STOP",
+        "CANNOT STOP",
+        "WON'T STOP",
+    ],
+)
+def test_non_attested_stop_phrase_is_not_a_canonical_cut(text):
+    """Ordinary and negated phrases ending in STOP remain non-controls."""
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = None
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer([text]),
+        _FakeStream(),
+        np.full(1600, 0.4, dtype="float32"),
+        time.monotonic(),
+    )
+
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_unavailable"] == 1
+    assert eng._wc_stats.get("cuts", 0) == 0
+
+
+def test_attested_stop_repair_is_shared_at_reply_tail():
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["OF HE STOP"])
+    block = np.full(1600, 0.4, dtype="float32")
+    eng._word_cut_fed_stream = True
+    eng._append_word_cut_candidate(block)
+
+    assert eng._finish_word_cut_reply(
+        recognizer, detect, normal, now=time.monotonic()
+    )
+    assert normal.fed_blocks == 1
+    assert eng._wc_stats["tail_handoffs"] == 1
+
+
+def test_attested_stop_repair_is_shared_at_tail_continuation():
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["OF HE STOP"])
+    block = np.full(1600, 0.4, dtype="float32")
+    now = time.monotonic()
+    eng._word_cut_tail_staged = True
+    eng._word_cut_tail_words = 2
+    eng._word_cut_tail_text = "OF HE"
+    eng._word_cut_tail_deadline = now + 1.0
+    eng._word_cut_tail_vad_reset_ok = True
+
+    assert eng._word_cut_tail_probation_step(
+        recognizer, detect, normal, block, now
+    ) == "promoted"
+    assert normal.fed_blocks == 1
+    assert eng._wc_stats["tail_continuations"] == 1
+
+
 def test_live_saturn_echo_rejected_by_enrolled_speaker_then_owner_cuts():
     """Regression for live run 20260711-115512 at 11:56:19.
 

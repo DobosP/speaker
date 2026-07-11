@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/session-tts-speaker-lock`; full:
-3157 passed, 30 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, stacked local `main`; voice branch full:
+3157 passed, 30 skipped, 9 known warnings; Stop focused: 85 passed; combined full pending. Live A/B is red.
 
 ## Runtime
 
@@ -31,8 +31,9 @@ Last verified: 2026-07-11 on Linux ROG, `fix/session-tts-speaker-lock`; full:
 - Word-cut uses isolated recognition and bounded PCM. Production cuts on a warmed,
   compatible enrolled-speaker score after 0.35 s of voiced audio even with zero
   ASR words; an ambiguous score starts a fresh identity window. Accepted PCM is
-  replayed/spliced once, and an empty stream may reach offline ASR. Canonical stop
-  stays immediate except standalone-own-echo ambiguity (ADR-0026/0036).
+  replayed/spliced once, and an empty stream may reach offline ASR. Exact STOP
+  plus the attested `OF HE STOP` repair may cut; TTS containing STOP still
+  requires short-window speaker authority (ADR-0026/0036/0042).
 - Capture recovery rebinds actual rate/resampler, resets dependent state, preserves
   the first correctly timed block, and revalidates fallback. Same-domain recovery
   preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
@@ -76,8 +77,8 @@ Last verified: 2026-07-11 on Linux ROG, `fix/session-tts-speaker-lock`; full:
 - Latest main `285d74e` run `154451` retried a 0.982 startup crest successfully
   (replacement peak 0.013/floor 0.0094), but switched `sid=0` to `sid=16`. Owner
   “STOP” reached word-cut text while scores 0.16–0.23 stayed below 0.30; cuts=0,
-  then PortAudio -9999/allocator corruption recurred. The voice switch is
-  headless-fixed only (ADR-0041); barge and capture remain red.
+  then PortAudio -9999/allocator corruption recurred. Voice lock and the exact
+  `OF HE STOP` repair are headless-fixed only (ADR-0041/0042); live stays red.
 - Capture recovery/device switch remains headless-only; no live unplug validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

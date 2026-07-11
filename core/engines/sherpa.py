@@ -11,6 +11,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Callable, Optional
 
 import numpy as np
@@ -78,7 +79,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
-from ..contract import is_stop_command
+from ..contract import is_stop_command, normalize_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
     AudioResampler,
@@ -148,6 +149,38 @@ from .echo_coherence import EchoCoherenceDetector
 _ATTESTED_SHORT_INTERRUPT_REPAIRS = frozenset({
     (("castle", "death"), ("cancel", "that")),
 })
+
+# Owner-attested playback-time ASR repair from live run 20260711-154451. Keep
+# this exact: arbitrary short phrases ending in STOP include ordinary nouns and
+# negations, and must never acquire canonical control semantics.
+_ATTESTED_WORD_CUT_STOP_REPAIRS = frozenset({("of", "he", "stop")})
+
+
+class _WordCutStopKind(Enum):
+    NONE = "none"
+    EXACT = "exact"
+    ATTESTED_REPAIR = "attested_repair"
+
+
+@dataclass(frozen=True)
+class _WordCutStopDecision:
+    """Typed fusion of lexical STOP evidence and current-TTS ambiguity."""
+
+    kind: _WordCutStopKind
+    speaker_required: bool
+    reads_like_own_speech: bool
+
+    @property
+    def requested(self) -> bool:
+        return self.kind is not _WordCutStopKind.NONE
+
+    @property
+    def needs_speaker(self) -> bool:
+        return (
+            self.requested
+            and self.speaker_required
+            and self.reads_like_own_speech
+        )
 
 
 @dataclass(frozen=True)
@@ -5848,14 +5881,45 @@ class SherpaOnnxEngine(AudioEngine):
         )
         self._trim_word_cut_candidate_to_limit(limit)
 
-    def _word_cut_stop_requested(self, new_text: str, full_text: str) -> bool:
-        """Recognize only a canonical stop in the NEW user-text suffix.
+    def _word_cut_stop_decision(
+        self,
+        new_text: str,
+        full_text: str,
+        *,
+        speaker_required: bool,
+        reads_like_own_speech: bool,
+    ) -> _WordCutStopDecision:
+        """Classify a canonical stop in the NEW playback-time ASR suffix.
 
-        Do not scan arbitrary full-text suffixes: the assistant can itself say a
-        sentence ending in “stop,” and that echo must still face speaker authority.
+        Exact stop-class commands retain their existing behavior. The one
+        owner-attested corrupt transcript is repaired exactly; every other
+        non-command remains ordinary talk-over text. Whether either form
+        resembles current/recent TTS is fused here so every word-cut boundary
+        applies the same enrolled-speaker requirement to own-speech ambiguity.
         """
-        del full_text  # kept in the seam so future recognizer metadata can use it
-        return is_stop_command(new_text)
+        del full_text  # reserved for future recognizer provenance metadata
+        kind = _WordCutStopKind.NONE
+        normalized_words = tuple(normalize_command(new_text).split())
+        if is_stop_command(new_text):
+            kind = _WordCutStopKind.EXACT
+        elif normalized_words in _ATTESTED_WORD_CUT_STOP_REPAIRS:
+            kind = _WordCutStopKind.ATTESTED_REPAIR
+        tts_contains_stop = False
+        if kind is _WordCutStopKind.ATTESTED_REPAIR:
+            candidates = (getattr(self, "_now_playing", ""),) + tuple(
+                getattr(self, "_recent_spoken", ())
+            )
+            tts_contains_stop = any(
+                "stop" in normalize_command(str(spoken)).split()
+                for spoken in candidates
+            )
+        return _WordCutStopDecision(
+            kind=kind,
+            speaker_required=bool(speaker_required),
+            reads_like_own_speech=bool(
+                reads_like_own_speech or tts_contains_stop
+            ),
+        )
 
     def _word_cut_speaker_decision(
         self, *, min_sec: Optional[float] = None
@@ -6276,15 +6340,17 @@ class SherpaOnnxEngine(AudioEngine):
             drop_reason = "empty"
         else:
             floor = self._word_cut_authority_min_words()
-            stop_requested = self._word_cut_stop_requested(new_text, text)
             speaker_required = bool(
                 getattr(self.config, "barge_word_cut_require_speaker", True)
             )
-            stop_needs_speaker = bool(
-                stop_requested
-                and speaker_required
-                and self._reads_like_own_speech(new_text)
+            stop = self._word_cut_stop_decision(
+                new_text,
+                text,
+                speaker_required=speaker_required,
+                reads_like_own_speech=self._reads_like_own_speech(new_text),
             )
+            stop_requested = stop.requested
+            stop_needs_speaker = stop.needs_speaker
             speaker_decision = "legacy"
             if (
                 len(words) >= floor
@@ -6407,12 +6473,14 @@ class SherpaOnnxEngine(AudioEngine):
             and (audio_first or len(words) > self._word_cut_tail_words)
         )
         if continuation:
-            stop_requested = self._word_cut_stop_requested(new_text, text)
-            stop_needs_speaker = bool(
-                stop_requested
-                and speaker_required
-                and self._reads_like_own_speech(new_text)
+            stop = self._word_cut_stop_decision(
+                new_text,
+                text,
+                speaker_required=speaker_required,
+                reads_like_own_speech=self._reads_like_own_speech(new_text),
             )
+            stop_requested = stop.requested
+            stop_needs_speaker = stop.needs_speaker
             speaker_decision = (
                 self._word_cut_speaker_decision(
                     min_sec=(
@@ -6650,12 +6718,14 @@ class SherpaOnnxEngine(AudioEngine):
         speaker_required = bool(
             getattr(self.config, "barge_word_cut_require_speaker", True)
         )
-        stop_requested = bool(text) and self._word_cut_stop_requested(
-            new_text, text
+        stop = self._word_cut_stop_decision(
+            new_text,
+            text,
+            speaker_required=speaker_required,
+            reads_like_own_speech=reads_like_own,
         )
-        stop_needs_speaker = bool(
-            stop_requested and speaker_required and reads_like_own
-        )
+        stop_requested = bool(text) and stop.requested
+        stop_needs_speaker = bool(text) and stop.needs_speaker
         speaker_decision = "legacy"
         if len(words) >= floor and (
             (speaker_required and (not stop_requested or stop_needs_speaker))

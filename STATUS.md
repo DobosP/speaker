@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
-24 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, lifecycle branch; focused recovery/Sherpa:
+276 passed, 1 skipped; APM/DTD: 6 passed; compile/whitespace passed. Main full baseline: 3154 passed, 24 skipped, 9 known warnings. Live A/B is red.
 
 ## Runtime
 
@@ -33,8 +33,11 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
   ASR words; an ambiguous score starts a fresh identity window. Accepted PCM is
   replayed/spliced once, and an empty stream may reach offline ASR. Canonical stop
   stays immediate except standalone-own-echo ambiguity (ADR-0026/0036).
-- Capture recovery rebinds actual rate/resampler, resets dependent state, preserves
-  the first correctly timed block, and revalidates fallback. Same-domain recovery
+- Capture recovery rebinds rate/resampler, resets dependent state, preserves the
+  first correctly timed block, and revalidates fallback; host `-9999` is REOPEN.
+  Shutdown invalidates a run epoch before recorder/KWS/barge/final effects and
+  joins before close. Abort and native teardown are bounded tracked helpers;
+  active/failed owners retain resources; live prior workers block restart; a post-join pass collects newly idle resources (ADR-0043). Same-domain recovery
   preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
   pre-AGC blocks. Speaker/word-cut authority stays cleared until compatible.
 - Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
@@ -77,7 +80,7 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
   (replacement peak 0.013/floor 0.0094), but switched `sid=0` to `sid=16`. Owner
   “STOP” reached word-cut text while scores 0.16–0.23 stayed below 0.30; cuts=0,
   then PortAudio -9999/allocator corruption recurred. Live B is red (ADR-0040).
-- Capture recovery/device switch remains headless-only; no live unplug validation ran.
+- The `-9999`/shutdown fix is headless-only; native overlap is an inference and no live unplug validation ran (ADR-0043).
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
   (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.

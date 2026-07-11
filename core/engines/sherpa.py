@@ -34,6 +34,10 @@ _BARGE_TAIL_FRESH_SEC = 0.30
 _FIFO_GROW = 1.5
 _FIFO_DECAY = 0.9
 _FIFO_SEC_MAX = 4.0
+# A healthy PortAudio stop()+close() may take several callback periods. Keep the
+# engine wait realistic but finite; a tracked helper retains ownership past it.
+_INPUT_TEARDOWN_TIMEOUT_SEC = 1.0
+_CAPTURE_FORCE_JOIN_TIMEOUT_SEC = 1.0
 
 # Startup calibration must measure stationary room tone, not the stream-open
 # impulse observed in live run 20260711-144211 (peak 0.818 over a 0.0049-RMS
@@ -1274,6 +1278,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._final_q: "Optional[queue.Queue[Optional[tuple]]]" = None
         self._final_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
+        self._capture_stopping = threading.Event()
+        self._capture_effect_condition = threading.Condition()
+        self._capture_epoch = 0
+        self._capture_effects = 0
+        self._capture_callback_context = threading.local()
+        # Set from the first stop instruction until the capture owner + every
+        # admitted external side effect quiesce. Output/recorder teardown checks
+        # this too: retained capture code must never race freed shared resources.
+        self._capture_resource_hold = threading.Event()
         self._playback_stopping = threading.Event()
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
@@ -2131,12 +2144,140 @@ class SherpaOnnxEngine(AudioEngine):
             thread.join(timeout=0.5)
             if thread.is_alive():
                 log.warning("playback receipt dispatcher did not exit within 0.5s")
+                # Retain ownership. A later start() must see this live worker and
+                # fail before re-setting its shared run event; dropping the
+                # reference here could resurrect two receipt consumers.
+                return
         with self._receipt_lock:
             if self._receipt_thread is thread:
                 self._receipt_thread = None
 
+    def _capture_epoch_is_current(self, epoch: int) -> bool:
+        with self._capture_effect_condition:
+            return bool(
+                epoch == self._capture_epoch
+                and not self._capture_stopping.is_set()
+            )
+
+    def _capture_callback_is_current(self, epoch: Optional[int] = None) -> bool:
+        """Fence a callback emitted by capture or its async final worker.
+
+        Direct unit/helper calls have no capture context and retain historical
+        behavior. Live capture installs its run epoch; queued finals carry it
+        explicitly so a slow second pass cannot callback into a stopped/restarted
+        runtime.
+        """
+        if epoch is None:
+            epoch = getattr(self._capture_callback_context, "epoch", None)
+        return epoch is None or self._capture_epoch_is_current(epoch)
+
+    def _emit_capture_callback(
+        self,
+        callback,
+        *args,
+        capture_epoch: Optional[int] = None,
+        **kwargs,
+    ) -> bool:
+        """Linearize one callback at its actual call seam against stop()."""
+        if capture_epoch is None:
+            capture_epoch = getattr(self._capture_callback_context, "epoch", None)
+        if capture_epoch is None:
+            callback(*args, **kwargs)
+            return True
+        if not self._enter_capture_effects(capture_epoch):
+            return False
+        try:
+            callback(*args, **kwargs)
+            return True
+        finally:
+            self._leave_capture_effects()
+
+    def _enter_capture_effects(self, epoch: int) -> bool:
+        """Admit one capture block's external effects for ``epoch``.
+
+        stop() invalidates the epoch under the same condition. Thus either this
+        increment wins first (and stop retains resources until it is released),
+        or the block is fenced before recorder/KWS/barge/ASR callbacks.
+        """
+        with self._capture_effect_condition:
+            if (
+                epoch != self._capture_epoch
+                or self._capture_stopping.is_set()
+            ):
+                return False
+            self._capture_effects += 1
+            return True
+
+    def _leave_capture_effects(self) -> None:
+        with self._capture_effect_condition:
+            self._capture_effects -= 1
+            if self._capture_effects == 0:
+                self._capture_effect_condition.notify_all()
+
+    def _capture_effects_are_idle(self) -> bool:
+        with self._capture_effect_condition:
+            return self._capture_effects == 0
+
+    def _capture_owner_and_effects_are_idle(self) -> bool:
+        capture_thread = self._capture_thread
+        return bool(
+            (capture_thread is None or not capture_thread.is_alive())
+            and self._capture_effects_are_idle()
+        )
+
+    def _close_capture_input(self) -> bool:
+        """Try one bounded physical input teardown, retaining on failure."""
+        capture_stream = self._stream_in
+        if capture_stream is None:
+            return True
+        try:
+            try:
+                closed = capture_stream.close(
+                    teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
+                )
+            except TypeError:
+                # Narrow compatibility for simple injected test streams.
+                closed = capture_stream.close()
+        except Exception:  # noqa: BLE001 - device may already be gone
+            log.exception("input close failed; retaining stream handle")
+            return False
+        if closed is False:
+            return False
+        if self._stream_in is capture_stream:
+            self._stream_in = None
+        return True
+
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
+        prior_workers = (
+            ("capture thread", self._capture_thread),
+            ("playback worker", self._play_thread),
+            ("final worker", self._final_thread),
+            ("receipt worker", self._receipt_thread),
+        )
+        for worker_name, worker in prior_workers:
+            if worker is not None and worker.is_alive():
+                raise RuntimeError(
+                    f"cannot start audio: previous {worker_name} is still alive"
+                )
+        if self._stream_in is not None:
+            raise RuntimeError(
+                "cannot start audio: previous input stream was retained; "
+                "restart the process after the native capture operation exits"
+            )
+        if self._capture_resource_hold.is_set():
+            raise RuntimeError(
+                "cannot start audio: previous capture resources remain retained; "
+                "run bounded cleanup again or restart the process"
+            )
+        with self._capture_effect_condition:
+            if self._capture_effects:
+                raise RuntimeError(
+                    "cannot start audio: previous capture side effect is still active"
+                )
+            self._capture_epoch += 1
+            self._capture_stopping.clear()
+            self._capture_resource_hold.clear()
         import sounddevice as sd  # lazy
 
         self._cb = callbacks
@@ -2239,8 +2380,12 @@ class SherpaOnnxEngine(AudioEngine):
             self._stream_in.open()
         except Exception:
             self._running.clear()
-            self._stream_in.close()
-            self._stream_in = None
+            if self._stream_in.close(
+                teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
+            ):
+                self._stream_in = None
+            else:
+                log.error("startup input cleanup retained a native stream")
             raise
         self._capture_sr = self._stream_in.actual_samplerate
         # Stateful anti-aliased resampler for the capture hot path (soxr ->
@@ -2295,8 +2440,12 @@ class SherpaOnnxEngine(AudioEngine):
                     )
         except Exception:
             self._running.clear()
-            self._stream_in.close()
-            self._stream_in = None
+            if self._stream_in.close(
+                teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
+            ):
+                self._stream_in = None
+            else:
+                log.error("failed-start input cleanup retained a native stream")
             if self._recorder is not None:
                 self._recorder.close()
                 self._recorder = None
@@ -2318,17 +2467,62 @@ class SherpaOnnxEngine(AudioEngine):
 
     def stop(self) -> None:
         self._playback_stopping.set()
+        retained_capture_resources_on_entry = self._capture_resource_hold.is_set()
+        self._capture_resource_hold.set()
+        with self._capture_effect_condition:
+            # Epoch invalidation is the linearization point: no later capture
+            # side-effect lease can be admitted for this run. Existing leases
+            # remain counted until their capture owner releases them.
+            self._capture_epoch += 1
+            self._capture_stopping.set()
+            self._capture_effect_condition.notify_all()
         self._running.clear()
-        # Close capture immediately, before joining. This interrupts an active
-        # PortAudio read or recovery backoff and prevents the recovering wrapper
-        # from reopening a device during the one-second join grace period.
-        if self._stream_in is not None:
-            try:
-                self._stream_in.close()
-            except Exception:  # noqa: BLE001 - device may already be gone
-                pass
-            self._stream_in = None
         self._stop_speaking.set()
+        # Capture owns a blocking PortAudio read.  Phase one closes only the
+        # wrapper admission/recovery gate; a healthy read then returns within one
+        # configured block and the capture loop exits before processing it.  Join
+        # that owner before physically handing PortAudio's buffer back.  Only a
+        # genuinely stuck read reaches bounded abort; native close still waits.
+        capture_stream = self._stream_in
+        capture_thread = self._capture_thread
+        if capture_stream is not None:
+            request_close = getattr(capture_stream, "request_close", None)
+            if callable(request_close):
+                request_close()
+        capture_grace = max(0.01, float(self.config.block_sec) + 0.05)
+        if capture_thread is not None:
+            capture_thread.join(timeout=capture_grace)
+        capture_alive = bool(capture_thread is not None and capture_thread.is_alive())
+        if capture_alive and capture_stream is not None:
+            log.warning(
+                "capture thread did not quiesce within %.3fs; requesting "
+                "bounded input abort",
+                capture_grace,
+            )
+            abort_read = getattr(capture_stream, "abort_read", None)
+            if callable(abort_read):
+                try:
+                    abort_read(timeout=capture_grace)
+                except Exception:  # noqa: BLE001 - device may already be gone
+                    pass
+            capture_thread.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
+            capture_alive = capture_thread.is_alive()
+        capture_effects_idle = self._capture_effects_are_idle()
+        capture_quiesced = not capture_alive and capture_effects_idle
+        input_close_attempted = False
+        if capture_stream is not None and capture_quiesced:
+            input_close_attempted = True
+            self._close_capture_input()
+        if capture_quiesced:
+            self._capture_resource_hold.clear()
+        else:
+            # Retain the wrapper + native handle.  Letting an uninterruptible
+            # daemon leak at shutdown is safer than concurrent close/read native
+            # allocator corruption; stop() remains bounded.
+            log.error(
+                "capture owner/effect remains active after bounded shutdown; "
+                "retaining audio resources and proceeding"
+            )
         # Tear the live output stream down BEFORE pushing the sentinel / joining
         # the play thread. On a dead/stalled device the play thread can be blocked
         # in FIFO.write() and would never reach _play_q.get() to see the sentinel,
@@ -2341,15 +2535,19 @@ class SherpaOnnxEngine(AudioEngine):
         # barge_in_stop metric (teardown, not an interruption).
         with self._receipt_lock:
             self._drain_play_q()
-            with self._out_lock:
-                if self._fifo is not None:
-                    self._fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
-                if self._out_stream is not None:
-                    try:
-                        self._out_stream.stop()
-                        self._out_stream.close()
-                    except Exception:  # noqa: BLE001 - device may be mid-teardown
-                        pass
+            if (
+                not self._capture_resource_hold.is_set()
+                and not retained_capture_resources_on_entry
+            ):
+                with self._out_lock:
+                    if self._fifo is not None:
+                        self._fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
+                    if self._out_stream is not None:
+                        try:
+                            self._out_stream.stop()
+                            self._out_stream.close()
+                        except Exception:  # noqa: BLE001 - device may be mid-teardown
+                            pass
             self._terminalize_unbound_receipts()
         sentinel = (None, None, 0, None, None)
         try:
@@ -2371,12 +2569,6 @@ class SherpaOnnxEngine(AudioEngine):
                 self._final_q.put_nowait(None)  # sentinel: wake the second-pass worker
             except queue.Full:
                 pass  # _running is already clear; it exits on its own next loop
-        if self._capture_thread is not None:
-            self._capture_thread.join(timeout=1.0)
-            if self._capture_thread.is_alive():
-                # Wedged somewhere abort() can't unblock; never hang stop().
-                # The thread is a daemon and is left to interpreter teardown.
-                log.warning("capture thread did not exit within 1.0s; proceeding")
         if self._play_thread is not None:
             self._play_thread.join(timeout=1.0)
             if self._play_thread.is_alive():
@@ -2385,6 +2577,46 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_thread.join(timeout=1.0)
             if self._final_thread.is_alive():
                 log.warning("second-pass thread did not exit within 1.0s; proceeding")
+        # An admitted async-final callback can be the only capture effect still
+        # active at the first snapshot above, then finish while the worker joins.
+        # Re-evaluate once after both shared audio workers have had their bounded
+        # joins. If ownership really quiesced, collect everything skipped under
+        # the capture hold; otherwise retain it for a later bounded stop.
+        if (
+            self._capture_resource_hold.is_set()
+            or retained_capture_resources_on_entry
+        ):
+            capture_now_idle = self._capture_owner_and_effects_are_idle()
+            play_thread = self._play_thread
+            playback_now_idle = bool(
+                play_thread is None or not play_thread.is_alive()
+            )
+            if capture_now_idle and playback_now_idle:
+                if self._stream_in is not None and not input_close_attempted:
+                    input_close_attempted = True
+                    self._close_capture_input()
+                with self._receipt_lock:
+                    with self._out_lock:
+                        fifo = self._fifo
+                        out = self._out_stream
+                        if fifo is not None:
+                            fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
+                        self._out_stream = None
+                        self._fifo = None
+                    if out is not None:
+                        try:
+                            out.stop()
+                            out.close()
+                        except Exception:  # noqa: BLE001 - device may be mid-teardown
+                            pass
+                    self._terminalize_unbound_receipts()
+                self._capture_resource_hold.clear()
+            else:
+                self._capture_resource_hold.set()
+                log.error(
+                    "capture/playback owner or effect remains active after "
+                    "worker joins; retaining shared audio resources"
+                )
         # A native TTS call may ignore cancellation beyond the bounded join.
         # Resolve every remaining accepted ownership while the dispatcher is
         # still alive. Any exact FIFO terminal event was appended earlier and
@@ -2402,12 +2634,12 @@ class SherpaOnnxEngine(AudioEngine):
         if not self._drain_receipt_dispatcher(timeout=0.5):
             log.warning("playback receipts still pending after bounded shutdown drain")
         self._stop_receipt_dispatcher()
-        if self._recorder is not None:
+        if self._recorder is not None and not self._capture_resource_hold.is_set():
             log.info("recorded %.1fs of session audio -> %s",
                      self._recorder.seconds, self._recorder.path)
             self._recorder.close()
             self._recorder = None
-        if self._ref_recorder is not None:
+        if self._ref_recorder is not None and not self._capture_resource_hold.is_set():
             log.info("recorded playback reference -> %s", self._ref_recorder.path)
             self._ref_recorder.close()
             self._ref_recorder = None
@@ -2625,7 +2857,7 @@ class SherpaOnnxEngine(AudioEngine):
         # speaking stream, so a no-op stop (nothing playing) records nothing --
         # preserving the old aborted-guarded behavior.
         if cut:
-            self._cb.on_metric(BARGE_IN_STOP)
+            self._emit_capture_callback(self._cb.on_metric, BARGE_IN_STOP)
 
     @property
     def is_speaking(self) -> bool:
@@ -2801,6 +3033,7 @@ class SherpaOnnxEngine(AudioEngine):
         speech_sec: Optional[float] = None,
         offline_recovery_authorized: bool = False,
         owner_lineage_intact: bool = True,
+        capture_epoch: Optional[int] = None,
     ) -> None:
         """Produce the FINAL transcript and deliver it (or its drop metric).
 
@@ -2848,9 +3081,17 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             )
         log.info("asr final: %r (raw %r)", final_text, raw_final)
+        if not self._capture_callback_is_current(capture_epoch):
+            return
         if not final_text.strip():
             log.info("dropping empty final after offline recovery")
-            self._cb.on_metric("empty_final_after_second_pass")
+            if not self._capture_callback_is_current(capture_epoch):
+                return
+            self._emit_capture_callback(
+                self._cb.on_metric,
+                "empty_final_after_second_pass",
+                capture_epoch=capture_epoch,
+            )
         elif not self._final_above_floor(seg):
             # L1: at/near the device's learned echo/quiet floor -- the assistant's
             # own residual echo or ambient noise transcribed into words. Drop it
@@ -2860,33 +3101,71 @@ class SherpaOnnxEngine(AudioEngine):
                 "dropping final %r -- at/near the learned echo/quiet floor "
                 "(echo/ambient, not speech)", final_text,
             )
-            self._cb.on_metric("echo_floor_rejected_final")
+            if not self._capture_callback_is_current(capture_epoch):
+                return
+            self._emit_capture_callback(
+                self._cb.on_metric,
+                "echo_floor_rejected_final",
+                capture_epoch=capture_epoch,
+            )
         else:
             speaker_decision = self._speaker_decision_for_final(seg)
+            if not self._capture_callback_is_current(capture_epoch):
+                return
             verification = speaker_decision.verification
             if (
                 verification is OwnerVerification.VERIFIED
                 and not owner_lineage_intact
             ):
                 verification = OwnerVerification.UNKNOWN
-                self._cb.on_metric("speaker_mixed_lineage_unverified")
+                if not self._capture_callback_is_current(capture_epoch):
+                    return
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "speaker_mixed_lineage_unverified",
+                    capture_epoch=capture_epoch,
+                )
             if not speaker_decision.admitted:
                 log.info(
                     "dropping final %r -- speaker is not the enrolled user",
                     final_text,
                 )
-                self._cb.on_metric("speaker_rejected_final")
+                if not self._capture_callback_is_current(capture_epoch):
+                    return
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "speaker_rejected_final",
+                    capture_epoch=capture_epoch,
+                )
                 return
-            self._cb.on_metric(SPEECH_END, at=speech_end_ts)
+            if not self._capture_callback_is_current(capture_epoch):
+                return
+            if not self._emit_capture_callback(
+                self._cb.on_metric,
+                SPEECH_END,
+                at=speech_end_ts,
+                capture_epoch=capture_epoch,
+            ):
+                return
             result = FinalTranscript(
                 final_text,
                 owner_verification=verification,
                 origin="live_audio",
             )
+            if not self._capture_callback_is_current(capture_epoch):
+                return
             if self._cb.on_final_result is not None:
-                self._cb.on_final_result(result)
+                self._emit_capture_callback(
+                    self._cb.on_final_result,
+                    result,
+                    capture_epoch=capture_epoch,
+                )
             else:
-                self._cb.on_final(final_text)
+                self._emit_capture_callback(
+                    self._cb.on_final,
+                    final_text,
+                    capture_epoch=capture_epoch,
+                )
 
     def _maybe_setup_async_final(self) -> None:
         """Create the second-pass worker queue iff a 2nd-pass recognizer was built
@@ -2907,6 +3186,7 @@ class SherpaOnnxEngine(AudioEngine):
         speech_sec: Optional[float] = None,
         offline_recovery_authorized: bool = False,
         owner_lineage_intact: bool = True,
+        capture_epoch: Optional[int] = None,
     ) -> None:
         """Hand an endpointed utterance to the second-pass worker WITHOUT ever
         blocking the capture loop. On overflow (the worker is wedged/very slow --
@@ -2916,14 +3196,23 @@ class SherpaOnnxEngine(AudioEngine):
         runtime's supersede is newest-ARRIVAL-wins, so a stale final arriving
         after a newer one would wrongly cancel the newer turn. Single producer
         (this capture thread), so after one ``get_nowait`` a slot is free."""
-        try:
+        def _item():
             item = (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
+            if capture_epoch is not None:
+                return item + (
+                    bool(offline_recovery_authorized),
+                    bool(owner_lineage_intact),
+                    int(capture_epoch),
+                )
             if offline_recovery_authorized or not owner_lineage_intact:
-                item += (
+                return item + (
                     bool(offline_recovery_authorized),
                     bool(owner_lineage_intact),
                 )
-            self._final_q.put_nowait(item)
+            return item
+
+        try:
+            self._final_q.put_nowait(_item())
             return
         except queue.Full:
             pass
@@ -2932,17 +3221,16 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_q.get_nowait()
             # Make the drop visible in the run bundle, like the floor/speaker
             # drop paths -- otherwise a wedged worker silently eats turns.
-            self._cb.on_metric("second_pass_queue_overflow_dropped_final")
+            if self._capture_callback_is_current(capture_epoch):
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "second_pass_queue_overflow_dropped_final",
+                    capture_epoch=capture_epoch,
+                )
         except queue.Empty:
             pass  # the worker just drained one; a slot is free now
         try:
-            item = (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
-            if offline_recovery_authorized or not owner_lineage_intact:
-                item += (
-                    bool(offline_recovery_authorized),
-                    bool(owner_lineage_intact),
-                )
-            self._final_q.put_nowait(item)
+            self._final_q.put_nowait(_item())
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
             log.warning("second-pass queue still full; finalizing inline")
@@ -2955,10 +3243,12 @@ class SherpaOnnxEngine(AudioEngine):
                     speech_sec,
                     offline_recovery_authorized=offline_recovery_authorized,
                     owner_lineage_intact=owner_lineage_intact,
+                    capture_epoch=capture_epoch,
                 )
             else:
                 self._finalize_and_dispatch(
-                    seg, raw_final, speech_end_ts, asr_seg, speech_sec
+                    seg, raw_final, speech_end_ts, asr_seg, speech_sec,
+                    capture_epoch=capture_epoch,
                 )
 
     def _final_worker(self) -> None:
@@ -2986,10 +3276,12 @@ class SherpaOnnxEngine(AudioEngine):
                 speech_sec = None
                 offline_recovery_authorized = False
                 owner_lineage_intact = True
+                capture_epoch = None
             elif len(item) == 5:
                 seg, raw_final, speech_end_ts, asr_seg, speech_sec = item
                 offline_recovery_authorized = False
                 owner_lineage_intact = True
+                capture_epoch = None
             elif len(item) == 6:
                 # Transitional schema used by the first zero-word handoff
                 # implementation: the sixth field carried only offline decode
@@ -3003,7 +3295,8 @@ class SherpaOnnxEngine(AudioEngine):
                     offline_recovery_authorized,
                 ) = item
                 owner_lineage_intact = True
-            else:
+                capture_epoch = None
+            elif len(item) == 7:
                 (
                     seg,
                     raw_final,
@@ -3013,6 +3306,23 @@ class SherpaOnnxEngine(AudioEngine):
                     offline_recovery_authorized,
                     owner_lineage_intact,
                 ) = item
+                capture_epoch = None
+            else:
+                (
+                    seg,
+                    raw_final,
+                    speech_end_ts,
+                    asr_seg,
+                    speech_sec,
+                    offline_recovery_authorized,
+                    owner_lineage_intact,
+                    capture_epoch,
+                ) = item
+            previous_callback_epoch = getattr(
+                self._capture_callback_context, "epoch", None
+            )
+            if capture_epoch is not None:
+                self._capture_callback_context.epoch = capture_epoch
             try:
                 if offline_recovery_authorized or not owner_lineage_intact:
                     self._finalize_and_dispatch(
@@ -3025,13 +3335,23 @@ class SherpaOnnxEngine(AudioEngine):
                             offline_recovery_authorized
                         ),
                         owner_lineage_intact=owner_lineage_intact,
+                        capture_epoch=capture_epoch,
                     )
                 else:
                     self._finalize_and_dispatch(
-                        seg, raw_final, speech_end_ts, asr_seg, speech_sec
+                        seg, raw_final, speech_end_ts, asr_seg, speech_sec,
+                        capture_epoch=capture_epoch,
                     )
             except Exception:  # noqa: BLE001 - never let the worker die on one turn
                 log.exception("second-pass finalize failed; dropping this turn")
+            finally:
+                if previous_callback_epoch is None:
+                    try:
+                        del self._capture_callback_context.epoch
+                    except AttributeError:
+                        pass
+                else:
+                    self._capture_callback_context.epoch = previous_callback_epoch
 
     @staticmethod
     def _build_turn_detector(config):
@@ -3358,11 +3678,23 @@ class SherpaOnnxEngine(AudioEngine):
         beat_clip = 0.0
         asr_errors = 0
         last_beat = time.monotonic()
+        with self._capture_effect_condition:
+            capture_epoch = self._capture_epoch
+        self._capture_callback_context.epoch = capture_epoch
+        effects_admitted = False
         log.info("capture loop started (capture_sr=%d -> asr_sr=%d)",
                  self._capture_sr, self.config.sample_rate)
         try:
             while self._running.is_set():
+                if effects_admitted:
+                    self._leave_capture_effects()
+                    effects_admitted = False
                 audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
+                # stop() deliberately leaves the native input open for one block
+                # so read() can return without a concurrent PortAudio close.  Do
+                # not process that final block; quiesce immediately for the join.
+                if self._capture_stopping.is_set():
+                    break
                 current_generation = int(
                     getattr(self._stream_in, "generation", capture_generation) or 0
                 )
@@ -3487,6 +3819,16 @@ class SherpaOnnxEngine(AudioEngine):
                 if self._denoiser is not None and not self._apm_owns_ns:
                     samples = self._denoiser.process_16k(samples)
 
+                # Linearize every externally visible effect from this processed
+                # block against stop(). The lease spans the remainder of the
+                # iteration (including every continue) and is released at the
+                # next loop head/finally. A stop that wins first rejects it; a
+                # block that wins first keeps shared resources retained until its
+                # capture owner quiesces.
+                if not self._enter_capture_effects(capture_epoch):
+                    break
+                effects_admitted = True
+
                 if self._recorder is not None:
                     self._recorder.write(samples)
                     # Frame-aligned reference: one ref frame per mic frame (silence
@@ -3530,16 +3872,28 @@ class SherpaOnnxEngine(AudioEngine):
                         # Surface it into the run bundle (summary.json), not just the
                         # log -- a hot ADC is the #1 silent STT-garbler.
                         try:
-                            self._cb.on_metric("input_clipping")
+                            if self._capture_callback_is_current(capture_epoch):
+                                self._emit_capture_callback(
+                                    self._cb.on_metric,
+                                    "input_clipping",
+                                    capture_epoch=capture_epoch,
+                                )
                         except Exception:  # noqa: BLE001 - metric is best-effort
                             pass
-                    self._cb.on_heartbeat()
+                    if not self._capture_callback_is_current(capture_epoch):
+                        continue
+                    self._emit_capture_callback(
+                        self._cb.on_heartbeat,
+                        capture_epoch=capture_epoch,
+                    )
                     last_beat, beat_blocks, beat_level, beat_clip = now, 0, 0.0, 0.0
 
                 # Command fast-path: normal listening is always eligible. During
                 # playback, raw mic echo must not become command authority: KWS
                 # is enabled only behind a live in-app AEC or a verified OS echo
                 # route. A failed AEC build/recovery therefore fails closed.
+                if not self._capture_epoch_is_current(capture_epoch):
+                    continue
                 if (
                     not self._speaking.is_set()
                     or self._aec is not None
@@ -3572,6 +3926,8 @@ class SherpaOnnxEngine(AudioEngine):
                 # transcribe its own TTS). Barge-in watch is gated by
                 # ``barge_in_enabled`` -- off until AEC, so the loud TTS leaking
                 # into an open-speaker mic can't self-interrupt.
+                if not self._capture_epoch_is_current(capture_epoch):
+                    continue
                 if self._speaking.is_set():
                     # audio-bargein-8: ingest the played reference blocks the audio
                     # callback queued (off its real-time thread) into the coherence
@@ -3783,7 +4139,11 @@ class SherpaOnnxEngine(AudioEngine):
                                         now + max(0.0, self.config.barge_in_suppress_sec)
                                     )
                                     log.info("barge-in detected")
-                                    self._cb.on_barge_in()
+                                    if self._capture_callback_is_current(capture_epoch):
+                                        self._emit_capture_callback(
+                                            self._cb.on_barge_in,
+                                            capture_epoch=capture_epoch,
+                                        )
                             elif eligible:
                                 rejected_run = 0.0
                             else:
@@ -3845,7 +4205,12 @@ class SherpaOnnxEngine(AudioEngine):
                                             "playback did not trip the gate (talk-over ignored?)",
                                             rejected_run,
                                         )
-                                        self._cb.on_metric("barge_in_rejected")
+                                        if self._capture_callback_is_current(capture_epoch):
+                                            self._emit_capture_callback(
+                                                self._cb.on_metric,
+                                                "barge_in_rejected",
+                                                capture_epoch=capture_epoch,
+                                            )
                                 else:
                                     rejected_run = 0.0
                     continue
@@ -3974,7 +4339,13 @@ class SherpaOnnxEngine(AudioEngine):
                         # heavier punctuation model is reserved for the final.
                         shown = restore_casing(text) if self.config.asr_restore_casing else text
                         log.debug("asr partial: %r", shown)
-                        self._cb.on_partial(shown)
+                        if not self._capture_epoch_is_current(capture_epoch):
+                            continue
+                        self._emit_capture_callback(
+                            self._cb.on_partial,
+                            shown,
+                            capture_epoch=capture_epoch,
+                        )
                     acoustic_endpoint = recognizer.is_endpoint(stream)
                     decision_now = time.perf_counter()
                     endpoint_silence = segment.trailing_silence(decision_now)
@@ -4035,6 +4406,8 @@ class SherpaOnnxEngine(AudioEngine):
                             and self._final_recognizer is not None
                         )
                         if admitted and (raw_final.strip() or recover_empty_streaming):
+                            if not self._capture_epoch_is_current(capture_epoch):
+                                continue
                             finals += 1
                             # Finalize (second-pass re-transcription, when
                             # configured, + the echo-floor/speaker gates) and
@@ -4056,6 +4429,7 @@ class SherpaOnnxEngine(AudioEngine):
                                         owner_lineage_intact=(
                                             owner_lineage_intact
                                         ),
+                                        capture_epoch=capture_epoch,
                                     )
                                 else:
                                     self._enqueue_final(
@@ -4064,6 +4438,7 @@ class SherpaOnnxEngine(AudioEngine):
                                         speech_end_ts,
                                         asr_seg,
                                         speech_sec,
+                                        capture_epoch=capture_epoch,
                                     )
                             else:
                                 if recover_empty_streaming or not owner_lineage_intact:
@@ -4097,7 +4472,12 @@ class SherpaOnnxEngine(AudioEngine):
                                 "dropping final %r -- VAD observed no speech in segment",
                                 raw_final,
                             )
-                            self._cb.on_metric("vad_rejected_final")
+                            if self._capture_callback_is_current(capture_epoch):
+                                self._emit_capture_callback(
+                                    self._cb.on_metric,
+                                    "vad_rejected_final",
+                                    capture_epoch=capture_epoch,
+                                )
                     asr_errors = 0
                 except Exception:
                     # Recover from a transient decode error by resetting the
@@ -4150,6 +4530,13 @@ class SherpaOnnxEngine(AudioEngine):
                     "capture loop crashed -- the assistant has stopped listening"
                 )
             self._running.clear()
+        finally:
+            if effects_admitted:
+                self._leave_capture_effects()
+            try:
+                del self._capture_callback_context.epoch
+            except AttributeError:
+                pass
 
     def _reset_capture_frontends_after_reopen(self) -> None:
         """Rebind state; preserve or relearn calibration before authority."""
@@ -4350,7 +4737,9 @@ class SherpaOnnxEngine(AudioEngine):
             "verified" if route_ok else "disabled",
         )
         try:
-            self._cb.on_metric("capture_recalibrated")
+            self._emit_capture_callback(
+                self._cb.on_metric, "capture_recalibrated"
+            )
         except Exception:  # noqa: BLE001 - telemetry is best-effort
             pass
 
@@ -4365,14 +4754,20 @@ class SherpaOnnxEngine(AudioEngine):
         warning during legitimate reopens."""
         state_str = getattr(state, "value", str(state))
         try:
-            self._cb.on_capture_state(state_str, message)
+            self._emit_capture_callback(
+                self._cb.on_capture_state, state_str, message
+            )
         except Exception:  # noqa: BLE001
             log.exception("on_capture_state callback raised")
         # Metric for the run summary: every reopen leaves a trace.
         if state_str == "recovering":
-            self._cb.on_metric("capture_recovery_start")
+            self._emit_capture_callback(
+                self._cb.on_metric, "capture_recovery_start"
+            )
         elif state_str == "open":
-            self._cb.on_metric("capture_recovery_end")
+            self._emit_capture_callback(
+                self._cb.on_metric, "capture_recovery_end"
+            )
 
     def _poll_keywords(self, samples) -> None:
         kws = self._kws
@@ -4385,7 +4780,8 @@ class SherpaOnnxEngine(AudioEngine):
         keyword = kws.get_result(ks)
         if keyword:
             kws.reset_stream(ks)
-            self._cb.on_command(keyword)
+            if self._capture_callback_is_current():
+                self._emit_capture_callback(self._cb.on_command, keyword)
 
     def _enqueue_play(
         self,
@@ -4906,15 +5302,20 @@ class SherpaOnnxEngine(AudioEngine):
             # stop_speaking() can't flush a stream we're closing. Clear the FIFO
             # too so a never-restarted loop holds no playback buffer. stop()/
             # close() (NOT abort) joins the callback before close.
-            with self._out_lock:
-                self._out_stream = None
-                self._fifo = None
-            if out is not None:
-                try:
-                    out.stop()
-                    out.close()
-                except Exception:  # noqa: BLE001 - may already be aborted/closed
-                    pass
+            if not self._capture_resource_hold.is_set():
+                with self._out_lock:
+                    self._out_stream = None
+                    self._fifo = None
+                if out is not None:
+                    try:
+                        out.stop()
+                        out.close()
+                    except Exception:  # noqa: BLE001 - may already be aborted/closed
+                        pass
+            elif out is not None:
+                log.error(
+                    "retaining output stream while capture side effects remain active"
+                )
 
     def _wait_for_playback_drain(self, timeout_sec: Optional[float] = None) -> bool:
         """Wait for queued playback to drain before reopening ASR.
@@ -5585,7 +5986,8 @@ class SherpaOnnxEngine(AudioEngine):
             "barge-in: acoustic trigger -- ducking playback, awaiting speech "
             "confirmation (%.1fs window)", self.config.barge_confirm_window_sec,
         )
-        self._cb.on_metric("barge_in_duck")
+        if self._capture_callback_is_current():
+            self._emit_capture_callback(self._cb.on_metric, "barge_in_duck")
 
     def _barge_confirm_step(
         self, recognizer, stream, samples, now: float, mic_raw=None
@@ -5639,11 +6041,17 @@ class SherpaOnnxEngine(AudioEngine):
                 now + max(0.0, self.config.barge_in_suppress_sec)
             )
             log.info("barge-in confirmed by speech: %r", new_text[:80])
-            self._cb.on_metric("barge_in_confirmed")
+            if not self._capture_callback_is_current():
+                return False
+            if not self._emit_capture_callback(
+                self._cb.on_metric, "barge_in_confirmed"
+            ):
+                return False
             # Keep the exact legacy log line so run-bundle tooling
             # (grep "barge-in detected") sees confirmed barges too.
             log.info("barge-in detected")
-            self._cb.on_barge_in()
+            if not self._emit_capture_callback(self._cb.on_barge_in):
+                return False
             # The confirm-window audio is already IN the stream: the user's
             # first words become the head of the next final (free pre-roll)
             # once _speaking clears and the normal ASR path resumes.
@@ -5674,7 +6082,10 @@ class SherpaOnnxEngine(AudioEngine):
                 "barge-in NOT confirmed (no talk-over speech in %.1fs) -- "
                 "restoring volume", self.config.barge_confirm_window_sec,
             )
-            self._cb.on_metric("barge_in_unconfirmed")
+            if self._capture_callback_is_current():
+                self._emit_capture_callback(
+                    self._cb.on_metric, "barge_in_unconfirmed"
+                )
         return False
 
     def _end_barge_confirm(self) -> None:
@@ -6729,11 +7140,17 @@ class SherpaOnnxEngine(AudioEngine):
             now + max(0.0, self.config.barge_in_suppress_sec)
         )
         log.info("barge-in confirmed by speech (word-cut): %r", new_text[:80])
-        self._cb.on_metric("barge_in_confirmed")
+        if not self._capture_callback_is_current():
+            return False
+        if not self._emit_capture_callback(
+            self._cb.on_metric, "barge_in_confirmed"
+        ):
+            return False
         # Keep the exact legacy log line so run-bundle tooling (grep
         # "barge-in detected") sees word-cut barges too.
         log.info("barge-in detected")
-        self._cb.on_barge_in()
+        if not self._emit_capture_callback(self._cb.on_barge_in):
+            return False
         return True
 
     def _wc_window_update(self, samples, now: float) -> None:
@@ -6936,7 +7353,9 @@ class SherpaOnnxEngine(AudioEngine):
                     identity_samples, self.config.sample_rate
                 )
                 if similarity is None or not math.isfinite(float(similarity)):
-                    self._cb.on_metric("speaker_gate_unusable_fail_open")
+                    self._emit_capture_callback(
+                        self._cb.on_metric, "speaker_gate_unusable_fail_open"
+                    )
                     return _FinalSpeakerDecision(
                         True, OwnerVerification.UNKNOWN
                     )
@@ -6956,7 +7375,9 @@ class SherpaOnnxEngine(AudioEngine):
                 exc_info=True,
             )
             try:
-                self._cb.on_metric("speaker_gate_error_fail_open")
+                self._emit_capture_callback(
+                    self._cb.on_metric, "speaker_gate_error_fail_open"
+                )
             except Exception:  # noqa: BLE001 - observability is best-effort
                 pass
             return _FinalSpeakerDecision(True, OwnerVerification.UNKNOWN)

@@ -28,9 +28,9 @@ https://raw.githubusercontent.com/spatialaudio/python-sounddevice/0.5.1/sounddev
 and https://files.portaudio.com/docs/v19-doxydocs-dev/portaudio_8h.html.
 
 The wrapper is platform-agnostic by design -- the same code path covers
-ALSA dmix shutdown (-9985), WASAPI exclusive-mode eviction (-9989 with
+ALSA dmix shutdown (-9985), WASAPI exclusive-mode eviction (-9999 with
 host_err_code = AUDCLNT_E_DEVICE_INVALIDATED), and CoreAudio aggregate-
-device vanish (-9989 with kAudioHardwareBadDeviceError). Reopen is
+device vanish (-9999 with kAudioHardwareBadDeviceError). Reopen is
 always by enumeration, never by stale device index.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ PA_DEVICE_UNAVAILABLE = -9985  # USB unplug, BT disconnect, sleep/resume
 PA_TIMED_OUT          = -9987  # CoreAudio aggregate vanish, WASAPI eviction
 PA_BAD_STREAM_PTR     = -9988  # read-after-close
 PA_INTERNAL_ERROR     = -9986  # host driver crash
-PA_UNANTICIPATED_HOST_ERROR = -9989  # real code in host_err_msg
+PA_UNANTICIPATED_HOST_ERROR = -9999  # real code in host_err_msg
 
 # Drop the frame; return silence; continue. The next read is expected to
 # succeed.
@@ -162,6 +162,13 @@ class _RecoveringInputStream:
         self.block_seconds = block_seconds
         self._sleep = sleep_fn
         self._closed = threading.Event()
+        # Never hold this condition across a native read.  It only linearizes
+        # "a read is now active" against request_close(), then lets close() wait
+        # a bounded interval without racing PortAudio's blocking read buffer.
+        self._read_condition = threading.Condition()
+        self._active_reads = 0
+        self._active_aborts = 0
+        self._active_closes = 0
         self._lifecycle_lock = threading.Lock()
         self._stream: Any = None
         self._current: Optional[OpenAttempt] = None
@@ -250,30 +257,257 @@ class _RecoveringInputStream:
         On TRANSIENT errors: returns a zero-filled block with
         ``overflowed=True``. On REOPEN errors: invokes the bounded recovery path
         which may raise FATAL after the backoff budget is exhausted."""
-        if self._closed.is_set():
-            raise RuntimeError("read() on closed input stream")
-        if self._stream is None:
-            raise RuntimeError("read() before open()")
+        with self._read_condition:
+            if self._closed.is_set():
+                raise RuntimeError("read() on closed input stream")
+            if self._stream is None:
+                raise RuntimeError("read() before open()")
+            stream = self._stream
+            self._active_reads += 1
         try:
-            return self._stream.read(frames)
+            return stream.read(frames)
         except Exception as exc:  # narrowed to PortAudioError below
             return self._handle_read_error(exc, frames)
+        finally:
+            with self._read_condition:
+                self._active_reads -= 1
+                if self._active_reads == 0:
+                    self._read_condition.notify_all()
 
-    def close(self) -> None:
-        self._closed.set()
-        with self._lifecycle_lock:
-            stream = self._stream
-            self._stream = None
-            self._current = None
-        if stream is not None:
+    def request_close(self) -> None:
+        """Stop admission and recovery without touching the native stream.
+
+        This is phase one of shutdown.  A capture owner can clear its running
+        flag, call this method, and join the reader before :meth:`close`
+        physically hands the device back.  Holding ``_read_condition`` makes
+        the close request linear with admission of a new blocking read.
+        """
+        with self._read_condition:
+            self._closed.set()
+
+    def close(
+        self,
+        *,
+        wait_timeout: Optional[float] = None,
+        abort_timeout: Optional[float] = None,
+        teardown_timeout: Optional[float] = None,
+    ) -> bool:
+        """Close the native stream after a bounded in-flight-read grace.
+
+        Returns ``True`` only when every wrapper read quiesced and native
+        stop/close completed successfully. The default read grace is one
+        configured audio block. On
+        timeout this method asks PortAudio to abort the read, waits once more,
+        and closes only after the read owner quiesces.  If abort itself or the
+        read remains stuck, the native handle is deliberately retained: a
+        bounded leak is safer than racing ``close()`` against native code.
+        """
+        self.request_close()
+        timeout = self.block_seconds if wait_timeout is None else wait_timeout
+        quiesced = self._wait_for_reads(max(0.0, float(timeout)))
+        if not quiesced:
+            log.warning(
+                "input read did not quiesce within %.3fs; requesting native abort",
+                max(0.0, float(timeout)),
+            )
+            abort_wait = timeout if abort_timeout is None else abort_timeout
+            self.abort_read(timeout=max(0.0, float(abort_wait)))
+            quiesced = self._wait_for_reads(max(0.0, float(timeout)))
+        if not quiesced:
+            log.error(
+                "input read remained active after bounded abort; retaining "
+                "native stream instead of racing close()"
+            )
+            return False
+        return self._close_native_stream(timeout=teardown_timeout)
+
+    def abort_read(self, *, timeout: Optional[float] = None) -> bool:
+        """Ask PortAudio to abort an active read within a bounded call budget.
+
+        The native abort call runs on a disposable daemon because a broken host
+        API can wedge even there.  This method never calls ``close()`` and never
+        detaches the handle; the capture owner must quiesce before phase two.
+        """
+        self.request_close()
+        budget = self.block_seconds if timeout is None else timeout
+        budget = max(0.0, float(budget))
+        wait_for_existing_abort = False
+        with self._read_condition:
+            active = self._active_reads > 0
+            abort_active = self._active_aborts > 0
+            close_active = self._active_closes > 0
+            if not active:
+                return not abort_active and not close_active
+            if close_active:
+                log.error("native input close is already active; not racing abort()")
+                return False
+            if abort_active:
+                wait_for_existing_abort = True
+                stream = None
+            else:
+                # Reserve abort ownership before selecting the native stream,
+                # under the same condition->lifecycle lock order used by close.
+                # Close therefore cannot observe zero aborts and detach between
+                # our decision and native-handle selection.
+                self._active_aborts += 1
+                with self._lifecycle_lock:
+                    stream = self._stream
+        if wait_for_existing_abort:
+            return self._wait_for_aborts(budget)
+        abort = getattr(stream, "abort", None) if stream is not None else None
+        if not callable(abort):
+            with self._read_condition:
+                self._active_aborts -= 1
+                self._read_condition.notify_all()
+            log.error("native input stream has no abort(); retaining active handle")
+            return False
+
+        completed = threading.Event()
+        succeeded = []
+
+        def _abort() -> None:
+            try:
+                abort()
+                succeeded.append(True)
+            except Exception:  # noqa: BLE001 - host may already be gone
+                log.exception("native input abort failed")
+            finally:
+                with self._read_condition:
+                    self._active_aborts -= 1
+                    self._read_condition.notify_all()
+                completed.set()
+
+        abort_thread = threading.Thread(
+            target=_abort,
+            name="speaker-input-abort",
+            daemon=True,
+        )
+        try:
+            abort_thread.start()
+        except Exception:
+            with self._read_condition:
+                self._active_aborts -= 1
+                self._read_condition.notify_all()
+            log.exception("could not start native input abort helper")
+            return False
+        if not completed.wait(budget):
+            log.error(
+                "native input abort did not return within %.3fs",
+                budget,
+            )
+            return False
+        return bool(succeeded)
+
+    def _wait_for_aborts(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._read_condition:
+            while self._active_aborts:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._read_condition.wait(remaining)
+            return True
+
+    def _wait_for_reads(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._read_condition:
+            while self._active_reads:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._read_condition.wait(remaining)
+            return True
+
+    def _wait_for_closes(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._read_condition:
+            while self._active_closes:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return False
+                self._read_condition.wait(remaining)
+            return True
+
+    def _close_native_stream(self, *, timeout: Optional[float] = None) -> bool:
+        budget = self.block_seconds if timeout is None else timeout
+        budget = max(0.0, float(budget))
+        deadline = time.monotonic() + budget
+
+        # A prior timed-out helper may still own native stop/close. Wait only the
+        # caller's bounded budget. If it completed successfully, _stream is None;
+        # if it failed, ownership remains and this call can safely retry below.
+        with self._read_condition:
+            close_active = self._active_closes > 0
+        if close_active and not self._wait_for_closes(budget):
+            log.error("native input teardown is still active; retaining stream")
+            return False
+
+        with self._read_condition:
+            if self._active_reads or self._active_aborts or self._active_closes:
+                log.error(
+                    "retaining native input while lifecycle call is active "
+                    "(reads=%d aborts=%d closes=%d)",
+                    self._active_reads,
+                    self._active_aborts,
+                    self._active_closes,
+                )
+                return False
+            # Reserve teardown before selecting the stream. abort_read() uses the
+            # same condition->lifecycle order, so neither can slip between a zero
+            # counter observation and native-handle selection.
+            self._active_closes += 1
+            with self._lifecycle_lock:
+                stream = self._stream
+            if stream is None:
+                self._active_closes -= 1
+                self._read_condition.notify_all()
+                return True
+
+        completed = threading.Event()
+        succeeded = []
+
+        def _teardown() -> None:
+            ok = False
             try:
                 stream.stop()
-            except Exception:
-                pass
-            try:
                 stream.close()
-            except Exception:
-                pass
+                ok = True
+            except Exception:  # noqa: BLE001 - retain for a safe later retry
+                log.exception("native input stop/close failed; retaining stream")
+            finally:
+                with self._read_condition:
+                    if ok:
+                        with self._lifecycle_lock:
+                            if self._stream is stream:
+                                self._stream = None
+                                self._current = None
+                        succeeded.append(True)
+                    self._active_closes -= 1
+                    self._read_condition.notify_all()
+                completed.set()
+
+        teardown_thread = threading.Thread(
+            target=_teardown,
+            name="speaker-input-close",
+            daemon=True,
+        )
+        try:
+            teardown_thread.start()
+        except Exception:
+            with self._read_condition:
+                self._active_closes -= 1
+                self._read_condition.notify_all()
+            log.exception("could not start native input teardown helper")
+            return False
+        remaining = max(0.0, deadline - time.monotonic())
+        if not completed.wait(remaining):
+            log.error(
+                "native input stop/close did not return within %.3fs; "
+                "retaining stream",
+                budget,
+            )
+            return False
+        return bool(succeeded)
 
     # --- error handling ---------------------------------------------------
 
@@ -297,8 +531,11 @@ class _RecoveringInputStream:
         failure, and publish OPEN/generation only after a usable read. This avoids
         both premature fatal and recursive recovery-budget resets.
         """
+        if self._closed.is_set():
+            raise RuntimeError("input stream closed during recovery")
         self._set_state(StreamState.RECOVERING, reason)
-        self._retire_stream()
+        if not self._retire_stream():
+            raise RuntimeError("input stream closed during recovery")
 
         last_exc: Optional[Exception] = None
         for delay in self._backoffs:
@@ -357,6 +594,21 @@ class _RecoveringInputStream:
                     return result
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
+                    if self._closed.is_set():
+                        if candidate is not None and candidate is not self._stream:
+                            # Shutdown landed while candidate.start() was in
+                            # flight. It never became the readable owner, so it
+                            # is safe (and necessary) to release it here.
+                            try:
+                                candidate.close()
+                            except Exception:
+                                pass
+                        # Phase two owns the physical stream handback.  In the
+                        # assigned/readable path it may already own this candidate;
+                        # never issue a second native close from the read owner.
+                        raise RuntimeError(
+                            "input stream closed during recovery"
+                        ) from exc
                     if candidate is self._stream:
                         self._retire_stream()
                     elif candidate is not None:
@@ -364,10 +616,6 @@ class _RecoveringInputStream:
                             candidate.close()
                         except Exception:
                             pass
-                    if self._closed.is_set():
-                        raise RuntimeError(
-                            "input stream closed during recovery"
-                        ) from exc
                     log.warning(
                         "reopen candidate failed after %.1fs device=%r sr=%d: %s",
                         delay,
@@ -388,17 +636,34 @@ class _RecoveringInputStream:
         import numpy as np
         return np.zeros((frames, self.channels), dtype="float32")
 
-    def _retire_stream(self) -> None:
+    def _retire_stream(self) -> bool:
         """Detach and close the current stream without closing the wrapper."""
-        with self._lifecycle_lock:
-            stream = self._stream
-            self._stream = None
-            self._current = None
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
+        with self._read_condition:
+            if (
+                self._closed.is_set()
+                or self._active_aborts
+                or self._active_closes
+            ):
+                return False
+            self._active_closes += 1
+            with self._lifecycle_lock:
+                stream = self._stream
+        try:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    log.exception("recovery could not retire native input stream")
+                    return False
+                with self._lifecycle_lock:
+                    if self._stream is stream:
+                        self._stream = None
+                        self._current = None
+            return True
+        finally:
+            with self._read_condition:
+                self._active_closes -= 1
+                self._read_condition.notify_all()
 
     def _set_state(self, new_state: StreamState, message: str) -> None:
         if new_state != self._state:

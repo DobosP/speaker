@@ -227,6 +227,7 @@ def test_shipped_config_phone_profile_uses_shared_minicpm_on_llamacpp():
     assert llm_cfg["backend"] == "llamacpp"
     assert llm_cfg["main_model_path"].endswith("MiniCPM5-1B-Q4_K_M.gguf")
     assert llm_cfg["fast_model_path"] == llm_cfg["main_model_path"]
+    assert llm_cfg["tool_format"] == "minicpm5_xml"
     # STT/TTS threads dialed down for a phone CPU
     assert config["sherpa"]["num_threads"] == 2
 
@@ -294,6 +295,19 @@ def test_build_llms_phone_profile_builds_llamacpp_clients():
         expected.n_threads_batch,
     )
     assert main._think is False
+    assert main.tool_format == "minicpm5_xml"
+
+
+def test_distinct_fast_gguf_is_not_forced_into_the_main_tool_template():
+    config = _apply_device_profile(_load_config(), "phone")
+    config["llm"]["fast_model_path"] = "models/other-fast-model.gguf"
+
+    main, fast = _build_llms(_args(), config)
+
+    assert isinstance(main, LlamaCppLLM) and isinstance(fast, LlamaCppLLM)
+    assert fast is not main
+    assert main.tool_format == "minicpm5_xml"
+    assert fast.tool_format is None
 
 
 @pytest.mark.parametrize("profile", ["phone", "phone_lite"])

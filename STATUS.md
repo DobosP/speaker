@@ -2,18 +2,20 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `perf/minicpm-llamacpp-thread-pair`; full
-headless: 2921 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
-12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
-outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
+Last verified: 2026-07-11 on Linux ROG, `feat/minicpm-native-tool-adapter`; full
+headless: 3039 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+12 skipped; APM/DTD: 6 passed; MiniCPM Q4 native-tool: conservative 1254/1279
+prompt tokens, two 2.2 ms cancels plus healthy 2.19--2.27 s local-tool/final
+reuse; whitespace passed. Prior host doctor was READY. No live audio A/B ran.
 
 ## Runtime
 
 - Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
 - Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local text tier,
-  gemma3:12b is complex/vision main, and warm MiniCPM TTFT was 0.12–0.14 s at
-  1.1 GB VRAM with 4/4 probes (ADR-0020); ASR has async SenseVoice finals.
+  gemma3:12b is complex/vision main, and warm MiniCPM TTFT was 0.12–0.14 s.
+  Phone/phone_lite Q4 use native XML only for registered read-only planner steps;
+  desktop Gemma/Ollama retains textual ReAct (ADR-0020/0033).
 - ACT routing now requires command-shaped markers; informational action-word
   questions stay on MiniCPM and ambiguous terms use it to disambiguate (ADR-0024).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
@@ -72,11 +74,10 @@ outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
   runs `093305`/`100432` had no `AND` storm in 20 s. No audio was recorded.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - One real word-cut occurred on 2026-07-07; device-free I/O is broad, but acoustic behavior remains headless-only.
-- Real Q4 MiniCPM no-think + pre-TTS filtering passed the production 4/8 gate:
-  all probes at 61.9--114.3 ms TTFT, natural `stop`, zero fallback, 7.3 ms cancel,
-  healthy reuse (ADR-0031/0032). Auto stays <=4/4 on <=8 CPUs; long-prompt TTFT
-  fell 4.651 s -> 0.333 s with clean synthetic wake/cancel evidence. Actual phone
-  thermals and live audio/barge remain unvalidated.
+- Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
+  cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
+  (ADR-0031/0032/0033). All evidence is headless; actual phone thermals and live
+  microphone/speaker/barge-in remain unvalidated.
 - Legacy enrollment is rejected by v2 provenance; `speaker_gate_input` stays off until live re-enrollment.
 - Still required with the owner at the mic: (1) `python -m core --enroll` on the active
   EC route; (2) quiet/casual phrase plus mid-thought-pause A/B; (3) bare-speaker
@@ -89,7 +90,8 @@ outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 git diff --check
 ```
 
-Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair: `python -m tools.llm_sanity --production-threads`; host: `python -m tools.doctor`.
+Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair:
+`python -m tools.llm_sanity --production-threads`; native tools: `python -m tools.minicpm_tool_sanity`; host: `python -m tools.doctor`.
 
 ## Operating policy
 - Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.

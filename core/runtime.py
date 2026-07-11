@@ -240,10 +240,16 @@ class VoiceRuntime:
             # brain) so an escalated ReAct turn's final answer keeps the persona,
             # and a first-token hook so an escalated turn stamps LLM_FIRST_TOKEN
             # (B3 -- otherwise the watchdog false-flags it as "llm stuck").
+            # Phone profiles may additionally opt their *bare local* MiniCPM
+            # client into its verified native XML step backend. Desktop
+            # Gemma/Ollama and every unconfigured model retain textual ReAct.
+            from .minicpm_tools import build_minicpm_planner_backend
+
             attach_react_capability(
                 registry, llm, config=planner_config,
                 persona_name=persona.name if persona is not None else "",
                 first_token_hook=lambda: self.metrics.mark(LLM_FIRST_TOKEN),
+                step_backend=build_minicpm_planner_backend(llm),
             )
         if agent_config is not None:
             # Opt-in: route command-mode through the Open Interpreter action brain.

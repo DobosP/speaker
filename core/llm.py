@@ -820,6 +820,15 @@ def _resolve_kv_cache_type(value):
 
 
 LLAMACPP_PINNED_VERSION = "0.3.33"
+LLAMACPP_TOOL_FORMAT_MINICPM5 = "minicpm5_xml"
+
+
+@dataclass(frozen=True)
+class LlamaCppToolCompletion:
+    """Buffered provider result from the internal MiniCPM planning seam."""
+
+    text: str
+    finish_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -900,6 +909,43 @@ def _llamacpp_native_context(client: object) -> object | None:
     if native is not None:
         return native
     return getattr(client, "ctx", None)
+
+
+_MINICPM5_TOOL_TEMPLATE_MARKERS = (
+    "{% if tools",
+    "<tools>",
+    "</tools>",
+    '<function name="',
+    '<param name="',
+    "</param>",
+    "</function>",
+    "<tool_response>",
+    "</tool_response>",
+    "message.tool_calls",
+    'message.role == "tool"',
+    "tool_call.arguments",
+    ".items()",
+    "enable_thinking",
+)
+
+
+def _is_minicpm5_tool_template(template: object) -> bool:
+    """Recognize the exact capabilities the scoped XML adapter requires.
+
+    This is intentionally strong contract-feature detection rather than a
+    model-path guess.  A configured native adapter must fail model load if its
+    GGUF template cannot render tool definitions, canonical call history, tool
+    responses, and the already-audited no-think control.  The application still
+    validates every produced call independently; this check grants no execution
+    authority by itself.
+    """
+
+    if not isinstance(template, str) or not template:
+        return False
+    # OpenBMB's checked-in template uses whitespace-trimming Jinja (``{%-``),
+    # while converted variants may use the ordinary ``{%`` spelling.
+    normalized = template.replace("{%-", "{%")
+    return all(marker in normalized for marker in _MINICPM5_TOOL_TEMPLATE_MARKERS)
 
 
 class _ReasoningTagFilter:
@@ -1253,6 +1299,9 @@ class LlamaCppLLM:
     content; without a vision-capable build the underlying model ignores them.
     """
 
+    _TOOL_OUTPUT_MAX_CHARS = 8192
+    _TOOL_OUTPUT_MAX_TOKENS = 256
+
     def __init__(
         self,
         model_path: str,
@@ -1266,6 +1315,7 @@ class LlamaCppLLM:
         type_k=None,
         type_v=None,
         think: Optional[bool] = False,
+        tool_format: Optional[str] = None,
         client=None,
         abort_api: Optional[_LlamaCppAbortAPI] = None,
     ):
@@ -1302,6 +1352,19 @@ class LlamaCppLLM:
         # for non-reasoning templates because an implicit prompt prefill cannot
         # be made safe at the output seam. Raw markup is always suppressed.
         self._think = think
+        normalized_tool_format = (
+            str(tool_format).strip().lower() if tool_format is not None else None
+        )
+        if normalized_tool_format not in (None, LLAMACPP_TOOL_FORMAT_MINICPM5):
+            raise ValueError(
+                "unsupported llama.cpp planner tool format: "
+                f"{normalized_tool_format!r}"
+            )
+        # Explicit profile opt-in.  The selected GGUF's embedded template is
+        # independently feature-verified during model construction before this
+        # can ever expose a tool schema.
+        self.tool_format = normalized_tool_format
+        self._native_tool_template_verified = False
         # KV-cache quantization (llm-inference-9): q8_0 roughly halves the KV
         # memory vs the f16 default at near-lossless quality, so a longer context
         # fits in a phone's RAM budget. None -> llama.cpp's default. n_ctx (above)
@@ -1365,6 +1428,13 @@ class LlamaCppLLM:
             if isinstance(metadata, Mapping)
             else None
         )
+        if self.tool_format == LLAMACPP_TOOL_FORMAT_MINICPM5:
+            if not _is_minicpm5_tool_template(template):
+                raise RuntimeError(
+                    "configured MiniCPM5 native tools require an embedded "
+                    "tools/function/param/tool_response chat template"
+                )
+            self._native_tool_template_verified = True
         if not isinstance(template, str) or not template:
             return None  # A non-template/non-reasoning GGUF needs no control.
         supports_flag = "enable_thinking" in template
@@ -1626,6 +1696,268 @@ class LlamaCppLLM:
         else:
             msgs.append({"role": "user", "content": prompt})
         return msgs
+
+    def _require_minicpm_tool_template(self, client: object) -> None:
+        if self.tool_format != LLAMACPP_TOOL_FORMAT_MINICPM5:
+            raise RuntimeError(
+                "MiniCPM5 native tool chat was not enabled for this model profile"
+            )
+        if self._think is not False:
+            raise RuntimeError(
+                "MiniCPM5 native planner tools require explicit think=False"
+            )
+        if self._native_tool_template_verified:
+            return
+        # Injected clients skip _configure_chat_template; retain a small metadata
+        # seam so model-free tests still prove the same fail-closed check.
+        metadata = getattr(client, "metadata", None)
+        template = (
+            metadata.get("tokenizer.chat_template")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if not _is_minicpm5_tool_template(template):
+            raise RuntimeError(
+                "MiniCPM5 native tool chat requires the verified embedded template"
+            )
+        self._native_tool_template_verified = True
+
+    def complete_minicpm_tool_chat(
+        self,
+        *,
+        messages: Sequence[Mapping[str, object]],
+        tools: Sequence[Mapping[str, object]],
+        first_token_hook: Optional[Callable[[], None]] = None,
+        cancel_event: object | None = None,
+    ) -> LlamaCppToolCompletion:
+        """Run one internal, buffered MiniCPM XML planning completion.
+
+        ``llama-cpp-python==0.3.33`` renders the checkpoint's tool template but
+        normally detokenizes with ``special=False``.  MiniCPM's four XML
+        delimiters are CONTROL tokens, so the generic path silently drops them.
+        While the sole native-context lock is held, this method scopes
+        ``special=True`` to this one non-spoken completion, consumes the lazy
+        iterator fully, restores the client method, and only then releases or
+        abort-recovers the context.  Generic ``generate``/``stream`` are
+        untouched and can never expose special tokens to TTS.
+
+        XML interpretation and tool execution intentionally live elsewhere.
+        This provider boundary returns only bounded raw protocol text plus the
+        native finish reason.
+        """
+
+        inherited_cancel = self._context_cancel_event()
+        if cancel_event is None:
+            cancel_event = inherited_cancel
+        elif inherited_cancel is not None and inherited_cancel is not cancel_event:
+            cancel_event = _CombinedCancelEvent(inherited_cancel, cancel_event)
+        client = self._begin_inference(cancel_event)
+        native_stream = None
+        native_iterator = None
+        error: BaseException | None = None
+        content: str | None = None
+        finish_reason: str | None = None
+        original_detokenize = None
+        detokenize_patched = False
+        detokenize_had_instance_value = False
+        detokenize_instance_value = None
+        try:
+            self._require_minicpm_tool_template(client)
+            candidate_detokenize = getattr(client, "detokenize", None)
+            if callable(candidate_detokenize):
+                original_detokenize = candidate_detokenize
+                client_dict = getattr(client, "__dict__", None)
+                if isinstance(client_dict, dict) and "detokenize" in client_dict:
+                    detokenize_had_instance_value = True
+                    detokenize_instance_value = client_dict["detokenize"]
+
+                def preserve_special(
+                    tokens,
+                    prev_tokens=None,
+                    special=False,
+                ):
+                    del special
+                    return original_detokenize(
+                        tokens,
+                        prev_tokens=prev_tokens,
+                        special=True,
+                    )
+
+                detokenize_patched = True
+                # Set the restoration latch *before* the foreign setattr: a
+                # custom client can mutate and then raise, and an asynchronous
+                # control-flow exception can land between CALL and STORE.
+                setattr(client, "detokenize", preserve_special)
+            else:
+                raise RuntimeError(
+                    "verified llama.cpp client lacks the detokenize seam needed "
+                    "to preserve MiniCPM5 tool tokens"
+                )
+
+            sampling_keys = {
+                "top_p",
+                "top_k",
+                "min_p",
+                "typical_p",
+                "seed",
+                "presence_penalty",
+                "frequency_penalty",
+                "repeat_penalty",
+                "tfs_z",
+                "mirostat_mode",
+                "mirostat_tau",
+                "mirostat_eta",
+                "logit_bias",
+            }
+            options = {
+                key: value
+                for key, value in self._options.items()
+                if key in sampling_keys
+            }
+            # Planning/tool selection must be reproducible.  Keep the profile's
+            # other audited sampling controls, but bound this internal step more
+            # tightly than ordinary spoken generation.
+            options["temperature"] = 0.0
+            configured_max = self._options.get("max_tokens")
+            try:
+                configured_max = int(configured_max) if configured_max is not None else None
+            except (TypeError, ValueError):
+                configured_max = None
+            options["max_tokens"] = min(
+                self._TOOL_OUTPUT_MAX_TOKENS,
+                configured_max if configured_max is not None and configured_max > 0 else self._TOOL_OUTPUT_MAX_TOKENS,
+            )
+            # An allowlist above intentionally drops stop/grammar/response
+            # format and every generic function/tool-choice kwarg.  In the
+            # pinned handler those can truncate XML or install a JSON grammar.
+            native_stream = client.create_chat_completion(
+                messages=[dict(message) for message in messages],
+                tools=[dict(tool) for tool in tools],
+                stream=True,
+                **options,
+            )
+            native_iterator = iter(native_stream)
+            parts: list[str] = []
+            raw_chars = 0
+            first_piece = True
+            saw_terminal = False
+            while True:
+                if _llamacpp_cancelled(cancel_event):
+                    raise LLMCallCancelled("llama.cpp tool chat cancelled")
+                try:
+                    chunk = next(native_iterator)
+                except StopIteration:
+                    break
+                if _llamacpp_cancelled(cancel_event):
+                    raise LLMCallCancelled("llama.cpp tool chat cancelled")
+                choice = chunk["choices"][0]
+                chunk_finish = choice.get("finish_reason")
+                piece = choice.get("delta", {}).get("content")
+                if saw_terminal and (chunk_finish is not None or piece):
+                    raise LLMProviderOutputError(
+                        "MiniCPM5 tool stream produced data after its terminal chunk"
+                    )
+                if chunk_finish is not None:
+                    if saw_terminal or piece:
+                        raise LLMProviderOutputError(
+                            "MiniCPM5 tool stream returned an ambiguous terminal chunk"
+                        )
+                    saw_terminal = True
+                    finish_reason = str(chunk_finish)
+                    self.last_finish_reason = finish_reason
+                if not piece:
+                    continue
+                if first_piece:
+                    first_piece = False
+                    if first_token_hook is not None:
+                        try:
+                            first_token_hook()
+                        except Exception:  # metrics stamping is best-effort
+                            pass
+                raw_piece = str(piece)
+                raw_chars += len(raw_piece)
+                if raw_chars > self._TOOL_OUTPUT_MAX_CHARS:
+                    raise LLMProviderOutputError(
+                        "MiniCPM5 tool output exceeded the bounded parser input"
+                    )
+                parts.append(raw_piece)
+            if _llamacpp_cancelled(cancel_event):
+                raise LLMCallCancelled(
+                    "llama.cpp tool chat cancelled at completion"
+                )
+            content = "".join(parts).strip()
+        except BaseException as exc:
+            error = exc
+        finally:
+            try:
+                close_targets = []
+                if native_iterator is not None:
+                    close_targets.append(native_iterator)
+                if native_stream is not None and native_stream is not native_iterator:
+                    close_targets.append(native_stream)
+                for close_target in close_targets:
+                    closer = getattr(close_target, "close", None)
+                    if not callable(closer):
+                        continue
+                    try:
+                        closer()
+                    except BaseException as exc:
+                        # Foreign control-flow must not be hidden behind an
+                        # earlier ordinary provider error. Restoration and lock
+                        # release still happen in the enclosing finally.
+                        if not isinstance(exc, Exception):
+                            error = exc
+                        elif error is None:
+                            error = exc
+                        else:
+                            _llamacpp_log.debug(
+                                "tool-chat stream close failed during teardown",
+                                exc_info=True,
+                            )
+            finally:
+                try:
+                    if detokenize_patched:
+                        if detokenize_had_instance_value:
+                            setattr(client, "detokenize", detokenize_instance_value)
+                        else:
+                            client_dict = getattr(client, "__dict__", None)
+                            if isinstance(client_dict, dict) and "detokenize" in client_dict:
+                                delattr(client, "detokenize")
+                except BaseException as exc:
+                    # A client left in special-token mode must never return to
+                    # generic speech generation.  Poison the shared context
+                    # before releasing its lock.
+                    self._context_poisoned = True
+                    restore_error = RuntimeError(
+                        "failed to restore llama.cpp detokenization after tool chat"
+                    )
+                    restore_error.__cause__ = exc
+                    if error is None:
+                        error = restore_error
+                    else:
+                        _llamacpp_log.exception(
+                            "detokenizer restore failed after tool-chat error"
+                        )
+                finally:
+                    cancelled = self._finish_inference(client, cancel_event)
+
+        if cancelled and (
+            error is None
+            or isinstance(error, (Exception, asyncio.CancelledError))
+        ):
+            if isinstance(error, LLMCallCancelled):
+                raise error.with_traceback(error.__traceback__)
+            cancelled_error = LLMCallCancelled(
+                "llama.cpp tool chat cancelled during native inference"
+            )
+            if error is not None:
+                raise cancelled_error from error
+            raise cancelled_error
+        if error is not None:
+            raise error.with_traceback(error.__traceback__)
+        if content is None:
+            raise RuntimeError("llama.cpp returned no MiniCPM5 tool-chat content")
+        return LlamaCppToolCompletion(content, finish_reason)
 
     def generate(
         self,

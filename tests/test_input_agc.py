@@ -28,12 +28,85 @@ def test_boosts_a_quiet_signal_toward_target():
     assert _rms(out) == approx(0.12, abs=0.02)   # recognizer now hears a healthy level
 
 
-def test_holds_gain_on_silence_never_pumps_hiss():
+def test_below_floor_silence_at_unity_does_not_raise_gain():
     agc = InputAGC(noise_floor_rms=0.004)
     for _ in range(50):
         out = agc.process(_sine(0.001))     # below the noise floor
     assert agc.gain == approx(1.0)
     assert _rms(out) == approx(0.001, abs=1e-4)  # untouched
+    assert agc.last_input_rms == approx(0.001, abs=1e-4)
+    assert agc.last_applied_gain == 1.0
+    assert agc.last_above_floor is False
+
+
+def test_stale_gain_is_never_applied_to_a_below_floor_block():
+    agc = InputAGC(noise_floor_rms=0.004)
+    agc.gain = 12.0
+    hiss = _sine(0.001)
+
+    out = agc.process(hiss)
+
+    assert agc.gain == 12.0                 # retain adaptation continuity
+    assert agc.last_applied_gain == 1.0
+    assert agc.last_above_floor is False
+    assert np.array_equal(out, hiss)
+
+
+def test_long_gain_pump_cannot_amplify_following_ambient_noise():
+    agc = InputAGC(noise_floor_rms=0.004, target_rms=0.12, max_gain=12.0)
+    for _ in range(50):
+        agc.process(_sine(0.0046))          # just above floor pumps retained state
+    assert agc.gain > 11.0
+
+    ambient = _sine(0.0015)
+    out = agc.process(ambient)
+
+    assert agc.gain > 11.0
+    assert agc.last_applied_gain == 1.0
+    assert np.array_equal(out, ambient)
+
+
+def test_alternating_floor_boundary_never_boosts_below_floor_blocks():
+    agc = InputAGC(noise_floor_rms=0.0045, target_rms=0.12, max_gain=12.0)
+    above = _sine(0.0046)
+    below = _sine(0.0044)
+
+    for _ in range(30):
+        agc.process(above)
+        out = agc.process(below)
+        assert np.array_equal(out, below)
+        assert agc.last_applied_gain == 1.0
+        assert agc.last_above_floor is False
+
+    assert agc.gain > 10.0
+
+
+def test_retained_gain_resumes_with_current_block_cap_after_silence():
+    agc = InputAGC(noise_floor_rms=0.004, target_rms=0.12, max_gain=12.0)
+    agc.gain = 12.0
+    agc.process(_sine(0.001))
+
+    speech = _sine(0.03)                    # current desired gain = 4x
+    out = agc.process(speech)
+
+    assert agc.gain > 4.0                   # retained state still releases smoothly
+    assert agc.last_above_floor is True
+    assert agc.last_applied_gain == approx(4.0, abs=0.01)
+    assert _rms(out) == approx(0.12, abs=0.01)
+
+
+def test_reset_clears_gain_and_diagnostics_without_changing_floor():
+    agc = InputAGC(noise_floor_rms=0.007)
+    agc.gain = 12.0
+    agc.process(_sine(0.001))
+
+    agc.reset()
+
+    assert agc.gain == 1.0
+    assert agc.noise_floor_rms == 0.007
+    assert agc.last_input_rms == 0.0
+    assert agc.last_applied_gain == 1.0
+    assert agc.last_above_floor is False
 
 
 def test_is_boost_only_does_not_attenuate_a_loud_signal():

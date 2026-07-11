@@ -7,6 +7,7 @@ no audio device.
 import threading
 
 import numpy as np
+import pytest
 
 from core.audio_frontend import compute_input_calibration, InputAGC
 from core.enroll import CaptureResolution
@@ -91,6 +92,22 @@ def test_calibration_feeds_the_agc_floor():
     agc.noise_floor_rms = cal["noise_floor_rms"]
     assert agc.noise_floor_rms == cal["noise_floor_rms"]
     assert agc.noise_floor_rms > 0.004                   # adapted up from the default
+
+    agc.gain = 12.0
+    below_calibrated = _block(0.03, seed=100)
+    below_out = agc.process(below_calibrated)
+    np.testing.assert_array_equal(below_out, below_calibrated)
+    assert agc.gain == 12.0
+    assert agc.last_above_floor is False
+    assert agc.last_applied_gain == 1.0
+
+    above_calibrated = _block(0.07, seed=101)
+    above_out = agc.process(above_calibrated)
+    assert agc.last_above_floor is True
+    assert agc.last_applied_gain > 1.0
+    assert np.sqrt(np.mean(above_out.astype("float64") ** 2)) == pytest.approx(
+        0.12, abs=0.005
+    )
 
 
 def test_stable_stationary_window_keeps_single_pass_behavior(caplog):
@@ -329,6 +346,9 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     engine._capture_resolution = resolution
     engine._last_calibration = calibration
     engine._input_agc.noise_floor_rms = 0.012
+    engine._input_agc.gain = 9.0
+    engine._input_agc.process(_block(0.001, seed=44))
+    assert engine._input_agc.last_input_rms > 0.0
     restores = []
 
     def resolve(_sd, _selector, **kwargs):
@@ -344,6 +364,10 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     assert restores == [False, True]
     assert engine._last_calibration is calibration
     assert engine._input_agc.noise_floor_rms == 0.012
+    assert engine._input_agc.gain == 1.0
+    assert engine._input_agc.last_input_rms == 0.0
+    assert engine._input_agc.last_applied_gain == 1.0
+    assert engine._input_agc.last_above_floor is False
     assert engine._recovery_calibration_target == 0
 
 
@@ -399,6 +423,9 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
     assert engine._recovery_calibration_target == 3
     assert not engine._word_cut_route_verified
 
+    engine._input_agc.gain = 8.0
+    engine._input_agc.process(_block(0.001, seed=88))
+    assert engine._input_agc.last_input_rms > 0.0
     for index in range(3):
         engine._observe_recovery_calibration(
             _block(0.006, seed=100 + index), vad_active=False
@@ -408,6 +435,10 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
     assert engine._recovery_calibration_target == 0
     assert engine._last_calibration["n_blocks"] == 3
     assert engine._input_agc.noise_floor_rms > 0.004
+    assert engine._input_agc.gain == 1.0
+    assert engine._input_agc.last_input_rms == 0.0
+    assert engine._input_agc.last_applied_gain == 1.0
+    assert engine._input_agc.last_above_floor is False
     assert engine._word_cut_route_verified
 
 

@@ -2342,6 +2342,11 @@ class SherpaOnnxEngine(AudioEngine):
             self._capture_stopping.clear()
             self._capture_resource_hold.clear()
             self._confirm_handoff_stream_live = False
+        if self._input_agc is not None:
+            # Adaptation belongs to one capture epoch. The ownership guards
+            # above prove the previous reader is gone before this shared state
+            # is cleared; resetting in stop() could race an in-flight block.
+            self._input_agc.reset()
         import sounddevice as sd  # lazy
 
         self._cb = callbacks
@@ -4710,7 +4715,7 @@ class SherpaOnnxEngine(AudioEngine):
             else None
         )
         if self._input_agc is not None:
-            self._input_agc.gain = 1.0
+            self._input_agc.reset()
         self._recovery_calibration_blocks.clear()
         self._recovery_calibration_target = 0
         self._recovery_calibration_resampler = None
@@ -4858,7 +4863,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._recovery_calibration_resampler = None
         self._last_calibration = calibration
         if self._input_agc is not None:
-            self._input_agc.gain = 1.0
+            self._input_agc.reset()
             self._input_agc.noise_floor_rms = calibration["noise_floor_rms"]
 
         route_ok = False

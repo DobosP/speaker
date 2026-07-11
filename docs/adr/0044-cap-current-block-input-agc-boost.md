@@ -1,7 +1,7 @@
 # ADR-0044: Cap stale InputAGC boost on the current block
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0047
 
 ## Decision
 

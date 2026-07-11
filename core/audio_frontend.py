@@ -754,13 +754,14 @@ class InputAGC:
     boost applied to the *current* above-floor block is additionally capped at
     that block's desired gain. This keeps the smoothed state for continuity while
     preventing stale high gain from overdriving a sudden normal-level word.
-    Blocks below ``noise_floor_rms`` retain the historical hold behavior. Applied
-    via :func:`apply_gain_soft_limit` so any residual peak saturates smoothly
-    instead of hard-clipping. ``gain`` starts at 1.0, so the first blocks are a
-    passthrough.
+    Blocks below ``noise_floor_rms`` retain the smoothed state but are emitted at
+    unity: a previous quiet utterance must not turn present ambient noise into
+    recognizer-visible energy. Applied via :func:`apply_gain_soft_limit` so any
+    residual peak saturates smoothly instead of hard-clipping. ``gain`` starts at
+    1.0, so the first blocks are a passthrough.
     """
 
-    algorithm = "boost_only_current_block_cap_v1"
+    algorithm = "boost_only_current_signal_cap_v2"
 
     def __init__(self, *, target_rms: float = 0.12, max_gain: float = 12.0,
                  noise_floor_rms: float = 0.004, rise: float = 0.08, fall: float = 0.4):
@@ -770,16 +771,25 @@ class InputAGC:
         self.rise = float(rise)
         self.fall = float(fall)
         self.gain = 1.0
+        self.last_input_rms = 0.0
+        self.last_applied_gain = 1.0
+        self.last_above_floor = False
 
     def process(self, samples):
         import numpy as np
 
         x = np.asarray(samples, dtype="float32").reshape(-1)
-        applied_gain = self.gain
+        input_rms = 0.0
+        applied_gain = 1.0
+        above_floor = False
         if x.size:
-            r = float(np.sqrt(np.mean(x.astype("float64") ** 2)))
-            if r > self.noise_floor_rms:                 # real signal (not silence/hiss)
-                desired = min(self.max_gain, max(1.0, self.target_rms / r))
+            input_rms = float(np.sqrt(np.mean(x.astype("float64") ** 2)))
+            if input_rms > self.noise_floor_rms:         # real signal (not silence/hiss)
+                above_floor = True
+                desired = min(
+                    self.max_gain,
+                    max(1.0, self.target_rms / input_rms),
+                )
                 # rise slow / fall fast, so the gain doesn't pump the noise floor
                 # up between words yet still backs off quickly on a loud phrase.
                 rate = self.rise if desired > self.gain else self.fall
@@ -790,7 +800,17 @@ class InputAGC:
                 # ``desired`` is >= 1, so this remains strictly boost-only and a
                 # hot ADC is still visible rather than silently attenuated.
                 applied_gain = min(self.gain, desired)
+        self.last_input_rms = input_rms
+        self.last_applied_gain = applied_gain
+        self.last_above_floor = above_floor
         return apply_gain_soft_limit(x, applied_gain)
+
+    def reset(self) -> None:
+        """Clear adaptation and diagnostic state after a capture-domain reset."""
+        self.gain = 1.0
+        self.last_input_rms = 0.0
+        self.last_applied_gain = 1.0
+        self.last_above_floor = False
 
 
 class AudioResampler:

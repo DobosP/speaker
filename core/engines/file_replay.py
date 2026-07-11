@@ -154,6 +154,18 @@ class FileReplayEngine(AudioEngine):
         with self._receipt_lock:
             generation = self._play_generation
         try:
+            style = None
+            if self.config.tts_markup:
+                prepared = prepare_speech_style(
+                    text,
+                    style=None,
+                    voices=self.config.tts_speaker_voices.keys(),
+                    emotions=self.config.tts_emotion_speed_map.keys(),
+                )
+                text = prepared.text
+                style = prepared.style
+                if not text or not text.strip():
+                    return
             # FileReplay owns one non-thread-safe OfflineTts model.  Dropping a
             # concurrent legacy request is safer than queueing stale work past a
             # later cut, and makes callback re-entry non-blocking.
@@ -186,10 +198,11 @@ class FileReplayEngine(AudioEngine):
                         if cut:
                             callbacks.on_metric(BARGE_IN_STOP)
                             return
+                        sid, speed = self._tts_params(tts, style)
                         tts.generate(
                             text,
-                            sid=self.config.tts_speaker_id,
-                            speed=self.config.tts_speed,
+                            sid=sid,
+                            speed=speed,
                         )
                         with self._receipt_lock:
                             cut = (

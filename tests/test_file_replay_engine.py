@@ -197,6 +197,52 @@ def test_replay_fires_final_and_records_metrics(monkeypatch):
     assert record.first_audio_latency is not None
 
 
+def test_file_replay_direct_speak_uses_shared_markup_sanitizer_and_style(
+    monkeypatch,
+):
+    tts = _ParamTts()
+    _patch_models(monkeypatch, _FakeRecognizer(), tts)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            tts_markup=True,
+            tts_speaker_id=2,
+            tts_speaker_voices={"warm": 16, "narrator": 7},
+        )
+    )
+    engine.start(EngineCallbacks())
+
+    engine.speak("[tag:story] Here is the first sequence.")
+    engine.speak("[narrator:deep] Once upon a time.")
+    engine.speak("[voice:warm] Styled sentence.")
+    engine.speak("[citation needed] Listener-visible notation.")
+    done: list[bool] = []
+    engine.speak("[tag:story]", on_done=lambda: done.append(True))
+
+    assert tts.params == [
+        ("Here is the first sequence.", 2, 1.0),
+        ("Once upon a time.", 2, 1.0),
+        ("Styled sentence.", 16, 1.0),
+        ("[citation needed] Listener-visible notation.", 2, 1.0),
+    ]
+    assert engine.spoken == [text for text, _sid, _speed in tts.params]
+    assert done == [True]
+
+
+def test_file_replay_direct_speak_markup_off_preserves_raw_brackets(monkeypatch):
+    tts = _ParamTts()
+    _patch_models(monkeypatch, _FakeRecognizer(), tts)
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(EngineCallbacks())
+
+    raw = "[tag:story] Listener-visible while markup is off."
+    engine.speak(raw)
+
+    assert tts.params == [(raw, 0, 1.0)]
+    assert engine.spoken == [raw]
+
+
 def test_file_replay_tracked_completion_attests_null_sink(monkeypatch):
     tts = _FakeTts()
     metrics: list[str] = []

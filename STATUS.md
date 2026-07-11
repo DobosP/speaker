@@ -3,7 +3,7 @@
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
 Last verified: 2026-07-11 on Linux ROG, stacked local `main`; focused: markup
-133 passed/1 skipped, calibration 56 passed. Prior full: 3100/30; live barge is red.
+135 passed/1 skipped, calibration 56 passed. Prior full: 3100/30; live barge is red.
 
 ## Runtime
 

@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/tts-unsupported-tag-hygiene`;
-focused: 133 passed, 1 skipped. Main full: 3100 passed, 30 skipped; live barge is red.
+Last verified: 2026-07-11 on Linux ROG, stacked local `main`; focused: markup
+133 passed/1 skipped, calibration 56 passed. Prior full: 3100/30; live barge is red.
 
 ## Runtime
 
@@ -37,6 +37,7 @@ focused: 133 passed, 1 skipped. Main full: 3100 passed, 30 skipped; live barge i
   the first correctly timed block, and revalidates fallback. Same-domain recovery
   preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
   pre-AGC blocks. Speaker/word-cut authority stays cleared until compatible.
+- Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
 - Enrollment provenance v3 is checked after live open/calibration and covers the
   stable route, rates, resampler, OS processing, gain algorithm, and front end;
   volatile measured AGC floor is excluded. Same-chain v2 records migrate through
@@ -75,10 +76,10 @@ focused: 133 passed, 1 skipped. Main full: 3100 passed, 30 skipped; live barge i
   Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
   override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
-- Main `75b1717` run `144211` improved over `130601`: streamed playback retained
-  `sid=18`, and the owner's “STOP” produced one cut with no self-storm. The remaining
-  override was garbled then INGESTed; its spoken unsupported model tags are now
-  headless-fixed (ADR-0038). Live status remains red despite the successful cut.
+- Main `75b1717` run `144211` retained `sid=18`; the owner's “STOP” cut once
+  without a self-storm. Its garbled, INGESTed override's tags are fixed (ADR-0038).
+  Its first calibration had a suspicious 0.818 peak, but no raw PCM proves
+  inflation; the one-shot retry remains headless-only (ADR-0040). Live stays red.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

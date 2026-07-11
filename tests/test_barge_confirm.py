@@ -272,11 +272,19 @@ def test_stop_speaking_closes_window_and_restores_duck():
 
 def test_engine_stop_clears_pending_confirm_handoff_before_reuse():
     eng = _engine(_Rec())
-    eng._confirm_handoff_stream_live = True
+    now = time.monotonic()
+    assert eng._publish_confirm_handoff_if_current(
+        [_BLOCK],
+        [_BLOCK],
+        speech_at=now,
+        speech_end_at=now,
+    )
+    assert eng._confirm_handoff_pending is not None
 
     eng.stop()
 
     assert not eng._confirm_handoff_stream_live
+    assert eng._confirm_handoff_pending is None
 
 
 # --- the duck is applied by the audio callback ----------------------------------

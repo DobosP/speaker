@@ -4,7 +4,9 @@ The device-generic operating-point step: measure THIS mic's quiet floor at start
 and set the AGC noise gate just above it -- no per-machine hand tuning. Pure logic,
 no audio device.
 """
+import json
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -37,6 +39,20 @@ class _CalibrationInput:
         block = self.blocks.pop(0)
         assert block.shape == (frames,)
         return block.copy(), False
+
+
+def test_device_adaptive_startup_calibration_is_shipped_on_but_library_safe():
+    # Programmatic callers that construct the engine directly retain the
+    # conservative no-capture default.  The normal application path explicitly
+    # opts into device adaptation in the committed configuration.
+    assert SherpaConfig().input_calibrate is False
+    shipped = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )["sherpa"]
+    assert shipped["input_calibrate"] is True
+    assert shipped["final_speech_evidence_enabled"] is True
 
 
 def _impulsive_block(*, quiet_rms=0.0002, peak=0.818, seed=0):
@@ -133,6 +149,10 @@ def test_stable_stationary_window_keeps_single_pass_behavior(caplog):
     assert stream.read_count == 3
     assert engine._last_calibration == expected
     assert engine._input_agc.noise_floor_rms == expected["noise_floor_rms"]
+    assert engine._speech_evidence_profile is not None
+    assert engine._speech_evidence_profile.ambient_rms == pytest.approx(
+        expected["ambient_rms"]
+    )
     assert metrics == []
     assert "suspicious transient crest" not in caplog.text
 
@@ -161,6 +181,10 @@ def test_suspicious_startup_crest_retries_once_and_uses_fresh_window(caplog):
     assert stream.read_count == 6
     assert engine._last_calibration == expected
     assert engine._input_agc.noise_floor_rms == expected["noise_floor_rms"] == 0.004
+    assert engine._speech_evidence_profile is not None
+    assert engine._speech_evidence_profile.ambient_rms == pytest.approx(
+        expected["ambient_rms"]
+    )
     assert metrics == ["input_calibration_transient_retry"]
     assert "suspicious transient crest" in caplog.text
     assert "retaining configured" not in caplog.text
@@ -193,12 +217,84 @@ def test_suspicious_replacement_exhausts_once_and_retains_configured_floor(caplo
     # four-window read budget and additional synthetic blocks remain available.
     assert stream.read_count == 6
     assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
     assert engine._input_agc.noise_floor_rms == 0.007
     assert metrics == [
         "input_calibration_transient_retry",
         "input_calibration_unstable",
     ]
     assert "retaining configured noise_floor=0.0070" in caplog.text
+
+
+def test_clipped_complete_calibration_retries_then_abstains():
+    railed = np.ones(1600, dtype="float32")
+    stream = _CalibrationInput([railed.copy() for _ in range(4)])
+    metrics: list[str] = []
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            block_sec=0.1,
+            input_calibrate=True,
+            input_calibrate_sec=0.2,
+        )
+    )
+    engine._stream_in = stream
+    engine._capture_sr = 16000
+    engine._cb = EngineCallbacks(
+        on_metric=lambda name, **_kwargs: metrics.append(name)
+    )
+
+    engine._calibrate_input()
+
+    assert stream.read_count == 4
+    assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
+    assert metrics == [
+        "input_clipping",
+        "input_calibration_contaminated_retry",
+        "input_calibration_unstable",
+    ]
+
+
+def test_speech_contaminated_calibration_retries_with_quiet_replacement():
+    class _CalibrationVad:
+        def __init__(self):
+            self.speech = False
+            self.resets = 0
+
+        def accept_waveform(self, samples):
+            self.speech = float(np.sqrt(np.mean(samples * samples))) > 0.01
+
+        def is_speech_detected(self):
+            return self.speech
+
+        def reset(self):
+            self.resets += 1
+            self.speech = False
+
+    first = [_block(0.02, seed=i) for i in range(2)]
+    replacement = [_block(0.001, seed=10 + i) for i in range(2)]
+    stream = _CalibrationInput(first + replacement)
+    metrics: list[str] = []
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            block_sec=0.1,
+            input_calibrate=True,
+            input_calibrate_sec=0.2,
+        )
+    )
+    engine._stream_in = stream
+    engine._capture_sr = 16000
+    engine._vad = _CalibrationVad()
+    engine._cb = EngineCallbacks(
+        on_metric=lambda name, **_kwargs: metrics.append(name)
+    )
+
+    engine._calibrate_input()
+
+    assert engine._last_calibration == compute_input_calibration(replacement)
+    assert engine._speech_evidence_profile is not None
+    assert metrics == ["input_calibration_contaminated_retry"]
+    assert engine._vad.resets >= 4
 
 
 def test_calibration_restarts_in_recovered_stream_domain(monkeypatch):
@@ -222,8 +318,8 @@ def test_calibration_restarts_in_recovered_stream_domain(monkeypatch):
                 # block from the newly opened 48 kHz stream.
                 self.generation = 2
                 self.actual_samplerate = 48000
-                return np.full(4800, 0.02, dtype="float32"), False
-            return np.full(frames, 0.02, dtype="float32"), False
+                return _block(0.02, n=4800, seed=420), False
+            return _block(0.02, n=frames, seed=420 + len(self.read_sizes)), False
 
     class _Resampler:
         def __init__(self, src_sr, dst_sr, *, quality):
@@ -264,10 +360,17 @@ def test_calibration_restarts_in_recovered_stream_domain(monkeypatch):
     assert engine._capture_sr == 48000
     assert engine._resampler is not None
     assert engine._resampler.src_sr == 48000
+    assert engine._pre_gain_resampler is not None
+    assert engine._pre_gain_resampler.src_sr == 48000
     assert len(seen) == 3
     assert all(block.shape == (1600,) for block in seen)
-    assert all(np.allclose(block, 0.02) for block in seen)
+    assert all(
+        float(np.sqrt(np.mean(block.astype("float64") ** 2)))
+        == pytest.approx(0.02, rel=0.1)
+        for block in seen
+    )
     assert engine._last_calibration["n_blocks"] == 3
+    assert engine._speech_evidence_profile is not None
 
 
 def test_calibration_rebinds_when_recovered_retry_raises(monkeypatch):
@@ -312,6 +415,7 @@ def test_calibration_rebinds_when_recovered_retry_raises(monkeypatch):
     assert engine._resampler.src_sr == 48000
     assert computed == []
     assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
 
 
 def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
@@ -345,6 +449,12 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     engine._capture_sr = 16000
     engine._capture_resolution = resolution
     engine._last_calibration = calibration
+    engine._install_speech_evidence_profile(
+        calibration,
+        [_block(0.004, seed=40), _block(0.004, seed=41)],
+    )
+    old_evidence_profile = engine._speech_evidence_profile
+    assert old_evidence_profile is not None
     engine._input_agc.noise_floor_rms = 0.012
     engine._input_agc.gain = 9.0
     engine._input_agc.process(_block(0.001, seed=44))
@@ -363,6 +473,7 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
 
     assert restores == [False, True]
     assert engine._last_calibration is calibration
+    assert engine._speech_evidence_profile is old_evidence_profile
     assert engine._input_agc.noise_floor_rms == 0.012
     assert engine._input_agc.gain == 1.0
     assert engine._input_agc.last_input_rms == 0.0
@@ -403,7 +514,17 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
     engine._stream_in = _Stream()
     engine._capture_sr = 16000
     engine._capture_resolution = old_resolution
-    engine._last_calibration = {"noise_floor_rms": 0.012}
+    engine._last_calibration = {
+        "ambient_rms": 0.004,
+        "noise_floor_rms": 0.012,
+    }
+    engine._install_speech_evidence_profile(
+        engine._last_calibration,
+        [_block(0.004, seed=80), _block(0.004, seed=81)],
+    )
+    old_evidence_generation = (
+        engine._speech_evidence_profile.calibration_generation
+    )
     engine._input_agc.noise_floor_rms = 0.012
     restores = []
 
@@ -419,6 +540,7 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
 
     assert restores == [False]
     assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
     assert engine._input_agc.noise_floor_rms == 0.004
     assert engine._recovery_calibration_target == 3
     assert not engine._word_cut_route_verified
@@ -428,18 +550,266 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
     assert engine._input_agc.last_input_rms > 0.0
     for index in range(3):
         engine._observe_recovery_calibration(
-            _block(0.006, seed=100 + index), vad_active=False
+            _block(0.006, seed=100 + index), speech_epoch_open=False
         )
 
     assert restores == [False, True]
     assert engine._recovery_calibration_target == 0
     assert engine._last_calibration["n_blocks"] == 3
+    assert engine._speech_evidence_profile is not None
+    assert (
+        engine._speech_evidence_profile.calibration_generation
+        > old_evidence_generation
+    )
+    assert engine._speech_evidence_profile.domain.route == "fallback-route"
     assert engine._input_agc.noise_floor_rms > 0.004
     assert engine._input_agc.gain == 1.0
     assert engine._input_agc.last_input_rms == 0.0
     assert engine._input_agc.last_applied_gain == 1.0
     assert engine._input_agc.last_above_floor is False
     assert engine._word_cut_route_verified
+
+
+def test_changed_domain_recalibrates_speech_evidence_without_input_agc():
+    class _Stream:
+        actual_samplerate = 48000
+        actual_device = "fallback-mic"
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            input_agc=False,
+            input_calibrate=True,
+            input_calibrate_sec=0.2,
+            block_sec=0.1,
+            final_speech_evidence_enabled=True,
+        )
+    )
+    old_resolution = CaptureResolution(
+        route="old-route",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+        voice_comm="none",
+    )
+    new_resolution = CaptureResolution(
+        route="fallback-route",
+        capture_sample_rate=48000,
+        model_sample_rate=16000,
+        resampler="soxr",
+        voice_comm="none",
+    )
+    engine._stream_in = _Stream()
+    engine._capture_sr = 16000
+    engine._capture_resolution = old_resolution
+    engine._last_calibration = {
+        "ambient_rms": 0.001,
+        "noise_floor_rms": 0.004,
+    }
+    engine._install_speech_evidence_profile(
+        engine._last_calibration,
+        [_block(0.001, seed=280), _block(0.001, seed=281)],
+    )
+
+    def resolve(_sd, _selector, **kwargs):
+        engine._capture_resolution = new_resolution
+        engine._word_cut_route_verified = kwargs.get("restore_authority", True)
+        return True
+
+    engine._resolve_capture_domain = resolve
+    engine._reset_capture_frontends_after_reopen()
+
+    assert engine._input_agc is None
+    assert engine._speech_evidence_profile is None
+    assert engine._recovery_calibration_target == 2
+    engine._observe_recovery_calibration(
+        _block(0.2, seed=299), speech_epoch_open=True
+    )
+    assert engine._recovery_calibration_target == 2
+    assert engine._speech_evidence_profile is None
+    engine._observe_recovery_calibration(
+        _block(0.001, seed=300), speech_epoch_open=False
+    )
+    assert engine._speech_evidence_profile is None
+    engine._observe_recovery_calibration(
+        _block(0.001, seed=301), speech_epoch_open=False
+    )
+
+    assert engine._recovery_calibration_target == 0
+    assert engine._speech_evidence_profile is not None
+    assert engine._speech_evidence_profile.domain.route == "fallback-route"
+    assert engine._word_cut_route_verified
+
+
+def test_unstable_recovery_calibration_keeps_speech_evidence_fail_open():
+    class _Stream:
+        actual_samplerate = 16000
+        actual_device = "test-mic"
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            input_agc=False,
+            input_calibrate=True,
+            final_speech_evidence_enabled=True,
+        )
+    )
+    engine._stream_in = _Stream()
+    engine._capture_resolution = CaptureResolution(
+        route="test-route",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+        voice_comm="none",
+    )
+    engine._recovery_calibration_target = 1
+    engine._resolve_capture_domain = lambda *_args, **_kwargs: True
+    metrics: list[str] = []
+    engine._cb = EngineCallbacks(
+        on_metric=lambda name, **_kwargs: metrics.append(name)
+    )
+
+    engine._observe_recovery_calibration(
+        _impulsive_block(seed=400),
+        speech_epoch_open=False,
+    )
+
+    assert engine._recovery_calibration_target == 1
+    assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
+    assert "speech_evidence_calibration_retry" in metrics
+
+    engine._observe_recovery_calibration(
+        _impulsive_block(seed=401),
+        speech_epoch_open=False,
+    )
+
+    assert engine._recovery_calibration_target == 0
+    assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
+    assert "speech_evidence_calibration_unstable" in metrics
+
+
+def test_open_speech_epoch_discards_partial_recovery_window():
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            input_agc=False,
+            input_calibrate=True,
+            input_calibrate_sec=0.2,
+            block_sec=0.1,
+        )
+    )
+    engine._capture_resolution = CaptureResolution(
+        route="new-route",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+        voice_comm="none",
+    )
+    engine._recovery_calibration_target = 2
+    engine._resolve_capture_domain = lambda *_args, **_kwargs: True
+
+    engine._observe_recovery_calibration(
+        _block(0.001, seed=500), speech_epoch_open=False
+    )
+    assert len(engine._recovery_calibration_blocks) == 1
+    engine._observe_recovery_calibration(
+        _block(0.02, seed=501), speech_epoch_open=True
+    )
+    assert engine._recovery_calibration_blocks == []
+
+    engine._observe_recovery_calibration(
+        _block(0.001, seed=502), speech_epoch_open=False
+    )
+    assert engine._recovery_calibration_target == 2
+    assert engine._speech_evidence_profile is None
+    engine._observe_recovery_calibration(
+        _block(0.001, seed=503), speech_epoch_open=False
+    )
+
+    assert engine._recovery_calibration_target == 0
+    assert engine._speech_evidence_profile is not None
+
+
+def test_recovery_replays_candidate_window_through_vad_before_arming():
+    class _SpeechVad:
+        def __init__(self):
+            self.speech = False
+
+        def reset(self):
+            self.speech = False
+
+        def accept_waveform(self, samples):
+            self.speech = self.speech or float(
+                np.sqrt(np.mean(np.asarray(samples, dtype="float64") ** 2))
+            ) > 0.01
+
+        def is_speech_detected(self):
+            return self.speech
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(input_agc=False, input_calibrate=True)
+    )
+    engine._vad = _SpeechVad()
+    engine._recovery_calibration_target = 2
+    engine._word_cut_route_verified = False
+    resolves: list[bool] = []
+    engine._resolve_capture_domain = (
+        lambda *_args, **_kwargs: resolves.append(True) or True
+    )
+
+    for seed in (510, 511):
+        engine._observe_recovery_calibration(
+            _block(0.02, seed=seed), speech_epoch_open=False
+        )
+
+    assert engine._recovery_calibration_target == 2
+    assert engine._recovery_calibration_retried is True
+    assert engine._speech_evidence_profile is None
+    assert resolves == []
+
+    for seed in (512, 513):
+        engine._observe_recovery_calibration(
+            _block(0.02, seed=seed), speech_epoch_open=False
+        )
+
+    assert engine._recovery_calibration_target == 0
+    assert engine._speech_evidence_profile is None
+    assert engine._word_cut_route_verified is False
+    assert resolves == []
+
+
+def test_degenerate_recovery_profile_retries_without_restoring_authority():
+    engine = SherpaOnnxEngine(
+        SherpaConfig(input_agc=False, input_calibrate=True)
+    )
+    engine._recovery_calibration_target = 2
+    engine._word_cut_route_verified = False
+    resolves: list[bool] = []
+    engine._resolve_capture_domain = (
+        lambda *_args, **_kwargs: resolves.append(True) or True
+    )
+    dc = np.full(1600, 0.003, dtype="float32")
+
+    for _ in range(2):
+        engine._observe_recovery_calibration(
+            dc, speech_epoch_open=False
+        )
+
+    assert engine._recovery_calibration_target == 2
+    assert engine._recovery_calibration_retried is True
+    assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
+    assert resolves == []
+
+    for _ in range(2):
+        engine._observe_recovery_calibration(
+            dc, speech_epoch_open=False
+        )
+
+    assert engine._recovery_calibration_target == 0
+    assert engine._last_calibration is None
+    assert engine._speech_evidence_profile is None
+    assert engine._word_cut_route_verified is False
+    assert resolves == []
 
 
 def test_capture_loop_recovery_calibration_samples_before_input_agc():
@@ -491,6 +861,7 @@ def test_capture_loop_recovery_calibration_samples_before_input_agc():
             input_agc=True,
             input_calibrate=True,
             input_calibrate_sec=0.1,
+            final_speech_evidence_enabled=False,
         )
     )
     engine._stream_in = _Input(engine)
@@ -519,3 +890,6 @@ def test_capture_loop_recovery_calibration_samples_before_input_agc():
     expected = compute_input_calibration([raw])["noise_floor_rms"]
     assert gains and gains[0] > 1.0
     assert engine._last_calibration["noise_floor_rms"] == expected
+    # This test isolates the AGC ordering; evidence is disabled because its
+    # profile correctly requires at least 200 ms of ambient PCM.
+    assert engine._speech_evidence_profile is None

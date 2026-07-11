@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, current-signal AGC v5 stacked on `15966db`;
-full: 3243 passed/30 skipped/9 warnings; focused: 67 passed; adjacent playback/audio:
-71/103 passed; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, calibrated pre-gain evidence stacked on `2e2ddfd`;
+full: 3312 passed/30 skipped/9 warnings; focused evidence/barge/enrollment/APM:
+274 passed; compile/config JSON/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -25,10 +25,10 @@ full: 3243 passed/30 skipped/9 warnings; focused: 67 passed; adjacent playback/a
 
 ## Voice reliability now implemented
 
-- VAD owns live ASR segments/acoustic time. At first onset the normal decoder
-  rebases to bounded pre-roll; pre-VAD text cannot publish/finalize, and no-text
-  ended episodes reset at the silence ceiling. Complete speech stays owned;
-  no-VAD fails open. SenseVoice rewrites remain exact and bounded (ADR-0026/0046).
+- VAD owns live ASR segments/acoustic time; first onset rebases bounded pre-roll.
+  Pre-VAD text cannot publish/finalize and no-text episodes expire. Ordinary
+  partials/finals require periodic dynamic 80/80 ms or steady ≥120 ms calibrated
+  pre-gain patterns; unavailable and bounded handoffs abstain/bypass (ADR-0046/48).
 - Word-cut uses isolated recognition and bounded PCM. Production generic cuts
   need at least four novel words plus warmed compatible speaker authority; local
   zero-to-three-word floors cannot reopen audio-first promotion. Canonical
@@ -37,9 +37,9 @@ full: 3243 passed/30 skipped/9 warnings; focused: 67 passed; adjacent playback/a
 - Capture recovery rebinds rate/resampler, preserves the first correctly timed
   block, and treats host `-9999` as REOPEN. Shutdown epoch-fences effects before
   bounded abort/teardown; active owners retain resources and block restart.
-  Same-domain recovery preserves its AGC floor; changed domains relearn from
-  VAD-quiet pre-AGC blocks. Authority stays cleared until compatible (ADR-0043).
-- Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
+  Same-domain recovery preserves calibration/evidence; changed domains relearn
+  outside complete speech epochs. Failed retry leaves authority cleared (ADR-0043/48).
+- Startup retries transient/clipped/VAD windows once; invalid profiles abstain; recovery also retries profile instability (ADR-0048).
 - Enrollment provenance v5 fingerprints current-signal-only AGC after live open;
   v2/v3/v4 InputAGC records fail open and require re-enrollment, while exact non-
   AGC aliases remain. Stable route/rates/resampler/OS processing stay covered;
@@ -80,12 +80,12 @@ full: 3243 passed/30 skipped/9 warnings; focused: 67 passed; adjacent playback/a
 - `173340` exposed stale AGC overshoot; `193818` made two silent zero-word cuts
   at 0.31/0.32 and spawned a raw-empty `I.` reply. The four-word guard prevents
   that path. `200747` made zero active cuts while stale/fresh garble entered; v5
-  closes deterministic below-floor pumping headlessly, but one echo-like tail
-  handed off after playback. Stability/barge remain live-red (ADR-0045/47).
+  closes below-floor pumping and calibrated pattern evidence guards ordinary turns,
+  but one echo-like tail handed off after playback. Live remains red (ADR-0045/47/48).
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native cancellation,
   reuse, and two phone-lite XML tool round trips (ADR-0031/32/33). Phone thermals remain unvalidated.
-- Still required at the mic: low-sensitivity use, self-echo rejection, override
-  response, mid-thought pause, and reply-tail continuity. Do not claim barge validated.
+- Still required at the mic: quiet `YES`, low sensitivity, self-echo, override,
+  mid-thought pause, reply-tail continuity, and STOP. Do not claim barge validated.
 
 ## Standard verification
 `/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`;

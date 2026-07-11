@@ -1,7 +1,7 @@
 # ADR-0040: Retry transient-suspicious startup calibration once
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0048
 
 ## Decision
 

@@ -15,6 +15,12 @@ from __future__ import annotations
 from collections import deque
 from typing import Optional
 
+from ._speech_evidence import (
+    SpeechEvidenceAccumulator,
+    SpeechEvidenceProfile,
+    SpeechEvidenceSnapshot,
+)
+
 
 class ASRSegment:
     """Own audio/timing state for one endpointed utterance.
@@ -32,6 +38,7 @@ class ASRSegment:
         max_utterance_sec: float,
         vad_available: bool,
         block_sec: float,
+        speech_evidence_required: bool = False,
     ) -> None:
         self.sample_rate = max(1, int(sample_rate))
         self.pre_roll_samples = max(0, int(round(self.sample_rate * pre_roll_sec)))
@@ -41,6 +48,7 @@ class ASRSegment:
         )
         self.vad_available = bool(vad_available)
         self.block_sec = max(0.0, float(block_sec))
+        self.speech_evidence_required = bool(speech_evidence_required)
         self.primary: deque = deque()
         self.alternate: deque = deque()
         self.samples = 0
@@ -56,6 +64,9 @@ class ASRSegment:
         self.offline_recovery_authorized = False
         self.owner_lineage_intact = True
         self._has_word_cut_prefix = False
+        self._speech_evidence: Optional[SpeechEvidenceAccumulator] = None
+        self._speech_evidence_unavailable_reason: Optional[str] = None
+        self._speech_evidence_bypass_reason: Optional[str] = None
 
     def observe_vad(self, active: bool, now: float) -> Optional[float]:
         """Observe one post-front-end VAD verdict.
@@ -150,6 +161,67 @@ class ASRSegment:
         )
         self._trim_to(limit)
 
+    def observe_pre_gain_model_pcm(
+        self,
+        samples,
+        profile: Optional[SpeechEvidenceProfile],
+        *,
+        capture_generation: int,
+    ) -> None:
+        """Bind/advance independent evidence for the current VAD epoch."""
+        if not self.speech_evidence_required or not self.vad_available:
+            return
+        if self._speech_evidence_bypass_reason is not None:
+            return
+        if not self.speech_seen:
+            return
+        if self._speech_evidence_unavailable_reason is not None:
+            return
+        if profile is None:
+            self._speech_evidence_unavailable_reason = (
+                "stable_calibration_unavailable"
+            )
+            self._speech_evidence = None
+            return
+        if self._speech_evidence is None:
+            self._speech_evidence = profile.accumulator(
+                capture_generation=capture_generation
+            )
+        elif self._speech_evidence.profile != profile:
+            # A VAD epoch may never be classified across calibration domains.
+            self._speech_evidence_unavailable_reason = (
+                "calibration_changed_mid_epoch"
+            )
+            self._speech_evidence = None
+            return
+        # First VAD onset opens the epoch. Thereafter assess every frame until
+        # endpoint even if VAD flickers; the frame's own pattern breaks/extends
+        # evidence and quiet PCM cannot count.
+        self._speech_evidence.observe(samples, epoch_open=True)
+
+    def bypass_speech_evidence(self, reason: str) -> None:
+        """Mark a separately authorized handoff as outside ordinary admission."""
+        self._speech_evidence_bypass_reason = str(reason)
+        self._speech_evidence = None
+
+    def speech_evidence_snapshot(self) -> SpeechEvidenceSnapshot:
+        """Freeze this epoch's decision before endpoint reset/async work."""
+        if not self.speech_evidence_required:
+            return SpeechEvidenceSnapshot.bypassed("disabled")
+        if not self.vad_available:
+            return SpeechEvidenceSnapshot.bypassed("vad_unavailable")
+        if self._speech_evidence_bypass_reason is not None:
+            return SpeechEvidenceSnapshot.bypassed(
+                self._speech_evidence_bypass_reason
+            )
+        if self._speech_evidence_unavailable_reason is not None:
+            return SpeechEvidenceSnapshot.unavailable(
+                self._speech_evidence_unavailable_reason
+            )
+        if self._speech_evidence is None:
+            return SpeechEvidenceSnapshot.unavailable("evidence_not_observed")
+        return self._speech_evidence.snapshot()
+
     def prepend(
         self,
         blocks,
@@ -183,6 +255,7 @@ class ASRSegment:
                 offline_recovery_authorized
             )
             self._has_word_cut_prefix = True
+            self.bypass_speech_evidence("word_cut_handoff")
             at = float(speech_at) if speech_at is not None else self.last_speech_at
             if at is None:
                 at = 0.0
@@ -197,6 +270,65 @@ class ASRSegment:
                 if self.last_speech_at is None
                 else max(self.last_speech_at, end_at)
             )
+        self._trim_to(self.max_samples)
+        return n
+
+    def adopt_confirmed_barge_handoff(
+        self,
+        blocks,
+        alternate_blocks=None,
+        *,
+        speech_at: float,
+        speech_end_at: float,
+    ) -> int:
+        """Own the exact bounded PCM that already confirmed a ducked barge.
+
+        Unlike a word-cut prefix, this is not speaker-attested and does not mint
+        owner lineage. It does bind the separately confirmed recognizer head to
+        this segment, so a later unrelated onset cannot inherit a stale boolean
+        bypass and the final speaker gate sees the confirming audio.
+        """
+        import numpy as np
+
+        primary = [
+            np.asarray(block, dtype="float32").reshape(-1).copy()
+            for block in blocks
+        ]
+        alternates = (
+            [
+                np.asarray(block, dtype="float32").reshape(-1).copy()
+                for block in alternate_blocks
+            ]
+            if alternate_blocks is not None
+            else [block.copy() for block in primary]
+        )
+        if len(alternates) != len(primary):
+            raise ValueError("confirmed handoff PCM domains must align")
+        n = sum(int(block.size) for block in primary)
+        if not n:
+            return 0
+        # The normal recognizer stream already contains idle lookback followed
+        # by these confirm-window blocks. Preserve that chronology: unlike a
+        # word-cut stream reset, this handoff belongs at the owned tail.
+        for block in primary:
+            self.primary.append(block)
+        for block in alternates:
+            self.alternate.append(block)
+        self.samples += n
+        start = max(0.0, float(speech_at))
+        end = max(start, float(speech_end_at))
+        self.speech_seen = True
+        self.first_speech_at = (
+            start
+            if self.first_speech_at is None
+            else min(self.first_speech_at, start)
+        )
+        self.last_speech_at = (
+            end
+            if self.last_speech_at is None
+            else max(self.last_speech_at, end)
+        )
+        self.bypass_speech_evidence("confirmed_barge_handoff")
         self._trim_to(self.max_samples)
         return n
 
@@ -285,3 +417,6 @@ class ASRSegment:
         self.offline_recovery_authorized = False
         self.owner_lineage_intact = True
         self._has_word_cut_prefix = False
+        self._speech_evidence = None
+        self._speech_evidence_unavailable_reason = None
+        self._speech_evidence_bypass_reason = None

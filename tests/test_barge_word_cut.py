@@ -172,6 +172,28 @@ def test_config_from_dict_roundtrip():
     assert c.barge_word_cut_speaker_retry_sec == 0.3
 
 
+@pytest.mark.parametrize(
+    ("require_speaker", "generic_words", "speaker_words", "expected"),
+    [
+        (True, 4, 0, 4),
+        (True, 2, 5, 5),
+        (True, 3, 0, 4),
+        (True, 0, 0, 4),
+        (False, 4, 9, 4),
+        (False, 0, 9, 1),
+    ],
+)
+def test_generic_floor_cannot_be_lowered_by_speaker_authority(
+    require_speaker, generic_words, speaker_words, expected
+):
+    eng = _engine(
+        barge_word_cut_require_speaker=require_speaker,
+        barge_word_cut_min_words=generic_words,
+        barge_word_cut_speaker_min_words=speaker_words,
+    )
+    assert eng._word_cut_authority_min_words() == expected
+
+
 def test_active_only_when_flag_set_and_no_inapp_aec():
     # Flag ON + no in-app AEC/APM (the OS echo-cancel path) -> live.
     assert _engine()._barge_word_cut_active() is True
@@ -309,12 +331,13 @@ class _FakeSpeakerGate:
         return self.embedding
 
 
-def test_audio_first_owner_authority_cuts_when_double_talk_asr_stays_empty():
-    """Regression for live run 20260711-130601.
+def test_zero_word_speaker_false_accept_cannot_cut_or_authorize_recovery():
+    """Regression for the two silent self-cuts in live run 20260711-193818.
 
-    The OS-cancelled waveform carried the owner, but streaming double-talk ASR
-    produced zero words for two replies and only 1-3 unstable words in the story.
-    Sustained compatible owner identity must therefore be sufficient authority.
+    CAM++ scored empty residual PCM at 0.31/0.32, above the purpose-specific
+    0.30 threshold.  No identity score may be requested until generic lexical
+    evidence clears the echo-safe floor, so empty PCM cannot be promoted into
+    normal/offline ASR and manufacture a post-barge turn.
     """
     rec = _Rec()
     eng = _engine(
@@ -325,7 +348,7 @@ def test_audio_first_owner_authority_cuts_when_double_talk_asr_stays_empty():
         barge_word_cut_speaker_threshold=0.30,
         speaker_gate_input=False,
     )
-    gate = _FakeSpeakerGate([0.387])
+    gate = _FakeSpeakerGate([0.32])
     eng._speaker_gate = gate
     eng._speaker_gate_warmed = True
     detect, normal = _FakeStream(), _FakeStream()
@@ -333,7 +356,7 @@ def test_audio_first_owner_authority_cuts_when_double_talk_asr_stays_empty():
     block = np.full(1600, 0.2, dtype="float32")
     now = time.monotonic()
 
-    for index in range(3):
+    for index in range(4):
         assert not eng._barge_word_cut_step(
             recognizer,
             detect,
@@ -341,14 +364,63 @@ def test_audio_first_owner_authority_cuts_when_double_talk_asr_stays_empty():
             now + index * 0.1,
             normal_stream=normal,
         )
-    assert eng._barge_word_cut_step(
-        recognizer, detect, block, now + 0.3, normal_stream=normal
-    )
+    assert rec.barges == 0
+    assert gate.calls == []
+    assert eng._wc_stats.get("speaker_accepts", 0) == 0
+    assert eng._word_cut_candidate_speaker_authorized is False
+    assert eng._word_cut_pending_samples == 0
+    assert normal.fed_blocks == 0
 
+
+@pytest.mark.parametrize(
+    "text",
+    ["wait", "please wait", "please wait now"],
+)
+def test_one_to_three_generic_words_cannot_consult_or_bypass_speaker_floor(text):
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([1.0])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer([text]),
+        _FakeStream(),
+        np.full(1600, 0.4, dtype="float32"),
+        time.monotonic(),
+    )
+    assert rec.barges == 0
+    assert gate.calls == []
+    assert eng._wc_stats.get("cuts", 0) == 0
+
+
+def test_four_generic_words_plus_speaker_authority_cut():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+
+    assert eng._barge_word_cut_step(
+        _FakeRecognizer(["switch to Roman architecture"]),
+        _FakeStream(),
+        np.full(1600, 0.4, dtype="float32"),
+        time.monotonic(),
+    )
     assert rec.barges == 1
     assert len(gate.calls) == 1
-    assert eng._wc_stats["speaker_accepts"] == 1
-    assert normal.fed_blocks == 1  # accepted PCM is voiced/model-window bounded
 
 
 def test_audio_first_own_tts_is_rejected_below_double_talk_threshold():
@@ -363,7 +435,8 @@ def test_audio_first_own_tts_is_rejected_below_double_talk_threshold():
     )
     eng._speaker_gate = _FakeSpeakerGate([0.179])
     eng._speaker_gate_warmed = True
-    recognizer = _FakeRecognizer([""] * 4)
+    eng._now_playing = "There are rings of Saturn."
+    recognizer = _FakeRecognizer(["there are rings of Saturn"] * 4)
     stream = _FakeStream()
     now = time.monotonic()
 
@@ -413,7 +486,7 @@ def test_audio_first_ambiguous_score_retries_after_more_pcm_then_cuts():
     gate = _FakeSpeakerGate([0.25, 0.387])
     eng._speaker_gate = gate
     eng._speaker_gate_warmed = True
-    recognizer = _FakeRecognizer([""] * 8)
+    recognizer = _FakeRecognizer(["switch to Roman architecture"] * 8)
     detect, normal = _FakeStream(), _FakeStream()
     block = np.full(1600, 0.2, dtype="float32")
     now = time.monotonic()
@@ -543,7 +616,7 @@ def test_audio_first_guarded_echo_cannot_contaminate_later_owner_handoff():
     )
     eng._speaker_gate = _FakeSpeakerGate([0.387])
     eng._speaker_gate_warmed = True
-    recognizer = _FakeRecognizer([""] * 8)
+    recognizer = _FakeRecognizer(["switch to Roman architecture"] * 8)
     detect, normal = _FakeStream(), _FakeStream()
     now = time.monotonic()
     eng._playback_onset_at = now
@@ -578,7 +651,7 @@ def test_audio_first_guarded_echo_cannot_contaminate_later_owner_handoff():
     assert eng._wc_stats["guard_candidate_clears"] == 4
 
 
-def test_audio_first_empty_tail_promotes_after_fresh_voiced_continuation():
+def test_empty_tail_is_dropped_without_speaker_or_offline_authority():
     eng = _engine(
         barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
@@ -600,12 +673,13 @@ def test_audio_first_empty_tail_promotes_after_fresh_voiced_continuation():
     assert not eng._finish_word_cut_reply(
         recognizer, detect, normal, now=now + 0.3
     )
-    assert eng._word_cut_tail_staged
+    assert not eng._word_cut_tail_staged
     assert eng._word_cut_tail_probation_step(
         recognizer, detect, normal, block, now + 0.4
-    ) == "promoted"
-    assert normal.fed_blocks == 1
-    assert eng._wc_stats["speaker_accepts"] == 1
+    ) == "dropped"
+    assert normal.fed_blocks == 0
+    assert eng._wc_stats.get("speaker_accepts", 0) == 0
+    assert eng._wc_stats["tail_drop_empty"] == 1
 
 
 @pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
@@ -679,7 +753,7 @@ def test_audio_first_ambiguous_retry_uses_monotonic_observed_pcm_after_trim():
     gate = _FakeSpeakerGate([0.25, 0.387])
     eng._speaker_gate = gate
     eng._speaker_gate_warmed = True
-    recognizer = _FakeRecognizer([""] * 4)
+    recognizer = _FakeRecognizer(["switch to Roman architecture"] * 4)
     detect, normal = _FakeStream(), _FakeStream()
     block = np.full(1600, 0.2, dtype="float32")
     now = time.monotonic()
@@ -816,6 +890,37 @@ def test_own_tts_attested_stop_repair_requires_speaker_and_does_not_cut():
     assert eng._wc_stats.get("cuts", 0) == 0
 
 
+def test_owner_attested_stop_repair_uses_short_gate_below_generic_floor():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = "The app may stop responding while it reconnects."
+    recognizer = _FakeRecognizer(["OF", "OF HE", "OF HE STOP"])
+    stream = _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now
+    )
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now + 0.1
+    )
+    assert eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now + 0.2
+    )
+
+    assert rec.barges == 1
+    assert len(gate.calls) == 1
+    assert eng._wc_stats["speaker_accepts"] == 1
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -853,7 +958,9 @@ def test_non_attested_stop_phrase_is_not_a_canonical_cut(text):
     )
 
     assert rec.barges == 0
-    assert eng._wc_stats["speaker_unavailable"] == 1
+    # These ordinary 2-3 word phrases are neither STOP-class controls nor enough
+    # generic lexical evidence to consult speaker authority.
+    assert eng._wc_stats.get("speaker_unavailable", 0) == 0
     assert eng._wc_stats.get("cuts", 0) == 0
 
 
@@ -875,6 +982,63 @@ def test_attested_stop_repair_is_shared_at_reply_tail():
     )
     assert normal.fed_blocks == 1
     assert eng._wc_stats["tail_handoffs"] == 1
+
+
+def test_tts_ambiguous_attested_stop_uses_short_gate_at_reply_tail():
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = "The app may stop responding while it reconnects."
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["OF HE STOP"])
+    eng._word_cut_fed_stream = True
+    eng._append_word_cut_candidate(np.full(1600, 0.4, dtype="float32"))
+
+    assert eng._finish_word_cut_reply(
+        recognizer, detect, normal, now=time.monotonic()
+    )
+    assert len(gate.calls) == 1
+    assert normal.fed_blocks == 1
+    assert eng._wc_stats["tail_handoffs"] == 1
+
+
+@pytest.mark.parametrize(
+    ("command", "now_playing"),
+    [("stop", "Stop."), ("cancel", "Please cancel.")],
+)
+@pytest.mark.parametrize(("score", "promoted"), [(0.16, False), (0.387, True)])
+def test_tts_ambiguous_exact_control_uses_short_gate_at_reply_tail(
+    command, now_playing, score, promoted
+):
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([score])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = now_playing
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer([command])
+    eng._word_cut_fed_stream = True
+    eng._append_word_cut_candidate(np.full(1600, 0.4, dtype="float32"))
+
+    assert eng._finish_word_cut_reply(
+        recognizer, detect, normal, now=time.monotonic()
+    ) is promoted
+    assert len(gate.calls) == 1
+    assert normal.fed_blocks == int(promoted)
+    assert eng._wc_stats.get("tail_handoffs", 0) == int(promoted)
+    if not promoted:
+        assert eng._wc_stats["tail_drop_speaker"] == 1
 
 
 def test_attested_stop_repair_is_shared_at_tail_continuation():
@@ -899,6 +1063,69 @@ def test_attested_stop_repair_is_shared_at_tail_continuation():
     ) == "promoted"
     assert normal.fed_blocks == 1
     assert eng._wc_stats["tail_continuations"] == 1
+
+
+def test_tts_ambiguous_attested_stop_uses_short_gate_at_tail_continuation():
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = "The app may stop responding while it reconnects."
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["OF HE STOP"])
+    block = np.full(1600, 0.4, dtype="float32")
+    now = time.monotonic()
+    eng._word_cut_tail_staged = True
+    eng._word_cut_tail_words = 2
+    eng._word_cut_tail_text = "OF HE"
+    eng._word_cut_tail_deadline = now + 1.0
+    eng._word_cut_tail_vad_reset_ok = True
+
+    assert eng._word_cut_tail_probation_step(
+        recognizer, detect, normal, block, now
+    ) == "promoted"
+    assert len(gate.calls) == 1
+    assert normal.fed_blocks == 1
+
+
+@pytest.mark.parametrize(
+    ("command", "now_playing"),
+    [("stop", "Stop."), ("cancel", "Please cancel.")],
+)
+@pytest.mark.parametrize(("score", "expected"), [(0.16, "dropped"), (0.387, "promoted")])
+def test_tts_ambiguous_exact_control_uses_short_gate_at_tail_continuation(
+    command, now_playing, score, expected
+):
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([score])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._now_playing = now_playing
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer([command])
+    block = np.full(1600, 0.4, dtype="float32")
+    now = time.monotonic()
+    eng._word_cut_tail_staged = True
+    eng._word_cut_tail_words = 1
+    eng._word_cut_tail_text = "garbled"
+    eng._word_cut_tail_deadline = now + 1.0
+    eng._word_cut_tail_vad_reset_ok = True
+
+    assert eng._word_cut_tail_probation_step(
+        recognizer, detect, normal, block, now
+    ) == expected
+    assert len(gate.calls) == 1
+    assert normal.fed_blocks == int(expected == "promoted")
 
 
 def test_live_saturn_echo_rejected_by_enrolled_speaker_then_owner_cuts():
@@ -1271,13 +1498,15 @@ def test_speech_block_between_quiets_defuses_the_debounce():
 # --- natural reply-tail handoff + PCM finalizer pre-roll --------------------------
 
 
-def test_novel_short_tail_requires_postplay_word_before_handoff(caplog):
+def test_novel_short_tail_requires_generic_floor_before_handoff(caplog):
     import logging
 
     caplog.set_level(logging.INFO, logger="speaker.sherpa")
     eng = _engine(vad_speech=True)
     detect, normal = _FakeStream(), _FakeStream()
-    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    r = _FakeRecognizer(
+        ["please wait", "please wait", "please wait right now"]
+    )
     tail_block = np.full(1600, 0.35, dtype="float32")
     continuation_block = np.full(1600, 0.45, dtype="float32")
     now = time.monotonic()
@@ -1289,8 +1518,8 @@ def test_novel_short_tail_requires_postplay_word_before_handoff(caplog):
     assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
     assert eng._word_cut_tail_staged is True
     assert normal.fed_blocks == 0
-    # The same VAD-active burst gains one post-playback word -> replay tail +
-    # continuation into normal ASR and hand off to ordinary endpointing.
+    # The same VAD-active burst reaches four words after playback -> replay tail
+    # plus continuation into normal ASR and hand off to ordinary endpointing.
     assert eng._word_cut_tail_probation_step(
         r, detect, normal, continuation_block, now + 0.1
     ) == "promoted"
@@ -1301,7 +1530,72 @@ def test_novel_short_tail_requires_postplay_word_before_handoff(caplog):
     assert eng._wc_stats.get("tail_drops", 0) == 0
     assert eng._wc_stats["tail_continuations"] == 1
     assert "word-cut tail staged: words=2" in caplog.text
-    assert "word-cut tail handoff: words=3 pcm_ms=200 replay=True" in caplog.text
+    assert "word-cut tail handoff: words=4 pcm_ms=200 replay=True" in caplog.text
+
+
+def test_two_word_tail_growing_to_three_cannot_bypass_speaker_floor():
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_min_words=0,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([1.0])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(recognizer, detect, _BLOCK, now)
+    assert not eng._finish_word_cut_reply(
+        recognizer, detect, normal, now=now
+    )
+    assert eng._word_cut_tail_staged
+    assert eng._word_cut_tail_probation_step(
+        recognizer, detect, normal, _BLOCK, now + 0.1
+    ) == "waiting"
+    assert gate.calls == []
+    assert normal.fed_blocks == 0
+    assert eng._word_cut_pending_samples == 0
+
+
+def test_four_word_tail_retries_speaker_on_fresh_voiced_pcm_without_fifth_word():
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_min_words=0,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.15,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["switch to Roman architecture"] * 3)
+    block = np.full(1600, 0.4, dtype="float32")
+    now = time.monotonic()
+
+    # The 100 ms playback tail clears the lexical floor but is too short for the
+    # 150 ms identity window. Fresh post-playback voice supplies enough PCM; the
+    # stable four-word transcript must not need a synthetic fifth word to retry.
+    assert not eng._barge_word_cut_step(recognizer, detect, block, now)
+    assert gate.calls == []
+    assert not eng._finish_word_cut_reply(
+        recognizer, detect, normal, now=now
+    )
+    assert eng._word_cut_tail_staged
+    assert eng._word_cut_tail_words == 4
+    assert eng._word_cut_tail_probation_step(
+        recognizer, detect, normal, block, now + 0.1
+    ) == "promoted"
+    assert len(gate.calls) == 1
+    np.testing.assert_array_equal(
+        np.concatenate(normal.blocks), np.concatenate([block, block])
+    )
 
 
 def test_garbled_two_word_tail_plus_silence_is_never_handed_to_normal_asr():
@@ -1426,7 +1720,7 @@ def test_required_speaker_authority_cannot_be_bypassed_at_reply_tail():
     assert normal_rejected.fed_blocks == 0
 
 
-def test_required_speaker_authority_gates_short_tail_continuation():
+def test_required_speaker_authority_gates_floor_reaching_tail_continuation():
     now = time.monotonic()
 
     accepted = _engine(
@@ -1438,7 +1732,9 @@ def test_required_speaker_authority_gates_short_tail_continuation():
     accepted._speaker_gate = _FakeSpeakerGate([0.8])
     accepted._speaker_gate_warmed = True
     detect_ok, normal_ok = _FakeStream(), _FakeStream()
-    r_ok = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    r_ok = _FakeRecognizer(
+        ["please wait", "please wait", "please wait right now"]
+    )
     assert not accepted._barge_word_cut_step(r_ok, detect_ok, _BLOCK, now)
     assert not accepted._finish_word_cut_reply(
         r_ok, detect_ok, normal_ok, now=now
@@ -1459,7 +1755,9 @@ def test_required_speaker_authority_gates_short_tail_continuation():
     rejected._speaker_gate = _FakeSpeakerGate([0.1])
     rejected._speaker_gate_warmed = True
     detect_no, normal_no = _FakeStream(), _FakeStream()
-    r_no = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    r_no = _FakeRecognizer(
+        ["please wait", "please wait", "please wait right now"]
+    )
     assert not rejected._barge_word_cut_step(r_no, detect_no, _BLOCK, now)
     assert not rejected._finish_word_cut_reply(
         r_no, detect_no, normal_no, now=now
@@ -1505,7 +1803,9 @@ def test_natural_tail_discards_own_empty_and_stale_bursts():
 def test_pending_preroll_splices_once_into_both_finalizer_segments():
     eng = _engine(vad_speech=True)
     detect, normal = _FakeStream(), _FakeStream()
-    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    r = _FakeRecognizer(
+        ["please wait", "please wait", "please wait right now"]
+    )
     block = np.full(1600, 0.42, dtype="float32")
     now = time.monotonic()
     eng._barge_word_cut_step(r, detect, block, now)
@@ -1527,7 +1827,9 @@ def test_preroll_pcm_reaches_second_pass_floor_and_speaker_gate():
     rec = _Rec()
     eng = _engine(rec, vad_speech=True)
     detect, normal = _FakeStream(), _FakeStream()
-    r = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    r = _FakeRecognizer(
+        ["please wait", "please wait", "please wait right now"]
+    )
     block = np.full(1600, 0.51, dtype="float32")
     now = time.monotonic()
     eng._barge_word_cut_step(r, detect, block, now)
@@ -1724,7 +2026,7 @@ def test_capture_tail_continuation_replays_current_block_once(caplog):
         def __init__(self):
             self.streams: list[_FakeStream] = []
             self.detect_results = iter(
-                ["please wait", "please wait", "please wait now"]
+                ["please wait", "please wait", "please wait right now"]
             )
 
         def create_stream(self, **kwargs):
@@ -1740,8 +2042,8 @@ def test_capture_tail_continuation_replays_current_block_once(caplog):
 
         def get_result(self, stream):
             if len(self.streams) > 1 and stream is self.streams[1]:
-                return next(self.detect_results, "please wait now")
-            return "please wait now" if stream.blocks else ""
+                return next(self.detect_results, "please wait right now")
+            return "please wait right now" if stream.blocks else ""
 
         def reset(self, stream):
             if stream is self.streams[0]:
@@ -1789,7 +2091,7 @@ def test_capture_tail_continuation_replays_current_block_once(caplog):
     assert len(normal.blocks) == 2  # tail + continuation, no duplicate current block
     np.testing.assert_array_equal(normal.blocks[0], tail)
     np.testing.assert_array_equal(normal.blocks[1], continuation)
-    assert partials == ["Please wait now"]
+    assert partials == ["Please wait right now"]
     assert "tail_continuations=1" in caplog.text
     assert "spliced_samples=3200" in caplog.text
 
@@ -1974,8 +2276,8 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
     np.testing.assert_array_equal(recognizer.endpoint_blocks[2], endpoint_silence)
 
 
-def test_capture_zero_word_speaker_cut_splices_and_dispatches_async_once():
-    """Production authority survives capture -> splice -> async final dispatch."""
+def test_capture_four_word_speaker_cut_splices_and_dispatches_async_once():
+    """Lexical + speaker authority survives capture through async dispatch."""
     import queue
 
     final_ready = threading.Event()
@@ -1999,7 +2301,7 @@ def test_capture_zero_word_speaker_cut_splices_and_dispatches_async_once():
 
         def get_result(self, stream):
             if len(self.streams) > 1 and stream is self.streams[1]:
-                return ""  # double-talk ASR remains empty during playback
+                return "switch to Roman architecture"
             return "owner command" if stream.blocks else ""
 
         def reset(self, stream):
@@ -2090,13 +2392,12 @@ def test_capture_zero_word_speaker_cut_splices_and_dispatches_async_once():
     )
 
 
-def test_zero_word_handoff_uses_offline_final_when_streaming_stays_empty():
-    """Accepted PCM must reach the second pass even if streaming stays empty.
+def test_zero_word_capture_never_invokes_offline_recovery_or_dispatches():
+    """Empty playback ASR cannot turn a false speaker score into a final.
 
-    Audio-first authority exists precisely because the playback-time streaming
-    recognizer can emit zero words.  Replaying the same degraded PCM into a fresh
-    streaming state is not proof that it will suddenly produce a raw final, so a
-    speaker-authorized segment must let the offline recognizer recover its text.
+    This is the full capture-path version of run 20260711-193818: VAD-active PCM
+    and a would-accept speaker score remain non-authoritative without the generic
+    lexical floor, so offline ASR is never given an empty promoted handoff.
     """
 
     class _AlwaysEmptyRecognizer:
@@ -2200,8 +2501,10 @@ def test_zero_word_handoff_uses_offline_final_when_streaming_stays_empty():
     capture_worker.join(timeout=3.0)
 
     assert not capture_worker.is_alive()
-    assert offline.calls == 1
-    assert finals == ["owner command"]
+    assert offline.calls == 0
+    assert finals == []
+    assert eng._word_cut_pending_samples == 0
+    assert eng._wc_stats.get("speaker_accepts", 0) == 0
 
 
 # --- funnel telemetry (ADR-0013 post-hoc scoring) ---------------------------------

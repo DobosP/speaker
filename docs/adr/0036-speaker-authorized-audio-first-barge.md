@@ -1,7 +1,7 @@
 # ADR-0036: Authorize no-duck barge-in from enrolled-speaker audio
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0045
 
 ## Decision
 

@@ -2,8 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, AGC-cap branch from main `6d8e9c2`;
-full: 3205 passed/27 skipped/9 warnings; focused: 166 passed; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, word-cut safety stacked on `a8f2abb`;
+full: 3225 passed/30 skipped/9 warnings; focused: 108 passed; adjacent: 130
+passed/1 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -15,8 +16,8 @@ full: 3205 passed/27 skipped/9 warnings; focused: 166 passed; APM/DTD: 6 passed;
 - ACT routing now requires command-shaped markers; informational action-word
   questions stay on MiniCPM and ambiguous terms use it to disambiguate (ADR-0024).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
-  GTCRN denoise is active. Speaker-authorized audio-first word-cut is the
-  open-speaker barge path; in-app AEC/APM are off (ADR-0036). EC nodes/Ollama are
+  GTCRN denoise is active. Generic word-cut requires four novel words plus
+  speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are
   session-only, not persistent services.
 - The host-local InputAGC remains boost-only. Smoothed state is retained, but an
   above-floor block cannot receive more than its current desired boost; the cap
@@ -28,12 +29,11 @@ full: 3205 passed/27 skipped/9 warnings; focused: 166 passed; APM/DTD: 6 passed;
   pre-roll; complete speech is retained through rule-3/endpoint. Finals need
   observed speech; no-VAD keeps bounded pre-partial audio (ADR-0017). The 0.900 s
   owner clip's exact SenseVoice repair is allowed; other rewrites fail closed (ADR-0026).
-- Word-cut uses isolated recognition and bounded PCM. Production cuts on a warmed,
-  compatible enrolled-speaker score after 0.35 s of voiced audio even with zero
-  ASR words; an ambiguous score starts a fresh identity window. Accepted PCM is
-  replayed/spliced once, and an empty stream may reach offline ASR. Exact STOP
-  plus the attested `OF HE STOP` repair may cut; TTS containing STOP still
-  requires short-window speaker authority (ADR-0026/0036/0042).
+- Word-cut uses isolated recognition and bounded PCM. Production generic cuts
+  need at least four novel words plus warmed compatible speaker authority; local
+  zero-to-three-word floors cannot reopen audio-first promotion. Canonical
+  STOP-class controls and attested `OF HE STOP` remain short exceptions; TTS
+  ambiguity uses the 0.10 s speaker window (ADR-0026/0042/0045).
 - Capture recovery rebinds rate/resampler, preserves the first correctly timed
   block, and treats host `-9999` as REOPEN. Shutdown epoch-fences effects before
   bounded abort/teardown; active owners retain resources and block restart.
@@ -77,13 +77,13 @@ full: 3205 passed/27 skipped/9 warnings; focused: 166 passed; APM/DTD: 6 passed;
 - Main `6d8e9c2` run `170840` stayed `sid=0` and exited cleanly once, but owner
   talk-over decoded only `AH`, scored 0.19–0.23, and made zero cuts. Ear grade,
   lifecycle causality, and unplug/switch remain unvalidated (ADR-0041/42/43).
-- Same-main diagnostic run `173340` retained floor 0.0040 after a 0.820/536.8x
-  startup crest and failed retry. Its final talk-over was one 0.4633-RMS block,
-  VAD/fed/cuts all zero. The current-block AGC cap is headless-only; re-enrollment
-  plus a bare-speaker A/B are required and live barge remains red (ADR-0044).
-- Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
-  cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
-  (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.
+- `173340` exposed stale AGC overshoot; `193818` made two silent zero-word cuts
+  at 0.31/0.32 and spawned a raw-empty `I.` reply. The four-word guard prevents
+  that path, but `200747` made zero active cuts while stale/garbled ordinary finals
+  entered with the final floor inert/input gate off; one 2→5 echo-like tail scored
+  0.31 and handed off after playback. Stability/barge remain live-red (ADR-0044/45).
+- Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native cancellation,
+  reuse, and two phone-lite XML tool round trips (ADR-0031/32/33). Phone thermals remain unvalidated.
 - Still required at the mic: low-sensitivity use, self-echo rejection, override
   response, mid-thought pause, and reply-tail continuity. Do not claim barge validated.
 

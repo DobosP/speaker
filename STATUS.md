@@ -1,10 +1,9 @@
 # Status — speaker
 
-Single source of current truth. On conflict: this file > newest accepted ADR in `docs/adr/`
-> everything else. Dated session/handoff documents are history.
+Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `feat/llamacpp-abort-boundary`; full
-headless: 2820 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `fix/minicpm-phone-voice-output`; full
+headless: 2879 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
 outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 
@@ -75,10 +74,11 @@ outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
   headless coverage only; no live device unplug/switch validation was run.
 - One real word-cut occurred on 2026-07-07. Device-free I/O covers capture/playback
   workers, FIFO receipts, cut fade, and stale-provider fencing; acoustic behavior is headless-only.
-- Real Q4 sanity was distinct/nondegenerate, but raw llama.cpp emits `<think>` and
-  can exhaust its voice cap before a final; no-think/answer completion remains P1.
-- Current v1/legacy speaker enrollment is intentionally rejected by v2 provenance;
-  local `speaker_gate_input` remains off until live re-enrollment succeeds.
+- Real Q4 llama.cpp uses MiniCPM no-think plus a pre-TTS fail-closed filter; its
+  2/2 functional gate answered all probes at 130.2--255.9 ms TTFT, natural `stop`,
+  zero fallback, 6.5 ms cancel, and healthy reuse (ADR-0031). Production hybrid-
+  CPU generation/batch thread-pair tuning remains P1.
+- Legacy enrollment is rejected by v2 provenance; `speaker_gate_input` stays off until live re-enrollment.
 - Still required with the owner at the mic: (1) `python -m core --enroll` on the active
   EC route; (2) quiet/casual phrase plus mid-thought-pause A/B; (3) bare-speaker
   talk-over cut/false-cut/tail continuity batch. Do not claim validated until run.

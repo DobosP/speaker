@@ -73,6 +73,31 @@ def test_check_passes_healthy_answers():
     assert _check(pairs) == []
 
 
+def test_check_rejects_reasoning_markup_and_wrong_known_answers():
+    problems = _check(
+        [
+            ("What is the capital of France?", "<think>Maybe.</think> Lyon."),
+            ("What is two plus two?", "Five."),
+        ]
+    )
+
+    assert any("reasoning markup leaked" in problem for problem in problems)
+    assert "capital probe did not answer Paris" in problems
+    assert "arithmetic probe did not answer four" in problems
+
+
+def test_check_rejects_negated_or_substring_known_answers():
+    problems = _check(
+        [
+            ("What is the capital of France?", "Paris is not the capital."),
+            ("What is two plus two?", "Four is not right; perhaps 14."),
+        ]
+    )
+
+    assert "capital probe did not answer Paris" in problems
+    assert "arithmetic probe did not answer four" in problems
+
+
 # --- real llama.cpp abort/recovery gate (model-free fakes) ----------------
 
 
@@ -81,6 +106,7 @@ class _FakeAbortRecoveryLLM:
 
     def __init__(self, *, recovery: str = "ready") -> None:
         self._context_poisoned = False
+        self.last_finish_reason = "stop"
         self.recovery = recovery
         self.stream_calls = 0
         self.generate_calls = 0
@@ -223,6 +249,40 @@ def test_llamacpp_abort_probe_rejects_empty_recovery_completion():
     with pytest.raises(RuntimeError, match="recovery completion was empty"):
         probe_llamacpp_abort_recovery(
             _FakeAbortRecoveryLLM(recovery="  "),
+            native_poll_timeout=0.5,
+            cancel_exit_timeout=0.5,
+        )
+
+
+class _FallbackRecoveryLLM(_FakeAbortRecoveryLLM):
+    def generate(self, prompt, *, system=None, images=None, history=None) -> str:
+        result = super().generate(
+            prompt,
+            system=system,
+            images=images,
+            history=history,
+        )
+        self.last_reasoning_blocks = 1
+        return result
+
+
+def test_llamacpp_abort_probe_rejects_reasoning_fallback_on_recovery():
+    with pytest.raises(RuntimeError, match="no-think template control is not effective"):
+        probe_llamacpp_abort_recovery(
+            _FallbackRecoveryLLM(),
+            native_poll_timeout=0.5,
+            cancel_exit_timeout=0.5,
+        )
+
+
+@pytest.mark.parametrize("finish_reason", [None, "length"])
+def test_llamacpp_abort_probe_rejects_incomplete_recovery(finish_reason):
+    llm = _FakeAbortRecoveryLLM()
+    llm.last_finish_reason = finish_reason
+
+    with pytest.raises(RuntimeError, match="did not finish naturally"):
+        probe_llamacpp_abort_recovery(
+            llm,
             native_poll_timeout=0.5,
             cancel_exit_timeout=0.5,
         )

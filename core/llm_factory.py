@@ -94,6 +94,7 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
             n_threads=n_threads,
             n_gpu_layers=llm_cfg.get("n_gpu_layers", 0),
             chat_format=llm_cfg.get("chat_format"),
+            think=llm_cfg.get("think", False),
             options=options,
             # KV-cache quantization (llm-inference-9): optional per-profile.
             type_k=llm_cfg.get("type_k"),

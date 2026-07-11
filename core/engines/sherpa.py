@@ -35,6 +35,37 @@ _FIFO_GROW = 1.5
 _FIFO_DECAY = 0.9
 _FIFO_SEC_MAX = 4.0
 
+# Startup calibration must measure stationary room tone, not the stream-open
+# impulse observed in live run 20260711-144211 (peak 0.818 over a 0.0049-RMS
+# ambient estimate).  The absolute guard keeps harmless low-level ADC ticks from
+# adding startup latency; the crest-ratio guard distinguishes an impulse from a
+# genuinely loud but stationary room.  These are detector bounds, not a
+# per-device operating point -- a suspicious window is remeasured, never clamped.
+_INPUT_CAL_TRANSIENT_MIN_PEAK = 0.10
+_INPUT_CAL_TRANSIENT_CREST_RATIO = 20.0
+
+
+def _calibration_has_suspicious_transient(calibration: dict) -> bool:
+    """Return whether a calibration window has a non-stationary crest.
+
+    This is deliberately a *suspicion* signal.  The initial live evidence did
+    not retain calibration PCM, and its later heartbeat is post-denoiser while
+    calibration is pre-denoiser, so it cannot prove that the measured ambient
+    was inflated.  A complete second measurement decides the operating floor.
+    """
+    try:
+        ambient = float(calibration["ambient_rms"])
+        peak = float(calibration["peak"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    if not math.isfinite(ambient) or not math.isfinite(peak):
+        return True
+    if peak < _INPUT_CAL_TRANSIENT_MIN_PEAK:
+        return False
+    if ambient <= 0.0:
+        return True
+    return peak / ambient >= _INPUT_CAL_TRANSIENT_CREST_RATIO
+
 
 def _auto_threads() -> int:
     """Sensible CPU thread count for one ONNX model on a laptop.
@@ -3115,7 +3146,15 @@ class SherpaOnnxEngine(AudioEngine):
         noise floor to this device's measured quiet level -- the device-generic
         operating point. Best-effort: any read error just ends calibration early
         and the engine proceeds with the configured defaults. Also surfaces an
-        ``input_clipping`` metric into the run bundle if the ADC is already hot."""
+        ``input_clipping`` metric into the run bundle if the ADC is already hot.
+
+        A transient-like crest in the first *complete* window triggers exactly
+        one fresh full-window measurement.  The first window is evidence that the
+        stream may still be settling, not evidence that its ambient estimate is
+        wrong; only the replacement window is eligible to set the floor.  The
+        existing read cap also bounds this retry.  If a complete replacement
+        cannot be accepted, retain the configured floor rather than applying a
+        known-suspicious or partial replacement."""
         import numpy as np
 
         sec = float(self.config.input_calibrate_sec)
@@ -3137,6 +3176,8 @@ class SherpaOnnxEngine(AudioEngine):
         # behavior as a read error below.
         max_reads = n_blocks * 4
         reads = 0
+        retried_transient = False
+        accepted_calibration = None
 
         def _sync_recovered_domain() -> bool:
             nonlocal generation
@@ -3183,9 +3224,65 @@ class SherpaOnnxEngine(AudioEngine):
                 s = self._resampler.process(s)
             if s.size:
                 blocks.append(s)
-        if not blocks:
-            return
-        cal = compute_input_calibration(blocks)
+            if len(blocks) < n_blocks:
+                continue
+
+            candidate = compute_input_calibration(blocks)
+            if not _calibration_has_suspicious_transient(candidate):
+                accepted_calibration = candidate
+                break
+
+            ambient = float(candidate.get("ambient_rms", 0.0) or 0.0)
+            peak = float(candidate.get("peak", 0.0) or 0.0)
+            crest = peak / ambient if ambient > 0.0 else float("inf")
+            if not retried_transient:
+                retried_transient = True
+                log.warning(
+                    "input calibration window has a suspicious transient crest "
+                    "(ambient_rms=%.4f peak=%.3f crest=%.1fx); discarding it "
+                    "and measuring one fresh window",
+                    ambient,
+                    peak,
+                    crest,
+                )
+                try:
+                    self._cb.on_metric("input_calibration_transient_retry")
+                except Exception:  # noqa: BLE001 - metric is best-effort
+                    pass
+                blocks.clear()
+                continue
+
+            # The sole replacement is suspicious too.  Do not let another
+            # retry, a partial window, or a high fallback floor make startup
+            # unbounded or leave a weak microphone deaf.
+            blocks.clear()
+            break
+
+        if accepted_calibration is None:
+            if retried_transient:
+                self._last_calibration = None
+                if self._input_agc is not None:
+                    self._input_agc.noise_floor_rms = float(
+                        self.config.input_agc_noise_floor_rms
+                    )
+                log.warning(
+                    "input calibration retry did not yield a stable complete "
+                    "window; retaining configured noise_floor=%.4f",
+                    float(self.config.input_agc_noise_floor_rms),
+                )
+                try:
+                    self._cb.on_metric("input_calibration_unstable")
+                except Exception:  # noqa: BLE001 - metric is best-effort
+                    pass
+                return
+            if not blocks:
+                return
+            # Preserve the pre-existing best-effort behavior when a read error or
+            # repeated capture reopen leaves a partial *initial* window.  Only a
+            # partial replacement is ineligible after transient suspicion.
+            accepted_calibration = compute_input_calibration(blocks)
+
+        cal = accepted_calibration
         self._last_calibration = cal
         log.info(
             "input calibration: ambient_rms=%.4f -> noise_floor=%.4f peak=%.3f clip=%.1f%% (%d blocks)",

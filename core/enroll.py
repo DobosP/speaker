@@ -25,8 +25,9 @@ import json
 import logging
 import math
 import os
+import shlex
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Mapping, Optional, Sequence
 
@@ -51,7 +52,7 @@ Recorder = Callable[[float], Sequence[float]]
 # Bump only when the model-visible enrollment capture chain changes semantics.
 # The fingerprint below covers the active stage configuration; this version covers
 # the implementation/order contract itself.
-ENROLLMENT_FRONTEND_VERSION = 2
+ENROLLMENT_FRONTEND_VERSION = 3
 
 
 def _agc_floor_bucket_db(value: float) -> int:
@@ -85,10 +86,9 @@ class CaptureResolution:
             "voice_comm": self.voice_comm,
         }
         if self.input_agc_noise_floor_rms is not None:
-            # Startup ambient calibration is expected to move slightly between
-            # runs. Fingerprint a 3 dB operating bucket: material threshold
-            # changes invalidate enrollment, while sensor jitter does not disable
-            # identity gating on every boot.
+            # Retained for diagnostics and migration of v2 fingerprints. The
+            # stable v3 front-end identity deliberately excludes this per-run
+            # ambient calibration value.
             out["input_agc_noise_floor_db_3"] = _agc_floor_bucket_db(
                 self.input_agc_noise_floor_rms
             )
@@ -110,6 +110,16 @@ class EnrollmentFrontendProvenance:
     fingerprint: str
     summary: str
     raw_baseline: bool = False
+    # Runtime-only migration aliases. Version 2 fingerprinted the measured AGC
+    # noise floor, so the same physical chain stopped matching whenever room
+    # tone crossed a 3 dB bucket. Active v3 provenance carries the finite set of
+    # v2 hashes for this exact stable chain while deliberately varying only that
+    # volatile calibration value. These aliases are never persisted.
+    compatible_fingerprints: frozenset[str] = field(
+        default_factory=frozenset,
+        compare=False,
+        repr=False,
+    )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -202,17 +212,6 @@ def make_enrollment_frontend_provenance(
 
     gain: dict[str, object]
     if agc_active:
-        applied_floor = (
-            capture.input_agc_noise_floor_rms
-            if capture.input_agc_noise_floor_rms is not None
-            else float(
-                getattr(
-                    input_agc,
-                    "noise_floor_rms",
-                    _cfg(config, "input_agc_noise_floor_rms", 0.004),
-                )
-            )
-        )
         gain = {
             "kind": "input_agc",
             "target_rms": float(
@@ -221,7 +220,6 @@ def make_enrollment_frontend_provenance(
             "max_gain": float(
                 getattr(input_agc, "max_gain", _cfg(config, "input_agc_max_gain", 12.0))
             ),
-            "noise_floor_db_3": _agc_floor_bucket_db(applied_floor),
             "rise": float(
                 getattr(input_agc, "rise", _cfg(config, "input_agc_rise", 0.08))
             ),
@@ -245,10 +243,18 @@ def make_enrollment_frontend_provenance(
     if denoise_active:
         denoise["model"] = _artifact_id(_cfg(config, "denoise_model", ""))
 
+    # Ambient calibration is runtime state, not capture-chain identity. It can
+    # legitimately change on every start while the device, route, resampler,
+    # AGC algorithm, and model-visible processors stay identical.
+    stable_capture = {
+        key: value
+        for key, value in capture.descriptor().items()
+        if key != "input_agc_noise_floor_db_3"
+    }
     descriptor = {
         "schema": ENROLLMENT_FRONTEND_VERSION,
         "capture": {
-            **capture.descriptor(),
+            **stable_capture,
             "resampler_quality": str(_cfg(config, "resampler_quality", "HQ") or "HQ"),
             "block_sec": float(_cfg(config, "block_sec", 0.1) or 0.1),
         },
@@ -258,6 +264,42 @@ def make_enrollment_frontend_provenance(
     }
     canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
     fingerprint = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    # Migrate version-2 enrollments without asking the owner to record another
+    # 36 seconds. V2 included the volatile floor in both the capture and AGC
+    # descriptors. Enumerate only that field while holding every stable field
+    # fixed, so a different device/route/model chain still cannot match.
+    compatible_fingerprints: set[str] = set()
+    legacy_capture_has_floor = bool(
+        agc_active and capture.input_agc_noise_floor_rms is not None
+    )
+    floor_buckets = range(-180, 31, 3) if agc_active else (None,)
+    for floor_bucket in floor_buckets:
+        legacy_gain = dict(gain)
+        if floor_bucket is not None:
+            legacy_gain["noise_floor_db_3"] = floor_bucket
+        legacy_capture = dict(stable_capture)
+        if floor_bucket is not None and legacy_capture_has_floor:
+            legacy_capture["input_agc_noise_floor_db_3"] = floor_bucket
+        legacy_descriptor = {
+            **descriptor,
+            "schema": 2,
+            "capture": {
+                **legacy_capture,
+                "resampler_quality": str(
+                    _cfg(config, "resampler_quality", "HQ") or "HQ"
+                ),
+                "block_sec": float(_cfg(config, "block_sec", 0.1) or 0.1),
+            },
+            "gain": legacy_gain,
+        }
+        legacy_canonical = json.dumps(
+            legacy_descriptor, sort_keys=True, separators=(",", ":")
+        )
+        compatible_fingerprints.add(
+            "sha256:"
+            + hashlib.sha256(legacy_canonical.encode("utf-8")).hexdigest()
+        )
 
     stages: list[str] = []
     if capture.voice_comm != "none":
@@ -285,6 +327,7 @@ def make_enrollment_frontend_provenance(
         fingerprint=fingerprint,
         summary=" -> ".join(stages) if stages else "raw baseline",
         raw_baseline=raw_baseline,
+        compatible_fingerprints=frozenset(compatible_fingerprints),
     )
 
 
@@ -603,9 +646,12 @@ def enrollment_matches_frontend(
     saved = enrollment.frontend
     if saved is None:
         return active.raw_baseline
+    if saved.version == active.version:
+        return saved.fingerprint == active.fingerprint
     return (
-        saved.version == active.version
-        and saved.fingerprint == active.fingerprint
+        saved.version == 2
+        and active.version == 3
+        and saved.fingerprint in active.compatible_fingerprints
     )
 
 
@@ -1232,7 +1278,15 @@ def run_enrollment(
             out("  WARNING: passes disagree -- re-run --enroll in a quieter room for a cleaner voice print.")
     out(f"  saved: {os.path.abspath(enroll_path)}")
     out(f"  wired: {config_path} (sherpa.speaker_enroll_embedding)")
-    out("\nNow run:  python -m core --engine sherpa")
+    launch = ["python", "-m", "core", "--engine", "sherpa"]
+    for flag, key in (
+        ("--input-device", "input_device"),
+        ("--output-device", "output_device"),
+    ):
+        selector = sherpa.get(key)
+        if selector not in (None, ""):
+            launch.extend((flag, str(selector)))
+    out("\nNow run:  " + " ".join(shlex.quote(part) for part in launch))
     return 0
 
 

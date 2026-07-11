@@ -6,6 +6,7 @@ real averaging + persistence + self-check logic with synthetic audio.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
@@ -138,7 +139,7 @@ def test_frontend_fingerprint_is_stable_and_tracks_active_stages():
     assert first.raw_baseline is False
 
 
-def test_frontend_fingerprint_tracks_resolved_capture_and_calibrated_agc():
+def test_frontend_fingerprint_tracks_resolved_capture_not_ambient_calibration():
     from core.audio_frontend import InputAGC
 
     agc = InputAGC(noise_floor_rms=0.011)
@@ -167,10 +168,80 @@ def test_frontend_fingerprint_tracks_resolved_capture_and_calibrated_agc():
     assert provenance(CaptureResolution(**{**capture.__dict__, "resampler": "scipy"})) != baseline
     assert provenance(CaptureResolution(**{
         **capture.__dict__, "input_agc_noise_floor_rms": 0.02
-    })) != baseline
+    })) == baseline
     assert provenance(CaptureResolution(**{
         **capture.__dict__, "input_agc_noise_floor_rms": 0.0114
     })) == baseline
+
+
+def test_v2_calibrated_floor_fingerprint_migrates_only_for_same_stable_chain():
+    from core.audio_frontend import InputAGC
+
+    agc = InputAGC(noise_floor_rms=0.011)
+    cfg = {"sample_rate": 16000, "input_agc": True}
+    capture = CaptureResolution(
+        route="default:PipeWire:echo-cancel-source",
+        capture_sample_rate=48000,
+        model_sample_rate=16000,
+        resampler="soxr",
+        voice_comm="pipewire-echo-cancel:capture=ec-source; playback=ec-sink",
+        input_agc_noise_floor_rms=0.011,
+    )
+
+    def provenance(resolution):
+        return make_enrollment_frontend_provenance(
+            cfg,
+            input_agc=agc,
+            idle_apm=None,
+            denoiser=None,
+            apm_owns_ns=False,
+            capture=resolution,
+        )
+
+    active = provenance(capture)
+    floor_bucket = capture.descriptor()["input_agc_noise_floor_db_3"]
+    legacy_descriptor = {
+        "schema": 2,
+        "capture": {
+            **capture.descriptor(),
+            "resampler_quality": "HQ",
+            "block_sec": 0.1,
+        },
+        "gain": {
+            "kind": "input_agc",
+            "target_rms": 0.12,
+            "max_gain": 12.0,
+            "noise_floor_db_3": floor_bucket,
+            "rise": 0.08,
+            "fall": 0.4,
+        },
+        "idle_apm": {"active": False},
+        "denoise": {"active": False},
+    }
+    canonical = json.dumps(
+        legacy_descriptor, sort_keys=True, separators=(",", ":")
+    )
+    legacy_hash = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    assert legacy_hash in active.compatible_fingerprints
+    legacy_frontend = type(active)(
+        version=2,
+        fingerprint=legacy_hash,
+        summary=active.summary,
+        raw_baseline=False,
+    )
+    saved = Enrollment(model="/m/spk.onnx", embedding=USER, frontend=legacy_frontend)
+
+    assert enrollment_matches_frontend(saved, active) is True
+    changed_route = provenance(CaptureResolution(**{**capture.__dict__, "route": "other"}))
+    assert enrollment_matches_frontend(saved, changed_route) is False
+    future = type(active)(
+        version=4,
+        fingerprint=active.fingerprint,
+        summary=active.summary,
+        raw_baseline=active.raw_baseline,
+        compatible_fingerprints=active.compatible_fingerprints,
+    )
+    assert enrollment_matches_frontend(saved, future) is False
 
 
 def test_default_pipewire_node_identity_distinguishes_raw_and_ec_routes():
@@ -420,6 +491,29 @@ def test_run_enrollment_saves_embedding_and_wires_config(tmp_path):
     text = "\n".join(msgs)
     assert "Enrolled from 3 clip(s)" in text
     assert "WARNING" not in text
+
+
+def test_run_enrollment_prints_exact_nondefault_device_selectors(tmp_path):
+    messages: list[str] = []
+    code = run_enrollment(
+        _config(
+            tmp_path,
+            input_device="pipewire",
+            output_device="pipewire",
+        ),
+        passes=1,
+        seconds=1.0,
+        config_path=str(tmp_path / "config.local.json"),
+        recorder=lambda _secs: [0.1, 0.2, 0.3],
+        gate=_gate(USER),
+        out=messages.append,
+    )
+
+    assert code == 0
+    assert (
+        "Now run:  python -m core --engine sherpa "
+        "--input-device pipewire --output-device pipewire"
+    ) in "\n".join(messages)
 
 
 def test_injected_raw_recorder_is_not_labeled_as_configured_denoise(tmp_path):
@@ -724,7 +818,9 @@ def test_calibrated_measured_ambient_admits_quiet_voice_below_agc_minimum(
         apm_owns_ns=False,
         capture=raw_ambient_resolution,
     )
-    assert frontend.provenance != raw_ambient_provenance
+    # Admission still uses the raw measured ambient, while reusable capture-chain
+    # provenance intentionally ignores that volatile per-run operating point.
+    assert frontend.provenance == raw_ambient_provenance
 
 
 def test_measured_ambient_rejects_muted_bed_and_short_loud_transient():

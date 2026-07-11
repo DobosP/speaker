@@ -105,8 +105,9 @@ the exact fields it parses.
 
 - `python -m tools.bench --fake` — no-download plumbing smoke test.
 - `python -m tools.bench --profile phone --fixtures
-  tests/fixture_audio/virtual_real_world` — fetches small Gemma GGUF (via
-  `$HUGGINGFACE_TOKEN`) + sherpa ONNX and runs the REAL ASR→LLM→TTS pipeline
+  tests/fixture_audio/virtual_real_world` — fetches the ADR-0020 MiniCPM5 GGUF
+  (optionally authenticated by `$HUGGINGFACE_TOKEN`) + sherpa ONNX and runs the
+  REAL ASR→LLM→TTS pipeline
   over fixtures, writing a measured-vs-`specsim`-budget report under
   `test-reports/perf/`. Model coordinates are overridable via a
   `--models-manifest` JSON / `SPEAKER_BENCH_*` env vars.

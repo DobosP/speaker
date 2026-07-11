@@ -1002,7 +1002,7 @@ The recorder is lock-guarded; the hot path computes nothing beyond a dict write.
 
 ### Spec simulation & bench
 
-**`tools/specsim/`** renders `test-reports/specsim/index.html` — a model-fit + responsiveness matrix + per-device ASR→LLM→TTS timelines (4090/Mac/Windows/phone/web). Numbers are modelled estimates, not measurements; calibrate `tools/specsim/specs.py` from real runs. Real-model latency benchmark: `python -m tools.bench --fake` is a no-download smoke test; `python -m tools.bench --profile phone --fixtures tests/fixture_audio/virtual_real_world` fetches small Gemma GGUF + sherpa ONNX and runs the REAL ASR→LLM→TTS pipeline over fixtures, writing a measured-vs-specsim report under `test-reports/perf/`.
+**`tools/specsim/`** renders `test-reports/specsim/index.html` — a model-fit + responsiveness matrix + per-device ASR→LLM→TTS timelines (4090/Mac/Windows/phone/web). Numbers are modelled estimates, not measurements; calibrate `tools/specsim/specs.py` from real runs. Real-model latency benchmark: `python -m tools.bench --fake` is a no-download smoke test; `python -m tools.bench --profile phone --fixtures tests/fixture_audio/virtual_real_world` fetches the ADR-0020 MiniCPM5 GGUF + sherpa ONNX and runs the REAL ASR→LLM→TTS pipeline over fixtures, writing a measured-vs-specsim report under `test-reports/perf/`.
 
 ### Preflight & setup
 

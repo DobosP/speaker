@@ -11,7 +11,7 @@ Reuses the shared model manifest (tools/bench/models.py) so the coordinates live
 in one place (override with the SPEAKER_BENCH_*_REPO / _FILE env vars). Models
 land in pretrained_models/sherpa/ with flat, predictable filenames. The desktop
 default serves the LLM via Ollama, so no GGUF is fetched by default; pass
-``--gguf`` to also fetch the on-device Gemma GGUF weights (the llamacpp backend
+``--gguf`` to also fetch the on-device MiniCPM5 GGUF weights (the llamacpp backend
 used by the phone / phone_lite device profiles) into ``models/``. Idempotent:
 re-running only fills missing files unless you pass --force.
 
@@ -661,7 +661,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-    # On-device LLM weights (optional, opt-in): the Gemma GGUFs for the llamacpp
+    # On-device LLM weights (optional, opt-in): the MiniCPM5 GGUF for the llamacpp
     # backend (phone / phone_lite profiles). The desktop default uses Ollama and
     # needs none. Same non-fatal contract: a failed fetch leaves the llamacpp
     # backend unrunnable until you re-run, but never blocks the sherpa setup.
@@ -683,7 +683,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"[models] GGUF weights not fetched ({exc}); the llamacpp backend "
                 "(phone profiles) stays unrunnable until you re-run with --gguf. "
-                "The gated Gemma repo needs $HUGGINGFACE_TOKEN.",
+                "Set $HUGGINGFACE_TOKEN if the public download is rate-limited.",
                 file=sys.stderr,
             )
 

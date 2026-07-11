@@ -61,10 +61,14 @@ def test_phone_profile_paths_match_gguf_manifest_filenames():
         assert Path(llm["fast_model_path"]).name == manifest["fast_gguf"]["file"]
 
 
-def test_requirements_ondevice_declares_llamacpp_runtime():
+def test_verified_llamacpp_abort_runtime_is_pinned_everywhere():
     txt = (_REPO / "requirements-ondevice.txt").read_text()
-    assert "llama-cpp-python" in txt
+    requirement = "llama-cpp-python==0.3.33"
+    assert requirement in txt
     assert "huggingface_hub" in txt or "huggingface-hub" in txt
+    for workflow in ("perf.yml", "llm-sanity.yml"):
+        content = (_REPO / ".github" / "workflows" / workflow).read_text()
+        assert f"pip install {requirement}" in content
 
 
 def test_build_llms_llamacpp_missing_path_gives_actionable_hint():

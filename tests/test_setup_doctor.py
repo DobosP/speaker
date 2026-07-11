@@ -13,6 +13,7 @@ from tools.doctor import (
     check_audio,
     check_audio_frontend,
     check_imports,
+    check_llamacpp_abort_runtime,
     check_ollama,
     check_platform,
     check_python,
@@ -144,6 +145,52 @@ def test_check_imports_flags_missing_with_pip_hint():
     assert checks[0].ok
     assert not checks[1].ok
     assert "pip install sherpa-onnx" in checks[1].hint  # underscore -> dashed pip name
+
+
+class _VerifiedLlamaCpp:
+    __version__ = "0.3.33"
+    ggml_abort_callback = staticmethod(lambda callback: callback)
+    llama_set_abort_callback = staticmethod(lambda *_args: None)
+    llama_get_memory = staticmethod(lambda *_args: object())
+    llama_memory_clear = staticmethod(lambda *_args: None)
+
+
+def test_check_llamacpp_abort_runtime_accepts_pinned_cpu_binding():
+    check = check_llamacpp_abort_runtime(
+        {"llm": {"backend": "llamacpp", "n_gpu_layers": 0}},
+        import_fn=lambda name: _VerifiedLlamaCpp if name == "llama_cpp" else object(),
+    )
+
+    assert check.ok
+    assert "llama-cpp-python==0.3.33" in check.detail
+    assert "n_gpu_layers=0" in check.detail
+
+
+def test_check_llamacpp_abort_runtime_rejects_version_drift_with_exact_fix():
+    class WrongVersion(_VerifiedLlamaCpp):
+        __version__ = "0.3.32"
+
+    check = check_llamacpp_abort_runtime(
+        {"llm": {"backend": "llamacpp", "n_gpu_layers": 0}},
+        import_fn=lambda _name: WrongVersion,
+    )
+
+    assert not check.ok
+    assert "requires llama-cpp-python==0.3.33" in check.detail
+    assert "found 0.3.32" in check.detail
+    assert "--force-reinstall llama-cpp-python==0.3.33" in check.hint
+
+
+def test_check_llamacpp_abort_runtime_rejects_gpu_offload():
+    check = check_llamacpp_abort_runtime(
+        {"llm": {"backend": "llamacpp", "n_gpu_layers": 1}},
+        import_fn=lambda _name: _VerifiedLlamaCpp,
+    )
+
+    assert not check.ok
+    assert "abort is CPU-only" in check.detail
+    assert "n_gpu_layers=1" in check.detail
+    assert "set llm.n_gpu_layers=0" in check.hint
 
 
 def test_check_sherpa_models_missing_then_present():
@@ -1112,6 +1159,39 @@ def test_runtime_checks_echo_never_imports_or_contacts_ollama():
     )
     assert all(check.ok for check in checks)
     assert not any("ollama" in check.name for check in checks)
+
+
+def test_runtime_checks_selected_llamacpp_fails_closed_on_unverified_abort_abi():
+    class WrongVersion(_VerifiedLlamaCpp):
+        __version__ = "0.3.32"
+
+    paths = _complete_sherpa_paths()
+
+    def imports(name):
+        return WrongVersion if name == "llama_cpp" else object()
+
+    checks = run_runtime_checks(
+        {
+            "sherpa": paths,
+            "llm": {
+                "backend": "llamacpp",
+                "main_model_path": "/m/minicpm.gguf",
+                "n_gpu_layers": 0,
+            },
+        },
+        resolved=True,
+        import_fn=imports,
+        exists=lambda _p: True,
+        platform="win32",
+        include_speaker=False,
+        require_audio_devices=False,
+    )
+
+    check = next(c for c in checks if c.name == "llama.cpp CPU cancellation")
+    assert not check.ok
+    assert "found 0.3.32" in check.detail
+    assert "llama-cpp-python==0.3.33" in check.hint
+    assert not any(c.name == "ollama" for c in checks)
 
 
 def test_run_all_ready_when_everything_passes():

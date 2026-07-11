@@ -108,6 +108,8 @@ config.local.json.bak*
 
 # Generated test reports (tools/run_tests.py)
 test-reports/
+# Download/cache root used by real-model sanity and benchmark tooling.
+.cache/
 
 # Swarm harness per-run churn; .agents/last_report.json is committed as the
 # version verdict snapshot, but the append-only history is local noise.

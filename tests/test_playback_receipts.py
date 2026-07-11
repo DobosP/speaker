@@ -14,8 +14,10 @@ from core.engine import (
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
+    SpeechStyle,
     TrackedSpeech,
 )
+from core.engines.sherpa import SherpaConfig
 from core.llm import EchoLLM
 from core.resume import ResumeConfig
 from core.runtime import VoiceRuntime
@@ -36,6 +38,7 @@ class _ControlledReceiptEngine(AudioEngine):
         tracked_terminal=True,
         exact_started=True,
         sample_counts=True,
+        speech_style_hints=True,
     )
 
     def __init__(self, *, stop_prefix: str = "") -> None:
@@ -383,6 +386,257 @@ def test_stream_cut_commits_only_completed_sentence_and_not_queued_echo():
         assert "third sentence" not in prompt
         assert not runtime._resume.is_self_echo(parts[2])
         assert runtime.supervisor._followup_timer is None
+    finally:
+        runtime.stop()
+
+
+def test_stream_voice_survives_priority_completion_until_stream_end():
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"warm": 16, "deep": 9},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime, "story")
+    first = AgentEvent(
+        EventKind.TTS_REQUEST,
+        {
+            "task_id": task.task_id,
+            "text": "[voice:warm] First sentence.",
+            "epoch": task.speech_epoch,
+            "streaming": True,
+        },
+    )
+    second = AgentEvent(
+        EventKind.TTS_REQUEST,
+        {
+            "task_id": task.task_id,
+            "text": "Second sentence.",
+            "epoch": task.speech_epoch,
+            "streaming": True,
+        },
+    )
+    runtime.bus.publish(first)
+    runtime.bus.drain()
+    # TASK_COMPLETED priority 60 overtakes the already-queued second sentence
+    # (priority 100). It must not close voice state; only STREAM_END does that.
+    runtime.bus.publish(second)
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TASK_COMPLETED,
+            {
+                "task_id": task.task_id,
+                "text": "[voice:warm] First sentence. Second sentence.",
+                "speak": True,
+                "followup": False,
+                "data": {"streamed": True},
+                "epoch": task.speech_epoch,
+            },
+            priority=60,
+        )
+    )
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_STREAM_END,
+            {"task_id": task.task_id, "epoch": task.speech_epoch},
+            priority=110,
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert [fragment.speech.text for fragment in engine.fragments] == [
+            "First sentence.",
+            "Second sentence.",
+        ]
+        assert [fragment.speech.style for fragment in engine.fragments] == [
+            SpeechStyle(voice="warm"),
+            SpeechStyle(voice="warm"),
+        ]
+
+        # END tombstones the producer after every legitimate priority-100
+        # fragment, so a buggy late emitter cannot reopen an unclosable group.
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": task.task_id,
+                    "text": "Late fragment.",
+                    "epoch": task.speech_epoch,
+                    "streaming": True,
+                },
+            )
+        )
+        runtime.bus.drain()
+        assert len(engine.fragments) == 2
+        assert not runtime.supervisor.tts_request_allowed(
+            task.task_id,
+            task.speech_epoch,
+        )
+    finally:
+        runtime.stop()
+
+
+def test_nonstream_reply_applies_one_leading_voice_to_whole_fragment():
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"warm": 16},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime, "short answer")
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TASK_COMPLETED,
+            {
+                "task_id": task.task_id,
+                "text": (
+                    "[voice:warm] First sentence. "
+                    "[voice:deep] Second sentence. "
+                    "[emotion:calm] Third sentence."
+                ),
+                "speak": True,
+                "followup": False,
+                "data": {},
+                "epoch": task.speech_epoch,
+            },
+            priority=60,
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert len(engine.fragments) == 1
+        assert engine.fragments[0].speech.text == (
+            "First sentence. Second sentence. Third sentence."
+        )
+        assert engine.fragments[0].speech.style == SpeechStyle(voice="warm")
+    finally:
+        runtime.stop()
+
+
+def test_interleaved_replies_and_auxiliary_tts_keep_voice_scopes_isolated():
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"warm": 16, "deep": 9},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task_a = _task(runtime, "reply a")
+    task_b = _task(runtime, "reply b")
+    aux_id = runtime.supervisor.register_aux_tts(
+        task_a.task_id,
+        speech_epoch=task_a.speech_epoch,
+    )
+
+    def stream(task, text):
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": task.task_id,
+                    "text": text,
+                    "epoch": task.speech_epoch,
+                    "streaming": True,
+                },
+            )
+        )
+
+    stream(task_a, "[voice:warm] A one.")
+    stream(task_b, "[voice:deep] B one.")
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task_a.task_id,
+                "text": "Please wait.",
+                "epoch": task_a.speech_epoch,
+                "auxiliary_tts": True,
+                "aux_tts_id": aux_id,
+            },
+        )
+    )
+    stream(task_a, "A two.")
+    stream(task_b, "B two.")
+    try:
+        runtime.bus.drain()
+        assert [fragment.speech.text for fragment in engine.fragments] == [
+            "A one.",
+            "B one.",
+            "Please wait.",
+            "A two.",
+            "B two.",
+        ]
+        assert [fragment.speech.style for fragment in engine.fragments] == [
+            SpeechStyle(voice="warm"),
+            SpeechStyle(voice="deep"),
+            None,
+            SpeechStyle(voice="warm"),
+            SpeechStyle(voice="deep"),
+        ]
+    finally:
+        runtime.stop()
+
+
+def test_barge_clears_voice_and_stale_fragment_cannot_reseed_it():
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"warm": 16, "deep": 9},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    old = _task(runtime, "old reply")
+    old_epoch = old.speech_epoch
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": old.task_id,
+                "text": "[voice:warm] Old reply.",
+                "epoch": old_epoch,
+                "streaming": True,
+            },
+        )
+    )
+    runtime.bus.drain()
+    assert engine.fragments[-1].speech.style == SpeechStyle(voice="warm")
+
+    try:
+        runtime._on_barge_in()
+        runtime.bus.drain()
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": old.task_id,
+                    "text": "[voice:deep] Stale reply.",
+                    "epoch": old_epoch,
+                    "streaming": True,
+                },
+            )
+        )
+        fresh = _task(runtime, "fresh reply")
+        fresh.speech_epoch = runtime.supervisor.speech_epoch
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": fresh.task_id,
+                    "text": "Fresh reply.",
+                    "epoch": fresh.speech_epoch,
+                    "streaming": True,
+                },
+            )
+        )
+        runtime.bus.drain()
+
+        assert [fragment.speech.text for fragment in engine.fragments] == [
+            "Old reply.",
+            "Fresh reply.",
+        ]
+        assert engine.fragments[-1].speech.style is None
     finally:
         runtime.stop()
 

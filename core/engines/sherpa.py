@@ -72,10 +72,16 @@ from ..engine import (
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
+    SpeechStyle,
     TrackedSpeech,
 )
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
-from ..tts_markup import parse_tts_markup, resolve_tts_params
+from ..tts_markup import (
+    parse_tts_markup,
+    prepare_speech_style,
+    resolve_tts_params,
+    style_to_directives,
+)
 from ._asr_segment import ASRSegment
 from ._denoiser import build_denoiser
 from ._aec import (
@@ -1078,6 +1084,7 @@ _SHERPA_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
     tracked_terminal=True,
     exact_started=True,
     sample_counts=True,
+    speech_style_hints=True,
 )
 
 
@@ -2376,7 +2383,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._ref_accum = None
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
-        self._submit_playback(text, on_done=on_done, ticket=None)
+        self._submit_playback(text, on_done=on_done, ticket=None, style=None)
 
     def speak_tracked(
         self,
@@ -2396,7 +2403,12 @@ class SherpaOnnxEngine(AudioEngine):
         if self._running.is_set():
             self._start_receipt_dispatcher()
         try:
-            self._submit_playback(speech.text, on_done=None, ticket=ticket)
+            self._submit_playback(
+                speech.text,
+                on_done=None,
+                ticket=ticket,
+                style=speech.style,
+            )
         except Exception:
             self._queue_direct_receipt(ticket, PlaybackOutcome.FAILED)
             raise
@@ -2407,6 +2419,7 @@ class SherpaOnnxEngine(AudioEngine):
         *,
         on_done: Optional[Callable[[], None]],
         ticket: Optional[_TrackedPlaybackCall],
+        style: Optional[SpeechStyle],
     ) -> None:
         # Non-blocking: hand the utterance to the single playback worker. Keeping
         # one sink (instead of a thread per call) is what makes sentence-level
@@ -2431,11 +2444,14 @@ class SherpaOnnxEngine(AudioEngine):
         directives = None
         if self.config.tts_markup:
             raw_text = text
-            text, directives = parse_tts_markup(
+            prepared = prepare_speech_style(
                 text,
+                style=style,
                 voices=self.config.tts_speaker_voices.keys(),
                 emotions=self.config.tts_emotion_speed_map.keys(),
             )
+            text = prepared.text
+            directives = style_to_directives(prepared.style) or None
             if raw_text != text or raw_text.lstrip().startswith("["):
                 log.info(
                     "tts sanitize: %s",
@@ -2444,7 +2460,9 @@ class SherpaOnnxEngine(AudioEngine):
                             "raw": raw_text,
                             "spoken": text,
                             "directives": directives or {},
-                            "status": "parsed" if directives else "unrecognized_tag",
+                            "status": (
+                                "parsed" if raw_text != text else "unrecognized_tag"
+                            ),
                         },
                         sort_keys=True,
                         ensure_ascii=True,

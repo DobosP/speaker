@@ -199,6 +199,11 @@ class TaskRuntime:
                         "epoch": task.speech_epoch,
                         "followup": bool(task.metadata.get("followup")),
                         "input_generation": task.metadata.get("input_generation"),
+                        # Explicit reply-stream identity.  Completion TTS uses a
+                        # single whole reply and omits this flag; the runtime
+                        # uses it to scope voice continuity without guessing
+                        # from task lifecycle races.
+                        "streaming": True,
                     },
                 )
             )

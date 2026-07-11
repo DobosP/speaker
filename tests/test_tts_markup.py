@@ -18,9 +18,12 @@ import threading
 import numpy as np
 import pytest
 
+from core.engine import SpeechStyle
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.persona import build_system_prompt
 from core.tts_markup import (
+    ReplySpeechId,
+    ReplyVoiceContinuity,
     build_markup_guidance,
     parse_tts_markup,
     resolve_tts_params,
@@ -99,6 +102,112 @@ def test_parse_only_consumes_one_leading_tag():
     text, d = parse_tts_markup("[voice:warm] the array is a[3] not a tag")
     assert text == "the array is a[3] not a tag"
     assert d == {"voice": "warm"}
+
+
+# --- reply-scoped voice continuity ---------------------------------------
+
+def test_reply_voice_persists_but_emotion_and_rate_stay_sentence_local():
+    continuity = ReplyVoiceContinuity(
+        voices=["warm", "deep"],
+        emotions=["calm", "excited"],
+    )
+    reply = ReplySpeechId("reply-a", 7)
+
+    first = continuity.prepare(
+        "[voice:warm emotion:calm rate:0.9] First.",
+        reply=reply,
+    )
+    assert first.text == "First."
+    assert first.style == SpeechStyle("warm", "calm", 0.9)
+
+    second = continuity.prepare("Second.", reply=reply)
+    assert second.style == SpeechStyle(voice="warm")
+
+    emotional = continuity.prepare(
+        "[emotion:excited rate:1.1] Third.",
+        reply=reply,
+    )
+    assert emotional.style == SpeechStyle("warm", "excited", 1.1)
+    assert continuity.prepare("Fourth.", reply=reply).style == SpeechStyle(
+        voice="warm"
+    )
+
+
+def test_later_explicit_voice_switches_only_future_fragments():
+    continuity = ReplyVoiceContinuity(voices=["warm", "deep"])
+    reply = ReplySpeechId("reply-a", 3)
+
+    queued_before_switch = continuity.prepare("[voice:warm] One.", reply=reply)
+    inherited_before_switch = continuity.prepare("Two.", reply=reply)
+    switch = continuity.prepare("[voice:deep] Three.", reply=reply)
+    inherited_after_switch = continuity.prepare("Four.", reply=reply)
+
+    assert [
+        item.style.voice if item.style is not None else None
+        for item in (
+            queued_before_switch,
+            inherited_before_switch,
+            switch,
+            inherited_after_switch,
+        )
+    ] == ["warm", "warm", "deep", "deep"]
+    # PreparedSpeech is an immutable queue snapshot: the later switch cannot
+    # retroactively mutate fragments already admitted with warm.
+    assert queued_before_switch.style == SpeechStyle(voice="warm")
+
+
+def test_reply_voices_are_isolated_and_close_by_exact_epoch_or_task():
+    continuity = ReplyVoiceContinuity(voices=["warm", "deep"])
+    a_old = ReplySpeechId("reply-a", 1)
+    a_new = ReplySpeechId("reply-a", 2)
+    b = ReplySpeechId("reply-b", 1)
+
+    continuity.prepare("[voice:warm] A1.", reply=a_old)
+    continuity.prepare("[voice:deep] B1.", reply=b)
+    continuity.prepare("[voice:deep] A2.", reply=a_new)
+    assert continuity.prepare("A1 next.", reply=a_old).style == SpeechStyle(
+        voice="warm"
+    )
+    assert continuity.prepare("B next.", reply=b).style == SpeechStyle(voice="deep")
+
+    continuity.close(a_old)
+    assert continuity.prepare("A1 reset.", reply=a_old).style is None
+    assert continuity.prepare("A2 stays.", reply=a_new).style == SpeechStyle(
+        voice="deep"
+    )
+    assert continuity.prepare("B stays.", reply=b).style == SpeechStyle(voice="deep")
+
+    continuity.close_task("reply-a")
+    assert continuity.prepare("A2 reset.", reply=a_new).style is None
+    assert continuity.prepare("B still stays.", reply=b).style == SpeechStyle(
+        voice="deep"
+    )
+
+
+def test_unknown_voice_is_ignored_without_destroying_active_lease():
+    continuity = ReplyVoiceContinuity(voices=["warm"])
+    reply = ReplySpeechId("reply", 1)
+    continuity.prepare("[voice:warm] One.", reply=reply)
+
+    unknown = continuity.prepare("[voice:not-configured] Two.", reply=reply)
+    assert unknown.text == "Two."
+    assert unknown.style == SpeechStyle(voice="warm")
+    assert continuity.prepare("Three.", reply=reply).style == SpeechStyle(
+        voice="warm"
+    )
+
+
+def test_auxiliary_unscoped_style_neither_inherits_nor_mutates_reply():
+    continuity = ReplyVoiceContinuity(voices=["warm", "deep"])
+    reply = ReplySpeechId("reply", 1)
+    continuity.prepare("[voice:warm] Answer one.", reply=reply)
+
+    assert continuity.prepare("Please wait.", reply=None).style is None
+    aux_explicit = continuity.prepare("[voice:deep] Please wait.", reply=None)
+    assert aux_explicit.style == SpeechStyle(voice="deep")
+    assert continuity.prepare("Answer two.", reply=reply).style == SpeechStyle(
+        voice="warm"
+    )
 
 
 # --- resolve_tts_params ---------------------------------------------------
@@ -293,6 +402,26 @@ def test_speak_strips_tag_and_enqueues_directives():
     assert ticket is None
 
 
+def test_sherpa_enqueues_typed_style_without_textual_markup():
+    cfg = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"warm": 7},
+        tts_emotion_speed_map={"calm": 0.9},
+    )
+    eng = _bare_engine(cfg)
+    eng._submit_playback(
+        "Inherited voice.",
+        on_done=None,
+        ticket=None,
+        style=SpeechStyle("warm", "calm", 1.05),
+    )
+
+    text, on_done, gen, directives, ticket = eng._play_q.get_nowait()
+    assert text == "Inherited voice."
+    assert directives == {"voice": "warm", "emotion": "calm", "rate": 1.05}
+    assert ticket is None
+
+
 def test_speak_strips_live_keyless_voice_variant():
     cfg = SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7})
     eng = _bare_engine(cfg)
@@ -330,10 +459,18 @@ def test_markup_guidance_empty_without_options():
 
 
 def test_markup_guidance_lists_voices_and_emotions():
-    g = build_markup_guidance(["warm", "narrator"], ["calm", "excited"])
+    g = build_markup_guidance(
+        ["warm", "narrator"],
+        ["calm", "excited"],
+        voice_continuity=True,
+    )
     assert "warm" in g and "narrator" in g
     assert "calm" in g and "excited" in g
     assert "[emotion:calm voice:warm]" in g  # a usable example
+    assert "voice choice persists" in g
+    assert "one tag per reply" in g
+    assert "never put tags between sentences" in g
+    assert "Emotion and rate apply to" in g
 
 
 def test_build_system_prompt_appends_guidance_only_when_given():
@@ -366,3 +503,49 @@ def test_runtime_no_guidance_when_markup_off():
 
     rt = VoiceRuntime(ScriptedEngine(), EchoLLM(reply="hi"))  # no .config
     assert "Expressive voice" not in rt._system_prompt
+
+
+def test_runtime_preserves_raw_markup_for_legacy_speak_override():
+    from always_on_agent.events import AgentEvent, EventKind
+    from core.engine import PlaybackCapabilities
+    from core.engines.scripted import ScriptedEngine
+    from core.llm import EchoLLM
+    from core.runtime import VoiceRuntime
+
+    class _LegacyMarkupEngine(ScriptedEngine):
+        def __init__(self):
+            super().__init__()
+            self.config = SherpaConfig(
+                tts_markup=True,
+                tts_speaker_voices={"warm": 7},
+            )
+            self.received = []
+
+        def speak(self, text, on_done=None):
+            self.received.append(text)
+            super().speak(text, on_done)
+
+        @property
+        def playback_capabilities(self):
+            # Even an invalid/custom hints-without-tracking combination must
+            # not make runtime strip the only directive carrier before speak().
+            return PlaybackCapabilities(speech_style_hints=True)
+
+    engine = _LegacyMarkupEngine()
+    assert engine.playback_capabilities.speech_style_hints
+    assert not engine.playback_capabilities.tracked_terminal
+    runtime = VoiceRuntime(engine, EchoLLM(reply="unused"))
+    runtime.start(run_bus=False)
+    try:
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {"text": "[voice:warm] Legacy fragment."},
+            )
+        )
+        runtime.bus.drain()
+
+        assert engine.received == ["[voice:warm] Legacy fragment."]
+        assert "voice choice persists" not in runtime._system_prompt
+    finally:
+        runtime.stop()

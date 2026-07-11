@@ -32,8 +32,14 @@ contract the Dart mobile loop mirrors -- because mobile does not share this path
 """
 from __future__ import annotations
 
+import math
 import re
+import threading
+from dataclasses import dataclass
 from typing import Iterable, Mapping, Optional
+
+from .contract import stream_sentences
+from .engine import SpeechStyle
 
 # One leading bracketed tag, <=120 chars of non-bracket content. Only the FIRST
 # leading tag is consumed (the directive for THIS utterance); any bracket later
@@ -48,6 +54,191 @@ KNOWN_KEYS = ("emotion", "voice", "rate", "speed")
 # audio. Matches the dataclass defaults (SherpaConfig.tts_speed_min/max).
 DEFAULT_SPEED_MIN = 0.5
 DEFAULT_SPEED_MAX = 2.0
+
+
+@dataclass(frozen=True)
+class ReplySpeechId:
+    """Stable identity for one streamed assistant reply."""
+
+    task_id: str
+    epoch: int
+
+
+@dataclass(frozen=True)
+class PreparedSpeech:
+    """Sanitized text plus the immutable style snapshot queued with it."""
+
+    text: str
+    style: Optional[SpeechStyle]
+
+
+def style_to_directives(style: Optional[SpeechStyle]) -> dict[str, object]:
+    """Convert typed engine hints to the legacy resolver mapping."""
+
+    if style is None:
+        return {}
+    directives: dict[str, object] = {}
+    if style.voice:
+        directives["voice"] = style.voice
+    if style.emotion:
+        directives["emotion"] = style.emotion
+    if style.rate is not None:
+        directives["rate"] = style.rate
+    return directives
+
+
+def _rate_value(value: object) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rate if math.isfinite(rate) else None
+
+
+def _style_from_directives(
+    directives: Mapping[str, object],
+) -> Optional[SpeechStyle]:
+    voice = str(directives.get("voice", "")).strip().lower() or None
+    emotion = str(directives.get("emotion", "")).strip().lower() or None
+    rate = _rate_value(
+        directives.get("rate")
+        if directives.get("rate") is not None
+        else directives.get("speed")
+    )
+    style = SpeechStyle(voice=voice, emotion=emotion, rate=rate)
+    return None if style == SpeechStyle() else style
+
+
+def prepare_speech_style(
+    text: str,
+    *,
+    style: Optional[SpeechStyle],
+    voices: Optional[Iterable] = None,
+    emotions: Optional[Iterable] = None,
+) -> PreparedSpeech:
+    """Defensively merge raw markup over a typed admission-time style.
+
+    Runtime-prepared fragments are already clean, while direct engine callers
+    may still supply the textual grammar. Keeping this helper shared gives
+    Sherpa and FileReplay identical sanitization and precedence.
+    """
+
+    clean, parsed = parse_tts_markup(text, voices=voices, emotions=emotions)
+    clean = _strip_later_markup(clean, voices=voices, emotions=emotions)
+    directives = style_to_directives(style)
+    directives.update(parsed)
+    return PreparedSpeech(clean, _style_from_directives(directives))
+
+
+def _strip_later_markup(
+    text: str,
+    *,
+    voices: Optional[Iterable],
+    emotions: Optional[Iterable],
+) -> str:
+    """Remove sentence-leading tags that one synthesis fragment cannot apply.
+
+    A non-streamed reply is one engine call, so only its first tag can choose
+    the fragment style. Defensive stripping keeps a model's accidental later
+    tag from being spoken literally. Separate streamed fragments still enter
+    :meth:`ReplyVoiceContinuity.prepare` independently and can switch voice.
+    """
+
+    parts = stream_sentences([text])
+    cleaned: list[str] = []
+    changed = False
+    for part in parts:
+        visible, directives = parse_tts_markup(
+            part,
+            voices=voices,
+            emotions=emotions,
+        )
+        changed = changed or bool(directives)
+        if visible.strip():
+            cleaned.append(visible.strip())
+    return " ".join(cleaned) if changed else text
+
+
+class ReplyVoiceContinuity:
+    """Resolve markup while carrying only voice across one streamed reply.
+
+    Emotion and rate remain sentence-local.  State is keyed by task + speech
+    epoch so interleaved replies cannot borrow each other's voice.  Methods are
+    thread-safe because stream terminal events run on the bus while barge/stop
+    cleanup can arrive from an audio callback thread.
+    """
+
+    def __init__(
+        self,
+        *,
+        voices: Optional[Iterable] = None,
+        emotions: Optional[Iterable] = None,
+    ) -> None:
+        self._voices = tuple(_vocab(voices))
+        self._voice_names = set(self._voices)
+        self._emotions = tuple(_vocab(emotions))
+        self._emotion_names = set(self._emotions)
+        self._voice_by_reply: dict[ReplySpeechId, str] = {}
+        self._lock = threading.Lock()
+
+    def prepare(
+        self,
+        text: str,
+        *,
+        reply: Optional[ReplySpeechId],
+    ) -> PreparedSpeech:
+        """Strip one tag and snapshot the effective style for this fragment."""
+
+        clean, parsed = parse_tts_markup(
+            text,
+            voices=self._voices,
+            emotions=self._emotions,
+        )
+        clean = _strip_later_markup(
+            clean,
+            voices=self._voices,
+            emotions=self._emotions,
+        )
+        explicit_voice = str(parsed.get("voice", "")).strip().lower()
+        valid_voice = (
+            explicit_voice
+            if explicit_voice and explicit_voice in self._voice_names
+            else None
+        )
+        explicit_emotion = str(parsed.get("emotion", "")).strip().lower()
+        emotion = (
+            explicit_emotion
+            if explicit_emotion and explicit_emotion in self._emotion_names
+            else None
+        )
+        rate = _rate_value(parsed.get("rate") or parsed.get("speed"))
+
+        with self._lock:
+            inherited = self._voice_by_reply.get(reply) if reply is not None else None
+            voice = valid_voice or inherited
+            if reply is not None and valid_voice:
+                self._voice_by_reply[reply] = valid_voice
+
+        style = SpeechStyle(voice=voice, emotion=emotion, rate=rate)
+        if style == SpeechStyle():
+            return PreparedSpeech(clean, None)
+        return PreparedSpeech(clean, style)
+
+    def close(self, reply: ReplySpeechId) -> None:
+        with self._lock:
+            self._voice_by_reply.pop(reply, None)
+
+    def close_task(self, task_id: str) -> None:
+        with self._lock:
+            stale = [key for key in self._voice_by_reply if key.task_id == task_id]
+            for key in stale:
+                self._voice_by_reply.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._voice_by_reply.clear()
 
 
 def _vocab(items: Optional[Iterable]) -> set[str]:
@@ -129,7 +320,7 @@ def parse_tts_markup(
 
 
 def resolve_tts_params(
-    directives: Optional[Mapping[str, str]],
+    directives: Optional[Mapping[str, object]],
     *,
     default_sid: int,
     default_speed: float,
@@ -175,8 +366,10 @@ def resolve_tts_params(
         except (TypeError, ValueError):
             pass
 
-    rate = directives.get("rate") or directives.get("speed")
-    if rate:
+    rate = directives.get("rate")
+    if rate is None:
+        rate = directives.get("speed")
+    if rate is not None:
         try:
             speed *= float(rate)
         except (TypeError, ValueError):
@@ -189,7 +382,10 @@ def resolve_tts_params(
 
 
 def build_markup_guidance(
-    voices: Optional[list] = None, emotions: Optional[list] = None
+    voices: Optional[list] = None,
+    emotions: Optional[list] = None,
+    *,
+    voice_continuity: bool = False,
 ) -> str:
     """A system-prompt snippet teaching the LLM the expressive-markup grammar.
 
@@ -210,6 +406,14 @@ def build_markup_guidance(
         "-- only when emotion or a voice change genuinely helps; most sentences "
         "need no tag."
     ]
+    if voice_continuity:
+        parts.append(
+            "Use at most one tag per reply, at the very start; never put tags "
+            "between sentences. In a streamed reply, its voice choice persists "
+            "across all untagged sentence fragments. Emotion and rate apply to "
+            "the tagged synthesis fragment, so choose them only when they suit "
+            "the entire reply."
+        )
     if emotions:
         parts.append("Emotions: " + ", ".join(emotions) + ".")
     if voices:

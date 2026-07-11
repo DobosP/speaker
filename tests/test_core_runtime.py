@@ -15,6 +15,8 @@ from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.events import AgentEvent, EventKind, Mode
 
 from core.engines.scripted import ScriptedEngine
+from core.engines.sherpa import SherpaConfig
+from core.engine import SpeechStyle
 from core.intents import LocalIntentHandler
 from core.llm import EchoLLM
 from core.metrics import HANDLED_LOCAL, LLM_FIRST_TOKEN
@@ -325,6 +327,44 @@ def test_stream_latency_policy_enables_per_turn_tts_streaming_when_global_off():
         llm.gate.set()
         assert runtime.wait_idle()
         assert engine.spoken == ["First sentence.", "Second sentence."]
+    finally:
+        runtime.stop()
+
+
+def test_streamed_reply_carries_first_voice_tag_across_sentences():
+    class _StyleRecordingEngine(ScriptedEngine):
+        def __init__(self):
+            super().__init__()
+            self.config = SherpaConfig(
+                tts_markup=True,
+                tts_speaker_voices={"warm": 16},
+            )
+            self.styles = []
+
+        def speak_tracked(self, speech, *, on_terminal, on_started=None):
+            self.styles.append(speech.style)
+            super().speak_tracked(
+                speech,
+                on_terminal=on_terminal,
+                on_started=on_started,
+            )
+
+    engine = _StyleRecordingEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(reply="[voice:warm] First sentence. Second sentence."),
+        start_mode=Mode.ASSISTANT,
+        stream_tts=True,
+    )
+    runtime.start(run_bus=False)
+    try:
+        engine.final("tell me a story")
+        assert runtime.wait_idle()
+        assert engine.spoken == ["First sentence.", "Second sentence."]
+        assert engine.styles == [
+            SpeechStyle(voice="warm"),
+            SpeechStyle(voice="warm"),
+        ]
     finally:
         runtime.stop()
 

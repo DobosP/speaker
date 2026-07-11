@@ -14,9 +14,15 @@ from ..engine import (
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
+    SpeechStyle,
     TrackedSpeech,
 )
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
+from ..tts_markup import (
+    prepare_speech_style,
+    resolve_tts_params,
+    style_to_directives,
+)
 from ._sherpa_models import build_recognizer, build_tts
 from .sherpa import SherpaConfig
 
@@ -25,6 +31,7 @@ log = logging.getLogger("speaker.file_replay")
 _FILE_REPLAY_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
     tracked_terminal=True,
     exact_started=True,
+    speech_style_hints=True,
 )
 
 
@@ -87,6 +94,20 @@ class FileReplayEngine(AudioEngine):
         self.last_final: str = ""
 
     # --- AudioEngine ---
+    def _tts_params(self, tts, style: Optional[SpeechStyle]) -> tuple[int, float]:
+        if not self.config.tts_markup or style is None:
+            return self.config.tts_speaker_id, self.config.tts_speed
+        return resolve_tts_params(
+            style_to_directives(style),
+            default_sid=self.config.tts_speaker_id,
+            default_speed=self.config.tts_speed,
+            voice_map=self.config.tts_speaker_voices,
+            emotion_speed_map=self.config.tts_emotion_speed_map,
+            num_speakers=int(getattr(tts, "num_speakers", 0) or 0),
+            speed_min=self.config.tts_speed_min,
+            speed_max=self.config.tts_speed_max,
+        )
+
     def start(self, callbacks: EngineCallbacks) -> None:
         recognizer = build_recognizer(self.config)
         if recognizer is None:
@@ -217,13 +238,25 @@ class FileReplayEngine(AudioEngine):
         TTS model.
         """
 
+        if not speech.fragment_id:
+            raise ValueError("tracked speech requires a fragment_id")
+        if self.config.tts_markup:
+            prepared = prepare_speech_style(
+                speech.text,
+                style=speech.style,
+                voices=self.config.tts_speaker_voices.keys(),
+                emotions=self.config.tts_emotion_speed_map.keys(),
+            )
+            speech = TrackedSpeech(
+                fragment_id=speech.fragment_id,
+                text=prepared.text,
+                style=prepared.style,
+            )
         ticket = _TrackedReplayCall(
             speech=speech,
             on_terminal=on_terminal,
             on_started=on_started,
         )
-        if not speech.fragment_id:
-            raise ValueError("tracked speech requires a fragment_id")
         if not speech.text.strip():
             self._finish_tracked(ticket, PlaybackOutcome.DROPPED)
             return
@@ -304,10 +337,11 @@ class FileReplayEngine(AudioEngine):
                         outcome = PlaybackOutcome.INTERRUPTED
                     else:
                         try:
+                            sid, speed = self._tts_params(tts, speech.style)
                             generated = tts.generate(
                                 speech.text,
-                                sid=self.config.tts_speaker_id,
-                                speed=self.config.tts_speed,
+                                sid=sid,
+                                speed=speed,
                             )
                             if self._valid_generated_clip(generated):
                                 outcome = PlaybackOutcome.COMPLETED

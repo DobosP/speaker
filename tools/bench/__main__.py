@@ -48,11 +48,21 @@ def _build_llms(config: dict, paths):
     common = dict(
         n_ctx=llm_cfg.get("n_ctx", 2048),
         n_threads=llm_cfg.get("n_threads"),
+        n_threads_batch=llm_cfg.get("n_threads_batch"),
         n_gpu_layers=llm_cfg.get("n_gpu_layers", 0),
+        chat_format=llm_cfg.get("chat_format"),
+        think=llm_cfg.get("think", False),
         options=llm_cfg.get("options"),
+        type_k=llm_cfg.get("type_k"),
+        type_v=llm_cfg.get("type_v"),
     )
     main = LlamaCppLLM(paths.main_gguf, **common)
-    fast = LlamaCppLLM(paths.fast_gguf, **common) if paths.fast_gguf else None
+    if paths.fast_gguf and os.path.abspath(paths.fast_gguf) == os.path.abspath(
+        paths.main_gguf
+    ):
+        fast = main
+    else:
+        fast = LlamaCppLLM(paths.fast_gguf, **common) if paths.fast_gguf else None
     return main, fast
 
 

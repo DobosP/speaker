@@ -265,10 +265,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       process if the native recovery gate regresses. Also evaluate MiniCPM native
       XML tools behind a dedicated adapter. Supported generation-time no-think,
       pre-TTS fail-closed reasoning filtering, and real TTFT/completion/cancel-
-      recovery gates shipped in ADR-0031. REMAINING: production llama.cpp thread-
-      pair tuning; on this 32-logical-core hybrid host the binding's 16 generation
-      / 32 batch defaults measured 5.266 s TTFT versus 0.173 s at 4/4. The sanity
-      gate's fixed 2/2 pair is a correctness baseline, not production tuning.
+      recovery gates shipped in ADR-0031. Affinity-aware, explicitly bounded
+      generation/batch pools and production-aligned benchmarks shipped in ADR-0032;
+      actual Q4 long-prompt TTFT fell from 4.651 s at the old 30/32 pair to
+      0.333 s at 4/8 on this hybrid host. The sanity gate's fixed 2/2 pair remains
+      a correctness baseline. REMAINING: actual phone/low-power thermal, callback-
+      xrun, and live bare-speaker barge validation before device-specific tuning.
       Flutter stays Gemma until a validated runtime exists.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)

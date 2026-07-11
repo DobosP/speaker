@@ -6,10 +6,13 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 from core.app import _apply_device_profile, _build_llms, _load_config
 from core.config import apply_device_profile, deep_merge, load_config
 from core.llm import LlamaCppLLM, OllamaLLM
 from core.llm_factory import build_llms
+from core.llm_threads import resolve_llamacpp_thread_pair
 
 
 class FakeLlama:
@@ -285,7 +288,30 @@ def test_build_llms_phone_profile_builds_llamacpp_clients():
     assert main.model_path.endswith("MiniCPM5-1B-Q4_K_M.gguf")
     assert fast is main  # identical GGUF must not allocate weights/KV twice
     assert main.n_ctx == 2048 and main.n_gpu_layers == 0
+    expected = resolve_llamacpp_thread_pair()
+    assert (main.n_threads, main.n_threads_batch) == (
+        expected.n_threads,
+        expected.n_threads_batch,
+    )
     assert main._think is False
+
+
+@pytest.mark.parametrize("profile", ["phone", "phone_lite"])
+def test_on_device_profiles_bound_generation_and_batch_threads(profile):
+    config = _apply_device_profile(_load_config(), profile)
+
+    main, fast = _build_llms(_args(), config)
+    llm_cfg = config["llm"]
+    expected = resolve_llamacpp_thread_pair(
+        llm_cfg.get("n_threads"),
+        llm_cfg.get("n_threads_batch"),
+    )
+
+    assert (main.n_threads, main.n_threads_batch) == (
+        expected.n_threads,
+        expected.n_threads_batch,
+    )
+    assert fast is main
 
 
 def test_llamacpp_phone_thinking_can_be_deliberately_opted_in():

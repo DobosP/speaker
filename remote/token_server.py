@@ -181,6 +181,7 @@ def _make_llm(config: dict):
             path,
             n_ctx=llm_cfg.get("n_ctx", 4096),
             n_threads=llm_cfg.get("n_threads"),
+            n_threads_batch=llm_cfg.get("n_threads_batch"),
             n_gpu_layers=llm_cfg.get("n_gpu_layers", 0),
             chat_format=llm_cfg.get("chat_format"),
             options=llm_cfg.get("options"),

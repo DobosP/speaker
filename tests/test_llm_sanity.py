@@ -22,12 +22,21 @@ from tools.llm_sanity import (
     _NativeAbortProbeEvent,
     ProbeResult,
     _check,
+    _local_thread_kwargs,
     looks_degenerate,
     outputs_distinct,
     probe_llamacpp_abort_recovery,
     probe_provider,
     validate_registry,
 )
+
+
+def test_local_sanity_thread_modes_are_explicit():
+    assert _local_thread_kwargs(production=False) == {
+        "n_threads": 2,
+        "n_threads_batch": 2,
+    }
+    assert _local_thread_kwargs(production=True) == {}
 
 
 def test_flags_single_token_spam():

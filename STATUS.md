@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/minicpm-phone-voice-output`; full
-headless: 2879 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `perf/minicpm-llamacpp-thread-pair`; full
+headless: 2921 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
 outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 
@@ -70,14 +70,13 @@ outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 
 - Pre-fix run `20260710-084939` emitted raw/final `AND` every ~2 s; post-fix
   runs `093305`/`100432` had no `AND` storm in 20 s. No audio was recorded.
-- Capture reopen, fallback, and changed-domain recalibration have deterministic
-  headless coverage only; no live device unplug/switch validation was run.
-- One real word-cut occurred on 2026-07-07. Device-free I/O covers capture/playback
-  workers, FIFO receipts, cut fade, and stale-provider fencing; acoustic behavior is headless-only.
-- Real Q4 llama.cpp uses MiniCPM no-think plus a pre-TTS fail-closed filter; its
-  2/2 functional gate answered all probes at 130.2--255.9 ms TTFT, natural `stop`,
-  zero fallback, 6.5 ms cancel, and healthy reuse (ADR-0031). Production hybrid-
-  CPU generation/batch thread-pair tuning remains P1.
+- Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
+- One real word-cut occurred on 2026-07-07; device-free I/O is broad, but acoustic behavior remains headless-only.
+- Real Q4 MiniCPM no-think + pre-TTS filtering passed the production 4/8 gate:
+  all probes at 61.9--114.3 ms TTFT, natural `stop`, zero fallback, 7.3 ms cancel,
+  healthy reuse (ADR-0031/0032). Auto stays <=4/4 on <=8 CPUs; long-prompt TTFT
+  fell 4.651 s -> 0.333 s with clean synthetic wake/cancel evidence. Actual phone
+  thermals and live audio/barge remain unvalidated.
 - Legacy enrollment is rejected by v2 provenance; `speaker_gate_input` stays off until live re-enrollment.
 - Still required with the owner at the mic: (1) `python -m core --enroll` on the active
   EC route; (2) quiet/casual phrase plus mid-thought-pause A/B; (3) bare-speaker
@@ -90,7 +89,7 @@ outside the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 git diff --check
 ```
 
-Real models: `python tools/run_tests.py real_model`; host: `python -m tools.doctor`.
+Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair: `python -m tools.llm_sanity --production-threads`; host: `python -m tools.doctor`.
 
 ## Operating policy
 - Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.

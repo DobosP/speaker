@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from core.llm_threads import resolve_llamacpp_thread_pair
 from tools.bench import report, runner
+from tools.bench.__main__ import _build_llms
 
 
 def test_run_fake_produces_aligned_populated_samples():
@@ -73,3 +76,39 @@ def test_discover_fixtures_reads_metadata(tmp_path):
     assert [f.name for f in fixtures] == ["clip_a", "clip_b"]
     assert fixtures[0].expectation == "callback"
     assert fixtures[1].expectation == ""  # not in metadata -> empty
+
+
+def test_real_bench_uses_bounded_pair_and_shares_identical_context():
+    config = {"llm": {"backend": "llamacpp", "n_ctx": 2048}}
+    paths = SimpleNamespace(main_gguf="same.gguf", fast_gguf="same.gguf")
+
+    main, fast = _build_llms(config, paths)
+    expected = resolve_llamacpp_thread_pair()
+
+    assert fast is main
+    assert (main.n_threads, main.n_threads_batch) == (
+        expected.n_threads,
+        expected.n_threads_batch,
+    )
+
+
+def test_real_bench_preserves_explicit_thread_pair():
+    config = {
+        "llm": {
+            "backend": "llamacpp",
+            "n_threads": 2,
+            "n_threads_batch": 3,
+            "think": True,
+            "type_k": "q8_0",
+            "type_v": "q8_0",
+        }
+    }
+    paths = SimpleNamespace(main_gguf="main.gguf", fast_gguf="fast.gguf")
+
+    main, fast = _build_llms(config, paths)
+
+    assert (main.n_threads, main.n_threads_batch) == (2, 3)
+    assert (fast.n_threads, fast.n_threads_batch) == (2, 3)
+    assert main._think is True and fast._think is True
+    assert main.type_k == fast.type_k == 8
+    assert main.type_v == fast.type_v == 8

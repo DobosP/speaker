@@ -5,7 +5,8 @@ self-skip when those are absent (keeping the Tier-0 suite import-safe).
 """
 import pytest
 
-from remote.token_server import sanitize_identity, sanitize_room_name
+from core.llm_threads import resolve_llamacpp_thread_pair
+from remote.token_server import _make_llm, sanitize_identity, sanitize_room_name
 
 
 def test_sanitize_room_name():
@@ -22,6 +23,33 @@ def test_sanitize_identity():
     assert sanitize_identity(None) == "user"
     assert sanitize_identity("  bob  ") == "bob"
     assert sanitize_identity("a/b\\c!") == "abc"
+
+
+def test_llamacpp_text_server_uses_bounded_thread_pair():
+    llm = _make_llm(
+        {"llm": {"backend": "llamacpp", "main_model_path": "model.gguf"}}
+    )
+    expected = resolve_llamacpp_thread_pair()
+
+    assert (llm.n_threads, llm.n_threads_batch) == (
+        expected.n_threads,
+        expected.n_threads_batch,
+    )
+
+
+def test_llamacpp_text_server_preserves_explicit_batch_override():
+    llm = _make_llm(
+        {
+            "llm": {
+                "backend": "llamacpp",
+                "main_model_path": "model.gguf",
+                "n_threads": 2,
+                "n_threads_batch": 3,
+            }
+        }
+    )
+
+    assert (llm.n_threads, llm.n_threads_batch) == (2, 3)
 
 
 def _client(monkeypatch):

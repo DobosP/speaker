@@ -303,6 +303,12 @@ FAIL = 1
 SKIP = 2
 
 
+def _local_thread_kwargs(*, production: bool) -> dict[str, int]:
+    """Keep CI topology-fixed unless explicitly probing production auto policy."""
+
+    return {} if production else {"n_threads": 2, "n_threads_batch": 2}
+
+
 @dataclass
 class ProbeResult:
     """Outcome of one provider probe. ``status`` is ``"ok"`` / ``"fail"`` /
@@ -557,6 +563,11 @@ def main(argv: list[str] | None = None) -> int:
                         help="legacy local-sanity model cache dir")
     parser.add_argument("--models-manifest", default=None,
                         help="legacy local-sanity manifest path")
+    parser.add_argument(
+        "--production-threads",
+        action="store_true",
+        help="exercise the affinity-aware production thread pair instead of fixed 2/2",
+    )
 
     cloud = parser.add_argument_group("cloud-provider smoke")
     cloud.add_argument("--provider", default=None,
@@ -594,15 +605,20 @@ def main(argv: list[str] | None = None) -> int:
     # One shared context is intentional: the gate below proves that a native
     # prefill abort leaves this exact client reusable before quality prompts
     # run.  The explicit output cap bounds every completion in this job.
+    thread_kwargs = _local_thread_kwargs(production=args.production_threads)
     llm = LlamaCppLLM(
         gguf,
         n_ctx=2048,
-        # Fixed functional baseline: keep host topology/oversubscription out of
-        # this correctness gate. The profile-aware perf workflow owns tuning.
-        n_threads=2,
-        n_threads_batch=2,
+        # Default is a fixed functional baseline; --production-threads omits the
+        # explicit pair so this same quality/cancel gate exercises auto policy.
         n_gpu_layers=0,
         options={"max_tokens": _LOCAL_MAX_TOKENS},
+        **thread_kwargs,
+    )
+    print(
+        "LLM thread pair: "
+        f"{llm.n_threads}/{llm.n_threads_batch} "
+        f"({'production auto' if args.production_threads else 'fixed functional gate'})"
     )
 
     try:

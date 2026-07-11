@@ -15,6 +15,7 @@ from core.llm import (
     _normalize_llamacpp_options,
     _resolve_kv_cache_type,
 )
+from core.llm_threads import resolve_llamacpp_thread_pair
 
 
 def _add_verified_abort_symbols(module) -> None:
@@ -167,6 +168,9 @@ def test_ensure_forwards_kv_cache_types_to_llama(monkeypatch):
     captured.clear()
     LlamaCppLLM("/x.gguf")._ensure()
     assert "type_k" not in captured and "type_v" not in captured  # default: not forwarded
+    expected = resolve_llamacpp_thread_pair()
+    assert captured["n_threads"] == expected.n_threads
+    assert captured["n_threads_batch"] == expected.n_threads_batch
 
 
 def test_ensure_degrades_when_llama_lacks_kv_quant_kwargs(monkeypatch):

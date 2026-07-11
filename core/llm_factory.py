@@ -23,6 +23,7 @@ from .llm import (
     SensitivityRouterLLM,
 )
 from .routing import build_chain_selector, order_presets_by_cost
+from .llm_threads import auto_llm_threads as _auto_llm_threads
 
 # Keep the historical logger name ("speaker.app") so the cloud-drop INFO logs
 # land under the same logger the tests + run-bundle expect after this code
@@ -37,24 +38,6 @@ __all__ = [
     "_build_cloud_client",
     "_preset_host",
 ]
-
-
-def _auto_llm_threads(cores: Optional[int] = None, *, reserve: int = 2) -> int:
-    """CPU thread budget for the on-device (llama.cpp) LLM (llm-inference-2).
-
-    llama.cpp defaults to ALL physical cores. On a shared-core phone that
-    oversubscribes against the always-on real-time audio loop -- capture + VAD +
-    AEC + the coherence/DTD barge detector that MUST keep running during a reply
-    -- so open-speaker barge-in degrades exactly when the LLM is busy generating.
-    Reserve ``reserve`` cores for that path and give the LLM the rest (>= 1).
-
-    Mirrors ``core.engines.sherpa._auto_threads``' "leave headroom for the
-    capture loop" philosophy, derived from the same ``os.cpu_count()`` probe so
-    the LLM and the audio path share one core budget. STT/TTS run sequentially
-    with the LLM (not concurrently), so only the capture/barge path needs the
-    reservation. An explicit ``llm.n_threads`` always wins over this default."""
-    cores = cores if cores is not None else (os.cpu_count() or 1)
-    return max(1, cores - reserve)
 
 
 def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | None]:
@@ -77,21 +60,15 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
     backend = llm_cfg.get("backend", "ollama")
 
     if backend == "llamacpp":
-        # llm-inference-2: budget the on-device LLM's CPU threads against the
-        # always-on audio path. Unset -> auto-budget (reserve cores for the
-        # capture/VAD/barge loop) instead of letting llama.cpp grab every core
-        # and starve real-time barge-in. An explicit llm.n_threads still wins.
-        n_threads = llm_cfg.get("n_threads")
-        if n_threads is None:
-            n_threads = _auto_llm_threads()
-            log.info(
-                "llamacpp n_threads auto-budgeted to %d of %d cores "
-                "(headroom reserved for the always-on capture/barge-in path)",
-                n_threads, os.cpu_count() or n_threads,
-            )
+        # Resolve both generation and prompt/batch counts at the provider
+        # boundary. This leaves bounded worker-count headroom for capture, barge
+        # detection, and overlapping TTS; it does not pin/reserve CPUs. It also
+        # prevents direct construction paths from silently taking the binding's
+        # topology-blind defaults.
         common = dict(
             n_ctx=llm_cfg.get("n_ctx", 4096),
-            n_threads=n_threads,
+            n_threads=llm_cfg.get("n_threads"),
+            n_threads_batch=llm_cfg.get("n_threads_batch"),
             n_gpu_layers=llm_cfg.get("n_gpu_layers", 0),
             chat_format=llm_cfg.get("chat_format"),
             think=llm_cfg.get("think", False),

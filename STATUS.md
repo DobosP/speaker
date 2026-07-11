@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
-24 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, branch `fix/canonical-stop-owner-fusion`;
+word-cut: 85 passed; prior full: 3153 passed, 30 skipped, 9 warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -31,8 +31,9 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
 - Word-cut uses isolated recognition and bounded PCM. Production cuts on a warmed,
   compatible enrolled-speaker score after 0.35 s of voiced audio even with zero
   ASR words; an ambiguous score starts a fresh identity window. Accepted PCM is
-  replayed/spliced once, and an empty stream may reach offline ASR. Canonical stop
-  stays immediate except standalone-own-echo ambiguity (ADR-0026/0036).
+  replayed/spliced once, and an empty stream may reach offline ASR. Exact STOP
+  plus the attested `OF HE STOP` repair may cut; TTS containing STOP still
+  requires short-window speaker authority (ADR-0026/0036/0042).
 - Capture recovery rebinds actual rate/resampler, resets dependent state, preserves
   the first correctly timed block, and revalidates fallback. Same-domain recovery
   preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
@@ -75,10 +76,10 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
   Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
   override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
-- Main `75b1717` run `144211` retained `sid=18`; the owner's “STOP” cut once
-  without a self-storm. Its garbled override was INGESTed; tags and response-only
-  admission are headless-fixed (ADR-0038/0039). A suspicious 0.818 calibration
-  peak prompted a headless-only one-shot retry (ADR-0040). Live stays red.
+- Main run `144211` kept `sid=18` and cut one owner STOP. Run `154451` kept one
+  voice but missed `OF HE STOP` before quiet reset; its attested repair is
+  headless-only (ADR-0042). Override, tag, and calibration fixes also await live
+  confirmation (ADR-0038/0039/0040). Live stays red.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

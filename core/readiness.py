@@ -168,10 +168,23 @@ def check_sherpa_models(
 def check_speaker_id(
     config: dict, exists: Callable[[str], bool] = os.path.exists
 ) -> Check:
-    """Advisory speaker-ID check; a configured missing model is a real failure."""
+    """Check optional speaker ID, or require it for production word-cut."""
     sherpa = (config or {}).get("sherpa", {}) or {}
+    required_for_word_cut = bool(
+        sherpa.get("barge_in_enabled", True)
+        and sherpa.get("barge_word_cut_enabled", False)
+        and not sherpa.get("aec_enabled", False)
+        and sherpa.get("barge_word_cut_require_speaker", True)
+    )
     model = sherpa.get("speaker_embedding_model", "")
     if not model:
+        if required_for_word_cut:
+            return Check(
+                "speaker-ID",
+                False,
+                "active word-cut requires a speaker embedding model and enrollment",
+                "python -m tools.setup_models; python -m core --enroll",
+            )
         return Check(
             "speaker-ID",
             True,
@@ -192,9 +205,16 @@ def check_speaker_id(
             "model + enrollment file present; capture-domain compatibility is "
             "checked after the microphone opens",
         )
+    if required_for_word_cut:
+        return Check(
+            "speaker-ID",
+            False,
+            "active word-cut requires enrollment; model is present but no "
+            "enrollment file was found",
+            "python -m core --enroll",
+        )
     return Check(
-        "speaker-ID",
-        True,
+        "speaker-ID", True,
         "model present but not enrolled -- gate is fail-open; "
         "run `python -m core --enroll` to enroll your voice",
     )

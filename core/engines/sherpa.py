@@ -64,9 +64,11 @@ from ..audio_frontend import (
     rms_of,
 )
 from ..engine import (
+    FinalTranscript,
     NO_PLAYBACK_CAPABILITIES,
     AudioEngine,
     EngineCallbacks,
+    OwnerVerification,
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
@@ -109,6 +111,12 @@ from .echo_coherence import EchoCoherenceDetector
 _ATTESTED_SHORT_INTERRUPT_REPAIRS = frozenset({
     (("castle", "death"), ("cancel", "that")),
 })
+
+
+@dataclass(frozen=True)
+class _FinalSpeakerDecision:
+    admitted: bool
+    verification: OwnerVerification
 
 
 def _attested_repair_words(text: str) -> tuple[str, ...]:
@@ -871,6 +879,35 @@ class SherpaConfig:
     # gaps are far longer than 3 blocks (Silero's own release hysteresis alone
     # exceeds it), so echo still cannot accumulate across bursts.
     barge_word_cut_reset_quiet_blocks: int = 3
+    # Production word-cut authority: when enabled, a non-stop talk-over may cut
+    # only after enough candidate PCM matches the compatible enrolled speaker.
+    # This removes the impossible text-only choice between a heavily corrupted
+    # TTS echo and a real near-homophonic command. Bare stop remains immediate.
+    # The dataclass defaults this ON so any host that opts into word-cut gets the
+    # safe behavior; focused legacy state-machine fixtures explicitly turn it off.
+    barge_word_cut_require_speaker: bool = True
+    # Once compatible enrolled-speaker authority is active, lexical content is
+    # not the identity decision: the OS canceller can preserve the owner waveform
+    # while corrupting every streaming token during double-talk. Zero therefore
+    # permits audio-first authority; identity-free legacy mode still keeps the
+    # stricter ``barge_word_cut_min_words`` echo-safety floor above.
+    barge_word_cut_speaker_min_words: int = 0
+    barge_word_cut_speaker_min_sec: float = 0.35
+    # A canonical stop is intentionally short. When it is lexically ambiguous
+    # with recent assistant speech, use this shorter identity window rather than
+    # either false-cutting on echo or requiring an unnatural 350 ms "stop".
+    barge_word_cut_stop_speaker_min_sec: float = 0.10
+    barge_word_cut_speaker_window_sec: float = 2.0
+    # Double-talk audio is materially degraded relative to a clean final. When
+    # final input speaker-gating is disabled, word-cut may use this lower,
+    # purpose-specific threshold. If final gating is enabled, the normal gate's
+    # threshold remains the floor so an authorized cut cannot be dropped later.
+    barge_word_cut_speaker_threshold: float = 0.30
+    # A score at/below this lower bound is decisively unlike the owner (measured
+    # own-TTS residuals: 0.15-0.179) and resets the burst. Scores in the band up
+    # to the accept threshold retain bounded PCM and retry after more evidence.
+    barge_word_cut_speaker_reject_threshold: float = 0.22
+    barge_word_cut_speaker_retry_sec: float = 0.25
     # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
     # the enrolled user (keeps the assistant's own TTS from self-interrupting).
     speaker_embedding_model: str = ""
@@ -1214,6 +1251,10 @@ class SherpaOnnxEngine(AudioEngine):
         self._speak_gen = 0
         self._gen_lock = threading.Lock()
         self._speaker_gate: Optional[SpeakerGate] = None
+        # Set only after the background engine warm pass completes a real
+        # similarity call. Word-cut never pays cold ONNX construction on the
+        # 100 ms capture thread; it defers non-stop authority until this is true.
+        self._speaker_gate_warmed: bool = False
         # Sink-attested playback callbacks never run on PortAudio's hard-real-
         # time thread. PlaybackFIFO appends only tiny ownership events; this
         # dispatcher consumes them on a normal daemon thread and invokes the
@@ -1358,10 +1399,14 @@ class SherpaOnnxEngine(AudioEngine):
         # second-pass recognizer, floor gate, and speaker-ID see the same pre-roll.
         self._word_cut_candidate_pcm: deque = deque()
         self._word_cut_candidate_samples: int = 0
+        self._word_cut_candidate_observed_samples: int = 0
+        self._word_cut_speaker_last_decision_observed_samples: int = 0
+        self._word_cut_candidate_speaker_authorized: bool = False
         self._word_cut_vad_preroll_pcm: deque = deque()
         self._word_cut_vad_preroll_samples: int = 0
         self._word_cut_pending_pcm: deque = deque()
         self._word_cut_pending_samples: int = 0
+        self._word_cut_pending_offline_recovery: bool = False
         self._word_cut_last_replay_ok: bool = False
         # A natural reply boundary is not permission to bypass the four-word
         # echo-safety floor. Novel sub-floor text is staged here and promoted
@@ -1667,6 +1712,7 @@ class SherpaOnnxEngine(AudioEngine):
         if self._hotwords:
             log.info("ASR contextual biasing: %d hotword phrase(s)", len(self._hotwords))
         if c.speaker_embedding_model:
+            self._speaker_gate_warmed = False
             self._speaker_gate = sherpa_speaker_gate(
                 c.speaker_embedding_model,
                 threshold=c.speaker_threshold,
@@ -2194,6 +2240,21 @@ class SherpaOnnxEngine(AudioEngine):
         actual_selector = getattr(self._stream_in, "actual_device", in_dev)
         try:
             self._resolve_capture_domain(sd, actual_selector, startup=True)
+            requires_word_cut_speaker = bool(
+                self.config.barge_in_enabled
+                and self.config.barge_word_cut_enabled
+                and not self.config.aec_enabled
+                and self.config.barge_word_cut_require_speaker
+            )
+            if requires_word_cut_speaker:
+                if self._speaker_gate is None or not self._speaker_gate.is_enrolled:
+                    raise RuntimeError(
+                        "active word-cut requires a compatible speaker enrollment"
+                    )
+                if not self._warm_speaker_gate():
+                    raise RuntimeError(
+                        "active word-cut speaker model could not warm off capture"
+                    )
         except Exception:
             self._running.clear()
             self._stream_in.close()
@@ -2553,16 +2614,31 @@ class SherpaOnnxEngine(AudioEngine):
                 self._punct.add_punctuation("ok")
             except Exception:  # noqa: BLE001 - best-effort
                 log.debug("punctuation warm-up failed", exc_info=True)
-        # Speaker-ID embedder -- runs only on a final (input gating). similarity()
-        # computes the embedding (the cold ONNX) before any cosine, so this JITs
-        # it even when unenrolled; the cosine may then no-op/raise harmlessly.
+        # Word-cut startup already warms required speaker authority synchronously
+        # before capture. Keep this idempotent retry for optional input gating.
+        self._warm_speaker_gate()
+
+    def _warm_speaker_gate(self) -> bool:
+        """Construct/JIT speaker embedding off the real-time capture thread."""
+        if self._speaker_gate_warmed:
+            return True
         gate = self._speaker_gate
-        if gate is not None:
-            try:
-                silence = np.zeros(int(self.config.sample_rate * 0.3), dtype="float32")
-                gate.similarity(silence, self.config.sample_rate)
-            except Exception:  # noqa: BLE001 - best-effort; the JIT already ran
-                log.debug("speaker-ID warm-up failed", exc_info=True)
+        if gate is None:
+            return False
+        try:
+            silence = np.zeros(
+                int(self.config.sample_rate * 0.3), dtype="float32"
+            )
+            embedding = gate.embed(silence, self.config.sample_rate)
+            self._speaker_gate_warmed = embedding is not None
+            if self._speaker_gate_warmed:
+                log.info("speaker-ID warm-up complete")
+            else:
+                log.warning("speaker-ID warm-up produced no embedding")
+        except Exception:  # noqa: BLE001 - caller decides optional vs required
+            self._speaker_gate_warmed = False
+            log.warning("speaker-ID warm-up failed", exc_info=True)
+        return self._speaker_gate_warmed
 
     # --- ASR text helpers ---
     def _new_asr_stream(self):
@@ -2600,7 +2676,12 @@ class SherpaOnnxEngine(AudioEngine):
         return result
 
     def _final_transcribe(
-        self, seg, raw_final: str, *, speech_sec: Optional[float] = None
+        self,
+        seg,
+        raw_final: str,
+        *,
+        speech_sec: Optional[float] = None,
+        allow_empty_streaming: bool = False,
     ) -> str:
         """The FINAL transcript for ``seg``. When a second-pass offline recognizer
         is configured, RE-transcribe the endpointed utterance with it (robust on
@@ -2631,6 +2712,13 @@ class SherpaOnnxEngine(AudioEngine):
                         # rejected hallucination falls back to the (post-processed)
                         # streaming final, which the L1 echo-floor gate then drops.
                         streaming_final = self._postprocess_final(raw_final)
+                        if allow_empty_streaming and not streaming_final.strip():
+                            # Audio-first barge exists precisely because the
+                            # streaming decoder can remain empty in double-talk.
+                            # A finite speaker-authorized PCM handoff may use the
+                            # offline result directly; ordinary VAD-only clips
+                            # never receive this exception.
+                            return text
                         guarded_final = agreement_guard(
                             streaming_final,
                             text,
@@ -2662,6 +2750,8 @@ class SherpaOnnxEngine(AudioEngine):
         speech_end_ts,
         asr_seg=None,
         speech_sec: Optional[float] = None,
+        offline_recovery_authorized: bool = False,
+        owner_lineage_intact: bool = True,
     ) -> None:
         """Produce the FINAL transcript and deliver it (or its drop metric).
 
@@ -2683,15 +2773,36 @@ class SherpaOnnxEngine(AudioEngine):
         the floor too easily and re-open the echo-final cascade). ``None`` (every
         non-apm-owns-ns path) -> decode ``seg``, byte-identical."""
         decode_seg = asr_seg if asr_seg is not None else seg
-        final_text = (
-            self._final_transcribe(decode_seg, raw_final)
-            if speech_sec is None
-            else self._final_transcribe(
-                decode_seg, raw_final, speech_sec=speech_sec
+        if speech_sec is None:
+            final_text = (
+                self._final_transcribe(
+                    decode_seg,
+                    raw_final,
+                    allow_empty_streaming=True,
+                )
+                if offline_recovery_authorized
+                else self._final_transcribe(decode_seg, raw_final)
             )
-        )
+        else:
+            final_text = (
+                self._final_transcribe(
+                    decode_seg,
+                    raw_final,
+                    speech_sec=speech_sec,
+                    allow_empty_streaming=True,
+                )
+                if offline_recovery_authorized
+                else self._final_transcribe(
+                    decode_seg,
+                    raw_final,
+                    speech_sec=speech_sec,
+                )
+            )
         log.info("asr final: %r (raw %r)", final_text, raw_final)
-        if not self._final_above_floor(seg):
+        if not final_text.strip():
+            log.info("dropping empty final after offline recovery")
+            self._cb.on_metric("empty_final_after_second_pass")
+        elif not self._final_above_floor(seg):
             # L1: at/near the device's learned echo/quiet floor -- the assistant's
             # own residual echo or ambient noise transcribed into words. Drop it
             # (this is what breaks the open-speaker echo-final self-interrupt
@@ -2701,12 +2812,32 @@ class SherpaOnnxEngine(AudioEngine):
                 "(echo/ambient, not speech)", final_text,
             )
             self._cb.on_metric("echo_floor_rejected_final")
-        elif self._should_act_on_final(seg):
-            self._cb.on_metric(SPEECH_END, at=speech_end_ts)
-            self._cb.on_final(final_text)
         else:
-            log.info("dropping final %r -- speaker is not the enrolled user", final_text)
-            self._cb.on_metric("speaker_rejected_final")
+            speaker_decision = self._speaker_decision_for_final(seg)
+            verification = speaker_decision.verification
+            if (
+                verification is OwnerVerification.VERIFIED
+                and not owner_lineage_intact
+            ):
+                verification = OwnerVerification.UNKNOWN
+                self._cb.on_metric("speaker_mixed_lineage_unverified")
+            if not speaker_decision.admitted:
+                log.info(
+                    "dropping final %r -- speaker is not the enrolled user",
+                    final_text,
+                )
+                self._cb.on_metric("speaker_rejected_final")
+                return
+            self._cb.on_metric(SPEECH_END, at=speech_end_ts)
+            result = FinalTranscript(
+                final_text,
+                owner_verification=verification,
+                origin="live_audio",
+            )
+            if self._cb.on_final_result is not None:
+                self._cb.on_final_result(result)
+            else:
+                self._cb.on_final(final_text)
 
     def _maybe_setup_async_final(self) -> None:
         """Create the second-pass worker queue iff a 2nd-pass recognizer was built
@@ -2725,6 +2856,8 @@ class SherpaOnnxEngine(AudioEngine):
         speech_end_ts,
         asr_seg=None,
         speech_sec: Optional[float] = None,
+        offline_recovery_authorized: bool = False,
+        owner_lineage_intact: bool = True,
     ) -> None:
         """Hand an endpointed utterance to the second-pass worker WITHOUT ever
         blocking the capture loop. On overflow (the worker is wedged/very slow --
@@ -2735,9 +2868,13 @@ class SherpaOnnxEngine(AudioEngine):
         after a newer one would wrongly cancel the newer turn. Single producer
         (this capture thread), so after one ``get_nowait`` a slot is free."""
         try:
-            self._final_q.put_nowait(
-                (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
-            )
+            item = (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
+            if offline_recovery_authorized or not owner_lineage_intact:
+                item += (
+                    bool(offline_recovery_authorized),
+                    bool(owner_lineage_intact),
+                )
+            self._final_q.put_nowait(item)
             return
         except queue.Full:
             pass
@@ -2750,15 +2887,30 @@ class SherpaOnnxEngine(AudioEngine):
         except queue.Empty:
             pass  # the worker just drained one; a slot is free now
         try:
-            self._final_q.put_nowait(
-                (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
-            )
+            item = (seg, raw_final, speech_end_ts, asr_seg, speech_sec)
+            if offline_recovery_authorized or not owner_lineage_intact:
+                item += (
+                    bool(offline_recovery_authorized),
+                    bool(owner_lineage_intact),
+                )
+            self._final_q.put_nowait(item)
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
             log.warning("second-pass queue still full; finalizing inline")
-            self._finalize_and_dispatch(
-                seg, raw_final, speech_end_ts, asr_seg, speech_sec
-            )
+            if offline_recovery_authorized or not owner_lineage_intact:
+                self._finalize_and_dispatch(
+                    seg,
+                    raw_final,
+                    speech_end_ts,
+                    asr_seg,
+                    speech_sec,
+                    offline_recovery_authorized=offline_recovery_authorized,
+                    owner_lineage_intact=owner_lineage_intact,
+                )
+            else:
+                self._finalize_and_dispatch(
+                    seg, raw_final, speech_end_ts, asr_seg, speech_sec
+                )
 
     def _final_worker(self) -> None:
         """Drain the second-pass work queue, finalizing one utterance at a time.
@@ -2783,12 +2935,52 @@ class SherpaOnnxEngine(AudioEngine):
             if len(item) == 4:
                 seg, raw_final, speech_end_ts, asr_seg = item
                 speech_sec = None
-            else:
+                offline_recovery_authorized = False
+                owner_lineage_intact = True
+            elif len(item) == 5:
                 seg, raw_final, speech_end_ts, asr_seg, speech_sec = item
+                offline_recovery_authorized = False
+                owner_lineage_intact = True
+            elif len(item) == 6:
+                # Transitional schema used by the first zero-word handoff
+                # implementation: the sixth field carried only offline decode
+                # authority, before mixed-lineage provenance was added.
+                (
+                    seg,
+                    raw_final,
+                    speech_end_ts,
+                    asr_seg,
+                    speech_sec,
+                    offline_recovery_authorized,
+                ) = item
+                owner_lineage_intact = True
+            else:
+                (
+                    seg,
+                    raw_final,
+                    speech_end_ts,
+                    asr_seg,
+                    speech_sec,
+                    offline_recovery_authorized,
+                    owner_lineage_intact,
+                ) = item
             try:
-                self._finalize_and_dispatch(
-                    seg, raw_final, speech_end_ts, asr_seg, speech_sec
-                )
+                if offline_recovery_authorized or not owner_lineage_intact:
+                    self._finalize_and_dispatch(
+                        seg,
+                        raw_final,
+                        speech_end_ts,
+                        asr_seg,
+                        speech_sec,
+                        offline_recovery_authorized=(
+                            offline_recovery_authorized
+                        ),
+                        owner_lineage_intact=owner_lineage_intact,
+                    )
+                else:
+                    self._finalize_and_dispatch(
+                        seg, raw_final, speech_end_ts, asr_seg, speech_sec
+                    )
             except Exception:  # noqa: BLE001 - never let the worker die on one turn
                 log.exception("second-pass finalize failed; dropping this turn")
 
@@ -3583,6 +3775,9 @@ class SherpaOnnxEngine(AudioEngine):
                     # keep the optional relaxed-ASR copy in lockstep when present.
                     pending_primary: list = []
                     pending_alternate = [] if self._aec_asr is not None else None
+                    pending_offline_recovery = bool(
+                        self._word_cut_pending_offline_recovery
+                    )
                     pending_samples = self._splice_word_cut_preroll(
                         pending_primary, pending_alternate,
                     )
@@ -3608,6 +3803,9 @@ class SherpaOnnxEngine(AudioEngine):
                                 - max(0.0, pending_sec - block_sec),
                             ),
                             speech_end_at=handoff_end_at,
+                            offline_recovery_authorized=(
+                                pending_offline_recovery
+                            ),
                         )
                     self._wc_reply_active = False
                     self._emit_word_cut_funnel()
@@ -3697,6 +3895,12 @@ class SherpaOnnxEngine(AudioEngine):
                         speech_end_ts = segment.speech_end_at
                         speech_sec = segment.speech_duration_sec
                         admitted = segment.final_admitted
+                        offline_recovery_authorized = bool(
+                            segment.offline_recovery_authorized
+                        )
+                        owner_lineage_intact = bool(
+                            segment.owner_lineage_intact
+                        )
                         seg = owned_primary if owned_primary.size else samples
                         asr_seg = owned_asr if self._aec_asr is not None else None
                         segment.reset()
@@ -3710,7 +3914,12 @@ class SherpaOnnxEngine(AudioEngine):
                                 vad_reset()
                             except Exception:  # noqa: BLE001 - ASR final still wins
                                 pass
-                        if raw_final.strip() and admitted:
+                        recover_empty_streaming = bool(
+                            admitted
+                            and offline_recovery_authorized
+                            and self._final_recognizer is not None
+                        )
+                        if admitted and (raw_final.strip() or recover_empty_streaming):
                             finals += 1
                             # Finalize (second-pass re-transcription, when
                             # configured, + the echo-floor/speaker gates) and
@@ -3719,21 +3928,51 @@ class SherpaOnnxEngine(AudioEngine):
                             # offline decode never stalls this real-time loop;
                             # otherwise finalize inline (legacy, byte-identical).
                             if self._final_q is not None:
-                                self._enqueue_final(
-                                    seg,
-                                    raw_final,
-                                    speech_end_ts,
-                                    asr_seg,
-                                    speech_sec,
-                                )
+                                if recover_empty_streaming or not owner_lineage_intact:
+                                    self._enqueue_final(
+                                        seg,
+                                        raw_final,
+                                        speech_end_ts,
+                                        asr_seg,
+                                        speech_sec,
+                                        offline_recovery_authorized=(
+                                            recover_empty_streaming
+                                        ),
+                                        owner_lineage_intact=(
+                                            owner_lineage_intact
+                                        ),
+                                    )
+                                else:
+                                    self._enqueue_final(
+                                        seg,
+                                        raw_final,
+                                        speech_end_ts,
+                                        asr_seg,
+                                        speech_sec,
+                                    )
                             else:
-                                self._finalize_and_dispatch(
-                                    seg,
-                                    raw_final,
-                                    speech_end_ts,
-                                    asr_seg,
-                                    speech_sec,
-                                )
+                                if recover_empty_streaming or not owner_lineage_intact:
+                                    self._finalize_and_dispatch(
+                                        seg,
+                                        raw_final,
+                                        speech_end_ts,
+                                        asr_seg,
+                                        speech_sec,
+                                        offline_recovery_authorized=(
+                                            recover_empty_streaming
+                                        ),
+                                        owner_lineage_intact=(
+                                            owner_lineage_intact
+                                        ),
+                                    )
+                                else:
+                                    self._finalize_and_dispatch(
+                                        seg,
+                                        raw_final,
+                                        speech_end_ts,
+                                        asr_seg,
+                                        speech_sec,
+                                    )
                         elif raw_final.strip():
                             # Live 2026-07-10: near-zero idle capture emitted
                             # raw/final 'AND' every ~2 s and burned addressing LLM
@@ -3853,6 +4092,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._clear_word_cut_vad_preroll()
         self._word_cut_pending_pcm.clear()
         self._word_cut_pending_samples = 0
+        self._word_cut_pending_offline_recovery = False
         self._clear_word_cut_tail_stage()
         self._wc_reply_active = False
         self._barge_sustain_reset_pending = True
@@ -5348,10 +5588,16 @@ class SherpaOnnxEngine(AudioEngine):
             and bool(getattr(self, "_word_cut_route_verified", False))
         )
 
-    def _clear_word_cut_candidate(self) -> None:
+    def _clear_word_cut_candidate(
+        self, *, preserve_speaker_retry: bool = False
+    ) -> None:
         """Discard the current playback-time speech-burst PCM (capture thread)."""
         self._word_cut_candidate_pcm.clear()
         self._word_cut_candidate_samples = 0
+        self._word_cut_candidate_speaker_authorized = False
+        if not preserve_speaker_retry:
+            self._word_cut_candidate_observed_samples = 0
+            self._word_cut_speaker_last_decision_observed_samples = 0
 
     def _clear_word_cut_vad_preroll(self) -> None:
         self._word_cut_vad_preroll_pcm.clear()
@@ -5417,6 +5663,9 @@ class SherpaOnnxEngine(AudioEngine):
         limit = self._asr_utterance_limit_samples()
         self._word_cut_candidate_pcm.append(block)
         self._word_cut_candidate_samples += int(block.size)
+        self._word_cut_candidate_observed_samples = int(
+            getattr(self, "_word_cut_candidate_observed_samples", 0) or 0
+        ) + int(block.size)
         trimmed = 0
         while self._word_cut_candidate_samples > limit:
             excess = self._word_cut_candidate_samples - limit
@@ -5435,6 +5684,295 @@ class SherpaOnnxEngine(AudioEngine):
         )
         if trimmed:
             st["pcm_trimmed_samples"] = st.get("pcm_trimmed_samples", 0) + trimmed
+
+    def _trim_word_cut_candidate_to_limit(self, limit: int) -> None:
+        """Keep only the newest ``limit`` candidate samples, with telemetry."""
+        limit = max(1, int(limit))
+        trimmed = 0
+        while self._word_cut_candidate_samples > limit:
+            excess = self._word_cut_candidate_samples - limit
+            first = self._word_cut_candidate_pcm[0]
+            if first.size <= excess:
+                self._word_cut_candidate_pcm.popleft()
+                self._word_cut_candidate_samples -= int(first.size)
+                trimmed += int(first.size)
+            else:
+                self._word_cut_candidate_pcm[0] = first[excess:].copy()
+                self._word_cut_candidate_samples -= int(excess)
+                trimmed += int(excess)
+        if trimmed:
+            st = self._wc_stats
+            st["pcm_trimmed_samples"] = st.get("pcm_trimmed_samples", 0) + trimmed
+
+    def _trim_word_cut_candidate_to_lookback(self) -> None:
+        """Bound PCM retained while a folded echo partial remains unchanged.
+
+        A held recognizer prefix contributes no new words, but its newest blocks
+        may contain the onset of a user who has not reached the decoder yet. Keep
+        only the configured VAD pre-roll window: enough onset for a later command,
+        never an unbounded own-TTS prefix in the promoted normal-ASR segment.
+        """
+        limit = max(
+            int(self.config.sample_rate * float(self.config.block_sec)),
+            int(
+                self.config.sample_rate
+                * max(
+                    0.0,
+                    float(
+                        getattr(
+                            self.config, "barge_word_cut_vad_preroll_sec", 0.3
+                        )
+                    ),
+                )
+            ),
+        )
+        self._trim_word_cut_candidate_to_limit(limit)
+
+    def _word_cut_stop_requested(self, new_text: str, full_text: str) -> bool:
+        """Recognize only a canonical stop in the NEW user-text suffix.
+
+        Do not scan arbitrary full-text suffixes: the assistant can itself say a
+        sentence ending in “stop,” and that echo must still face speaker authority.
+        """
+        del full_text  # kept in the seam so future recognizer metadata can use it
+        return is_stop_command(new_text)
+
+    def _word_cut_speaker_decision(
+        self, *, min_sec: Optional[float] = None
+    ) -> str:
+        """Return ``legacy``, ``defer``, ``accept``, or ``reject`` for a cut.
+
+        Text cannot reliably distinguish a near-homophonic command from nonlinear
+        TTS echo. When production requires speaker authority, use the compatible
+        enrolled embedding on the bounded candidate PCM. Missing/error authority
+        fails closed for non-stop talk-over; the canonical stop path bypasses this
+        method and remains immediate.
+        """
+        if not bool(
+            getattr(self.config, "barge_word_cut_require_speaker", True)
+        ):
+            return "legacy"
+        gate = self._speaker_gate
+        st = self._wc_stats
+        if gate is None or not gate.is_enrolled:
+            st["speaker_unavailable"] = st.get("speaker_unavailable", 0) + 1
+            if not st.get("_speaker_unavailable_warned"):
+                st["_speaker_unavailable_warned"] = True
+                log.warning(
+                    "word-cut speaker authority unavailable; non-stop cut deferred"
+                )
+            return "defer"
+        required_sec = (
+            float(min_sec)
+            if min_sec is not None
+            else float(
+                getattr(
+                    self.config, "barge_word_cut_speaker_min_sec", 0.35
+                )
+            )
+        )
+        min_samples = max(
+            0,
+            int(
+                self.config.sample_rate
+                * max(0.0, required_sec)
+            ),
+        )
+        if self._word_cut_candidate_samples <= 0 or (
+            min_samples > 0 and self._word_cut_candidate_samples < min_samples
+        ):
+            st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
+            return "defer"
+        if not self._speaker_gate_warmed:
+            st["speaker_cold_deferred"] = st.get("speaker_cold_deferred", 0) + 1
+            if not st.get("_speaker_cold_warned"):
+                st["_speaker_cold_warned"] = True
+                log.warning(
+                    "word-cut speaker authority not warmed; non-stop cut deferred"
+                )
+            return "defer"
+        if st.get("_speaker_error"):
+            return "defer"
+        retry_samples = max(
+            1,
+            int(
+                self.config.sample_rate
+                * max(
+                    0.0,
+                    float(
+                        getattr(
+                            self.config, "barge_word_cut_speaker_retry_sec", 0.25
+                        )
+                    ),
+                )
+            ),
+        )
+        last_decision = int(
+            getattr(
+                self,
+                "_word_cut_speaker_last_decision_observed_samples",
+                0,
+            )
+            or 0
+        )
+        if (
+            last_decision > 0
+            and self._word_cut_candidate_observed_samples - last_decision
+            < retry_samples
+        ):
+            st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
+            return "defer"
+        try:
+            candidate = np.concatenate(list(self._word_cut_candidate_pcm))
+            window_samples = max(
+                1,
+                int(
+                    self.config.sample_rate
+                    * max(
+                        float(self.config.block_sec),
+                        float(
+                            getattr(
+                                self.config,
+                                "barge_word_cut_speaker_window_sec",
+                                2.0,
+                            )
+                        ),
+                    )
+                ),
+            )
+            if candidate.size > window_samples:
+                candidate = candidate[-window_samples:]
+            identity = trim_to_voiced_region(candidate, self.config.sample_rate)
+            frame = max(1, int(round(self.config.sample_rate * 0.02)))
+            framed = (candidate.size // frame) * frame
+            voiced_samples = 0
+            if framed:
+                frames = candidate[:framed].reshape(-1, frame).astype("float64")
+                energies = np.sqrt(np.mean(frames * frames, axis=1))
+                peak = float(np.max(energies)) if energies.size else 0.0
+                if peak > 1e-8:
+                    voiced_samples = int(
+                        np.count_nonzero(energies >= max(1e-5, peak * 0.15))
+                    ) * frame
+            if min_samples > 0 and voiced_samples < min_samples:
+                st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
+                return "defer"
+            try_similarity = getattr(gate, "try_similarity", None)
+            raw_similarity = (
+                try_similarity(identity, self.config.sample_rate)
+                if callable(try_similarity)
+                else gate.similarity(identity, self.config.sample_rate)
+            )
+            if raw_similarity is None:
+                st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
+                st["speaker_busy_deferred"] = (
+                    st.get("speaker_busy_deferred", 0) + 1
+                )
+                return "defer"
+            similarity = float(raw_similarity)
+            if not math.isfinite(similarity):
+                raise ValueError("speaker similarity is not finite")
+            self._word_cut_speaker_last_decision_observed_samples = int(
+                self._word_cut_candidate_observed_samples
+            )
+        except Exception:  # noqa: BLE001 - enrolled authority fails closed
+            st["_speaker_error"] = True
+            st["speaker_errors"] = st.get("speaker_errors", 0) + 1
+            log.warning(
+                "word-cut speaker decision failed; non-stop cut deferred",
+                exc_info=True,
+            )
+            return "defer"
+        # A clean final and an OS-cancelled double-talk slice are different
+        # acoustic domains. When normal finals are not identity-gated, use the
+        # purpose-specific barge threshold measured for double-talk. If normal
+        # input gating is on, never authorize below its threshold: that would cut
+        # playback only to have the same request rejected at final dispatch.
+        configured_threshold = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    getattr(
+                        self.config,
+                        "barge_word_cut_speaker_threshold",
+                        gate.threshold,
+                    )
+                ),
+            ),
+        )
+        threshold = (
+            max(float(gate.threshold), configured_threshold)
+            if bool(getattr(self.config, "speaker_gate_input", True))
+            else configured_threshold
+        )
+        reject_threshold = max(
+            0.0,
+            min(
+                threshold,
+                float(
+                    getattr(
+                        self.config,
+                        "barge_word_cut_speaker_reject_threshold",
+                        0.22,
+                    )
+                ),
+            ),
+        )
+        accepted = similarity >= threshold
+        if accepted:
+            # Identity authorizes only the exact voiced/model-bounded PCM it saw.
+            # Never let an older echo prefix or trimmed silence ride into normal
+            # ASR behind a valid owner suffix.
+            authorized = np.asarray(identity, dtype="float32").reshape(-1).copy()
+            trimmed = max(0, self._word_cut_candidate_samples - authorized.size)
+            self._word_cut_candidate_pcm = deque([authorized])
+            self._word_cut_candidate_samples = int(authorized.size)
+            self._word_cut_candidate_speaker_authorized = True
+            if trimmed:
+                st["pcm_trimmed_samples"] = (
+                    st.get("pcm_trimmed_samples", 0) + trimmed
+                )
+        ambiguous = not accepted and similarity > reject_threshold
+        if ambiguous:
+            st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
+            st["speaker_ambiguous"] = st.get("speaker_ambiguous", 0) + 1
+        else:
+            key = "speaker_accepts" if accepted else "speaker_rejects"
+            st[key] = st.get(key, 0) + 1
+        log.info(
+            "word-cut speaker: decision=%s similarity=%.2f reject=%.2f "
+            "threshold=%.2f pcm_ms=%d",
+            "accept" if accepted else ("defer" if ambiguous else "reject"),
+            similarity,
+            reject_threshold,
+            threshold,
+            round(1000 * self._word_cut_candidate_samples / self.config.sample_rate),
+        )
+        if ambiguous:
+            # The scored PCM is explicitly neither owner-authorized nor a clear
+            # reject.  It may not ride ahead of a later owner-like suffix and be
+            # replayed as if the later aggregate score attested every word.
+            # Keep only the monotonic retry clock; the next decision must earn a
+            # fresh minimum-duration PCM window from after this boundary.
+            self._clear_word_cut_candidate(preserve_speaker_retry=True)
+            st["speaker_ambiguous_candidate_clears"] = (
+                st.get("speaker_ambiguous_candidate_clears", 0) + 1
+            )
+        return "accept" if accepted else ("defer" if ambiguous else "reject")
+
+    def _word_cut_authority_min_words(self) -> int:
+        """Lexical evidence required before the active authority may cut."""
+        if bool(getattr(self.config, "barge_word_cut_require_speaker", True)):
+            return max(
+                0,
+                int(
+                    getattr(
+                        self.config, "barge_word_cut_speaker_min_words", 0
+                    )
+                ),
+            )
+        return max(1, int(getattr(self.config, "barge_word_cut_min_words", 4)))
 
     def _word_cut_new_text(self, text: str) -> str:
         """Text added after the most recent own-speech fold/burst boundary."""
@@ -5493,6 +6031,9 @@ class SherpaOnnxEngine(AudioEngine):
             return False
         blocks = list(self._word_cut_candidate_pcm)
         samples_n = self._word_cut_candidate_samples
+        offline_recovery_authorized = bool(
+            self._word_cut_candidate_speaker_authorized
+        )
         self._clear_word_cut_candidate()
         self._clear_word_cut_vad_preroll()
 
@@ -5536,6 +6077,9 @@ class SherpaOnnxEngine(AudioEngine):
             )
         self._word_cut_pending_pcm = deque(blocks)
         self._word_cut_pending_samples = samples_n
+        self._word_cut_pending_offline_recovery = (
+            offline_recovery_authorized
+        )
         self._clear_word_cut_tail_stage()
         self._word_cut_fed_stream = False
         self._word_cut_base = ""
@@ -5565,6 +6109,17 @@ class SherpaOnnxEngine(AudioEngine):
         another word. Empty, own, stale, or non-continuing tails are discarded.
         Returns True only for an immediate authoritative handoff.
         """
+        if self._barge_in_fired_this_run:
+            # The cut already promoted the authoritative owner PCM. Playback-stop
+            # propagation is cross-thread; discard any detector residue captured
+            # in that brief boundary without touching the pending handoff.
+            self._clear_word_cut_candidate()
+            self._clear_word_cut_vad_preroll()
+            self._clear_word_cut_tail_stage()
+            self._word_cut_fed_stream = False
+            self._word_cut_base = ""
+            self._word_cut_quiet_run = 0
+            return False
         if not self._word_cut_fed_stream:
             self._clear_word_cut_candidate()
             self._clear_word_cut_tail_stage()
@@ -5584,51 +6139,97 @@ class SherpaOnnxEngine(AudioEngine):
         )
         if self._word_cut_quiet_run >= debounce:
             drop_reason = "stale"
-        elif not words:
+        elif not words and not bool(
+            getattr(self.config, "barge_word_cut_require_speaker", True)
+        ):
             # A fully folded own-speech partial has no NEW words by design; keep
             # that distinct from a recognizer that emitted nothing at all.
             drop_reason = "own" if text and self._word_cut_base else "empty"
-        elif self._reads_like_own_speech(new_text):
+        elif (
+            not bool(
+                getattr(self.config, "barge_word_cut_require_speaker", True)
+            )
+            and self._reads_like_own_speech(new_text)
+        ):
             drop_reason = "own"
         elif not self._word_cut_candidate_pcm:
             drop_reason = "empty"
         else:
-            floor = max(
-                1, int(getattr(self.config, "barge_word_cut_min_words", 4))
+            floor = self._word_cut_authority_min_words()
+            stop_requested = self._word_cut_stop_requested(new_text, text)
+            speaker_required = bool(
+                getattr(self.config, "barge_word_cut_require_speaker", True)
             )
-            if is_stop_command(new_text) or len(words) >= floor:
+            stop_needs_speaker = bool(
+                stop_requested
+                and speaker_required
+                and self._reads_like_own_speech(new_text)
+            )
+            speaker_decision = "legacy"
+            if (
+                len(words) >= floor
+                and speaker_required
+                and (not stop_requested or stop_needs_speaker)
+            ):
+                speaker_decision = self._word_cut_speaker_decision(
+                    min_sec=(
+                        float(
+                            getattr(
+                                self.config,
+                                "barge_word_cut_stop_speaker_min_sec",
+                                0.10,
+                            )
+                        )
+                        if stop_needs_speaker
+                        else None
+                    )
+                )
+            if (stop_requested and not stop_needs_speaker) or (
+                len(words) >= floor
+                and speaker_decision in ("legacy", "accept")
+            ):
                 return self._promote_word_cut_candidate(
                     recognizer, detect_stream, normal_stream,
                     reason="tail", text=new_text,
                 )
-            now = time.monotonic() if now is None else float(now)
-            probation_sec = max(
-                float(self.config.block_sec),
-                float(getattr(self.config, "endpoint_max_silence_sec", 0.0) or 0.0),
-            )
-            self._word_cut_tail_staged = True
-            self._word_cut_tail_words = len(words)
-            self._word_cut_tail_text = new_text
-            self._word_cut_tail_deadline = now + probation_sec
-            # Do not inherit playback-time VAD hangover as proof of fresh
-            # post-playback speech. A new VAD epoch must observe the continuing
-            # user; the short PCM lookback below preserves its onset meanwhile.
-            reset = getattr(self._vad, "reset", None)
-            try:
-                if callable(reset):
-                    reset()
-                    self._word_cut_tail_vad_reset_ok = not bool(
-                        self._vad.is_speech_detected()
-                    )
-            except Exception:  # noqa: BLE001 - no fresh epoch => fail closed
-                self._word_cut_tail_vad_reset_ok = False
-            self._clear_word_cut_vad_preroll()
-            self._wc_stats["tail_stages"] = self._wc_stats.get("tail_stages", 0) + 1
-            log.info(
-                "word-cut tail staged: words=%d await_postplay_continuation %r",
-                len(words), new_text[:80],
-            )
-            return False
+            if speaker_decision == "reject":
+                drop_reason = "speaker"
+            else:
+                now = time.monotonic() if now is None else float(now)
+                probation_sec = max(
+                    float(self.config.block_sec),
+                    float(
+                        getattr(
+                            self.config, "endpoint_max_silence_sec", 0.0
+                        )
+                        or 0.0
+                    ),
+                )
+                self._word_cut_tail_staged = True
+                self._word_cut_tail_words = len(words)
+                self._word_cut_tail_text = new_text
+                self._word_cut_tail_deadline = now + probation_sec
+                # Do not inherit playback-time VAD hangover as proof of fresh
+                # post-playback speech. A new VAD epoch must observe the continuing
+                # user; the short PCM lookback below preserves its onset meanwhile.
+                reset = getattr(self._vad, "reset", None)
+                try:
+                    if callable(reset):
+                        reset()
+                        self._word_cut_tail_vad_reset_ok = not bool(
+                            self._vad.is_speech_detected()
+                        )
+                except Exception:  # noqa: BLE001 - no fresh epoch => fail closed
+                    self._word_cut_tail_vad_reset_ok = False
+                self._clear_word_cut_vad_preroll()
+                self._wc_stats["tail_stages"] = (
+                    self._wc_stats.get("tail_stages", 0) + 1
+                )
+                log.info(
+                    "word-cut tail staged: words=%d await_postplay_continuation %r",
+                    len(words), new_text[:80],
+                )
+                return False
 
         self._drop_word_cut_tail(
             recognizer, detect_stream, reason=drop_reason, text=new_text
@@ -5647,7 +6248,9 @@ class SherpaOnnxEngine(AudioEngine):
 
         Returns ``waiting``, ``promoted``, or ``dropped``. Every block reaches the
         dedicated stream so its endpoint can fire; only VAD-active PCM joins the
-        candidate. Promotion requires at least one additional word on such a block.
+        candidate. Legacy authority requires an additional word; audio-first
+        enrolled-speaker authority may promote sustained fresh voiced PCM even
+        when double-talk ASR remains empty.
         """
         if not self._word_cut_tail_staged:
             return "dropped"
@@ -5671,21 +6274,66 @@ class SherpaOnnxEngine(AudioEngine):
             self._wc_stats["decode_errors"] = self._wc_stats.get("decode_errors", 0) + 1
         new_text = self._word_cut_new_text(text)
         words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
-        if (
+        speaker_required = bool(
+            getattr(self.config, "barge_word_cut_require_speaker", True)
+        )
+        audio_first = bool(
+            speaker_required and self._word_cut_authority_min_words() == 0
+        )
+        continuation = (
             decode_ok
             and voiced
             and self._word_cut_tail_vad_reset_ok
-            and len(words) > self._word_cut_tail_words
-            and not self._reads_like_own_speech(new_text)
-        ):
-            self._wc_stats["tail_continuations"] = (
-                self._wc_stats.get("tail_continuations", 0) + 1
+            and (audio_first or len(words) > self._word_cut_tail_words)
+        )
+        if continuation:
+            stop_requested = self._word_cut_stop_requested(new_text, text)
+            stop_needs_speaker = bool(
+                stop_requested
+                and speaker_required
+                and self._reads_like_own_speech(new_text)
             )
-            self._promote_word_cut_candidate(
-                recognizer, detect_stream, normal_stream,
-                reason="tail", text=new_text,
+            speaker_decision = (
+                self._word_cut_speaker_decision(
+                    min_sec=(
+                        float(
+                            getattr(
+                                self.config,
+                                "barge_word_cut_stop_speaker_min_sec",
+                                0.10,
+                            )
+                        )
+                        if stop_needs_speaker
+                        else None
+                    )
+                )
+                if speaker_required
+                and (not stop_requested or stop_needs_speaker)
+                else "legacy"
             )
-            return "promoted"
+            if speaker_decision == "reject":
+                self._drop_word_cut_tail(
+                    recognizer, detect_stream, reason="speaker", text=new_text
+                )
+                return "dropped"
+            authorized = (
+                (stop_requested and not stop_needs_speaker)
+                or speaker_decision == "accept"
+                or (
+                    speaker_decision == "legacy"
+                    and not speaker_required
+                    and not self._reads_like_own_speech(new_text)
+                )
+            )
+            if authorized:
+                self._wc_stats["tail_continuations"] = (
+                    self._wc_stats.get("tail_continuations", 0) + 1
+                )
+                self._promote_word_cut_candidate(
+                    recognizer, detect_stream, normal_stream,
+                    reason="tail", text=new_text,
+                )
+                return "promoted"
 
         endpoint = False
         try:
@@ -5710,6 +6358,7 @@ class SherpaOnnxEngine(AudioEngine):
         samples_n = self._word_cut_pending_samples
         self._word_cut_pending_pcm.clear()
         self._word_cut_pending_samples = 0
+        self._word_cut_pending_offline_recovery = False
         utterance.extend(blocks)
         if asr_utterance is not None:
             asr_utterance.extend(blocks)
@@ -5731,6 +6380,15 @@ class SherpaOnnxEngine(AudioEngine):
         started -- or a stop command. No ducking / no volume change: word CONTENT
         decides, not level. Returns True when it fired the cut."""
         st = self._wc_stats
+        if self._barge_in_fired_this_run:
+            # on_barge_in stops playback on another control path. Until `_speaking`
+            # clears, later capture blocks can still enter this method; never let
+            # them rebuild detector/candidate state and overwrite the promoted PCM.
+            self._clear_word_cut_candidate()
+            self._clear_word_cut_vad_preroll()
+            self._word_cut_fed_stream = False
+            self._word_cut_base = ""
+            return False
         self._append_word_cut_vad_preroll(samples)
         # Feed the VAD THIS block BEFORE consulting it (live fix, run-20260706-
         # 231226): the word-cut branch `continue`s before the acoustic path's
@@ -5843,22 +6501,96 @@ class SherpaOnnxEngine(AudioEngine):
             or (grace > 0.0 and onset > 0.0 and now < onset + grace)
         ):
             st["guard_suppressed"] = st.get("guard_suppressed", 0) + 1
+            # Suppressed playback audio is not future authority. In particular,
+            # reply-onset echo accumulated during the grace window must not ride
+            # ahead of a later owner suffix into the accepted speaker window or
+            # normal-ASR handoff. A user already talking simply builds a fresh
+            # bounded candidate once the guard expires.
+            try:
+                recognizer.reset(stream)
+            except Exception:  # noqa: BLE001 - state still fails closed
+                pass
+            self._word_cut_fed_stream = False
+            self._word_cut_base = ""
+            self._word_cut_quiet_run = 0
+            if self._word_cut_candidate_pcm:
+                st["guard_candidate_clears"] = (
+                    st.get("guard_candidate_clears", 0) + 1
+                )
+            self._clear_word_cut_candidate()
+            self._clear_word_cut_vad_preroll()
             return False
         # WORD-CUT floor (barge_word_cut_min_words, default 4) -- higher than the
         # shared min_words=2 because nonlinear-speaker echo transcribes as garbled
         # 2-3 word fragments that don't match the played text (so _reads_like_own_
         # speech can't reject them). A real talk-over sentence clears 4; a bare
         # "stop" cuts alone via is_stop_command.
-        floor = max(1, int(getattr(self.config, "barge_word_cut_min_words", 4)))
-        confirmed = bool(new_text) and (
-            is_stop_command(new_text)
-            or (len(words) >= floor and not self._reads_like_own_speech(new_text))
+        floor = self._word_cut_authority_min_words()
+        reads_like_own = bool(new_text) and self._reads_like_own_speech(new_text)
+        speaker_required = bool(
+            getattr(self.config, "barge_word_cut_require_speaker", True)
+        )
+        stop_requested = bool(text) and self._word_cut_stop_requested(
+            new_text, text
+        )
+        stop_needs_speaker = bool(
+            stop_requested and speaker_required and reads_like_own
+        )
+        speaker_decision = "legacy"
+        if len(words) >= floor and (
+            (speaker_required and (not stop_requested or stop_needs_speaker))
+            or (not speaker_required and bool(new_text) and not stop_requested)
+        ):
+            speaker_decision = self._word_cut_speaker_decision(
+                min_sec=(
+                    float(
+                        getattr(
+                            self.config,
+                            "barge_word_cut_stop_speaker_min_sec",
+                            0.10,
+                        )
+                    )
+                    if stop_needs_speaker
+                    else None
+                )
+            )
+        confirmed = (
+            (stop_requested and not stop_needs_speaker)
+            or speaker_decision == "accept"
+            or (
+                bool(new_text)
+                and speaker_decision == "legacy"
+                and len(words) >= floor
+                and not reads_like_own
+            )
         )
         if not confirmed:
+            if speaker_decision == "reject":
+                # A compatible enrolled gate identified non-owner playback-time
+                # voice. Reset the throw-away detector stream instead of carrying
+                # its unstable prefix forward: a later owner command then starts
+                # with clean text and PCM, even if echo ASR revises every token.
+                try:
+                    recognizer.reset(stream)
+                except Exception:  # noqa: BLE001 - state still fails closed
+                    pass
+                self._word_cut_fed_stream = False
+                self._word_cut_base = ""
+                st["speaker_resets"] = st.get("speaker_resets", 0) + 1
+                if self._word_cut_candidate_pcm:
+                    st["candidate_clears"] = st.get("candidate_clears", 0) + 1
+                self._clear_word_cut_candidate()
+                self._clear_word_cut_vad_preroll()
+                return False
+            if speaker_required:
+                # Under enrolled authority, lexical similarity is never allowed
+                # to discard an owner command before enough PCM exists to decide.
+                # The candidate remains bounded by the utterance cap/quiet reset.
+                return False
             # Fold pure-echo text (reads as own speech) into the base so it can't
             # pile up and swamp the next block's novelty test; a real user (novel)
             # is NOT folded -> their words accumulate toward the floor.
-            if new_text and self._reads_like_own_speech(new_text):
+            if new_text and reads_like_own:
                 st["own_folds"] = st.get("own_folds", 0) + 1
                 self._word_cut_base = text
                 # The detection stream may retain this echo as a prefix, but PCM
@@ -5866,6 +6598,8 @@ class SherpaOnnxEngine(AudioEngine):
                 if self._word_cut_candidate_pcm:
                     st["candidate_clears"] = st.get("candidate_clears", 0) + 1
                 self._clear_word_cut_candidate()
+            elif not new_text and self._word_cut_base:
+                self._trim_word_cut_candidate_to_lookback()
             return False
         st["cuts"] = st.get("cuts", 0) + 1
         # Seed the CLEAN normal stream from candidate USER PCM before firing. The
@@ -5909,7 +6643,12 @@ class SherpaOnnxEngine(AudioEngine):
         avg = w["rms_sum"] / blocks
         vad_frac = w["vad"] / blocks
         cal = self._last_calibration or {}
-        floor = float(cal.get("noise_floor_rms", 0.0) or 0.0)
+        active_floor = getattr(
+            getattr(self, "_input_agc", None),
+            "noise_floor_rms",
+            getattr(self.config, "input_agc_noise_floor_rms", 0.0),
+        )
+        floor = float(cal.get("noise_floor_rms", active_floor) or active_floor or 0.0)
         log.info(
             "word-cut near-end: rms_avg=%.4f rms_peak=%.4f vad_frac=%.2f "
             "floor=%.4f blocks=%d",
@@ -5942,7 +6681,10 @@ class SherpaOnnxEngine(AudioEngine):
             "cuts=%d nearend_rms_p50=%.4f nearend_rms_p95=%.4f "
             "handoffs=%d tail_handoffs=%d tail_drops=%d tail_stages=%d "
             "tail_continuations=%d preroll_samples=%d spliced_samples=%d "
-            "pcm_trimmed_samples=%d replay_errors=%d",
+            "pcm_trimmed_samples=%d replay_errors=%d "
+            "speaker_accepts=%d speaker_rejects=%d speaker_deferred=%d "
+            "speaker_unavailable=%d speaker_cold_deferred=%d "
+            "speaker_errors=%d speaker_resets=%d",
             st.get("fed", 0), st.get("skipped_quiet", 0), st.get("resets", 0),
             st.get("dropped_words", 0), st.get("max_words", 0),
             st.get("own_folds", 0), st.get("guard_suppressed", 0),
@@ -5952,6 +6694,10 @@ class SherpaOnnxEngine(AudioEngine):
             st.get("tail_continuations", 0), st.get("preroll_samples", 0),
             st.get("spliced_samples", 0), st.get("pcm_trimmed_samples", 0),
             st.get("handoff_replay_errors", 0),
+            st.get("speaker_accepts", 0), st.get("speaker_rejects", 0),
+            st.get("speaker_deferred", 0), st.get("speaker_unavailable", 0),
+            st.get("speaker_cold_deferred", 0), st.get("speaker_errors", 0),
+            st.get("speaker_resets", 0),
         )
         self._wc_stats = {}
         self._wc_win = {}
@@ -6049,26 +6795,45 @@ class SherpaOnnxEngine(AudioEngine):
         the future, since ``_last_speaking_end`` is a past stamp)."""
         return now < self._last_speaking_end + self.config.barge_in_refractory_sec
 
-    def _should_act_on_final(self, samples) -> bool:
-        """Whether a completed ASR utterance should be delivered to the runtime.
+    def _speaker_decision_for_final(self, samples) -> _FinalSpeakerDecision:
+        """Return admission separately from an explicit identity verdict.
 
-        With the gate enrolled and ``speaker_gate_input`` on, only the enrolled
-        user's speech is answered -- a TV, another person, or a read-aloud
-        quotation is dropped instead of being treated as a request. Fail-open
-        when gating is off, there's no gate, or no enrollment, so an
-        unconfigured setup behaves exactly as before."""
+        Disabled/unavailable/error paths remain usable but UNKNOWN. A loudness
+        rescue may admit a clip whose enrolled-speaker comparison REJECTED it;
+        that distinction is security-relevant and must survive into the typed
+        final rather than being flattened into one truthy admission boolean.
+        """
         if not self.config.speaker_gate_input:
-            return True
+            return _FinalSpeakerDecision(True, OwnerVerification.UNKNOWN)
         gate = self._speaker_gate
         if gate is None or not gate.is_enrolled:
-            return True
+            return _FinalSpeakerDecision(True, OwnerVerification.UNKNOWN)
         # Enrollment strips its fixed recording head/tail before embedding. Use
         # the identical voiced envelope here so bounded ASR pre-roll and endpoint
         # padding do not move live speech into a different identity domain. The
         # echo-floor decision deliberately ran on the untrimmed owned segment.
         try:
             identity_samples = trim_to_voiced_region(samples, self.config.sample_rate)
-            accepted = gate.accept(identity_samples, self.config.sample_rate)
+            exact_similarity = getattr(gate, "verification_similarity", None)
+            if callable(exact_similarity):
+                similarity = exact_similarity(
+                    identity_samples, self.config.sample_rate
+                )
+                if similarity is None or not math.isfinite(float(similarity)):
+                    self._cb.on_metric("speaker_gate_unusable_fail_open")
+                    return _FinalSpeakerDecision(
+                        True, OwnerVerification.UNKNOWN
+                    )
+                accepted = float(similarity) >= float(gate.threshold)
+                exact_verdict = True
+            else:
+                # A legacy/custom gate exposes admission only. Preserve its
+                # usability behavior, but a fail-open boolean cannot mint owner
+                # authority because it cannot distinguish a match from abstain.
+                accepted = gate.accept(
+                    identity_samples, self.config.sample_rate
+                )
+                exact_verdict = False
         except Exception:  # noqa: BLE001 - identity failure must never eat owner speech
             log.warning(
                 "speaker-ID decision failed; admitting final (fail-open)",
@@ -6078,17 +6843,31 @@ class SherpaOnnxEngine(AudioEngine):
                 self._cb.on_metric("speaker_gate_error_fail_open")
             except Exception:  # noqa: BLE001 - observability is best-effort
                 pass
-            return True
+            return _FinalSpeakerDecision(True, OwnerVerification.UNKNOWN)
         if accepted:
-            return True
+            return _FinalSpeakerDecision(
+                True,
+                (
+                    OwnerVerification.VERIFIED
+                    if exact_verdict
+                    else OwnerVerification.UNKNOWN
+                ),
+            )
         # Identity DIPPED. The optional loudness gate can still admit a LOUD
         # near-field speaker (the user close to the mic) -- so a wavering embedding
         # never wrongly drops the user. Only when configured (margin > 0); otherwise
         # identity-only (unchanged).
         if self._input_loudness_margin_db > 0.0:
-            return loudness_admits(
-                rms(identity_samples),
-                self._ambient_rms,
-                margin_db=self._input_loudness_margin_db,
+            return _FinalSpeakerDecision(
+                loudness_admits(
+                    rms(identity_samples),
+                    self._ambient_rms,
+                    margin_db=self._input_loudness_margin_db,
+                ),
+                OwnerVerification.REJECTED,
             )
-        return False
+        return _FinalSpeakerDecision(False, OwnerVerification.REJECTED)
+
+    def _should_act_on_final(self, samples) -> bool:
+        """Compatibility predicate for tests/adapters needing admission only."""
+        return self._speaker_decision_for_final(samples).admitted

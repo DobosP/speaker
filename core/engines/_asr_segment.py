@@ -50,6 +50,12 @@ class ASRSegment:
         self.last_speech_at: Optional[float] = None
         self.last_text_at: Optional[float] = None
         self._quiet_started_at: Optional[float] = None
+        # A speaker-authorized playback-time handoff may recover an utterance
+        # with the offline recognizer even when BOTH streaming recognizers stay
+        # empty.  This is decoding authority, not owner/action attestation.
+        self.offline_recovery_authorized = False
+        self.owner_lineage_intact = True
+        self._has_word_cut_prefix = False
 
     def observe_vad(self, active: bool, now: float) -> Optional[float]:
         """Observe one post-front-end VAD verdict.
@@ -63,6 +69,12 @@ class ASRSegment:
         active = bool(active)
         pause = None
         if active:
+            if self._has_word_cut_prefix:
+                # The final may still be decoded and answered, but a fresh
+                # post-cut voice block was not part of the cut-time identity
+                # decision.  Do not let an aggregate final embedding bless the
+                # whole mixed span for owner-authorized actions.
+                self.owner_lineage_intact = False
             if not self.speech_seen:
                 self.speech_seen = True
                 self.first_speech_at = float(now)
@@ -119,6 +131,7 @@ class ASRSegment:
         *,
         speech_at: Optional[float] = None,
         speech_end_at: Optional[float] = None,
+        offline_recovery_authorized: bool = False,
     ) -> int:
         """Prepend confirmed playback-time user PCM and mark it as speech.
 
@@ -140,6 +153,10 @@ class ASRSegment:
             self.alternate.appendleft(block)
         self.samples += n
         if n:
+            self.offline_recovery_authorized = bool(
+                offline_recovery_authorized
+            )
+            self._has_word_cut_prefix = True
             at = float(speech_at) if speech_at is not None else self.last_speech_at
             if at is None:
                 at = 0.0
@@ -239,3 +256,6 @@ class ASRSegment:
         self.last_speech_at = None
         self.last_text_at = None
         self._quiet_started_at = None
+        self.offline_recovery_authorized = False
+        self.owner_lineage_intact = True
+        self._has_word_cut_prefix = False

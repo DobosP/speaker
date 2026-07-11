@@ -81,6 +81,9 @@ _BARGE_UNCONFIRMED_PAT = re.compile(r"barge-in NOT confirmed")
 # the generic ADR-0011 "barge-in confirmed by speech" counter or every word-cut
 # would be miscounted into the duck-confirm funnel (which never ducked).
 _WC_CONFIRMED_PAT = re.compile(r"barge-in confirmed by speech \(word-cut\)")
+_SELF_ECHO_DROP_PAT = re.compile(
+    r"dropping self-echo final \(own TTS heard back\):\s*(.*)"
+)
 _WC_TRACE_PAT = re.compile(r"word-cut trace:\s+(\d+) word\(s\)\s+(.*)")
 _WC_RESET_PAT = re.compile(r"word-cut burst reset: dropped (\d+) word\(s\)\s+(.*)")
 _WC_NEAREND_PAT = re.compile(
@@ -92,6 +95,11 @@ _WC_FUNNEL_PAT = re.compile(
     r" dropped_words=(\d+) max_words=(\d+) own_folds=(\d+) guard_suppressed=(\d+)"
     rf" decode_errors=(\d+) cuts=(\d+) nearend_rms_p50=({_NUM})"
     rf" nearend_rms_p95=({_NUM})"
+)
+_WC_SPEAKER_PAT = re.compile(
+    r"speaker_accepts=(\d+) speaker_rejects=(\d+) speaker_deferred=(\d+)"
+    r" speaker_unavailable=(\d+) speaker_cold_deferred=(\d+)"
+    r" speaker_errors=(\d+) speaker_resets=(\d+)"
 )
 _DTD_PAT = re.compile(
     rf"dtd:\s+D=({_NUM})\s+K=({_NUM})\s+fired=(True|False)\s+gated=(True|False)"
@@ -192,6 +200,13 @@ class WordCutReply:
     cuts: int
     nearend_rms_p50: float
     nearend_rms_p95: float
+    speaker_accepts: int = 0
+    speaker_rejects: int = 0
+    speaker_deferred: int = 0
+    speaker_unavailable: int = 0
+    speaker_cold_deferred: int = 0
+    speaker_errors: int = 0
+    speaker_resets: int = 0
     sentence_idx: Optional[int] = None
 
 
@@ -235,6 +250,9 @@ class ParsedRun:
     # detected event at one of these instants must not be judged by DTD evidence at all
     # (the word-cut path bypasses DTD by design — see self_interrupt_summary).
     word_cut_confirm_times: list = field(default_factory=list)
+    # A word-cut followed by normal ASR recognizing/dropping the promoted PCM as
+    # own TTS is direct proof that the confirmation was a false self-echo cut.
+    self_echo_drop_times: list = field(default_factory=list)  # (time, text)
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +278,7 @@ def parse_log(txt_path: str) -> ParsedRun:
     word_cut_resets: list[tuple] = []
     word_cut_confirmed = 0
     word_cut_confirm_times: list[float] = []
+    self_echo_drop_times: list[tuple[float, str]] = []
     pending_tts_sanitize: Optional[dict] = None
     last_playback_sample_rate: Optional[int] = None
 
@@ -314,6 +333,11 @@ def parse_log(txt_path: str) -> ParsedRun:
                     sentences[-1].tts_quality = json.loads(mtq.group(1))
                 except json.JSONDecodeError:
                     sentences[-1].tts_quality = None
+                continue
+
+            mse = _SELF_ECHO_DROP_PAT.search(msg)
+            if mse:
+                self_echo_drop_times.append((t, mse.group(1)))
                 continue
 
             # Heartbeat
@@ -425,6 +449,8 @@ def parse_log(txt_path: str) -> ParsedRun:
                     continue
                 mwf = _WC_FUNNEL_PAT.search(msg)
                 if mwf:
+                    mws = _WC_SPEAKER_PAT.search(msg)
+                    speaker = [int(mws.group(i)) for i in range(1, 8)] if mws else [0] * 7
                     word_cut_replies.append(WordCutReply(
                         t=t,
                         fed=int(mwf.group(1)),
@@ -438,6 +464,13 @@ def parse_log(txt_path: str) -> ParsedRun:
                         cuts=int(mwf.group(9)),
                         nearend_rms_p50=float(mwf.group(10)),
                         nearend_rms_p95=float(mwf.group(11)),
+                        speaker_accepts=speaker[0],
+                        speaker_rejects=speaker[1],
+                        speaker_deferred=speaker[2],
+                        speaker_unavailable=speaker[3],
+                        speaker_cold_deferred=speaker[4],
+                        speaker_errors=speaker[5],
+                        speaker_resets=speaker[6],
                         sentence_idx=len(sentences) - 1 if sentences else None,
                     ))
                     continue
@@ -497,6 +530,7 @@ def parse_log(txt_path: str) -> ParsedRun:
         word_cut_resets=word_cut_resets,
         word_cut_confirmed=word_cut_confirmed,
         word_cut_confirm_times=word_cut_confirm_times,
+        self_echo_drop_times=self_echo_drop_times,
     )
 
 
@@ -852,6 +886,14 @@ def word_cut_funnel(run: ParsedRun) -> dict:
     max_words = max((r.max_words for r in replies), default=0)
     if run.word_cut_traces:
         max_words = max(max_words, max(t[1] for t in run.word_cut_traces))
+    false_echo_confirms = sum(
+        1
+        for confirmed_at in run.word_cut_confirm_times
+        if any(
+            0.0 <= dropped_at - confirmed_at <= 5.0
+            for dropped_at, _text in run.self_echo_drop_times
+        )
+    )
     return {
         "present": True,
         "replies": len(replies),
@@ -865,6 +907,14 @@ def word_cut_funnel(run: ParsedRun) -> dict:
         "decode_errors": _tot("decode_errors"),
         "cuts": _tot("cuts"),
         "confirmed_lines": run.word_cut_confirmed,
+        "self_echo_confirmations": false_echo_confirms,
+        "speaker_accepts": _tot("speaker_accepts"),
+        "speaker_rejects": _tot("speaker_rejects"),
+        "speaker_deferred": _tot("speaker_deferred"),
+        "speaker_unavailable": _tot("speaker_unavailable"),
+        "speaker_cold_deferred": _tot("speaker_cold_deferred"),
+        "speaker_errors": _tot("speaker_errors"),
+        "speaker_resets": _tot("speaker_resets"),
         "windows": len(run.word_cut_windows),
         "voiced_windows": len(voiced),
         "starved_replies": sum(1 for r in replies if r.fed == 0),
@@ -880,7 +930,19 @@ def self_interrupt_summary(run: ParsedRun) -> dict:
         # words), deliberately bypassing DTD — so a detected event at a confirm
         # instant must not be tallied as `suspect:no-dtd`/`suspect:*`. Run-level
         # exemption only: classify_barge_event stays strict for every other event.
-        return any(abs(be.t - tc) <= 0.5 for tc in run.word_cut_confirm_times)
+        for confirmed_at in run.word_cut_confirm_times:
+            if abs(be.t - confirmed_at) > 0.5:
+                continue
+            # The normal finalizer sees promoted word-cut PCM after the hard cut.
+            # If it then identifies that PCM as the assistant's own TTS, the
+            # confirmation did not prove near-end speech and must not receive the
+            # usual no-DTD exemption.
+            false_echo = any(
+                0.0 <= dropped_at - confirmed_at <= 5.0
+                for dropped_at, _text in run.self_echo_drop_times
+            )
+            return not false_echo
+        return False
 
     total_detected = sum(1 for be in run.barge_events if be.kind == "detected")
     suspects = []
@@ -1345,6 +1407,18 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
         lines.append(
             f"  cuts: {wcf['cuts']} (confirmed lines: {wcf['confirmed_lines']})  "
             f"guard_suppressed={wcf['guard_suppressed']} decode_errors={wcf['decode_errors']}"
+        )
+        if wcf["self_echo_confirmations"]:
+            lines.append(
+                f"  [!] {wcf['self_echo_confirmations']} confirmation(s) finalized as "
+                "own TTS -- false self-echo cut"
+            )
+        lines.append(
+            "  speaker authority: "
+            f"accept={wcf['speaker_accepts']} reject={wcf['speaker_rejects']} "
+            f"defer={wcf['speaker_deferred']} unavailable={wcf['speaker_unavailable']} "
+            f"cold={wcf['speaker_cold_deferred']} errors={wcf['speaker_errors']} "
+            f"resets={wcf['speaker_resets']}"
         )
         lines.append(
             f"  near-end windows: {wcf['windows']} total, {wcf['voiced_windows']} "

@@ -1,7 +1,7 @@
 # ADR-0013: OS voice-comm capture (module-echo-cancel) + no-duck word-cut barge for the open speaker
 
 Date: 2026-07-06
-Status: accepted (Windows addendum superseded-by ADR-0019)
+Status: superseded-by ADR-0036 (Windows addendum superseded-by ADR-0019)
 
 ## Decision
 

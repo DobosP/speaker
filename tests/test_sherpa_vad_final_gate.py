@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -63,10 +64,10 @@ class _Vad:
         return self.speech
 
 
-def _run(*, vad_speech: bool):
+def _run(*, vad_speech: bool | None):
     engine = SherpaOnnxEngine(SherpaConfig(endpoint_enabled=False))
     engine._recognizer = _HallucinatingRecognizer()
-    engine._vad = _Vad(vad_speech)
+    engine._vad = _Vad(vad_speech) if vad_speech is not None else None
     engine._stream_in = _Input(engine)
     finals: list[str] = []
     metrics: list[str] = []
@@ -94,6 +95,360 @@ def test_same_recognizer_final_is_admitted_after_vad_speech():
     assert finals == ["And"]
     assert "vad_rejected_final" not in metrics
     assert engine._vad.accepted == 1
+
+
+def test_evidence_enabled_without_vad_explicitly_bypasses():
+    _engine, finals, metrics = _run(vad_speech=None)
+    assert finals == ["And"]
+    assert "speech_evidence_rejected_final" not in metrics
+
+
+_EVIDENCE_FRAME = 320
+
+
+def _normalize_evidence(values, target_rms: float):
+    values = np.asarray(values, dtype="float32")
+    level = float(np.sqrt(np.mean(values.astype("float64") ** 2)))
+    return (values * (target_rms / level)).astype("float32")
+
+
+def _evidence_ambient_frame(rms: float = 0.001):
+    t = np.arange(_EVIDENCE_FRAME, dtype="float64") / 16000.0
+    return _normalize_evidence(
+        np.sin(2 * np.pi * 5100 * t)
+        + 0.7 * np.sin(2 * np.pi * 6200 * t + 0.3)
+        + 0.4 * np.sin(2 * np.pi * 7100 * t + 0.8),
+        rms,
+    )
+
+
+def _evidence_voice_frame(rms: float = 0.0022):
+    t = np.arange(_EVIDENCE_FRAME, dtype="float64") / 16000.0
+    envelope = np.sin(
+        np.pi * (np.arange(_EVIDENCE_FRAME) + 0.5) / _EVIDENCE_FRAME
+    ) ** 0.2
+    return _normalize_evidence(
+        envelope
+        * (
+            np.sin(2 * np.pi * 180 * t)
+            + 0.55 * np.sin(2 * np.pi * 360 * t + 0.2)
+            + 0.25 * np.sin(2 * np.pi * 540 * t + 0.5)
+        ),
+        rms,
+    )
+
+
+def _evidence_ambient_block(rms: float = 0.001):
+    return np.tile(_evidence_ambient_frame(rms), 5)
+
+
+def _short_yes_block(*, voice_rms: float = 0.0022):
+    t = np.arange(_EVIDENCE_FRAME * 5, dtype="float64") / 16000.0
+    frame_index = np.arange(_EVIDENCE_FRAME * 5) // _EVIDENCE_FRAME
+    second = np.asarray((0.2, 0.75, 0.35, 0.8, 0.25))[frame_index]
+    third = np.asarray((0.6, 0.2, 0.7, 0.25, 0.65))[frame_index]
+    signal = (
+        np.sin(2 * np.pi * 180 * t)
+        + second * np.sin(2 * np.pi * 360 * t + 0.2)
+        + third * np.sin(2 * np.pi * 540 * t + 0.5)
+    )
+    return np.concatenate(
+        [
+            _normalize_evidence(
+                signal[
+                    index * _EVIDENCE_FRAME : (index + 1) * _EVIDENCE_FRAME
+                ],
+                voice_rms,
+            )
+            for index in range(5)
+        ]
+    )
+
+
+def _run_calibrated_evidence(
+    *,
+    raw_blocks: list[np.ndarray],
+    text: str,
+    ambient_rms: float | None,
+    input_gain: float = 1.0,
+    capture_sample_rate: int = 16000,
+    pre_gain_resampler=None,
+    live_resampler=None,
+    enqueue_sink: list[str] | None = None,
+    calibration_pcm: list[np.ndarray] | None = None,
+    confirmed_barge_handoff: bool = False,
+    mismatch_confirm_generation: bool = False,
+    expire_confirm_handoff: bool = False,
+):
+    class _EvidenceInput:
+        generation = 0
+
+        def __init__(self, engine):
+            self.engine = engine
+            self.blocks = [np.asarray(block, dtype="float32") for block in raw_blocks]
+
+        def read(self, n):
+            block = self.blocks.pop(0)
+            assert block.shape == (n,)
+            if not self.blocks:
+                self.engine._running.clear()
+            return block.copy(), False
+
+    class _EvidenceStream(_Stream):
+        def __init__(self):
+            self.blocks = 0
+
+        def accept_waveform(self, _sample_rate, _samples):
+            self.blocks += 1
+
+    class _EvidenceRecognizer:
+        def __init__(self):
+            self.stream = _EvidenceStream()
+
+        def create_stream(self):
+            return self.stream
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            return text if stream.blocks else ""
+
+        def is_endpoint(self, stream):
+            return stream.blocks >= len(raw_blocks)
+
+        def reset(self, stream):
+            stream.blocks = 0
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            input_calibrate=False,
+            input_gain=input_gain,
+            final_speech_evidence_enabled=True,
+        )
+    )
+    engine._recognizer = _EvidenceRecognizer()
+    engine._vad = _Vad(True)
+    engine._stream_in = _EvidenceInput(engine)
+    engine._capture_sr = int(capture_sample_rate)
+    engine._pre_gain_resampler = pre_gain_resampler
+    engine._resampler = live_resampler
+    if confirmed_barge_handoff:
+        handoff_at = time.perf_counter()
+        assert engine._publish_confirm_handoff_if_current(
+            [raw_blocks[0]],
+            [raw_blocks[0]],
+            speech_at=handoff_at,
+            speech_end_at=handoff_at,
+        )
+        if mismatch_confirm_generation:
+            engine._stream_in.generation = 1
+        if expire_confirm_handoff:
+            engine._confirm_handoff_pending = replace(
+                engine._confirm_handoff_pending,
+                expires_at=0.0,
+            )
+    if ambient_rms is not None:
+        engine._install_speech_evidence_profile(
+            {"ambient_rms": ambient_rms, "clipping_fraction": 0.0},
+            calibration_pcm
+            if calibration_pcm is not None
+            else [_evidence_ambient_block(), _evidence_ambient_block()],
+        )
+    partials: list[str] = []
+    finals: list[str] = []
+    metrics: list[str] = []
+    engine._cb = EngineCallbacks(
+        on_partial=partials.append,
+        on_final=finals.append,
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+    )
+    if enqueue_sink is not None:
+        engine._final_q = object()
+        engine._enqueue_final = (
+            lambda _seg, raw, *_args, **_kwargs: enqueue_sink.append(raw)
+        )
+
+    engine._running.set()
+    thread = threading.Thread(target=engine._capture_loop)
+    thread.start()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    return partials, finals, metrics
+
+
+def test_one_frame_impulse_cannot_publish_partial_or_final():
+    impulse = _evidence_ambient_block()
+    impulse[_EVIDENCE_FRAME // 2] = 0.5
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[impulse],
+        text="AND",
+        ambient_rms=0.001,
+    )
+
+    assert partials == []
+    assert finals == []
+    assert metrics.count("speech_evidence_rejected_final") == 1
+
+
+def test_quiet_short_yes_pattern_publishes_within_one_capture_block():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_short_yes_block()],
+        text="YES",
+        ambient_rms=0.001,
+    )
+
+    assert partials == ["Yes"]
+    assert finals == ["Yes"]
+    assert "speech_evidence_rejected_final" not in metrics
+
+
+def test_missing_calibration_explicitly_fails_open():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[np.zeros(1600, dtype="float32")],
+        text="AND",
+        ambient_rms=None,
+    )
+
+    assert partials == ["And"]
+    assert finals == ["And"]
+    assert metrics.count("speech_evidence_unavailable_fail_open") == 1
+
+
+def test_confirmed_barge_handoff_bypasses_armed_ordinary_evidence_gate():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_evidence_ambient_block()],
+        text="STOP",
+        ambient_rms=0.001,
+        confirmed_barge_handoff=True,
+    )
+
+    assert partials == ["Stop"]
+    assert finals == ["Stop"]
+    assert "speech_evidence_rejected_final" not in metrics
+
+
+def test_confirmed_barge_handoff_cannot_cross_capture_generation():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_evidence_ambient_block()],
+        text="STOP",
+        ambient_rms=0.001,
+        confirmed_barge_handoff=True,
+        mismatch_confirm_generation=True,
+    )
+
+    assert partials == []
+    assert finals == []
+    assert metrics.count("barge_confirm_handoff_stale") == 1
+    assert metrics.count("speech_evidence_rejected_final") == 1
+
+
+def test_confirmed_barge_handoff_expires_before_unrelated_turn():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_evidence_ambient_block()],
+        text="STOP",
+        ambient_rms=0.001,
+        confirmed_barge_handoff=True,
+        expire_confirm_handoff=True,
+    )
+
+    assert partials == []
+    assert finals == []
+    assert metrics.count("barge_confirm_handoff_stale") == 1
+    assert metrics.count("speech_evidence_rejected_final") == 1
+
+
+def test_short_stop_transcript_passes_an_armed_profile():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_short_yes_block()],
+        text="STOP",
+        ambient_rms=0.001,
+    )
+
+    assert partials == ["Stop"]
+    assert finals == ["Stop"]
+    assert "speech_evidence_rejected_final" not in metrics
+
+
+def test_static_gain_cannot_manufacture_pre_gain_speech_evidence():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_evidence_ambient_block(rms=0.003)],
+        text="AND",
+        ambient_rms=0.001,
+        input_gain=12.0,
+    )
+
+    assert partials == []
+    assert finals == []
+    assert metrics.count("speech_evidence_rejected_final") == 1
+
+
+def test_static_gain_cannot_lift_subthreshold_voice_into_evidence():
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[_short_yes_block(voice_rms=0.0015)],
+        text="YES",
+        ambient_rms=0.001,
+        input_gain=12.0,
+    )
+
+    assert partials == []
+    assert finals == []
+    assert metrics.count("speech_evidence_rejected_final") == 1
+
+
+def test_native_rate_pre_gain_and_live_paths_use_independent_resamplers_once():
+    class _Decimator:
+        kind = "test-decimator"
+
+        def __init__(self):
+            self.calls: list[int] = []
+
+        def process(self, samples):
+            block = np.asarray(samples, dtype="float32")
+            self.calls.append(block.size)
+            return block[::3]
+
+    evidence_resampler = _Decimator()
+    live_resampler = _Decimator()
+    partials, finals, metrics = _run_calibrated_evidence(
+        raw_blocks=[np.repeat(_short_yes_block(), 3)],
+        text="YES",
+        ambient_rms=0.001,
+        capture_sample_rate=48000,
+        pre_gain_resampler=evidence_resampler,
+        live_resampler=live_resampler,
+    )
+
+    assert evidence_resampler.calls == [4800]
+    assert live_resampler.calls == [4800]
+    assert partials == ["Yes"]
+    assert finals == ["Yes"]
+    assert "speech_evidence_rejected_final" not in metrics
+
+
+def test_speech_evidence_rejects_before_async_enqueue():
+    enqueued: list[str] = []
+    impulse = _evidence_ambient_block()
+    impulse[_EVIDENCE_FRAME // 2] = 0.5
+    _run_calibrated_evidence(
+        raw_blocks=[impulse],
+        text="AND",
+        ambient_rms=0.001,
+        enqueue_sink=enqueued,
+    )
+    assert enqueued == []
+
+    _run_calibrated_evidence(
+        raw_blocks=[_short_yes_block()],
+        text="YES",
+        ambient_rms=0.001,
+        enqueue_sink=enqueued,
+    )
+    assert enqueued == ["YES"]
 
 
 def test_vad_onset_rebase_replays_alternate_asr_domain_not_primary():
@@ -464,7 +819,7 @@ def test_empty_vad_blip_is_reset_after_endpoint_ceiling_without_a_final():
 
 
 def test_confirmed_barge_stream_is_adopted_instead_of_erased_at_vad_onset():
-    """The epoch rebase must preserve legacy duck/confirm command lineage."""
+    """Bounded confirm PCM is adopted even when the next VAD block is quiet."""
 
     class _TwoBlockInput:
         generation = 0
@@ -531,8 +886,12 @@ def test_confirmed_barge_stream_is_adopted_instead_of_erased_at_vad_onset():
     )
     recognizer = _ConfirmRecognizer()
     engine._recognizer = recognizer
-    engine._vad = _Vad(True)
+    engine._vad = _Vad(False)
     engine._stream_in = _TwoBlockInput(engine)
+    engine._install_speech_evidence_profile(
+        {"ambient_rms": 0.001, "clipping_fraction": 0.0},
+        [_evidence_ambient_block(), _evidence_ambient_block()],
+    )
     engine._barge_watch_active = lambda: True
     barges: list[str] = []
     partials: list[str] = []
@@ -566,6 +925,7 @@ def test_confirmed_barge_stream_is_adopted_instead_of_erased_at_vad_onset():
     assert np.count_nonzero(np.isclose(confirmed, 0.41)) == 1600
     assert np.count_nonzero(np.isclose(confirmed, 0.22)) == 1600
     assert not engine._confirm_handoff_stream_live
+    assert engine._confirm_handoff_pending is None
 
 
 def test_stop_drops_block_that_returns_after_capture_shutdown_signal():

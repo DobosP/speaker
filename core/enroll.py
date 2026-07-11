@@ -1128,7 +1128,7 @@ def run_enrollment(
             return 4
         if frontend is None:
             frontend = build_enrollment_frontend(sherpa)
-        if bool(sherpa.get("input_calibrate", False)) and frontend.input_agc is not None:
+        if bool(sherpa.get("input_calibrate", False)):
             cal_sec = float(sherpa.get("input_calibrate_sec", 1.5) or 0.0)
             if cal_sec > 0.0:
                 out(f"Calibrating {cal_sec:.1f}s of room tone -- stay quiet...")
@@ -1153,12 +1153,13 @@ def run_enrollment(
                     calibration = frontend.calibrate(
                         ambient, resolution.capture_sample_rate
                     )
-                    resolution = replace(
-                        resolution,
-                        input_agc_noise_floor_rms=float(
-                            frontend.input_agc.noise_floor_rms
-                        ),
-                    )
+                    if frontend.input_agc is not None:
+                        resolution = replace(
+                            resolution,
+                            input_agc_noise_floor_rms=float(
+                                frontend.input_agc.noise_floor_rms
+                            ),
+                        )
                     frontend.bind_capture(resolution)
                 except (EnrollmentCaptureError, RuntimeError) as exc:
                     out(f"Enrollment aborted: capture calibration failed: {exc}")

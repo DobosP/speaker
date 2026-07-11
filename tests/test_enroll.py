@@ -625,6 +625,66 @@ def test_run_enrollment_saves_embedding_and_wires_config(tmp_path):
     assert "WARNING" not in text
 
 
+def test_production_enrollment_calibrates_ambient_without_input_agc(
+    monkeypatch, tmp_path
+):
+    import numpy as np
+
+    config = _config(
+        tmp_path,
+        input_agc=False,
+        input_calibrate=True,
+        input_calibrate_sec=0.2,
+    )
+    provenance = make_enrollment_frontend_provenance(
+        config["sherpa"],
+        input_agc=None,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+    )
+    frontend = EnrollmentFrontend(
+        sample_rate=16000,
+        block_sec=0.1,
+        provenance=provenance,
+        config=config["sherpa"],
+    )
+    resolution = CaptureResolution(
+        route="test-production-mic",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+    )
+    ambient = np.full(3200, 0.001, dtype="float32")
+    t = np.arange(8000, dtype="float64") / 16000.0
+    speech = (0.02 * np.sin(2.0 * np.pi * 200.0 * t)).astype("float32")
+    captures = iter([(ambient, resolution), (speech, resolution)])
+    monkeypatch.setattr(
+        "core.enroll._capture_raw_once",
+        lambda *_args, **_kwargs: next(captures),
+    )
+    monkeypatch.setattr(
+        "core.enroll.verify_required_os_echo_route",
+        lambda _config, **_kwargs: "none",
+    )
+    messages: list[str] = []
+
+    code = run_enrollment(
+        config,
+        passes=1,
+        seconds=0.5,
+        config_path=str(tmp_path / "config.local.json"),
+        gate=_gate(USER),
+        frontend=frontend,
+        out=messages.append,
+    )
+
+    assert code == 0
+    assert frontend.input_agc is None
+    assert frontend.measured_pre_gain_ambient_rms == pytest.approx(0.001)
+    assert "ambient calibrated" in "\n".join(messages)
+
+
 def test_run_enrollment_prints_exact_nondefault_device_selectors(tmp_path):
     messages: list[str] = []
     code = run_enrollment(

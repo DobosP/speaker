@@ -396,6 +396,7 @@ def test_stream_voice_survives_priority_completion_until_stream_end():
     engine = _ControlledReceiptEngine()
     engine.config = SherpaConfig(
         tts_markup=True,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 16, "deep": 9},
     )
     runtime = VoiceRuntime(engine, EchoLLM())
@@ -483,6 +484,7 @@ def test_nonstream_reply_applies_one_leading_voice_to_whole_fragment():
     engine = _ControlledReceiptEngine()
     engine.config = SherpaConfig(
         tts_markup=True,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 16},
     )
     runtime = VoiceRuntime(engine, EchoLLM())
@@ -584,10 +586,60 @@ def test_runtime_preserves_listener_visible_bracket_text():
         runtime.stop()
 
 
+def test_runtime_locks_physical_speaker_across_replies_but_keeps_expression():
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_lock_speaker_id=True,
+        tts_speaker_id=2,
+        tts_speaker_voices={"warm": 16, "deep": 9},
+        tts_emotion_speed_map={"calm": 0.9, "excited": 1.1},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    first = _task(runtime, "first reply")
+    second = _task(runtime, "second reply")
+
+    for task, text in (
+        (first, "[voice:warm emotion:calm rate:0.95] First."),
+        (second, "[voice:deep emotion:excited] Second."),
+    ):
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_REQUEST,
+                {
+                    "task_id": task.task_id,
+                    "text": text,
+                    "epoch": task.speech_epoch,
+                    "streaming": True,
+                },
+            )
+        )
+    try:
+        runtime.bus.drain()
+
+        assert [fragment.speech.text for fragment in engine.fragments] == [
+            "First.",
+            "Second.",
+        ]
+        assert [fragment.speech.style for fragment in engine.fragments] == [
+            SpeechStyle(emotion="calm", rate=0.95),
+            SpeechStyle(emotion="excited"),
+        ]
+        assert all(
+            fragment.speech.style is None
+            or fragment.speech.style.voice is None
+            for fragment in engine.fragments
+        )
+    finally:
+        runtime.stop()
+
+
 def test_interleaved_replies_and_auxiliary_tts_keep_voice_scopes_isolated():
     engine = _ControlledReceiptEngine()
     engine.config = SherpaConfig(
         tts_markup=True,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 16, "deep": 9},
     )
     runtime = VoiceRuntime(engine, EchoLLM())
@@ -652,6 +704,7 @@ def test_barge_clears_voice_and_stale_fragment_cannot_reseed_it():
     engine = _ControlledReceiptEngine()
     engine.config = SherpaConfig(
         tts_markup=True,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 16, "deep": 9},
     )
     runtime = VoiceRuntime(engine, EchoLLM())

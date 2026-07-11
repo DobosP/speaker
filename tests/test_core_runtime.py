@@ -337,6 +337,7 @@ def test_streamed_reply_carries_first_voice_tag_across_sentences():
             super().__init__()
             self.config = SherpaConfig(
                 tts_markup=True,
+                tts_lock_speaker_id=False,
                 tts_speaker_voices={"warm": 16},
             )
             self.styles = []

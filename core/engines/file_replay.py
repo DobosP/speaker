@@ -106,6 +106,7 @@ class FileReplayEngine(AudioEngine):
             num_speakers=int(getattr(tts, "num_speakers", 0) or 0),
             speed_min=self.config.tts_speed_min,
             speed_max=self.config.tts_speed_max,
+            lock_speaker_id=self.config.tts_lock_speaker_id,
         )
 
     def start(self, callbacks: EngineCallbacks) -> None:

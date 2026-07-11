@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
-24 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, `fix/session-tts-speaker-lock`; full:
+3157 passed, 30 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -61,9 +61,9 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
 - ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts; sample ratios
-  never imply words. Streamed TTS snapshots task+epoch voice per reply; later voice
-  switches and emotion/rate stay fragment-local. Finite unsupported control tags
-  strip without changing style; other brackets stay visible (ADR-0027/28/29/37/38).
+  never imply words. The shipped TTS speaker ID is session-locked; voice tags
+  sanitize without switching it, while emotion/rate stay fragment-local. Finite
+  unsupported control tags strip; other brackets stay visible (ADR-0027/28/29/38/41).
 
 ## Live evidence and limits
 
@@ -75,10 +75,10 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
   Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
   override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
-- Main `75b1717` run `144211` retained `sid=18`; the owner's “STOP” cut once
-  without a self-storm. Its garbled override was INGESTed; tags and response-only
-  admission are headless-fixed (ADR-0038/0039). A suspicious 0.818 calibration
-  peak prompted a headless-only one-shot retry (ADR-0040). Live stays red.
+- Main `75b1717` run `144211` retained `sid=18` and cut once on “STOP”; its
+  garbled override was INGESTed. Main `285d74e` run `154451` switched `sid=0` to
+  `sid=16` across replies and the owner reported a missed barge. The voice switch
+  is headless-fixed only (ADR-0041); barge remains red.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

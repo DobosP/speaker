@@ -1,7 +1,7 @@
 # ADR-0034: Use measured ambient for enrollment admission
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0035
 
 ## Decision
 Keep the calibration run's measured pre-gain ambient separate from the expanded,

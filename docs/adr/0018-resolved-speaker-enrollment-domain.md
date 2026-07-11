@@ -1,7 +1,7 @@
 # ADR-0018: Resolve the speaker-enrollment domain after capture opens
 
 Date: 2026-07-10
-Status: accepted
+Status: superseded-by ADR-0035
 
 ## Decision
 

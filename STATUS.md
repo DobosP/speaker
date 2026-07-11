@@ -39,11 +39,11 @@ enrollment passed; normal-use low-gain and open-speaker barge A/B exposed failur
   the first correctly timed block, and revalidates fallback. Same-domain recovery
   preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
   pre-AGC blocks. Speaker/word-cut authority stays cleared until compatible.
-- Enrollment provenance v2 is checked after live open/input calibration and covers
-  actual route, rates, resampler, OS processing, front end, and calibrated AGC.
-  Enrollment/live embeddings use the same voiced slice; sustained raw pre-AGC
-  evidence now uses measured ambient, not the expanded/clamped runtime AGC floor;
-  silence/transient guards remain. Mismatch is fail-open (ADR-0018/0034).
+- Enrollment provenance v3 is checked after live open/calibration and covers the
+  stable route, rates, resampler, OS processing, gain algorithm, and front end;
+  volatile measured AGC floor is excluded. Same-chain v2 records migrate through
+  bounded runtime aliases, and enrollment prints exact nondefault launch selectors.
+  Voiced slicing/measured-ambient admission remain shared (ADR-0035).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   readiness contract. Selected ASR/TTS/VAD/denoise/KWS/punctuation/AEC artifacts
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).

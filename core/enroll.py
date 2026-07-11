@@ -53,7 +53,7 @@ Recorder = Callable[[float], Sequence[float]]
 # Bump only when the model-visible enrollment capture chain changes semantics.
 # The fingerprint below covers the active stage configuration; this version covers
 # the implementation/order contract itself.
-ENROLLMENT_FRONTEND_VERSION = 4
+ENROLLMENT_FRONTEND_VERSION = 5
 
 
 def _agc_floor_bucket_db(value: float) -> int:
@@ -88,7 +88,7 @@ class CaptureResolution:
         }
         if self.input_agc_noise_floor_rms is not None:
             # Retained for diagnostics and migration of v2 fingerprints. The
-            # stable v4 front-end identity deliberately excludes this per-run
+            # stable v5 front-end identity deliberately excludes this per-run
             # ambient calibration value.
             out["input_agc_noise_floor_db_3"] = _agc_floor_bucket_db(
                 self.input_agc_noise_floor_rms
@@ -111,8 +111,8 @@ class EnrollmentFrontendProvenance:
     fingerprint: str
     summary: str
     raw_baseline: bool = False
-    # Runtime-only migration aliases. Active v4 provenance carries old hashes
-    # only when the model-visible chain did not use InputAGC. Pre-v4 AGC audio
+    # Runtime-only migration aliases. Active v5 provenance carries old hashes
+    # only when the model-visible chain did not use InputAGC. Pre-v5 AGC audio
     # used a different applied-gain algorithm and must be re-enrolled. These
     # aliases are never persisted.
     compatible_fingerprints: frozenset[str] = field(
@@ -272,14 +272,14 @@ def make_enrollment_frontend_provenance(
     canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
     fingerprint = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    # V4 changes model-visible InputAGC output, so no v2/v3 AGC fingerprint is
+    # V5 changes model-visible InputAGC output, so no v2/v3/v4 AGC fingerprint is
     # compatible. Chains without InputAGC are byte-identical: retain bounded
-    # aliases for their exact v2/v3 descriptors so those owners do not re-enroll
+    # aliases for their exact v2/v3/v4 descriptors so those owners do not re-enroll
     # for an unrelated schema bump. Different routes/processors still cannot
     # match because every other descriptor field remains fixed.
     compatible_fingerprints: set[str] = set()
     if not agc_active:
-        for legacy_version in (2, 3):
+        for legacy_version in (2, 3, 4):
             legacy_descriptor = {
                 **descriptor,
                 "schema": legacy_version,
@@ -296,7 +296,7 @@ def make_enrollment_frontend_provenance(
     if capture.voice_comm != "none":
         stages.append(capture.voice_comm)
     if agc_active:
-        stages.append("input-agc-capped")
+        stages.append("input-agc-current-signal")
     elif input_gain != 1.0:
         stages.append(f"static-gain({input_gain:g})")
     if idle_apm_active:
@@ -640,8 +640,8 @@ def enrollment_matches_frontend(
     if saved.version == active.version:
         return saved.fingerprint == active.fingerprint
     return (
-        saved.version in {2, 3}
-        and active.version == 4
+        saved.version in {2, 3, 4}
+        and active.version == 5
         and saved.fingerprint in active.compatible_fingerprints
     )
 

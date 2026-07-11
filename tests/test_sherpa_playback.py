@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.audio_frontend import apply_gain_soft_limit
+from core.audio_frontend import InputAGC, apply_gain_soft_limit
 from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.engine import EngineCallbacks, PlaybackOutcome, PlaybackReceipt, TrackedSpeech
@@ -1290,10 +1290,12 @@ def test_retained_capture_ownership_fails_restart_before_clearing_fences(
     retained = _RetainedInput()
     old_thread = _StuckThread()
     eng = _engine(_StreamingTts())
+    eng._input_agc = InputAGC()
     eng._stream_in = retained
     eng._capture_thread = old_thread
     eng._capture_stopping.set()
     eng._playback_stopping.set()
+    eng._input_agc.gain = 9.0
 
     with pytest.raises(RuntimeError, match=message):
         eng.start(EngineCallbacks())
@@ -1303,6 +1305,29 @@ def test_retained_capture_ownership_fails_restart_before_clearing_fences(
     assert not eng._running.is_set()
     assert eng._stream_in is retained
     assert eng._capture_thread is old_thread
+    assert eng._input_agc.gain == 9.0
+
+
+def test_start_resets_input_agc_only_after_prior_owner_guards(monkeypatch):
+    eng = SherpaOnnxEngine(SherpaConfig(tts_dc_block=False, input_agc=True))
+    eng._input_agc.gain = 9.0
+    eng._input_agc.process(np.full(1600, 0.001, dtype="float32"))
+    assert eng._input_agc.last_input_rms > 0.0
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace())
+
+    def stop_after_reset():
+        raise RuntimeError("scripted build stop")
+
+    monkeypatch.setattr(eng, "_build", stop_after_reset)
+
+    with pytest.raises(RuntimeError, match="scripted build stop"):
+        eng.start(EngineCallbacks())
+
+    assert eng._input_agc.gain == 1.0
+    assert eng._input_agc.last_input_rms == 0.0
+    assert eng._input_agc.last_applied_gain == 1.0
+    assert eng._input_agc.last_above_floor is False
 
 
 def test_retained_capture_resource_hold_blocks_restart_after_effect_finishes():

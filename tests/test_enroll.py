@@ -106,6 +106,8 @@ def test_enrollment_matches_model():
 
 
 def test_frontend_fingerprint_is_stable_and_tracks_active_stages():
+    from core.audio_frontend import InputAGC
+
     cfg = {
         "sample_rate": 16000,
         "input_agc_target_rms": 0.12,
@@ -132,10 +134,20 @@ def test_frontend_fingerprint_is_stable_and_tracks_active_stages():
         denoiser=object(),
         apm_owns_ns=False,
     )
+    old_agc = InputAGC()
+    old_agc.algorithm = "boost_only_current_block_cap_v1"
+    old_algorithm = make_enrollment_frontend_provenance(
+        cfg,
+        input_agc=old_agc,
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
     assert first == same
     assert first.fingerprint.startswith("sha256:")
     assert first.fingerprint != changed.fingerprint
-    assert first.summary == "input-agc-capped -> gtcrn"
+    assert first.fingerprint != old_algorithm.fingerprint
+    assert first.summary == "input-agc-current-signal -> gtcrn"
     assert first.raw_baseline is False
 
 
@@ -174,7 +186,7 @@ def test_frontend_fingerprint_tracks_resolved_capture_not_ambient_calibration():
     })) == baseline
 
 
-def test_pre_cap_agc_fingerprints_require_reenrollment():
+def test_pre_current_signal_agc_fingerprints_require_reenrollment():
     from core.audio_frontend import InputAGC
 
     agc = InputAGC(noise_floor_rms=0.011)
@@ -199,7 +211,7 @@ def test_pre_cap_agc_fingerprints_require_reenrollment():
         )
 
     active = provenance(capture)
-    assert active.version == 4
+    assert active.version == 5
     assert active.compatible_fingerprints == frozenset()
     floor_bucket = capture.descriptor()["input_agc_noise_floor_db_3"]
     shared_legacy_descriptor = {
@@ -222,7 +234,7 @@ def test_pre_cap_agc_fingerprints_require_reenrollment():
         "idle_apm": {"active": False},
         "denoise": {"active": False},
     }
-    for legacy_version in (2, 3):
+    for legacy_version in (2, 3, 4):
         legacy_descriptor = {
             **shared_legacy_descriptor,
             "schema": legacy_version,
@@ -235,6 +247,11 @@ def test_pre_cap_agc_fingerprints_require_reenrollment():
             legacy_descriptor["gain"] = {
                 **legacy_descriptor["gain"],
                 "noise_floor_db_3": floor_bucket,
+            }
+        elif legacy_version == 4:
+            legacy_descriptor["gain"] = {
+                **legacy_descriptor["gain"],
+                "algorithm": "boost_only_current_block_cap_v1",
             }
         canonical = json.dumps(
             legacy_descriptor, sort_keys=True, separators=(",", ":")
@@ -256,7 +273,7 @@ def test_pre_cap_agc_fingerprints_require_reenrollment():
         assert enrollment_matches_frontend(saved, active) is False
 
 
-def test_v4_migrates_v2_v3_only_when_input_agc_was_absent():
+def test_v5_migrates_v2_v3_v4_only_when_input_agc_was_absent():
     cfg = {"sample_rate": 16000, "denoise_model": "/m/gtcrn.onnx"}
     active = make_enrollment_frontend_provenance(
         cfg,
@@ -287,9 +304,9 @@ def test_v4_migrates_v2_v3_only_when_input_agc_was_absent():
         "denoise": {"active": True, "model": "/m/gtcrn.onnx"},
     }
 
-    assert active.version == 4
-    assert len(active.compatible_fingerprints) == 2
-    for legacy_version in (2, 3):
+    assert active.version == 5
+    assert len(active.compatible_fingerprints) == 3
+    for legacy_version in (2, 3, 4):
         legacy_descriptor = {**descriptor, "schema": legacy_version}
         canonical = json.dumps(
             legacy_descriptor, sort_keys=True, separators=(",", ":")
@@ -470,6 +487,52 @@ def test_frontend_disabled_is_byte_identical():
     np.testing.assert_array_equal(
         front.process(captured, capture_sample_rate=10), captured
     )
+
+
+def test_real_input_agc_matches_live_blockwise_current_signal_behavior():
+    import numpy as np
+
+    from core.audio_frontend import InputAGC
+
+    def block(rms: float, seed: int):
+        rng = np.random.default_rng(seed)
+        value = rng.standard_normal(1600).astype("float32")
+        value *= rms / float(np.sqrt(np.mean(value ** 2)))
+        return value
+
+    enrollment_agc = InputAGC(noise_floor_rms=0.004)
+    live_agc = InputAGC(noise_floor_rms=0.004)
+    config = {"sample_rate": 16000, "block_sec": 0.1, "input_agc": True}
+    frontend = EnrollmentFrontend(
+        sample_rate=16000,
+        block_sec=0.1,
+        input_agc=enrollment_agc,
+        provenance=make_enrollment_frontend_provenance(
+            config,
+            input_agc=enrollment_agc,
+            idle_apm=None,
+            denoiser=None,
+            apm_owns_ns=False,
+        ),
+        config=config,
+    )
+    pump = block(0.0046, 200)
+    ambient = block(0.0015, 201)
+    captured = np.concatenate([np.tile(pump, 50), ambient])
+
+    enrollment_out = frontend.process(captured, capture_sample_rate=16000)
+    live_out = np.concatenate(
+        [live_agc.process(chunk) for chunk in np.split(captured, 51)]
+    )
+
+    np.testing.assert_array_equal(enrollment_out, live_out)
+    np.testing.assert_array_equal(enrollment_out[-1600:], ambient)
+    assert enrollment_agc.gain == pytest.approx(live_agc.gain)
+    assert enrollment_agc.last_input_rms == pytest.approx(
+        live_agc.last_input_rms
+    )
+    assert enrollment_agc.last_applied_gain == live_agc.last_applied_gain == 1.0
+    assert enrollment_agc.last_above_floor is live_agc.last_above_floor is False
 
 
 def test_frontend_always_on_apm_gets_zero_far_and_owns_ns():

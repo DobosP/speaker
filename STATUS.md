@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, VAD-epoch safety stacked on `a050439`;
-full: 3236 passed/30 skipped/9 warnings; focused: 47 passed; adjacent: 306
-passed/4 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, current-signal AGC v5 stacked on `15966db`;
+full: 3243 passed/30 skipped/9 warnings; focused: 67 passed; adjacent playback/audio:
+71/103 passed; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -19,9 +19,9 @@ passed/4 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are
   session-only, not persistent services.
-- The host-local InputAGC remains boost-only. Smoothed state is retained, but an
-  above-floor block cannot receive more than its current desired boost; the cap
-  and its effect on pumping remain live-unvalidated (ADR-0044).
+- The host-local InputAGC remains boost-only. Boost is applied only when the
+  current raw block clears its calibrated floor; below-floor PCM stays unity
+  while state is retained. The v5 behavior remains live-unvalidated (ADR-0047).
 
 ## Voice reliability now implemented
 
@@ -40,10 +40,10 @@ passed/4 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
   Same-domain recovery preserves its AGC floor; changed domains relearn from
   VAD-quiet pre-AGC blocks. Authority stays cleared until compatible (ADR-0043).
 - Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
-- Enrollment provenance v4 fingerprints the capped AGC algorithm after live open;
-  v2/v3 InputAGC records fail open and require re-enrollment, while exact non-AGC
-  aliases remain. Stable route/rates/resampler/OS processing stay covered, volatile
-  ambient stays excluded, and measured voice admission remains shared (ADR-0044).
+- Enrollment provenance v5 fingerprints current-signal-only AGC after live open;
+  v2/v3/v4 InputAGC records fail open and require re-enrollment, while exact non-
+  AGC aliases remain. Stable route/rates/resampler/OS processing stay covered;
+  volatile ambient stays excluded and measured voice admission stays shared (ADR-0047).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   readiness contract. Selected ASR/TTS/VAD/denoise/KWS/punctuation/AEC artifacts
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
@@ -79,9 +79,9 @@ passed/4 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
   lifecycle causality, and unplug/switch remain unvalidated (ADR-0041/42/43).
 - `173340` exposed stale AGC overshoot; `193818` made two silent zero-word cuts
   at 0.31/0.32 and spawned a raw-empty `I.` reply. The four-word guard prevents
-  that path, but `200747` made zero active cuts while stale/garbled ordinary finals
-  entered with the final floor inert/input gate off; one 2→5 echo-like tail scored
-  0.31 and handed off after playback. Stability/barge remain live-red (ADR-0044/45).
+  that path. `200747` made zero active cuts while stale/fresh garble entered; v5
+  closes deterministic below-floor pumping headlessly, but one echo-like tail
+  handed off after playback. Stability/barge remain live-red (ADR-0045/47).
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native cancellation,
   reuse, and two phone-lite XML tool round trips (ADR-0031/32/33). Phone thermals remain unvalidated.
 - Still required at the mic: low-sensitivity use, self-echo rejection, override

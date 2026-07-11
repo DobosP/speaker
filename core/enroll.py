@@ -327,6 +327,14 @@ class EnrollmentFrontend:
             "input_gain": self.input_gain,
         }
         self.capture_resolution: Optional[CaptureResolution] = None
+        # Enrollment admission compares pre-gain speech with the *measured*
+        # pre-gain ambient from this run. InputAGC.noise_floor_rms is a different
+        # operating point: compute_input_calibration has already multiplied the
+        # ambient by its headroom and clamped it for runtime gain control. Reusing
+        # that expanded gate and adding another voice margin rejects valid quiet
+        # mics (the live ROG route measured 0.00018 ambient / ~0.003 speech while
+        # the AGC minimum was 0.004).
+        self.measured_pre_gain_ambient_rms: Optional[float] = None
 
     def bind_capture(self, capture: CaptureResolution) -> None:
         """Bind once to the actual route/rate used for this enrollment run."""
@@ -387,6 +395,7 @@ class EnrollmentFrontend:
 
         blocks = self._pre_gain_model_blocks(samples, capture_sample_rate)
         cal = compute_input_calibration(blocks)
+        self.measured_pre_gain_ambient_rms = float(cal["ambient_rms"])
         if self.input_agc is not None:
             self.input_agc.noise_floor_rms = cal["noise_floor_rms"]
         return cal
@@ -935,9 +944,11 @@ def record_once(
     if hasattr(frontend, "bind_capture"):
         frontend.bind_capture(resolution)
     if require_voice_evidence:
-        ambient_floor = None
+        ambient_floor = getattr(frontend, "measured_pre_gain_ambient_rms", None)
         input_agc = getattr(frontend, "input_agc", None)
-        if input_agc is not None:
+        if ambient_floor is None and input_agc is not None:
+            # No live calibration ran: preserve the historical configured AGC
+            # gate rather than inventing a lower admission threshold.
             ambient_floor = float(input_agc.noise_floor_rms)
         admitted, voiced_sec = _has_enrollment_voice_evidence(
             frontend.pre_gain_model_audio(
@@ -997,7 +1008,13 @@ def _has_enrollment_voice_evidence(
 
     floor = float(ambient_floor_rms or 0.0)
     if floor > 0.0:
-        threshold = floor * (10.0 ** (float(margin_db) / 20.0))
+        # Keep an absolute numerical floor even when a muted/near-zero device
+        # calibrated an extremely small ambient. A brief click still cannot
+        # satisfy min_voiced_sec.
+        threshold = max(
+            1e-4,
+            floor * (10.0 ** (float(margin_db) / 20.0)),
+        )
     else:
         # No calibrated absolute operating point: a natural spoken clip has
         # pauses/phoneme dynamics, while steady silence or a constant noise bed

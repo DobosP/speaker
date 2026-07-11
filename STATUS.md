@@ -3,8 +3,8 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in `docs/adr/`
 > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-11 on Linux ROG, `feat/sherpa-playback-receipts`; full
-headless: 2757 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `feat/file-replay-playback-receipts`; full
+headless: 2786 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY outside
 the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 
@@ -65,9 +65,9 @@ the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
   shutdown have generation/epoch ownership and cannot resurrect stale work. A
   real no-mic MiniCPM gate cancel took 157.9 ms with zero old pieces and a healthy
   ACT/follow-up.
-- ScriptedEngine and Sherpa now use terminal sink receipts. Sherpa tags output-domain
-  FIFO spans, dispatches callbacks off the audio thread, and preserves only an owned,
-  bounded cut fade; exact sample counts never imply words (ADR-0027/0028).
+- ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts. Sherpa owns
+  FIFO spans/off-audio-thread callbacks/bounded cut fade; FileReplay atomically
+  attests numeric null-sink clips; sample ratios never imply words (ADR-0027/0028/0029).
 
 ## Live evidence and limits
 

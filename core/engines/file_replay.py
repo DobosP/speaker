@@ -1,13 +1,47 @@
 from __future__ import annotations
 
+import logging
 import threading
 import time
+from dataclasses import dataclass
+from numbers import Real
 from typing import Callable, Optional
 
-from ..engine import AudioEngine, EngineCallbacks
+from ..engine import (
+    NO_PLAYBACK_CAPABILITIES,
+    AudioEngine,
+    EngineCallbacks,
+    PlaybackCapabilities,
+    PlaybackOutcome,
+    PlaybackReceipt,
+    TrackedSpeech,
+)
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ._sherpa_models import build_recognizer, build_tts
 from .sherpa import SherpaConfig
+
+log = logging.getLogger("speaker.file_replay")
+
+_FILE_REPLAY_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
+    tracked_terminal=True,
+    exact_started=True,
+)
+
+
+@dataclass(eq=False)
+class _TrackedReplayCall:
+    speech: TrackedSpeech
+    on_terminal: Callable[[PlaybackReceipt], None]
+    on_started: Optional[Callable[[str], None]]
+    terminal: bool = False
+
+
+@dataclass(frozen=True)
+class _TrackedReplayDelivery:
+    on_started: Optional[Callable[[str], None]]
+    on_terminal: Callable[[PlaybackReceipt], None]
+    receipt: PlaybackReceipt
+
 
 # Headless engine: runs the REAL sherpa-onnx recognizer and TTS over a recorded
 # waveform instead of a live mic + sound card, so the full ASR -> LLM -> TTS
@@ -40,6 +74,13 @@ class FileReplayEngine(AudioEngine):
         self._stream = None
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
+        self._receipt_lock = threading.RLock()
+        self._generate_lock = threading.Lock()
+        self._started = False
+        self._stopping = False
+        self._play_generation = 0
+        self._tracked_busy = False
+        self._active_tracked: Optional[_TrackedReplayCall] = None
         # Observability for the bench harness: what the assistant tried to say
         # this run, and the most recent recognized utterance.
         self.spoken: list[str] = []
@@ -47,48 +88,418 @@ class FileReplayEngine(AudioEngine):
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
-        self._cb = callbacks
-        self._recognizer = build_recognizer(self.config)
-        if self._recognizer is None:
+        recognizer = build_recognizer(self.config)
+        if recognizer is None:
             raise SystemExit(
                 "FileReplayEngine needs an ASR model: set sherpa.asr_encoder/"
                 "decoder/joiner/tokens (see tools/bench, which fetches them)."
             )
-        self._tts = build_tts(self.config)
-        self._stream = self._recognizer.create_stream()
+        tts = build_tts(self.config)
+        stream = recognizer.create_stream()
+        with self._receipt_lock:
+            self._stop_speaking.set()
+            delivery = self._claim_active_tracked_locked(
+                PlaybackOutcome.INTERRUPTED
+            )
+            self._cb = callbacks
+            self._recognizer = recognizer
+            self._tts = tts
+            self._stream = stream
+            self._play_generation += 1
+            self._stopping = False
+            self._started = True
+        if delivery is not None:
+            fatal_error = self._deliver_tracked(delivery)
+            if fatal_error is not None:
+                raise fatal_error
 
     def stop(self) -> None:
-        self._stop_speaking.set()
+        with self._receipt_lock:
+            self._play_generation += 1
+            self._stop_speaking.set()
+            self._stopping = True
+            self._started = False
+            delivery = self._claim_active_tracked_locked(
+                PlaybackOutcome.INTERRUPTED
+            )
+        if delivery is not None:
+            fatal_error = self._deliver_tracked(delivery)
+            if fatal_error is not None:
+                raise fatal_error
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
         # Synchronous: the bench drives one turn at a time, and synthesizing on
         # the calling (bus) thread keeps the metric stamp ordering deterministic.
-        if self._tts is None:
-            if on_done:
-                on_done()
-            return
-        self._stop_speaking.clear()
-        self._speaking.set()
-        self.spoken.append(text)
-        self._cb.on_speech_start()
+        with self._receipt_lock:
+            generation = self._play_generation
         try:
-            if self._stop_speaking.is_set():
-                self._cb.on_metric(BARGE_IN_STOP)
+            # FileReplay owns one non-thread-safe OfflineTts model.  Dropping a
+            # concurrent legacy request is safer than queueing stale work past a
+            # later cut, and makes callback re-entry non-blocking.
+            if not self._generate_lock.acquire(blocking=False):
                 return
-            self._tts.generate(
-                text, sid=self.config.tts_speaker_id, speed=self.config.tts_speed
-            )
-            # Offline TTS returns the whole clip; "first audio" is now (the point
-            # at which a player would start). No sound card -- we discard it.
-            self._cb.on_metric(TTS_FIRST_AUDIO)
+            try:
+                with self._receipt_lock:
+                    if (
+                        generation != self._play_generation
+                        or self._stopping
+                        or not self._started
+                        or self._tts is None
+                        or self._tracked_busy
+                    ):
+                        return
+                    tts = self._tts
+                    callbacks = self._cb
+                    self._stop_speaking.clear()
+
+                self._speaking.set()
+                try:
+                    self.spoken.append(text)
+                    callbacks.on_speech_start()
+                    try:
+                        with self._receipt_lock:
+                            cut = (
+                                generation != self._play_generation
+                                or self._stop_speaking.is_set()
+                            )
+                        if cut:
+                            callbacks.on_metric(BARGE_IN_STOP)
+                            return
+                        tts.generate(
+                            text,
+                            sid=self.config.tts_speaker_id,
+                            speed=self.config.tts_speed,
+                        )
+                        with self._receipt_lock:
+                            cut = (
+                                generation != self._play_generation
+                                or self._stop_speaking.is_set()
+                            )
+                        if cut:
+                            callbacks.on_metric(BARGE_IN_STOP)
+                            return
+                        # Offline TTS returns the whole clip; "first audio" is
+                        # now the point where a player would start. No sound card.
+                        callbacks.on_metric(TTS_FIRST_AUDIO)
+                    finally:
+                        callbacks.on_speech_end()
+                finally:
+                    self._speaking.clear()
+            finally:
+                self._generate_lock.release()
         finally:
-            self._speaking.clear()
-            self._cb.on_speech_end()
             if on_done:
                 on_done()
 
+    @property
+    def playback_capabilities(self) -> PlaybackCapabilities:
+        if (
+            type(self).speak is not FileReplayEngine.speak
+            and type(self).speak_tracked is FileReplayEngine.speak_tracked
+        ):
+            return NO_PLAYBACK_CAPABILITIES
+        return _FILE_REPLAY_PLAYBACK_CAPABILITIES
+
+    def speak_tracked(
+        self,
+        speech: TrackedSpeech,
+        *,
+        on_terminal: Callable[[PlaybackReceipt], None],
+        on_started: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Synthesize one fragment into the deterministic in-memory null sink.
+
+        FileReplay has no acoustic output callback or output sample domain. A
+        non-empty OfflineTts clip accepted by its null sink is one exact
+        start/completion boundary, but carries no acoustic sample counts. Stops
+        claim the active ticket immediately while native generation unwinds; a
+        concurrent call is dropped rather than overlapping the non-thread-safe
+        TTS model.
+        """
+
+        ticket = _TrackedReplayCall(
+            speech=speech,
+            on_terminal=on_terminal,
+            on_started=on_started,
+        )
+        if not speech.fragment_id:
+            raise ValueError("tracked speech requires a fragment_id")
+        if not speech.text.strip():
+            self._finish_tracked(ticket, PlaybackOutcome.DROPPED)
+            return
+        with self._receipt_lock:
+            generation = self._play_generation
+        if not self._generate_lock.acquire(blocking=False):
+            self._finish_tracked(ticket, PlaybackOutcome.DROPPED)
+            return
+        rejection: Optional[PlaybackOutcome] = None
+        activated = False
+        reservation_started = False
+        try:
+            with self._receipt_lock:
+                if (
+                    generation != self._play_generation
+                    or self._stopping
+                    or not self._started
+                ):
+                    rejection = PlaybackOutcome.DROPPED
+                elif self._tts is None:
+                    rejection = PlaybackOutcome.FAILED
+                elif self._tracked_busy:
+                    rejection = PlaybackOutcome.DROPPED
+                else:
+                    reservation_started = True
+                    tts = self._tts
+                    callbacks = self._cb
+                    self._stop_speaking.clear()
+                    self._active_tracked = ticket
+                    self._tracked_busy = True
+                    activated = True
+        except BaseException:
+            with self._receipt_lock:
+                if reservation_started:
+                    if self._active_tracked is ticket:
+                        self._active_tracked = None
+                    self._tracked_busy = False
+            activated = False
+            raise
+        finally:
+            if not activated:
+                self._generate_lock.release()
+        if not activated:
+            assert rejection is not None
+            self._finish_tracked(ticket, rejection)
+            return
+
+        outcome = PlaybackOutcome.FAILED
+        fatal_error: Optional[BaseException] = None
+        speech_lifecycle_invoked = False
+        try:
+            try:
+                try:
+                    self._speaking.set()
+                    self.spoken.append(speech.text)
+                except Exception as exc:  # internal bookkeeping must not leak
+                    log.exception("FileReplay tracked admission bookkeeping failed")
+                    fatal_error = exc
+                except BaseException as exc:
+                    fatal_error = exc
+                if fatal_error is None:
+                    speech_lifecycle_invoked = True
+                    fatal_error = self._invoke_tracked_callback(
+                        callbacks.on_speech_start,
+                        log_message="FileReplay on_speech_start callback raised",
+                    )
+                if fatal_error is None:
+                    if self._stop_speaking.is_set():
+                        metric_fatal = self._invoke_tracked_callback(
+                            callbacks.on_metric,
+                            BARGE_IN_STOP,
+                            log_message=(
+                                "FileReplay barge-stop metric callback raised"
+                            ),
+                        )
+                        if fatal_error is None:
+                            fatal_error = metric_fatal
+                        outcome = PlaybackOutcome.INTERRUPTED
+                    else:
+                        try:
+                            generated = tts.generate(
+                                speech.text,
+                                sid=self.config.tts_speaker_id,
+                                speed=self.config.tts_speed,
+                            )
+                            if self._valid_generated_clip(generated):
+                                outcome = PlaybackOutcome.COMPLETED
+                        except Exception:  # noqa: BLE001 - receipt owns failure
+                            log.exception("FileReplay tracked TTS generation failed")
+                        except BaseException as exc:
+                            fatal_error = exc
+                        if (
+                            self._stop_speaking.is_set()
+                            and outcome is PlaybackOutcome.COMPLETED
+                        ):
+                            outcome = PlaybackOutcome.INTERRUPTED
+            finally:
+                try:
+                    self._speaking.clear()
+                except BaseException as exc:
+                    if fatal_error is None:
+                        fatal_error = exc
+                try:
+                    with self._receipt_lock:
+                        delivery = self._claim_tracked_locked(ticket, outcome)
+                finally:
+                    self._generate_lock.release()
+
+            # External callbacks run after the ticket is immutable and the model
+            # lock is free. ``_tracked_busy`` stays set until delivery finishes,
+            # so callback re-entry is rejected instead of overtaking this receipt.
+            if delivery is not None:
+                if outcome is PlaybackOutcome.COMPLETED:
+                    metric_fatal = self._invoke_tracked_callback(
+                        callbacks.on_metric,
+                        TTS_FIRST_AUDIO,
+                        log_message="FileReplay first-audio metric callback raised",
+                    )
+                    if fatal_error is None:
+                        fatal_error = metric_fatal
+                started_fatal = self._deliver_tracked_started(delivery)
+                if fatal_error is None:
+                    fatal_error = started_fatal
+            if speech_lifecycle_invoked:
+                end_fatal = self._invoke_tracked_callback(
+                    callbacks.on_speech_end,
+                    log_message="FileReplay on_speech_end callback raised",
+                )
+                if fatal_error is None:
+                    fatal_error = end_fatal
+            if delivery is not None:
+                terminal_fatal = self._deliver_tracked_terminal(delivery)
+                if fatal_error is None:
+                    fatal_error = terminal_fatal
+        finally:
+            with self._receipt_lock:
+                self._tracked_busy = False
+        if fatal_error is not None:
+            raise fatal_error
+
+    def _claim_tracked(
+        self,
+        ticket: Optional[_TrackedReplayCall],
+        outcome: PlaybackOutcome,
+    ) -> Optional[_TrackedReplayDelivery]:
+        if ticket is None:
+            return None
+        with self._receipt_lock:
+            return self._claim_tracked_locked(ticket, outcome)
+
+    def _claim_tracked_locked(
+        self,
+        ticket: _TrackedReplayCall,
+        outcome: PlaybackOutcome,
+    ) -> Optional[_TrackedReplayDelivery]:
+        if ticket.terminal:
+            return None
+        receipt = PlaybackReceipt(
+            fragment_id=ticket.speech.fragment_id,
+            outcome=outcome,
+            safe_text_prefix=(
+                ticket.speech.text if outcome is PlaybackOutcome.COMPLETED else ""
+            ),
+        )
+        ticket.terminal = True
+        if self._active_tracked is ticket:
+            self._active_tracked = None
+        return _TrackedReplayDelivery(
+            on_started=(
+                ticket.on_started if outcome is PlaybackOutcome.COMPLETED else None
+            ),
+            on_terminal=ticket.on_terminal,
+            receipt=receipt,
+        )
+
+    def _claim_active_tracked_locked(
+        self,
+        outcome: PlaybackOutcome,
+    ) -> Optional[_TrackedReplayDelivery]:
+        active = self._active_tracked
+        if active is None:
+            return None
+        return self._claim_tracked_locked(active, outcome)
+
+    @staticmethod
+    def _valid_generated_clip(generated) -> bool:
+        samples = getattr(generated, "samples", None)
+        sample_rate = getattr(generated, "sample_rate", None)
+        try:
+            if samples is None or int(sample_rate) <= 0:
+                return False
+            shape = getattr(samples, "shape", None)
+            if shape is not None:
+                if len(shape) != 1 or int(shape[0]) <= 0:
+                    return False
+                dtype_kind = getattr(getattr(samples, "dtype", None), "kind", None)
+                if dtype_kind is not None:
+                    return dtype_kind in {"f", "i", "u"}
+            if len(samples) == 0:
+                return False
+            return all(
+                isinstance(sample, Real) and not isinstance(sample, bool)
+                for sample in samples
+            )
+        except (IndexError, TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _invoke_tracked_callback(
+        callback: Callable[..., None],
+        *args,
+        log_message: str,
+    ) -> Optional[BaseException]:
+        try:
+            callback(*args)
+        except Exception:  # noqa: BLE001 - tracked receipts must still resolve
+            log.exception(log_message)
+        except BaseException as exc:
+            return exc
+        return None
+
+    @classmethod
+    def _deliver_tracked_started(
+        cls,
+        delivery: _TrackedReplayDelivery,
+    ) -> Optional[BaseException]:
+        if delivery.on_started is None:
+            return None
+        return cls._invoke_tracked_callback(
+            delivery.on_started,
+            delivery.receipt.fragment_id,
+            log_message="FileReplay tracked on_started callback raised",
+        )
+
+    @classmethod
+    def _deliver_tracked_terminal(
+        cls,
+        delivery: _TrackedReplayDelivery,
+    ) -> Optional[BaseException]:
+        return cls._invoke_tracked_callback(
+            delivery.on_terminal,
+            delivery.receipt,
+            log_message="FileReplay tracked terminal callback raised",
+        )
+
+    @classmethod
+    def _deliver_tracked(
+        cls,
+        delivery: _TrackedReplayDelivery,
+    ) -> Optional[BaseException]:
+        started_fatal = cls._deliver_tracked_started(delivery)
+        terminal_fatal = cls._deliver_tracked_terminal(delivery)
+        return started_fatal if started_fatal is not None else terminal_fatal
+
+    def _finish_tracked(
+        self,
+        ticket: Optional[_TrackedReplayCall],
+        outcome: PlaybackOutcome,
+    ) -> None:
+        delivery = self._claim_tracked(ticket, outcome)
+        if delivery is not None:
+            fatal_error = self._deliver_tracked(delivery)
+            if fatal_error is not None:
+                raise fatal_error
+
     def stop_speaking(self) -> None:
-        self._stop_speaking.set()
+        with self._receipt_lock:
+            self._play_generation += 1
+            self._stop_speaking.set()
+            delivery = self._claim_active_tracked_locked(
+                PlaybackOutcome.INTERRUPTED
+            )
+        if delivery is not None:
+            fatal_error = self._deliver_tracked(delivery)
+            if fatal_error is not None:
+                raise fatal_error
 
     @property
     def is_speaking(self) -> bool:

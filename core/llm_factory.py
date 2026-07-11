@@ -88,7 +88,14 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
                 "# fetch the shipped MiniCPM GGUF into models/\n"
                 "or pass --model <path/to/model.gguf>."
             )
-        main = LlamaCppLLM(main_path, **common)
+        # Only the main/reasoning client owns ReAct planning. A distinct fast
+        # GGUF must not be forced to verify MiniCPM's tool template merely
+        # because the main profile opted in.
+        main = LlamaCppLLM(
+            main_path,
+            tool_format=llm_cfg.get("tool_format"),
+            **common,
+        )
         # A single-tier profile may deliberately use the same compact GGUF for
         # main + fast.  Share one in-process llama.cpp context in that case:
         # loading identical weights/KV twice wastes RAM and CPU headroom that

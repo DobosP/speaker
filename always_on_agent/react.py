@@ -20,6 +20,12 @@ from threading import Event
 from typing import Callable, Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from .capabilities import CapabilityRegistry, CapabilityResult, CapabilitySpec
+from .planner_steps import (
+    PlannerCall,
+    PlannerExchange,
+    PlannerStepBackend,
+    PlannerTool,
+)
 from .untrusted import wrap_untrusted
 
 
@@ -185,12 +191,17 @@ class ReactPlanner:
         tools: Sequence[str] = DEFAULT_TOOLS,
         persona_name: str = "",
         first_token_hook: Optional[Callable[[], None]] = None,
+        step_backend: PlannerStepBackend | None = None,
     ):
         self._llm = llm
         self._registry = registry
         self._max_steps = max(1, int(max_steps))
         self._tools = tuple(tools)
         self._persona_name = (persona_name or "").strip()
+        # None is the historical textual ReAct protocol.  A native backend is
+        # injected only for a provider/profile whose exact grammar was verified;
+        # it never owns execution or the allowlist.
+        self._step_backend = step_backend
         # Fired on the first token this planner streams from the model. The
         # runtime wires it to stamp LLM_FIRST_TOKEN, so an escalated (ReAct) turn
         # -- whose LLM work happens here, not in the one-shot assistant path --
@@ -218,6 +229,34 @@ class ReactPlanner:
         # ``when_to_use``), so the planner's tool catalog can never drift from
         # the actually-registered capabilities.
         return self._registry.describe(self._tools, planner=True)
+
+    def _native_tools(self) -> tuple[PlannerTool, ...]:
+        """Return the safe configured/registered intersection for native calls.
+
+        Text ReAct stays byte-identical.  The new native seam is deliberately
+        narrower: an untyped/missing spec, a capability not marked as a planner
+        tool, or any side effect keeps that capability out of the model schema.
+        The controller still checks the parsed name again before invocation.
+        """
+
+        registered = set(self._registry.names())
+        offered: list[PlannerTool] = []
+        for name in self._tools:
+            spec = self._registry.spec(name)
+            if (
+                name not in registered
+                or spec is None
+                or not spec.planner_tool
+                or spec.side_effecting
+            ):
+                continue
+            offered.append(
+                PlannerTool(
+                    name=name,
+                    description=spec.when_to_use or spec.summary,
+                )
+            )
+        return tuple(offered)
 
     def _plan_prompt(self, query: str, observations: list[str], recent: str = "") -> str:
         gathered = "\n".join(observations) if observations else "(none yet)"
@@ -326,31 +365,70 @@ class ReactPlanner:
                 pass
         observations: list[str] = []
         steps_taken: list[str] = []
+        native_backend = self._step_backend
+        native_tools = self._native_tools() if native_backend is not None else ()
+        native_allowed = {tool.name for tool in native_tools}
+        native_exchanges: list[PlannerExchange] = []
         reprompt_budget = 1  # one strict-format retry across the whole plan (P3)
+
+        def native_action(reminder: bool) -> tuple[Optional[str], str]:
+            """Ask the optional backend, retaining controller-side authority."""
+
+            assert native_backend is not None
+            try:
+                step = native_backend.next_step(
+                    query=query,
+                    recent=recent,
+                    tools=native_tools,
+                    exchanges=tuple(native_exchanges),
+                    reminder=reminder,
+                    cancel=cancel,
+                    first_token_hook=first_token_hook,
+                )
+            except Exception:
+                # Provider-native cancellation commonly arrives as its own
+                # exception.  The task event is the authority for whether this
+                # is cancellation or an ordinary provider failure.
+                if _cancelled(cancel):
+                    return None, ""
+                raise
+            if step.malformed:
+                return None, ""
+            if step.call is not None:
+                # Redundant with the backend parser by design: only the
+                # controller's safe configured/registered intersection can
+                # become executable, even if a backend regresses.
+                if step.call.name not in native_allowed:
+                    return None, ""
+                return step.call.name, step.call.query
+            return "FINAL", step.final or ""
 
         for _ in range(self._max_steps):
             if _cancelled(cancel):
                 return CapabilityResult(
                     True, "", data={"cancelled": True, "agent": True}
                 )
-            # Drain the plan step as a cancel-aware stream (like ``_final``) so a
-            # barge-in/STOP between chunks aborts mid-planning instead of blocking
-            # on ``generate()``. ``_drain`` strips, which is parse-neutral:
-            # ``_parse_step`` strips again before matching TOOL/FINAL.
             if not claim_start():
                 return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
-            raw = self._drain(
-                self._llm.stream(
-                    self._plan_prompt(query, observations, recent), system=PLANNER_SYSTEM
-                ),
-                cancel,
-                first_token_hook,
-            )
+            if native_backend is None:
+                # Drain the plan step as a cancel-aware stream (like ``_final``)
+                # so barge-in between chunks closes the provider. ``_drain``
+                # strips, which is parse-neutral for the text protocol.
+                raw = self._drain(
+                    self._llm.stream(
+                        self._plan_prompt(query, observations, recent),
+                        system=PLANNER_SYSTEM,
+                    ),
+                    cancel,
+                    first_token_hook,
+                )
+                action, arg = _parse_step(raw)
+            else:
+                action, arg = native_action(False)
             if _cancelled(cancel):
                 return CapabilityResult(
                     True, "", data={"cancelled": True, "agent": True}
                 )
-            action, arg = _parse_step(raw)
 
             # P3 reliability: an unparseable step (no TOOL/FINAL directive at all)
             # gets ONE strict-format re-prompt before we give up and synthesize a
@@ -360,17 +438,22 @@ class ReactPlanner:
                 reprompt_budget -= 1
                 if not claim_start():
                     return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
-                raw = self._drain(
-                    self._llm.stream(
-                        self._plan_prompt(query, observations, recent) + "\n\n" + _FORMAT_REMINDER,
-                        system=PLANNER_SYSTEM,
-                    ),
-                    cancel,
-                    first_token_hook,
-                )
+                if native_backend is None:
+                    raw = self._drain(
+                        self._llm.stream(
+                            self._plan_prompt(query, observations, recent)
+                            + "\n\n"
+                            + _FORMAT_REMINDER,
+                            system=PLANNER_SYSTEM,
+                        ),
+                        cancel,
+                        first_token_hook,
+                    )
+                    action, arg = _parse_step(raw)
+                else:
+                    action, arg = native_action(True)
                 if _cancelled(cancel):
                     return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
-                action, arg = _parse_step(raw)
 
             if action is None or action.upper() == "FINAL":
                 text = (
@@ -385,13 +468,16 @@ class ReactPlanner:
                         claim_start,
                     )
                 )
+                if native_backend is not None:
+                    text = native_backend.validate_final(text) or ""
                 return CapabilityResult(
                     True,
                     text or "Sorry, I couldn't work that out.",
                     data={"agent": True, "steps": steps_taken},
                 )
 
-            if action not in self._tools:
+            allowed = native_allowed if native_backend is not None else set(self._tools)
+            if action not in allowed:
                 # Recover: tell the next planning turn the tool is unavailable.
                 observations.append(f"(tool '{action}' is unavailable)")
                 continue
@@ -402,6 +488,8 @@ class ReactPlanner:
             if _cancelled(cancel):
                 return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
             steps_taken.append(action)
+            exchange_text = ""
+            exchange_untrusted = False
             if result.ok:
                 # Prompt-injection hardening (OWASP LLM01): web/external (egress)
                 # tool output is attacker-controllable webpage text -- fence it as
@@ -410,11 +498,26 @@ class ReactPlanner:
                 # (no egress) is left as-is, byte-identical.
                 obs_text = result.text
                 if (result.data or {}).get("egress"):
+                    exchange_untrusted = True
                     obs_text = wrap_untrusted(obs_text, source="web")
                 observations.append(f"{action}: {obs_text}".strip())
+                # The native backend applies a compact, bounded envelope using
+                # this explicit trust bit. Keep raw bytes here so clipping never
+                # cuts the full spotlight directive/fences before the finding.
+                exchange_text = result.text
             else:
                 # Recovery phase: surface the failure so the model can replan.
                 observations.append(f"{action} failed: {result.error}")
+                exchange_text = f"Tool failed: {result.error}"
+            if native_backend is not None:
+                native_exchanges.append(
+                    PlannerExchange(
+                        call=PlannerCall(action, arg or query),
+                        result=exchange_text,
+                        ok=result.ok,
+                        untrusted=exchange_untrusted,
+                    )
+                )
 
         # Step budget exhausted -> synthesize whatever we have.
         text = self._final(
@@ -425,6 +528,8 @@ class ReactPlanner:
             first_token_hook,
             claim_start,
         )
+        if native_backend is not None:
+            text = native_backend.validate_final(text) or ""
         return CapabilityResult(
             True,
             text or "Sorry, I couldn't work that out.",
@@ -441,6 +546,7 @@ def attach_react_capability(
     capability_name: str = "agent.react",
     persona_name: str = "",
     first_token_hook: Optional[Callable[[], None]] = None,
+    step_backend: PlannerStepBackend | None = None,
 ) -> CapabilityRegistry:
     """Register the ReAct planner as a capability provider.
 
@@ -450,11 +556,14 @@ def attach_react_capability(
     takes no ``core`` import) keeps an escalated turn's final answer in voice.
     ``first_token_hook`` lets the runtime stamp LLM_FIRST_TOKEN for an escalated
     turn (B3 -- so the watchdog doesn't false-flag it as stuck).
+    ``step_backend`` is an optional verified native planning grammar; execution
+    remains in :class:`ReactPlanner`.
     """
     config = config or PlannerConfig()
     planner = planner or ReactPlanner(
         llm, registry, max_steps=config.max_steps, tools=config.tools,
         persona_name=persona_name, first_token_hook=first_token_hook,
+        step_backend=step_backend,
     )
 
     def provider(query: str, context: dict[str, object]) -> CapabilityResult:

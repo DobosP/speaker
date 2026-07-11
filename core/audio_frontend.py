@@ -750,12 +750,17 @@ class InputAGC:
     the AGC carries the rest.
 
     The smoothed gain RISES slowly (``rise``) so the noise floor between words is
-    not pumped up, and FALLS fast (``fall``) so a sudden loud phrase is reined in
-    before the soft-knee limiter has to work. Blocks below ``noise_floor_rms``
-    HOLD the gain rather than amplifying hiss. Applied via
-    :func:`apply_gain_soft_limit` so any residual peak saturates smoothly instead
-    of hard-clipping. ``gain`` starts at 1.0, so the first blocks are a passthrough.
+    not pumped up, and FALLS fast (``fall``) when the input becomes louder. The
+    boost applied to the *current* above-floor block is additionally capped at
+    that block's desired gain. This keeps the smoothed state for continuity while
+    preventing stale high gain from overdriving a sudden normal-level word.
+    Blocks below ``noise_floor_rms`` retain the historical hold behavior. Applied
+    via :func:`apply_gain_soft_limit` so any residual peak saturates smoothly
+    instead of hard-clipping. ``gain`` starts at 1.0, so the first blocks are a
+    passthrough.
     """
+
+    algorithm = "boost_only_current_block_cap_v1"
 
     def __init__(self, *, target_rms: float = 0.12, max_gain: float = 12.0,
                  noise_floor_rms: float = 0.004, rise: float = 0.08, fall: float = 0.4):
@@ -770,6 +775,7 @@ class InputAGC:
         import numpy as np
 
         x = np.asarray(samples, dtype="float32").reshape(-1)
+        applied_gain = self.gain
         if x.size:
             r = float(np.sqrt(np.mean(x.astype("float64") ** 2)))
             if r > self.noise_floor_rms:                 # real signal (not silence/hiss)
@@ -778,7 +784,13 @@ class InputAGC:
                 # up between words yet still backs off quickly on a loud phrase.
                 rate = self.rise if desired > self.gain else self.fall
                 self.gain += rate * (desired - self.gain)
-        return apply_gain_soft_limit(x, self.gain)
+                # The smoothed state may still be far above the gain this new,
+                # louder block needs (e.g. 12x -> 2x). Preserve that state for
+                # continuity, but never apply stale excess boost to this block.
+                # ``desired`` is >= 1, so this remains strictly boost-only and a
+                # hot ADC is still visible rather than silently attenuated.
+                applied_gain = min(self.gain, desired)
+        return apply_gain_soft_limit(x, applied_gain)
 
 
 class AudioResampler:

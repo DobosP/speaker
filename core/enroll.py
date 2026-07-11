@@ -31,6 +31,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from .audio_frontend import InputAGC
 from .engines.speaker_gate import (
     SpeakerGate,
     sherpa_speaker_gate,
@@ -52,7 +53,7 @@ Recorder = Callable[[float], Sequence[float]]
 # Bump only when the model-visible enrollment capture chain changes semantics.
 # The fingerprint below covers the active stage configuration; this version covers
 # the implementation/order contract itself.
-ENROLLMENT_FRONTEND_VERSION = 3
+ENROLLMENT_FRONTEND_VERSION = 4
 
 
 def _agc_floor_bucket_db(value: float) -> int:
@@ -87,7 +88,7 @@ class CaptureResolution:
         }
         if self.input_agc_noise_floor_rms is not None:
             # Retained for diagnostics and migration of v2 fingerprints. The
-            # stable v3 front-end identity deliberately excludes this per-run
+            # stable v4 front-end identity deliberately excludes this per-run
             # ambient calibration value.
             out["input_agc_noise_floor_db_3"] = _agc_floor_bucket_db(
                 self.input_agc_noise_floor_rms
@@ -110,11 +111,10 @@ class EnrollmentFrontendProvenance:
     fingerprint: str
     summary: str
     raw_baseline: bool = False
-    # Runtime-only migration aliases. Version 2 fingerprinted the measured AGC
-    # noise floor, so the same physical chain stopped matching whenever room
-    # tone crossed a 3 dB bucket. Active v3 provenance carries the finite set of
-    # v2 hashes for this exact stable chain while deliberately varying only that
-    # volatile calibration value. These aliases are never persisted.
+    # Runtime-only migration aliases. Active v4 provenance carries old hashes
+    # only when the model-visible chain did not use InputAGC. Pre-v4 AGC audio
+    # used a different applied-gain algorithm and must be re-enrolled. These
+    # aliases are never persisted.
     compatible_fingerprints: frozenset[str] = field(
         default_factory=frozenset,
         compare=False,
@@ -214,6 +214,13 @@ def make_enrollment_frontend_provenance(
     if agc_active:
         gain = {
             "kind": "input_agc",
+            "algorithm": str(
+                getattr(
+                    input_agc,
+                    "algorithm",
+                    InputAGC.algorithm,
+                )
+            ),
             "target_rms": float(
                 getattr(input_agc, "target_rms", _cfg(config, "input_agc_target_rms", 0.12))
             ),
@@ -265,47 +272,31 @@ def make_enrollment_frontend_provenance(
     canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":"))
     fingerprint = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
-    # Migrate version-2 enrollments without asking the owner to record another
-    # 36 seconds. V2 included the volatile floor in both the capture and AGC
-    # descriptors. Enumerate only that field while holding every stable field
-    # fixed, so a different device/route/model chain still cannot match.
+    # V4 changes model-visible InputAGC output, so no v2/v3 AGC fingerprint is
+    # compatible. Chains without InputAGC are byte-identical: retain bounded
+    # aliases for their exact v2/v3 descriptors so those owners do not re-enroll
+    # for an unrelated schema bump. Different routes/processors still cannot
+    # match because every other descriptor field remains fixed.
     compatible_fingerprints: set[str] = set()
-    legacy_capture_has_floor = bool(
-        agc_active and capture.input_agc_noise_floor_rms is not None
-    )
-    floor_buckets = range(-180, 31, 3) if agc_active else (None,)
-    for floor_bucket in floor_buckets:
-        legacy_gain = dict(gain)
-        if floor_bucket is not None:
-            legacy_gain["noise_floor_db_3"] = floor_bucket
-        legacy_capture = dict(stable_capture)
-        if floor_bucket is not None and legacy_capture_has_floor:
-            legacy_capture["input_agc_noise_floor_db_3"] = floor_bucket
-        legacy_descriptor = {
-            **descriptor,
-            "schema": 2,
-            "capture": {
-                **legacy_capture,
-                "resampler_quality": str(
-                    _cfg(config, "resampler_quality", "HQ") or "HQ"
-                ),
-                "block_sec": float(_cfg(config, "block_sec", 0.1) or 0.1),
-            },
-            "gain": legacy_gain,
-        }
-        legacy_canonical = json.dumps(
-            legacy_descriptor, sort_keys=True, separators=(",", ":")
-        )
-        compatible_fingerprints.add(
-            "sha256:"
-            + hashlib.sha256(legacy_canonical.encode("utf-8")).hexdigest()
-        )
+    if not agc_active:
+        for legacy_version in (2, 3):
+            legacy_descriptor = {
+                **descriptor,
+                "schema": legacy_version,
+            }
+            legacy_canonical = json.dumps(
+                legacy_descriptor, sort_keys=True, separators=(",", ":")
+            )
+            compatible_fingerprints.add(
+                "sha256:"
+                + hashlib.sha256(legacy_canonical.encode("utf-8")).hexdigest()
+            )
 
     stages: list[str] = []
     if capture.voice_comm != "none":
         stages.append(capture.voice_comm)
     if agc_active:
-        stages.append("input-agc")
+        stages.append("input-agc-capped")
     elif input_gain != 1.0:
         stages.append(f"static-gain({input_gain:g})")
     if idle_apm_active:
@@ -649,8 +640,8 @@ def enrollment_matches_frontend(
     if saved.version == active.version:
         return saved.fingerprint == active.fingerprint
     return (
-        saved.version == 2
-        and active.version == 3
+        saved.version in {2, 3}
+        and active.version == 4
         and saved.fingerprint in active.compatible_fingerprints
     )
 

@@ -1,7 +1,7 @@
 # ADR-0035: Keep ambient calibration out of enrollment identity
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0044
 
 ## Decision
 

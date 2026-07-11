@@ -135,7 +135,7 @@ def test_frontend_fingerprint_is_stable_and_tracks_active_stages():
     assert first == same
     assert first.fingerprint.startswith("sha256:")
     assert first.fingerprint != changed.fingerprint
-    assert first.summary == "input-agc -> gtcrn"
+    assert first.summary == "input-agc-capped -> gtcrn"
     assert first.raw_baseline is False
 
 
@@ -174,7 +174,7 @@ def test_frontend_fingerprint_tracks_resolved_capture_not_ambient_calibration():
     })) == baseline
 
 
-def test_v2_calibrated_floor_fingerprint_migrates_only_for_same_stable_chain():
+def test_pre_cap_agc_fingerprints_require_reenrollment():
     from core.audio_frontend import InputAGC
 
     agc = InputAGC(noise_floor_rms=0.011)
@@ -199,11 +199,16 @@ def test_v2_calibrated_floor_fingerprint_migrates_only_for_same_stable_chain():
         )
 
     active = provenance(capture)
+    assert active.version == 4
+    assert active.compatible_fingerprints == frozenset()
     floor_bucket = capture.descriptor()["input_agc_noise_floor_db_3"]
-    legacy_descriptor = {
-        "schema": 2,
+    shared_legacy_descriptor = {
         "capture": {
-            **capture.descriptor(),
+            **{
+                key: value
+                for key, value in capture.descriptor().items()
+                if key != "input_agc_noise_floor_db_3"
+            },
             "resampler_quality": "HQ",
             "block_sec": 0.1,
         },
@@ -211,37 +216,101 @@ def test_v2_calibrated_floor_fingerprint_migrates_only_for_same_stable_chain():
             "kind": "input_agc",
             "target_rms": 0.12,
             "max_gain": 12.0,
-            "noise_floor_db_3": floor_bucket,
             "rise": 0.08,
             "fall": 0.4,
         },
         "idle_apm": {"active": False},
         "denoise": {"active": False},
     }
-    canonical = json.dumps(
-        legacy_descriptor, sort_keys=True, separators=(",", ":")
-    )
-    legacy_hash = "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    assert legacy_hash in active.compatible_fingerprints
-    legacy_frontend = type(active)(
-        version=2,
-        fingerprint=legacy_hash,
-        summary=active.summary,
-        raw_baseline=False,
-    )
-    saved = Enrollment(model="/m/spk.onnx", embedding=USER, frontend=legacy_frontend)
+    for legacy_version in (2, 3):
+        legacy_descriptor = {
+            **shared_legacy_descriptor,
+            "schema": legacy_version,
+        }
+        if legacy_version == 2:
+            legacy_descriptor["capture"] = {
+                **legacy_descriptor["capture"],
+                "input_agc_noise_floor_db_3": floor_bucket,
+            }
+            legacy_descriptor["gain"] = {
+                **legacy_descriptor["gain"],
+                "noise_floor_db_3": floor_bucket,
+            }
+        canonical = json.dumps(
+            legacy_descriptor, sort_keys=True, separators=(",", ":")
+        )
+        legacy_hash = (
+            "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        )
+        legacy_frontend = type(active)(
+            version=legacy_version,
+            fingerprint=legacy_hash,
+            summary="input-agc",
+            raw_baseline=False,
+        )
+        saved = Enrollment(
+            model="/m/spk.onnx", embedding=USER, frontend=legacy_frontend
+        )
 
-    assert enrollment_matches_frontend(saved, active) is True
-    changed_route = provenance(CaptureResolution(**{**capture.__dict__, "route": "other"}))
-    assert enrollment_matches_frontend(saved, changed_route) is False
-    future = type(active)(
-        version=4,
-        fingerprint=active.fingerprint,
-        summary=active.summary,
-        raw_baseline=active.raw_baseline,
-        compatible_fingerprints=active.compatible_fingerprints,
+        assert legacy_hash not in active.compatible_fingerprints
+        assert enrollment_matches_frontend(saved, active) is False
+
+
+def test_v4_migrates_v2_v3_only_when_input_agc_was_absent():
+    cfg = {"sample_rate": 16000, "denoise_model": "/m/gtcrn.onnx"}
+    active = make_enrollment_frontend_provenance(
+        cfg,
+        input_agc=None,
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
     )
-    assert enrollment_matches_frontend(saved, future) is False
+    changed = make_enrollment_frontend_provenance(
+        {**cfg, "denoise_model": "/m/other.onnx"},
+        input_agc=None,
+        idle_apm=None,
+        denoiser=object(),
+        apm_owns_ns=False,
+    )
+    descriptor = {
+        "capture": {
+            "route": "unresolved:None",
+            "capture_sample_rate": 16000,
+            "model_sample_rate": 16000,
+            "resampler": "identity",
+            "voice_comm": "none",
+            "resampler_quality": "HQ",
+            "block_sec": 0.1,
+        },
+        "gain": {"kind": "static", "gain": 1.0},
+        "idle_apm": {"active": False},
+        "denoise": {"active": True, "model": "/m/gtcrn.onnx"},
+    }
+
+    assert active.version == 4
+    assert len(active.compatible_fingerprints) == 2
+    for legacy_version in (2, 3):
+        legacy_descriptor = {**descriptor, "schema": legacy_version}
+        canonical = json.dumps(
+            legacy_descriptor, sort_keys=True, separators=(",", ":")
+        )
+        legacy_hash = (
+            "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        )
+        saved = Enrollment(
+            model="/m/spk.onnx",
+            embedding=USER,
+            frontend=type(active)(
+                version=legacy_version,
+                fingerprint=legacy_hash,
+                summary=active.summary,
+                raw_baseline=False,
+            ),
+        )
+
+        assert legacy_hash in active.compatible_fingerprints
+        assert enrollment_matches_frontend(saved, active) is True
+        assert enrollment_matches_frontend(saved, changed) is False
 
 
 def test_default_pipewire_node_identity_distinguishes_raw_and_ec_routes():

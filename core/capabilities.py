@@ -228,6 +228,7 @@ def attach_llm_capabilities(
     live_routing: bool = False,
     load_snapshot: Optional[Callable[[], Optional[float]]] = None,
     image_provider: Optional[Callable[[], Optional[Sequence[object]]]] = None,
+    before_conversation_read: Optional[Callable[[], bool]] = None,
 ) -> CapabilityRegistry:
     """Replace the brain's stub providers with real LLM-backed ones.
 
@@ -322,6 +323,21 @@ def attach_llm_capabilities(
         # flagged), and its folded prompt already embeds the prior context.
         meta = context.get("metadata")
         skip_user_memory = bool(meta.get("skip_user_memory")) if isinstance(meta, dict) else False
+        if not skip_user_memory and before_conversation_read is not None:
+            try:
+                if not before_conversation_read():
+                    # Never append a newer user turn ahead of unresolved older
+                    # playback. A broken receipt engine degrades by omitting
+                    # this turn from conversation memory, not reversing roles.
+                    skip_user_memory = True
+                    log.warning(
+                        "skipping conversation memory after playback barrier timeout"
+                    )
+            except Exception:  # noqa: BLE001 - memory ordering is best-effort
+                skip_user_memory = True
+                log.exception(
+                    "playback history barrier failed; skipping conversation memory"
+                )
         # Procedural capture (default-OFF): detect an explicit teach directive in the
         # LIVE user query and store it as a durable behavior rule -- done BEFORE the
         # escalation branch so an escalated teach utterance still registers. The rule

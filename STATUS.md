@@ -1,26 +1,25 @@
 # Status — speaker
 
-Single source of current truth. On conflict: this file > newest accepted ADR in
-`docs/adr/` > everything else. Dated session/handoff documents are history.
+Single source of current truth. On conflict: this file > newest accepted ADR in `docs/adr/`
+> everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-11 on Linux ROG, `test/device-free-duplex-overlap-gate`;
-full headless: 2695 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
-12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY
-outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ran.
+Last verified: 2026-07-11 on Linux ROG, `feat/staged-playback-receipts`; full
+headless: 2733 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY outside
+the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 
 ## Runtime
 
 - Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
-- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local text tier
-  and gemma3:12b remains the complex/vision main tier (ADR-0020). Warm MiniCPM
-  TTFT was 0.12–0.14 s at 1.1 GB VRAM and 4/4 text probes passed; ASR has async SenseVoice finals.
+- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local text tier and
+  gemma3:12b remains the complex/vision main tier (ADR-0020). Warm MiniCPM TTFT was
+  0.12–0.14 s at 1.1 GB VRAM and 4/4 text probes passed; ASR has async SenseVoice finals.
 - ACT routing now requires command-shaped markers; informational action-word
   questions stay on MiniCPM and ambiguous terms use it to disambiguate (ADR-0024).
-- Current host capture is routed through PipeWire `echo-cancel-source` and output
-  through `echo-cancel-sink`. GTCRN denoise is active. Word-cut is the active
-  open-speaker barge path; in-app AEC/APM are off (ADR-0013). EC nodes and
-  Ollama are manually active for this session, not persistent boot services.
+- Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
+  GTCRN denoise is active. Word-cut is the open-speaker barge path; in-app AEC/APM
+  are off (ADR-0013). EC nodes/Ollama are session-only, not persistent services.
 - The host-local InputAGC flag remains on. Prior ear grading found pumping, while
   low-level word-cut evidence favored gain; do not flip it without a live A/B.
 
@@ -66,6 +65,9 @@ outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ra
   shutdown have generation/epoch ownership and cannot resurrect stale work. A
   real no-mic MiniCPM gate cancel took 157.9 ms with zero old pieces and a healthy
   ACT/follow-up.
+- Playback history has opt-in terminal sink receipts: capable engines commit ordered,
+  attested safe text; only uncancelled group completion schedules follow-ups. Sink
+  onset stays separate cut/echo evidence (ADR-0027). ScriptedEngine alone opts in.
 
 ## Live evidence and limits
 
@@ -78,11 +80,9 @@ outside the sandbox on the actual EC route/models/Ollama. No human-speech A/B ra
   handling stays headless, and acoustic echo/owner-mic behavior is not live-validated.
 - Current v1/legacy speaker enrollment is intentionally rejected by v2 provenance;
   local `speaker_gate_input` remains off until live re-enrollment succeeds.
-- Still required with the owner at the mic: (1) `python -m core --enroll` on the
-  active EC route and owner-acceptance check; (2) quiet/casual phrase accuracy plus
-  mid-thought pause A/B; (3) bare-speaker sustained talk-over batch measuring cut
-  rate, silent-control false cuts/tails, and reply-tail word continuity. Do not
-  claim these live-validated until they actually run.
+- Still required with the owner at the mic: (1) `python -m core --enroll` on the active
+  EC route; (2) quiet/casual phrase plus mid-thought-pause A/B; (3) bare-speaker
+  talk-over cut/false-cut/tail continuity batch. Do not claim validated until run.
 
 ## Standard verification
 ```bash

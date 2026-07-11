@@ -8,6 +8,7 @@ A large delay_sec keeps the real timer from firing mid-test.
 from __future__ import annotations
 
 from always_on_agent.followups import FollowupConfig, FollowupState
+from always_on_agent.events import AgentEvent, EventKind
 from always_on_agent.supervisor import AgentSupervisor
 
 from core.engines.scripted import ScriptedEngine
@@ -109,3 +110,49 @@ def test_user_speech_cancels_pending_followup():
     assert runtime.wait_idle()
     assert runtime.supervisor._followup_state.count == 0
     runtime.stop()
+
+
+def test_queued_followup_tick_cannot_survive_cancel_reset():
+    sup = AgentSupervisor(
+        followup_config=FollowupConfig(enabled=True, delay_sec=100)
+    )
+    started = []
+    sup._start_task = lambda task, *args, **kwargs: started.append(task)  # type: ignore[method-assign]
+    sup._schedule_followup()
+    sup._tick_followup()  # callback published, event intentionally still queued
+
+    sup.cancel_all()
+    sup.bus.drain()
+
+    assert started == []
+    sup.shutdown()
+
+
+def test_old_playback_commit_after_user_partial_cannot_rearm_followup():
+    sup = AgentSupervisor(
+        followup_config=FollowupConfig(enabled=True, delay_sec=100),
+        defer_output_until_playback_receipt=True,
+    )
+    old_followup_generation = sup.followup_generation
+    old_input_generation = sup.latest_arrival_generation
+    old_speech_epoch = sup.speech_epoch
+
+    sup.handle_event(AgentEvent.partial("new user speech"))
+    sup.handle_event(
+        AgentEvent(
+            EventKind.MEMORY_COMMIT,
+            {
+                "source": "playback_receipt",
+                "text": "Earlier heard answer.",
+                "is_followup": False,
+                "schedule_followup": True,
+                "epoch": old_speech_epoch,
+                "input_generation": old_input_generation,
+                "followup_generation": old_followup_generation,
+            },
+        )
+    )
+
+    assert [item.text for item in sup.memory.all()] == ["Earlier heard answer."]
+    assert sup._followup_timer is None
+    sup.shutdown()

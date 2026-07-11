@@ -285,6 +285,17 @@ def test_build_llms_phone_profile_builds_llamacpp_clients():
     assert main.model_path.endswith("MiniCPM5-1B-Q4_K_M.gguf")
     assert fast is main  # identical GGUF must not allocate weights/KV twice
     assert main.n_ctx == 2048 and main.n_gpu_layers == 0
+    assert main._think is False
+
+
+def test_llamacpp_phone_thinking_can_be_deliberately_opted_in():
+    config = _apply_device_profile(_load_config(), "phone")
+    config["llm"]["think"] = True
+
+    main, fast = _build_llms(_args(), config)
+
+    assert main._think is True
+    assert fast is main
 
 
 def test_on_device_profiles_quantize_the_k_cache():

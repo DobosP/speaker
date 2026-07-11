@@ -153,9 +153,16 @@ def test_ensure_forwards_kv_cache_types_to_llama(monkeypatch):
     _add_verified_abort_symbols(fake_mod)
     monkeypatch.setitem(sys.modules, "llama_cpp", fake_mod)
 
-    LlamaCppLLM("/x.gguf", type_k="q8_0", type_v="q8_0")._ensure()  # no client -> builds
+    LlamaCppLLM(
+        "/x.gguf",
+        type_k="q8_0",
+        type_v="q8_0",
+        n_threads=2,
+        n_threads_batch=3,
+    )._ensure()  # no client -> builds
     assert captured["type_k"] == 8 and captured["type_v"] == 8
     assert captured["model_path"] == "/x.gguf"
+    assert captured["n_threads"] == 2 and captured["n_threads_batch"] == 3
 
     captured.clear()
     LlamaCppLLM("/x.gguf")._ensure()

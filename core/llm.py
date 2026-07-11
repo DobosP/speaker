@@ -5,6 +5,7 @@ import inspect
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import weakref
@@ -134,6 +135,10 @@ class LLMClient(Protocol):
 
 class LLMCallCancelled(RuntimeError):
     """Control-flow signal for a retired cancellable LLM invocation."""
+
+
+class LLMProviderOutputError(RuntimeError):
+    """Provider completed without a safe user-visible answer."""
 
 
 class _CombinedCancelEvent:
@@ -895,6 +900,336 @@ def _llamacpp_native_context(client: object) -> object | None:
     return getattr(client, "ctx", None)
 
 
+class _ReasoningTagFilter:
+    """Incrementally remove model-visible reasoning blocks from spoken output.
+
+    MiniCPM's supported no-think template should prevent these from being
+    generated. This parser is the output-boundary safety net: drifted, nested,
+    or malformed reasoning blocks must never send hidden content to TTS. Markers
+    may be split across arbitrary native stream chunks.
+    """
+
+    _HTML_OPEN = "<think"
+    _HTML_CLOSE = "</think"
+    _SPECIAL_OPEN = "<|thought_begin|>"
+    _SPECIAL_CLOSE = "<|thought_end|>"
+    _MAX_NESTING = 64
+    _MAX_PARTIAL_MARKER = 64
+    _HTML_OPEN_RE = re.compile(r"<\s*think(?=\s|>)", re.IGNORECASE)
+    _HTML_CLOSE_RE = re.compile(r"<\s*/\s*think(?=\s|>)", re.IGNORECASE)
+    _SPECIAL_START_RE = re.compile(r"<\s*\|\s*", re.IGNORECASE)
+    _DEFINITIONS = (
+        (_HTML_OPEN, _HTML_CLOSE),
+        (_HTML_CLOSE, None),
+        (_SPECIAL_OPEN, _SPECIAL_CLOSE),
+        (_SPECIAL_CLOSE, None),
+    )
+
+    def __init__(self, *, initial_reasoning_closer: str | None = None) -> None:
+        self._buffer = ""
+        self._active_closers: list[str] = (
+            [initial_reasoning_closer] if initial_reasoning_closer else []
+        )
+        self.suppressed_chars = 0
+        self.suppressed_blocks = 1 if initial_reasoning_closer else 0
+        self.saw_markup = bool(initial_reasoning_closer)
+        self.safe_nonspace = False
+        self.malformed = False
+
+    @classmethod
+    def _partial_marker_suffix(cls, text: str) -> tuple[int, str]:
+        """Return start and bounded canonical text for a partial marker."""
+
+        candidates: list[tuple[int, str]] = []
+        for marker in (cls._SPECIAL_OPEN, cls._SPECIAL_CLOSE):
+            upper = min(len(text), len(marker) - 1)
+            for size in range(upper, 0, -1):
+                if text.lower().endswith(marker[:size].lower()):
+                    candidates.append((len(text) - size, text[-size:]))
+                    break
+
+        # HTML-like markers permit whitespace around ``/`` and ``think``.
+        # Canonicalize an incomplete suffix so arbitrary whitespace cannot make
+        # retained stream state grow without bound.
+        start = text.rfind("<")
+        if start >= 0:
+            tail = text[start:]
+
+            # Also retain canonical or whitespace-deformed prefixes of the
+            # special-token markers. Once ``<|thought_`` is present, any
+            # truncated/divergent continuation is control markup, not speech.
+            index = 1
+            while index < len(tail) and tail[index].isspace():
+                index += 1
+            if index < len(tail) and tail[index] == "|":
+                index += 1
+                while index < len(tail) and tail[index].isspace():
+                    index += 1
+                special_tail = tail[index:].lower()
+                stem = "thought_"
+                valid_special_prefix = (
+                    len(special_tail) <= len(stem)
+                    and stem.startswith(special_tail)
+                )
+                if special_tail.startswith(stem):
+                    suffix = special_tail[len(stem):]
+                    valid_special_prefix = any(
+                        target.startswith(suffix)
+                        or suffix in (target, target + "|")
+                        for target in ("begin", "end")
+                    )
+                if valid_special_prefix:
+                    retained = (
+                        tail
+                        if len(tail) <= cls._MAX_PARTIAL_MARKER
+                        else "<|" + special_tail
+                    )
+                    candidates.append((start, retained))
+
+            index = 1
+            while index < len(tail) and tail[index].isspace():
+                index += 1
+            closing = index < len(tail) and tail[index] == "/"
+            if closing:
+                index += 1
+                while index < len(tail) and tail[index].isspace():
+                    index += 1
+            letters = tail[index:]
+            if len(letters) <= len("think") and "think".startswith(letters.lower()):
+                canonical = "</" if closing else "<"
+                canonical += letters.lower()
+                retained = (
+                    tail if len(tail) <= cls._MAX_PARTIAL_MARKER else canonical
+                )
+                candidates.append((start, retained))
+
+        if not candidates:
+            return len(text), ""
+        return min(candidates, key=lambda candidate: candidate[0])
+
+    @classmethod
+    def _marker_at(
+        cls,
+        text: str,
+        marker: str,
+    ) -> tuple[int, int, int] | None:
+        """Return ``(start, end, prefix_end)`` for a supported marker.
+
+        A negative ``end`` means a complete HTML prefix was observed but its
+        final ``>`` has not arrived. ``prefix_end`` lets the parser enter hidden
+        state without retaining unbounded attributes/content.
+        """
+
+        if marker == cls._HTML_OPEN:
+            match = cls._HTML_OPEN_RE.search(text)
+        elif marker == cls._HTML_CLOSE:
+            match = cls._HTML_CLOSE_RE.search(text)
+        else:
+            # Special-token tags have no attributes. Reserve the whole
+            # ``<|thought_`` namespace so truncated variants cannot become TTS
+            # text merely because native chunking split before ``|>``.
+            target = "begin" if marker == cls._SPECIAL_OPEN else "end"
+            for special_match in cls._SPECIAL_START_RE.finditer(text):
+                remainder = text[special_match.end():]
+                if not remainder:
+                    return None
+                lowered = remainder.lower()
+                stem = "thought_"
+                stem_common = 0
+                while (
+                    stem_common < len(lowered)
+                    and stem_common < len(stem)
+                    and lowered[stem_common] == stem[stem_common]
+                ):
+                    stem_common += 1
+                if stem_common < min(len(lowered), len(stem)):
+                    if marker == cls._SPECIAL_OPEN:
+                        return (
+                            special_match.start(),
+                            -1,
+                            special_match.end() + stem_common,
+                        )
+                    continue
+                if len(lowered) < len(stem):
+                    return None
+                mode = lowered[len(stem):]
+                mode_start = special_match.end() + len(stem)
+                if not mode:
+                    return None
+                if not mode.startswith(target[0]):
+                    if marker == cls._SPECIAL_OPEN and not mode.startswith("e"):
+                        return special_match.start(), -1, mode_start
+                    continue
+                common = 0
+                while (
+                    common < len(mode)
+                    and common < len(target)
+                    and mode[common] == target[common]
+                ):
+                    common += 1
+                if common < min(len(mode), len(target)):
+                    return special_match.start(), -1, mode_start + common
+                if len(mode) < len(target):
+                    return None
+                prefix_end = mode_start + len(target)
+                if prefix_end == len(text) or text[prefix_end:] == "|":
+                    return None
+                if text.startswith("|>", prefix_end):
+                    end = prefix_end + 2
+                    return special_match.start(), end, end
+                return special_match.start(), -1, prefix_end
+            return None
+        if match is None:
+            return None
+        end = text.find(">", match.end())
+        nested_start = text.find("<", match.end())
+        if nested_start >= 0 and (end < 0 or nested_start < end):
+            # Do not steal a later closing tag's ``>`` as this tag's terminator.
+            # Enter the normal fail-closed hidden path at the confirmed prefix.
+            return match.start(), -1, match.end()
+        return match.start(), end + 1 if end >= 0 else -1, match.end()
+
+    def _emit(self, text: str, visible: list[str]) -> None:
+        if not text:
+            return
+        if self.malformed:
+            self.suppressed_chars += len(text)
+            return
+        if not self.safe_nonspace:
+            # A closed reasoning preamble commonly leaves ``\n\n`` before the
+            # answer. It must not stamp first-token/TTS timing by itself.
+            text = text.lstrip()
+            if not text:
+                return
+            self.safe_nonspace = True
+        visible.append(text)
+
+    def _hide_or_emit(self, text: str, visible: list[str]) -> None:
+        if self._active_closers or self.malformed:
+            self.suppressed_chars += len(text)
+        else:
+            self._emit(text, visible)
+
+    def feed(self, text: object) -> list[str]:
+        self._buffer += str(text or "")
+        visible: list[str] = []
+        while self._buffer:
+            candidates: list[tuple[int, int, int, str, str | None]] = []
+            for marker, closer in self._DEFINITIONS:
+                found = self._marker_at(self._buffer, marker)
+                if found is not None:
+                    candidates.append((*found, marker, closer))
+            if candidates:
+                index, end, prefix_end, marker, closer = min(
+                    candidates,
+                    key=lambda item: item[0],
+                )
+                self._hide_or_emit(self._buffer[:index], visible)
+                self.saw_markup = True
+
+                if end < 0:
+                    if closer is not None:
+                        # An incomplete opener is already unsafe. Enter hidden
+                        # mode now and scan the remainder for its eventual close.
+                        if len(self._active_closers) >= self._MAX_NESTING:
+                            self.malformed = True
+                        else:
+                            self._active_closers.append(closer)
+                            self.suppressed_blocks += 1
+                        self._buffer = self._buffer[prefix_end:]
+                        continue
+                    if self._active_closers and self._active_closers[-1] != marker:
+                        self.malformed = True
+                        self._buffer = ""
+                        break
+                    if marker == self._SPECIAL_CLOSE:
+                        self.malformed = True
+                        self.suppressed_chars += len(self._buffer) - prefix_end
+                        self._buffer = ""
+                        break
+                    # Keep only a fixed canonical prefix while waiting for ``>``.
+                    self._buffer = marker + " "
+                    break
+
+                self._buffer = self._buffer[end:]
+                if closer is not None:
+                    # Depth/closer tracking prevents nested reasoning from
+                    # becoming visible after the first inner close.
+                    if len(self._active_closers) >= self._MAX_NESTING:
+                        self.malformed = True
+                    else:
+                        self._active_closers.append(closer)
+                        self.suppressed_blocks += 1
+                elif self._active_closers:
+                    if self._active_closers[-1] == marker:
+                        self._active_closers.pop()
+                    else:
+                        # Mismatched control markup is never recoverable into a
+                        # trustworthy spoken answer during this invocation.
+                        self.malformed = True
+                # A stray closing marker outside reasoning is discarded.
+                continue
+
+            start, suffix = self._partial_marker_suffix(self._buffer)
+            self._hide_or_emit(self._buffer[:start], visible)
+            self._buffer = suffix
+            break
+        return visible
+
+    def finish(self) -> list[str]:
+        if self._active_closers:
+            # Everything after an opener remains reasoning until all nested
+            # blocks close; max-token cuts therefore fail closed.
+            self.suppressed_chars += len(self._buffer)
+            self._buffer = ""
+            self._active_closers.clear()
+            self.malformed = True
+            return []
+        if self._buffer:
+            partial_at, _canonical = self._partial_marker_suffix(self._buffer)
+            incomplete_html = any(
+                (found := self._marker_at(self._buffer, marker)) is not None
+                and found[1] < 0
+                for marker in (self._HTML_OPEN, self._HTML_CLOSE)
+            )
+            if partial_at == 0 or incomplete_html:
+                # Never turn a truncated control opener (e.g. ``< thi``) into
+                # speech at the native stream boundary.
+                self._buffer = ""
+                self.saw_markup = True
+                self.malformed = True
+                return []
+        tail = self._buffer
+        self._buffer = ""
+        visible: list[str] = []
+        self._emit(tail, visible)
+        return visible
+
+
+def _without_reasoning_tags(
+    text: object,
+    *,
+    initial_reasoning_closer: str | None = None,
+) -> tuple[str, _ReasoningTagFilter]:
+    parser = _ReasoningTagFilter(
+        initial_reasoning_closer=initial_reasoning_closer,
+    )
+    visible = parser.feed(text)
+    visible.extend(parser.finish())
+    return "".join(visible), parser
+
+
+def _require_safe_reasoning_output(parser: _ReasoningTagFilter) -> None:
+    if parser.malformed:
+        raise LLMProviderOutputError(
+            "llama.cpp reasoning output ended in malformed/unclosed markup"
+        )
+    if parser.saw_markup and not parser.safe_nonspace:
+        raise LLMProviderOutputError(
+            "llama.cpp reasoning output contained no final answer"
+        )
+
+
 class LlamaCppLLM:
     """On-device LLM via llama.cpp (the mobile/no-Ollama path).
 
@@ -922,19 +1257,27 @@ class LlamaCppLLM:
         *,
         n_ctx: int = 4096,
         n_threads: Optional[int] = None,
+        n_threads_batch: Optional[int] = None,
         n_gpu_layers: int = 0,
         chat_format: Optional[str] = None,
         options: Optional[dict] = None,
         type_k=None,
         type_v=None,
+        think: Optional[bool] = False,
         client=None,
         abort_api: Optional[_LlamaCppAbortAPI] = None,
     ):
         self.model_path = model_path
         self.n_ctx = n_ctx
         self.n_threads = n_threads
+        self.n_threads_batch = n_threads_batch
         self.n_gpu_layers = n_gpu_layers
         self.chat_format = chat_format
+        # Same voice-path contract as OllamaLLM: reasoning is explicitly off by
+        # default. True opts into deliberate reasoning; None is accepted only
+        # for non-reasoning templates because an implicit prompt prefill cannot
+        # be made safe at the output seam. Raw markup is always suppressed.
+        self._think = think
         # KV-cache quantization (llm-inference-9): q8_0 roughly halves the KV
         # memory vs the f16 default at near-lossless quality, so a longer context
         # fits in a phone's RAM budget. None -> llama.cpp's default. n_ctx (above)
@@ -951,6 +1294,13 @@ class LlamaCppLLM:
         self._abort_registered_client: object | None = None
         self._active_cancel_event: object | None = None
         self._context_poisoned = False
+        self.last_reasoning_chars = 0
+        self.last_reasoning_blocks = 0
+        self.last_finish_reason: str | None = None
+        # Set only after this instance installs a supported template handler
+        # whose prompt actually ends inside a reasoning block. Merely asking a
+        # non-reasoning/injected model for ``think=True`` must not hide its answer.
+        self._reasoning_prefill_closer: str | None = None
         # A single llama.cpp context can't run two inferences at once, and the
         # lazy build must not double-construct. This serializes both: the startup
         # warm pass and a concurrent first live turn (or two tasks) share one
@@ -976,6 +1326,83 @@ class LlamaCppLLM:
                     )
                 return
 
+    def _configure_chat_template(self, client: object) -> str | None:
+        """Apply MiniCPM's supported think mode to the selected GGUF handler.
+
+        v0.3.33's direct ``create_chat_completion`` signature cannot accept
+        chat-template kwargs. Its bundled HTTP server implements them by
+        wrapping the effective handler after model construction; mirror that
+        audited mechanism for the in-process phone path.
+        """
+
+        metadata = getattr(client, "metadata", None)
+        template = (
+            metadata.get("tokenizer.chat_template")
+            if isinstance(metadata, Mapping)
+            else None
+        )
+        if not isinstance(template, str) or not template:
+            return None  # A non-template/non-reasoning GGUF needs no control.
+        supports_flag = "enable_thinking" in template
+        lowered_template = template.lower()
+        has_html_reasoning = bool(re.search(r"<\s*think\b", lowered_template))
+        has_special_reasoning = "<|thought_begin|>" in lowered_template
+        has_reasoning_markup = has_html_reasoning or has_special_reasoning
+        if self._think is None:
+            if has_reasoning_markup or supports_flag:
+                raise RuntimeError(
+                    "GGUF reasoning templates require an explicit think boolean"
+                )
+            return None
+        if not supports_flag:
+            if has_reasoning_markup:
+                raise RuntimeError(
+                    "GGUF reasoning template lacks the required "
+                    "enable_thinking control"
+                )
+            return None
+
+        selected_format = getattr(client, "chat_format", None)
+        if callable(getattr(client, "chat_handler", None)) or (
+            selected_format != "chat_template.default"
+        ):
+            raise RuntimeError(
+                "GGUF hybrid reasoning requires its embedded "
+                "chat_template.default handler"
+            )
+        handlers = getattr(client, "_chat_handlers", None)
+        base_handler = (
+            handlers.get("chat_template.default")
+            if isinstance(handlers, Mapping)
+            else None
+        )
+        if not callable(base_handler):
+            raise RuntimeError(
+                "llama.cpp could not resolve the GGUF chat-template handler"
+            )
+
+        enable_thinking = bool(self._think)
+
+        def chat_handler_with_think_mode(*args, **kwargs):
+            return base_handler(
+                *args,
+                **{"enable_thinking": enable_thinking, **kwargs},
+            )
+
+        try:
+            setattr(client, "chat_handler", chat_handler_with_think_mode)
+        except Exception as exc:
+            raise RuntimeError(
+                "llama.cpp could not install the voice think-mode handler"
+            ) from exc
+        if not enable_thinking:
+            return None
+        if has_html_reasoning:
+            return _ReasoningTagFilter._HTML_CLOSE
+        if has_special_reasoning:
+            return _ReasoningTagFilter._SPECIAL_CLOSE
+        return None
+
     def _ensure(self, cancel_event: object | None = None):
         if self._client is None:
             self._acquire_model_lock(cancel_event)
@@ -999,6 +1426,8 @@ class LlamaCppLLM:
                     )
                     if self.n_threads:
                         kwargs["n_threads"] = self.n_threads
+                    if self.n_threads_batch:
+                        kwargs["n_threads_batch"] = self.n_threads_batch
                     if self.chat_format:
                         kwargs["chat_format"] = self.chat_format
                     if self.type_k is not None:
@@ -1006,7 +1435,7 @@ class LlamaCppLLM:
                     if self.type_v is not None:
                         kwargs["type_v"] = self.type_v
                     try:
-                        self._client = Llama(**kwargs)
+                        candidate = Llama(**kwargs)
                     except TypeError:
                         # An old llama-cpp-python without the type_k/type_v kwargs
                         # would hard-crash the first on-device turn. Degrade to the
@@ -1020,7 +1449,24 @@ class LlamaCppLLM:
                         _llamacpp_log.warning(
                             "llama.cpp build lacks KV-cache-quant kwargs; using the f16 default"
                         )
-                        self._client = Llama(**kwargs)
+                        candidate = Llama(**kwargs)
+                    try:
+                        reasoning_prefill_closer = self._configure_chat_template(
+                            candidate
+                        )
+                    except BaseException:
+                        closer = getattr(candidate, "close", None)
+                        if callable(closer):
+                            try:
+                                closer()
+                            except Exception:
+                                _llamacpp_log.debug(
+                                    "failed to close llama.cpp after chat-template setup error",
+                                    exc_info=True,
+                                )
+                        raise
+                    self._reasoning_prefill_closer = reasoning_prefill_closer
+                    self._client = candidate
             finally:
                 self._lock.release()
         return self._client
@@ -1076,12 +1522,25 @@ class LlamaCppLLM:
             self._register_abort_locked(client)
             if _llamacpp_cancelled(cancel_event):
                 raise LLMCallCancelled("llama.cpp call cancelled before inference")
+            self.last_reasoning_chars = 0
+            self.last_reasoning_blocks = 0
+            self.last_finish_reason = None
             self._active_cancel_event = cancel_event
             return client
         except BaseException:
             self._active_cancel_event = None
             self._lock.release()
             raise
+
+    def _record_reasoning_filter(self, parser: _ReasoningTagFilter) -> None:
+        self.last_reasoning_chars = parser.suppressed_chars
+        self.last_reasoning_blocks = parser.suppressed_blocks
+        if parser.suppressed_blocks:
+            _llamacpp_log.info(
+                "llama.cpp suppressed %d reasoning block(s), %d chars",
+                parser.suppressed_blocks,
+                parser.suppressed_chars,
+            )
 
     def _recover_cancelled_locked(self, client: object) -> None:
         """Clear partial ubatches before the shared context is reusable."""
@@ -1145,13 +1604,24 @@ class LlamaCppLLM:
     ) -> str:
         cancel_event = self._context_cancel_event()
         client = self._begin_inference(cancel_event)
-        resp = None
+        content: str | None = None
         error: BaseException | None = None
         try:
             resp = client.create_chat_completion(
                 messages=self._messages(prompt, system, images, history),
                 stream=False, **self._options
             )
+            choice = resp["choices"][0]
+            finish_reason = choice.get("finish_reason")
+            if finish_reason is not None:
+                self.last_finish_reason = str(finish_reason)
+            raw_content = choice["message"]["content"]
+            content, parser = _without_reasoning_tags(
+                raw_content,
+                initial_reasoning_closer=self._reasoning_prefill_closer,
+            )
+            self._record_reasoning_filter(parser)
+            _require_safe_reasoning_output(parser)
         except BaseException as exc:
             error = exc
         finally:
@@ -1169,10 +1639,9 @@ class LlamaCppLLM:
             raise cancelled_error
         if error is not None:
             raise error.with_traceback(error.__traceback__)
-        # Defensive: a successful binding call always returns a mapping.
-        if resp is None:
-            raise RuntimeError("llama.cpp returned no chat-completion response")
-        return resp["choices"][0]["message"]["content"]
+        if content is None:
+            raise RuntimeError("llama.cpp returned no chat-completion content")
+        return content
 
     def stream(
         self,
@@ -1204,6 +1673,10 @@ class LlamaCppLLM:
     ) -> Iterator[str]:
         client = self._begin_inference(cancel_event)
         native_stream = None
+        parser = _ReasoningTagFilter(
+            initial_reasoning_closer=self._reasoning_prefill_closer,
+        )
+        filter_recorded = False
         error: BaseException | None = None
         try:
             native_stream = client.create_chat_completion(
@@ -1220,15 +1693,35 @@ class LlamaCppLLM:
                     break
                 if _llamacpp_cancelled(cancel_event):
                     raise LLMCallCancelled("llama.cpp stream cancelled")
-                piece = chunk["choices"][0].get("delta", {}).get("content")
+                choice = chunk["choices"][0]
+                finish_reason = choice.get("finish_reason")
+                if finish_reason is not None:
+                    self.last_finish_reason = str(finish_reason)
+                piece = choice.get("delta", {}).get("content")
                 if piece:
-                    yield piece
+                    for visible in parser.feed(piece):
+                        if _llamacpp_cancelled(cancel_event):
+                            raise LLMCallCancelled("llama.cpp stream cancelled")
+                        if visible:
+                            yield visible
             if _llamacpp_cancelled(cancel_event):
                 raise LLMCallCancelled("llama.cpp stream cancelled at completion")
+            tail = parser.finish()
+            self._record_reasoning_filter(parser)
+            filter_recorded = True
+            _require_safe_reasoning_output(parser)
+            for visible in tail:
+                if _llamacpp_cancelled(cancel_event):
+                    raise LLMCallCancelled("llama.cpp stream cancelled at completion")
+                if visible:
+                    yield visible
         except BaseException as exc:
             error = exc
         finally:
             try:
+                if not filter_recorded:
+                    parser.finish()
+                    self._record_reasoning_filter(parser)
                 closer = getattr(native_stream, "close", None)
                 if callable(closer):
                     try:

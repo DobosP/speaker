@@ -263,10 +263,12 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       recovery boundary (ADR-0030). REMAINING: hard containment for model load /
       native deadlock and cloud-enabled Hedge loser cancellation; use a spawned
       process if the native recovery gate regresses. Also evaluate MiniCPM native
-      XML tools behind a dedicated adapter. The raw llama.cpp chat path currently
-      emits MiniCPM `<think>` content and can spend its voice output cap before a
-      final answer; add a supported no-think template/adapter plus real TTFT and
-      answer-completion gates before calling the phone voice tier polished.
+      XML tools behind a dedicated adapter. Supported generation-time no-think,
+      pre-TTS fail-closed reasoning filtering, and real TTFT/completion/cancel-
+      recovery gates shipped in ADR-0031. REMAINING: production llama.cpp thread-
+      pair tuning; on this 32-logical-core hybrid host the binding's 16 generation
+      / 32 batch defaults measured 5.266 s TTFT versus 0.173 s at 4/4. The sanity
+      gate's fixed 2/2 pair is a correctness baseline, not production tuning.
       Flutter stays Gemma until a validated runtime exists.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)

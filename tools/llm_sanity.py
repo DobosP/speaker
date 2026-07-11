@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -92,8 +93,27 @@ def _check(pairs: list[tuple[str, str]]) -> list[str]:
     """Return human-readable problems (empty list == healthy)."""
     problems = []
     for prompt, out in pairs:
+        lowered = out.lower()
         if looks_degenerate(out):
             problems.append(f"degenerate output for {prompt!r}: {out!r}")
+        if any(marker in lowered for marker in ("<think", "</think", "<|thought_")):
+            problems.append(f"reasoning markup leaked for {prompt!r}")
+        if prompt == "What is the capital of France?":
+            has_paris = bool(re.search(r"\bparis\b", lowered))
+            negates_paris = bool(
+                re.search(r"\b(?:not|isn't|isnt|never)\b.{0,24}\bparis\b", lowered)
+                or re.search(r"\bparis\b\s+(?:is|was)\s+not\b", lowered)
+            )
+            if not has_paris or negates_paris:
+                problems.append("capital probe did not answer Paris")
+        if prompt == "What is two plus two?":
+            has_four = bool(re.search(r"\b(?:four|4)\b", lowered))
+            negates_four = bool(
+                re.search(r"\b(?:not|isn't|isnt|never)\b.{0,24}\b(?:four|4)\b", lowered)
+                or re.search(r"\b(?:four|4)\b\s+(?:is|was)\s+not\b", lowered)
+            )
+            if not has_four or negates_four:
+                problems.append("arithmetic probe did not answer four")
     if len(pairs) > 1 and not outputs_distinct([o for _, o in pairs]):
         problems.append("all prompts produced the same answer")
     return problems
@@ -254,6 +274,16 @@ def probe_llamacpp_abort_recovery(
     recovery_finished_at = time.perf_counter()
     if not recovered:
         raise RuntimeError("same-context recovery completion was empty")
+    if int(getattr(llm, "last_reasoning_blocks", 0) or 0):
+        raise RuntimeError(
+            "same-context recovery needed the reasoning-tag fallback; "
+            "no-think template control is not effective"
+        )
+    if hasattr(llm, "last_finish_reason") and llm.last_finish_reason != "stop":
+        raise RuntimeError(
+            "same-context recovery did not finish naturally "
+            f"(finish_reason={llm.last_finish_reason!r})"
+        )
     if getattr(llm, "_context_poisoned", None) is not False:
         raise RuntimeError("llama.cpp context became poisoned during recovery")
 
@@ -567,6 +597,10 @@ def main(argv: list[str] | None = None) -> int:
     llm = LlamaCppLLM(
         gguf,
         n_ctx=2048,
+        # Fixed functional baseline: keep host topology/oversubscription out of
+        # this correctness gate. The profile-aware perf workflow owns tuning.
+        n_threads=2,
+        n_threads_batch=2,
         n_gpu_layers=0,
         options={"max_tokens": _LOCAL_MAX_TOKENS},
     )
@@ -588,18 +622,45 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     pairs: list[tuple[str, str]] = []
+    template_problems: list[str] = []
     for prompt in _PROMPTS:
-        out = "".join(llm.stream(prompt, system=_SYSTEM)).strip()
-        print(f"\n=== {prompt}\n{out}")
+        started_at = time.perf_counter()
+        first_at: float | None = None
+        pieces: list[str] = []
+        for piece in llm.stream(prompt, system=_SYSTEM):
+            if first_at is None:
+                first_at = time.perf_counter()
+            pieces.append(piece)
+        finished_at = time.perf_counter()
+        out = "".join(pieces).strip()
+        ttft_ms = (
+            (first_at - started_at) * 1000.0
+            if first_at is not None
+            else float("inf")
+        )
+        print(
+            f"\n=== {prompt} "
+            f"[ttft={ttft_ms:.1f}ms total={(finished_at - started_at) * 1000.0:.1f}ms]"
+            f"\n{out}"
+        )
         pairs.append((prompt, out))
+        if int(getattr(llm, "last_reasoning_blocks", 0) or 0):
+            template_problems.append(
+                f"no-think template failed for {prompt!r}; output fallback was needed"
+            )
+        if getattr(llm, "last_finish_reason", None) != "stop":
+            template_problems.append(
+                f"answer did not finish naturally for {prompt!r}: "
+                f"{getattr(llm, 'last_finish_reason', None)!r}"
+            )
 
-    problems = _check(pairs)
+    problems = template_problems + _check(pairs)
     if problems:
         print("\nLLM SANITY FAILED:")
         for problem in problems:
             print(" -", problem)
         return FAIL
-    print("\nLLM sanity OK: distinct, non-degenerate answers.")
+    print("\nLLM sanity OK: direct complete answers, no reasoning fallback.")
     return OK
 
 

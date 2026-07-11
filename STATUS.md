@@ -2,11 +2,10 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `feat/minicpm-native-tool-adapter`; full
-headless: 3039 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
-12 skipped; APM/DTD: 6 passed; MiniCPM Q4 native-tool: conservative 1254/1279
-prompt tokens, two 2.2 ms cancels plus healthy 2.19--2.27 s local-tool/final
-reuse; whitespace passed. Prior host doctor was READY. No live audio A/B ran.
+Last verified: 2026-07-11 on Linux ROG, `fix/enrollment-measured-ambient`; full
+headless: 3043 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+12 skipped; APM/DTD: 6 passed; compilation/whitespace passed. Matched-device live
+enrollment passed; normal-use low-gain and open-speaker barge A/B exposed failures.
 
 ## Runtime
 
@@ -43,8 +42,8 @@ reuse; whitespace passed. Prior host doctor was READY. No live audio A/B ran.
 - Enrollment provenance v2 is checked after live open/input calibration and covers
   actual route, rates, resampler, OS processing, front end, and calibrated AGC.
   Enrollment/live embeddings use the same voiced slice; sustained raw pre-AGC
-  evidence rejects silent/carried-gain garbage references. Mismatch is fail-open
-  (ADR-0018, superseding ADR-0015).
+  evidence now uses measured ambient, not the expanded/clamped runtime AGC floor;
+  silence/transient guards remain. Mismatch is fail-open (ADR-0018/0034).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   readiness contract. Selected ASR/TTS/VAD/denoise/KWS/punctuation/AEC artifacts
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
@@ -70,31 +69,32 @@ reuse; whitespace passed. Prior host doctor was READY. No live audio A/B ran.
 
 ## Live evidence and limits
 
-- Pre-fix run `20260710-084939` emitted raw/final `AND` every ~2 s; post-fix
-  runs `093305`/`100432` had no `AND` storm in 20 s. No audio was recorded.
+- Matched-device enrollment completed from three 12 s clips on the active PipeWire
+  EC route: 512 dimensions, similarity 0.58 minimum/0.78 mean. Runtime `114725`
+  accepted its fingerprint and reported the enrolled speaker-ID gate.
+- At the owner's 13% OS source setting, run `114725` heard speech but SenseVoice
+  damaged or lost commands; runtime calibration did not make normal use reliable.
+  In controlled run `115512`, moderate hardware gain removed that immediate limit,
+  but word-cut falsely cut on the assistant's own “rings of Saturn” and then the
+  real Roman-architecture override was INGESTed instead of preserved. Shutdown
+  also hit PortAudio -9999 followed by allocator corruption. These are red evidence.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
-- One real word-cut occurred on 2026-07-07; device-free I/O is broad, but acoustic behavior remains headless-only.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
-  (ADR-0031/0032/0033). All evidence is headless; actual phone thermals and live
-  microphone/speaker/barge-in remain unvalidated.
-- Legacy enrollment is rejected by v2 provenance; `speaker_gate_input` stays off until live re-enrollment.
-- Still required with the owner at the mic: (1) `python -m core --enroll` on the active
-  EC route; (2) quiet/casual phrase plus mid-thought-pause A/B; (3) bare-speaker
-  talk-over cut/false-cut/tail continuity batch. Do not claim validated until run.
+  (ADR-0031/0032/0033). Phone thermals remain unvalidated; today's live
+  microphone/speaker barge batch is red.
+- Still required with the owner at the mic: fix/verify low-sensitivity normal use,
+  self-echo rejection, override preservation, mid-thought pause, bare `stop`, and
+  reply-tail continuity. Do not claim barge validated until the full batch passes.
 
 ## Standard verification
-```bash
-/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q
-/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q
-git diff --check
-```
+`/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`;
+`/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q`;
+`git diff --check`.
 
-Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair:
-`python -m tools.llm_sanity --production-threads`; native tools: `python -m tools.minicpm_tool_sanity`; host: `python -m tools.doctor`.
+Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair: `python -m tools.llm_sanity --production-threads`; native tools: `python -m tools.minicpm_tool_sanity`; host: `python -m tools.doctor`.
 
 ## Operating policy
 - Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.
-- Direct merge/push to `main` is authorized during development only after every
-  required gate is green (ADR-0014). Never land a red suite.
+- Direct merge/push to `main` is authorized only after every gate is green (ADR-0014). Never land a red suite.
 - Do not delete logs/expose secrets/claim unrun hardware validation; public-history PII cleanup stays owner-deferred with no history rewrite (ADR-0008).

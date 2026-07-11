@@ -635,6 +635,193 @@ def test_production_enrollment_rejects_noise_after_prior_clip_raised_agc_gain(
     assert "pre-gain voice" in "\n".join(messages)
 
 
+def test_calibrated_measured_ambient_admits_quiet_voice_below_agc_minimum(
+    monkeypatch,
+):
+    import numpy as np
+
+    from core.audio_frontend import InputAGC
+    from core.enroll import _has_enrollment_voice_evidence, record_once
+
+    agc = InputAGC(noise_floor_rms=0.004)
+    config = {
+        "sample_rate": 16000,
+        "block_sec": 0.1,
+        "input_agc": True,
+        "input_agc_noise_floor_rms": 0.004,
+    }
+    frontend = EnrollmentFrontend(
+        sample_rate=16000,
+        block_sec=0.1,
+        input_agc=agc,
+        provenance=make_enrollment_frontend_provenance(
+            config,
+            input_agc=agc,
+            idle_apm=None,
+            denoiser=None,
+            apm_owns_ns=False,
+        ),
+        config=config,
+    )
+    rng = np.random.default_rng(20260711)
+    ambient = rng.normal(0.0, 0.0001, 16000).astype("float32")
+    calibration = frontend.calibrate(ambient, 16000)
+
+    assert calibration["ambient_rms"] == pytest.approx(0.0001, rel=0.2)
+    assert agc.noise_floor_rms == 0.004  # runtime AGC clamp is unchanged
+    assert frontend.measured_pre_gain_ambient_rms == calibration["ambient_rms"]
+
+    clip = rng.normal(0.0, 0.0001, 16000).astype("float32")
+    t = np.arange(9600, dtype="float64") / 16000.0
+    clip[3200:12800] += (0.0012 * np.sin(2.0 * np.pi * 200.0 * t)).astype(
+        "float32"
+    )
+    admitted, voiced_sec = _has_enrollment_voice_evidence(
+        clip,
+        16000,
+        ambient_floor_rms=frontend.measured_pre_gain_ambient_rms,
+    )
+    old_admitted, _ = _has_enrollment_voice_evidence(
+        clip,
+        16000,
+        ambient_floor_rms=agc.noise_floor_rms,
+    )
+    assert admitted is True and voiced_sec >= 0.35
+    assert old_admitted is False
+
+    resolution = CaptureResolution(
+        route="test-production-mic",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+        input_agc_noise_floor_rms=agc.noise_floor_rms,
+    )
+    monkeypatch.setattr(
+        "core.enroll._capture_raw_once",
+        lambda *_args, **_kwargs: (clip, resolution),
+    )
+    recorded = record_once(
+        1.0,
+        sample_rate=16000,
+        frontend=frontend,
+        os_echo_mode="none",
+        require_voice_evidence=True,
+    )
+    assert recorded.size > 0
+    assert resolution.descriptor()["input_agc_noise_floor_db_3"] == -48
+    raw_ambient_resolution = CaptureResolution(
+        route=resolution.route,
+        capture_sample_rate=resolution.capture_sample_rate,
+        model_sample_rate=resolution.model_sample_rate,
+        resampler=resolution.resampler,
+        input_agc_noise_floor_rms=calibration["ambient_rms"],
+    )
+    raw_ambient_provenance = make_enrollment_frontend_provenance(
+        config,
+        input_agc=agc,
+        idle_apm=None,
+        denoiser=None,
+        apm_owns_ns=False,
+        capture=raw_ambient_resolution,
+    )
+    assert frontend.provenance != raw_ambient_provenance
+
+
+def test_measured_ambient_rejects_muted_bed_and_short_loud_transient():
+    import numpy as np
+
+    from core.enroll import _has_enrollment_voice_evidence
+
+    muted = np.zeros(16000, dtype="float32")
+    steady_bed = np.full(16000, 0.0001, dtype="float32")
+    transient = steady_bed.copy()
+    transient[3200:6400] = 0.02  # 0.2 seconds, below the sustain minimum
+
+    for clip, expected_voiced in (
+        (muted, 0.0),
+        (steady_bed, 0.0),
+        (transient, 0.2),
+    ):
+        admitted, voiced_sec = _has_enrollment_voice_evidence(
+            clip,
+            16000,
+            ambient_floor_rms=0.0001,
+        )
+        assert admitted is False
+        assert voiced_sec == pytest.approx(expected_voiced)
+
+
+def test_measured_near_zero_ambient_keeps_absolute_silence_guard():
+    import numpy as np
+
+    from core.enroll import _has_enrollment_voice_evidence
+
+    admitted, voiced_sec = _has_enrollment_voice_evidence(
+        np.full(16000, 5e-5, dtype="float32"),
+        16000,
+        ambient_floor_rms=1e-6,
+    )
+    assert admitted is False
+    assert voiced_sec == 0.0
+
+
+def test_uncalibrated_agc_keeps_configured_floor_instead_of_dynamic_fallback(
+    monkeypatch,
+):
+    import numpy as np
+
+    from core.audio_frontend import InputAGC
+    from core.enroll import (
+        EnrollmentVoiceError,
+        _has_enrollment_voice_evidence,
+        record_once,
+    )
+
+    agc = InputAGC(noise_floor_rms=0.004)
+    frontend = EnrollmentFrontend(
+        sample_rate=16000,
+        input_agc=agc,
+        provenance=make_enrollment_frontend_provenance(
+            {"sample_rate": 16000, "input_agc": True},
+            input_agc=agc,
+            idle_apm=None,
+            denoiser=None,
+            apm_owns_ns=False,
+        ),
+    )
+    clip = np.zeros(16000, dtype="float32")
+    t = np.arange(9600, dtype="float64") / 16000.0
+    clip[3200:12800] = (0.0014 * np.sin(2.0 * np.pi * 200.0 * t)).astype(
+        "float32"
+    )
+    dynamic_admitted, _ = _has_enrollment_voice_evidence(
+        clip,
+        16000,
+        ambient_floor_rms=None,
+    )
+    assert dynamic_admitted is True
+    assert frontend.measured_pre_gain_ambient_rms is None
+
+    resolution = CaptureResolution(
+        route="test-production-mic",
+        capture_sample_rate=16000,
+        model_sample_rate=16000,
+        resampler="identity",
+    )
+    monkeypatch.setattr(
+        "core.enroll._capture_raw_once",
+        lambda *_args, **_kwargs: (clip, resolution),
+    )
+    with pytest.raises(EnrollmentVoiceError, match="pre-gain voice"):
+        record_once(
+            1.0,
+            sample_rate=16000,
+            frontend=frontend,
+            os_echo_mode="none",
+            require_voice_evidence=True,
+        )
+
+
 def test_production_enrollment_rejects_out_of_model_band_capture_energy(
     monkeypatch, tmp_path
 ):

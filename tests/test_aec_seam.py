@@ -16,6 +16,7 @@ from core.engines._aec import (
     EchoCanceller,
     FarEndRing,
     PlaybackFIFO,
+    PlaybackFIFOEvent,
     _DTLNEchoCanceller,
     _FDAFAdaptiveFilter,
     _resolve_dtln_paths,
@@ -379,6 +380,291 @@ def test_fifo_mid_chunk_abort_halts_enqueue_and_flush_clears_the_partial():
     # The production pattern pairs the abort with flush(), which drops it.
     fifo.flush()
     assert fifo.count() == 0
+
+
+# --- tagged playback ownership / sink receipts ------------------------------
+
+
+def test_tagged_fifo_preserves_two_owner_lifecycle_order_in_one_sink_read():
+    """One callback can cross a fragment boundary; ownership events must not."""
+    from collections import deque
+
+    events = deque()
+    fifo = PlaybackFIFO(8, event_queue=events)
+    first = object()
+    second = object()
+    assert fifo.open_tag(first)
+    assert fifo.open_tag(second)
+    assert fifo.write(np.array([1, 2], dtype="float32"), _never_abort, tag=first) == 2
+    assert fifo.close_tag(first, "completed")
+    assert fifo.write(
+        np.array([3, 4, 5], dtype="float32"), _never_abort, tag=second
+    ) == 3
+    assert fifo.close_tag(second, "completed")
+    assert list(events) == []  # synthesis/seal is not sink evidence
+
+    out = np.empty(5, dtype="float32")
+    assert fifo.read_into(out) == 5
+
+    np.testing.assert_array_equal(out, [1, 2, 3, 4, 5])
+    assert list(events) == [
+        PlaybackFIFOEvent(kind="started", tag=first),
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=first,
+            played_samples=2,
+            total_samples=2,
+            status="completed",
+        ),
+        PlaybackFIFOEvent(kind="started", tag=second),
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=second,
+            played_samples=3,
+            total_samples=3,
+            status="completed",
+        ),
+    ]
+
+
+def test_tagged_fifo_drain_before_seal_starts_but_does_not_terminalize():
+    """An empty FIFO between synth chunks is not completion until close_tag()."""
+    from collections import deque
+
+    events = deque()
+    fifo = PlaybackFIFO(4, event_queue=events)
+    tag = object()
+    assert fifo.open_tag(tag)
+    assert fifo.write(np.array([1, 2], dtype="float32"), _never_abort, tag=tag) == 2
+
+    out = np.empty(2, dtype="float32")
+    assert fifo.read_into(out) == 2
+    assert list(events) == [PlaybackFIFOEvent(kind="started", tag=tag)]
+
+    # Natural synthesis EOF arrives after the callback already drained the tag.
+    assert fifo.close_tag(tag, "completed")
+    assert list(events) == [
+        PlaybackFIFOEvent(kind="started", tag=tag),
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=tag,
+            played_samples=2,
+            total_samples=2,
+            status="completed",
+        ),
+    ]
+    assert fifo.close_tag(tag, "completed") is False
+
+
+def test_tagged_fifo_partial_abort_reports_only_admitted_samples():
+    """A blocked/aborted long write must not count its unadmitted suffix."""
+    from collections import deque
+
+    events = deque()
+    fifo = PlaybackFIFO(4, event_queue=events)
+    tag = object()
+    assert fifo.open_tag(tag)
+    probes = 0
+
+    def abort_after_first_copy():
+        nonlocal probes
+        probes += 1
+        return probes > 1
+
+    accepted = fifo.write(
+        np.arange(1, 9, dtype="float32"),
+        abort_after_first_copy,
+        tag=tag,
+    )
+    assert accepted == 4
+    assert fifo.count() == 4
+
+    fifo.interrupt_tags("interrupted")
+
+    assert fifo.count() == 0
+    assert list(events) == [
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=tag,
+            played_samples=0,
+            total_samples=4,
+            status="interrupted",
+        )
+    ]
+
+
+def test_tagged_fifo_hard_interrupt_reports_exact_partial_sink_count():
+    from collections import deque
+
+    events = deque()
+    fifo = PlaybackFIFO(8, event_queue=events)
+    tag = object()
+    assert fifo.open_tag(tag)
+    assert fifo.write(np.arange(1, 7, dtype="float32"), _never_abort, tag=tag) == 6
+    assert fifo.close_tag(tag, "completed")
+
+    out = np.empty(2, dtype="float32")
+    assert fifo.read_into(out) == 2
+    fifo.interrupt_tags("interrupted")
+
+    np.testing.assert_array_equal(out, [1, 2])
+    assert fifo.count() == 0
+    assert list(events) == [
+        PlaybackFIFOEvent(kind="started", tag=tag),
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=tag,
+            played_samples=2,
+            total_samples=6,
+            status="interrupted",
+        ),
+    ]
+
+
+def test_tagged_fifo_fade_keeps_only_started_head_owner_and_waits_for_sink():
+    """A fade cannot make the next, unheard fragment audible."""
+    from collections import deque
+
+    events = deque()
+    fifo = PlaybackFIFO(12, event_queue=events)
+    head = object()
+    queued = object()
+    assert fifo.open_tag(head)
+    assert fifo.open_tag(queued)
+    assert fifo.write(
+        np.array([1, 2, 3, 4, 5], dtype="float32"), _never_abort, tag=head
+    ) == 5
+    assert fifo.close_tag(head, "completed")
+    assert fifo.write(
+        np.array([6, 7, 8, 9], dtype="float32"), _never_abort, tag=queued
+    ) == 4
+    assert fifo.close_tag(queued, "completed")
+
+    played_head = np.empty(2, dtype="float32")
+    assert fifo.read_into(played_head) == 2
+    fifo.interrupt_tags("interrupted", fade_samples=4)
+
+    # Only the head owner's three remaining frames survive. The queued owner is
+    # terminalized without a start event, and the head waits for the fade drain.
+    assert fifo.count() == 3
+    assert list(events) == [
+        PlaybackFIFOEvent(kind="started", tag=head),
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=queued,
+            played_samples=0,
+            total_samples=4,
+            status="interrupted",
+        ),
+    ]
+
+    faded = np.full(5, -1.0, dtype="float32")
+    assert fifo.read_into(faded) == 3
+
+    np.testing.assert_array_equal(played_head, [1, 2])
+    assert faded[0] == pytest.approx(2.25)  # 3 * raised-cosine(1/3)
+    assert faded[1] == pytest.approx(1.0)   # 4 * raised-cosine(2/3)
+    assert faded[2] == pytest.approx(0.0)
+    np.testing.assert_array_equal(faded[3:], [0, 0])
+    assert list(events)[-1] == PlaybackFIFOEvent(
+        kind="terminal",
+        tag=head,
+        played_samples=5,
+        total_samples=5,
+        status="interrupted",
+    )
+    assert not any(event.kind == "started" and event.tag is queued for event in events)
+
+
+def test_tagged_fifo_expired_fade_preserves_fresh_owner_behind_it():
+    from collections import deque
+
+    events = deque()
+    fifo = PlaybackFIFO(16, event_queue=events)
+    old = object()
+    fresh = object()
+    assert fifo.open_tag(old)
+    assert fifo.write(np.arange(1, 9, dtype="float32"), _never_abort, tag=old) == 8
+    played = np.empty(2, dtype="float32")
+    assert fifo.read_into(played) == 2
+    lease = fifo.interrupt_tags("interrupted", fade_samples=4)
+    assert lease == (old,)
+
+    assert fifo.open_tag(fresh)
+    assert fifo.write(np.array([20, 21], dtype="float32"), _never_abort, tag=fresh) == 2
+    assert fifo.close_tag(fresh, "completed")
+    assert fifo.expire_tags(lease) == 4
+
+    out = np.empty(2, dtype="float32")
+    assert fifo.read_into(out) == 2
+    np.testing.assert_array_equal(out, [20, 21])
+    terminals = [event for event in events if event.kind == "terminal"]
+    assert terminals == [
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=old,
+            played_samples=2,
+            total_samples=8,
+            status="interrupted",
+        ),
+        PlaybackFIFOEvent(
+            kind="terminal",
+            tag=fresh,
+            played_samples=2,
+            total_samples=2,
+            status="completed",
+        ),
+    ]
+
+
+def test_tagged_fifo_sink_read_vs_interrupt_terminalizes_exactly_once():
+    """The FIFO lock linearizes the callback/cut race and prevents double receipt."""
+    from collections import deque
+
+    for _ in range(32):
+        events = deque()
+        fifo = PlaybackFIFO(4, event_queue=events)
+        tag = object()
+        assert fifo.open_tag(tag)
+        assert fifo.write(
+            np.array([1, 2, 3, 4], dtype="float32"), _never_abort, tag=tag
+        ) == 4
+        assert fifo.close_tag(tag, "completed")
+
+        gate = threading.Barrier(3)
+        result = {}
+
+        def read_sink():
+            out = np.empty(4, dtype="float32")
+            gate.wait()
+            result["read"] = fifo.read_into(out)
+
+        def interrupt():
+            gate.wait()
+            fifo.interrupt_tags("interrupted")
+
+        reader = threading.Thread(target=read_sink)
+        cutter = threading.Thread(target=interrupt)
+        reader.start()
+        cutter.start()
+        gate.wait()
+        reader.join(timeout=1.0)
+        cutter.join(timeout=1.0)
+        assert not reader.is_alive() and not cutter.is_alive()
+
+        terminals = [event for event in events if event.kind == "terminal"]
+        assert len(terminals) == 1
+        terminal = terminals[0]
+        assert terminal.total_samples == 4
+        if terminal.status == "completed":
+            assert result["read"] == 4
+            assert terminal.played_samples == 4
+            assert [event.kind for event in events] == ["started", "terminal"]
+        else:
+            assert terminal.status == "interrupted"
+            assert result["read"] == 0
+            assert terminal.played_samples == 0
+            assert [event.kind for event in events] == ["terminal"]
 
 
 # --- adaptive filter: single-talk cancellation -------------------------------

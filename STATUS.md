@@ -3,8 +3,8 @@
 Single source of current truth. On conflict: this file > newest accepted ADR in `docs/adr/`
 > everything else. Dated session/handoff documents are history.
 
-Last verified: 2026-07-11 on Linux ROG, `feat/staged-playback-receipts`; full
-headless: 2733 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
+Last verified: 2026-07-11 on Linux ROG, `feat/sherpa-playback-receipts`; full
+headless: 2757 passed, 24 skipped, 9 existing warnings; real-model: 5 passed,
 12 skipped; APM/DTD: 6 passed; whitespace passed. Prior host doctor was READY outside
 the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 
@@ -65,9 +65,9 @@ the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
   shutdown have generation/epoch ownership and cannot resurrect stale work. A
   real no-mic MiniCPM gate cancel took 157.9 ms with zero old pieces and a healthy
   ACT/follow-up.
-- Playback history has opt-in terminal sink receipts: capable engines commit ordered,
-  attested safe text; only uncancelled group completion schedules follow-ups. Sink
-  onset stays separate cut/echo evidence (ADR-0027). ScriptedEngine alone opts in.
+- ScriptedEngine and Sherpa now use terminal sink receipts. Sherpa tags output-domain
+  FIFO spans, dispatches callbacks off the audio thread, and preserves only an owned,
+  bounded cut fade; exact sample counts never imply words (ADR-0027/0028).
 
 ## Live evidence and limits
 
@@ -76,8 +76,8 @@ the sandbox on actual EC routes/models/Ollama. No human-speech A/B ran.
 - Capture reopen, fallback, and changed-domain recalibration have deterministic
   headless coverage only; no live device unplug/switch validation was run.
 - One real word-cut occurred on 2026-07-07. Device-free concurrent I/O now covers
-  the real capture/playback workers, FIFO cut, and stale-provider fencing; tail/PCM
-  handling stays headless, and acoustic echo/owner-mic behavior is not live-validated.
+  real capture/playback workers, FIFO ownership/receipts, cut fade, and stale-provider
+  fencing; tail/PCM and acoustic echo/owner-mic behavior remain headless-only.
 - Current v1/legacy speaker enrollment is intentionally rejected by v2 provenance;
   local `speaker_gate_input` remains off until live re-enrollment succeeds.
 - Still required with the owner at the mic: (1) `python -m core --enroll` on the active

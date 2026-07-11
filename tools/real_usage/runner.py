@@ -154,6 +154,15 @@ def _make_signal_engine(config):
                 self.spoken.append((text or "").strip())
             super().speak(text, on_done)
 
+        def speak_tracked(self, speech, *, on_terminal, on_started=None):
+            with self._rec_lock:
+                self.spoken.append((speech.text or "").strip())
+            super().speak_tracked(
+                speech,
+                on_terminal=on_terminal,
+                on_started=on_started,
+            )
+
         def stop_speaking(self):
             with self._rec_lock:
                 self._stops.append(time.perf_counter())

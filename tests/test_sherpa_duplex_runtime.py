@@ -357,11 +357,17 @@ def test_real_capture_and_playback_workers_cancel_stale_stream_on_word_cut(monke
         assert llm.finished.wait(timeout=2.0)
         assert _wait_until(runtime.bus.idle)
         time.sleep(0.15)  # allow the bounded de-click fade callback to drain
+        assert runtime.wait_idle(timeout=2.0)  # receipt + memory handoff settled
 
         spoken = [text for text, _stamp in engine.spoken_since(0)]
         assert spoken == ["First sentence."]
         assert tts.texts() == ["First sentence."]
         assert output.nonzero_blocks() <= nonzero_at_cut + 2
+        assert [
+            item.text
+            for item in runtime.memory.all()
+            if "assistant_output" in item.tags
+        ] == []
 
         terminal = {
             event.kind

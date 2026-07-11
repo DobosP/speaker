@@ -203,6 +203,17 @@ def make_recording_engine(config):
                 self._spoken.append(((text or "").strip(), time.perf_counter()))
             super().speak(text, on_done)
 
+        def speak_tracked(self, speech, *, on_terminal, on_started=None):
+            with self._rec_lock:
+                self._spoken.append(
+                    ((speech.text or "").strip(), time.perf_counter())
+                )
+            super().speak_tracked(
+                speech,
+                on_terminal=on_terminal,
+                on_started=on_started,
+            )
+
         def stop_speaking(self):
             with self._rec_lock:
                 self._stops.append(time.perf_counter())

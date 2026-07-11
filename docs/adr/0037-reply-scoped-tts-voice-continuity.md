@@ -1,7 +1,7 @@
 # ADR-0037: Keep streamed TTS voice continuous within one reply
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0041
 
 ## Decision
 The runtime owns a reply-scoped voice lease keyed by `(task_id, speech_epoch)`.

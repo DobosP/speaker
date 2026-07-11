@@ -119,12 +119,17 @@ class VoiceRuntime:
         self._tracked_playback = bool(playback_capabilities.tracked_terminal)
         self._playback_history = PlaybackHistory() if self._tracked_playback else None
         _eng_cfg = getattr(self.engine, "config", None)
+        self._tts_lock_speaker_id = bool(
+            _eng_cfg is not None
+            and getattr(_eng_cfg, "tts_lock_speaker_id", False)
+        )
         self._reply_voice_continuity = (
             ReplyVoiceContinuity(
                 voices=(getattr(_eng_cfg, "tts_speaker_voices", {}) or {}).keys(),
                 emotions=(
                     getattr(_eng_cfg, "tts_emotion_speed_map", {}) or {}
                 ).keys(),
+                lock_speaker_id=self._tts_lock_speaker_id,
             )
             if (
                 _eng_cfg is not None
@@ -242,6 +247,7 @@ class VoiceRuntime:
                 voices=list(getattr(_eng_cfg, "tts_speaker_voices", {}) or {}),
                 emotions=list(getattr(_eng_cfg, "tts_emotion_speed_map", {}) or {}),
                 voice_continuity=self._reply_voice_continuity is not None,
+                lock_speaker_id=self._tts_lock_speaker_id,
             )
         system_prompt = build_system_prompt(
             registry, persona=persona, web_enabled=web_enabled,

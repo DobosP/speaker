@@ -1,13 +1,13 @@
 # On-device LLM tier (llamacpp backend) -- the phone / phone_lite device
-# profiles run the Python core under phone-like limits with small Gemma GGUFs
+# profiles run the Python core under phone-like limits with a MiniCPM5-1B GGUF
 # in-process. The DESKTOP default serves MiniCPM/Gemma via Ollama and needs NONE of
 # this (see requirements.txt). Install only when running an on-device profile:
 #
 #   pip install -r requirements-ondevice.txt
-#   python -m tools.setup_models --gguf        # fetch the Gemma GGUF weights
+#   python -m tools.setup_models --gguf        # fetch the MiniCPM GGUF weights
 #   python -m core --engine sherpa --device phone
 #
-# The gated Gemma repos need $HUGGINGFACE_TOKEN at fetch time (see CREDENTIALS.md).
+# A Hugging Face token can still be supplied for rate-limited model fetches.
 
-llama-cpp-python>=0.3.0      # in-process GGUF inference (Gemma 3 1b/4b Q4_K_M)
+llama-cpp-python==0.3.33     # verified CPU abort ABI for MiniCPM5-1B Q4_K_M
 huggingface_hub>=0.23.0      # weight download (setup_models --gguf)

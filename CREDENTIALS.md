@@ -14,8 +14,8 @@ reference; `CLAUDE.md` only points here.**
 | Credential | Where it comes from | Used by | Unlocks |
 |---|---|---|---|
 | `GIT_HUB_TOKEN` | session environment (this repo's web/CI sessions) | `tools/gh_admin.py`, ad-hoc `curl` | **Maximum repo access** — the privileged GitHub ops the session harness blocks. **Explicit authorization only** (see below) |
-| `HUGGINGFACE_TOKEN` | session environment (Gemma license accepted) | `tools/bench/__main__.py` | Pulling gated Gemma weights at runtime (dev/bench) |
-| `HF_TOKEN` | **GitHub Actions secret** | `perf.yml`, `publish-model.yml` | Same HuggingFace pull, but inside CI |
+| `HUGGINGFACE_TOKEN` | session environment (Hugging Face read token) | `tools/bench/__main__.py`, `tools/setup_models.py` | Authenticated/rate-limit-safe model downloads in dev/bench |
+| `HF_TOKEN` | **GitHub Actions secret** | `perf.yml`, `publish-model.yml` | Model downloads inside CI, including gated mobile Gemma publishing |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | session/host environment | `remote/token_server.py`, `core/app.py` | Minting LiveKit JWTs for the remote host + thin-client path |
 | `DATABASE_URL` | developer `.env` (see `SETUP.md`) | `utils/memory.py` | Postgres-backed smart memory |
 
@@ -123,19 +123,20 @@ curl -X PUT "${AUTH[@]}" \
 
 ## `HUGGINGFACE_TOKEN` vs `HF_TOKEN` — same purpose, two homes
 
-Both are HuggingFace **read** tokens on an account that has accepted the Gemma
-license at `huggingface.co/litert-community/Gemma3-1B-IT`. They are split only by
-*where the code runs*:
+Both are HuggingFace **read** tokens. The account has also accepted the mobile
+Gemma license at `huggingface.co/litert-community/Gemma3-1B-IT`; the phone Python
+benchmark's MiniCPM5 GGUF is public but authenticated pulls avoid anonymous rate
+limits. The variables are split by *where the code runs*:
 
 - **`HUGGINGFACE_TOKEN`** — provided as an **env var in dev/web sessions**. Used
-  to pull gated Gemma weights at runtime, e.g. the latency benchmark at
+  for model downloads, e.g. the public MiniCPM5 latency benchmark at
   `tools/bench/__main__.py` (which falls back to `HF_TOKEN` if the first is
   unset: `os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")`).
   Also usable directly: `hf_hub_download(..., token=os.environ["HUGGINGFACE_TOKEN"])`
   or `Authorization: Bearer $HUGGINGFACE_TOKEN` on `huggingface.co`.
 - **`HF_TOKEN`** — the **GitHub Actions secret** form of the same token, injected
   into CI:
-  - `perf.yml` → `env: HF_TOKEN: ${{ secrets.HF_TOKEN }}` (downloads Gemma GGUF +
+  - `perf.yml` → `env: HF_TOKEN: ${{ secrets.HF_TOKEN }}` (downloads MiniCPM GGUF +
     sherpa ONNX for the benchmark).
   - `publish-model.yml` → `env: HF: ${{ secrets.HF_TOKEN }}` (fetches the gated
     Gemma 3 1B and republishes it to the **public** `gemma-model` release).

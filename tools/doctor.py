@@ -21,6 +21,7 @@ from core.readiness import (
     check_audio,
     check_audio_frontend,
     check_imports,
+    check_llamacpp_abort_runtime,
     check_llamacpp_models,
     check_ollama,
     check_sherpa_models,

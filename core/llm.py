@@ -10,7 +10,15 @@ import time
 import weakref
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from typing import Iterator, Mapping, Optional, Protocol, Sequence, runtime_checkable
+from typing import (
+    Callable,
+    Iterator,
+    Mapping,
+    Optional,
+    Protocol,
+    Sequence,
+    runtime_checkable,
+)
 
 # Per-turn context published by the capability layer so the LLM stack can
 # pick a routing chain (sensitivity / intent_kind / mode) without changing
@@ -804,6 +812,89 @@ def _resolve_kv_cache_type(value):
     return _KV_CACHE_GGML_TYPES.get(str(value).strip().lower())
 
 
+LLAMACPP_PINNED_VERSION = "0.3.33"
+
+
+@dataclass(frozen=True)
+class _LlamaCppAbortAPI:
+    """Audited v0.3.33 low-level symbols used by the CPU abort boundary."""
+
+    callback_type: Callable[..., object]
+    set_callback: Callable[..., object]
+    get_memory: Callable[..., object]
+    clear_memory: Callable[..., object]
+
+
+def _resolve_llamacpp_abort_api(module: object) -> _LlamaCppAbortAPI:
+    """Verify the exact llama-cpp-python ABI used by phone cancellation.
+
+    The low-level ctypes surface tracks a rapidly changing vendored llama.cpp.
+    Silent drift here is worse than refusing to start: the callback object and
+    context-memory functions cross a native ABI boundary.  The on-device
+    requirements and real-model workflows pin the same audited release.
+    """
+
+    version = str(getattr(module, "__version__", "") or "")
+    if version != LLAMACPP_PINNED_VERSION:
+        raise RuntimeError(
+            "llamacpp backend requires llama-cpp-python=="
+            f"{LLAMACPP_PINNED_VERSION} for verified CPU cancellation; "
+            f"found {version or 'unknown'}"
+        )
+    names = (
+        "ggml_abort_callback",
+        "llama_set_abort_callback",
+        "llama_get_memory",
+        "llama_memory_clear",
+    )
+    missing = [name for name in names if not callable(getattr(module, name, None))]
+    if missing:
+        raise RuntimeError(
+            "llama-cpp-python cancellation ABI missing: " + ", ".join(missing)
+        )
+    return _LlamaCppAbortAPI(
+        callback_type=getattr(module, "ggml_abort_callback"),
+        set_callback=getattr(module, "llama_set_abort_callback"),
+        get_memory=getattr(module, "llama_get_memory"),
+        clear_memory=getattr(module, "llama_memory_clear"),
+    )
+
+
+def verify_llamacpp_abort_runtime(module: object | None = None) -> _LlamaCppAbortAPI:
+    """Import and verify the selected production llama.cpp binding."""
+
+    if module is None:
+        import llama_cpp as module  # type: ignore[no-redef]  # lazy optional dep
+
+    return _resolve_llamacpp_abort_api(module)
+
+
+def _llamacpp_cancelled(event: object | None) -> bool:
+    check = getattr(event, "is_set", None)
+    if not callable(check):
+        return False
+    try:
+        return bool(check())
+    except BaseException:
+        # A broken foreign Event must not throw through a ctypes callback.
+        return False
+
+
+def _llamacpp_native_context(client: object) -> object | None:
+    """Return the raw ``llama_context *`` from the audited high-level client.
+
+    llama-cpp-python keeps it at ``Llama._ctx.ctx``.  The direct ``ctx``
+    fallback is a deliberately small test seam for injected clients; production
+    clients are still version/symbol checked before this is called.
+    """
+
+    wrapper = getattr(client, "_ctx", None)
+    native = getattr(wrapper, "ctx", None)
+    if native is not None:
+        return native
+    return getattr(client, "ctx", None)
+
+
 class LlamaCppLLM:
     """On-device LLM via llama.cpp (the mobile/no-Ollama path).
 
@@ -814,6 +905,11 @@ class LlamaCppLLM:
 
     The ``llama_cpp`` package is imported lazily so the runtime and tests work
     without the native lib. Pass ``client`` to inject a fake in tests.
+
+    Production uses the exact CPU-only binding audited in ADR-0030. A task-owned
+    cancellation event reaches native prompt evaluation/generation and the
+    interrupted context is cleared before reuse. Model construction has no
+    context yet and therefore remains outside that cooperative abort boundary.
 
     Vision: llama.cpp needs a separate projector (``mmproj``) + a chat handler
     for image input. When ``images`` are passed we format multimodal chat
@@ -832,6 +928,7 @@ class LlamaCppLLM:
         type_k=None,
         type_v=None,
         client=None,
+        abort_api: Optional[_LlamaCppAbortAPI] = None,
     ):
         self.model_path = model_path
         self.n_ctx = n_ctx
@@ -848,17 +945,51 @@ class LlamaCppLLM:
         # an Ollama-shaped profile still bounds on-device output (llm-inference-3).
         self._options = _normalize_llamacpp_options(options)
         self._client = client
+        self._client_injected = client is not None
+        self._abort_api = abort_api
+        self._abort_callback: object | None = None
+        self._abort_registered_client: object | None = None
+        self._active_cancel_event: object | None = None
+        self._context_poisoned = False
         # A single llama.cpp context can't run two inferences at once, and the
         # lazy build must not double-construct. This serializes both: the startup
         # warm pass and a concurrent first live turn (or two tasks) share one
         # context safely instead of racing into the native lib.
         self._lock = threading.Lock()
 
-    def _ensure(self):
+    @staticmethod
+    def _context_cancel_event() -> object | None:
+        return capability_context.get().get("cancel_event")
+
+    def _acquire_model_lock(self, cancel_event: object | None) -> None:
+        if cancel_event is None:
+            self._lock.acquire()
+            return
+        while True:
+            if _llamacpp_cancelled(cancel_event):
+                raise LLMCallCancelled("llama.cpp call cancelled while waiting")
+            if self._lock.acquire(timeout=0.01):
+                if _llamacpp_cancelled(cancel_event):
+                    self._lock.release()
+                    raise LLMCallCancelled(
+                        "llama.cpp call cancelled at model-lock admission"
+                    )
+                return
+
+    def _ensure(self, cancel_event: object | None = None):
         if self._client is None:
-            with self._lock:
+            self._acquire_model_lock(cancel_event)
+            try:
                 if self._client is None:  # double-checked: build exactly once
-                    from llama_cpp import Llama  # lazy
+                    if self.n_gpu_layers != 0:
+                        raise RuntimeError(
+                            "verified llama.cpp cancellation requires CPU-only "
+                            "n_gpu_layers=0"
+                        )
+                    import llama_cpp  # lazy optional dependency
+
+                    self._abort_api = verify_llamacpp_abort_runtime(llama_cpp)
+                    Llama = llama_cpp.Llama
 
                     kwargs = dict(
                         model_path=self.model_path,
@@ -890,7 +1021,101 @@ class LlamaCppLLM:
                             "llama.cpp build lacks KV-cache-quant kwargs; using the f16 default"
                         )
                         self._client = Llama(**kwargs)
+            finally:
+                self._lock.release()
         return self._client
+
+    def _register_abort_locked(self, client: object) -> bool:
+        if self._abort_registered_client is client:
+            return True
+        api = self._abort_api
+        if api is None:
+            if self._client_injected:
+                return False
+            raise RuntimeError("verified llama.cpp abort API was not initialized")
+        if self.n_gpu_layers != 0:
+            raise RuntimeError(
+                "llama.cpp native abort is CPU-only; n_gpu_layers must be 0"
+            )
+        ctx = _llamacpp_native_context(client)
+        reset = getattr(client, "reset", None)
+        if ctx is None or not callable(reset):
+            if self._client_injected:
+                return False
+            raise RuntimeError("llama.cpp client lacks ctx/reset cancellation seams")
+
+        owner_ref = weakref.ref(self)
+
+        def should_abort(_data) -> bool:
+            owner = owner_ref()
+            return bool(
+                owner is not None
+                and _llamacpp_cancelled(owner._active_cancel_event)
+            )
+
+        try:
+            callback = api.callback_type(should_abort)
+            api.set_callback(ctx, callback, None)
+        except Exception as exc:
+            raise RuntimeError("failed to install llama.cpp CPU abort callback") from exc
+        # ctypes does not keep this callback alive for us. Retain it for exactly
+        # as long as the native context can call it; the active event changes
+        # only while the same inference lock is owned.
+        self._abort_callback = callback
+        self._abort_registered_client = client
+        return True
+
+    def _begin_inference(self, cancel_event: object | None):
+        client = self._ensure(cancel_event)
+        self._acquire_model_lock(cancel_event)
+        try:
+            if self._context_poisoned:
+                raise RuntimeError(
+                    "llama.cpp context is poisoned after failed abort cleanup; restart required"
+                )
+            self._register_abort_locked(client)
+            if _llamacpp_cancelled(cancel_event):
+                raise LLMCallCancelled("llama.cpp call cancelled before inference")
+            self._active_cancel_event = cancel_event
+            return client
+        except BaseException:
+            self._active_cancel_event = None
+            self._lock.release()
+            raise
+
+    def _recover_cancelled_locked(self, client: object) -> None:
+        """Clear partial ubatches before the shared context is reusable."""
+
+        api = self._abort_api
+        reset = getattr(client, "reset", None)
+        try:
+            if api is not None and self._abort_registered_client is client:
+                ctx = _llamacpp_native_context(client)
+                if ctx is None:
+                    raise RuntimeError("llama.cpp client lost its native context")
+                memory = api.get_memory(ctx)
+                if memory is None:
+                    raise RuntimeError("llama.cpp context returned no memory handle")
+                api.clear_memory(memory, True)
+            if callable(reset):
+                reset()
+            elif not self._client_injected:
+                raise RuntimeError("llama.cpp client has no reset()")
+        except (Exception, asyncio.CancelledError):
+            self._context_poisoned = True
+            _llamacpp_log.exception(
+                "llama.cpp abort cleanup failed; context is now fail-closed"
+            )
+
+    def _finish_inference(self, client: object, cancel_event: object | None) -> bool:
+        cancelled = _llamacpp_cancelled(cancel_event)
+        try:
+            if cancelled:
+                self._recover_cancelled_locked(client)
+        finally:
+            self._active_cancel_event = None
+            self._lock.release()
+        return cancelled
 
     def _messages(
         self, prompt: str, system: Optional[str], images: Optional[Sequence[ImageInput]],
@@ -918,12 +1143,35 @@ class LlamaCppLLM:
         images: Optional[Sequence[ImageInput]] = None,
         history: Optional[Sequence[HistoryTurn]] = None,
     ) -> str:
-        client = self._ensure()
-        with self._lock:  # one inference at a time on the shared context
+        cancel_event = self._context_cancel_event()
+        client = self._begin_inference(cancel_event)
+        resp = None
+        error: BaseException | None = None
+        try:
             resp = client.create_chat_completion(
                 messages=self._messages(prompt, system, images, history),
                 stream=False, **self._options
             )
+        except BaseException as exc:
+            error = exc
+        finally:
+            cancelled = self._finish_inference(client, cancel_event)
+
+        if cancelled and (
+            error is None
+            or isinstance(error, (Exception, asyncio.CancelledError))
+        ):
+            cancelled_error = LLMCallCancelled(
+                "llama.cpp call cancelled during inference"
+            )
+            if error is not None:
+                raise cancelled_error from error
+            raise cancelled_error
+        if error is not None:
+            raise error.with_traceback(error.__traceback__)
+        # Defensive: a successful binding call always returns a mapping.
+        if resp is None:
+            raise RuntimeError("llama.cpp returned no chat-completion response")
         return resp["choices"][0]["message"]["content"]
 
     def stream(
@@ -934,18 +1182,81 @@ class LlamaCppLLM:
         images: Optional[Sequence[ImageInput]] = None,
         history: Optional[Sequence[HistoryTurn]] = None,
     ) -> Iterator[str]:
-        client = self._ensure()
-        # Held across the whole generation (released when the generator is
-        # exhausted or closed early on barge-in) so the single context isn't
-        # driven by two threads at once.
-        with self._lock:
-            for chunk in client.create_chat_completion(
+        # Capture the ContextVar now: callers may construct the iterator in a
+        # capability context and consume it later from a worker thread.
+        cancel_event = self._context_cancel_event()
+        return self._stream_captured(
+            prompt,
+            system=system,
+            images=images,
+            history=history,
+            cancel_event=cancel_event,
+        )
+
+    def _stream_captured(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str],
+        images: Optional[Sequence[ImageInput]],
+        history: Optional[Sequence[HistoryTurn]],
+        cancel_event: object | None,
+    ) -> Iterator[str]:
+        client = self._begin_inference(cancel_event)
+        native_stream = None
+        error: BaseException | None = None
+        try:
+            native_stream = client.create_chat_completion(
                 messages=self._messages(prompt, system, images, history),
                 stream=True, **self._options
-            ):
+            )
+            iterator = iter(native_stream)
+            while True:
+                if _llamacpp_cancelled(cancel_event):
+                    raise LLMCallCancelled("llama.cpp stream cancelled")
+                try:
+                    chunk = next(iterator)
+                except StopIteration:
+                    break
+                if _llamacpp_cancelled(cancel_event):
+                    raise LLMCallCancelled("llama.cpp stream cancelled")
                 piece = chunk["choices"][0].get("delta", {}).get("content")
                 if piece:
                     yield piece
+            if _llamacpp_cancelled(cancel_event):
+                raise LLMCallCancelled("llama.cpp stream cancelled at completion")
+        except BaseException as exc:
+            error = exc
+        finally:
+            try:
+                closer = getattr(native_stream, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except (Exception, asyncio.CancelledError):
+                        _llamacpp_log.debug(
+                            "llama.cpp stream close failed during teardown",
+                            exc_info=True,
+                        )
+            finally:
+                # Even control-flow BaseExceptions from a foreign iterator's
+                # close() must not strand the sole native-context lock.
+                cancelled = self._finish_inference(client, cancel_event)
+
+        if cancelled and (
+            error is None
+            or isinstance(error, (Exception, asyncio.CancelledError))
+        ):
+            if isinstance(error, LLMCallCancelled):
+                raise error.with_traceback(error.__traceback__)
+            cancelled_error = LLMCallCancelled(
+                "llama.cpp stream cancelled during native inference"
+            )
+            if error is not None:
+                raise cancelled_error from error
+            raise cancelled_error
+        if error is not None:
+            raise error.with_traceback(error.__traceback__)
 
 
 def _redact_messages_for_egress(messages: list[dict]) -> list[dict]:
@@ -1298,10 +1609,11 @@ class HedgeLLM:
     # ``deadline`` (hedge_delay / ttft_deadline) when a worker is still live, and
     # in the hedge strategy that becomes ``inf`` once everything is launched -- so
     # without this budget a stalled local source (notably the in-process
-    # ``LlamaCppLLM`` tier, which runs a GGUF in-process and therefore has NO
-    # socket/read timeout to reap a hung native call) would block the
-    # ``q.get(timeout=None)`` forever. This wall-clock budget IS that bound for
-    # the llama.cpp tier. The multiplier is generous: each launched source may
+    # ``LlamaCppLLM`` tier, whose cooperative CPU abort cannot recover a native
+    # deadlock and has no socket/read timeout) would block the
+    # ``q.get(timeout=None)`` forever. This wall-clock budget remains that hard
+    # outer bound for the llama.cpp tier. The multiplier is generous: each
+    # launched source may
     # legitimately consume up to ~``ttft_deadline`` of pre-first-token wait
     # (a fallback chain retires each slow cloud only at its deadline), so the
     # budget scales with the chain length; it must never be unbounded.
@@ -1612,11 +1924,12 @@ class HedgeLLM:
                         break
                     t.join(timeout=remaining)
             # Observability for the known leak: WORKER_JOIN_TIMEOUT is below real
-            # reap latency (a cloud worker can take up to ~5s; an in-process
-            # LlamaCppLLM pre-first-token native call is uncancellable), so a
-            # loser can outlive the join and leak a live thread/socket. A barge-in
-            # storm accumulates them. Surface the survivor count in the run bundle
-            # so the leak is visible instead of silent. Best-effort: never raise
+            # reap latency (a cloud worker can take up to ~5s; Hedge's private
+            # loser-stop event is not yet bridged into LlamaCppLLM's task-owned
+            # native abort), so a loser can outlive the join and leak a live
+            # thread/socket. A barge-in storm accumulates them. Surface the
+            # survivor count in the run bundle so the leak is visible instead of
+            # silent. Best-effort: never raise
             # from cleanup (this runs in a generator finally, including on
             # GeneratorExit), so guard the whole check.
             try:

@@ -5,7 +5,7 @@ entrypoint.py).
 
 Reuses the project's model manifest (tools/bench/models.py) so coordinates stay
 in one place and the same SPEAKER_BENCH_*_REPO / _FILE env overrides apply. The
-LLM is served by Ollama, so the gated Gemma GGUFs are deliberately skipped here.
+LLM is served by Ollama, so the phone-only MiniCPM GGUF is deliberately skipped here.
 
 Idempotent: skips if sherpa_paths.json already exists (set FORCE_DOWNLOAD=1 to
 refetch).

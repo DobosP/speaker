@@ -9,7 +9,22 @@ translation (no models -- the llama_cpp import is lazy; a fake client records th
 request kwargs)."""
 from __future__ import annotations
 
-from core.llm import LlamaCppLLM, _normalize_llamacpp_options, _resolve_kv_cache_type
+from core.llm import (
+    LLAMACPP_PINNED_VERSION,
+    LlamaCppLLM,
+    _normalize_llamacpp_options,
+    _resolve_kv_cache_type,
+)
+
+
+def _add_verified_abort_symbols(module) -> None:
+    """Make a constructor fake satisfy the audited production import gate."""
+
+    module.__version__ = LLAMACPP_PINNED_VERSION
+    module.ggml_abort_callback = lambda callback: callback
+    module.llama_set_abort_callback = lambda *_args: None
+    module.llama_get_memory = lambda _ctx: object()
+    module.llama_memory_clear = lambda *_args: None
 
 
 # --- the pure translation -----------------------------------------------------
@@ -135,6 +150,7 @@ def test_ensure_forwards_kv_cache_types_to_llama(monkeypatch):
 
     fake_mod = types.ModuleType("llama_cpp")
     fake_mod.Llama = _FakeLlama
+    _add_verified_abort_symbols(fake_mod)
     monkeypatch.setitem(sys.modules, "llama_cpp", fake_mod)
 
     LlamaCppLLM("/x.gguf", type_k="q8_0", type_v="q8_0")._ensure()  # no client -> builds
@@ -160,6 +176,7 @@ def test_ensure_degrades_when_llama_lacks_kv_quant_kwargs(monkeypatch):
 
     fake_mod = types.ModuleType("llama_cpp")
     fake_mod.Llama = _OldLlama
+    _add_verified_abort_symbols(fake_mod)
     monkeypatch.setitem(sys.modules, "llama_cpp", fake_mod)
 
     # An old lib must NOT crash the first turn -- it degrades to the f16 default.

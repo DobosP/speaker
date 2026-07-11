@@ -258,10 +258,16 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       cancellation + bounded abandoned calls shipped in ADR-0021; production
       Ollama streams now cancel their async request task (ADR-0022). Pre-task
       addressing/cleanup/routing leases, arrival-time output fencing, and
-      continuation reservations shipped in ADR-0023. A verified llama.cpp
-      abort/process boundary remains for phone-class native inference. Also
-      evaluate MiniCPM native XML tools behind a dedicated adapter; Flutter stays
-      Gemma until a validated runtime exists.
+      continuation reservations shipped in ADR-0023. Direct CPU llama.cpp
+      prefill/generation now uses the version-verified native abort + context
+      recovery boundary (ADR-0030). REMAINING: hard containment for model load /
+      native deadlock and cloud-enabled Hedge loser cancellation; use a spawned
+      process if the native recovery gate regresses. Also evaluate MiniCPM native
+      XML tools behind a dedicated adapter. The raw llama.cpp chat path currently
+      emits MiniCPM `<think>` content and can spend its voice output cap before a
+      final answer; add a supported no-think template/adapter plus real TTFT and
+      answer-completion gates before calling the phone voice tier polished.
+      Flutter stays Gemma until a validated runtime exists.
 
 ## P1 — voice / audio: follow-ups from the 2026-06-10 LIVE iteration (5 rounds with the owner)
 > Context: docs/session_2026-06-10_capability_audit_and_fixes.md. Five live rounds
@@ -440,10 +446,10 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
       interpreter was never safe to drive concurrently (tests/test_core_agent.py).
 - [~] **Task worker can outlive its supervisor reap** — task coordinators now
       retire promptly on reap/barge and abandoned synchronous provider calls are
-      bulkhead-bounded (ADR-0021), and production Ollama streams cancel through
-      their per-request async task (ADR-0022). REMAINING: synchronous generate,
-      arbitrary providers, and llama.cpp cannot be force-killed; add a
-      version-verified llama.cpp abort/process boundary for the phone path.
+      bulkhead-bounded (ADR-0021); production Ollama streams cancel their owned
+      request (ADR-0022), and direct CPU llama.cpp inference aborts and recovers
+      its shared context (ADR-0030). REMAINING: arbitrary providers, llama.cpp
+      construction/native deadlock, and cloud-enabled Hedge loser cancellation.
 - [x] **Unbounded queued_tasks list + runlog logging queue** — DONE 2026-07-07:
       `_queue_task` bounded admission (`max_queued_tasks=32` ctor default; drop-OLDEST
       non-continuation victim, cancelled + one spoken notice per storm); runlog queue

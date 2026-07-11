@@ -1,7 +1,7 @@
 """Fast unit tests for the LLM output-degeneracy heuristics + the
 cloud-provider smoke probe.
 
-These pin the detection logic with no model (the real fast Gemma run on CPU
+These pin the detection logic with no model (the real MiniCPM5-1B run on CPU
 lives in ``tools/llm_sanity.main``, exercised by the llm-sanity workflow),
 and exercise the probe-shape/exit-code policy of the cloud smoke without
 hitting any network."""
@@ -9,16 +9,22 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Iterator
 
+import pytest
+
+from core.llm import LLMCallCancelled, capability_context
 from tools.llm_sanity import (
     FAIL,
     OK,
     SKIP,
+    _NativeAbortProbeEvent,
     ProbeResult,
     _check,
     looks_degenerate,
     outputs_distinct,
+    probe_llamacpp_abort_recovery,
     probe_provider,
     validate_registry,
 )
@@ -65,6 +71,161 @@ def test_check_passes_healthy_answers():
         ("2+2", "Two plus two is four."),
     ]
     assert _check(pairs) == []
+
+
+# --- real llama.cpp abort/recovery gate (model-free fakes) ----------------
+
+
+class _FakeAbortRecoveryLLM:
+    """Mimic the native callback contract without loading a model."""
+
+    def __init__(self, *, recovery: str = "ready") -> None:
+        self._context_poisoned = False
+        self.recovery = recovery
+        self.stream_calls = 0
+        self.generate_calls = 0
+        self._tick = threading.Event()
+
+    def stream(self, prompt, *, system=None, images=None, history=None) -> Iterator[str]:
+        self.stream_calls += 1
+        cancel_event = capability_context.get()["cancel_event"]
+
+        # This name deliberately mirrors LlamaCppLLM's retained ctypes closure;
+        # _NativeAbortProbeEvent uses it to distinguish a callback poll from the
+        # surrounding Python stream loop.
+        def should_abort(_data) -> bool:
+            return bool(cancel_event.is_set())
+
+        while not should_abort(None):
+            self._tick.wait(0.001)
+        raise LLMCallCancelled("fake native abort")
+        yield ""  # pragma: no cover - keeps this function an iterator
+
+    def generate(self, prompt, *, system=None, images=None, history=None) -> str:
+        self.generate_calls += 1
+        return self.recovery
+
+
+def test_native_abort_probe_event_marks_only_should_abort_stack():
+    event = _NativeAbortProbeEvent()
+    assert event.is_set() is False
+    assert event.wait_for_native_poll(0.0) is False
+
+    def should_abort(_data) -> bool:
+        return event.is_set()
+
+    assert should_abort(None) is False
+    assert event.wait_for_native_poll(0.0) is True
+    event.set()
+    assert should_abort(None) is True
+
+
+def test_llamacpp_abort_probe_requires_cancel_then_reuses_same_client():
+    llm = _FakeAbortRecoveryLLM()
+    result = probe_llamacpp_abort_recovery(
+        llm,
+        native_poll_timeout=0.5,
+        cancel_exit_timeout=0.5,
+    )
+
+    assert result.native_poll_ms >= 0.0
+    assert result.cancel_exit_ms >= 0.0
+    assert result.recovery_ms >= 0.0
+    assert llm.stream_calls == 1
+    assert llm.generate_calls == 1
+    assert llm._context_poisoned is False
+
+
+class _WrongAbortErrorLLM(_FakeAbortRecoveryLLM):
+    def stream(self, prompt, *, system=None, images=None, history=None) -> Iterator[str]:
+        cancel_event = capability_context.get()["cancel_event"]
+
+        def should_abort(_data) -> bool:
+            return bool(cancel_event.is_set())
+
+        while not should_abort(None):
+            self._tick.wait(0.001)
+        raise RuntimeError("binding surfaced an ordinary failure")
+        yield ""  # pragma: no cover
+
+
+def test_llamacpp_abort_probe_rejects_non_cancellation_exit():
+    with pytest.raises(RuntimeError, match="did not exit as LLMCallCancelled"):
+        probe_llamacpp_abort_recovery(
+            _WrongAbortErrorLLM(),
+            native_poll_timeout=0.5,
+            cancel_exit_timeout=0.5,
+        )
+
+
+class _PieceBeforeAbortLLM(_FakeAbortRecoveryLLM):
+    def stream(self, prompt, *, system=None, images=None, history=None) -> Iterator[str]:
+        yield "premature-token"
+        cancel_event = capability_context.get()["cancel_event"]
+
+        def should_abort(_data) -> bool:
+            return bool(cancel_event.is_set())
+
+        while not should_abort(None):
+            self._tick.wait(0.001)
+        raise LLMCallCancelled("fake native abort after output")
+
+
+def test_llamacpp_abort_probe_rejects_any_piece_before_cancellation():
+    llm = _PieceBeforeAbortLLM()
+    with pytest.raises(RuntimeError, match=r"emitted 1 piece\(s\)"):
+        probe_llamacpp_abort_recovery(
+            llm,
+            native_poll_timeout=0.5,
+            cancel_exit_timeout=0.5,
+        )
+    assert llm.generate_calls == 0
+
+
+class _NoNativePollLLM(_FakeAbortRecoveryLLM):
+    def stream(self, prompt, *, system=None, images=None, history=None) -> Iterator[str]:
+        cancel_event = capability_context.get()["cancel_event"]
+        while not cancel_event.is_set():
+            self._tick.wait(0.001)
+        raise LLMCallCancelled("Python-only cancellation")
+        yield ""  # pragma: no cover
+
+
+def test_llamacpp_abort_probe_rejects_python_only_poll_without_native_callback():
+    with pytest.raises(RuntimeError, match="native abort callback was not polled"):
+        probe_llamacpp_abort_recovery(
+            _NoNativePollLLM(),
+            native_poll_timeout=0.02,
+            cancel_exit_timeout=0.5,
+        )
+
+
+class _PoisonedAbortLLM(_FakeAbortRecoveryLLM):
+    def stream(self, prompt, *, system=None, images=None, history=None) -> Iterator[str]:
+        try:
+            yield from super().stream(prompt, system=system, images=images, history=history)
+        finally:
+            self._context_poisoned = True
+
+
+def test_llamacpp_abort_probe_rejects_poisoned_context_before_recovery():
+    llm = _PoisonedAbortLLM()
+    with pytest.raises(RuntimeError, match="context was poisoned"):
+        probe_llamacpp_abort_recovery(
+            llm,
+            native_poll_timeout=0.5,
+            cancel_exit_timeout=0.5,
+        )
+    assert llm.generate_calls == 0
+
+
+def test_llamacpp_abort_probe_rejects_empty_recovery_completion():
+    with pytest.raises(RuntimeError, match="recovery completion was empty"):
+        probe_llamacpp_abort_recovery(
+            _FakeAbortRecoveryLLM(recovery="  "),
+            native_poll_timeout=0.5,
+            cancel_exit_timeout=0.5,
+        )
 
 
 # --- cloud-provider smoke probe -------------------------------------------

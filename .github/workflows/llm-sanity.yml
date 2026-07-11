@@ -1,6 +1,6 @@
 name: LLM sanity (real model on CPU)
 
-# Runs the real fast Gemma (1B GGUF) on a GitHub CPU and asserts a few prompts
+# Runs the real MiniCPM5-1B Q4 GGUF on a GitHub CPU and asserts a few prompts
 # give distinct, non-degenerate answers — the canned/looping output that broke
 # the mobile app. Heavy-ish (downloads the 1B model, cached), so it runs on
 # manual dispatch and when the LLM code changes, not on every push. Exercises the
@@ -13,7 +13,9 @@ on:
     branches: [ main ]
     paths:
       - 'core/llm.py'
+      - 'core/readiness.py'
       - 'core/capabilities.py'
+      - 'requirements-ondevice.txt'
       - 'tools/llm_sanity.py'
       - '.github/workflows/llm-sanity.yml'
 
@@ -23,6 +25,7 @@ permissions:
 jobs:
   llm-sanity:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
@@ -46,7 +49,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install huggingface_hub
           # Prebuilt CPU wheel so the job doesn't compile llama.cpp.
-          pip install llama-cpp-python \
+          pip install llama-cpp-python==0.3.33 \
             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
       - name: Run LLM output sanity check (real model, CPU)

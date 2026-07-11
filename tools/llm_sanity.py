@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import sys
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -41,6 +42,18 @@ _PROMPTS = [
 ]
 
 _SYSTEM = "You are a concise, friendly assistant. Answer in one or two short sentences."
+
+# Long enough to cross llama.cpp's default 512-token decode batch without
+# approaching this tool's 2k context limit.  Repetition is intentional: the
+# answer is discarded, and familiar single-token words make the lower bound
+# much less tokenizer-dependent than prose would be.
+_ABORT_PROBE_PROMPT = (
+    "Read every word before replying. "
+    + " ".join(["red blue green black white small large round"] * 112)
+)
+_LOCAL_MAX_TOKENS = 96
+_ABORT_POLL_TIMEOUT_SEC = 45.0
+_ABORT_EXIT_TIMEOUT_SEC = 5.0
 
 # Single short prompt for the cloud smoke probe -- we want round-trip + a
 # real token, not a quality check. Reasoning models will preamble; that's OK
@@ -84,6 +97,171 @@ def _check(pairs: list[tuple[str, str]]) -> list[str]:
     if len(pairs) > 1 and not outputs_distinct([o for _, o in pairs]):
         problems.append("all prompts produced the same answer")
     return problems
+
+
+@dataclass(frozen=True)
+class NativeAbortProbeResult:
+    """Timings from the real llama.cpp abort-and-reuse sanity gate."""
+
+    native_poll_ms: float
+    cancel_exit_ms: float
+    recovery_ms: float
+
+
+class _NativeAbortProbeEvent:
+    """Event that distinguishes native abort polls from Python-side polls.
+
+    ``LlamaCppLLM``'s retained ctypes callback is a closure named
+    ``should_abort``.  Its callback and the Python stream loop both inspect the
+    same event, so a plain ``Event`` cannot prove that native prefill actually
+    reached the callback.  Walking this tiny stack only during the sanity job
+    provides that proof without adding a production-only hook to ``core.llm``.
+    """
+
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+        self._native_polled = threading.Event()
+
+    def is_set(self) -> bool:
+        frame = sys._getframe(1)
+        try:
+            while frame is not None:
+                if frame.f_code.co_name == "should_abort":
+                    self._native_polled.set()
+                    break
+                frame = frame.f_back
+        finally:
+            # Avoid retaining worker frames (and therefore the model/client)
+            # through a reference cycle after this callback returns.
+            del frame
+        return self._cancelled.is_set()
+
+    def set(self) -> None:
+        self._cancelled.set()
+
+    def wait_for_native_poll(self, timeout: float) -> bool:
+        return self._native_polled.wait(timeout=max(0.0, timeout))
+
+    @property
+    def native_polled(self) -> bool:
+        return self._native_polled.is_set()
+
+
+def probe_llamacpp_abort_recovery(
+    llm,
+    *,
+    native_poll_timeout: float = _ABORT_POLL_TIMEOUT_SEC,
+    cancel_exit_timeout: float = _ABORT_EXIT_TIMEOUT_SEC,
+) -> NativeAbortProbeResult:
+    """Require native stream cancellation and immediate same-context reuse.
+
+    The first-call timeout includes lazy model loading.  Once the audited
+    native callback has polled, cancellation must retire the worker within the
+    much smaller exit bound as :class:`LLMCallCancelled`.  The discarded stream
+    deliberately follows the voice agent's production barge-in path.
+    """
+    from core.llm import LLMCallCancelled, capability_context
+
+    cancel_event = _NativeAbortProbeEvent()
+    done = threading.Event()
+    outcome: dict[str, object] = {"pieces": 0}
+
+    def consume_cancelled_stream() -> None:
+        token = capability_context.set({"cancel_event": cancel_event})
+        try:
+            for _piece in llm.stream(_ABORT_PROBE_PROMPT, system=_SYSTEM):
+                outcome["pieces"] = int(outcome["pieces"]) + 1
+        except BaseException as exc:
+            outcome["error"] = exc
+        else:
+            outcome["error"] = None
+        finally:
+            capability_context.reset(token)
+            done.set()
+
+    started_at = time.perf_counter()
+    worker = threading.Thread(
+        target=consume_cancelled_stream,
+        name="llamacpp-native-abort-sanity",
+        daemon=True,
+    )
+    worker.start()
+
+    poll_deadline = started_at + max(0.0, native_poll_timeout)
+    while not cancel_event.native_polled:
+        remaining = poll_deadline - time.perf_counter()
+        if remaining <= 0.0 or done.wait(timeout=min(0.01, remaining)):
+            break
+
+    if not cancel_event.native_polled:
+        # Best-effort retirement also keeps an early-failure/unit-test worker
+        # from leaking after the gate has diagnosed the missing native poll.
+        cancel_event.set()
+        stopped = done.wait(timeout=max(0.0, cancel_exit_timeout))
+        if not stopped:
+            raise RuntimeError(
+                "native abort callback was not polled and the stream worker "
+                f"did not stop within {cancel_exit_timeout:.2f}s"
+            )
+        worker.join(timeout=max(0.0, cancel_exit_timeout))
+        if worker.is_alive():
+            raise RuntimeError("native abort probe worker stayed alive after teardown")
+        error = outcome.get("error")
+        if error is not None:
+            raise RuntimeError(
+                "native abort callback was not polled before stream failure "
+                f"({type(error).__name__})"
+            ) from error
+        raise RuntimeError("native abort callback was not polled before stream completion")
+
+    native_polled_at = time.perf_counter()
+    cancel_event.set()
+    cancel_started_at = time.perf_counter()
+    if not done.wait(timeout=max(0.0, cancel_exit_timeout)):
+        raise RuntimeError(
+            "native-cancelled stream worker did not stop within "
+            f"{cancel_exit_timeout:.2f}s"
+        )
+    worker.join(timeout=max(0.0, cancel_exit_timeout))
+    if worker.is_alive():
+        raise RuntimeError("native-cancelled stream worker stayed alive after teardown")
+    cancel_finished_at = time.perf_counter()
+
+    error = outcome.get("error")
+    if not isinstance(error, LLMCallCancelled):
+        actual = "normal completion" if error is None else type(error).__name__
+        raise RuntimeError(
+            "native-cancelled stream did not exit as LLMCallCancelled "
+            f"(got {actual})"
+        ) from error
+    pieces_seen = int(outcome["pieces"])
+    if pieces_seen:
+        raise RuntimeError(
+            "native abort was not pre-token: stream emitted "
+            f"{pieces_seen} piece(s) before cancellation"
+        )
+    if getattr(llm, "_context_poisoned", None) is not False:
+        raise RuntimeError("llama.cpp context was poisoned or could not be inspected")
+
+    recovery_started_at = time.perf_counter()
+    recovered = str(
+        llm.generate(
+            "Reply with only the word ready.",
+            system="This is a health check. Follow the request exactly.",
+        )
+        or ""
+    ).strip()
+    recovery_finished_at = time.perf_counter()
+    if not recovered:
+        raise RuntimeError("same-context recovery completion was empty")
+    if getattr(llm, "_context_poisoned", None) is not False:
+        raise RuntimeError("llama.cpp context became poisoned during recovery")
+
+    return NativeAbortProbeResult(
+        native_poll_ms=(native_polled_at - started_at) * 1000.0,
+        cancel_exit_ms=(cancel_finished_at - cancel_started_at) * 1000.0,
+        recovery_ms=(recovery_finished_at - recovery_started_at) * 1000.0,
+    )
 
 
 # --- cloud-provider smoke -------------------------------------------------
@@ -383,7 +561,31 @@ def main(argv: list[str] | None = None) -> int:
     gguf = hf_hub_download(
         repo_id=coords["repo"], filename=coords["file"], cache_dir=args.cache_dir, token=token
     )
-    llm = LlamaCppLLM(gguf, n_ctx=2048, n_gpu_layers=0)
+    # One shared context is intentional: the gate below proves that a native
+    # prefill abort leaves this exact client reusable before quality prompts
+    # run.  The explicit output cap bounds every completion in this job.
+    llm = LlamaCppLLM(
+        gguf,
+        n_ctx=2048,
+        n_gpu_layers=0,
+        options={"max_tokens": _LOCAL_MAX_TOKENS},
+    )
+
+    try:
+        abort_probe = probe_llamacpp_abort_recovery(llm)
+    except Exception as exc:
+        print(
+            "LLM SANITY FAILED: native abort/recovery gate: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return FAIL
+    print(
+        "Native abort/recovery OK: "
+        f"poll={abort_probe.native_poll_ms:.1f}ms "
+        f"cancel={abort_probe.cancel_exit_ms:.1f}ms "
+        f"recovery={abort_probe.recovery_ms:.1f}ms"
+    )
 
     pairs: list[tuple[str, str]] = []
     for prompt in _PROMPTS:

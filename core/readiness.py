@@ -671,6 +671,45 @@ def check_llamacpp_models(
     )]
 
 
+def check_llamacpp_abort_runtime(
+    config: dict,
+    import_fn: Callable[[str], object] = importlib.import_module,
+) -> Check:
+    """Fail closed unless the selected llama.cpp CPU abort ABI is verified."""
+    from .llm import LLAMACPP_PINNED_VERSION, verify_llamacpp_abort_runtime
+
+    llm = (config or {}).get("llm", {}) or {}
+    problems: list[str] = []
+    n_gpu_layers = llm.get("n_gpu_layers", 0)
+    if n_gpu_layers != 0:
+        problems.append(
+            "native abort is CPU-only; "
+            f"n_gpu_layers={n_gpu_layers!r} (expected 0)"
+        )
+
+    try:
+        module = import_fn("llama_cpp")
+        verify_llamacpp_abort_runtime(module)
+    except Exception as exc:  # noqa: BLE001 - native ABI drift is not ready
+        problems.append(str(exc))
+
+    return Check(
+        "llama.cpp CPU cancellation",
+        not problems,
+        (
+            f"llama-cpp-python=={LLAMACPP_PINNED_VERSION}; n_gpu_layers=0"
+            if not problems
+            else "; ".join(problems)
+        ),
+        "" if not problems else (
+            "set llm.n_gpu_layers=0; python -m pip install --force-reinstall "
+            f"llama-cpp-python=={LLAMACPP_PINNED_VERSION} "
+            "--extra-index-url "
+            "https://abetlen.github.io/llama-cpp-python/whl/cpu"
+        ),
+    )
+
+
 def run_runtime_checks(
     config: dict,
     *,
@@ -704,6 +743,7 @@ def run_runtime_checks(
 
     if llm_mode != "echo":
         if backend == "llamacpp":
+            checks.append(check_llamacpp_abort_runtime(merged, import_fn=import_fn))
             checks += check_llamacpp_models(merged, exists=exists)
         else:
             needed = (

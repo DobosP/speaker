@@ -150,6 +150,8 @@ class AgentSupervisor:
         on_input_resolved: Optional[Callable[[int], None]] = None,
         runtime_owns_stop: bool = False,
         defer_output_until_tts_admission: bool = False,
+        defer_output_until_playback_receipt: bool = False,
+        record_user_memory: Optional[Callable[[str], None]] = None,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -182,9 +184,16 @@ class AgentSupervisor:
         self._on_turn_merged = on_turn_merged
         self._on_continuation_admitted = on_continuation_admitted
         self._on_input_resolved = on_input_resolved
+        self._record_user_memory = record_user_memory
         self._runtime_owns_stop = bool(runtime_owns_stop)
         self._defer_output_until_tts_admission = bool(
             defer_output_until_tts_admission
+        )
+        # Receipt-capable runtimes commit assistant history only after the
+        # output sink terminally attests what played.  Legacy runtimes leave
+        # this off and retain admission-time behavior byte-for-byte.
+        self._defer_output_until_playback_receipt = bool(
+            defer_output_until_playback_receipt
         )
         self._task_timeouts = dict(DEFAULT_TASK_TIMEOUTS)
         if isinstance(task_timeouts, Mapping):
@@ -215,6 +224,11 @@ class AgentSupervisor:
         self._followup_timer: Timer | None = None
         self._followup_lock = Lock()
         self._followup_shutdown = False
+        # Ownership for timer callbacks and delayed playback commits.  A user
+        # speech/reset advances generation; replacing/cancelling a timer advances
+        # token.  Both identities ride FOLLOWUP_TICK so queued stale ticks drop.
+        self._followup_generation = 0
+        self._followup_token = 0
         # Set by shutdown(): a Timer callback that was already in flight when the
         # runtime stopped must not publish a late FOLLOWUP_TICK into a dead bus,
         # and nothing may arm a new timer afterwards (backlog: shutdown guard).
@@ -265,6 +279,11 @@ class AgentSupervisor:
                 not task.cancel_event.is_set()
                 for task in self.state.queued_tasks
             )
+
+    @property
+    def followup_generation(self) -> int:
+        with self._followup_lock:
+            return self._followup_generation
 
     def looks_like_realtime_continuation(self, text: str) -> bool:
         """Audio-thread-safe continuation check for arrival-time preemption.
@@ -676,7 +695,38 @@ class AgentSupervisor:
                     self._on_input_resolved(int(generation))
             return
         if event.kind == EventKind.FOLLOWUP_TICK:
-            self._emit_followup()
+            self._emit_followup(
+                expected_speech_epoch=event.payload.get("speech_epoch"),
+                expected_input_generation=event.payload.get("input_generation"),
+                expected_followup_generation=event.payload.get(
+                    "followup_generation"
+                ),
+                timer_token=event.payload.get("timer_token"),
+            )
+            return
+        if event.kind == EventKind.MEMORY_COMMIT:
+            if event.payload.get("source") == "playback_receipt":
+                schedule_followup = bool(
+                    event.payload.get("schedule_followup", False)
+                )
+                self.record_admitted_output(
+                    str(event.payload.get("text", "")),
+                    is_followup=bool(event.payload.get("is_followup", False)),
+                    # Scheduling has a separate epoch-linearized step below:
+                    # heard history remains true after a cut, but an old commit
+                    # must never re-arm cadence after cancel_all reset it.
+                    schedule_followup=False,
+                )
+                if schedule_followup:
+                    self._schedule_followup_if_playback_current(
+                        event.payload.get("epoch"),
+                        event.payload.get("input_generation"),
+                        event.payload.get("followup_generation"),
+                    )
+            elif event.payload.get("source") == "playback_ordered_user":
+                text = str(event.payload.get("text", "")).strip()
+                if text:
+                    self.memory.add(text, tags=("user",))
             return
         if event.kind == EventKind.CONTROL_STOP:
             if self._runtime_owns_stop:
@@ -1001,13 +1051,19 @@ class AgentSupervisor:
                 return pending_output, pending_followup
             return None
 
-    def record_admitted_output(self, text: str, *, is_followup: bool) -> None:
-        """Commit a completed reply to memory after playback admission."""
+    def record_admitted_output(
+        self,
+        text: str,
+        *,
+        is_followup: bool,
+        schedule_followup: bool = True,
+    ) -> None:
+        """Commit a reply after the runtime's configured playback boundary."""
         if text:
             self.state.spoken_outputs.append(text)
         if text and not is_followup:
             self.memory.add(text, tags=("assistant_output",))
-        if text:
+        if text and schedule_followup:
             self._schedule_followup()
 
     # --- proactive follow-ups ------------------------------------------------
@@ -1015,55 +1071,215 @@ class AgentSupervisor:
         """Arm a timer that, after a silent delay, nudges the conversation."""
         if not self.followups.enabled or not self._followup_state.can_continue():
             return
-        with self._followup_lock:
-            if self._followup_shutdown or self._stopped:
+        with self._cancel_lock:
+            if self._stopped:
                 return
-            self._cancel_followup_locked()
-            timer = Timer(self.followups.delay_sec, self._tick_followup)
-            timer.daemon = True
-            self._followup_timer = timer
-            timer.start()
+            speech_epoch = self.speech_epoch
+            input_generation = self.latest_arrival_generation
+            with self._followup_lock:
+                self._arm_followup_locked(
+                    speech_epoch,
+                    input_generation,
+                    self._followup_generation,
+                )
+
+    def _schedule_followup_if_playback_current(
+        self,
+        epoch: object,
+        input_generation: object,
+        followup_generation: object,
+    ) -> None:
+        """Arm cadence only while the receipt still owns the silent interval.
+
+        Heard text remains memory after a cut/new utterance, but its delayed
+        commit may not start a new timer. Speech epoch covers stop/barge; input
+        arrival covers runtime partials; follow-up generation covers every
+        supervisor-level speech/reset. Locks linearize scheduling against each.
+        """
+
+        try:
+            expected_epoch = int(epoch)
+            expected_input = int(input_generation)
+            expected_followup = int(followup_generation)
+        except (TypeError, ValueError):
+            return
+        with self._cancel_lock:
+            if (
+                self._stopped
+                or expected_epoch != self.speech_epoch
+                or expected_input != self.latest_arrival_generation
+            ):
+                return
+            with self._followup_lock:
+                if expected_followup != self._followup_generation:
+                    return
+                self._arm_followup_locked(
+                    expected_epoch,
+                    expected_input,
+                    expected_followup,
+                )
+
+    def _arm_followup_locked(
+        self,
+        speech_epoch: int,
+        input_generation: int,
+        followup_generation: int,
+    ) -> None:
+        """Create/replace one timer. Caller holds ``_followup_lock``."""
+
+        if (
+            self._followup_shutdown
+            or self._stopped
+            or not self.followups.enabled
+            or not self._followup_state.can_continue()
+        ):
+            return
+        self._cancel_followup_locked()
+        token = self._followup_token
+        timer = Timer(
+            self.followups.delay_sec,
+            self._tick_followup,
+            args=(
+                token,
+                int(speech_epoch),
+                int(input_generation),
+                int(followup_generation),
+            ),
+        )
+        timer.daemon = True
+        self._followup_timer = timer
+        timer.start()
 
     def _cancel_followup(self) -> None:
         with self._followup_lock:
             self._cancel_followup_locked()
 
     def _cancel_followup_locked(self) -> None:
+        self._followup_token += 1
         timer = self._followup_timer
         if timer is not None:
             timer.cancel()
             self._followup_timer = None
 
     def _reset_followups(self) -> None:
-        self._cancel_followup()
-        self._followup_state.reset()
-
-    def _tick_followup(self) -> None:
-        """Timer-thread callback: hand control back to the bus thread."""
         with self._followup_lock:
+            self._followup_generation += 1
+            self._cancel_followup_locked()
+            self._followup_state.reset()
+
+    def _tick_followup(
+        self,
+        timer_token: object = None,
+        speech_epoch: object = None,
+        input_generation: object = None,
+        followup_generation: object = None,
+    ) -> None:
+        """Timer-thread callback: hand control back to the bus thread."""
+        with self._cancel_lock:
+            if self._stopped:
+                return
+            event_epoch = (
+                self.speech_epoch if speech_epoch is None else int(speech_epoch)
+            )
+            event_input = (
+                self.latest_arrival_generation
+                if input_generation is None
+                else int(input_generation)
+            )
+        with self._followup_lock:
+            event_token = (
+                self._followup_token
+                if timer_token is None
+                else int(timer_token)
+            )
+            event_followup = (
+                self._followup_generation
+                if followup_generation is None
+                else int(followup_generation)
+            )
+            if (
+                event_token != self._followup_token
+                or event_followup != self._followup_generation
+            ):
+                return
             self._followup_timer = None
             if self._followup_shutdown or self._stopped:
                 return
-        self.publish(AgentEvent(EventKind.FOLLOWUP_TICK, priority=95))
+        self.publish(
+            AgentEvent(
+                EventKind.FOLLOWUP_TICK,
+                {
+                    "timer_token": event_token,
+                    "speech_epoch": event_epoch,
+                    "input_generation": event_input,
+                    "followup_generation": event_followup,
+                },
+                priority=95,
+            )
+        )
 
-    def _emit_followup(self) -> None:
+    def _emit_followup(
+        self,
+        *,
+        expected_speech_epoch: object = None,
+        expected_input_generation: object = None,
+        expected_followup_generation: object = None,
+        timer_token: object = None,
+    ) -> None:
         """Bus-thread handler: start a follow-up task if still warranted."""
         if not self.followups.enabled or not self._followup_state.can_continue():
+            return
+        try:
+            expected_epoch = (
+                None
+                if expected_speech_epoch is None
+                else int(expected_speech_epoch)
+            )
+            expected_input = (
+                None
+                if expected_input_generation is None
+                else int(expected_input_generation)
+            )
+            expected_followup = (
+                None
+                if expected_followup_generation is None
+                else int(expected_followup_generation)
+            )
+            expected_token = None if timer_token is None else int(timer_token)
+        except (TypeError, ValueError):
             return
         with self._cancel_lock:
             if (
                 self._stopped
+                or (
+                    expected_epoch is not None
+                    and expected_epoch != self.speech_epoch
+                )
+                or (
+                    expected_input is not None
+                    and expected_input != self.latest_arrival_generation
+                )
                 or self.state.active_tasks
                 or self.state.pending_audio_tasks
                 or self.state.pending_aux_tts
                 or self.state.queued_tasks
             ):
                 return
+            speech_epoch = self.speech_epoch
             # Bind the synthetic turn BEFORE task creation.  Stamping whatever
             # generation happened to be current afterward let a user arrival in
             # this gap make the follow-up look like part of the newer turn.
             input_epoch = self.input_epoch
             input_generation = self.latest_input_generation
+            with self._followup_lock:
+                if (
+                    expected_followup is not None
+                    and expected_followup != self._followup_generation
+                ) or (
+                    expected_token is not None
+                    and expected_token != self._followup_token
+                ):
+                    return
         marker = self._followup_state.next_marker()
         decision = IntentDecision(
             kind=IntentKind.ASSISTANT,
@@ -1082,7 +1298,7 @@ class AgentSupervisor:
         task.metadata["origin"] = "system"
         task.metadata["input_epoch"] = input_epoch
         task.metadata["input_generation"] = input_generation
-        self._start_task(task)
+        self._start_task(task, expected_epoch=speech_epoch)
 
     def _handle_speech(
         self, text: str, *, is_final: bool,
@@ -1882,7 +2098,10 @@ class AgentSupervisor:
         instead. The prior turn was already ingested by the victim, so memory
         keeps both real utterances without the synthetic duplicate. Best-effort."""
         try:
-            self.memory.add(addon, tags=("user",))
+            if self._record_user_memory is not None:
+                self._record_user_memory(addon)
+            else:
+                self.memory.add(addon, tags=("user",))
         except Exception:  # noqa: BLE001 - memory is best-effort, never fatal
             log.debug("continuation: memory.add(addon) failed", exc_info=True)
 
@@ -2176,7 +2395,14 @@ class AgentSupervisor:
                 self.publish(
                     AgentEvent(
                         EventKind.TTS_REQUEST,
-                        {"task_id": task_id, "text": text, "epoch": epoch},
+                        {
+                            "task_id": task_id,
+                            "text": text,
+                            "epoch": epoch,
+                            "input_generation": event.payload.get(
+                                "input_generation"
+                            ),
+                        },
                     )
                 )
         # Arm (or continue) the silence cadence once the assistant has spoken.
@@ -2209,6 +2435,11 @@ class AgentSupervisor:
             for fragment in fragments
             if str(fragment).strip()
         )
+        if self._defer_output_until_playback_receipt:
+            # TTS_STREAM_END means only that the model stopped PRODUCING
+            # sentences.  A receipt-capable runtime owns the later sink-drain
+            # boundary and publishes one MEMORY_COMMIT from the safe prefixes.
+            return
         if admitted_text:
             self.state.spoken_outputs.append(admitted_text)
             if not is_followup:

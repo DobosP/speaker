@@ -138,7 +138,7 @@ def test_instant_local_intent_gets_no_latency_ack():
 def test_stop_phrase_cancels_and_halts_playback():
     runtime, engine = _runtime(hold_speech=True, reply="a long winded answer")
     engine.final("tell me a story")
-    assert runtime.wait_idle()
+    assert runtime.wait_idle(include_playback=False)
     assert engine.is_speaking  # held mid-utterance
 
     engine.final("stop")
@@ -149,7 +149,7 @@ def test_stop_phrase_cancels_and_halts_playback():
 def test_cancel_that_final_cancels_and_halts_playback():
     runtime, engine = _runtime(hold_speech=True, reply="a long winded answer")
     engine.final("tell me a story")
-    assert runtime.wait_idle()
+    assert runtime.wait_idle(include_playback=False)
     assert engine.is_speaking
     spoken_before = list(engine.spoken)
 
@@ -164,7 +164,7 @@ def test_cancel_that_final_cancels_and_halts_playback():
 def test_barge_in_stops_playback():
     runtime, engine = _runtime(hold_speech=True, reply="assistant talking")
     engine.final("hello")
-    assert runtime.wait_idle()
+    assert runtime.wait_idle(include_playback=False)
     assert engine.is_speaking
 
     engine.barge_in()
@@ -175,7 +175,7 @@ def test_barge_in_stops_playback():
 def test_command_fast_path_stop_halts_playback_without_llm():
     runtime, engine = _runtime(hold_speech=True, reply="a long winded answer", command_map=_COMMANDS)
     engine.final("tell me a story")
-    assert runtime.wait_idle()
+    assert runtime.wait_idle(include_playback=False)
     assert engine.is_speaking  # held mid-utterance
 
     engine.command("stop")  # spotted keyword, not a transcript
@@ -262,6 +262,15 @@ class _RecordingEngine(ScriptedEngine):
         with self._calls_lock:
             self.calls.append(("speak", text))
         super().speak(text, on_done)
+
+    def speak_tracked(self, speech, *, on_terminal, on_started=None):
+        with self._calls_lock:
+            self.calls.append(("speak", speech.text))
+        super().speak_tracked(
+            speech,
+            on_terminal=on_terminal,
+            on_started=on_started,
+        )
 
     def stop_speaking(self):
         with self._calls_lock:

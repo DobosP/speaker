@@ -45,6 +45,15 @@ class _RecordingEngine(ScriptedEngine):
             self.calls.append(("speak", text))
         super().speak(text, on_done)
 
+    def speak_tracked(self, speech, *, on_terminal, on_started=None):
+        with self._calls_lock:
+            self.calls.append(("speak", speech.text))
+        super().speak_tracked(
+            speech,
+            on_terminal=on_terminal,
+            on_started=on_started,
+        )
+
     def stop_speaking(self):
         with self._calls_lock:
             self.calls.append(("stop_speaking", ""))

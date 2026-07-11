@@ -286,7 +286,7 @@ def test_intent_fast_path_sees_cleaned_text():
     )
     runtime.start(run_bus=False)
     engine.final("tell me a story")
-    assert runtime.wait_idle()
+    assert runtime.wait_idle(include_playback=False)
     assert engine.is_speaking
     # The user repeats "stop" as a correction; cleaned -> "stop" -> halt.
     engine.final("stop stop")

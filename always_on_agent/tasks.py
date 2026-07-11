@@ -193,7 +193,13 @@ class TaskRuntime:
             self._publish(
                 AgentEvent(
                     EventKind.TTS_REQUEST,
-                    {"task_id": task.task_id, "text": sentence, "epoch": task.speech_epoch},
+                    {
+                        "task_id": task.task_id,
+                        "text": sentence,
+                        "epoch": task.speech_epoch,
+                        "followup": bool(task.metadata.get("followup")),
+                        "input_generation": task.metadata.get("input_generation"),
+                    },
                 )
             )
 
@@ -539,6 +545,7 @@ class TaskRuntime:
                     # (e.g. a continuation merge bumped the epoch after the task
                     # finished but before its TASK_COMPLETED was dequeued).
                     "epoch": task.speech_epoch,
+                    "input_generation": task.metadata.get("input_generation"),
                 },
                 priority=60,
             )

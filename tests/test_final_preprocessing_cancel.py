@@ -694,7 +694,7 @@ def test_tts_admission_and_speak_are_atomic_against_barge_in():
     release_allowed = threading.Event()
     calls: list[str] = []
     original_allowed = runtime.supervisor.tts_request_allowed
-    original_speak = engine.speak
+    original_speak_tracked = engine.speak_tracked
     original_stop = engine.stop_speaking
 
     def gated_allowed(task_id, epoch=None):
@@ -703,16 +703,20 @@ def test_tts_admission_and_speak_are_atomic_against_barge_in():
         assert release_allowed.wait(1.0)
         return allowed
 
-    def recording_speak(text, on_done=None):
+    def recording_speak(speech, *, on_terminal, on_started=None):
         calls.append("speak")
-        return original_speak(text, on_done)
+        return original_speak_tracked(
+            speech,
+            on_terminal=on_terminal,
+            on_started=on_started,
+        )
 
     def recording_stop():
         calls.append("stop")
         return original_stop()
 
     runtime.supervisor.tts_request_allowed = gated_allowed
-    engine.speak = recording_speak
+    engine.speak_tracked = recording_speak
     engine.stop_speaking = recording_stop
     runtime.start(run_bus=True)
     try:

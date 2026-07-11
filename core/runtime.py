@@ -27,11 +27,18 @@ from .capability_router import CapabilityRouter, CapabilityTierRouter, escalate_
 from .conversation import RecentContextConfig
 from .cleanup import TranscriptCleaner, rewrite_is_overreach
 from .contract import is_stop_command, normalize_command
-from .engine import AudioEngine, EngineCallbacks
+from .engine import (
+    AudioEngine,
+    EngineCallbacks,
+    PlaybackOutcome,
+    PlaybackReceipt,
+    TrackedSpeech,
+)
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMCallCancelled, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, HELD, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
+from .playback_history import PlaybackCommit, PlaybackHistory
 from .tts_markup import build_markup_guidance
 from .resume import ResumeConfig, ResumeTracker
 from .routing import Router, classify_latency_policy
@@ -94,6 +101,21 @@ class VoiceRuntime:
         admission_load: Optional[Callable[[], Optional[float]]] = None,
     ):
         self.engine = engine
+        # Playout receipts are opt-in.  Legacy engines retain the established
+        # admission-time history path; a capable engine moves memory/resume/
+        # follow-up truth to its terminal sink attestations.
+        self._tracked_playback = bool(
+            self.engine.playback_capabilities.tracked_terminal
+        )
+        self._playback_history = PlaybackHistory() if self._tracked_playback else None
+        # Linearizes "ledger became terminal" with publication of the resulting
+        # MEMORY_COMMIT.  Shutdown samples both facts under this same lock so it
+        # cannot close the bus/memory in the tiny resolve->publish handoff gap.
+        self._playback_effect_lock = threading.RLock()
+        self._playback_effect_changed = threading.Condition(
+            self._playback_effect_lock
+        )
+        self._pending_playback_memory_commits = 0
         # Optional deterministic speech-to-intent fast-path. When present it
         # answers frequent commands directly (no LLM); a miss falls through to
         # the brain. ``None`` -> disabled (the default, preserving the bare
@@ -211,6 +233,7 @@ class VoiceRuntime:
             recent_context=recent_context_config,
             live_routing=live_routing, load_snapshot=load_snapshot,
             image_provider=self._current_images,
+            before_conversation_read=self._await_playback_history,
         )
         if planner_on:
             # Thread the persona name (a plain string -- no core import in the
@@ -280,8 +303,10 @@ class VoiceRuntime:
             on_turn_merged=self.metrics.mark_merged_turn,
             on_continuation_admitted=self._clear_arrival_continuation,
             on_input_resolved=self._clear_published_unheard,
+            record_user_memory=self._record_user_memory_ordered,
             runtime_owns_stop=True,
             defer_output_until_tts_admission=True,
+            defer_output_until_playback_receipt=self._tracked_playback,
         )
         self.supervisor.state.mode = start_mode
         if self._intents is not None and hasattr(self._intents, "bind_speak"):
@@ -548,6 +573,39 @@ class VoiceRuntime:
                 self._watch_manager.shutdown()
             except Exception:  # noqa: BLE001
                 log.exception("watch manager shutdown failed")
+        engine_stopped = False
+        if self._playback_history is not None:
+            # Receipt-capable shutdown must stop/terminalize the sink while the
+            # bus and memory are still alive.  Legacy engines retain the old
+            # teardown order below.  Bound the drain so a broken engine contract
+            # can never turn shutdown into a hang.
+            self._interrupt_playback_history()
+            try:
+                self.engine.stop()
+                engine_stopped = True
+            except Exception:  # noqa: BLE001
+                log.exception("receipt-capable engine stop failed")
+            receipt_deadline = time.monotonic() + 0.5
+            while time.monotonic() < receipt_deadline:
+                if not self._bus_threaded:
+                    self.bus.drain()
+                with self._playback_effect_lock:
+                    if (
+                        not self._playback_history.pending
+                        and not self._pending_playback_memory_commits
+                        and self.bus.idle()
+                    ):
+                        break
+                time.sleep(0.005)
+            with self._playback_effect_lock:
+                playback_pending = bool(
+                    self._playback_history.pending
+                    or self._pending_playback_memory_commits
+                )
+            if playback_pending:
+                log.warning(
+                    "playback receipts still pending after bounded shutdown drain"
+                )
         try:
             self.supervisor.shutdown()
         except Exception:  # noqa: BLE001
@@ -567,13 +625,134 @@ class VoiceRuntime:
             self.memory.close()
         except Exception:  # noqa: BLE001
             log.exception("memory close failed")
-        self.engine.stop()
+        if not engine_stopped:
+            self.engine.stop()
 
     @property
     def mode(self) -> Mode:
         return self.supervisor.state.mode
 
     # --- engine callbacks (may run on an audio thread) ---
+    def _publish_playback_commits(
+        self, commits: tuple[PlaybackCommit, ...]
+    ) -> None:
+        """Hand receipt-proven history back to the serialized brain thread."""
+
+        self._pending_playback_memory_commits += len(commits)
+        for commit in commits:
+            self.bus.publish(
+                AgentEvent(
+                    EventKind.MEMORY_COMMIT,
+                    {
+                        "source": (
+                            "playback_receipt"
+                            if commit.role == "assistant"
+                            else "playback_ordered_user"
+                        ),
+                        "text": commit.text,
+                        "is_followup": commit.is_followup,
+                        "schedule_followup": commit.schedule_followup,
+                        "epoch": commit.epoch,
+                        "input_generation": commit.input_generation,
+                        "followup_generation": commit.followup_generation,
+                    },
+                    priority=30,
+                )
+            )
+        if commits:
+            self._playback_effect_changed.notify_all()
+
+    def _record_user_memory_ordered(self, text: str) -> None:
+        """Preserve assistant-before-user chronology without blocking the bus."""
+
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return
+        history = self._playback_history
+        if history is None:
+            self.memory.add(cleaned, tags=("user",))
+            return
+        with self._playback_effect_changed:
+            if history.conversation_pending or self._pending_playback_memory_commits:
+                commits = history.stage_user(
+                    cleaned,
+                    epoch=self.supervisor.speech_epoch,
+                    input_generation=self.supervisor.latest_arrival_generation,
+                    followup_generation=self.supervisor.followup_generation,
+                )
+                self._publish_playback_commits(commits)
+                self._playback_effect_changed.notify_all()
+                return
+        self.memory.add(cleaned, tags=("user",))
+
+    def _await_playback_history(self, timeout: float = 1.0) -> bool:
+        """Bounded provider-side barrier before reading/adding conversation.
+
+        A new answer must not read recent context or append its user query ahead
+        of an older sink receipt. Receipt callbacks and the bus remain free to
+        run while this provider thread waits. A broken engine degrades after the
+        bound; the capability then skips conversation memory for that turn.
+        """
+
+        history = self._playback_history
+        if history is None:
+            return True
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._playback_effect_changed:
+            while (
+                history.conversation_pending
+                or self._pending_playback_memory_commits
+            ):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0 or self._stopping:
+                    log.warning(
+                        "conversation memory barrier timed out with playback history pending"
+                    )
+                    return False
+                self._playback_effect_changed.wait(timeout=min(0.05, remaining))
+            return True
+
+    def _on_playback_started(self, fragment_id: str) -> None:
+        """Exact sink-onset callback for one receipt-owned fragment."""
+
+        history = self._playback_history
+        if history is None:
+            return
+        with self._playback_effect_lock:
+            attempted = history.mark_started(fragment_id)
+            if attempted is None:
+                return
+            self._resume.note_playback_started(fragment_id)
+
+    def _on_playback_terminal(self, receipt: PlaybackReceipt) -> None:
+        """Resolve one terminal receipt without doing memory I/O on its thread."""
+
+        history = self._playback_history
+        if history is None:
+            return
+        with self._playback_effect_lock:
+            resolution = history.resolve(receipt)
+            if resolution is None:
+                log.warning(
+                    "ignoring unknown/duplicate playback receipt %r",
+                    receipt.fragment_id,
+                )
+                return
+            self._resume.note_playback_receipt(
+                resolution.fragment_id,
+                resolution.safe_text_prefix,
+                played=resolution.played,
+            )
+            self._publish_playback_commits(resolution.commits)
+            self._playback_effect_changed.notify_all()
+
+    def _interrupt_playback_history(self) -> None:
+        history = self._playback_history
+        if history is not None:
+            with self._playback_effect_lock:
+                self._publish_playback_commits(history.interrupt_all())
+                self._playback_effect_changed.notify_all()
+
     def _new_input_generation(self) -> int:
         with self._input_generation_lock:
             self._next_input_generation += 1
@@ -1315,6 +1494,7 @@ class VoiceRuntime:
             self.metrics.mark(BARGE_IN)
             self._watchdog.note_barge_in()
             self.supervisor.cancel_all()
+            self._interrupt_playback_history()
             self.engine.stop_speaking()
             if self._intents is not None:
                 self._intents.cancel_all()
@@ -1355,6 +1535,7 @@ class VoiceRuntime:
                 self._clear_published_unheard()
                 self._clear_partial_fence()
                 self.supervisor.cancel_all()
+                self._interrupt_playback_history()
                 self.engine.stop_speaking()
                 if self._intents is not None:
                     self._intents.cancel_all()
@@ -1474,6 +1655,17 @@ class VoiceRuntime:
 
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:
+        if (
+            event.kind == EventKind.MEMORY_COMMIT
+            and event.payload.get("source")
+            in {"playback_receipt", "playback_ordered_user"}
+        ):
+            # Supervisor is subscribed before the runtime, so its memory write
+            # has completed (or failed visibly) when this acknowledgement runs.
+            with self._playback_effect_changed:
+                if self._pending_playback_memory_commits > 0:
+                    self._pending_playback_memory_commits -= 1
+                self._playback_effect_changed.notify_all()
         if event.kind == EventKind.TASK_COMPLETED:
             capability = str(event.payload.get("capability", "") or "")
             if capability and capability not in _LLM_BACKED_TASK_CAPABILITIES:
@@ -1481,6 +1673,44 @@ class VoiceRuntime:
                 # meeting note, local search/command staging). The turn has an
                 # ASR_FINAL but legitimately never gets an LLM_FIRST_TOKEN.
                 self.metrics.mark(HANDLED_LOCAL)
+            if self._playback_history is not None:
+                data = event.payload.get("data")
+                if isinstance(data, dict) and data.get("streamed"):
+                    completed_epoch = event.payload.get("epoch")
+                    with self._playback_effect_lock:
+                        self._playback_history.note_stream_metadata(
+                            str(event.payload.get("task_id", "")),
+                            int(
+                                completed_epoch
+                                if completed_epoch is not None
+                                else self.supervisor.speech_epoch
+                            ),
+                            is_followup=bool(event.payload.get("followup", False)),
+                        )
+        if self._playback_history is not None:
+            if event.kind == EventKind.TTS_STREAM_END:
+                stream_epoch = event.payload.get("epoch")
+                with self._playback_effect_lock:
+                    self._publish_playback_commits(
+                        self._playback_history.close_stream(
+                            str(event.payload.get("task_id", "")),
+                            int(
+                                stream_epoch
+                                if stream_epoch is not None
+                                else self.supervisor.speech_epoch
+                            ),
+                        )
+                    )
+                    self._playback_effect_changed.notify_all()
+            elif event.kind in {EventKind.TASK_CANCELLED, EventKind.TASK_FAILED}:
+                with self._playback_effect_lock:
+                    self._publish_playback_commits(
+                        self._playback_history.close_task(
+                            str(event.payload.get("task_id", "")),
+                            interrupted=True,
+                        )
+                    )
+                    self._playback_effect_changed.notify_all()
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
             if not text:
@@ -1529,9 +1759,65 @@ class VoiceRuntime:
                     "assistant: %r", text,
                     extra={"transcript": {"role": "assistant", "text": text}},
                 )
-                self._resume.note_spoken(text)  # what was ACTUALLY sent to playback
-                self.engine.speak(text)
-            if admitted_output is not None:
+                if self._playback_history is None:
+                    # Legacy engines expose admission, not sink-drain truth.
+                    self._resume.note_spoken(text)
+                    self.engine.speak(text)
+                else:
+                    epoch_value = int(
+                        epoch if epoch is not None else self.supervisor.speech_epoch
+                    )
+                    streaming = bool(
+                        not auxiliary_tts and task_id and admitted_output is None
+                    )
+                    is_followup = bool(
+                        admitted_output[1]
+                        if admitted_output is not None
+                        else event.payload.get("followup", False)
+                    )
+                    with self._playback_effect_lock:
+                        fragment_id = self._playback_history.register(
+                            task_id=task_id,
+                            epoch=epoch_value,
+                            input_generation=int(
+                                event.payload.get("input_generation")
+                                if event.payload.get("input_generation") is not None
+                                else self.supervisor.latest_arrival_generation
+                            ),
+                            followup_generation=self.supervisor.followup_generation,
+                            text=text,
+                            remember=bool(not auxiliary_tts and task_id),
+                            is_followup=is_followup,
+                            streaming=streaming,
+                        )
+                        # Register with both ledgers before the engine call: a
+                        # deterministic engine may start and terminally receipt
+                        # synchronously inside speak_tracked(). The shared effect
+                        # lock prevents a newer conversation barrier from passing
+                        # between admission and ledger registration.
+                        self._resume.stage_playback(fragment_id, text)
+                    # Do not hold the effect lock across the adapter call: a
+                    # compliant adapter may synchronously wait for a callback
+                    # dispatched on another thread, and callbacks acquire that
+                    # same lock while applying their effects.
+                    try:
+                        self.engine.speak_tracked(
+                            TrackedSpeech(fragment_id=fragment_id, text=text),
+                            on_started=self._on_playback_started,
+                            on_terminal=self._on_playback_terminal,
+                        )
+                    except Exception:
+                        # The capability contract requires a terminal for every
+                        # accepted call. Resolve a failed handoff with no prefix
+                        # so wait_idle cannot leak permanently.
+                        self._on_playback_terminal(
+                            PlaybackReceipt(
+                                fragment_id=fragment_id,
+                                outcome=PlaybackOutcome.FAILED,
+                            )
+                        )
+                        raise
+            if admitted_output is not None and self._playback_history is None:
                 output, is_followup = admitted_output
                 self.supervisor.record_admitted_output(
                     output,
@@ -1555,6 +1841,7 @@ class VoiceRuntime:
                 self._clear_arrival_continuation()
                 self._clear_published_unheard()
                 self._clear_partial_fence()
+                self._interrupt_playback_history()
                 self.engine.stop_speaking()
                 self._resume.note_cut()  # a spoken "stop" arms resume too
                 self._resume.note_playback_end()
@@ -1563,9 +1850,17 @@ class VoiceRuntime:
                     self._intents.cancel_all()
 
     # --- synchronous helper for tests / console demo ---
-    def wait_idle(self, timeout: float = 3.0) -> bool:
-        """Wait until the brain is quiet: no held final, no undispatched bus
-        events, no active/queued tasks.
+    def wait_idle(
+        self,
+        timeout: float = 3.0,
+        *,
+        include_playback: bool = True,
+    ) -> bool:
+        """Wait until the turn is terminal, including tracked playout by default.
+
+        ``include_playback=False`` is the explicit test/console seam for callers
+        that need to wait only until the brain has begun a held utterance so they
+        can inject a stop or barge-in.
 
         rc-1 fix: when the bus runs on its own thread (``run_bus=True`` -- the
         replay harness path), this must NOT also drain the queue from here:
@@ -1573,6 +1868,15 @@ class VoiceRuntime:
         double-dispatched events, poisoning the replay measurement loop. With
         the bus thread running we POLL ``bus.idle()``; only the test path
         (``run_bus=False``) pumps the queue from this thread."""
+
+        def _playback_quiet() -> bool:
+            if not include_playback or self._playback_history is None:
+                return True
+            with self._playback_effect_lock:
+                return bool(
+                    not self._playback_history.pending
+                    and not self._pending_playback_memory_commits
+                )
 
         def _quiet() -> bool:
             return (
@@ -1582,6 +1886,7 @@ class VoiceRuntime:
                 and not self.supervisor.state.pending_audio_tasks
                 and not self.supervisor.state.pending_aux_tts
                 and not self.supervisor.state.queued_tasks
+                and _playback_quiet()
             )
 
         deadline = time.time() + timeout

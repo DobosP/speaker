@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Callable, Optional
 
 
@@ -11,6 +12,96 @@ def _noop(*_args, **_kwargs) -> None:
 
 def _noop_text(*_args, **_kwargs) -> None:
     pass
+
+
+class PlaybackOutcome(str, Enum):
+    """Terminal result for one opt-in tracked speech fragment."""
+
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+    DROPPED = "dropped"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class TrackedSpeech:
+    """One engine-independent text fragment whose playback is tracked.
+
+    ``fragment_id`` is an opaque, runtime-owned identifier.  Engines must copy
+    it unchanged into the corresponding :class:`PlaybackReceipt`; it must not
+    contain transcript text or other user data.
+    """
+
+    fragment_id: str
+    text: str
+
+
+@dataclass(frozen=True)
+class PlaybackReceipt:
+    """Engine attestation of the terminal playback state of one fragment.
+
+    ``safe_text_prefix`` is text the engine can prove reached its playback sink,
+    after any engine-side sanitization.  It is deliberately text, rather than a
+    character count into :class:`TrackedSpeech`, because the queued input is not
+    proof of what played.  An engine without text/audio alignment must report the
+    full sanitized fragment only on completion and an empty prefix on a partial
+    interruption; callers must never infer a prefix from the sample ratio.
+
+    Sample counts are optional because deterministic/no-audio engines can attest
+    text completion without inventing an acoustic sample rate.  When present,
+    both counts use ``output_sample_rate`` and ``played_samples`` never exceeds
+    ``total_samples``.
+    """
+
+    fragment_id: str
+    outcome: PlaybackOutcome
+    safe_text_prefix: str = ""
+    played_samples: Optional[int] = None
+    total_samples: Optional[int] = None
+    output_sample_rate: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if not self.fragment_id:
+            raise ValueError("playback receipt requires a fragment_id")
+        for name, value in (
+            ("played_samples", self.played_samples),
+            ("total_samples", self.total_samples),
+        ):
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must be non-negative")
+        if (
+            self.played_samples is not None
+            and self.total_samples is not None
+            and self.played_samples > self.total_samples
+        ):
+            raise ValueError("played_samples cannot exceed total_samples")
+        if self.output_sample_rate is not None and self.output_sample_rate <= 0:
+            raise ValueError("output_sample_rate must be positive")
+
+    @property
+    def completed(self) -> bool:
+        return self.outcome is PlaybackOutcome.COMPLETED
+
+    @property
+    def interrupted(self) -> bool:
+        return self.outcome is PlaybackOutcome.INTERRUPTED
+
+
+@dataclass(frozen=True)
+class PlaybackCapabilities:
+    """Opt-in playback facts an :class:`AudioEngine` can guarantee.
+
+    The all-false value is the backwards-compatible default.  Runtime code must
+    capability-check instead of fabricating receipts from legacy ``on_done``
+    callbacks, whose meaning differs among existing adapters.
+    """
+
+    tracked_terminal: bool = False
+    exact_started: bool = False
+    sample_counts: bool = False
+
+
+NO_PLAYBACK_CAPABILITIES = PlaybackCapabilities()
 
 
 @dataclass
@@ -81,6 +172,39 @@ class AudioEngine(ABC):
     @property
     def is_speaking(self) -> bool:
         return False
+
+    @property
+    def playback_capabilities(self) -> PlaybackCapabilities:
+        """Playback attestations implemented by this engine.
+
+        Kept non-abstract so every existing engine remains source-compatible.
+        Engines that opt in must give every accepted ``speak_tracked`` call one
+        and only one terminal callback, including rejection, interruption,
+        queue eviction, shutdown, and failure paths.  ``on_started`` is optional
+        and fires at most once, before the terminal callback, only after playback
+        reaches the engine's sink.  Either callback may run synchronously; a
+        hardware engine must not invoke them from its hard real-time audio
+        callback.
+        """
+
+        return NO_PLAYBACK_CAPABILITIES
+
+    def speak_tracked(
+        self,
+        speech: TrackedSpeech,
+        *,
+        on_terminal: Callable[[PlaybackReceipt], None],
+        on_started: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        """Play an opt-in tracked fragment.
+
+        Legacy engines intentionally raise instead of adapting ``speak`` or
+        ``on_done`` into a receipt: queue admission and synthesis completion are
+        not evidence that audio played.  Callers must check
+        :attr:`playback_capabilities` first.
+        """
+
+        raise NotImplementedError("this audio engine does not support tracked speech")
 
     def warm(self) -> None:
         """Exercise the engine's models once so the first turn isn't cold.

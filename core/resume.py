@@ -159,7 +159,10 @@ class ResumeTracker:
     runtime calls:
 
     * ``note_query(text)``    -- a normal final was dispatched (a new turn)
-    * ``note_spoken(text)``   -- a TTS sentence was handed to the engine
+    * ``note_spoken(text)``   -- legacy engine: a TTS sentence was admitted
+    * ``stage_playback(...)`` -- receipt engine: register before playback
+    * ``note_playback_started(...)`` -- first sink sample for that fragment
+    * ``note_playback_receipt(...)`` -- engine-attested safe spoken prefix
     * ``note_playback_end()`` -- the engine reported speech end (echo anchor)
     * ``note_cut()``          -- barge-in / stop interrupted playback
     * ``is_self_echo(text)``  -- L4 guard at the final seam
@@ -175,8 +178,19 @@ class ResumeTracker:
         self._lock = threading.Lock()
         self._query: str = ""
         self._spoken: str = ""
-        self._sentences: deque[str] = deque(maxlen=12)  # recent spoken sentences
+        # Echo candidates are attempted fragments that actually STARTED at the
+        # sink.  Conversational/resume text in _spoken is stricter: only safe
+        # receipt prefixes.  Keeping these separate prevents queued future
+        # sentences from becoming history without giving up tail-echo defence
+        # for a partially played fragment whose word boundary is unknowable.
+        self._sentences: deque[str] = deque(maxlen=12)
+        self._staged_playback: dict[str, str] = {}
+        self._playback_order: deque[str] = deque()
+        self._resolved_playback: dict[str, tuple[str, bool]] = {}
+        self._started_playback: set[str] = set()
+        self._heard_any = False
         self._cut = False
+        self._cut_pending = False
         self._playback_end_at: float = 0.0
         # Diagnostics
         self.echo_dropped = 0
@@ -188,7 +202,13 @@ class ResumeTracker:
         with self._lock:
             self._query = text
             self._spoken = ""
+            self._staged_playback.clear()
+            self._playback_order.clear()
+            self._resolved_playback.clear()
+            self._started_playback.clear()
+            self._heard_any = False
             self._cut = False
+            self._cut_pending = False
 
     def note_spoken(self, text: str) -> None:
         text = (text or "").strip()
@@ -196,8 +216,94 @@ class ResumeTracker:
             return
         with self._lock:
             self._sentences.append(text)
+            self._heard_any = True
+            if self._cut_pending:
+                self._cut = True
+                self._cut_pending = False
             if len(self._spoken) < self._c.max_spoken_chars:
                 self._spoken = (self._spoken + " " + text).strip()
+
+    def stage_playback(self, fragment_id: str, text: str) -> None:
+        """Register a receipt-owned fragment without claiming it was heard."""
+
+        text = (text or "").strip()
+        if not fragment_id or not text:
+            return
+        with self._lock:
+            if fragment_id not in self._staged_playback:
+                self._playback_order.append(fragment_id)
+            self._staged_playback[fragment_id] = text
+
+    def note_playback_started(self, fragment_id: str) -> None:
+        """Record exact sink onset for echo/cut state, not conversation text."""
+
+        with self._lock:
+            text = self._staged_playback.get(fragment_id)
+            if not text:
+                return
+            if fragment_id in self._started_playback:
+                return
+            self._started_playback.add(fragment_id)
+            self._heard_any = True
+            self._sentences.append(text)
+            if self._cut_pending:
+                self._cut = True
+                self._cut_pending = False
+
+    def note_playback_receipt(
+        self,
+        fragment_id: str,
+        safe_text_prefix: str,
+        *,
+        played: bool,
+    ) -> None:
+        """Resolve a staged fragment using only its engine-attested safe text.
+
+        A receipt arriving after :meth:`note_query` is ignored because the new
+        turn cleared its staged IDs.  This keeps a late worker callback from
+        appending an interrupted old reply to the new turn's resume state.
+        """
+
+        safe = (safe_text_prefix or "").strip()
+        with self._lock:
+            if (
+                fragment_id not in self._staged_playback
+                or fragment_id in self._resolved_playback
+            ):
+                return
+            self._resolved_playback[fragment_id] = (safe, bool(played))
+            if played or safe:
+                self._heard_any = True
+                if self._cut_pending:
+                    self._cut = True
+                    self._cut_pending = False
+            # Apply safe prefixes only once every earlier registered fragment
+            # is terminal. Engine callback order is not conversational order.
+            while (
+                self._playback_order
+                and self._playback_order[0] in self._resolved_playback
+            ):
+                ready_id = self._playback_order.popleft()
+                ready_safe, _ready_played = self._resolved_playback.pop(ready_id)
+                self._staged_playback.pop(ready_id, None)
+                started = ready_id in self._started_playback
+                self._started_playback.discard(ready_id)
+                if not ready_safe:
+                    continue
+                # A backend may complete without a separate onset callback. In
+                # that case the safe text is also the echo candidate.
+                if not started:
+                    self._sentences.append(ready_safe)
+                if len(self._spoken) < self._c.max_spoken_chars:
+                    self._spoken = (self._spoken + " " + ready_safe).strip()
+            if self._cut_pending and not self._staged_playback:
+                # Every receipt-owned fragment resolved with zero playback.
+                self._cut_pending = False
+
+    def discard_playback(self, fragment_id: str) -> None:
+        """Forget a registration rejected before the engine owned it."""
+
+        self.note_playback_receipt(fragment_id, "", played=False)
 
     def note_playback_end(self) -> None:
         with self._lock:
@@ -205,8 +311,15 @@ class ResumeTracker:
 
     def note_cut(self) -> None:
         with self._lock:
-            if self._spoken:  # a cut with nothing spoken is not a resumable turn
+            if self._heard_any:  # a pre-audio cut is not a resumable turn
                 self._cut = True
+                self._cut_pending = False
+            elif self._staged_playback:
+                # A receipt may be dispatched asynchronously after the physical
+                # stop.  Remember that a cut happened; later proof of any played
+                # audio retroactively arms resume, while all-zero receipts clear
+                # this latch without inventing speech.
+                self._cut_pending = True
 
     # --- readers (the final-dispatch seam) -------------------------------------
 
@@ -286,9 +399,13 @@ class ResumeTracker:
         if normalize_text(text) not in self._phrases:
             return None
         with self._lock:
-            if not (self._cut and self._query and self._spoken):
+            if not (self._cut and self._query and self._heard_any):
                 return None
-            tail = self._spoken[-self._c.spoken_tail_chars:]
+            tail = (
+                self._spoken[-self._c.spoken_tail_chars:]
+                if self._spoken
+                else "[partial sentence; exact words unavailable]"
+            )
             query = self._query
             if consume:
                 # Consumed: a second "continue" continues the NEW turn.

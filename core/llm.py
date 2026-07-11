@@ -21,6 +21,8 @@ from typing import (
     runtime_checkable,
 )
 
+from .llm_threads import DEFAULT_LLM_THREAD_RESERVE, resolve_llamacpp_thread_pair
+
 # Per-turn context published by the capability layer so the LLM stack can
 # pick a routing chain (sensitivity / intent_kind / mode) without changing
 # the LLMClient protocol. Default is an empty mapping so callers that don't
@@ -1269,8 +1271,30 @@ class LlamaCppLLM:
     ):
         self.model_path = model_path
         self.n_ctx = n_ctx
-        self.n_threads = n_threads
-        self.n_threads_batch = n_threads_batch
+        thread_pair = resolve_llamacpp_thread_pair(n_threads, n_threads_batch)
+        self.n_threads = thread_pair.n_threads
+        self.n_threads_batch = thread_pair.n_threads_batch
+        self._available_cpus = thread_pair.available_cpus
+        self._n_threads_source = "auto" if n_threads is None else "explicit"
+        if n_threads_batch is not None:
+            self._n_threads_batch_source = "explicit"
+        elif n_threads is None:
+            self._n_threads_batch_source = "auto"
+        else:
+            self._n_threads_batch_source = "paired"
+        headroom_ceiling = max(
+            1,
+            self._available_cpus - DEFAULT_LLM_THREAD_RESERVE,
+        )
+        if max(self.n_threads, self.n_threads_batch) > headroom_ceiling:
+            _llamacpp_log.warning(
+                "llama.cpp explicit thread pair %d/%d exceeds the %d-thread "
+                "voice-headroom ceiling for %d CPUs visible to the calling thread",
+                self.n_threads,
+                self.n_threads_batch,
+                headroom_ceiling,
+                self._available_cpus,
+            )
         self.n_gpu_layers = n_gpu_layers
         self.chat_format = chat_format
         # Same voice-path contract as OllamaLLM: reasoning is explicitly off by
@@ -1418,6 +1442,15 @@ class LlamaCppLLM:
                     self._abort_api = verify_llamacpp_abort_runtime(llama_cpp)
                     Llama = llama_cpp.Llama
 
+                    _llamacpp_log.info(
+                        "llama.cpp CPU threads generation=%d (%s) batch=%d (%s) "
+                        "available=%d",
+                        self.n_threads,
+                        self._n_threads_source,
+                        self.n_threads_batch,
+                        self._n_threads_batch_source,
+                        self._available_cpus,
+                    )
                     kwargs = dict(
                         model_path=self.model_path,
                         n_ctx=self.n_ctx,

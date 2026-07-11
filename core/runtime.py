@@ -40,7 +40,11 @@ from .llm import EchoLLM, LLMCallCancelled, LLMClient
 from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, HELD, LLM_FIRST_TOKEN, MetricsRecorder
 from .persona import PersonaConfig, build_system_prompt
 from .playback_history import PlaybackCommit, PlaybackHistory
-from .tts_markup import build_markup_guidance
+from .tts_markup import (
+    ReplySpeechId,
+    ReplyVoiceContinuity,
+    build_markup_guidance,
+)
 from .resume import ResumeConfig, ResumeTracker
 from .routing import Router, classify_latency_policy
 from .turn_merge import FinalDispatcher, FinalDispatchLease, TurnMergeConfig
@@ -105,10 +109,25 @@ class VoiceRuntime:
         # Playout receipts are opt-in.  Legacy engines retain the established
         # admission-time history path; a capable engine moves memory/resume/
         # follow-up truth to its terminal sink attestations.
-        self._tracked_playback = bool(
-            self.engine.playback_capabilities.tracked_terminal
-        )
+        playback_capabilities = self.engine.playback_capabilities
+        self._tracked_playback = bool(playback_capabilities.tracked_terminal)
         self._playback_history = PlaybackHistory() if self._tracked_playback else None
+        _eng_cfg = getattr(self.engine, "config", None)
+        self._reply_voice_continuity = (
+            ReplyVoiceContinuity(
+                voices=(getattr(_eng_cfg, "tts_speaker_voices", {}) or {}).keys(),
+                emotions=(
+                    getattr(_eng_cfg, "tts_emotion_speed_map", {}) or {}
+                ).keys(),
+            )
+            if (
+                _eng_cfg is not None
+                and getattr(_eng_cfg, "tts_markup", False)
+                and playback_capabilities.tracked_terminal
+                and playback_capabilities.speech_style_hints
+            )
+            else None
+        )
         # Linearizes "ledger became terminal" with publication of the resulting
         # MEMORY_COMMIT.  Shutdown samples both facts under this same lock so it
         # cannot close the bus/memory in the tiny resolve->publish handoff gap.
@@ -206,11 +225,11 @@ class VoiceRuntime:
         # config (a sherpa-only feature), so a non-sherpa engine yields "" and the
         # prompt is unchanged. Off by default -> the model stays tag-unaware.
         markup_guidance = ""
-        _eng_cfg = getattr(self.engine, "config", None)
         if _eng_cfg is not None and getattr(_eng_cfg, "tts_markup", False):
             markup_guidance = build_markup_guidance(
                 voices=list(getattr(_eng_cfg, "tts_speaker_voices", {}) or {}),
                 emotions=list(getattr(_eng_cfg, "tts_emotion_speed_map", {}) or {}),
+                voice_continuity=self._reply_voice_continuity is not None,
             )
         system_prompt = build_system_prompt(
             registry, persona=persona, web_enabled=web_enabled,
@@ -559,6 +578,8 @@ class VoiceRuntime:
         # action-producing events once this is set.
         with self._terminal_effect_lock:
             self._stopping = True
+            if self._reply_voice_continuity is not None:
+                self._reply_voice_continuity.clear()
             self._clear_arrival_continuation()
             self._clear_published_unheard()
             self._clear_partial_fence()
@@ -755,6 +776,8 @@ class VoiceRuntime:
             self._playback_effect_changed.notify_all()
 
     def _interrupt_playback_history(self) -> None:
+        if self._reply_voice_continuity is not None:
+            self._reply_voice_continuity.clear()
         history = self._playback_history
         if history is not None:
             with self._playback_effect_lock:
@@ -1723,6 +1746,29 @@ class VoiceRuntime:
                             ),
                             is_followup=bool(event.payload.get("followup", False)),
                         )
+        if self._reply_voice_continuity is not None:
+            if event.kind == EventKind.TTS_STREAM_END:
+                stream_epoch = event.payload.get("epoch")
+                self._reply_voice_continuity.close(
+                    ReplySpeechId(
+                        task_id=str(event.payload.get("task_id", "")),
+                        epoch=int(
+                            stream_epoch
+                            if stream_epoch is not None
+                            else self.supervisor.speech_epoch
+                        ),
+                    )
+                )
+            elif event.kind in {EventKind.TASK_CANCELLED, EventKind.TASK_FAILED}:
+                self._reply_voice_continuity.close_task(
+                    str(event.payload.get("task_id", ""))
+                )
+            elif event.kind == EventKind.TASK_COMPLETED:
+                data = event.payload.get("data")
+                if not (isinstance(data, dict) and data.get("streamed")):
+                    self._reply_voice_continuity.close_task(
+                        str(event.payload.get("task_id", ""))
+                    )
         if self._playback_history is not None:
             if event.kind == EventKind.TTS_STREAM_END:
                 stream_epoch = event.payload.get("epoch")
@@ -1751,6 +1797,7 @@ class VoiceRuntime:
             text = str(event.payload.get("text", "")).strip()
             if not text:
                 return
+            style = None
             admitted_output: tuple[str, bool] | None = None
             with self._terminal_effect_lock:
                 # Shutdown gate: stop() sets _stopping before the bus thread is
@@ -1783,6 +1830,27 @@ class VoiceRuntime:
                         text,
                     )
                     return
+                if self._reply_voice_continuity is not None:
+                    reply = None
+                    if (
+                        not auxiliary_tts
+                        and task_id
+                        and epoch is not None
+                        and bool(event.payload.get("streaming", False))
+                    ):
+                        reply = ReplySpeechId(task_id=task_id, epoch=int(epoch))
+                    prepared = self._reply_voice_continuity.prepare(
+                        text,
+                        reply=reply,
+                    )
+                    text = prepared.text.strip()
+                    style = prepared.style
+                    # A standalone style tag may establish the reply's voice,
+                    # but it is not speech and must not mark the task audible.
+                    if not text:
+                        if auxiliary_tts:
+                            self.supervisor.note_aux_tts_admitted(aux_tts_id)
+                        return
                 if auxiliary_tts:
                     self.supervisor.note_aux_tts_admitted(aux_tts_id)
                 elif not event.payload.get("latency_ack", False):
@@ -1838,7 +1906,11 @@ class VoiceRuntime:
                     # same lock while applying their effects.
                     try:
                         self.engine.speak_tracked(
-                            TrackedSpeech(fragment_id=fragment_id, text=text),
+                            TrackedSpeech(
+                                fragment_id=fragment_id,
+                                text=text,
+                                style=style,
+                            ),
                             on_started=self._on_playback_started,
                             on_terminal=self._on_playback_terminal,
                         )

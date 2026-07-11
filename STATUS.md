@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/word-cut-fuzzy-self-echo`; full
-headless: 3092 passed, 24 skipped, 9 existing warnings; APM/DTD: 6 passed;
+Last verified: 2026-07-11 on Linux ROG, `fix/tts-voice-continuity`; full
+headless: 3100 passed, 30 skipped, 9 existing warnings; APM/DTD: 6 passed;
 compilation/whitespace passed. Prior enrollment live passed; barge live A/B is red.
 
 ## Runtime
@@ -61,9 +61,9 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
-- ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts. Sherpa owns
-  FIFO spans/off-audio-thread callbacks/bounded cut fade; FileReplay atomically
-  attests numeric null-sink clips; sample ratios never imply words (ADR-0027/0028/0029).
+- ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts; sample ratios
+  never imply words. Streamed TTS snapshots task+epoch voice across each reply,
+  while later voice switches and emotion/rate stay fragment-local (ADR-0027/0028/0029/0037).
 
 ## Live evidence and limits
 

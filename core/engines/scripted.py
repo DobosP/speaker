@@ -19,6 +19,7 @@ _SCRIPTED_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
     tracked_terminal=True,
     exact_started=True,
     sample_counts=False,
+    speech_style_hints=True,
 )
 
 

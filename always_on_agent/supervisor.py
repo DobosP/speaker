@@ -2414,6 +2414,10 @@ class AgentSupervisor:
         task_id = str(event.payload.get("task_id", ""))
         with self._cancel_lock:
             task = self.state.pending_audio_tasks.pop(task_id, None)
+            # Every legitimate sentence was published before this lower-priority
+            # marker. Tombstone the producer now so a buggy/late emitter cannot
+            # reopen an unclosable playback-history group after stream end.
+            self._retire_task_tts_locked(task_id)
             schedule_followup = bool(
                 task is not None
                 and not task.cancel_event.is_set()

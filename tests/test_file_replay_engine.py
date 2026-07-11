@@ -12,6 +12,7 @@ from core.engine import (
     EngineCallbacks,
     PlaybackOutcome,
     PlaybackReceipt,
+    SpeechStyle,
     TrackedSpeech,
 )
 from core.engines.file_replay import FileReplayEngine, load_waveform
@@ -66,6 +67,19 @@ class _FakeTts:
 
     def generate(self, text: str, sid: int = 0, speed: float = 1.0):
         self.calls.append(text)
+        return _GeneratedAudio()
+
+
+class _ParamTts(_FakeTts):
+    num_speakers = 103
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.params: list[tuple[str, int, float]] = []
+
+    def generate(self, text: str, sid: int = 0, speed: float = 1.0):
+        self.calls.append(text)
+        self.params.append((text, sid, speed))
         return _GeneratedAudio()
 
 
@@ -241,6 +255,84 @@ def test_file_replay_tracked_completion_attests_null_sink(monkeypatch):
         ("terminal", "null-sink"),
     ]
     assert engine.spoken == ["complete replay text"]
+
+
+def test_file_replay_resolves_typed_style_like_live_sherpa(monkeypatch):
+    tts = _ParamTts()
+    _patch_models(monkeypatch, _FakeRecognizer(), tts)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            tts_markup=True,
+            tts_speaker_voices={"warm": 16},
+            tts_emotion_speed_map={"calm": 0.9},
+        )
+    )
+    engine.start(EngineCallbacks())
+    probe = _ReceiptProbe()
+
+    engine.speak_tracked(
+        TrackedSpeech(
+            "styled",
+            "Inherited voice.",
+            SpeechStyle("warm", "calm", 1.1),
+        ),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+
+    assert tts.params == [("Inherited voice.", 16, pytest.approx(0.99))]
+    assert probe.snapshot()[1][0].safe_text_prefix == "Inherited voice."
+
+
+def test_file_replay_raw_markup_matches_sherpa_sanitization_and_precedence(
+    monkeypatch,
+):
+    tts = _ParamTts()
+    _patch_models(monkeypatch, _FakeRecognizer(), tts)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            tts_markup=True,
+            tts_speaker_voices={"warm": 16, "deep": 9},
+        )
+    )
+    engine.start(EngineCallbacks())
+
+    raw = _ReceiptProbe()
+    engine.speak_tracked(
+        TrackedSpeech("raw", "[voice:deep] Raw directive."),
+        on_started=raw.on_started,
+        on_terminal=raw.on_terminal,
+    )
+    conflict = _ReceiptProbe()
+    engine.speak_tracked(
+        TrackedSpeech(
+            "conflict",
+            "[voice:deep] Explicit wins.",
+            SpeechStyle(voice="warm"),
+        ),
+        on_started=conflict.on_started,
+        on_terminal=conflict.on_terminal,
+    )
+    tag_only = _ReceiptProbe()
+    engine.speak_tracked(
+        TrackedSpeech("tag-only", "[voice:deep]"),
+        on_started=tag_only.on_started,
+        on_terminal=tag_only.on_terminal,
+    )
+
+    assert tts.params == [
+        ("Raw directive.", 9, 1.0),
+        ("Explicit wins.", 9, 1.0),
+    ]
+    assert raw.snapshot()[1][0].safe_text_prefix == "Raw directive."
+    assert conflict.snapshot()[1][0].safe_text_prefix == "Explicit wins."
+    assert tag_only.snapshot()[0] == [("terminal", "tag-only")]
+    assert tag_only.snapshot()[1][0].outcome is PlaybackOutcome.DROPPED
+    assert tag_only.snapshot()[1][0].safe_text_prefix == ""
 
 
 def test_file_replay_interrupt_terminalizes_before_blocked_generate_returns(

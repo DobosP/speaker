@@ -54,16 +54,33 @@ class FinalTranscript:
 
 
 @dataclass(frozen=True)
+class SpeechStyle:
+    """Engine-independent, immutable synthesis hints for one fragment.
+
+    The values stay symbolic until an engine resolves them against its local
+    voice/emotion configuration.  A missing field means "use the engine
+    default"; callers snapshot the effective style before queueing so later
+    reply changes cannot restyle an already-admitted fragment.
+    """
+
+    voice: Optional[str] = None
+    emotion: Optional[str] = None
+    rate: Optional[float] = None
+
+
+@dataclass(frozen=True)
 class TrackedSpeech:
     """One engine-independent text fragment whose playback is tracked.
 
     ``fragment_id`` is an opaque, runtime-owned identifier.  Engines must copy
     it unchanged into the corresponding :class:`PlaybackReceipt`; it must not
-    contain transcript text or other user data.
+    contain transcript text or other user data. ``style`` is an admission-time
+    snapshot; an engine may ignore unsupported hints but must never mutate it.
     """
 
     fragment_id: str
     text: str
+    style: Optional[SpeechStyle] = None
 
 
 @dataclass(frozen=True)
@@ -129,6 +146,10 @@ class PlaybackCapabilities:
     tracked_terminal: bool = False
     exact_started: bool = False
     sample_counts: bool = False
+    # The engine accepts ``TrackedSpeech.style`` as the authoritative directive
+    # carrier. Runtimes must leave textual markup intact for engines that do not
+    # opt in, especially legacy speak()-overriding subclasses.
+    speech_style_hints: bool = False
 
 
 NO_PLAYBACK_CAPABILITIES = PlaybackCapabilities()

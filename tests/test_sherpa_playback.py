@@ -19,7 +19,7 @@ import pytest
 from core.audio_frontend import apply_gain_soft_limit
 from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
-from core.engine import PlaybackOutcome, PlaybackReceipt, TrackedSpeech
+from core.engine import EngineCallbacks, PlaybackOutcome, PlaybackReceipt, TrackedSpeech
 from core.metrics import TTS_FIRST_AUDIO
 
 
@@ -1119,29 +1119,429 @@ def test_stop_flushes_and_closes_live_stream_before_join():
     assert eng._stop_speaking.is_set()
 
 
-def test_stop_closes_capture_before_joining_its_thread():
+def test_stop_joins_capture_before_closing_input_without_read_overlap():
+    """A cooperative block returns before PortAudio is physically closed."""
     events = []
+    read_started = threading.Event()
+    release_read = threading.Event()
 
     class _Input:
+        def __init__(self):
+            self.read_active = False
+            self.close_overlapped = False
+
+        def read(self):
+            self.read_active = True
+            events.append("read-start")
+            read_started.set()
+            assert release_read.wait(timeout=2.0)
+            self.read_active = False
+            events.append("read-exit")
+
+        def request_close(self):
+            events.append("input-request-close")
+            release_read.set()
+
         def close(self):
+            self.close_overlapped = self.read_active
             events.append("input-close")
 
-    class _CaptureThread:
-        def join(self, timeout):
-            events.append(("capture-join", timeout))
-
-        def is_alive(self):
-            return False
-
+    stream = _Input()
     eng = _engine(_StreamingTts())
-    eng._stream_in = _Input()
-    eng._capture_thread = _CaptureThread()
+    eng.config.block_sec = 0.02
+    eng._stream_in = stream
     eng._running.set()
+    eng._capture_thread = threading.Thread(target=stream.read, daemon=True)
+    eng._capture_thread.start()
+    assert read_started.wait(timeout=1.0)
 
     eng.stop()
 
-    assert events == ["input-close", ("capture-join", 1.0)]
+    assert events == [
+        "read-start",
+        "input-request-close",
+        "read-exit",
+        "input-close",
+    ]
+    assert stream.close_overlapped is False
+    assert not eng._capture_thread.is_alive()
     assert eng._stream_in is None
+
+
+def test_stop_aborts_stuck_capture_then_closes_without_read_overlap():
+    """Abort unblocks the owner; physical close follows its bounded join."""
+    read_started = threading.Event()
+    forced = threading.Event()
+
+    class _Input:
+        def __init__(self):
+            self.read_active = False
+            self.abort_overlapped = False
+            self.close_overlapped = False
+            self.close_calls = 0
+
+        def read(self):
+            self.read_active = True
+            read_started.set()
+            assert forced.wait(timeout=2.0)
+            self.read_active = False
+
+        def request_close(self):
+            pass  # emulate a native host read that ignores logical shutdown
+
+        def close(self):
+            self.close_overlapped = self.read_active
+            self.close_calls += 1
+            return True
+
+        def abort_read(self, *, timeout):
+            assert timeout > 0.0
+            self.abort_overlapped = self.read_active
+            forced.set()
+            return True
+
+    stream = _Input()
+    eng = _engine(_StreamingTts())
+    eng.config.block_sec = 0.01
+    eng._stream_in = stream
+    eng._running.set()
+    eng._capture_thread = threading.Thread(target=stream.read, daemon=True)
+    eng._capture_thread.start()
+    assert read_started.wait(timeout=1.0)
+
+    started = time.monotonic()
+    eng.stop()
+    elapsed = time.monotonic() - started
+
+    assert stream.abort_overlapped is True
+    assert stream.close_overlapped is False
+    assert stream.close_calls == 1
+    assert elapsed < 0.75
+    assert not eng._capture_thread.is_alive()
+    assert eng._stream_in is None
+
+
+def test_stop_retains_truly_stuck_input_without_unbounded_close():
+    """If abort cannot quiesce, bounded stop retains rather than close-racing."""
+    class _Input:
+        def __init__(self):
+            self.close_calls = 0
+            self.abort_calls = 0
+
+        def request_close(self):
+            pass
+
+        def abort_read(self, *, timeout):
+            assert timeout > 0.0
+            self.abort_calls += 1
+            return False
+
+        def close(self):
+            self.close_calls += 1
+            raise AssertionError("must not close while capture remains active")
+
+    class _StuckThread:
+        def __init__(self):
+            self.join_timeouts = []
+
+        def join(self, timeout):
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self):
+            return True
+
+    stream = _Input()
+    thread = _StuckThread()
+    eng = _engine(_StreamingTts())
+    eng.config.block_sec = 0.01
+    eng._stream_in = stream
+    eng._capture_thread = thread
+    eng._running.set()
+
+    started = time.monotonic()
+    eng.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.5
+    assert stream.abort_calls == 1
+    assert stream.close_calls == 0
+    assert thread.join_timeouts == [pytest.approx(0.06), 1.0]
+    assert eng._stream_in is stream
+
+
+@pytest.mark.parametrize(
+    ("old_thread_alive", "message"),
+    [
+        (True, "previous capture thread is still alive"),
+        (False, "previous input stream was retained"),
+    ],
+)
+def test_retained_capture_ownership_fails_restart_before_clearing_fences(
+    old_thread_alive, message
+):
+    """A later start cannot resurrect the retained native capture owner."""
+    class _RetainedInput:
+        pass
+
+    class _StuckThread:
+        def is_alive(self):
+            return old_thread_alive
+
+    retained = _RetainedInput()
+    old_thread = _StuckThread()
+    eng = _engine(_StreamingTts())
+    eng._stream_in = retained
+    eng._capture_thread = old_thread
+    eng._capture_stopping.set()
+    eng._playback_stopping.set()
+
+    with pytest.raises(RuntimeError, match=message):
+        eng.start(EngineCallbacks())
+
+    assert eng._capture_stopping.is_set()
+    assert eng._playback_stopping.is_set()
+    assert not eng._running.is_set()
+    assert eng._stream_in is retained
+    assert eng._capture_thread is old_thread
+
+
+def test_retained_capture_resource_hold_blocks_restart_after_effect_finishes():
+    """Cleanup must collect retained output/recorders before a new run starts."""
+    eng = _engine(_StreamingTts())
+    eng._capture_resource_hold.set()
+    eng._capture_stopping.set()
+    eng._playback_stopping.set()
+
+    with pytest.raises(RuntimeError, match="capture resources remain retained"):
+        eng.start(EngineCallbacks())
+
+    assert eng._capture_resource_hold.is_set()
+    assert eng._capture_stopping.is_set()
+    assert eng._playback_stopping.is_set()
+
+
+@pytest.mark.parametrize(
+    ("worker_attr", "message"),
+    [
+        ("_play_thread", "previous playback worker is still alive"),
+        ("_final_thread", "previous final worker is still alive"),
+        ("_receipt_thread", "previous receipt worker is still alive"),
+    ],
+)
+def test_live_shared_worker_fails_restart_before_shared_events_are_reset(
+    worker_attr, message
+):
+    """A slow prior worker cannot be resurrected by the next run's Event.set()."""
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_worker():
+        started.set()
+        assert release.wait(timeout=2.0)
+
+    worker = threading.Thread(target=_slow_worker, daemon=True)
+    worker.start()
+    assert started.wait(timeout=1.0)
+    eng = _engine(_StreamingTts())
+    setattr(eng, worker_attr, worker)
+    eng._capture_stopping.set()
+    eng._playback_stopping.set()
+    prior_play_q = eng._play_q
+    prior_final_q = eng._final_q
+
+    try:
+        with pytest.raises(RuntimeError, match=message):
+            eng.start(EngineCallbacks())
+
+        assert eng._capture_stopping.is_set()
+        assert eng._playback_stopping.is_set()
+        assert not eng._running.is_set()
+        assert not eng._receipt_running.is_set()
+        assert eng._play_q is prior_play_q
+        assert eng._final_q is prior_final_q
+        assert getattr(eng, worker_attr) is worker
+    finally:
+        release.set()
+        worker.join(timeout=1.0)
+
+
+def test_timed_out_receipt_dispatcher_reference_is_retained_for_restart_guard():
+    """A wedged receipt callback remains discoverable after bounded stop."""
+    class _StuckReceiptThread:
+        def __init__(self):
+            self.join_timeouts = []
+
+        def join(self, timeout):
+            self.join_timeouts.append(timeout)
+
+        def is_alive(self):
+            return True
+
+    worker = _StuckReceiptThread()
+    eng = _engine(_StreamingTts())
+    eng._receipt_thread = worker
+    eng._receipt_running.set()
+    eng._capture_stopping.set()
+    eng._playback_stopping.set()
+
+    eng._stop_receipt_dispatcher()
+
+    assert worker.join_timeouts == [0.5]
+    assert eng._receipt_thread is worker
+    assert not eng._receipt_running.is_set()
+    with pytest.raises(RuntimeError, match="previous receipt worker is still alive"):
+        eng.start(EngineCallbacks())
+    assert eng._capture_stopping.is_set()
+    assert eng._playback_stopping.is_set()
+
+
+def test_stop_retains_input_until_timed_out_abort_call_itself_finishes():
+    """Capture may join first; an in-flight native abort still fences close."""
+    from core.engines._recovering_input import OpenAttempt, _RecoveringInputStream
+
+    read_started = threading.Event()
+    abort_started = threading.Event()
+    allow_abort = threading.Event()
+    abort_done = threading.Event()
+    release_read = threading.Event()
+
+    class _NativeInput:
+        def __init__(self):
+            self.read_active = False
+            self.abort_active = False
+            self.close_calls = 0
+            self.close_overlapped = False
+
+        def start(self):
+            pass
+
+        def read(self, frames):
+            self.read_active = True
+            read_started.set()
+            assert release_read.wait(timeout=2.0)
+            self.read_active = False
+            return np.zeros((frames, 1), dtype="float32"), False
+
+        def abort(self):
+            self.abort_active = True
+            abort_started.set()
+            assert allow_abort.wait(timeout=2.0)
+            self.abort_active = False
+            abort_done.set()
+
+        def stop(self):
+            pass
+
+        def close(self):
+            self.close_overlapped = self.read_active or self.abort_active
+            self.close_calls += 1
+
+    native = _NativeInput()
+    wrapper = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.01,
+    )
+    wrapper.open()
+    capture = threading.Thread(target=lambda: wrapper.read(160), daemon=True)
+    capture.start()
+    assert read_started.wait(timeout=1.0)
+
+    def _release_read_during_abort():
+        assert abort_started.wait(timeout=1.0)
+        release_read.set()
+
+    threading.Thread(target=_release_read_during_abort, daemon=True).start()
+    eng = _engine(_StreamingTts())
+    eng.config.block_sec = 0.01
+    eng._stream_in = wrapper
+    eng._capture_thread = capture
+    eng._running.set()
+
+    started = time.monotonic()
+    eng.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.75
+    assert not capture.is_alive()
+    assert native.close_calls == 0
+    assert eng._stream_in is wrapper
+
+    allow_abort.set()
+    assert abort_done.wait(timeout=1.0)
+    assert wrapper.close(wait_timeout=0.0)
+    assert native.close_calls == 1
+    assert native.close_overlapped is False
+
+
+@pytest.mark.parametrize("blocked_method", ["stop", "close"])
+def test_engine_stop_is_bounded_and_retains_stuck_native_teardown(
+    blocked_method, monkeypatch
+):
+    """A wedged native stop/close helper cannot hang engine stop or detach."""
+    from core.engines._recovering_input import OpenAttempt, _RecoveringInputStream
+    from core.engines import sherpa as sherpa_module
+
+    monkeypatch.setattr(sherpa_module, "_INPUT_TEARDOWN_TIMEOUT_SEC", 0.02)
+
+    teardown_entered = threading.Event()
+    release_teardown = threading.Event()
+    teardown_done = threading.Event()
+
+    class _NativeInput:
+        def __init__(self):
+            self.stop_calls = 0
+            self.close_calls = 0
+            self.read_active = False
+            self.abort_active = False
+            self.overlap = False
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stop_calls += 1
+            self.overlap |= self.read_active or self.abort_active
+            if blocked_method == "stop":
+                teardown_entered.set()
+                assert release_teardown.wait(timeout=2.0)
+
+        def close(self):
+            self.close_calls += 1
+            self.overlap |= self.read_active or self.abort_active
+            if blocked_method == "close":
+                teardown_entered.set()
+                assert release_teardown.wait(timeout=2.0)
+            teardown_done.set()
+
+    native = _NativeInput()
+    wrapper = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.02,
+    )
+    wrapper.open()
+    eng = _engine(_StreamingTts())
+    eng.config.block_sec = 0.02
+    eng._stream_in = wrapper
+    eng._running.set()
+
+    started = time.monotonic()
+    eng.stop()
+    elapsed = time.monotonic() - started
+
+    assert teardown_entered.is_set()
+    assert elapsed < 0.5
+    assert eng._stream_in is wrapper
+    assert wrapper._stream is native  # noqa: SLF001 - retained until helper succeeds
+    assert native.overlap is False
+
+    release_teardown.set()
+    assert teardown_done.wait(timeout=1.0)
+    eng.stop()  # collect the successfully completed retained wrapper
+    assert eng._stream_in is None
+    assert native.stop_calls == 1
+    assert native.close_calls == 1
 
 
 def test_stop_without_live_stream_is_noop():

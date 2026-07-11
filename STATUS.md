@@ -67,19 +67,17 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
 
 ## Live evidence and limits
 
-- Matched-device enrollment completed from three 12 s clips on the active PipeWire
-  EC route: 512 dimensions, similarity 0.58 minimum/0.78 mean. Runtime `114725`
-  accepted its fingerprint and reported the enrolled speaker-ID gate.
-- At the owner's 13% OS source setting, run `114725` heard speech but SenseVoice
-  damaged or lost commands; runtime calibration did not make normal use reliable.
-  Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
-  override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
-  zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
-- Main `75b1717` run `144211` retained `sid=18`; the owner's “STOP” cut once
-  without a self-storm. Its garbled override was INGESTed; tags and response-only
-  admission are headless-fixed (ADR-0038/0039). A suspicious 0.818 calibration
-  peak prompted a headless-only one-shot retry (ADR-0040). Live stays red.
-- Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
+- Matched-device enrollment on the PipeWire EC route: 512 dimensions, 0.58
+  minimum/0.78 mean similarity; runtime `114725` accepted its fingerprint.
+- At 13% OS gain `114725` damaged/lost commands; `115512` false-cut, INGESTed the
+  override, then hit -9999/corruption; `130601` had fragmented ASR (ADR-0036).
+- Main `75b1717` run `144211` kept `sid=18` and cut once, but INGESTed the override;
+  tag/response admission fixes remained headless-only (ADR-0038/0039).
+- Latest main `285d74e` run `154451` retried a 0.982 startup crest successfully
+  (replacement peak 0.013/floor 0.0094), but switched `sid=0` to `sid=16`. Owner
+  “STOP” reached word-cut text while scores 0.16–0.23 stayed below 0.30; cuts=0,
+  then PortAudio -9999/allocator corruption recurred. Live B is red (ADR-0040).
+- Capture recovery/device switch remains headless-only; no live unplug validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
   (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.

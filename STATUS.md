@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/tts-voice-continuity`; full
-headless: 3100 passed, 30 skipped, 9 existing warnings; APM/DTD: 6 passed;
-compilation/whitespace passed. Prior enrollment live passed; barge live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, `fix/post-barge-override-admission`;
+focused runtime/resume/capability: 374 passed. Prior full: 3100 passed,
+30 skipped; APM/DTD: 6 passed. Enrollment live passed; barge live A/B is red.
 
 ## Runtime
 
@@ -53,11 +53,10 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
   llama.cpp cancellation clears native memory before shared-context release; a real
   Q4 pre-token cancel took 22.4 ms with healthy reuse (ADR-0030). Model load/warm,
   arbitrary providers, and cloud Hedge losers remain bulkhead-only.
-- Addressing, cleanup, and both routing layers use a separate bounded cancellable
-  final-preprocessing lease before any AgentTask (ADR-0023/0025). Input fences every
-  unheard output; only assistant-eligible add-ons retain lineage across gates and
-  playback. Audio/controls, confirmations, follow-ups, memory, and shutdown have
-  generation/epoch ownership; a real gate cancel took 157.9 ms with zero old pieces.
+- Addressing, cleanup, and routing use a bounded cancellable preprocessing lease.
+  A post-barge live final may bypass `INGEST` only for a direct answer; identity,
+  private context, tools, and continuation lineage stay stripped, and synthetic
+  resumes share that envelope (ADR-0023/0025/0039). Input effects remain fenced.
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
@@ -75,10 +74,9 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
   Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
   override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
-- Main `75b1717` run `144211` improved over `130601`: streamed playback retained
-  `sid=18`, and the owner's “STOP” produced one cut with no self-storm. The remaining
-  override was garbled then INGESTed, and unsupported model tags were spoken; live
-  status therefore remains red despite the successful cut/voice-state controls.
+- Main `75b1717` run `144211` retained `sid=18`, and the owner's “STOP” cut once
+  without a self-storm. Its garbled override was then INGESTed; the bounded
+  response-only override is headless-fixed (ADR-0039), but live status stays red.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

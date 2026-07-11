@@ -22,6 +22,9 @@ Design rules (both functions are pure, stdlib-only, and never raise on bad input
 * A leading bracket is treated as a directive ONLY when it contains at least one
   KNOWN key, so ordinary text that merely starts with ``[`` (footnote markers
   like ``[1]``, markdown, code) passes through untouched.
+* A finite set of control-only namespaces also consumes atom-shaped model slips
+  such as ``[tag:story]`` or ``[narrator:deep]`` without applying any style.
+  Unknown namespaces and free-form bracket prose remain listener-visible.
 * Unknown voice names / emotions / absurd rates fall back to the configured
   defaults; speed is clamped to a safe band and the speaker id to the model's
   real range.
@@ -45,6 +48,21 @@ from .engine import SpeechStyle
 # leading tag is consumed (the directive for THIS utterance); any bracket later
 # in the sentence is real text and never touched.
 _TAG_RE = re.compile(r"^\s*\[([^\[\]]{1,120})\]\s*")
+
+# A deliberately narrow grammar for model-generated, control-like bracket slips.
+# These namespaces are metadata roles, not listener text.  They are consumed
+# only when the whole bracket body is one ``atom:atom`` / ``atom=atom`` pair;
+# prose such as ``[citation needed]`` and an unknown ``[chapter:one]`` stay
+# byte-identical. Configured voice/emotion names are also control namespaces so
+# a reversed model form such as ``[warm:deep]`` cannot leak into TTS.
+CONTROL_ONLY_NAMESPACES = frozenset(
+    {"tag", "narrator", "role", "speaker", "style", "tone"}
+)
+_CONTROL_ONLY_TAG_RE = re.compile(
+    r"^\s*([a-z][a-z0-9_-]{0,31})\s*[:=]\s*"
+    r"([a-z][a-z0-9_-]{0,31})\s*$",
+    re.IGNORECASE,
+)
 
 # The directive keys understood. A leading bracket lacking ALL of these is NOT a
 # TTS tag, so "[1]" / "[see note]" pass through as ordinary spoken text.
@@ -150,12 +168,14 @@ def _strip_later_markup(
     cleaned: list[str] = []
     changed = False
     for part in parts:
-        visible, directives = parse_tts_markup(
+        visible, _directives = parse_tts_markup(
             part,
             voices=voices,
             emotions=emotions,
         )
-        changed = changed or bool(directives)
+        # A malformed-but-control-only tag is consumed without directives, so
+        # text change—not style presence—is the sanitizer's source of truth.
+        changed = changed or visible != part
         if visible.strip():
             cleaned.append(visible.strip())
     return " ".join(cleaned) if changed else text
@@ -253,6 +273,25 @@ def _is_number(text: str) -> bool:
         return False
 
 
+def _is_control_only_tag(
+    body: str,
+    *,
+    voice_names: set[str],
+    emotion_names: set[str],
+) -> bool:
+    """Whether ``body`` is a finite, non-semantic model control slip."""
+
+    match = _CONTROL_ONLY_TAG_RE.fullmatch(body)
+    if match is None:
+        return False
+    namespace = match.group(1).lower()
+    return (
+        namespace in CONTROL_ONLY_NAMESPACES
+        or namespace in voice_names
+        or namespace in emotion_names
+    )
+
+
 def parse_tts_markup(
     text: str,
     *,
@@ -262,9 +301,10 @@ def parse_tts_markup(
     """Split a leading ``[emotion:.. voice:.. rate:..]`` tag off ``text``.
 
     Returns ``(clean_text, directives)``. With no leading tag -- or a leading
-    bracket holding none of :data:`KNOWN_KEYS` and none of the configured
-    ``voices``/``emotions`` -- returns the original text and an empty dict (a
-    byte-identical pass-through). Accepts ``k:v`` or ``k=v`` pairs separated by
+    bracket outside the finite control/configured vocabulary -- returns the
+    original text and an empty dict (a byte-identical pass-through). An
+    atom-shaped control-only slip is removed but also returns empty directives,
+    so it cannot change style. Accepts ``k:v`` or ``k=v`` pairs separated by
     spaces and/or commas, plus the common LLM slips ``[warm voice]``,
     ``[voice warm]``, ``[gentle voice:soft]``, and ``[rate 1.05]``. Never
     raises."""
@@ -313,6 +353,14 @@ def parse_tts_markup(
             if tok in emotion_names:
                 directives.setdefault("emotion", tok)
         if not directives:
+            if _is_control_only_tag(
+                m.group(1),
+                voice_names=voice_names,
+                emotion_names=emotion_names,
+            ):
+                # Sanitize, but do not guess what the malformed metadata meant:
+                # in particular, it must not mutate reply voice continuity.
+                return text[m.end():], {}
             return text, {}  # a non-directive bracket ("[1]") -> leave intact
         return text[m.end():], directives
     except Exception:  # pragma: no cover - defensive; speech must survive bad markup

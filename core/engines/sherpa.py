@@ -4930,14 +4930,15 @@ class SherpaOnnxEngine(AudioEngine):
                 voices=self.config.tts_speaker_voices.keys(),
                 emotions=self.config.tts_emotion_speed_map.keys(),
             )
-            if parsed_directives:
+            if parsed_text != text:
                 text = parsed_text
+                if not text:
+                    return
+            if parsed_directives:
                 merged_directives = dict(parsed_directives)
                 if directives:
                     merged_directives.update(directives)
                 directives = merged_directives
-                if not text:
-                    return
         sid = self.config.tts_speaker_id
         speed = self.config.tts_speed
         # Opt-in expressive markup: map this utterance's parsed directives to a

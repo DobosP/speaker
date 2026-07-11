@@ -335,6 +335,40 @@ def test_file_replay_raw_markup_matches_sherpa_sanitization_and_precedence(
     assert tag_only.snapshot()[1][0].safe_text_prefix == ""
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[tag:story] Here is the first sequence.",
+        "[tag:narrator] The moon orbits Earth.",
+        "[narrator:deep] Once upon a time.",
+    ],
+)
+def test_file_replay_receipt_excludes_unsupported_control_tag(monkeypatch, raw):
+    tts = _ParamTts()
+    _patch_models(monkeypatch, _FakeRecognizer(), tts)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            tts_markup=True,
+            tts_speaker_voices={"narrator": 7},
+        )
+    )
+    engine.start(EngineCallbacks())
+    probe = _ReceiptProbe()
+
+    engine.speak_tracked(
+        TrackedSpeech("unsupported-control", raw),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+
+    [(spoken, _sid, _speed)] = tts.params
+    receipt = probe.snapshot()[1][0]
+    assert not spoken.startswith("[")
+    assert receipt.safe_text_prefix == spoken
+
+
 def test_file_replay_interrupt_terminalizes_before_blocked_generate_returns(
     monkeypatch,
 ):

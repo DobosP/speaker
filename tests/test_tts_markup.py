@@ -26,6 +26,7 @@ from core.tts_markup import (
     ReplyVoiceContinuity,
     build_markup_guidance,
     parse_tts_markup,
+    prepare_speech_style,
     resolve_tts_params,
 )
 
@@ -83,6 +84,41 @@ def test_parse_footnote_bracket_is_not_a_tag():
     # A leading bracket with NONE of the known keys is ordinary text, untouched.
     assert parse_tts_markup("[1] First reference.") == ("[1] First reference.", {})
     assert parse_tts_markup("[see note] hello") == ("[see note] hello", {})
+
+
+@pytest.mark.parametrize(
+    ("raw", "voices"),
+    [
+        ("[tag:story] Here is the first sequence.", []),
+        ("[tag:narrator] The moon orbits Earth.", []),
+        ("[narrator:deep] Once upon a time.", ["narrator"]),
+        ("[role:story] A role alias.", []),
+        ("[speaker:deep] A speaker alias.", []),
+        ("[style:dramatic] A style alias.", []),
+        ("[tone:warm] A tone alias.", []),
+        ("[warm:deep] A configured-name alias.", ["warm"]),
+    ],
+)
+def test_parse_strips_unsupported_model_control_tags_without_applying_style(
+    raw,
+    voices,
+):
+    text, directives = parse_tts_markup(raw, voices=voices)
+
+    assert not text.startswith("[")
+    assert directives == {}
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[citation needed] This claim needs a source.",
+        "[citation:needed] This is listener-visible notation.",
+        "[chapter:one] This is an unknown listener namespace.",
+    ],
+)
+def test_parse_preserves_listener_brackets_outside_the_control_vocabulary(raw):
+    assert parse_tts_markup(raw) == (raw, {})
 
 
 def test_parse_only_keeps_known_keys():
@@ -195,6 +231,34 @@ def test_unknown_voice_is_ignored_without_destroying_active_lease():
     assert continuity.prepare("Three.", reply=reply).style == SpeechStyle(
         voice="warm"
     )
+
+
+def test_unsupported_control_tag_is_silent_and_does_not_mutate_voice_lease():
+    continuity = ReplyVoiceContinuity(voices=["lively", "narrator"])
+    reply = ReplySpeechId("reply", 1)
+    continuity.prepare("[voice:lively] One.", reply=reply)
+
+    malformed = continuity.prepare(
+        "[narrator:deep] That sounds lovely.",
+        reply=reply,
+    )
+    alias = continuity.prepare("[tag:story] Two.", reply=reply)
+
+    assert malformed.text == "That sounds lovely."
+    assert malformed.style == SpeechStyle(voice="lively")
+    assert alias.text == "Two."
+    assert alias.style == SpeechStyle(voice="lively")
+
+
+def test_later_unsupported_control_tag_is_removed_from_one_engine_fragment():
+    prepared = prepare_speech_style(
+        "First sentence. [tag:story] Second sentence.",
+        style=SpeechStyle(voice="warm"),
+        voices=["warm"],
+    )
+
+    assert prepared.text == "First sentence. Second sentence."
+    assert prepared.style == SpeechStyle(voice="warm")
 
 
 def test_auxiliary_unscoped_style_neither_inherits_nor_mutates_reply():
@@ -432,12 +496,55 @@ def test_speak_strips_live_keyless_voice_variant():
     assert ticket is None
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[tag:story] Here is the first sequence.",
+        "[tag:narrator] The moon orbits Earth.",
+        "[narrator:deep] Once upon a time.",
+    ],
+)
+def test_sherpa_does_not_enqueue_unsupported_control_tag_text(raw):
+    cfg = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"narrator": 7},
+    )
+    eng = _bare_engine(cfg)
+
+    eng.speak(raw)
+
+    text, _on_done, _gen, directives, ticket = eng._play_q.get_nowait()
+    assert not text.startswith("[")
+    assert directives is None
+    assert ticket is None
+
+
+def test_synthesize_final_guard_strips_unsupported_control_tag():
+    cfg = SherpaConfig(
+        tts_markup=True,
+        tts_declick=False,
+        tts_target_rms=0.0,
+        tts_output_leveler=False,
+    )
+    eng = _bare_engine(cfg)
+
+    eng._synthesize("[tag:story] The visible line.", lambda _samples: None, gen=0)
+
+    assert eng._tts.calls == [("The visible line.", 0, pytest.approx(1.0))]
+
+
 def test_speak_markup_off_is_passthrough():
     cfg = SherpaConfig(tts_markup=False)
     eng = _bare_engine(cfg)
     eng.speak("[voice:warm] Hello there.")  # tag NOT parsed when off
     text, on_done, gen, directives, ticket = eng._play_q.get_nowait()
     assert text == "[voice:warm] Hello there."
+    assert directives is None
+    assert ticket is None
+
+    eng.speak("[tag:story] Listener-visible while markup is off.")
+    text, _on_done, _gen, directives, ticket = eng._play_q.get_nowait()
+    assert text == "[tag:story] Listener-visible while markup is off."
     assert directives is None
     assert ticket is None
 

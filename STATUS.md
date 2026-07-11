@@ -2,9 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/tts-voice-continuity`; full
-headless: 3100 passed, 30 skipped, 9 existing warnings; APM/DTD: 6 passed;
-compilation/whitespace passed. Prior enrollment live passed; barge live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, `fix/tts-unsupported-tag-hygiene`;
+focused: 133 passed, 1 skipped. Main full: 3100 passed, 30 skipped; live barge is red.
 
 ## Runtime
 
@@ -62,8 +61,9 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
 - ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts; sample ratios
-  never imply words. Streamed TTS snapshots task+epoch voice across each reply,
-  while later voice switches and emotion/rate stay fragment-local (ADR-0027/0028/0029/0037).
+  never imply words. Streamed TTS snapshots task+epoch voice per reply; later voice
+  switches and emotion/rate stay fragment-local. Finite unsupported control tags
+  strip without changing style; other brackets stay visible (ADR-0027/28/29/37/38).
 
 ## Live evidence and limits
 
@@ -77,15 +77,14 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
 - Main `75b1717` run `144211` improved over `130601`: streamed playback retained
   `sid=18`, and the owner's “STOP” produced one cut with no self-storm. The remaining
-  override was garbled then INGESTed, and unsupported model tags were spoken; live
-  status therefore remains red despite the successful cut/voice-state controls.
+  override was garbled then INGESTed; its spoken unsupported model tags are now
+  headless-fixed (ADR-0038). Live status remains red despite the successful cut.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
   (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.
-- Still required with the owner at the mic: fix/verify low-sensitivity normal use,
-  self-echo rejection, override response, markup hygiene, mid-thought pause, and
-  reply-tail continuity. Do not claim barge validated until the full batch passes.
+- Still required at the mic: low-sensitivity use, self-echo rejection, override
+  response, mid-thought pause, and reply-tail continuity. Do not claim barge validated.
 
 ## Standard verification
 `/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`;

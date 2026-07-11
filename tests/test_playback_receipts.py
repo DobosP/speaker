@@ -4,6 +4,8 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass
 
+import pytest
+
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import SessionMemory
@@ -511,6 +513,73 @@ def test_nonstream_reply_applies_one_leading_voice_to_whole_fragment():
             "First sentence. Second sentence. Third sentence."
         )
         assert engine.fragments[0].speech.style == SpeechStyle(voice="warm")
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[tag:story] Here is the first sequence.",
+        "[tag:narrator] The moon orbits Earth.",
+        "[narrator:deep] Once upon a time.",
+    ],
+)
+def test_runtime_excludes_unsupported_control_tag_from_tracked_text(raw):
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"narrator": 7},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime, "story")
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": raw,
+                "epoch": task.speech_epoch,
+                "streaming": True,
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+
+        assert len(engine.fragments) == 1
+        assert not engine.fragments[0].speech.text.startswith("[")
+        assert engine.fragments[0].speech.style is None
+    finally:
+        runtime.stop()
+
+
+def test_runtime_preserves_listener_visible_bracket_text():
+    engine = _ControlledReceiptEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_speaker_voices={"narrator": 7},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime, "citation")
+    text = "[citation needed] This claim needs a source."
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": text,
+                "epoch": task.speech_epoch,
+                "streaming": True,
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+
+        assert engine.fragments[0].speech.text == text
     finally:
         runtime.stop()
 

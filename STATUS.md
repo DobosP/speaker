@@ -73,15 +73,18 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
 - At the owner's 13% OS source setting, run `114725` heard speech but SenseVoice
   damaged or lost commands; runtime calibration did not make normal use reliable.
   Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
-  override, and hit PortAudio -9999/allocator corruption. Run `130601` then
-  reproduced zero/fragmented playback ASR despite owner-energy windows; the new
-  authority is headless-green but lacks live A/B. These remain red live evidence.
+  override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
+  zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
+- Main `75b1717` run `144211` improved over `130601`: streamed playback retained
+  `sid=18`, and the owner's “STOP” produced one cut with no self-storm. The remaining
+  override was garbled then INGESTed, and unsupported model tags were spoken; live
+  status therefore remains red despite the successful cut/voice-state controls.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
   (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.
 - Still required with the owner at the mic: fix/verify low-sensitivity normal use,
-  self-echo rejection, override preservation, mid-thought pause, bare `stop`, and
+  self-echo rejection, override response, markup hygiene, mid-thought pause, and
   reply-tail continuity. Do not claim barge validated until the full batch passes.
 
 ## Standard verification

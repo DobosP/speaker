@@ -3,7 +3,7 @@
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
 Last verified: 2026-07-11 on Linux ROG, `fix/tts-unsupported-tag-hygiene`;
-focused: 133 passed, 1 skipped. Main full: 3100 passed, 30 skipped; live barge is red.
+focused: 135 passed, 1 skipped. Main full: 3100 passed, 30 skipped; live barge is red.
 
 ## Runtime
 

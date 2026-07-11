@@ -21,6 +21,29 @@ def _block(rms, n=1600, seed=0):
     return x
 
 
+class _CalibrationInput:
+    generation = 1
+    actual_samplerate = 16000
+
+    def __init__(self, blocks):
+        self.blocks = [np.asarray(block, dtype="float32") for block in blocks]
+        self.read_count = 0
+
+    def read(self, frames):
+        self.read_count += 1
+        if not self.blocks:
+            raise RuntimeError("synthetic calibration input exhausted")
+        block = self.blocks.pop(0)
+        assert block.shape == (frames,)
+        return block.copy(), False
+
+
+def _impulsive_block(*, quiet_rms=0.0002, peak=0.818, seed=0):
+    block = _block(quiet_rms, seed=seed)
+    block[0] = peak
+    return block
+
+
 def test_floor_tracks_quiet_level_with_headroom():
     # A quiet room ~0.01 RMS -> floor ~ headroom * 0.01, clamped into range.
     blocks = [_block(0.01, seed=i) for i in range(15)]
@@ -68,6 +91,97 @@ def test_calibration_feeds_the_agc_floor():
     agc.noise_floor_rms = cal["noise_floor_rms"]
     assert agc.noise_floor_rms == cal["noise_floor_rms"]
     assert agc.noise_floor_rms > 0.004                   # adapted up from the default
+
+
+def test_stable_stationary_window_keeps_single_pass_behavior(caplog):
+    """A high absolute peak is harmless when its crest is stationary."""
+    blocks = [_block(0.04, seed=i) for i in range(3)]
+    expected = compute_input_calibration(blocks)
+    stream = _CalibrationInput(blocks)
+    metrics = []
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            block_sec=0.1,
+            input_agc=True,
+            input_calibrate=True,
+            input_calibrate_sec=0.3,
+        )
+    )
+    engine._stream_in = stream
+    engine._capture_sr = 16000
+    engine._cb = EngineCallbacks(on_metric=lambda name, **_kw: metrics.append(name))
+
+    engine._calibrate_input()
+
+    assert stream.read_count == 3
+    assert engine._last_calibration == expected
+    assert engine._input_agc.noise_floor_rms == expected["noise_floor_rms"]
+    assert metrics == []
+    assert "suspicious transient crest" not in caplog.text
+
+
+def test_suspicious_startup_crest_retries_once_and_uses_fresh_window(caplog):
+    first = [_impulsive_block(seed=i) for i in range(3)]
+    replacement = [_block(0.0002, seed=20 + i) for i in range(3)]
+    expected = compute_input_calibration(replacement)
+    stream = _CalibrationInput(first + replacement)
+    metrics = []
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            block_sec=0.1,
+            input_agc=True,
+            input_calibrate=True,
+            input_calibrate_sec=0.3,
+            input_agc_noise_floor_rms=0.012,
+        )
+    )
+    engine._stream_in = stream
+    engine._capture_sr = 16000
+    engine._cb = EngineCallbacks(on_metric=lambda name, **_kw: metrics.append(name))
+
+    engine._calibrate_input()
+
+    assert stream.read_count == 6
+    assert engine._last_calibration == expected
+    assert engine._input_agc.noise_floor_rms == expected["noise_floor_rms"] == 0.004
+    assert metrics == ["input_calibration_transient_retry"]
+    assert "suspicious transient crest" in caplog.text
+    assert "retaining configured" not in caplog.text
+
+
+def test_suspicious_replacement_exhausts_once_and_retains_configured_floor(caplog):
+    stream = _CalibrationInput(
+        [_impulsive_block(seed=i) for i in range(6)]
+        + [_block(0.0002, seed=50 + i) for i in range(6)]
+    )
+    metrics = []
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            block_sec=0.1,
+            input_agc=True,
+            input_calibrate=True,
+            input_calibrate_sec=0.3,
+            input_agc_noise_floor_rms=0.007,
+        )
+    )
+    engine._stream_in = stream
+    engine._capture_sr = 16000
+    engine._last_calibration = {"noise_floor_rms": 0.03}
+    engine._input_agc.noise_floor_rms = 0.03
+    engine._cb = EngineCallbacks(on_metric=lambda name, **_kw: metrics.append(name))
+
+    engine._calibrate_input()
+
+    # Exactly one replacement window is attempted even though the existing
+    # four-window read budget and additional synthetic blocks remain available.
+    assert stream.read_count == 6
+    assert engine._last_calibration is None
+    assert engine._input_agc.noise_floor_rms == 0.007
+    assert metrics == [
+        "input_calibration_transient_retry",
+        "input_calibration_unstable",
+    ]
+    assert "retaining configured noise_floor=0.0070" in caplog.text
 
 
 def test_calibration_restarts_in_recovered_stream_domain(monkeypatch):

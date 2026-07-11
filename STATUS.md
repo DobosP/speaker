@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, `fix/tts-voice-continuity`; full
-headless: 3100 passed, 30 skipped, 9 existing warnings; APM/DTD: 6 passed;
-compilation/whitespace passed. Prior enrollment live passed; barge live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, `fix/startup-calibration-settle-retry`;
+focused calibration/enroll/duplex: 56 passed; compile/whitespace passed. Prior full:
+3100 passed, 30 skipped; APM/DTD: 6 passed. Enrollment live passed; barge live A/B is red.
 
 ## Runtime
 
@@ -38,6 +38,7 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
   the first correctly timed block, and revalidates fallback. Same-domain recovery
   preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
   pre-AGC blocks. Speaker/word-cut authority stays cleared until compatible.
+- Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
 - Enrollment provenance v3 is checked after live open/calibration and covers the
   stable route, rates, resampler, OS processing, gain algorithm, and front end;
   volatile measured AGC floor is excluded. Same-chain v2 records migrate through
@@ -75,10 +76,9 @@ compilation/whitespace passed. Prior enrollment live passed; barge live A/B is r
   Run `115512` at moderate gain instead false-cut on own TTS, INGESTed the real
   override, and hit PortAudio -9999/allocator corruption. Run `130601` reproduced
   zero/fragmented playback ASR despite owner-energy windows (ADR-0036).
-- Main `75b1717` run `144211` improved over `130601`: streamed playback retained
-  `sid=18`, and the owner's “STOP” produced one cut with no self-storm. The remaining
-  override was garbled then INGESTed, and unsupported model tags were spoken; live
-  status therefore remains red despite the successful cut/voice-state controls.
+- Main `75b1717` run `144211` retained `sid=18`, and “STOP” cut once without a
+  self-storm. Its first calibration had a suspicious 0.818 peak, but no raw PCM
+  proves inflation; retry is headless-only. Override was garbled/INGESTed; tags spoke.
 - Capture recovery/recalibration is headless-only; no live device unplug/switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

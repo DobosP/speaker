@@ -6,14 +6,17 @@ diversity). Two layers:
   speed)`` -- exercised on a bare instance (``object.__new__``) with a fake TTS, so
   the directive path is covered without starting threads, models, or a sound card.
 
-The contract: default OFF is byte-identical (no parsing, static sid/speed); when
+The contract: markup OFF is byte-identical (no parsing, static sid/speed); when
 on, a leading ``[emotion:.. voice:.. rate:..]`` tag is stripped from the spoken
-text and mapped to a per-utterance ``(sid, speed)``, fail-soft and clamped.
+text and resolved fail-soft. The shipped speaker lock keeps ``sid`` fixed while
+emotion/rate may change speed; an explicit opt-out retains named-voice mapping.
 """
 from __future__ import annotations
 
+import json
 import queue
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,6 +25,7 @@ from core.engine import SpeechStyle
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.persona import build_system_prompt
 from core.tts_markup import (
+    PreparedSpeech,
     ReplySpeechId,
     ReplyVoiceContinuity,
     build_markup_guidance,
@@ -32,6 +36,16 @@ from core.tts_markup import (
 
 
 # --- parse_tts_markup -----------------------------------------------------
+
+def test_shipped_config_and_typed_default_lock_physical_speaker():
+    committed = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert SherpaConfig().tts_lock_speaker_id is True
+    assert committed["sherpa"]["tts_lock_speaker_id"] is True
 
 def test_parse_no_tag_is_passthrough():
     assert parse_tts_markup("Just a normal sentence.") == ("Just a normal sentence.", {})
@@ -169,6 +183,32 @@ def test_reply_voice_persists_but_emotion_and_rate_stay_sentence_local():
     )
 
 
+def test_locked_speaker_sanitizes_voice_but_keeps_fragment_expression():
+    continuity = ReplyVoiceContinuity(
+        voices=["warm", "deep"],
+        emotions=["calm", "excited"],
+        lock_speaker_id=True,
+    )
+    first_reply = ReplySpeechId("reply-a", 7)
+    second_reply = ReplySpeechId("reply-b", 8)
+
+    first = continuity.prepare(
+        "[voice:warm emotion:calm rate:0.9] First.",
+        reply=first_reply,
+    )
+    later = continuity.prepare("Second.", reply=first_reply)
+    other = continuity.prepare(
+        "[voice:deep emotion:excited] Third.",
+        reply=second_reply,
+    )
+
+    assert first == PreparedSpeech(
+        "First.", SpeechStyle(emotion="calm", rate=0.9)
+    )
+    assert later == PreparedSpeech("Second.", None)
+    assert other == PreparedSpeech("Third.", SpeechStyle(emotion="excited"))
+
+
 def test_later_explicit_voice_switches_only_future_fragments():
     continuity = ReplyVoiceContinuity(voices=["warm", "deep"])
     reply = ReplySpeechId("reply-a", 3)
@@ -288,6 +328,20 @@ def test_resolve_voice_name_maps_to_sid():
     assert sid == 7 and speed == 1.0
 
 
+def test_resolve_locked_speaker_ignores_voice_but_keeps_emotion_and_rate():
+    sid, speed = resolve_tts_params(
+        {"voice": "warm", "emotion": "calm", "rate": "1.1"},
+        default_sid=3,
+        default_speed=1.0,
+        voice_map={"warm": 7},
+        emotion_speed_map={"calm": 0.9},
+        num_speakers=103,
+        lock_speaker_id=True,
+    )
+    assert sid == 3
+    assert speed == pytest.approx(0.99)
+
+
 def test_resolve_unknown_voice_falls_back_to_default_sid():
     sid, _ = resolve_tts_params(
         {"voice": "nope"}, default_sid=2, default_speed=1.0, voice_map={"warm": 7})
@@ -377,6 +431,7 @@ def _bare_engine(config: SherpaConfig) -> SherpaOnnxEngine:
 def test_synthesize_applies_directives_streaming_path():
     cfg = SherpaConfig(
         tts_markup=True, tts_declick=False, tts_target_rms=0.0, tts_output_leveler=False,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 7}, tts_emotion_speed_map={"calm": 0.9})
     eng = _bare_engine(cfg)
     written = []
@@ -389,6 +444,7 @@ def test_synthesize_applies_directives_streaming_path():
 def test_synthesize_strips_unparsed_bracket_directive_before_tts():
     cfg = SherpaConfig(
         tts_markup=True, tts_declick=False, tts_target_rms=0.0, tts_output_leveler=False,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 7}, tts_emotion_speed_map={"gentle": 0.92})
     eng = _bare_engine(cfg)
     written = []
@@ -400,6 +456,7 @@ def test_synthesize_strips_unparsed_bracket_directive_before_tts():
 def test_synthesize_merges_final_guard_directives_with_existing_ones():
     cfg = SherpaConfig(
         tts_markup=True, tts_declick=False, tts_target_rms=0.0, tts_output_leveler=False,
+        tts_lock_speaker_id=False,
         tts_speaker_voices={"warm": 7, "soft": 3}, tts_emotion_speed_map={"gentle": 0.92})
     eng = _bare_engine(cfg)
     eng._synthesize(
@@ -409,6 +466,39 @@ def test_synthesize_merges_final_guard_directives_with_existing_ones():
         directives={"voice": "warm"},
     )
     assert eng._tts.calls == [("Yes.", 7, pytest.approx(0.92))]
+
+
+def test_synthesize_locks_physical_speaker_across_different_reply_styles():
+    cfg = SherpaConfig(
+        tts_markup=True,
+        tts_lock_speaker_id=True,
+        tts_speaker_id=5,
+        tts_speed=1.0,
+        tts_speaker_voices={"warm": 7, "deep": 9},
+        tts_emotion_speed_map={"calm": 0.9, "excited": 1.1},
+        tts_declick=False,
+        tts_target_rms=0.0,
+        tts_output_leveler=False,
+    )
+    eng = _bare_engine(cfg)
+
+    eng._synthesize(
+        "first reply",
+        lambda _samples: None,
+        gen=0,
+        directives={"voice": "warm", "emotion": "calm"},
+    )
+    eng._synthesize(
+        "second reply",
+        lambda _samples: None,
+        gen=0,
+        directives={"voice": "deep", "emotion": "excited"},
+    )
+
+    assert eng._tts.calls == [
+        ("first reply", 5, pytest.approx(0.9)),
+        ("second reply", 5, pytest.approx(1.1)),
+    ]
 
 
 def test_synthesize_lowpass_streams_and_attenuates_hf():
@@ -580,6 +670,36 @@ def test_markup_guidance_lists_voices_and_emotions():
     assert "Emotion and rate apply to" in g
 
 
+def test_markup_guidance_hides_named_voices_when_speaker_is_locked():
+    guidance = build_markup_guidance(
+        ["warm", "narrator"],
+        ["calm"],
+        voice_continuity=True,
+        lock_speaker_id=True,
+    )
+
+    assert "physical speaker voice is fixed" in guidance
+    assert "Never emit a voice directive" in guidance
+    assert "warm" not in guidance and "narrator" not in guidance
+    assert "[emotion:calm]" in guidance
+    assert "voice choice persists" not in guidance
+
+
+def test_locked_speaker_without_emotions_has_no_empty_markup_example():
+    guidance = build_markup_guidance(
+        ["warm"],
+        [],
+        voice_continuity=True,
+        lock_speaker_id=True,
+    )
+
+    assert guidance == (
+        "The physical speaker voice is fixed for this session. Never emit a "
+        "voice directive or a voice name."
+    )
+    assert "[]" not in guidance
+
+
 def test_build_system_prompt_appends_guidance_only_when_given():
     guidance = build_markup_guidance(["warm"], ["calm"])
     base = build_system_prompt(persona=None, web_enabled=False)
@@ -596,11 +716,31 @@ def test_runtime_threads_markup_guidance_from_engine_config():
 
     engine = ScriptedEngine()
     engine.config = SherpaConfig(  # duck-typed: runtime reads engine.config
-        tts_markup=True, tts_speaker_voices={"warm": 7},
+        tts_markup=True, tts_lock_speaker_id=False,
+        tts_speaker_voices={"warm": 7},
         tts_emotion_speed_map={"calm": 0.9})
     rt = VoiceRuntime(engine, EchoLLM(reply="hi"))
     assert "Expressive voice" in rt._system_prompt
     assert "warm" in rt._system_prompt and "calm" in rt._system_prompt
+
+
+def test_runtime_prompt_enforces_shipped_speaker_lock():
+    from core.engines.scripted import ScriptedEngine
+    from core.llm import EchoLLM
+    from core.runtime import VoiceRuntime
+
+    engine = ScriptedEngine()
+    engine.config = SherpaConfig(
+        tts_markup=True,
+        tts_lock_speaker_id=True,
+        tts_speaker_voices={"warm": 7},
+        tts_emotion_speed_map={"calm": 0.9},
+    )
+    runtime = VoiceRuntime(engine, EchoLLM(reply="hi"))
+
+    assert "physical speaker voice is fixed" in runtime._system_prompt
+    assert "warm" not in runtime._system_prompt
+    assert "calm" in runtime._system_prompt
 
 
 def test_runtime_no_guidance_when_markup_off():

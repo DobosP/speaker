@@ -207,6 +207,7 @@ def test_file_replay_direct_speak_uses_shared_markup_sanitizer_and_style(
             asr_encoder="x",
             tts_model="y",
             tts_markup=True,
+            tts_lock_speaker_id=False,
             tts_speaker_id=2,
             tts_speaker_voices={"warm": 16, "narrator": 7},
         )
@@ -311,6 +312,7 @@ def test_file_replay_resolves_typed_style_like_live_sherpa(monkeypatch):
             asr_encoder="x",
             tts_model="y",
             tts_markup=True,
+            tts_lock_speaker_id=False,
             tts_speaker_voices={"warm": 16},
             tts_emotion_speed_map={"calm": 0.9},
         )
@@ -342,6 +344,7 @@ def test_file_replay_raw_markup_matches_sherpa_sanitization_and_precedence(
             asr_encoder="x",
             tts_model="y",
             tts_markup=True,
+            tts_lock_speaker_id=False,
             tts_speaker_voices={"warm": 16, "deep": 9},
         )
     )
@@ -379,6 +382,33 @@ def test_file_replay_raw_markup_matches_sherpa_sanitization_and_precedence(
     assert tag_only.snapshot()[0] == [("terminal", "tag-only")]
     assert tag_only.snapshot()[1][0].outcome is PlaybackOutcome.DROPPED
     assert tag_only.snapshot()[1][0].safe_text_prefix == ""
+
+
+def test_file_replay_locks_speaker_across_replies_and_keeps_rate_expression(
+    monkeypatch,
+):
+    tts = _ParamTts()
+    _patch_models(monkeypatch, _FakeRecognizer(), tts)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            tts_markup=True,
+            tts_lock_speaker_id=True,
+            tts_speaker_id=2,
+            tts_speaker_voices={"warm": 16, "deep": 9},
+            tts_emotion_speed_map={"calm": 0.9, "excited": 1.1},
+        )
+    )
+    engine.start(EngineCallbacks())
+
+    engine.speak("[voice:warm emotion:calm] First reply.")
+    engine.speak("[voice:deep emotion:excited rate:1.05] Second reply.")
+
+    assert tts.params == [
+        ("First reply.", 2, pytest.approx(0.9)),
+        ("Second reply.", 2, pytest.approx(1.155)),
+    ]
 
 
 @pytest.mark.parametrize(

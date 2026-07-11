@@ -548,20 +548,23 @@ class SherpaConfig:
     tts_lexicon: str = ""
     tts_speaker_id: int = 0
     tts_speed: float = 1.0
+    # Session-wide physical voice stability. When true, named voice markup is
+    # still stripped but cannot change ``tts_speaker_id``; emotion/rate may
+    # continue to adjust speed. This keeps onboarding, acknowledgements, and
+    # normal replies on one configured timbre. Set false only for an intentional
+    # multi-character deployment.
+    tts_lock_speaker_id: bool = True
     # EXPRESSIVE MARKUP (opt-in, default OFF -> byte-identical). When True the LLM
     # may prefix a sentence with a leading directive tag -- [emotion:.. voice:..
-    # rate:..] (see core/tts_markup.py) -- which SherpaOnnxEngine.speak() strips
-    # from the spoken text and maps to a per-utterance (speaker_id, speed). This is
-    # the cheap on-device "emotion + voice diversity" capability: no extra model,
-    # just a regex + two dict lookups per sentence. Requires a system prompt that
-    # teaches the grammar (also opt-in); with the default tag-unaware prompt the
-    # LLM never emits a tag, so enabling this alone changes nothing. The two maps
-    # below are inert while this is False.
+    # rate:..] (see core/tts_markup.py) -- which SherpaOnnxEngine.speak() strips.
+    # The shipped lock above fixes physical speaker identity while emotion/rate
+    # remain cheap speed controls. The two maps below are inert while this is
+    # False; named voices additionally require the lock to be deliberately off.
     tts_markup: bool = False
-    # Named-voice map (diversity): voice name -> Kokoro sid. Lets the markup (or a
-    # deployment) pick a voice by role ("warm", "narrator", ...) instead of a raw
-    # integer. Empty (default) -> only tts_speaker_id is ever used. Out-of-range
-    # sids are validated against the model's speaker count at synth time.
+    # Named-voice map: voice name -> Kokoro sid. Names stay in the sanitizer
+    # vocabulary while the session lock is on; with an explicit lock opt-out,
+    # markup can pick a role ("warm", "narrator", ...) instead of a raw integer.
+    # Out-of-range sids are validated against the model's speaker count.
     tts_speaker_voices: dict = field(default_factory=dict)
     # Emotion -> speed-multiplier map (rate-as-affect, the realistic cheap emotion
     # lever sherpa-onnx Kokoro exposes -- there is no latent style vector). e.g.
@@ -5051,6 +5054,7 @@ class SherpaOnnxEngine(AudioEngine):
                 num_speakers=int(getattr(tts, "num_speakers", 0) or 0),
                 speed_min=self.config.tts_speed_min,
                 speed_max=self.config.tts_speed_max,
+                lock_speaker_id=self.config.tts_lock_speaker_id,
             )
         target_rms = self.config.tts_target_rms
         leveler_on = self.config.tts_output_leveler

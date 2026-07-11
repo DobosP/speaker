@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
-24 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, `fix/session-tts-speaker-lock`; full:
+3157 passed, 30 skipped, 9 known warnings; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -61,9 +61,9 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
 - ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts; sample ratios
-  never imply words. Streamed TTS snapshots task+epoch voice per reply; later voice
-  switches and emotion/rate stay fragment-local. Finite unsupported control tags
-  strip without changing style; other brackets stay visible (ADR-0027/28/29/37/38).
+  never imply words. The shipped TTS speaker ID is session-locked; voice tags
+  sanitize without switching it, while emotion/rate stay fragment-local. Finite
+  unsupported control tags strip; other brackets stay visible (ADR-0027/28/29/38/41).
 
 ## Live evidence and limits
 
@@ -76,7 +76,8 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3154 passed,
 - Latest main `285d74e` run `154451` retried a 0.982 startup crest successfully
   (replacement peak 0.013/floor 0.0094), but switched `sid=0` to `sid=16`. Owner
   “STOP” reached word-cut text while scores 0.16–0.23 stayed below 0.30; cuts=0,
-  then PortAudio -9999/allocator corruption recurred. Live B is red (ADR-0040).
+  then PortAudio -9999/allocator corruption recurred. The voice switch is
+  headless-fixed only (ADR-0041); barge and capture remain red.
 - Capture recovery/device switch remains headless-only; no live unplug validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips

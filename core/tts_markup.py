@@ -1,4 +1,4 @@
-"""Opt-in TTS expressive markup -> per-utterance (speaker_id, speed).
+"""Opt-in TTS expressive markup -> per-utterance synthesis style.
 
 When its system prompt teaches the grammar (an explicit, per-deployment opt-in),
 the LLM may prefix a spoken sentence with a small leading bracket tag carrying
@@ -9,12 +9,9 @@ voice / emotion / rate directives, e.g.
 
 :func:`parse_tts_markup` strips that one leading tag and returns the directives;
 :func:`resolve_tts_params` maps them to a concrete ``(speaker_id, speed)`` for
-the synthesizer. This is the whole "emotion + voice diversity" capability and it
-is deliberately CHEAP: no extra model, no added latency -- a regex scan plus two
-dict lookups per sentence. Kokoro's only realistic expressivity levers via
-sherpa-onnx are *which voice* (sid, 103 of them) and *how fast* (speed); there is
-no latent style vector exposed, so emotion is modelled as voice-choice +
-rate-as-affect.
+the synthesizer. Deployments may permit named voice selection, but the shipped
+session-stability policy locks ``speaker_id`` to its configured default and
+keeps only rate-as-affect. Kokoro exposes no separate latent style vector.
 
 Design rules (both functions are pure, stdlib-only, and never raise on bad input
 -- they must never corrupt speech):
@@ -182,12 +179,14 @@ def _strip_later_markup(
 
 
 class ReplyVoiceContinuity:
-    """Resolve markup while carrying only voice across one streamed reply.
+    """Resolve markup while optionally carrying voice across one streamed reply.
 
-    Emotion and rate remain sentence-local.  State is keyed by task + speech
-    epoch so interleaved replies cannot borrow each other's voice.  Methods are
-    thread-safe because stream terminal events run on the bus while barge/stop
-    cleanup can arrive from an audio callback thread.
+    Emotion and rate remain sentence-local. When ``lock_speaker_id`` is true,
+    voice directives are sanitized but never enter the typed style, so every
+    reply resolves to the configured physical speaker. Otherwise state is keyed
+    by task + speech epoch so interleaved replies cannot borrow each other's
+    voice. Methods are thread-safe because stream terminal events run on the bus
+    while barge/stop cleanup can arrive from an audio callback thread.
     """
 
     def __init__(
@@ -195,11 +194,13 @@ class ReplyVoiceContinuity:
         *,
         voices: Optional[Iterable] = None,
         emotions: Optional[Iterable] = None,
+        lock_speaker_id: bool = False,
     ) -> None:
         self._voices = tuple(_vocab(voices))
         self._voice_names = set(self._voices)
         self._emotions = tuple(_vocab(emotions))
         self._emotion_names = set(self._emotions)
+        self._lock_speaker_id = bool(lock_speaker_id)
         self._voice_by_reply: dict[ReplySpeechId, str] = {}
         self._lock = threading.Lock()
 
@@ -224,7 +225,11 @@ class ReplyVoiceContinuity:
         explicit_voice = str(parsed.get("voice", "")).strip().lower()
         valid_voice = (
             explicit_voice
-            if explicit_voice and explicit_voice in self._voice_names
+            if (
+                not self._lock_speaker_id
+                and explicit_voice
+                and explicit_voice in self._voice_names
+            )
             else None
         )
         explicit_emotion = str(parsed.get("emotion", "")).strip().lower()
@@ -377,10 +382,12 @@ def resolve_tts_params(
     num_speakers: int = 0,
     speed_min: float = DEFAULT_SPEED_MIN,
     speed_max: float = DEFAULT_SPEED_MAX,
+    lock_speaker_id: bool = False,
 ) -> tuple[int, float]:
     """Map parsed ``directives`` to a concrete ``(speaker_id, speed)``.
 
-    ``voice`` -> sid via ``voice_map``; ``emotion`` -> a speed multiplier via
+    ``voice`` -> sid via ``voice_map`` unless ``lock_speaker_id`` keeps the
+    configured physical speaker fixed; ``emotion`` -> a speed multiplier via
     ``emotion_speed_map``; an explicit ``rate``/``speed`` -> a further multiplier.
     Empty/absent directives return the defaults unchanged (byte-identical). Every
     lookup is fail-soft: an unknown voice keeps ``default_sid``, an unknown emotion
@@ -400,7 +407,7 @@ def resolve_tts_params(
 
     vname = directives.get("voice")
     vkey = str(vname).strip().lower() if vname else ""
-    if vkey and vkey in voice_map_norm:
+    if not lock_speaker_id and vkey and vkey in voice_map_norm:
         try:
             sid = int(voice_map_norm[vkey])
         except (TypeError, ValueError):
@@ -434,6 +441,7 @@ def build_markup_guidance(
     emotions: Optional[list] = None,
     *,
     voice_continuity: bool = False,
+    lock_speaker_id: bool = False,
 ) -> str:
     """A system-prompt snippet teaching the LLM the expressive-markup grammar.
 
@@ -443,18 +451,35 @@ def build_markup_guidance(
     system prompt only when ``SherpaConfig.tts_markup`` is on, so a deployment
     enables the whole capability by setting that flag plus the maps -- no manual
     prompt edits."""
-    voices = [str(v) for v in (voices or []) if v]
+    configured_voices = [str(v) for v in (voices or []) if v]
+    voices = [] if lock_speaker_id else configured_voices
     emotions = [str(e) for e in (emotions or []) if e]
-    if not voices and not emotions:
+    if not configured_voices and not emotions:
         return ""
+    fixed_voice_instruction = (
+        "The physical speaker voice is fixed for this session. Never emit a "
+        "voice directive or a voice name."
+    )
+    if lock_speaker_id and not emotions:
+        return fixed_voice_instruction
     parts = [
+        "Expressive delivery: you may begin a sentence with ONE optional tag in "
+        "square brackets to set its emotion or rate. Put it at the very start; "
+        "it is removed before speaking, so the listener never hears it. Use it "
+        "sparingly; most sentences need no tag."
+        if lock_speaker_id
+        else
         "Expressive voice: you may begin a sentence with ONE optional tag in "
         "square brackets to set how it is spoken. Put it at the very start; it is "
         "removed before speaking, so the listener never hears it. Use it sparingly "
         "-- only when emotion or a voice change genuinely helps; most sentences "
         "need no tag."
     ]
-    if voice_continuity:
+    if lock_speaker_id:
+        parts.append(
+            fixed_voice_instruction + " Emotion and rate may vary."
+        )
+    elif voice_continuity:
         parts.append(
             "Use at most one tag per reply, at the very start; never put tags "
             "between sentences. In a streamed reply, its voice choice persists "

@@ -1,7 +1,7 @@
 # ADR-0017: VAD-backed ASR segment ownership and endpoint clock
 
 Date: 2026-07-10
-Status: accepted
+Status: superseded-by ADR-0046
 
 ## Decision
 

@@ -89,6 +89,12 @@ class ASRSegment:
 
     def observe_text(self, now: float) -> None:
         """Record a decoder advance; speech evidence only when VAD is absent."""
+        if self.vad_available and not self.speech_seen:
+            # Decoder hypotheses produced before the independent VAD has opened
+            # a speech episode are not part of any owner utterance.  In
+            # particular, do not let their timestamp keep a later empty VAD blip
+            # alive or bind that old text to the new acoustic episode.
+            return
         self.last_text_at = float(now)
         if self.vad_available:
             return
@@ -96,6 +102,26 @@ class ASRSegment:
             self.speech_seen = True
             self.first_speech_at = float(now)
         self.last_speech_at = float(now)
+
+    def abandoned_without_text(self, now: float, *, quiet_limit_sec: float) -> bool:
+        """Whether a VAD episode ended without current-epoch decoder evidence.
+
+        A brief false VAD onset must not leave the normal recognizer/segment
+        armed indefinitely when sherpa never emits an acoustic endpoint.  The
+        caller resets both at the configured endpoint ceiling.  Word-cut
+        prefixes have their own bounded endpoint/offline-recovery contract and
+        are deliberately excluded.
+        """
+        if (
+            not self.vad_available
+            or not self.speech_seen
+            or self.vad_active
+            or self.last_text_at is not None
+            or self._has_word_cut_prefix
+        ):
+            return False
+        limit = max(self.block_sec, float(quiet_limit_sec))
+        return self.trailing_silence(float(now)) >= limit
 
     def append(self, primary, alternate=None) -> None:
         """Append one processed capture block and enforce the ownership bound."""

@@ -5,9 +5,12 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from core.engine import EngineCallbacks
+from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.metrics import SPEECH_END
 
 
 class _Input:
@@ -91,6 +94,478 @@ def test_same_recognizer_final_is_admitted_after_vad_speech():
     assert finals == ["And"]
     assert "vad_rejected_final" not in metrics
     assert engine._vad.accepted == 1
+
+
+def test_vad_onset_rebase_replays_alternate_asr_domain_not_primary():
+    class _RecordingStream(_Stream):
+        def __init__(self):
+            self.blocks: list[np.ndarray] = []
+
+        def accept_waveform(self, _sample_rate, samples):
+            self.blocks.append(np.asarray(samples, dtype="float32").copy())
+
+    class _Recognizer:
+        def __init__(self):
+            self.resets = 0
+
+        def reset(self, _stream):
+            self.resets += 1
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+    segment = ASRSegment(
+        sample_rate=16000,
+        pre_roll_sec=0.2,
+        max_utterance_sec=2.0,
+        vad_available=True,
+        block_sec=0.1,
+    )
+    segment.append(
+        np.full(1600, 0.11, dtype="float32"),
+        np.full(1600, 0.71, dtype="float32"),
+    )
+    segment.append(
+        np.full(1600, 0.22, dtype="float32"),
+        np.full(1600, 0.82, dtype="float32"),
+    )
+    engine = SherpaOnnxEngine(SherpaConfig())
+    recognizer = _Recognizer()
+    stream = _RecordingStream()
+
+    replayed = engine._rebase_normal_asr_stream(
+        recognizer, stream, segment
+    )
+
+    assert recognizer.resets == 1
+    assert replayed == 3200
+    assert len(stream.blocks) == 1
+    np.testing.assert_array_equal(
+        stream.blocks[0],
+        np.concatenate(
+            [
+                np.full(1600, 0.71, dtype="float32"),
+                np.full(1600, 0.82, dtype="float32"),
+            ]
+        ),
+    )
+    primary, alternate = segment.arrays()
+    assert np.any(np.isclose(primary, 0.11))
+    assert alternate is not None and np.any(np.isclose(alternate, 0.71))
+
+
+def test_mid_utterance_pause_resume_does_not_rebase_a_second_time():
+    class _PauseInput:
+        generation = 0
+
+        def __init__(self, engine):
+            self.engine = engine
+            self.values = [0.11, 0.0, 0.22, 0.0]
+
+        def read(self, n):
+            value = self.values.pop(0)
+            if not self.values:
+                self.engine._running.clear()
+            return np.full(n, value, dtype="float32"), False
+
+    class _PauseStream:
+        def __init__(self):
+            self.generation = 0
+            self.accepted = {0: []}
+
+        def accept_waveform(self, _sample_rate, samples):
+            self.accepted.setdefault(self.generation, []).append(
+                np.asarray(samples, dtype="float32").copy()
+            )
+
+    class _PauseRecognizer:
+        def __init__(self):
+            self.stream = _PauseStream()
+            self.resets = 0
+
+        def create_stream(self):
+            return self.stream
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+        def _values(self, stream):
+            blocks = stream.accepted.get(stream.generation, [])
+            return np.concatenate(blocks) if blocks else np.zeros(0, dtype="float32")
+
+        def get_result(self, stream):
+            values = self._values(stream)
+            if np.any(np.isclose(values, 0.22)):
+                return "HELLO AGAIN"
+            return "HELLO" if np.any(np.isclose(values, 0.11)) else ""
+
+        def is_endpoint(self, stream):
+            values = self._values(stream)
+            return (
+                np.any(np.isclose(values, 0.22))
+                and np.count_nonzero(np.isclose(values, 0.0)) >= 3200
+            )
+
+        def reset(self, stream):
+            self.resets += 1
+            stream.generation += 1
+            stream.accepted.setdefault(stream.generation, [])
+
+    class _PauseVad(_Vad):
+        def __init__(self):
+            super().__init__(False)
+            self.states = iter([True, False, True, False])
+
+        def accept_waveform(self, samples):
+            super().accept_waveform(samples)
+            self.speech = next(self.states)
+
+        def reset(self):
+            pass
+
+    engine = SherpaOnnxEngine(SherpaConfig(endpoint_enabled=False))
+    recognizer = _PauseRecognizer()
+    engine._recognizer = recognizer
+    engine._vad = _PauseVad()
+    engine._stream_in = _PauseInput(engine)
+    partials: list[str] = []
+    finals: list[str] = []
+    engine._cb = EngineCallbacks(
+        on_partial=partials.append,
+        on_final=finals.append,
+    )
+
+    engine._running.set()
+    thread = threading.Thread(target=engine._capture_loop)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert partials == ["Hello", "Hello again"]
+    assert finals == ["Hello again"]
+    assert recognizer.resets == 2  # one onset rebase + one endpoint reset
+    continuous = np.concatenate(recognizer.stream.accepted[1])
+    assert np.any(np.isclose(continuous, 0.11))
+    assert np.any(np.isclose(continuous, 0.22))
+
+
+@pytest.mark.parametrize(("command", "expected"), [("YES", "Yes"), ("STOP", "Stop")])
+def test_first_vad_onset_rebases_stale_decoder_and_replays_bounded_preroll_once(
+    command, expected
+):
+    """Run-200747 regression: pre-VAD text cannot join a later speech epoch."""
+
+    class _ScriptedInput:
+        generation = 0
+
+        def __init__(self, engine):
+            self.engine = engine
+            self.blocks = [0.01, 0.02, 0.03, 0.11, 0.22, 0.0]
+
+        def read(self, n):
+            value = self.blocks.pop(0)
+            if not self.blocks:
+                self.engine._running.clear()
+            return np.full(n, value, dtype="float32"), False
+
+    class _EpochStream:
+        def __init__(self):
+            self.generation = 0
+            self.accepted = {0: []}
+
+        def accept_waveform(self, _sample_rate, samples):
+            self.accepted.setdefault(self.generation, []).append(
+                np.asarray(samples, dtype="float32").copy()
+            )
+
+    class _EpochRecognizer:
+        def __init__(self):
+            self.stream = _EpochStream()
+            self.resets = 0
+
+        def create_stream(self):
+            return self.stream
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+        def _values(self, stream):
+            blocks = stream.accepted.get(stream.generation, [])
+            return np.concatenate(blocks) if blocks else np.zeros(0, dtype="float32")
+
+        def get_result(self, stream):
+            values = self._values(stream)
+            if stream.generation == 0 and np.any(np.isclose(values, 0.02)):
+                return "MA"
+            if (
+                stream.generation == 1
+                and np.any(np.isclose(values, 0.11))
+                and np.any(np.isclose(values, 0.22))
+            ):
+                return command
+            return ""
+
+        def is_endpoint(self, stream):
+            values = self._values(stream)
+            return (
+                stream.generation == 1
+                and values.size > 0
+                and np.any(np.isclose(values, 0.0))
+            )
+
+        def reset(self, stream):
+            self.resets += 1
+            stream.generation += 1
+            stream.accepted.setdefault(stream.generation, [])
+
+    class _ScriptedVad:
+        def __init__(self):
+            self.states = iter([False, False, False, False, True, False])
+            self.active = False
+            self.resets = 0
+
+        def accept_waveform(self, _samples):
+            self.active = next(self.states)
+
+        def is_speech_detected(self):
+            return self.active
+
+        def reset(self):
+            self.resets += 1
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            asr_final_preroll_sec=0.2,
+        )
+    )
+    recognizer = _EpochRecognizer()
+    engine._recognizer = recognizer
+    engine._vad = _ScriptedVad()
+    engine._stream_in = _ScriptedInput(engine)
+    partials: list[str] = []
+    finals: list[str] = []
+    metrics: list[str] = []
+    finalized_pcm: list[np.ndarray] = []
+    original_finalize = engine._finalize_and_dispatch
+
+    def _capture_finalize(seg, *args, **kwargs):
+        finalized_pcm.append(np.asarray(seg, dtype="float32").copy())
+        return original_finalize(seg, *args, **kwargs)
+
+    engine._finalize_and_dispatch = _capture_finalize
+    engine._cb = EngineCallbacks(
+        on_partial=partials.append,
+        on_final=finals.append,
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+    )
+
+    engine._running.set()
+    thread = threading.Thread(target=engine._capture_loop)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert partials == [expected]
+    assert finals == [expected]
+    assert all("ma" not in text.lower() for text in partials + finals)
+    assert metrics.count(SPEECH_END) == 1
+    assert "vad_rejected_final" not in metrics
+    assert recognizer.resets == 2  # first onset rebase + ordinary endpoint reset
+
+    fresh = np.concatenate(recognizer.stream.accepted[1])
+    # Only the bounded 200 ms lookback is replayed; old 0.01/0.02 history is gone.
+    assert not np.any(np.isclose(fresh, 0.01))
+    assert not np.any(np.isclose(fresh, 0.02))
+    for value in (0.03, 0.11, 0.22, 0.0):
+        assert np.count_nonzero(np.isclose(fresh, value)) == 1600
+    assert len(finalized_pcm) == 1
+    for value in (0.03, 0.11, 0.22, 0.0):
+        assert np.count_nonzero(np.isclose(finalized_pcm[0], value)) == 1600
+
+
+def test_empty_vad_blip_is_reset_after_endpoint_ceiling_without_a_final():
+    class _SlowInput:
+        generation = 0
+
+        def __init__(self, engine):
+            self.engine = engine
+            self.left = 4
+
+        def read(self, n):
+            time.sleep(0.03)
+            self.left -= 1
+            if self.left <= 0:
+                self.engine._running.clear()
+            return np.full(n, 0.01, dtype="float32"), False
+
+    class _EmptyRecognizer(_HallucinatingRecognizer):
+        def __init__(self):
+            self.resets = 0
+
+        def get_result(self, stream):
+            return ""
+
+        def is_endpoint(self, stream):
+            return False
+
+        def reset(self, stream):
+            self.resets += 1
+
+    class _BlipVad(_Vad):
+        def __init__(self):
+            super().__init__(False)
+            self.states = iter([True, False, False, False])
+            self.resets = 0
+
+        def accept_waveform(self, samples):
+            super().accept_waveform(samples)
+            self.speech = next(self.states)
+
+        def reset(self):
+            self.resets += 1
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            block_sec=0.01,
+            endpoint_max_silence_sec=0.02,
+        )
+    )
+    recognizer = _EmptyRecognizer()
+    engine._recognizer = recognizer
+    engine._vad = _BlipVad()
+    engine._stream_in = _SlowInput(engine)
+    finals: list[str] = []
+    metrics: list[str] = []
+    engine._cb = EngineCallbacks(
+        on_final=finals.append,
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+    )
+
+    engine._running.set()
+    thread = threading.Thread(target=engine._capture_loop)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert finals == []
+    assert metrics.count("vad_abandoned_epoch_reset") == 1
+    assert recognizer.resets == 2  # onset rebase + abandoned episode reset
+
+
+def test_confirmed_barge_stream_is_adopted_instead_of_erased_at_vad_onset():
+    """The epoch rebase must preserve legacy duck/confirm command lineage."""
+
+    class _TwoBlockInput:
+        generation = 0
+
+        def __init__(self, engine):
+            self.engine = engine
+            self.values = [0.41, 0.22]
+
+        def read(self, n):
+            value = self.values.pop(0)
+            if not self.values:
+                self.engine._running.clear()
+            return np.full(n, value, dtype="float32"), False
+
+    class _ConfirmStream:
+        def __init__(self):
+            self.generation = 0
+            self.accepted = {0: []}
+
+        def accept_waveform(self, _sample_rate, samples):
+            self.accepted.setdefault(self.generation, []).append(
+                np.asarray(samples, dtype="float32").copy()
+            )
+
+    class _ConfirmRecognizer:
+        def __init__(self):
+            self.stream = _ConfirmStream()
+            self.resets = 0
+
+        def create_stream(self):
+            return self.stream
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+        def _values(self, stream):
+            blocks = stream.accepted.get(stream.generation, [])
+            return np.concatenate(blocks) if blocks else np.zeros(0, dtype="float32")
+
+        def get_result(self, stream):
+            return "STOP" if np.any(np.isclose(self._values(stream), 0.41)) else ""
+
+        def is_endpoint(self, stream):
+            values = self._values(stream)
+            return (
+                np.any(np.isclose(values, 0.41))
+                and np.any(np.isclose(values, 0.22))
+            )
+
+        def reset(self, stream):
+            self.resets += 1
+            stream.generation += 1
+            stream.accepted.setdefault(stream.generation, [])
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            barge_in_enabled=True,
+            barge_confirm_enabled=True,
+        )
+    )
+    recognizer = _ConfirmRecognizer()
+    engine._recognizer = recognizer
+    engine._vad = _Vad(True)
+    engine._stream_in = _TwoBlockInput(engine)
+    engine._barge_watch_active = lambda: True
+    barges: list[str] = []
+    partials: list[str] = []
+    finals: list[str] = []
+
+    def _barge():
+        barges.append("barge")
+        engine._speaking.clear()
+
+    engine._cb = EngineCallbacks(
+        on_barge_in=_barge,
+        on_partial=partials.append,
+        on_final=finals.append,
+    )
+    engine._speaking.set()
+    engine._begin_barge_confirm(
+        recognizer, recognizer.stream, time.monotonic()
+    )
+
+    engine._running.set()
+    thread = threading.Thread(target=engine._capture_loop)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert barges == ["barge"]
+    assert partials == ["Stop"]
+    assert finals == ["Stop"]
+    assert recognizer.resets == 1  # ordinary endpoint only; no onset rebase
+    confirmed = np.concatenate(recognizer.stream.accepted[0])
+    assert np.count_nonzero(np.isclose(confirmed, 0.41)) == 1600
+    assert np.count_nonzero(np.isclose(confirmed, 0.22)) == 1600
+    assert not engine._confirm_handoff_stream_live
 
 
 def test_stop_drops_block_that_returns_after_capture_shutdown_signal():
@@ -324,7 +799,7 @@ def test_active_vad_rule3_endpoint_finalizes_and_resets_bounded_segment():
 
     assert not thread.is_alive()
     assert finals == ["And then"]
-    assert recognizer.resets == 1
+    assert recognizer.resets == 2  # first VAD-onset rebase + rule-3 endpoint
     assert detector.calls == []
 
 
@@ -374,7 +849,10 @@ def test_capture_reopen_preserves_recovered_block_after_rebinding_domain():
             return "hello" if self.accepted else ""
 
         def is_endpoint(self, stream):
-            return self.resets > 0 and bool(self.accepted)
+            # The first reset now binds the initial stream to the first VAD
+            # episode. Only a subsequent recovery-domain reset may make this
+            # fixture endpoint; do not mistake onset rebasing for recovery.
+            return self.resets >= 2 and bool(self.accepted)
 
         def reset(self, stream):
             self.resets += 1

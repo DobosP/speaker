@@ -9,6 +9,7 @@ exercised end-to-end."""
 from __future__ import annotations
 
 import threading
+import time
 from typing import Iterator
 
 import numpy as np
@@ -75,6 +76,7 @@ class _ScriptedStream:
         self.read_frames: list[int] = []
         self.start_calls = 0
         self.stop_calls = 0
+        self.abort_calls = 0
         self.close_calls = 0
         self.started = False
 
@@ -84,6 +86,10 @@ class _ScriptedStream:
 
     def stop(self):
         self.stop_calls += 1
+        self.started = False
+
+    def abort(self):
+        self.abort_calls += 1
         self.started = False
 
     def close(self):
@@ -309,6 +315,33 @@ def test_read_triggers_reopen_on_device_unavailable_then_succeeds():
     assert good_stream.start_calls == 1
 
 
+def test_unanticipated_host_error_minus_9999_reopens_then_succeeds():
+    """sounddevice/PortAudio's current host-error value is -9999."""
+    assert PA_UNANTICIPATED_HOST_ERROR == -9999
+    failed = _ScriptedStream([_make_err(PA_UNANTICIPATED_HOST_ERROR)])
+    recovered = _ScriptedStream(
+        [(np.ones((100, 1), dtype="float32"), False)]
+    )
+    streams = iter([failed, recovered])
+    states: list[StreamState] = []
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: next(streams),
+        on_state=lambda state, _message: states.append(state),
+        backoffs=(0.0,),
+        sleep_fn=lambda _delay: None,
+    )
+    rs.open()
+
+    samples, overflowed = rs.read(100)
+
+    assert not overflowed
+    assert (samples == 1.0).all()
+    assert failed.close_calls == 1
+    assert StreamState.RECOVERING in states
+    assert states[-1] is StreamState.OPEN
+
+
 def test_reopen_retry_uses_recovered_rate_block_duration():
     """A rate-changing fallback returns one correctly timed recovered block."""
     attempts = [
@@ -431,11 +464,52 @@ def test_close_during_recovery_backoff_prevents_late_reopen():
     rs.close()
     release_sleep.set()
     reader.join(timeout=2.0)
+    assert rs.close(wait_timeout=0.0)
 
     assert not reader.is_alive()
     assert len(errors) == 1
     assert "closed during recovery" in str(errors[0])
     assert open_calls == 1
+
+
+def test_shutdown_during_recovery_candidate_start_closes_unpublished_candidate():
+    """A start-in-flight candidate is retained until start returns, then released."""
+    initial = _ScriptedStream([_make_err(PA_DEVICE_UNAVAILABLE)])
+    start_entered = threading.Event()
+    release_start = threading.Event()
+
+    class _StartingCandidate(_ScriptedStream):
+        def start(self):
+            self.start_calls += 1
+            start_entered.set()
+            assert release_start.wait(timeout=2.0)
+            self.started = True
+
+    candidate = _StartingCandidate([])
+    streams = iter([initial, candidate])
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: next(streams),
+        backoffs=(0.0,),
+        sleep_fn=lambda _delay: None,
+    )
+    rs.open()
+    errors = []
+    reader = threading.Thread(
+        target=lambda: _read_error_into(rs, errors), daemon=True
+    )
+    reader.start()
+    assert start_entered.wait(timeout=1.0)
+
+    rs.request_close()
+    release_start.set()
+    reader.join(timeout=1.0)
+
+    assert not reader.is_alive()
+    assert len(errors) == 1
+    assert "closed during recovery" in str(errors[0])
+    assert candidate.close_calls == 1
+    assert rs.close(wait_timeout=0.0)
 
 
 def _read_error_into(stream, errors):
@@ -521,8 +595,8 @@ def test_unrecognized_error_bubbles_up():
     """A PortAudio error code we don't classify should NOT be silently
     treated as transient. Let the engine's outer except surface it."""
     attempts = [OpenAttempt(device=None, samplerate=16000)]
-    # Use a code not in either set (-9999 is reserved as 'no error').
-    other = _make_err(-9999)
+    # paBufferTooSmall is not a read-recovery condition in this wrapper.
+    other = _make_err(-9990)
     stream = _ScriptedStream([other])
 
     rs = _RecoveringInputStream(attempts, opener=lambda d, sr: stream)
@@ -541,6 +615,360 @@ def test_close_releases_stream_handles():
     assert stream.start_calls == 1
     rs.close()
     assert stream.close_calls == 1
+
+
+def test_close_waits_for_active_read_before_native_teardown():
+    """The normal phase-two close never overlaps a one-block native read."""
+    read_started = threading.Event()
+    release_read = threading.Event()
+    close_called = threading.Event()
+    overlap = []
+
+    class _BlockingStream(_ScriptedStream):
+        def __init__(self):
+            super().__init__([])
+            self.read_active = False
+
+        def read(self, frames):
+            self.read_active = True
+            read_started.set()
+            assert release_read.wait(timeout=2.0)
+            self.read_active = False
+            return np.zeros((frames, 1), dtype="float32"), False
+
+        def close(self):
+            overlap.append(self.read_active)
+            super().close()
+            close_called.set()
+
+    native = _BlockingStream()
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=1.0,
+    )
+    rs.open()
+    reader = threading.Thread(target=lambda: rs.read(1600), daemon=True)
+    reader.start()
+    assert read_started.wait(timeout=1.0)
+
+    outcomes = []
+    closer = threading.Thread(target=lambda: outcomes.append(rs.close()), daemon=True)
+    closer.start()
+    assert rs._closed.wait(timeout=1.0)  # noqa: SLF001 - synchronization seam
+    assert not close_called.is_set()
+    release_read.set()
+    reader.join(timeout=1.0)
+    closer.join(timeout=1.0)
+
+    assert not reader.is_alive()
+    assert not closer.is_alive()
+    assert outcomes == [True]
+    assert overlap == [False]
+
+
+def test_close_aborts_stuck_read_then_closes_only_after_quiescence():
+    """Abort may overlap a stuck read; physical close never does."""
+    read_started = threading.Event()
+    native_aborted = threading.Event()
+
+    class _StuckStream(_ScriptedStream):
+        def __init__(self):
+            super().__init__([])
+            self.read_active = False
+            self.close_overlapped = False
+
+        def read(self, frames):
+            self.read_active = True
+            read_started.set()
+            assert native_aborted.wait(timeout=2.0)
+            self.read_active = False
+            return np.zeros((frames, 1), dtype="float32"), False
+
+        def abort(self):
+            super().abort()
+            native_aborted.set()
+
+        def close(self):
+            self.close_overlapped = self.read_active
+            super().close()
+
+    native = _StuckStream()
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.02,
+    )
+    rs.open()
+    reader = threading.Thread(target=lambda: rs.read(1600), daemon=True)
+    reader.start()
+    assert read_started.wait(timeout=1.0)
+
+    started = time.monotonic()
+    closed = rs.close()
+    elapsed = time.monotonic() - started
+    reader.join(timeout=1.0)
+
+    assert closed is True
+    assert elapsed < 0.5
+    assert native.abort_calls == 1
+    assert native.close_calls == 1
+    assert native.close_overlapped is False
+    assert not reader.is_alive()
+
+
+def test_uninterruptible_abort_is_bounded_and_retains_native_until_idle():
+    """A wedged abort cannot trigger concurrent close or an unbounded wait."""
+    read_started = threading.Event()
+    abort_started = threading.Event()
+    allow_abort = threading.Event()
+    release_read = threading.Event()
+
+    class _UninterruptibleStream(_ScriptedStream):
+        def __init__(self):
+            super().__init__([])
+            self.read_active = False
+            self.close_overlapped = False
+
+        def read(self, frames):
+            self.read_active = True
+            read_started.set()
+            assert release_read.wait(timeout=2.0)
+            self.read_active = False
+            return np.zeros((frames, 1), dtype="float32"), False
+
+        def abort(self):
+            self.abort_calls += 1
+            abort_started.set()
+            assert allow_abort.wait(timeout=2.0)
+            release_read.set()
+
+        def close(self):
+            self.close_overlapped = self.read_active
+            super().close()
+
+    native = _UninterruptibleStream()
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.02,
+    )
+    rs.open()
+    reader = threading.Thread(target=lambda: rs.read(1600), daemon=True)
+    reader.start()
+    assert read_started.wait(timeout=1.0)
+
+    started = time.monotonic()
+    closed = rs.close()
+    elapsed = time.monotonic() - started
+
+    assert closed is False
+    assert abort_started.is_set()
+    assert elapsed < 0.5
+    assert native.close_calls == 0
+    assert reader.is_alive()
+
+    allow_abort.set()
+    reader.join(timeout=1.0)
+    assert not reader.is_alive()
+    assert rs.close(wait_timeout=0.0)
+    assert native.close_calls == 1
+    assert native.close_overlapped is False
+
+
+def test_close_retains_when_read_returns_but_native_abort_is_still_active():
+    """Read-idle alone is insufficient: close must also wait for abort-idle."""
+    read_started = threading.Event()
+    abort_started = threading.Event()
+    allow_abort = threading.Event()
+    abort_done = threading.Event()
+    release_read = threading.Event()
+
+    class _AbortStallsAfterRead(_ScriptedStream):
+        def __init__(self):
+            super().__init__([])
+            self.read_active = False
+            self.abort_active = False
+            self.close_overlapped = False
+
+        def read(self, frames):
+            self.read_active = True
+            read_started.set()
+            assert release_read.wait(timeout=2.0)
+            self.read_active = False
+            return np.zeros((frames, 1), dtype="float32"), False
+
+        def abort(self):
+            self.abort_calls += 1
+            self.abort_active = True
+            abort_started.set()
+            assert allow_abort.wait(timeout=2.0)
+            self.abort_active = False
+            abort_done.set()
+
+        def close(self):
+            self.close_overlapped = self.read_active or self.abort_active
+            super().close()
+
+    native = _AbortStallsAfterRead()
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.02,
+    )
+    rs.open()
+    reader = threading.Thread(target=lambda: rs.read(1600), daemon=True)
+    reader.start()
+    assert read_started.wait(timeout=1.0)
+
+    def _release_read_during_abort():
+        assert abort_started.wait(timeout=1.0)
+        release_read.set()
+
+    releaser = threading.Thread(target=_release_read_during_abort, daemon=True)
+    releaser.start()
+    started = time.monotonic()
+    closed = rs.close()
+    elapsed = time.monotonic() - started
+    reader.join(timeout=1.0)
+
+    assert closed is False
+    assert elapsed < 0.5
+    assert not reader.is_alive()
+    assert native.close_calls == 0
+
+    allow_abort.set()
+    assert abort_done.wait(timeout=1.0)
+    assert rs.close(wait_timeout=0.0)
+    assert native.close_calls == 1
+    assert native.close_overlapped is False
+
+
+@pytest.mark.parametrize("failing_method", ["stop", "close"])
+def test_native_teardown_exception_retains_stream_for_safe_retry(failing_method):
+    """Neither stop() nor close() failure may detach/report success."""
+    class _FailsOnce(_ScriptedStream):
+        def __init__(self):
+            super().__init__([])
+            self.failed = False
+
+        def stop(self):
+            super().stop()
+            if failing_method == "stop" and not self.failed:
+                self.failed = True
+                raise RuntimeError("stop failed")
+
+        def close(self):
+            self.close_calls += 1
+            if failing_method == "close" and not self.failed:
+                self.failed = True
+                raise RuntimeError("close failed")
+
+    native = _FailsOnce()
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.02,
+    )
+    rs.open()
+
+    assert rs.close(teardown_timeout=0.2) is False
+    assert rs._stream is native  # noqa: SLF001 - retained ownership contract
+    assert rs.actual_samplerate == 16000
+
+    assert rs.close(teardown_timeout=0.2) is True
+    assert rs._stream is None  # noqa: SLF001
+    assert native.stop_calls == 2
+    assert native.close_calls == (1 if failing_method == "stop" else 2)
+
+
+def test_abort_reservation_precedes_stream_selection_and_blocks_close_toctou():
+    """Forced interleaving cannot detach between abort decision/reservation."""
+    read_started = threading.Event()
+    release_read = threading.Event()
+    lifecycle_entered = threading.Event()
+    allow_lifecycle = threading.Event()
+    events = []
+
+    class _Native(_ScriptedStream):
+        def read(self, frames):
+            read_started.set()
+            assert release_read.wait(timeout=2.0)
+            return np.zeros((frames, 1), dtype="float32"), False
+
+        def abort(self):
+            events.append("abort")
+            super().abort()
+            release_read.set()
+
+        def stop(self):
+            events.append("stop")
+            super().stop()
+
+        def close(self):
+            events.append("close")
+            super().close()
+
+    class _GatedLifecycleLock:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.gated = False
+
+        def __enter__(self):
+            if threading.current_thread().name == "abort-reservation" and not self.gated:
+                self.gated = True
+                lifecycle_entered.set()
+                assert allow_lifecycle.wait(timeout=2.0)
+            self.delegate.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.delegate.release()
+
+    native = _Native([])
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=lambda _device, _samplerate: native,
+        block_seconds=0.02,
+    )
+    rs.open()
+    rs._lifecycle_lock = _GatedLifecycleLock(rs._lifecycle_lock)  # noqa: SLF001
+    reader = threading.Thread(target=lambda: rs.read(1600), daemon=True)
+    reader.start()
+    assert read_started.wait(timeout=1.0)
+
+    abort_results = []
+    aborter = threading.Thread(
+        target=lambda: abort_results.append(rs.abort_read(timeout=0.5)),
+        name="abort-reservation",
+        daemon=True,
+    )
+    aborter.start()
+    assert lifecycle_entered.wait(timeout=1.0)
+    assert rs._active_aborts == 1  # noqa: SLF001 - reserved before selection
+
+    close_results = []
+    closer = threading.Thread(
+        target=lambda: close_results.append(
+            rs.close(wait_timeout=0.0, teardown_timeout=0.2)
+        ),
+        daemon=True,
+    )
+    closer.start()
+    assert native.close_calls == 0
+    allow_lifecycle.set()
+    aborter.join(timeout=1.0)
+    closer.join(timeout=1.0)
+    reader.join(timeout=1.0)
+
+    assert abort_results == [True]
+    assert not aborter.is_alive() and not reader.is_alive()
+    assert events[0] == "abort"
+    if close_results == [False]:
+        assert rs.close(teardown_timeout=0.2)
+    else:
+        assert close_results == [True]
+    assert events.index("abort") < events.index("close")
 
 
 # --- state-listener contract ---------------------------------------------

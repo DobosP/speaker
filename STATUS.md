@@ -2,17 +2,16 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; voice branch full:
-3157 passed, 30 skipped, 9 known warnings; Stop focused: 85 passed; combined full pending. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3205 passed,
+24 skipped, 9 warnings; focused: 357 passed/1 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
 - Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
-- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is the local text tier,
-  gemma3:12b is complex/vision main, and warm MiniCPM TTFT was 0.12–0.14 s.
-  Phone Q4 uses native XML for registered read-only steps; desktop Gemma/Ollama
-  retains textual ReAct (ADR-0020/0033).
+- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is local text,
+  gemma3:12b is complex/vision, and warm MiniCPM TTFT was 0.12–0.14 s. Phone Q4
+  uses native XML tools; desktop Gemma/Ollama retains textual ReAct (ADR-0020/0033).
 - ACT routing now requires command-shaped markers; informational action-word
   questions stay on MiniCPM and ambiguous terms use it to disambiguate (ADR-0024).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
@@ -34,10 +33,11 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; voice branch full:
   replayed/spliced once, and an empty stream may reach offline ASR. Exact STOP
   plus the attested `OF HE STOP` repair may cut; TTS containing STOP still
   requires short-window speaker authority (ADR-0026/0036/0042).
-- Capture recovery rebinds actual rate/resampler, resets dependent state, preserves
-  the first correctly timed block, and revalidates fallback. Same-domain recovery
-  preserves its calibrated AGC floor; changed domains relearn from VAD-quiet
-  pre-AGC blocks. Speaker/word-cut authority stays cleared until compatible.
+- Capture recovery rebinds rate/resampler, preserves the first correctly timed
+  block, and treats host `-9999` as REOPEN. Shutdown epoch-fences effects before
+  bounded abort/teardown; active owners retain resources and block restart.
+  Same-domain recovery preserves its AGC floor; changed domains relearn from
+  VAD-quiet pre-AGC blocks. Authority stays cleared until compatible (ADR-0043).
 - Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
 - Enrollment provenance v3 is checked after live open/calibration and covers the
   stable route, rates, resampler, OS processing, gain algorithm, and front end;
@@ -77,9 +77,9 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; voice branch full:
 - Latest main `285d74e` run `154451` retried a 0.982 startup crest successfully
   (replacement peak 0.013/floor 0.0094), but switched `sid=0` to `sid=16`. Owner
   “STOP” reached word-cut text while scores 0.16–0.23 stayed below 0.30; cuts=0,
-  then PortAudio -9999/allocator corruption recurred. Voice lock and the exact
-  `OF HE STOP` repair are headless-fixed only (ADR-0041/0042); live stays red.
-- Capture recovery/device switch remains headless-only; no live unplug validation ran.
+  then PortAudio -9999/allocator corruption recurred. Voice lock, exact Stop
+  repair, and lifecycle fix are headless-only (ADR-0041/42/43); live stays red.
+- Native close overlap is an inference; no live unplug/device-switch validation ran.
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
   (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.

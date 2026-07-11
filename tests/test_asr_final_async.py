@@ -312,6 +312,143 @@ def test_worker_exits_when_running_clears_without_sentinel():
     assert not t.is_alive()
 
 
+def test_slow_async_final_cannot_callback_after_capture_stop_epoch():
+    """A >stop-join second pass is fenced again at the actual callback seam."""
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._final_q = queue.Queue(maxsize=8)
+    decode_started = threading.Event()
+    release_decode = threading.Event()
+
+    def _slow_final(_seg, _raw, **_kwargs):
+        decode_started.set()
+        assert release_decode.wait(timeout=3.0)
+        return "Late final"
+
+    eng._final_transcribe = _slow_final
+    eng._final_above_floor = lambda _seg: True
+    t = _run_worker(eng)
+    eng._final_thread = t
+    with eng._capture_effect_condition:
+        epoch = eng._capture_epoch
+    eng._enqueue_final(
+        np.ones(16000, dtype="float32"),
+        "late final",
+        1.0,
+        capture_epoch=epoch,
+    )
+    assert decode_started.wait(timeout=1.0)
+
+    eng.stop()  # bounded final-worker join returns while decode remains blocked
+    assert t.is_alive()
+    release_decode.set()
+    t.join(timeout=1.0)
+
+    assert not t.is_alive()
+    assert rec.finals == []
+    assert rec.metrics == []
+
+
+def test_callback_lease_finishing_during_worker_join_releases_retained_resources():
+    """The post-join pass collects resources retained by the first snapshot."""
+    callback_started = threading.Event()
+    release_callback = threading.Event()
+    finals = []
+
+    def _blocking_metric(name, **_kwargs):
+        if name == SPEECH_END:
+            callback_started.set()
+            assert release_callback.wait(timeout=2.0)
+
+    class _Input:
+        def __init__(self):
+            self.request_close_calls = 0
+            self.close_calls = 0
+
+        def request_close(self):
+            self.request_close_calls += 1
+
+        def close(self, *, teardown_timeout):
+            assert teardown_timeout == 1.0
+            self.close_calls += 1
+            return True
+
+    class _Output:
+        def __init__(self):
+            self.stop_calls = 0
+            self.close_calls = 0
+
+        def stop(self):
+            self.stop_calls += 1
+
+        def close(self):
+            self.close_calls += 1
+
+    class _Recorder:
+        seconds = 0.0
+        path = "retained.wav"
+
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+
+    class _ReleaseOnJoin:
+        def __init__(self):
+            self.join_timeouts = []
+
+        def join(self, timeout):
+            self.join_timeouts.append(timeout)
+            release_callback.set()
+
+        def is_alive(self):
+            return False
+
+    eng = _engine()
+    eng._cb = EngineCallbacks(
+        on_final=finals.append,
+        on_metric=_blocking_metric,
+    )
+    eng._final_q = queue.Queue(maxsize=8)
+    eng._final_transcribe = lambda _seg, _raw, **_kwargs: "Final"
+    eng._final_above_floor = lambda _seg: True
+    capture_input = _Input()
+    output = _Output()
+    recorder = _Recorder()
+    eng._stream_in = capture_input
+    eng._out_stream = output
+    eng._recorder = recorder
+    eng._play_thread = _ReleaseOnJoin()
+    final_thread = _run_worker(eng)
+    eng._final_thread = final_thread
+    with eng._capture_effect_condition:
+        epoch = eng._capture_epoch
+    eng._enqueue_final(
+        np.ones(16000, dtype="float32"),
+        "final",
+        1.0,
+        capture_epoch=epoch,
+    )
+    assert callback_started.wait(timeout=1.0)
+    assert eng._capture_effects == 1
+
+    eng.stop()
+
+    assert not final_thread.is_alive()
+    assert capture_input.request_close_calls == 1
+    assert capture_input.close_calls == 1
+    assert eng._stream_in is None
+    assert output.stop_calls == 1
+    assert output.close_calls == 1
+    assert eng._out_stream is None
+    assert recorder.close_calls == 1
+    assert eng._recorder is None
+    assert not eng._capture_resource_hold.is_set()
+    assert eng._capture_effects == 0
+    assert finals == []
+
+
 # --- real-model smoke: the REAL SenseVoice second pass runs on the worker ------
 # Proves the wiring the fakes can't: the actual offline recognizer plugs into
 # _finalize_and_dispatch and dispatches exactly one final per utterance off the

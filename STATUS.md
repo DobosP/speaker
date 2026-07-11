@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3205 passed,
-24 skipped, 9 warnings; focused: 357 passed/1 skipped; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
+Last verified: 2026-07-11 on Linux ROG, AGC-cap branch from main `6d8e9c2`;
+full: 3205 passed/27 skipped/9 warnings; focused: 166 passed; APM/DTD: 6 passed; compile/whitespace passed. Live A/B is red.
 
 ## Runtime
 
@@ -18,8 +18,9 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3205 passed,
   GTCRN denoise is active. Speaker-authorized audio-first word-cut is the
   open-speaker barge path; in-app AEC/APM are off (ADR-0036). EC nodes/Ollama are
   session-only, not persistent services.
-- The host-local InputAGC flag remains on. Prior ear grading found pumping, while
-  low-level word-cut evidence favored gain; do not flip it without a live A/B.
+- The host-local InputAGC remains boost-only. Smoothed state is retained, but an
+  above-floor block cannot receive more than its current desired boost; the cap
+  and its effect on pumping remain live-unvalidated (ADR-0044).
 
 ## Voice reliability now implemented
 
@@ -39,11 +40,10 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3205 passed,
   Same-domain recovery preserves its AGC floor; changed domains relearn from
   VAD-quiet pre-AGC blocks. Authority stays cleared until compatible (ADR-0043).
 - Startup calibration retries once for a high-peak, 20x-ambient crest; stable raw windows stay one-pass and retry failure keeps config (ADR-0040).
-- Enrollment provenance v3 is checked after live open/calibration and covers the
-  stable route, rates, resampler, OS processing, gain algorithm, and front end;
-  volatile measured AGC floor is excluded. Same-chain v2 records migrate through
-  bounded runtime aliases, and enrollment prints exact nondefault launch selectors.
-  Voiced slicing/measured-ambient admission remain shared (ADR-0035).
+- Enrollment provenance v4 fingerprints the capped AGC algorithm after live open;
+  v2/v3 InputAGC records fail open and require re-enrollment, while exact non-AGC
+  aliases remain. Stable route/rates/resampler/OS processing stay covered, volatile
+  ambient stays excluded, and measured voice admission remains shared (ADR-0044).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   readiness contract. Selected ASR/TTS/VAD/denoise/KWS/punctuation/AEC artifacts
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
@@ -74,12 +74,13 @@ Last verified: 2026-07-11 on Linux ROG, stacked local `main`; full: 3205 passed,
   override, then hit -9999/corruption; `130601` had fragmented ASR (ADR-0036).
 - Main `75b1717` run `144211` kept `sid=18` and cut once, but INGESTed the override;
   tag/response admission fixes remained headless-only (ADR-0038/0039).
-- Latest main `285d74e` run `154451` retried a 0.982 startup crest successfully
-  (replacement peak 0.013/floor 0.0094), but switched `sid=0` to `sid=16`. Owner
-  “STOP” reached word-cut text while scores 0.16–0.23 stayed below 0.30; cuts=0,
-  then PortAudio -9999/allocator corruption recurred. Voice lock, exact Stop
-  repair, and lifecycle fix are headless-only (ADR-0041/42/43); live stays red.
-- Native close overlap is an inference; no live unplug/device-switch validation ran.
+- Main `6d8e9c2` run `170840` stayed `sid=0` and exited cleanly once, but owner
+  talk-over decoded only `AH`, scored 0.19–0.23, and made zero cuts. Ear grade,
+  lifecycle causality, and unplug/switch remain unvalidated (ADR-0041/42/43).
+- Same-main diagnostic run `173340` retained floor 0.0040 after a 0.820/536.8x
+  startup crest and failed retry. Its final talk-over was one 0.4633-RMS block,
+  VAD/fed/cuts all zero. The current-block AGC cap is headless-only; re-enrollment
+  plus a bare-speaker A/B are required and live barge remains red (ADR-0044).
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native
   cancellation/reuse, and two deterministic phone-lite XML local-tool round trips
   (ADR-0031/0032/0033). Phone thermals remain unvalidated; live barge is red.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from pytest import approx
 
-from core.audio_frontend import InputAGC
+from core.audio_frontend import InputAGC, apply_gain_soft_limit
 
 
 def _sine(rms: float, n: int = 1600, f: int = 200, sr: int = 16000):
@@ -51,6 +51,38 @@ def test_gain_rises_slowly_to_avoid_pumping():
     agc = InputAGC(target_rms=0.12, rise=0.08)
     agc.process(_sine(0.03))                # desired 4.0, one block
     assert agc.gain == approx(1.0 + 0.08 * (4.0 - 1.0), abs=0.05)   # ~1.24, not a jump to 4
+
+
+def test_stale_max_gain_cannot_overdrive_a_normal_current_block():
+    """A long quiet run may leave high state; the next word stays at target."""
+    agc = InputAGC(target_rms=0.12, max_gain=12.0, fall=0.4)
+    agc.gain = 12.0
+    rng = np.random.default_rng(1)
+    block = rng.standard_normal(1600).astype("float32")
+    block *= 0.061 / _rms(block)            # current desired gain ~= 1.97
+
+    out = agc.process(block)
+
+    desired = 0.12 / 0.061
+    old_smoothed_gain = 12.0 + 0.4 * (desired - 12.0)
+    old_output = apply_gain_soft_limit(block, old_smoothed_gain)
+    # Counterfactual pins the live 0.4633-RMS regime to the old controller.
+    assert _rms(old_output) == approx(0.4653, abs=0.002)
+    # Preserve the smoothed state/release contract for following blocks...
+    assert agc.gain == approx(old_smoothed_gain, abs=1e-6)
+    assert agc.gain > desired
+    # ...but stale state is never the boost applied to this louder block.
+    assert _rms(out) == approx(0.12, abs=0.005)
+
+
+def test_stale_boost_still_never_attenuates_a_hot_current_block():
+    agc = InputAGC(target_rms=0.12, max_gain=12.0)
+    agc.gain = 12.0
+    loud = _sine(0.3)
+
+    out = agc.process(loud)
+
+    assert _rms(out) == approx(0.3, abs=0.02)
 
 
 def test_max_gain_caps_the_boost():

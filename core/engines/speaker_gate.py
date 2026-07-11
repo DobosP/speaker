@@ -124,9 +124,14 @@ class SpeakerGate:
         # in-flight decision fail open instead of comparing against stale state.
         self._enrollment_lock = threading.Lock()
         self._enrollment_generation = 0
+        # The sherpa extractor is shared by playback-time word-cut and the async
+        # final worker and is not documented as re-entrant. Serialize inference;
+        # the capture path uses try_similarity() and defers instead of blocking.
+        self._inference_lock = threading.Lock()
 
     def set_embed_fn(self, embed_fn: EmbedFn) -> None:
-        self._embed_fn = embed_fn
+        with self._inference_lock:
+            self._embed_fn = embed_fn
 
     @property
     def is_enrolled(self) -> bool:
@@ -201,10 +206,47 @@ class SpeakerGate:
         return cosine_similarity(embedding, enrolled) >= self.threshold
 
     def similarity(self, samples: Sequence[float], sample_rate: int) -> float:
+        """Compatibility score; unusable/stale inference collapses to ``0``."""
+        similarity = self.verification_similarity(samples, sample_rate)
+        return 0.0 if similarity is None else similarity
+
+    def verification_similarity(
+        self, samples: Sequence[float], sample_rate: int
+    ) -> Optional[float]:
+        """Exact identity score, or ``None`` when no verdict was possible.
+
+        Unlike :meth:`accept`, this seam never fail-opens an unusable embedding
+        or enrollment-generation race. Security callers may mint VERIFIED only
+        from a finite score that clears the enrolled threshold; usability callers
+        retain the historical boolean/zero-score APIs.
+        """
+        enrolled, generation = self._enrollment_snapshot()
+        if enrolled is None:
+            return None
+        embedding = self._embed(samples, sample_rate)
+        if embedding is None:
+            return None
+        if not self._enrollment_is_current(enrolled, generation):
+            return None
+        return cosine_similarity(embedding, enrolled)
+
+    def try_similarity(
+        self, samples: Sequence[float], sample_rate: int
+    ) -> Optional[float]:
+        """Return similarity without waiting for another model inference.
+
+        ``None`` means the shared extractor is busy. Capture-thread callers retain
+        bounded PCM and retry later; a completed unusable embedding returns 0.0.
+        """
         enrolled, generation = self._enrollment_snapshot()
         if enrolled is None:
             return 0.0
-        embedding = self._embed(samples, sample_rate)
+        if not self._inference_lock.acquire(blocking=False):
+            return None
+        try:
+            embedding = self._embed_unlocked(samples, sample_rate)
+        finally:
+            self._inference_lock.release()
         if embedding is None:
             return 0.0
         if not self._enrollment_is_current(enrolled, generation):
@@ -220,6 +262,12 @@ class SpeakerGate:
         return self._embed(samples, sample_rate)
 
     def _embed(self, samples: Sequence[float], sample_rate: int) -> Optional[Embedding]:
+        with self._inference_lock:
+            return self._embed_unlocked(samples, sample_rate)
+
+    def _embed_unlocked(
+        self, samples: Sequence[float], sample_rate: int
+    ) -> Optional[Embedding]:
         if self._embed_fn is None:
             raise RuntimeError("SpeakerGate has no embed_fn configured")
         return self._embed_fn(samples, sample_rate)

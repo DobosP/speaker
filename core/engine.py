@@ -23,6 +23,36 @@ class PlaybackOutcome(str, Enum):
     FAILED = "failed"
 
 
+class OwnerVerification(str, Enum):
+    """Speaker-identity verdict attached to one final transcript.
+
+    ``UNKNOWN`` includes every fail-open/advisory admission path.  Only a
+    completed enrolled-speaker comparison may produce ``VERIFIED``; a rejected
+    final is normally dropped before it reaches the runtime.
+    """
+
+    UNKNOWN = "unknown"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class FinalTranscript:
+    """A final ASR transcript plus explicit input provenance.
+
+    The legacy text-only callback remains available for engines that cannot
+    attest identity.  Those inputs intentionally arrive as UNKNOWN/unverified.
+    """
+
+    text: str
+    owner_verification: OwnerVerification = OwnerVerification.UNKNOWN
+    origin: str = "unknown"
+
+    @property
+    def owner_verified(self) -> bool:
+        return self.owner_verification is OwnerVerification.VERIFIED
+
+
 @dataclass(frozen=True)
 class TrackedSpeech:
     """One engine-independent text fragment whose playback is tracked.
@@ -114,6 +144,10 @@ class EngineCallbacks:
 
     on_partial: Callable[[str], None] = _noop_text
     on_final: Callable[[str], None] = _noop_text
+    # Typed final path. Production engines prefer it when bound; legacy engines
+    # continue to call ``on_final`` and therefore cannot accidentally mint
+    # owner trust from an untyped boolean/admission decision.
+    on_final_result: Optional[Callable[[FinalTranscript], None]] = None
     on_barge_in: Callable[[], None] = _noop
     on_speech_start: Callable[[], None] = _noop
     on_speech_end: Callable[[], None] = _noop

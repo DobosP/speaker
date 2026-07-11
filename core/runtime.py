@@ -30,6 +30,7 @@ from .contract import is_stop_command, normalize_command
 from .engine import (
     AudioEngine,
     EngineCallbacks,
+    FinalTranscript,
     PlaybackOutcome,
     PlaybackReceipt,
     TrackedSpeech,
@@ -481,6 +482,7 @@ class VoiceRuntime:
             EngineCallbacks(
                 on_partial=self._on_partial,
                 on_final=self._on_final,
+                on_final_result=self._on_final_result,
                 on_barge_in=self._on_barge_in,
                 on_command=self._on_command,
                 on_metric=self.metrics.mark,
@@ -966,7 +968,21 @@ class VoiceRuntime:
                         )
             self.bus.publish(AgentEvent.partial(text))
 
-    def _on_final(self, text: str) -> None:
+    def _on_final_result(self, result: FinalTranscript) -> None:
+        """Typed engine-final seam; text-only engines remain fail-closed."""
+        self._on_final(
+            result.text,
+            owner_verified=result.owner_verified,
+            origin=result.origin,
+        )
+
+    def _on_final(
+        self,
+        text: str,
+        *,
+        owner_verified: bool = False,
+        origin: str = "unknown",
+    ) -> None:
         final_at = time.perf_counter()
         with self._terminal_effect_lock:
             if self._stopping:
@@ -981,7 +997,7 @@ class VoiceRuntime:
                     self.supervisor.commit_input_generation(partial_generation)
                     self._clear_arrival_continuation(partial_generation)
                 return
-            if self._resume.preview_self_echo(text):
+            if not owner_verified and self._resume.preview_self_echo(text):
                 # Like punctuation noise, a recognized self-echo must not enter
                 # the dispatcher and cancel valid preprocessing already in flight.
                 if self._resume.is_self_echo(text):
@@ -1043,12 +1059,16 @@ class VoiceRuntime:
                     submitted_at=final_at,
                     input_generation=input_generation,
                     input_epoch=self.supervisor.input_epoch,
+                    owner_verified=owner_verified,
+                    origin=origin,
                 )
                 return
             self._process_final(
                 text,
                 final_at=final_at,
                 input_generation=input_generation,
+                owner_verified=owner_verified,
+                origin=origin,
             )
 
     def _process_final(
@@ -1058,6 +1078,8 @@ class VoiceRuntime:
         *,
         final_at: Optional[float] = None,
         input_generation: Optional[int] = None,
+        owner_verified: bool = False,
+        origin: str = "unknown",
     ) -> None:
         cancel_event = lease.cancel_event if lease is not None else None
         terminal_input_epoch = (
@@ -1068,6 +1090,8 @@ class VoiceRuntime:
         if lease is not None:
             final_at = lease.submitted_at
             input_generation = lease.input_generation
+            owner_verified = lease.owner_verified
+            origin = lease.origin
         if final_at is None:
             final_at = time.perf_counter()
         if input_generation is None:
@@ -1149,7 +1173,7 @@ class VoiceRuntime:
         # can I help you today?" came back as a user turn and got answered).
         # Volume-independent -- the energy floors (L1-L3) cannot catch a loud
         # echo, the text match can. Dropped before addressing/ingest/metrics.
-        if self._resume.is_self_echo(text):
+        if not owner_verified and self._resume.is_self_echo(text):
             if not claim_terminal():
                 return
             with self._terminal_effect_lock:
@@ -1304,6 +1328,10 @@ class VoiceRuntime:
                         }},
                     )
                     final_text = cleaned
+                    # A model-generated rewrite is no longer an exact owner-
+                    # spoken instruction. It may be answered, but it cannot
+                    # inherit action authority from the acoustic verdict.
+                    owner_verified = False
         continuation_metadata: dict[str, object] = {}
         routed_text = final_text
         if continuation is not None:
@@ -1470,6 +1498,8 @@ class VoiceRuntime:
             self.bus.publish(
                 AgentEvent.final(
                     final_text,
+                    owner_verified=owner_verified,
+                    origin=origin,
                     metadata={
                         "latency_policy": latency_policy,
                         "metrics_turn_token": metrics_turn_token,

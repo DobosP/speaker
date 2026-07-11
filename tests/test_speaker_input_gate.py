@@ -83,6 +83,41 @@ def test_enrolled_other_voice_final_is_dropped():
     assert _engine(gate=_gate(OTHER))._should_act_on_final([0.0]) is False
 
 
+def test_capture_try_similarity_never_overlaps_or_waits_for_final_inference():
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def embedding(_samples, _sr):
+        calls.append("enter")
+        entered.set()
+        assert release.wait(1.0)
+        calls.append("exit")
+        return USER
+
+    gate = SpeakerGate(threshold=0.5, embed_fn=embedding)
+    gate.enroll_embedding(USER)
+    result = []
+    worker = threading.Thread(
+        target=lambda: result.append(gate.similarity([0.2] * 1600, 16000))
+    )
+    worker.start()
+    assert entered.wait(1.0)
+
+    # The capture-thread seam abstains immediately instead of racing the shared
+    # extractor or blocking behind the async final worker.
+    assert gate.try_similarity([0.2] * 1600, 16000) is None
+    assert calls == ["enter"]
+
+    release.set()
+    worker.join(1.0)
+    assert not worker.is_alive()
+    assert result == [1.0]
+    assert calls == ["enter", "exit"]
+
+
 def test_broken_speaker_embedder_fails_open_instead_of_dropping_turn():
     def broken(_samples, _sr):
         raise RuntimeError("embedding backend failed")

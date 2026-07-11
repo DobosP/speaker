@@ -540,6 +540,51 @@ def test_check_speaker_id_enrolled_is_ok():
     assert "after the microphone opens" in c.detail
 
 
+def test_check_speaker_id_is_required_by_active_word_cut():
+    selected = {
+        "barge_in_enabled": True,
+        "barge_word_cut_enabled": True,
+        "barge_word_cut_require_speaker": True,
+        "aec_enabled": False,
+    }
+    missing_model = check_speaker_id({"sherpa": selected})
+    assert not missing_model.ok
+    assert "requires" in missing_model.detail
+
+    missing_enrollment = check_speaker_id(
+        {"sherpa": {**selected, "speaker_embedding_model": "/m/spk.onnx"}},
+        exists=lambda path: path == "/m/spk.onnx",
+    )
+    assert not missing_enrollment.ok
+    assert "enrollment" in missing_enrollment.detail
+
+    enrolled = check_speaker_id(
+        {
+            "sherpa": {
+                **selected,
+                "speaker_embedding_model": "/m/spk.onnx",
+                "speaker_enroll_embedding": "/m/enroll.json",
+            }
+        },
+        exists=lambda _path: True,
+    )
+    assert enrolled.ok
+
+
+def test_check_speaker_id_remains_advisory_when_word_cut_uses_in_app_aec():
+    c = check_speaker_id(
+        {
+            "sherpa": {
+                "barge_word_cut_enabled": True,
+                "barge_word_cut_require_speaker": True,
+                "aec_enabled": True,
+            }
+        }
+    )
+    assert c.ok
+    assert "optional" in c.detail
+
+
 def test_check_ollama_models_present_and_missing():
     checks = check_ollama(("gemma3:4b", "gemma3:12b"), lister=lambda: ["gemma3:4b"])
     by_name = {c.name: c for c in checks}

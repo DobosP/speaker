@@ -19,6 +19,7 @@ import pytest
 
 from core.engine import EngineCallbacks
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.speaker_gate import SpeakerGate
 from core.metrics import SPEECH_END
 
 
@@ -155,7 +156,10 @@ def test_finalize_2nd_pass_reads_asr_seg_gates_keep_seg():
     got: dict = {}
     eng._final_transcribe = lambda s, raw: (got.__setitem__("transcribe", s), "final")[1]
     eng._final_above_floor = lambda s: (got.__setitem__("floor", s), True)[1]
-    eng._should_act_on_final = lambda s: (got.__setitem__("speaker", s), True)[1]
+    original_speaker_decision = eng._speaker_decision_for_final
+    eng._speaker_decision_for_final = lambda s: (
+        got.__setitem__("speaker", s), original_speaker_decision(s)
+    )[1]
 
     eng._finalize_and_dispatch(seg, "raw", 1.0, asr_seg)
     assert got["transcribe"] is asr_seg   # 2nd pass reads the NS-off audio
@@ -202,7 +206,11 @@ def test_finalize_drops_on_speaker_reject():
     eng = _engine(rec)
     eng._final_recognizer = _FakeOffline("are you there")
     eng._final_above_floor = lambda seg: True
-    eng._should_act_on_final = lambda seg: False  # not the enrolled user
+    eng._speaker_gate = SpeakerGate(
+        threshold=0.5,
+        embed_fn=lambda _samples, _sample_rate: [0.0, 1.0],
+    )
+    eng._speaker_gate.enroll_embedding([1.0, 0.0])
     eng._finalize_and_dispatch(np.ones(2 * 16000, dtype="float32"), "Ario der", 2.0)
     assert rec.finals == []
     assert ("speaker_rejected_final", {}) in rec.metrics

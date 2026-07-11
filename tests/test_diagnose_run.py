@@ -819,7 +819,7 @@ WORD_CUT_FUNNEL_LINES = [
     "12:00:15.000 INFO  speaker.sherpa | word-cut trace: 5 word(s) 'actually tell me the time'",
     "12:00:15.100 INFO  speaker.sherpa | barge-in confirmed by speech (word-cut): 'actually tell me the time'",
     "12:00:15.100 INFO  speaker.sherpa | barge-in detected",
-    "12:00:16.000 INFO  speaker.sherpa | word-cut funnel: fed=40 skipped_quiet=12 resets=1 dropped_words=2 max_words=5 own_folds=3 guard_suppressed=2 decode_errors=0 cuts=1 nearend_rms_p50=0.0080 nearend_rms_p95=0.0150",
+    "12:00:16.000 INFO  speaker.sherpa | word-cut funnel: fed=40 skipped_quiet=12 resets=1 dropped_words=2 max_words=5 own_folds=3 guard_suppressed=2 decode_errors=0 cuts=1 nearend_rms_p50=0.0080 nearend_rms_p95=0.0150 speaker_accepts=1 speaker_rejects=2 speaker_deferred=3 speaker_unavailable=4 speaker_cold_deferred=5 speaker_errors=6 speaker_resets=7",
 ]
 
 
@@ -830,6 +830,15 @@ def test_word_cut_lines_parse(tmp_path):
     assert (r.fed, r.skipped_quiet, r.resets, r.dropped_words) == (40, 12, 1, 2)
     assert (r.max_words, r.own_folds, r.guard_suppressed) == (5, 3, 2)
     assert (r.decode_errors, r.cuts) == (0, 1)
+    assert (
+        r.speaker_accepts,
+        r.speaker_rejects,
+        r.speaker_deferred,
+        r.speaker_unavailable,
+        r.speaker_cold_deferred,
+        r.speaker_errors,
+        r.speaker_resets,
+    ) == (1, 2, 3, 4, 5, 6, 7)
     assert abs(r.nearend_rms_p95 - 0.0150) < 1e-9
     assert len(run.word_cut_windows) == 2
     assert run.word_cut_traces == [
@@ -858,6 +867,9 @@ def test_word_cut_funnel_aggregation(tmp_path):
     assert wcf["voiced_windows"] == 1          # 0.0150 >= 2 * 0.0040
     assert wcf["starved_replies"] == 0
     assert wcf["voice_present_zero_words"] == 0  # words WERE transcribed
+    assert wcf["speaker_accepts"] == 1
+    assert wcf["speaker_rejects"] == 2
+    assert "speaker authority: accept=1 reject=2" in format_report(run)
 
 
 def test_word_cut_report_and_json(tmp_path):
@@ -928,11 +940,29 @@ def test_word_cut_confirmed_detected_barge_not_self_interrupt(tmp_path):
     si = self_interrupt_summary(run)
     assert si["suspect_count"] == 0
     assert si["verdict"] == "clean"
-
     pf = pass_fail_verdict(run)
     assert pf["self_interrupt"] == "PASS"
     assert pf["overall"] != "FAIL"
 
+
+def test_word_cut_confirm_followed_by_self_echo_drop_fails(tmp_path):
+    from tools.diagnose_run import pass_fail_verdict
+
+    lines = WORD_CUT_CONFIRMED_BARGE_LINES + [
+        "12:00:16.500 INFO  speaker.runtime | dropping self-echo final "
+        "(own TTS heard back): 'There are rings of Saturn.'",
+    ]
+    run = parse_log(_write_log(tmp_path, lines))
+
+    assert run.self_echo_drop_times == [
+        (12 * 3600 + 16.5, "'There are rings of Saturn.'")
+    ]
+    si = self_interrupt_summary(run)
+    assert si["suspect_count"] == 1
+    assert si["verdict"] == "self-interrupt-likely"
+    assert word_cut_funnel(run)["self_echo_confirmations"] == 1
+    assert pass_fail_verdict(run)["overall"] == "FAIL"
+    assert "false self-echo cut" in format_report(run)
 
 def test_unconfirmed_no_dtd_barge_still_suspect(tmp_path):
     # Same shape WITHOUT the confirm line: the strict no-dtd suspicion must survive

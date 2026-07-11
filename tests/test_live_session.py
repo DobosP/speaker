@@ -496,6 +496,8 @@ def test_preflight_rejects_word_cut_when_ec_module_is_not_routed():
         {"sherpa": {
             **required,
             "barge_word_cut_enabled": True,
+            "speaker_embedding_model": "/m/speaker.onnx",
+            "speaker_enroll_embedding": "/m/enrollment.json",
             "aec_enabled": False,
             "vad_model": "/m/vad.onnx",
         }},
@@ -527,6 +529,8 @@ def test_explicit_inject_preflight_skips_only_physical_devices_and_ec_route():
         {"sherpa": {
             **required,
             "barge_word_cut_enabled": True,
+            "speaker_embedding_model": "/m/speaker.onnx",
+            "speaker_enroll_embedding": "/m/enrollment.json",
             "aec_enabled": False,
             "vad_model": "/m/vad.onnx",
         }},

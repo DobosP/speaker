@@ -212,6 +212,45 @@ def test_hold_callback_fires_when_fragment_is_held():
         d.stop()
 
 
+@pytest.mark.parametrize(
+    ("first_verified", "second_verified", "expected_verified"),
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_cancellable_merge_combines_owner_trust_fail_closed(
+    first_verified, second_verified, expected_verified
+):
+    """A continuation can never inherit trust from only one fragment."""
+    received = []
+
+    def dispatch(text, lease):
+        received.append((text, lease.owner_verified, lease.origin))
+
+    cfg = TurnMergeConfig(enabled=True, hold_sec=0.15, max_hold_sec=1.0)
+    d = FinalDispatcher(dispatch, cfg, cancellable=True)
+    d.start()
+    try:
+        d.submit(
+            "A long story about",
+            owner_verified=first_verified,
+            origin="live_audio",
+        )
+        d.submit(
+            "the lighthouse",
+            owner_verified=second_verified,
+            origin="live_audio",
+        )
+        assert _wait_for(lambda: len(received) == 1)
+        assert received == [
+            (
+                "A long story about the lighthouse",
+                expected_verified,
+                "live_audio",
+            )
+        ]
+    finally:
+        d.stop()
+
+
 # --- VoiceRuntime integration ---------------------------------------------------
 
 

@@ -18,6 +18,7 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from core.engine import EngineCallbacks
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
@@ -113,6 +114,9 @@ class _Rec:
 def _engine(
     rec: _Rec | None = None, *, aec=None, vad_speech: bool = True, **cfg
 ) -> SherpaOnnxEngine:
+    # Most fixtures pin the historical identity-free state machine. Production
+    # defaults to enrolled authority; dedicated tests below exercise that gate.
+    cfg.setdefault("barge_word_cut_require_speaker", False)
     eng = SherpaOnnxEngine(SherpaConfig(barge_word_cut_enabled=True, **cfg))
     eng._aec = aec  # None = OS echo-cancel path -> word-cut live (ADR-0013)
     eng._vad = _FakeVad(vad_speech)
@@ -133,6 +137,14 @@ def test_word_cut_disabled_by_default():
     assert c.barge_word_cut_enabled is False  # shipped default: legacy paths intact
     assert c.barge_word_cut_min_words == 4    # the garbled-echo no-false-cut floor
     assert c.barge_word_cut_reset_quiet_blocks == 3  # flicker-proof burst reset
+    assert c.barge_word_cut_require_speaker is True
+    assert c.barge_word_cut_speaker_min_words == 0
+    assert c.barge_word_cut_speaker_min_sec == 0.35
+    assert c.barge_word_cut_stop_speaker_min_sec == 0.10
+    assert c.barge_word_cut_speaker_window_sec == 2.0
+    assert c.barge_word_cut_speaker_threshold == 0.30
+    assert c.barge_word_cut_speaker_reject_threshold == 0.22
+    assert c.barge_word_cut_speaker_retry_sec == 0.25
 
 
 def test_config_from_dict_roundtrip():
@@ -142,12 +154,22 @@ def test_config_from_dict_roundtrip():
             "barge_word_cut_min_words": 3,
             "barge_word_cut_reset_quiet_blocks": 5,
             "barge_word_cut_vad_preroll_sec": 0.4,
+            "barge_word_cut_speaker_min_words": 1,
+            "barge_word_cut_stop_speaker_min_sec": 0.15,
+            "barge_word_cut_speaker_threshold": 0.4,
+            "barge_word_cut_speaker_reject_threshold": 0.2,
+            "barge_word_cut_speaker_retry_sec": 0.3,
         }
     )
     assert c.barge_word_cut_enabled is True
     assert c.barge_word_cut_min_words == 3
     assert c.barge_word_cut_reset_quiet_blocks == 5
     assert c.barge_word_cut_vad_preroll_sec == 0.4
+    assert c.barge_word_cut_speaker_min_words == 1
+    assert c.barge_word_cut_stop_speaker_min_sec == 0.15
+    assert c.barge_word_cut_speaker_threshold == 0.4
+    assert c.barge_word_cut_speaker_reject_threshold == 0.2
+    assert c.barge_word_cut_speaker_retry_sec == 0.3
 
 
 def test_active_only_when_flag_set_and_no_inapp_aec():
@@ -267,6 +289,657 @@ def test_garbled_two_word_echo_does_not_cut():
     assert eng._word_cut_base == ""
 
 
+class _FakeSpeakerGate:
+    def __init__(
+        self, scores, *, enrolled=True, threshold=0.5, embedding=(1.0, 0.0)
+    ):
+        self._scores = list(scores)
+        self.is_enrolled = bool(enrolled)
+        self.threshold = float(threshold)
+        self.embedding = embedding
+        self.calls: list[np.ndarray] = []
+        self.embed_calls = 0
+
+    def similarity(self, samples, _sample_rate):
+        self.calls.append(np.asarray(samples, dtype="float32").copy())
+        return self._scores.pop(0)
+
+    def embed(self, _samples, _sample_rate):
+        self.embed_calls += 1
+        return self.embedding
+
+
+def test_audio_first_owner_authority_cuts_when_double_talk_asr_stays_empty():
+    """Regression for live run 20260711-130601.
+
+    The OS-cancelled waveform carried the owner, but streaming double-talk ASR
+    produced zero words for two replies and only 1-3 unstable words in the story.
+    Sustained compatible owner identity must therefore be sufficient authority.
+    """
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer([""] * 4)
+    block = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(3):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            detect,
+            block,
+            now + index * 0.1,
+            normal_stream=normal,
+        )
+    assert eng._barge_word_cut_step(
+        recognizer, detect, block, now + 0.3, normal_stream=normal
+    )
+
+    assert rec.barges == 1
+    assert len(gate.calls) == 1
+    assert eng._wc_stats["speaker_accepts"] == 1
+    assert normal.fed_blocks == 1  # accepted PCM is voiced/model-window bounded
+
+
+def test_audio_first_own_tts_is_rejected_below_double_talk_threshold():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.179])
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer([""] * 4)
+    stream = _FakeStream()
+    now = time.monotonic()
+
+    for index in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            np.full(1600, 0.2, dtype="float32"),
+            now + index * 0.1,
+        )
+
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_rejects"] == 1
+    assert eng._wc_stats["speaker_resets"] == 1
+    assert eng._word_cut_candidate_samples == 0
+
+
+def test_audio_first_threshold_never_undercuts_enabled_final_speaker_gate():
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=True,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.49], threshold=0.50)
+    eng._speaker_gate_warmed = True
+    eng._append_word_cut_candidate(np.full(1600, 0.2, dtype="float32"))
+
+    assert eng._word_cut_speaker_decision() == "defer"
+    assert eng._wc_stats.get("speaker_rejects", 0) == 0
+    assert eng._wc_stats["speaker_ambiguous"] == 1
+
+
+def test_audio_first_ambiguous_score_retries_after_more_pcm_then_cuts():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        barge_word_cut_speaker_reject_threshold=0.22,
+        barge_word_cut_speaker_retry_sec=0.25,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.25, 0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer([""] * 8)
+    detect, normal = _FakeStream(), _FakeStream()
+    block = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(6):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            detect,
+            block,
+            now + index * 0.1,
+            normal_stream=normal,
+        )
+    assert len(gate.calls) == 1  # retry cadence avoids per-block ONNX work
+    assert not eng._barge_word_cut_step(
+        recognizer, detect, block, now + 0.6, normal_stream=normal
+    )
+    assert eng._barge_word_cut_step(
+        recognizer, detect, block, now + 0.7, normal_stream=normal
+    )
+    assert len(gate.calls) == 2
+    assert rec.barges == 1
+
+
+def test_ambiguous_prefix_cannot_gain_owner_lineage_from_later_suffix():
+    """A clip-level retry must not upgrade already-ambiguous PCM to owner PCM.
+
+    The first block is explicitly not authoritative.  A later owner-like suffix
+    may safely cause another retry (or remain deferred), but if it cuts, the
+    promoted normal-ASR/finalizer PCM must not contain the ambiguous prefix.
+    Otherwise text spoken by a different source can inherit the owner's later
+    aggregate embedding score.
+    """
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        barge_word_cut_speaker_threshold=0.30,
+        barge_word_cut_speaker_reject_threshold=0.22,
+        barge_word_cut_speaker_retry_sec=0.0,
+        speaker_gate_input=False,
+    )
+    gate = _FakeSpeakerGate([0.25, 0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer(["", ""])
+    detect, normal = _FakeStream(), _FakeStream()
+    ambiguous_prefix = np.full(1600, 0.20, dtype="float32")
+    owner_suffix = np.full(1600, 0.70, dtype="float32")
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer,
+        detect,
+        ambiguous_prefix,
+        now,
+        normal_stream=normal,
+    )
+    fired = eng._barge_word_cut_step(
+        recognizer,
+        detect,
+        owner_suffix,
+        now + 0.1,
+        normal_stream=normal,
+    )
+
+    # Failing closed is valid.  If the later suffix does earn a cut, only PCM
+    # whose owner lineage is known may be replayed/finalized.
+    if fired:
+        replay = np.concatenate(normal.blocks)
+        assert np.all(replay == np.float32(0.70))
+
+
+def test_audio_first_minimum_counts_voiced_frames_not_preroll_envelope():
+    class _ScriptedVad(_FakeVad):
+        def __init__(self):
+            super().__init__(False)
+            self._states = iter((True, False, False, True))
+
+        def accept_waveform(self, samples):
+            self.accepted += 1
+            self._speech = next(self._states)
+
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        speaker_gate_input=False,
+    )
+    eng._vad = _ScriptedVad()
+    gate = _FakeSpeakerGate([0.8])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer([""] * 4)
+    stream = _FakeStream()
+    now = time.monotonic()
+    blocks = (
+        np.full(1600, 0.2, dtype="float32"),
+        np.zeros(1600, dtype="float32"),
+        np.zeros(1600, dtype="float32"),
+        np.full(1600, 0.2, dtype="float32"),
+    )
+
+    for index, block in enumerate(blocks):
+        assert not eng._barge_word_cut_step(
+            recognizer, stream, block, now + index * 0.1
+        )
+
+    assert eng._word_cut_candidate_samples == 6400  # 400 ms envelope retained
+    assert gate.calls == []  # only 200 ms is actually energy-voiced
+    assert rec.barges == 0
+
+
+def test_audio_first_guarded_echo_cannot_contaminate_later_owner_handoff():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=False,
+        barge_in_playback_onset_grace_sec=0.4,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer([""] * 8)
+    detect, normal = _FakeStream(), _FakeStream()
+    now = time.monotonic()
+    eng._playback_onset_at = now
+
+    for index in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            detect,
+            np.full(1600, 0.1, dtype="float32"),
+            now + index * 0.1,
+            normal_stream=normal,
+        )
+    for index in range(3):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            detect,
+            np.full(1600, 0.7, dtype="float32"),
+            now + 0.5 + index * 0.1,
+            normal_stream=normal,
+        )
+    assert eng._barge_word_cut_step(
+        recognizer,
+        detect,
+        np.full(1600, 0.7, dtype="float32"),
+        now + 0.8,
+        normal_stream=normal,
+    )
+
+    replay = np.concatenate(normal.blocks)
+    assert replay.size == 6400
+    assert np.all(replay == np.float32(0.7))
+    assert eng._wc_stats["guard_candidate_clears"] == 4
+
+
+def test_audio_first_empty_tail_promotes_after_fresh_voiced_continuation():
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer([""] * 5)
+    detect, normal = _FakeStream(), _FakeStream()
+    block = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(3):
+        assert not eng._barge_word_cut_step(
+            recognizer, detect, block, now + index * 0.1
+        )
+    assert not eng._finish_word_cut_reply(
+        recognizer, detect, normal, now=now + 0.3
+    )
+    assert eng._word_cut_tail_staged
+    assert eng._word_cut_tail_probation_step(
+        recognizer, detect, normal, block, now + 0.4
+    ) == "promoted"
+    assert normal.fed_blocks == 1
+    assert eng._wc_stats["speaker_accepts"] == 1
+
+
+@pytest.mark.parametrize("score", [float("nan"), float("inf"), float("-inf")])
+def test_audio_first_nonfinite_similarity_fails_closed(score):
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([score])
+    eng._speaker_gate_warmed = True
+    eng._append_word_cut_candidate(np.full(1600, 0.2, dtype="float32"))
+
+    assert eng._word_cut_speaker_decision() == "defer"
+    assert eng._wc_stats["speaker_errors"] == 1
+    assert eng._wc_stats.get("speaker_accepts", 0) == 0
+
+
+def test_audio_first_busy_speaker_extractor_defers_without_blocking_capture():
+    from core.engines.speaker_gate import SpeakerGate
+
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    gate = SpeakerGate(threshold=0.5, embed_fn=lambda _samples, _sr: [1.0, 0.0])
+    gate.enroll_embedding([1.0, 0.0])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._append_word_cut_candidate(np.full(1600, 0.2, dtype="float32"))
+
+    assert gate._inference_lock.acquire(blocking=False)
+    try:
+        assert eng._word_cut_speaker_decision() == "defer"
+    finally:
+        gate._inference_lock.release()
+    assert eng._wc_stats["speaker_busy_deferred"] == 1
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [(0.22, "reject"), (0.221, "defer"), (0.30, "accept")],
+)
+def test_audio_first_reject_defer_accept_boundaries(score, expected):
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+        barge_word_cut_speaker_threshold=0.30,
+        barge_word_cut_speaker_reject_threshold=0.22,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([score])
+    eng._speaker_gate_warmed = True
+    eng._append_word_cut_candidate(np.full(1600, 0.2, dtype="float32"))
+
+    assert eng._word_cut_speaker_decision() == expected
+
+
+def test_audio_first_ambiguous_retry_uses_monotonic_observed_pcm_after_trim():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.0,
+        barge_word_cut_speaker_retry_sec=0.25,
+        speaker_gate_input=False,
+    )
+    eng._asr_utterance_limit_samples = lambda: 3200
+    gate = _FakeSpeakerGate([0.25, 0.387])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer([""] * 4)
+    detect, normal = _FakeStream(), _FakeStream()
+    block = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(3):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            detect,
+            block,
+            now + index * 0.1,
+            normal_stream=normal,
+        )
+    assert eng._word_cut_candidate_samples == 3200
+    assert eng._word_cut_candidate_observed_samples == 4800
+    assert eng._barge_word_cut_step(
+        recognizer, detect, block, now + 0.3, normal_stream=normal
+    )
+    assert len(gate.calls) == 2
+
+
+def test_standalone_own_tts_stop_requires_speaker_authority():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    eng._now_playing = "Stop."
+    eng._speaker_gate = _FakeSpeakerGate([0.15])
+    eng._speaker_gate_warmed = True
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["stop"]),
+        _FakeStream(),
+        np.full(1600, 0.2, dtype="float32"),
+        time.monotonic(),
+    )
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_rejects"] == 1
+
+
+def test_short_owner_stop_cuts_when_recent_tts_makes_text_ambiguous():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    eng._now_playing = "Stop."
+    eng._speaker_gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate_warmed = True
+
+    assert eng._barge_word_cut_step(
+        _FakeRecognizer(["stop"]),
+        _FakeStream(),
+        np.full(1600, 0.2, dtype="float32"),
+        time.monotonic(),
+    )
+    assert rec.barges == 1
+    assert eng._wc_stats["speaker_accepts"] == 1
+
+
+def test_live_saturn_echo_rejected_by_enrolled_speaker_then_owner_cuts():
+    """Regression for live run 20260711-115512 at 11:56:19.
+
+    The word-cut stream emitted two words then four garbled words and promoted
+    1.5 s that normal ASR proved was own TTS. Speaker authority rejects that PCM,
+    resets the unstable detector stream, and admits a later owner command with
+    only owner PCM replayed into normal ASR.
+    """
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.15,
+    )
+    gate = _FakeSpeakerGate([0.18, 0.54])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    detect, normal = _FakeStream(), _FakeStream()
+    echo = _FakeRecognizer(["THE HARRING", "THE HARRING OF SA"])
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        echo, detect, np.full(1600, 0.2, dtype="float32"), now,
+        normal_stream=normal,
+    )
+    assert not eng._barge_word_cut_step(
+        echo, detect, np.full(1600, 0.3, dtype="float32"), now + 0.1,
+        normal_stream=normal,
+    )
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_rejects"] == 1
+    assert eng._wc_stats["speaker_resets"] == 1
+    assert eng._word_cut_candidate_samples == 0
+    assert detect in echo.reset_streams
+
+    owner = _FakeRecognizer(
+        [
+            "switch to ancient Roman architecture",
+            "switch to ancient Roman architecture",
+        ]
+    )
+    user_blocks = [
+        np.full(1600, 0.7, dtype="float32"),
+        np.full(1600, 0.8, dtype="float32"),
+    ]
+    assert not eng._barge_word_cut_step(
+        owner, detect, user_blocks[0], now + 0.2, normal_stream=normal
+    )
+    assert eng._barge_word_cut_step(
+        owner, detect, user_blocks[1], now + 0.3, normal_stream=normal
+    )
+    assert rec.barges == 1
+    assert eng._wc_stats["speaker_accepts"] == 1
+    np.testing.assert_array_equal(
+        np.concatenate(normal.blocks), np.concatenate(user_blocks)
+    )
+
+
+def test_enrolled_speaker_authority_overrides_text_overlap():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.35,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.8])
+    eng._speaker_gate_warmed = True
+    eng._now_playing = "There are rings of Saturn."
+    recognizer = _FakeRecognizer(["there are rings of Saturn"] * 4)
+    stream = _FakeStream()
+    voice_block = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(3):
+        assert not eng._barge_word_cut_step(
+            recognizer, stream, voice_block, now + index * 0.1
+        )
+        assert eng._word_cut_base == ""  # lexical echo match cannot preempt ID
+    assert eng._barge_word_cut_step(
+        recognizer, stream, voice_block, now + 0.3
+    )
+    assert rec.barges == 1
+
+
+def test_required_speaker_authority_fails_closed_but_bare_stop_still_cuts():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    eng._speaker_gate = None
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["switch to ancient Roman architecture"]),
+        _FakeStream(),
+        _BLOCK,
+        time.monotonic(),
+    )
+    assert rec.barges == 0
+
+    stop = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    stop._speaker_gate = None
+    assert stop._barge_word_cut_step(
+        _FakeRecognizer(["stop"]), _FakeStream(), _BLOCK, time.monotonic()
+    )
+    assert rec.barges == 1
+
+
+def test_cold_speaker_authority_defers_without_blocking_capture_inference():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    gate = _FakeSpeakerGate([0.8])
+    eng._speaker_gate = gate
+    recognizer = _FakeRecognizer(
+        ["switch to ancient Roman architecture"] * 2
+    )
+    stream = _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(recognizer, stream, _BLOCK, now)
+    assert gate.calls == []
+    assert eng._wc_stats["speaker_cold_deferred"] == 1
+
+    eng._speaker_gate_warmed = True
+    assert eng._barge_word_cut_step(recognizer, stream, _BLOCK, now + 0.1)
+    assert len(gate.calls) == 1
+    assert rec.barges == 1
+
+
+def test_required_speaker_authority_warms_idempotently_off_capture_thread():
+    eng = _engine(barge_word_cut_require_speaker=True)
+    gate = _FakeSpeakerGate([])
+    eng._speaker_gate = gate
+
+    assert eng._warm_speaker_gate()
+    assert eng._speaker_gate_warmed
+    assert gate.embed_calls == 1
+    assert eng._warm_speaker_gate()
+    assert gate.embed_calls == 1
+
+
+def test_speaker_authority_embedding_window_is_bounded_off_capture_hot_path():
+    eng = _engine(
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+        barge_word_cut_speaker_window_sec=2.0,
+    )
+    gate = _FakeSpeakerGate([0.8])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    eng._append_word_cut_candidate(np.ones(16000 * 8, dtype="float32"))
+
+    assert eng._word_cut_speaker_decision() == "accept"
+    assert len(gate.calls) == 1
+    assert gate.calls[0].size <= 2 * eng.config.sample_rate
+    assert eng._word_cut_candidate_samples <= 2 * eng.config.sample_rate
+
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["switch to ancient Roman architecture"])
+    assert eng._promote_word_cut_candidate(
+        recognizer,
+        detect,
+        normal,
+        reason="cut",
+        text="switch to ancient Roman architecture",
+    )
+    assert eng._word_cut_pending_samples <= 2 * eng.config.sample_rate
+    assert sum(block.size for block in normal.blocks) <= 2 * eng.config.sample_rate
+
+
+def test_own_tts_sentence_ending_stop_does_not_bypass_speaker_authority():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.1])
+    eng._speaker_gate_warmed = True
+    recognizer = _FakeRecognizer(["if you want me to stop"])
+
+    assert not eng._barge_word_cut_step(
+        recognizer, _FakeStream(), _BLOCK, time.monotonic()
+    )
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_rejects"] == 1
+
+
 def test_own_echo_folds_into_base_then_user_words_cut():
     rec = _Rec()
     eng = _engine(rec)
@@ -337,6 +1010,43 @@ def test_cut_replay_failure_is_telemetry_visible_and_keeps_finalizer_pcm(caplog)
     assert eng._wc_stats["handoff_replay_errors"] == 1
     assert eng._word_cut_pending_samples == block.size
     assert "normal-stream replay failed" in caplog.text
+
+
+def test_post_cut_async_stop_boundary_cannot_overwrite_pending_owner_pcm():
+    eng = _engine(_Rec())
+    detect, normal = _FakeStream(), _FakeStream()
+    first = np.full(1600, 0.4, dtype="float32")
+    residue = np.full(1600, 0.8, dtype="float32")
+    now = time.monotonic()
+
+    assert eng._barge_word_cut_step(
+        _FakeRecognizer(["what are you doing"]),
+        detect,
+        first,
+        now,
+        normal_stream=normal,
+    )
+    assert eng._word_cut_pending_samples == first.size
+    np.testing.assert_array_equal(eng._word_cut_pending_pcm[0], first)
+
+    # Playback/control cancellation has not cleared `_speaking` yet, so one more
+    # capture block reaches the word-cut seam. It must be inert.
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["entirely different residue words"]),
+        detect,
+        residue,
+        now + 0.1,
+        normal_stream=normal,
+    )
+    assert not eng._finish_word_cut_reply(
+        _FakeRecognizer(["entirely different residue words"]),
+        detect,
+        normal,
+        now=now + 0.2,
+    )
+    assert eng._wc_stats.get("pending_overwrites", 0) == 0
+    assert eng._word_cut_pending_samples == first.size
+    np.testing.assert_array_equal(eng._word_cut_pending_pcm[0], first)
 
 
 # --- per-speech-burst stream reset (the second no-false-cut gate) ----------------
@@ -500,20 +1210,108 @@ def test_tail_requires_fresh_vad_epoch_not_inherited_playback_hangover():
     assert eng._word_cut_pending_samples == 0
 
 
-def test_floor_clearing_tail_hands_off_immediately_when_cut_was_guarded():
+def test_guarded_pcm_cannot_become_authority_at_reply_tail():
     eng = _engine(vad_speech=True)
     detect, normal = _FakeStream(), _FakeStream()
     r = _FakeRecognizer(["what are you doing", "what are you doing"])
     now = time.monotonic()
     eng._barge_in_suppressed_until = now + 10.0
 
-    # The suppress guard delays the cut, but it does not revoke the four-word
-    # transcript's authority once playback naturally ends.
+    # Suppression is an authority boundary: playback/echo PCM observed while the
+    # guard is active cannot be promoted later merely because playback ends.
     assert eng._barge_word_cut_step(r, detect, _BLOCK, now) is False
-    assert eng._finish_word_cut_reply(r, detect, normal, now=now + 0.1) is True
+    assert eng._finish_word_cut_reply(r, detect, normal, now=now + 0.1) is False
     assert eng._word_cut_tail_staged is False
-    assert normal.fed_blocks == 1
-    assert eng._wc_stats["tail_handoffs"] == 1
+    assert normal.fed_blocks == 0
+    assert eng._word_cut_candidate_samples == 0
+    assert eng._wc_stats["guard_candidate_clears"] == 1
+
+
+def test_required_speaker_authority_cannot_be_bypassed_at_reply_tail():
+    now = time.monotonic()
+
+    missing = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=3,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    missing._speaker_gate = None
+    detect_missing, normal_missing = _FakeStream(), _FakeStream()
+    r_missing = _FakeRecognizer(["what are you doing", "what are you doing"])
+    assert not missing._barge_word_cut_step(
+        r_missing, detect_missing, _BLOCK, now
+    )
+    assert not missing._finish_word_cut_reply(
+        r_missing, detect_missing, normal_missing, now=now + 0.1
+    )
+    assert missing._word_cut_tail_staged  # bounded wait, never immediate bypass
+    assert normal_missing.fed_blocks == 0
+
+    rejected = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=3,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    rejected._speaker_gate = _FakeSpeakerGate([0.1])
+    rejected._speaker_gate_warmed = True
+    detect_rejected, normal_rejected = _FakeStream(), _FakeStream()
+    r_rejected = _FakeRecognizer(["what are you doing", "what are you doing"])
+    assert not rejected._barge_word_cut_step(
+        r_rejected, detect_rejected, _BLOCK, now
+    )
+    assert not rejected._finish_word_cut_reply(
+        r_rejected, detect_rejected, normal_rejected, now=now + 0.1
+    )
+    assert not rejected._word_cut_tail_staged
+    assert rejected._wc_stats["speaker_rejects"] == 1
+    assert normal_rejected.fed_blocks == 0
+
+
+def test_required_speaker_authority_gates_short_tail_continuation():
+    now = time.monotonic()
+
+    accepted = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=3,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    accepted._speaker_gate = _FakeSpeakerGate([0.8])
+    accepted._speaker_gate_warmed = True
+    detect_ok, normal_ok = _FakeStream(), _FakeStream()
+    r_ok = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    assert not accepted._barge_word_cut_step(r_ok, detect_ok, _BLOCK, now)
+    assert not accepted._finish_word_cut_reply(
+        r_ok, detect_ok, normal_ok, now=now
+    )
+    assert accepted._word_cut_tail_probation_step(
+        r_ok, detect_ok, normal_ok, _BLOCK, now + 0.1
+    ) == "promoted"
+    np.testing.assert_array_equal(
+        np.concatenate(normal_ok.blocks), np.concatenate([_BLOCK, _BLOCK])
+    )
+
+    rejected = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=3,
+        barge_word_cut_speaker_min_sec=0.0,
+    )
+    rejected._speaker_gate = _FakeSpeakerGate([0.1])
+    rejected._speaker_gate_warmed = True
+    detect_no, normal_no = _FakeStream(), _FakeStream()
+    r_no = _FakeRecognizer(["please wait", "please wait", "please wait now"])
+    assert not rejected._barge_word_cut_step(r_no, detect_no, _BLOCK, now)
+    assert not rejected._finish_word_cut_reply(
+        r_no, detect_no, normal_no, now=now
+    )
+    assert rejected._word_cut_tail_probation_step(
+        r_no, detect_no, normal_no, _BLOCK, now + 0.1
+    ) == "dropped"
+    assert normal_no.fed_blocks == 0
+    assert rejected._wc_stats["tail_drop_speaker"] == 1
 
 
 def test_natural_tail_discards_own_empty_and_stale_bursts():
@@ -596,11 +1394,12 @@ def test_preroll_pcm_reaches_second_pass_floor_and_speaker_gate():
 
     def speaker(samples):
         seen["speaker"] = np.asarray(samples).copy()
-        return True
+        return original_speaker_decision(samples)
 
     eng._final_transcribe = final_transcribe
     eng._final_above_floor = floor
-    eng._should_act_on_final = speaker
+    original_speaker_decision = eng._speaker_decision_for_final
+    eng._speaker_decision_for_final = speaker
     eng._finalize_and_dispatch(seg, "please wait", 1.0)
 
     for consumer in ("second_pass", "floor", "speaker"):
@@ -1018,6 +1817,236 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
     np.testing.assert_array_equal(recognizer.endpoint_blocks[2], endpoint_silence)
 
 
+def test_capture_zero_word_speaker_cut_splices_and_dispatches_async_once():
+    """Production authority survives capture -> splice -> async final dispatch."""
+    import queue
+
+    final_ready = threading.Event()
+    finals: list[str] = []
+
+    class _AsyncRecognizer:
+        def __init__(self):
+            self.streams: list[_FakeStream] = []
+            self.endpoint_blocks: list[np.ndarray] = []
+
+        def create_stream(self, **_kwargs):
+            stream = _FakeStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, stream):
+            if len(self.streams) > 1 and stream is self.streams[1]:
+                return ""  # double-talk ASR remains empty during playback
+            return "owner command" if stream.blocks else ""
+
+        def reset(self, stream):
+            stream.blocks.clear()
+            stream.fed_blocks = 0
+
+        def is_endpoint(self, stream):
+            endpoint = bool(
+                self.streams
+                and stream is self.streams[0]
+                and stream.fed_blocks >= 2
+            )
+            if endpoint:
+                self.endpoint_blocks = [block.copy() for block in stream.blocks]
+            return endpoint
+
+    class _FiniteAsyncInput:
+        def __init__(self, engine, blocks):
+            self.engine = engine
+            self.blocks = list(blocks)
+            self.index = 0
+
+        def read(self, _n):
+            if self.index < len(self.blocks):
+                block = self.blocks[self.index]
+                self.index += 1
+                if self.index == len(self.blocks):
+                    self.engine._vad.set_speech(False)
+                return block.copy(), False
+            assert final_ready.wait(2.0)
+            self.engine._running.clear()
+            return np.zeros(1600, dtype="float32"), False
+
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate_warmed = True
+    recognizer = _AsyncRecognizer()
+    voice_blocks = [
+        np.full(1600, value, dtype="float32")
+        for value in (0.11, 0.12, 0.13, 0.14)
+    ]
+    endpoint_silence = np.zeros(1600, dtype="float32")
+
+    def on_barge_in():
+        eng._speaking.clear()
+
+    def on_final(text):
+        finals.append(text)
+        final_ready.set()
+
+    eng._recognizer = recognizer
+    eng._final_recognizer = None
+    eng._final_q = queue.Queue(maxsize=8)
+    eng._cb = EngineCallbacks(on_barge_in=on_barge_in, on_final=on_final)
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _FiniteAsyncInput(
+        eng, [*voice_blocks, endpoint_silence]
+    )
+    eng._final_above_floor = lambda _seg: True
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+    eng._first_audio_pending = True
+
+    eng._running.set()
+    final_worker = threading.Thread(target=eng._final_worker)
+    capture_worker = threading.Thread(target=eng._capture_loop)
+    final_worker.start()
+    capture_worker.start()
+    capture_worker.join(timeout=3.0)
+    final_worker.join(timeout=3.0)
+
+    assert not capture_worker.is_alive()
+    assert not final_worker.is_alive()
+    assert final_ready.is_set()
+    assert len(finals) == 1
+    assert "owner command" in finals[0].lower()
+    assert eng._word_cut_pending_samples == 0
+    expected = np.concatenate([*voice_blocks, endpoint_silence])
+    np.testing.assert_array_equal(
+        np.concatenate(recognizer.endpoint_blocks), expected
+    )
+
+
+def test_zero_word_handoff_uses_offline_final_when_streaming_stays_empty():
+    """Accepted PCM must reach the second pass even if streaming stays empty.
+
+    Audio-first authority exists precisely because the playback-time streaming
+    recognizer can emit zero words.  Replaying the same degraded PCM into a fresh
+    streaming state is not proof that it will suddenly produce a raw final, so a
+    speaker-authorized segment must let the offline recognizer recover its text.
+    """
+
+    class _AlwaysEmptyRecognizer:
+        def __init__(self):
+            self.streams: list[_FakeStream] = []
+
+        def create_stream(self, **_kwargs):
+            stream = _FakeStream()
+            self.streams.append(stream)
+            return stream
+
+        def is_ready(self, _stream):
+            return False
+
+        def decode_stream(self, _stream):  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, _stream):
+            return ""
+
+        def reset(self, stream):
+            stream.blocks.clear()
+            stream.fed_blocks = 0
+
+        def is_endpoint(self, stream):
+            return bool(
+                self.streams
+                and stream is self.streams[0]
+                and sum(block.size for block in stream.blocks) >= 7 * 1600
+            )
+
+    class _OfflineStream(_FakeStream):
+        def __init__(self):
+            super().__init__()
+            self.result = type("Result", (), {"text": "owner command"})()
+
+    class _OfflineRecognizer:
+        def __init__(self):
+            self.calls = 0
+
+        def create_stream(self):
+            self.calls += 1
+            return _OfflineStream()
+
+        def decode_stream(self, _stream):
+            pass
+
+    class _FiniteInput:
+        def __init__(self, engine, blocks):
+            self.engine = engine
+            self.blocks = list(blocks)
+            self.index = 0
+
+        def read(self, _n):
+            block = self.blocks[self.index]
+            self.index += 1
+            if self.index == len(self.blocks):
+                self.engine._vad.set_speech(False)
+                self.engine._running.clear()
+            return block.copy(), False
+
+    eng = _engine(
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        barge_word_cut_speaker_min_sec=0.35,
+        barge_word_cut_speaker_threshold=0.30,
+        speaker_gate_input=False,
+        asr_final_min_sec=0.5,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate_warmed = True
+    streaming = _AlwaysEmptyRecognizer()
+    offline = _OfflineRecognizer()
+    finals: list[str] = []
+    voice_blocks = [
+        np.full(1600, value, dtype="float32")
+        for value in (0.20, 0.21, 0.22, 0.23, 0.24, 0.25)
+    ]
+    endpoint_silence = np.zeros(1600, dtype="float32")
+
+    def on_barge_in():
+        eng._speaking.clear()
+
+    eng._recognizer = streaming
+    eng._final_recognizer = offline
+    eng._final_q = None
+    eng._cb = EngineCallbacks(on_barge_in=on_barge_in, on_final=finals.append)
+    eng._capture_sr = eng.config.sample_rate
+    eng._stream_in = _FiniteInput(
+        eng, [*voice_blocks, endpoint_silence]
+    )
+    eng._final_above_floor = lambda _seg: True
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+    eng._first_audio_pending = True
+
+    eng._running.set()
+    capture_worker = threading.Thread(target=eng._capture_loop)
+    capture_worker.start()
+    capture_worker.join(timeout=3.0)
+
+    assert not capture_worker.is_alive()
+    assert offline.calls == 1
+    assert finals == ["owner command"]
+
+
 # --- funnel telemetry (ADR-0013 post-hoc scoring) ---------------------------------
 
 
@@ -1094,6 +2123,7 @@ def test_near_end_window_emits_after_two_seconds(caplog):
         eng._barge_word_cut_step(r, s, _BLOCK, now + 2.1)   # crosses 2s -> emits
     assert "word-cut near-end: rms_avg=" in caplog.text
     assert "vad_frac=1.00" in caplog.text
+    assert "floor=0.0040" in caplog.text
     # The window fed the per-reply percentile accumulator and reset itself.
     assert eng._wc_stats.get("win_rms")
     assert eng._wc_win == {}

@@ -165,6 +165,8 @@ class FinalDispatchLease:
         submitted_at: Optional[float] = None,
         input_generation: Optional[int] = None,
         input_epoch: Optional[int] = None,
+        owner_verified: bool = False,
+        origin: str = "unknown",
     ) -> None:
         self._owner = owner
         self.generation = generation
@@ -173,6 +175,8 @@ class FinalDispatchLease:
         self.submitted_at = submitted_at
         self.input_generation = input_generation
         self.input_epoch = input_epoch
+        self.owner_verified = bool(owner_verified)
+        self.origin = str(origin or "unknown")
         self.cancel_event = threading.Event()
         self._committed = False
 
@@ -216,6 +220,8 @@ class FinalDispatcher:
         self._pending_submitted_at: Optional[float] = None
         self._pending_input_generation: Optional[int] = None
         self._pending_input_epoch: Optional[int] = None
+        self._pending_owner_verified = False
+        self._pending_origin = "unknown"
         self._deadline = 0.0
         self._hold_started = 0.0
         self._dispatching = False
@@ -269,9 +275,13 @@ class FinalDispatcher:
         submitted_at: Optional[float] = None,
         input_generation: Optional[int] = None,
         input_epoch: Optional[int] = None,
+        owner_verified: bool = False,
+        origin: str = "unknown",
     ) -> None:
         """Engine-thread entry: queue a final, merging into an open hold."""
         now = time.monotonic()
+        owner_verified = bool(owner_verified)
+        origin = str(origin or "unknown")
         with self._cv:
             if not self._running:
                 log.debug("dropping final submitted to stopped dispatcher: %r", text)
@@ -299,6 +309,14 @@ class FinalDispatcher:
                         )
                     )
                 ):
+                    owner_verified = bool(
+                        self._active_lease.owner_verified and owner_verified
+                    )
+                    origin = (
+                        origin
+                        if self._active_lease.origin == origin
+                        else "unknown"
+                    )
                     text = self._coalescer.merge(active_text, text)
                     active_hold_started = self._hold_started
                     coalesced_with_active = True
@@ -311,6 +329,8 @@ class FinalDispatcher:
                 self._pending_submitted_at = submitted_at
                 self._pending_input_generation = input_generation
                 self._pending_input_epoch = input_epoch
+                self._pending_owner_verified = owner_verified
+                self._pending_origin = origin
                 self._pending_merge_next = False
                 self._pending_coalesced = coalesced_with_active
                 self._hold_started = (
@@ -344,6 +364,12 @@ class FinalDispatcher:
                 self._pending_submitted_at = submitted_at
                 self._pending_input_generation = input_generation
                 self._pending_input_epoch = input_epoch
+                self._pending_owner_verified = bool(
+                    self._pending_owner_verified and owner_verified
+                )
+                self._pending_origin = (
+                    origin if self._pending_origin == origin else "unknown"
+                )
                 self._pending_merge_next = False
                 self._pending_coalesced = True
                 extend = (
@@ -363,6 +389,8 @@ class FinalDispatcher:
                 self._pending_submitted_at = submitted_at
                 self._pending_input_generation = input_generation
                 self._pending_input_epoch = input_epoch
+                self._pending_owner_verified = owner_verified
+                self._pending_origin = origin
                 self._pending_merge_next = False
                 self._pending_coalesced = False
                 self._hold_started = now
@@ -397,6 +425,8 @@ class FinalDispatcher:
                 self._pending_submitted_at = None
                 self._pending_input_generation = None
                 self._pending_input_epoch = None
+                self._pending_owner_verified = False
+                self._pending_origin = "unknown"
                 self._pending_merge_next = False
                 self._pending_coalesced = False
                 self._cv.notify_all()
@@ -417,6 +447,8 @@ class FinalDispatcher:
                 self._pending_submitted_at = self._active_lease.submitted_at
                 self._pending_input_generation = self._active_lease.input_generation
                 self._pending_input_epoch = self._active_lease.input_epoch
+                self._pending_owner_verified = self._active_lease.owner_verified
+                self._pending_origin = self._active_lease.origin
                 self._pending_merge_next = True
                 self._pending_coalesced = self._active_lease.coalesced
                 now = time.monotonic()
@@ -451,6 +483,8 @@ class FinalDispatcher:
             self._pending_submitted_at = None
             self._pending_input_generation = None
             self._pending_input_epoch = None
+            self._pending_owner_verified = False
+            self._pending_origin = "unknown"
             self._pending_merge_next = False
             self._pending_coalesced = False
             self._cv.notify_all()
@@ -497,6 +531,8 @@ class FinalDispatcher:
                 self._pending_submitted_at = None
                 self._pending_input_generation = None
                 self._pending_input_epoch = None
+                self._pending_owner_verified = False
+                self._pending_origin = "unknown"
                 self._pending_merge_next = False
                 self._pending_coalesced = False
                 self._cv.notify_all()
@@ -522,6 +558,8 @@ class FinalDispatcher:
             self._pending_submitted_at = None
             self._pending_input_generation = None
             self._pending_input_epoch = None
+            self._pending_owner_verified = False
+            self._pending_origin = "unknown"
             self._pending_merge_next = False
             self._pending_coalesced = False
         if text is not None:
@@ -550,6 +588,8 @@ class FinalDispatcher:
                 self._pending_submitted_at = None
                 self._pending_input_generation = None
                 self._pending_input_epoch = None
+                self._pending_owner_verified = False
+                self._pending_origin = "unknown"
                 self._pending_merge_next = False
                 self._pending_coalesced = False
                 self._dispatching = True
@@ -608,6 +648,14 @@ class FinalDispatcher:
                     self._pending_input_epoch,
                     None,
                 )
+                owner_verified, self._pending_owner_verified = (
+                    self._pending_owner_verified,
+                    False,
+                )
+                origin, self._pending_origin = (
+                    self._pending_origin,
+                    "unknown",
+                )
                 merge_next, self._pending_merge_next = (
                     self._pending_merge_next,
                     False,
@@ -625,6 +673,8 @@ class FinalDispatcher:
                     submitted_at=submitted_at,
                     input_generation=input_generation,
                     input_epoch=input_epoch,
+                    owner_verified=owner_verified,
+                    origin=origin,
                 )
                 self._active_lease = lease
                 self._active_text = text

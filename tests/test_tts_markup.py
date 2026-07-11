@@ -191,7 +191,10 @@ def _bare_engine(config: SherpaConfig) -> SherpaOnnxEngine:
     eng._tts = _FakeTTS()
     eng._tts_lock = threading.Lock()
     eng._stop_speaking = threading.Event()
+    eng._playback_stopping = threading.Event()
     eng._speak_gen = 0
+    eng._gen_lock = threading.Lock()
+    eng._receipt_lock = threading.RLock()
     eng._tts_can_stream = True
     eng._play_q = queue.Queue()
     eng._tts_level_gain_db = None
@@ -284,27 +287,30 @@ def test_speak_strips_tag_and_enqueues_directives():
     cfg = SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7})
     eng = _bare_engine(cfg)
     eng.speak("[voice:warm emotion:calm] Hello there.")
-    text, on_done, gen, directives = eng._play_q.get_nowait()
+    text, on_done, gen, directives, ticket = eng._play_q.get_nowait()
     assert text == "Hello there."
     assert directives == {"voice": "warm", "emotion": "calm"}
+    assert ticket is None
 
 
 def test_speak_strips_live_keyless_voice_variant():
     cfg = SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7})
     eng = _bare_engine(cfg)
     eng.speak("[warm voice] Once upon a time.")
-    text, on_done, gen, directives = eng._play_q.get_nowait()
+    text, on_done, gen, directives, ticket = eng._play_q.get_nowait()
     assert text == "Once upon a time."
     assert directives == {"voice": "warm"}
+    assert ticket is None
 
 
 def test_speak_markup_off_is_passthrough():
     cfg = SherpaConfig(tts_markup=False)
     eng = _bare_engine(cfg)
     eng.speak("[voice:warm] Hello there.")  # tag NOT parsed when off
-    text, on_done, gen, directives = eng._play_q.get_nowait()
+    text, on_done, gen, directives, ticket = eng._play_q.get_nowait()
     assert text == "[voice:warm] Hello there."
     assert directives is None
+    assert ticket is None
 
 
 def test_speak_tag_only_emission_is_dropped():

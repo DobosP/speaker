@@ -63,12 +63,26 @@ from ..audio_frontend import (
     output_leveler,
     rms_of,
 )
-from ..engine import AudioEngine, EngineCallbacks
+from ..engine import (
+    NO_PLAYBACK_CAPABILITIES,
+    AudioEngine,
+    EngineCallbacks,
+    PlaybackCapabilities,
+    PlaybackOutcome,
+    PlaybackReceipt,
+    TrackedSpeech,
+)
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ..tts_markup import parse_tts_markup, resolve_tts_params
 from ._asr_segment import ASRSegment
 from ._denoiser import build_denoiser
-from ._aec import AecDelayCalibrator, FarEndRing, PlaybackFIFO, build_aec
+from ._aec import (
+    AecDelayCalibrator,
+    FarEndRing,
+    PlaybackFIFO,
+    PlaybackFIFOEvent,
+    build_aec,
+)
 from ._sherpa_models import (
     build_keyword_spotter,
     build_final_recognizer,
@@ -1023,6 +1037,35 @@ def _resample_linear(samples, src_sr: int, dst_sr: int):
     return np.interp(idx, np.arange(x.shape[0]), x).astype("float32")
 
 
+_SHERPA_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
+    tracked_terminal=True,
+    exact_started=True,
+    sample_counts=True,
+)
+
+
+@dataclass(eq=False)
+class _TrackedPlaybackCall:
+    """One accepted tracked request until its callbacks are dispatched.
+
+    Identity equality is intentional: the runtime fragment ID is opaque and a
+    buggy caller repeating it must not merge two accepted engine calls.  Mutable
+    lifecycle fields are guarded by ``SherpaOnnxEngine._receipt_lock``; the FIFO
+    sees only this object's identity as its ownership tag.
+    """
+
+    speech: TrackedSpeech
+    on_terminal: Callable[[PlaybackReceipt], None]
+    on_started: Optional[Callable[[str], None]]
+    sink_text: str = ""
+    output_sample_rate: Optional[int] = None
+    claimed: bool = False
+    fifo_bound: bool = False
+    terminal_queued: bool = False
+    started_sent: bool = False
+    terminal_sent: bool = False
+
+
 class SherpaOnnxEngine(AudioEngine):
     """Real-time on-device engine. Requires model files in :class:`SherpaConfig`.
 
@@ -1156,6 +1199,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._final_q: "Optional[queue.Queue[Optional[tuple]]]" = None
         self._final_thread: Optional[threading.Thread] = None
         self._running = threading.Event()
+        self._playback_stopping = threading.Event()
         self._speaking = threading.Event()
         self._stop_speaking = threading.Event()
         # Per-utterance generation counter (rc-3). Every queued sentence carries
@@ -1170,12 +1214,22 @@ class SherpaOnnxEngine(AudioEngine):
         self._speak_gen = 0
         self._gen_lock = threading.Lock()
         self._speaker_gate: Optional[SpeakerGate] = None
+        # Sink-attested playback callbacks never run on PortAudio's hard-real-
+        # time thread. PlaybackFIFO appends only tiny ownership events; this
+        # dispatcher consumes them on a normal daemon thread and invokes the
+        # runtime callbacks. The lock serializes request admission/binding with
+        # stop so a tag cannot appear in a FIFO just after that FIFO was flushed.
+        self._receipt_lock = threading.RLock()
+        self._receipt_events: deque[PlaybackFIFOEvent] = deque()
+        self._receipt_pending: set[_TrackedPlaybackCall] = set()
+        self._receipt_running = threading.Event()
+        self._receipt_thread: Optional[threading.Thread] = None
         # Single playback sink: every utterance is queued onto one worker thread
         # so sentences play in order and never overlap (streaming TTS emits many
         # short sentences in quick succession). Bounded so a runaway producer
         # can't grow memory; oldest is dropped under backpressure to stay fresh.
-        self._play_q: "queue.Queue[tuple[Optional[str], Optional[Callable[[], None]], int]]" = (
-            queue.Queue(maxsize=64)
+        self._play_q: "queue.Queue[tuple[Optional[str], Optional[Callable[[], None]], int, Optional[dict], Optional[_TrackedPlaybackCall]]]" = queue.Queue(
+            maxsize=64
         )
         self._play_thread: Optional[threading.Thread] = None
         # The live PortAudio output stream, shared with stop_speaking() so a
@@ -1798,11 +1852,211 @@ class SherpaOnnxEngine(AudioEngine):
                 )
         return route_verified
 
+    # --- sink-attested playback receipts ---
+    @property
+    def playback_capabilities(self) -> PlaybackCapabilities:
+        # Preserve downstream subclasses that historically customized only the
+        # legacy admission seam. Routing those around their speak() override via
+        # this inherited method would silently change instrumentation/behavior.
+        if (
+            type(self).speak is not SherpaOnnxEngine.speak
+            and type(self).speak_tracked is SherpaOnnxEngine.speak_tracked
+        ):
+            return NO_PLAYBACK_CAPABILITIES
+        return _SHERPA_PLAYBACK_CAPABILITIES
+
+    def _start_receipt_dispatcher(self) -> None:
+        with self._receipt_lock:
+            thread = self._receipt_thread
+            if thread is not None and thread.is_alive():
+                return
+            self._receipt_running.set()
+            self._receipt_thread = threading.Thread(
+                target=self._receipt_loop,
+                name="sherpa-playback-receipts",
+                daemon=True,
+            )
+            self._receipt_thread.start()
+
+    def _receipt_loop(self) -> None:
+        try:
+            while self._receipt_running.is_set() or self._receipt_events:
+                try:
+                    event = self._receipt_events.popleft()
+                except IndexError:
+                    time.sleep(0.005)
+                    continue
+                self._dispatch_receipt_event(event)
+        finally:
+            with self._receipt_lock:
+                if self._receipt_thread is threading.current_thread():
+                    self._receipt_thread = None
+
+    def _dispatch_receipt_event(self, event: PlaybackFIFOEvent) -> None:
+        ticket = event.tag
+        if not isinstance(ticket, _TrackedPlaybackCall):
+            return
+        if event.kind == "started":
+            callback = None
+            with self._receipt_lock:
+                if ticket.terminal_sent or ticket.started_sent:
+                    return
+                ticket.started_sent = True
+                callback = ticket.on_started
+            if callback is not None:
+                try:
+                    callback(ticket.speech.fragment_id)
+                except Exception:  # noqa: BLE001 - isolate adapter consumers
+                    log.exception("tracked playback on_started callback raised")
+            return
+        if event.kind != "terminal":
+            return
+
+        outcome = (
+            event.status
+            if isinstance(event.status, PlaybackOutcome)
+            else PlaybackOutcome.FAILED
+        )
+        played = event.played_samples
+        total = event.total_samples
+        # A normal seal is completion only when at least one output-domain
+        # sample was admitted and every admitted sample reached the sink.
+        if outcome is PlaybackOutcome.COMPLETED and (
+            played is None
+            or total is None
+            or total <= 0
+            or played != total
+        ):
+            outcome = PlaybackOutcome.FAILED
+        safe_text = ticket.sink_text.strip() if outcome is PlaybackOutcome.COMPLETED else ""
+        sample_rate = (
+            ticket.output_sample_rate
+            if played is not None and total is not None
+            else None
+        )
+        callback = None
+        with self._receipt_lock:
+            if ticket.terminal_sent:
+                return
+            ticket.terminal_sent = True
+            ticket.terminal_queued = True
+            self._receipt_pending.discard(ticket)
+            callback = ticket.on_terminal
+        try:
+            callback(
+                PlaybackReceipt(
+                    fragment_id=ticket.speech.fragment_id,
+                    outcome=outcome,
+                    safe_text_prefix=safe_text,
+                    played_samples=played,
+                    total_samples=total,
+                    output_sample_rate=sample_rate,
+                )
+            )
+        except Exception:  # noqa: BLE001 - one consumer cannot kill dispatcher
+            log.exception("tracked playback terminal callback raised")
+
+    def _queue_direct_receipt(
+        self,
+        ticket: Optional[_TrackedPlaybackCall],
+        outcome: PlaybackOutcome,
+        *,
+        played_samples: Optional[int] = None,
+        total_samples: Optional[int] = None,
+        force: bool = False,
+    ) -> None:
+        if ticket is None:
+            return
+        dispatch_inline = False
+        with self._receipt_lock:
+            if ticket.terminal_sent or (ticket.terminal_queued and not force):
+                return
+            ticket.terminal_queued = True
+            self._receipt_events.append(
+                PlaybackFIFOEvent(
+                    kind="terminal",
+                    tag=ticket,
+                    played_samples=played_samples,
+                    total_samples=total_samples,
+                    status=outcome,
+                )
+            )
+            thread = self._receipt_thread
+            dispatch_inline = (
+                not self._receipt_running.is_set()
+                or thread is None
+                or not thread.is_alive()
+            )
+        if dispatch_inline:
+            while True:
+                try:
+                    event = self._receipt_events.popleft()
+                except IndexError:
+                    return
+                self._dispatch_receipt_event(event)
+
+    def _terminalize_unbound_receipts(
+        self,
+        *,
+        claimed_outcome: PlaybackOutcome = PlaybackOutcome.INTERRUPTED,
+    ) -> None:
+        """Resolve claimed pre-FIFO work after a stop wins its bind race."""
+
+        with self._receipt_lock:
+            pending = [
+                ticket
+                for ticket in self._receipt_pending
+                if not ticket.fifo_bound
+                and not ticket.terminal_queued
+                and not ticket.terminal_sent
+            ]
+        for ticket in pending:
+            self._queue_direct_receipt(
+                ticket,
+                claimed_outcome if ticket.claimed else PlaybackOutcome.DROPPED,
+            )
+
+    def _drain_receipt_dispatcher(self, timeout: float = 0.5) -> bool:
+        if self._receipt_thread is threading.current_thread():
+            # Reentrant terminal callbacks are allowed to stop the engine. The
+            # dispatcher cannot wait for itself, so drain events synchronously
+            # before returning from that stop call.
+            while True:
+                try:
+                    event = self._receipt_events.popleft()
+                except IndexError:
+                    break
+                self._dispatch_receipt_event(event)
+            with self._receipt_lock:
+                return not self._receipt_pending and not self._receipt_events
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while time.monotonic() < deadline:
+            with self._receipt_lock:
+                if not self._receipt_pending and not self._receipt_events:
+                    return True
+            time.sleep(0.002)
+        with self._receipt_lock:
+            return not self._receipt_pending and not self._receipt_events
+
+    def _stop_receipt_dispatcher(self) -> None:
+        self._receipt_running.clear()
+        thread = self._receipt_thread
+        if thread is threading.current_thread():
+            return
+        if thread is not None:
+            thread.join(timeout=0.5)
+            if thread.is_alive():
+                log.warning("playback receipt dispatcher did not exit within 0.5s")
+        with self._receipt_lock:
+            if self._receipt_thread is thread:
+                self._receipt_thread = None
+
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
         import sounddevice as sd  # lazy
 
         self._cb = callbacks
+        self._playback_stopping.clear()
         self._build()
         self._running.set()
         in_dev = _norm_device(self.config.input_device)
@@ -1954,6 +2208,7 @@ class SherpaOnnxEngine(AudioEngine):
             raise
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
+        self._start_receipt_dispatcher()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._play_thread.start()
         # asr-tts-2: the second-pass worker (only when async + a recognizer were
@@ -1963,6 +2218,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_thread.start()
 
     def stop(self) -> None:
+        self._playback_stopping.set()
         self._running.clear()
         # Close capture immediately, before joining. This interrupts an active
         # PortAudio read or recovery backoff and prevents the recovering wrapper
@@ -1974,7 +2230,6 @@ class SherpaOnnxEngine(AudioEngine):
                 pass
             self._stream_in = None
         self._stop_speaking.set()
-        self._drain_play_q()
         # Tear the live output stream down BEFORE pushing the sentinel / joining
         # the play thread. On a dead/stalled device the play thread can be blocked
         # in FIFO.write() and would never reach _play_q.get() to see the sentinel,
@@ -1985,16 +2240,30 @@ class SherpaOnnxEngine(AudioEngine):
         # device handback -- PortAudio stop() JOINS the callback so none fires
         # post-close. On a healthy/idle stream this is cheap. Emits no
         # barge_in_stop metric (teardown, not an interruption).
-        with self._out_lock:
-            if self._fifo is not None:
-                self._fifo.flush()
-            if self._out_stream is not None:
-                try:
-                    self._out_stream.stop()
-                    self._out_stream.close()
-                except Exception:  # noqa: BLE001 - device may be mid-teardown
-                    pass
-        self._play_q.put((None, None, 0, None))  # sentinel: wake the worker so it exits
+        with self._receipt_lock:
+            self._drain_play_q()
+            with self._out_lock:
+                if self._fifo is not None:
+                    self._fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
+                if self._out_stream is not None:
+                    try:
+                        self._out_stream.stop()
+                        self._out_stream.close()
+                    except Exception:  # noqa: BLE001 - device may be mid-teardown
+                        pass
+            self._terminalize_unbound_receipts()
+        sentinel = (None, None, 0, None, None)
+        try:
+            self._play_q.put_nowait(sentinel)
+        except queue.Full:
+            # Admissions are gated above; a full queue can only contain work
+            # that raced the gate before it closed. Drop it with receipts, then
+            # reserve the wake slot without turning shutdown into a blocker.
+            self._drain_play_q()
+            try:
+                self._play_q.put_nowait(sentinel)
+            except queue.Full:
+                pass
         if self._final_q is not None:
             # Any finals still queued here are intentionally dropped on shutdown
             # (like _play_q) -- dispatching a final into a tearing-down runtime is
@@ -2017,6 +2286,23 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_thread.join(timeout=1.0)
             if self._final_thread.is_alive():
                 log.warning("second-pass thread did not exit within 1.0s; proceeding")
+        # A native TTS call may ignore cancellation beyond the bounded join.
+        # Resolve every remaining accepted ownership while the dispatcher is
+        # still alive. Any exact FIFO terminal event was appended earlier and
+        # therefore wins the deque order; duplicates are ignored by the ticket.
+        with self._receipt_lock:
+            pending_receipts = tuple(self._receipt_pending)
+        for ticket in pending_receipts:
+            self._queue_direct_receipt(
+                ticket,
+                PlaybackOutcome.INTERRUPTED
+                if ticket.claimed
+                else PlaybackOutcome.DROPPED,
+                force=True,
+            )
+        if not self._drain_receipt_dispatcher(timeout=0.5):
+            log.warning("playback receipts still pending after bounded shutdown drain")
+        self._stop_receipt_dispatcher()
         if self._recorder is not None:
             log.info("recorded %.1fs of session audio -> %s",
                      self._recorder.seconds, self._recorder.path)
@@ -2029,12 +2315,53 @@ class SherpaOnnxEngine(AudioEngine):
             self._ref_accum = None
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
+        self._submit_playback(text, on_done=on_done, ticket=None)
+
+    def speak_tracked(
+        self,
+        speech: TrackedSpeech,
+        *,
+        on_terminal: Callable[[PlaybackReceipt], None],
+        on_started: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        ticket = _TrackedPlaybackCall(
+            speech=speech,
+            on_terminal=on_terminal,
+            on_started=on_started,
+            sink_text=speech.text,
+        )
+        with self._receipt_lock:
+            self._receipt_pending.add(ticket)
+        if self._running.is_set():
+            self._start_receipt_dispatcher()
+        try:
+            self._submit_playback(speech.text, on_done=None, ticket=ticket)
+        except Exception:
+            self._queue_direct_receipt(ticket, PlaybackOutcome.FAILED)
+            raise
+
+    def _submit_playback(
+        self,
+        text: str,
+        *,
+        on_done: Optional[Callable[[], None]],
+        ticket: Optional[_TrackedPlaybackCall],
+    ) -> None:
         # Non-blocking: hand the utterance to the single playback worker. Keeping
         # one sink (instead of a thread per call) is what makes sentence-level
         # streaming play in order rather than on top of itself.
+        if self._playback_stopping.is_set():
+            if on_done:
+                on_done()
+            self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
+            return
         if self._tts is None:
             if on_done:
                 on_done()
+            self._queue_direct_receipt(ticket, PlaybackOutcome.FAILED)
+            return
+        if ticket is not None and not self._running.is_set():
+            self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
             return
         # Expressive markup (opt-in): strip a leading [emotion:.. voice:.. rate:..]
         # tag off the text and carry the parsed directives to _synthesize, which
@@ -2066,7 +2393,10 @@ class SherpaOnnxEngine(AudioEngine):
             if not text:
                 if on_done:
                     on_done()
+                self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
                 return
+        if ticket is not None:
+            ticket.sink_text = text
         # Echo filter feed for the duck-then-confirm barge gate: what is about to
         # be synthesized is what a confirm-window partial may transcribe back as
         # the assistant's own (ducked) echo. Cheap ring; inert unless
@@ -2075,7 +2405,13 @@ class SherpaOnnxEngine(AudioEngine):
         spoken_ring = getattr(self, "_recent_spoken", None)
         if spoken_ring is not None:
             spoken_ring.append(text)
-        self._enqueue_play(text, on_done, directives)
+        with self._receipt_lock:
+            if self._playback_stopping.is_set():
+                if on_done:
+                    on_done()
+                self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
+                return
+            self._enqueue_play(text, on_done, directives, ticket)
 
     def stop_speaking(self) -> None:
         # Cut the current utterance and discard whatever is queued behind it, so
@@ -2088,7 +2424,6 @@ class SherpaOnnxEngine(AudioEngine):
         # the worker's clear momentarily wipes _stop_speaking.
         with self._gen_lock:
             self._speak_gen += 1
-        self._drain_play_q()
         # Cut the live audio by FLUSHING the playback FIFO rather than aborting
         # the stream. flush() drops every queued sample in one short lock, so the
         # very next PortAudio callback emits a silent zero-fill -- equivalent to
@@ -2098,20 +2433,49 @@ class SherpaOnnxEngine(AudioEngine):
         # blocked in FIFO.write via its should_abort predicate. Residual latency
         # is now one-two low-latency callback periods, comparable to abort()'s.
         cut = False
-        with self._out_lock:
-            if (
-                self._out_stream is not None
-                and self._fifo is not None
-                and self._speaking.is_set()
-            ):
-                # Fade the tail to silence instead of a hard cut (de-click the
-                # barge-in). The FIFO is sized in play_sr samples.
-                fade = (
-                    int(self._play_sr * self.config.barge_fade_ms / 1000.0)
-                    if self._play_sr else 0
-                )
-                self._fifo.flush(fade)
-                cut = True
+        fade_fifo: Optional[PlaybackFIFO] = None
+        fade_tags: tuple[object, ...] = ()
+        with self._receipt_lock:
+            self._drain_play_q()
+            with self._out_lock:
+                if (
+                    self._out_stream is not None
+                    and self._fifo is not None
+                    and self._speaking.is_set()
+                ):
+                    # Fade only the already-started head owner. Later/unheard
+                    # fragments are hard-dropped and can never become audible
+                    # merely because the user cut the prior fragment.
+                    fade = (
+                        int(self._play_sr * self.config.barge_fade_ms / 1000.0)
+                        if self._play_sr else 0
+                    )
+                    fade_fifo = self._fifo
+                    fade_tags = fade_fifo.interrupt_tags(
+                        PlaybackOutcome.INTERRUPTED,
+                        fade,
+                    )
+                    cut = True
+            # A stop can win while a claimed request is still opening the device
+            # and has no FIFO tag yet. Resolve it before releasing the admission/
+            # bind lock so a fresh post-stop request is not swept up.
+            self._terminalize_unbound_receipts()
+        if fade_fifo is not None and fade_tags:
+            # A wedged native TTS call may never reach the playback worker's
+            # drain epilogue. Expire the exact retained fade lease independently
+            # so barge-in still terminalizes; expire_tags preserves any fresh
+            # fragment later appended behind this head owner.
+            fade_grace = max(
+                0.05,
+                self.config.barge_fade_ms / 1000.0 + 0.05,
+            )
+            timer = threading.Timer(
+                fade_grace,
+                fade_fifo.expire_tags,
+                args=(fade_tags,),
+            )
+            timer.daemon = True
+            timer.start()
         # Playback is being cut: drop the echo reference so the capture loop
         # doesn't keep gating barge-in against a level that is no longer audible.
         self._playback_level = 0.0
@@ -3673,30 +4037,37 @@ class SherpaOnnxEngine(AudioEngine):
         text: str,
         on_done: Optional[Callable[[], None]],
         directives: Optional[dict] = None,
+        ticket: Optional[_TrackedPlaybackCall] = None,
     ) -> None:
         # Stamp the sentence with the current generation (rc-3): if a barge bumps
         # the generation before this sentence is dequeued, the worker drops it.
         # ``directives`` (opt-in expressive markup) rides alongside to _synthesize.
-        gen = self._speak_gen
-        item = (text, on_done, gen, directives)
+        with self._gen_lock:
+            gen = self._speak_gen
+        item = (text, on_done, gen, directives, ticket)
         try:
             self._play_q.put_nowait(item)
         except queue.Full:
             # Drop the oldest queued sentence rather than block or lag playback.
+            dropped = None
             try:
-                self._play_q.get_nowait()
+                dropped = self._play_q.get_nowait()
             except queue.Empty:
                 pass
+            if dropped is not None:
+                self._queue_direct_receipt(dropped[4], PlaybackOutcome.DROPPED)
             try:
                 self._play_q.put_nowait(item)
             except queue.Full:
                 if on_done:
                     on_done()
+                self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
 
     def _drain_play_q(self) -> None:
         try:
             while True:
-                self._play_q.get_nowait()
+                item = self._play_q.get_nowait()
+                self._queue_direct_receipt(item[4], PlaybackOutcome.DROPPED)
         except queue.Empty:
             pass
 
@@ -3711,10 +4082,11 @@ class SherpaOnnxEngine(AudioEngine):
         ``_playback_loop`` (which needs a real device) so this load-bearing
         wipe-race guard is unit-testable.
         """
-        if item_gen != self._speak_gen:
-            return None
-        self._stop_speaking.clear()
-        return item_gen
+        with self._gen_lock:
+            if item_gen != self._speak_gen:
+                return None
+            self._stop_speaking.clear()
+            return item_gen
 
     def _audio_cb(self, outdata, frames, time_info, status) -> None:
         """PortAudio output callback -- runs on a HIGH-PRIORITY audio thread.
@@ -3836,7 +4208,9 @@ class SherpaOnnxEngine(AudioEngine):
         try:
             while self._running.is_set():
                 try:
-                    text, on_done, item_gen, directives = self._play_q.get(timeout=0.1)
+                    text, on_done, item_gen, directives, ticket = self._play_q.get(
+                        timeout=0.1
+                    )
                 except queue.Empty:
                     continue
                 if text is None:  # shutdown sentinel from stop()
@@ -3847,10 +4221,14 @@ class SherpaOnnxEngine(AudioEngine):
                 # _claim_utterance returns None WITHOUT clearing _stop_speaking
                 # (so the pending barge isn't wiped). A current sentence is
                 # claimed (clearing the flag for this fresh utterance).
-                my_gen = self._claim_utterance(item_gen)
+                with self._receipt_lock:
+                    my_gen = self._claim_utterance(item_gen)
+                    if my_gen is not None and ticket is not None:
+                        ticket.claimed = True
                 if my_gen is None:
                     if on_done:
                         on_done()
+                    self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
                     continue
                 # What is audibly playing RIGHT NOW -- the primary reference for
                 # the barge-confirm echo filter. The _recent_spoken ring holds
@@ -3894,6 +4272,10 @@ class SherpaOnnxEngine(AudioEngine):
                 self._cb.on_speech_start()
                 log.debug("speaking: %r (queue depth=%d)", text, self._play_q.qsize())
 
+                fifo_for_item: Optional[PlaybackFIFO] = None
+                play_sr_for_item = 0
+                tts_sr_for_item = 0
+
                 def write(samples) -> None:
                     # Producer side of the playback FIFO (runs on this worker
                     # thread, NOT the audio callback). All the echo-reference tees
@@ -3905,21 +4287,25 @@ class SherpaOnnxEngine(AudioEngine):
                     # (backpressure that paces synthesis to real-time playback).
                     if self._stop_speaking.is_set() or self._speak_gen != my_gen:
                         return  # barged / superseded chunk: never enqueue it
-                    if self._play_sr != self._tts_sr:
-                        samples = _resample_linear(samples, self._tts_sr, self._play_sr)
-                    fifo = self._fifo
-                    if fifo is not None:
+                    if play_sr_for_item != tts_sr_for_item:
+                        samples = _resample_linear(
+                            samples,
+                            tts_sr_for_item,
+                            play_sr_for_item,
+                        )
+                    if fifo_for_item is not None:
                         # should_abort releases a producer blocked on a full FIFO
                         # the instant a barge-in (_stop_speaking / a generation
                         # bump) or shutdown (not _running) is requested -- no
                         # deadlock on teardown.
-                        fifo.write(
+                        fifo_for_item.write(
                             samples,
                             should_abort=lambda: (
                                 self._stop_speaking.is_set()
                                 or self._speak_gen != my_gen
                                 or not self._running.is_set()
                             ),
+                            tag=ticket,
                         )
 
                 try:
@@ -3978,8 +4364,12 @@ class SherpaOnnxEngine(AudioEngine):
                         # outdata are both play_sr. The audio callback may already
                         # be firing (zero-filling) before this assignment -- that's
                         # fine: it checks `self._fifo is None` and emits silence.
-                        self._fifo = PlaybackFIFO(int(self._play_sr * self._playback_fifo_sec_cur))
+                        new_fifo = PlaybackFIFO(
+                            int(self._play_sr * self._playback_fifo_sec_cur),
+                            event_queue=self._receipt_events,
+                        )
                         with self._out_lock:
+                            self._fifo = new_fifo
                             self._out_stream = out
                     elif not out.active:
                         # Rare safety net: with the callback path a barge-in only
@@ -3987,9 +4377,53 @@ class SherpaOnnxEngine(AudioEngine):
                         # so the stream is normally already active here. Restart it
                         # only if something stopped it.
                         out.start()
-                    self._synthesize(text, write, my_gen, directives)
+                    fifo_for_item = self._fifo
+                    play_sr_for_item = int(self._play_sr)
+                    tts_sr_for_item = int(self._tts_sr)
+                    bind_rejection: Optional[PlaybackOutcome] = None
+                    if ticket is not None:
+                        with self._receipt_lock:
+                            if (
+                                ticket.terminal_queued
+                                or ticket.terminal_sent
+                                or self._playback_stopping.is_set()
+                                or self._stop_speaking.is_set()
+                                or self._speak_gen != my_gen
+                                or not self._running.is_set()
+                            ):
+                                bind_rejection = PlaybackOutcome.INTERRUPTED
+                            elif fifo_for_item is None:
+                                bind_rejection = PlaybackOutcome.FAILED
+                            elif not fifo_for_item.open_tag(ticket):
+                                bind_rejection = PlaybackOutcome.FAILED
+                            else:
+                                ticket.fifo_bound = True
+                                ticket.output_sample_rate = play_sr_for_item
+                        if bind_rejection is not None:
+                            self._queue_direct_receipt(ticket, bind_rejection)
+
+                    if bind_rejection is None:
+                        self._synthesize(text, write, my_gen, directives)
+                        if ticket is not None and fifo_for_item is not None:
+                            terminal_status = (
+                                PlaybackOutcome.COMPLETED
+                                if (
+                                    self._running.is_set()
+                                    and not self._stop_speaking.is_set()
+                                    and self._speak_gen == my_gen
+                                )
+                                else PlaybackOutcome.INTERRUPTED
+                            )
+                            fifo_for_item.close_tag(ticket, terminal_status)
                     # (true barge-in-stop is stamped in stop_speaking() at the
                     # abort() instant -- the moment audio actually goes silent.)
+                except Exception:
+                    if ticket is not None and fifo_for_item is not None:
+                        with self._receipt_lock:
+                            fifo_for_item.interrupt_tags(PlaybackOutcome.FAILED)
+                    else:
+                        self._queue_direct_receipt(ticket, PlaybackOutcome.FAILED)
+                    raise
                 finally:
                     if on_done:
                         on_done()
@@ -4004,7 +4438,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # unplugged device can never hang the worker (mirrors the
                         # 1.0s join guards in stop()). A barge-in flush makes
                         # count()==0 immediately, so this returns at once then.
-                        self._wait_for_playback_drain()
+                        playback_drained = self._wait_for_playback_drain()
                         self._speaking.clear()
                         # Acoustic-artifact diagnostic (off the real-time thread):
                         # if the FIFO underran during this reply the listener heard
@@ -4027,10 +4461,15 @@ class SherpaOnnxEngine(AudioEngine):
                         seed = float(self.config.playback_fifo_sec)
                         prev = self._playback_fifo_sec_cur
                         self._playback_fifo_sec_cur = self._next_fifo_sec(prev, _ur, seed)
-                        if (abs(self._playback_fifo_sec_cur - prev) > 1e-3
-                                and self._play_sr > 0):
+                        if (
+                            playback_drained
+                            and abs(self._playback_fifo_sec_cur - prev) > 1e-3
+                            and self._play_sr > 0
+                        ):
                             self._fifo = PlaybackFIFO(
-                                int(self._play_sr * self._playback_fifo_sec_cur))
+                                int(self._play_sr * self._playback_fifo_sec_cur),
+                                event_queue=self._receipt_events,
+                            )
                             log.info(
                                 "playback FIFO lead -> %.2fs (seed %.2fs, underran %d)",
                                 self._playback_fifo_sec_cur, seed, _ur,
@@ -4079,15 +4518,42 @@ class SherpaOnnxEngine(AudioEngine):
                         self._cb.on_speech_end()
         except Exception:
             log.exception("playback loop crashed -- the assistant has gone mute")
+            self._playback_stopping.set()
             self._running.clear()
+            with self._receipt_lock:
+                self._drain_play_q()
+                fifo = self._fifo
+                if fifo is not None:
+                    fifo.interrupt_tags(PlaybackOutcome.FAILED)
+                self._terminalize_unbound_receipts(
+                    claimed_outcome=PlaybackOutcome.FAILED
+                )
         finally:
+            # `_running` is shared with capture recovery/fatal state. The loop
+            # can therefore end without raising here while tracked audio is
+            # still queued. Terminalize that ownership before dropping the FIFO
+            # pointer; explicit engine stop is an interruption, while an
+            # independent capture/playback liveness loss is a sink failure.
+            exit_outcome = (
+                PlaybackOutcome.INTERRUPTED
+                if self._playback_stopping.is_set()
+                else PlaybackOutcome.FAILED
+            )
+            with self._receipt_lock:
+                self._drain_play_q()
+                fifo = self._fifo
+                if fifo is not None:
+                    fifo.interrupt_tags(exit_outcome)
+                self._terminalize_unbound_receipts(
+                    claimed_outcome=exit_outcome
+                )
             # Drop the shared handle before teardown so a concurrent
             # stop_speaking() can't flush a stream we're closing. Clear the FIFO
             # too so a never-restarted loop holds no playback buffer. stop()/
             # close() (NOT abort) joins the callback before close.
             with self._out_lock:
                 self._out_stream = None
-            self._fifo = None
+                self._fifo = None
             if out is not None:
                 try:
                     out.stop()
@@ -4099,30 +4565,42 @@ class SherpaOnnxEngine(AudioEngine):
         """Wait for queued playback to drain before reopening ASR.
 
         Returns True when no queued FIFO audio remains. If the output callback stalls
-        past the bounded deadline while the session is otherwise healthy, flush the
-        unplayed tail before ``_speaking`` clears; otherwise that tail can play after
-        ASR reopens and be transcribed as a user final.
+        past the adaptive deadline while the session is otherwise healthy, fail and
+        flush the unplayed tail before ``_speaking`` clears; otherwise that tail can
+        play after ASR reopens and be transcribed as a user final. A deliberate cut
+        gets only the much shorter de-click-fade grace and retains interruption status.
         """
         fifo = self._fifo
         if fifo is None:
             return True
+        deliberate_stop = self._stop_speaking.is_set()
         if timeout_sec is None:
-            timeout_sec = self.config.playback_fifo_sec + 0.5
+            timeout_sec = (
+                max(0.05, self.config.barge_fade_ms / 1000.0 + 0.05)
+                if deliberate_stop
+                else self._playback_fifo_sec_cur + 0.5
+            )
         deadline = time.monotonic() + max(0.0, float(timeout_sec))
         while (
             fifo is not None
             and fifo.count() > 0
             and self._running.is_set()
-            and not self._stop_speaking.is_set()
+            and (deliberate_stop or not self._stop_speaking.is_set())
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
             fifo = self._fifo
         if fifo is None or fifo.count() <= 0:
             return True
+        if deliberate_stop:
+            # The callback stalled before consuming the retained de-click fade.
+            # Hard-drop only what remains after the bounded grace so a cut can
+            # never leave an accepted receipt pending forever.
+            fifo.interrupt_tags(PlaybackOutcome.INTERRUPTED)
+            return False
         if self._running.is_set() and not self._stop_speaking.is_set():
             remaining = fifo.count()
-            fifo.flush()
+            fifo.interrupt_tags(PlaybackOutcome.FAILED)
             log.warning(
                 "playback FIFO did not drain before idle deadline; flushed %d queued "
                 "samples before reopening ASR",

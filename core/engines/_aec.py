@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import deque
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 import numpy as np
@@ -285,6 +286,35 @@ class AecDelayCalibrator:
         return best_lag * step, best_corr
 
 
+@dataclass(frozen=True)
+class PlaybackFIFOEvent:
+    """One ownership fact emitted by :class:`PlaybackFIFO`.
+
+    Events are appended while the FIFO copy lock is held, which linearizes a
+    sink read against a concurrent flush without invoking user code on the
+    hard-real-time audio callback.  ``tag`` and ``status`` are deliberately
+    opaque: the FIFO owns sample accounting, while the engine maps lifecycle
+    state onto its public receipt contract on a normal worker thread.
+    """
+
+    kind: str
+    tag: object
+    played_samples: Optional[int] = None
+    total_samples: Optional[int] = None
+    status: object = None
+
+
+@dataclass
+class _PlaybackTagState:
+    tag: object
+    queued: int = 0
+    played: int = 0
+    total: int = 0
+    started: bool = False
+    closed: bool = False
+    status: object = None
+
+
 class PlaybackFIFO:
     """Thread-safe bounded float32 sample FIFO between the synthesizer and the
     PortAudio output callback.
@@ -312,7 +342,7 @@ class PlaybackFIFO:
     flips True (barge-in / shutdown), with a finite wait timeout as a backstop
     against a missed notify so it can never deadlock."""
 
-    def __init__(self, capacity: int):
+    def __init__(self, capacity: int, *, event_queue=None):
         self._cap = max(1, int(capacity))
         self._buf = np.zeros(self._cap, dtype=np.float32)
         self._r = 0           # read head (mod cap)
@@ -320,8 +350,133 @@ class PlaybackFIFO:
         self._count = 0       # queued samples
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
+        # Sample ownership follows the same order as the ring.  Lists are used
+        # for spans so the callback can decrement the head count in place.
+        self._spans = deque()
+        self._tag_states: dict[object, _PlaybackTagState] = {}
+        self._event_queue = event_queue
 
-    def write(self, samples, should_abort) -> None:
+    def open_tag(self, tag: object) -> bool:
+        """Register an opaque producer before its first tagged write.
+
+        The tag must be identity-hashable and unique for the lifetime of this
+        FIFO.  A zero-sample producer is still registered so close/interrupt can
+        emit one terminal accounting event without inventing sink onset.
+        """
+
+        if tag is None:
+            raise ValueError("tracked playback tag cannot be None")
+        with self._cond:
+            if tag in self._tag_states:
+                return False
+            self._tag_states[tag] = _PlaybackTagState(tag=tag)
+            return True
+
+    def close_tag(self, tag: object, status: object) -> bool:
+        """Seal one producer and emit terminal accounting once it drains.
+
+        A later :meth:`interrupt_tags` may replace this tentative status while
+        samples remain queued.  Once the last sample is consumed, the terminal
+        event is appended and the state is removed atomically under the FIFO
+        lock, so completion-vs-stop has one unambiguous winner.
+        """
+
+        with self._cond:
+            state = self._tag_states.get(tag)
+            if state is None:
+                return False
+            if not state.closed:
+                state.closed = True
+                state.status = status
+            self._finish_tag_if_ready_locked(state)
+            self._cond.notify_all()
+            return True
+
+    def interrupt_tags(
+        self,
+        status: object,
+        fade_samples: int = 0,
+    ) -> tuple[object, ...]:
+        """Atomically close every live tag and discard its unplayed tail.
+
+        A de-click fade may keep only the head owner's queued prefix, and only
+        after that owner has already reached the sink.  It never starts a later
+        fragment merely to fade it, nor crosses an ownership boundary.  Kept
+        samples remain pending until a later callback drains them; all other
+        tags terminalize immediately with their exact played/total counts.
+        """
+
+        with self._cond:
+            for state in self._tag_states.values():
+                state.closed = True
+                state.status = status
+            self._flush_locked(int(fade_samples), restrict_fade_to_head_tag=True)
+            return tuple(
+                state.tag
+                for state in self._tag_states.values()
+                if state.closed and state.queued > 0
+            )
+
+    def expire_tags(self, tags) -> int:
+        """Drop a retained interrupted head without touching newer owners.
+
+        ``interrupt_tags(..., fade_samples>0)`` returns the ownership tags whose
+        de-click prefix remains queued. A watchdog may pass that exact lease
+        here if the callback stalls. New fragments appended behind the fade are
+        preserved; a callback drain racing expiry is linearized by this lock.
+        Returns the number of still-queued leased samples that were dropped.
+        """
+
+        targets = set(tags)
+        if not targets:
+            return 0
+        with self._cond:
+            dropped = 0
+            touched: dict[object, _PlaybackTagState] = {}
+            while self._spans and self._spans[0][0] in targets:
+                tag, span_count = self._spans.popleft()
+                dropped += span_count
+                state = self._tag_states.get(tag)
+                if state is not None:
+                    state.queued -= span_count
+                    touched[tag] = state
+            if dropped:
+                self._r = (self._r + dropped) % self._cap
+                self._count -= dropped
+            for state in tuple(touched.values()):
+                self._finish_tag_if_ready_locked(state)
+            self._cond.notify_all()
+            return dropped
+
+    def _append_span_locked(self, tag: object, count: int) -> None:
+        if count <= 0:
+            return
+        if self._spans and self._spans[-1][0] is tag:
+            self._spans[-1][1] += count
+        else:
+            self._spans.append([tag, count])
+
+    def _emit_event_locked(self, event: PlaybackFIFOEvent) -> None:
+        if self._event_queue is not None:
+            self._event_queue.append(event)
+
+    def _finish_tag_if_ready_locked(self, state: _PlaybackTagState) -> None:
+        if not state.closed or state.queued > 0:
+            return
+        # Remove before publishing so a reentrant/off-thread stop cannot find
+        # and terminalize the same ownership a second time.
+        self._tag_states.pop(state.tag, None)
+        self._emit_event_locked(
+            PlaybackFIFOEvent(
+                kind="terminal",
+                tag=state.tag,
+                played_samples=state.played,
+                total_samples=state.total,
+                status=state.status,
+            )
+        )
+
+    def write(self, samples, should_abort, *, tag: object = None) -> int:
         """Producer (playback thread). Append ``samples``, BLOCKING with
         backpressure while the ring is full so synthesis is paced to real
         playback. NEVER called from the audio callback.
@@ -337,8 +492,14 @@ class PlaybackFIFO:
         :meth:`flush`, which the barge-in / shutdown paths always call alongside
         setting the abort predicate (see ``SherpaOnnxEngine.stop_speaking`` /
         ``stop``). CONTRACT: a caller that wants the queue emptied on abort MUST
-        pair ``should_abort`` with a :meth:`flush`; ``should_abort`` alone only
-        halts further synthesis, it does not retroactively clear the ring."""
+        pair ``should_abort`` with :meth:`flush` or :meth:`interrupt_tags`;
+        ``should_abort`` alone only halts further synthesis, it does not
+        retroactively clear the ring.
+
+        Returns the exact number of samples admitted. For a tagged producer this
+        is the receipt ``total_samples`` domain; an abort may make it smaller
+        than the supplied array without rolling back samples already admitted.
+        """
         x = np.asarray(samples, dtype=np.float32).reshape(-1)
         i = 0
         n = x.shape[0]
@@ -349,10 +510,19 @@ class PlaybackFIFO:
                 # producer that the consumer can no longer drain. flush() (paired
                 # with the abort by the caller) clears whatever earlier passes
                 # already queued; here we only stop adding more.
-                while self._count >= self._cap and not should_abort():
+                state = self._tag_states.get(tag) if tag is not None else None
+                while (
+                    self._count >= self._cap
+                    and not should_abort()
+                    and (tag is None or (state is not None and not state.closed))
+                ):
                     self._cond.wait(timeout=0.1)
-                if should_abort():
-                    return
+                    state = self._tag_states.get(tag) if tag is not None else None
+                if (
+                    should_abort()
+                    or (tag is not None and (state is None or state.closed))
+                ):
+                    return i
                 free = self._cap - self._count
                 take = min(free, n - i)
                 start = self._w
@@ -365,10 +535,15 @@ class PlaybackFIFO:
                     self._buf[: end - self._cap] = x[i + k : i + take]
                 self._w = end % self._cap
                 self._count += take
+                self._append_span_locked(tag, take)
+                if state is not None:
+                    state.queued += take
+                    state.total += take
                 i += take
                 # Wake the consumer if it was (in principle) waiting; harmless
                 # otherwise. The consumer never blocks, so this is purely to keep
                 # the symmetry tidy -- the real wake direction is consumer->producer.
+        return i
 
     def read_into(self, out_view) -> int:
         """Consumer (audio callback ONLY). Fill ``out_view`` (the PortAudio mono
@@ -393,6 +568,26 @@ class PlaybackFIFO:
                     out_view[k:m] = self._buf[: end - self._cap]
                 self._r = end % self._cap
                 self._count -= m
+                remaining = m
+                while remaining > 0 and self._spans:
+                    span = self._spans[0]
+                    take = min(remaining, span[1])
+                    tag = span[0]
+                    state = self._tag_states.get(tag) if tag is not None else None
+                    if state is not None:
+                        if not state.started:
+                            state.started = True
+                            self._emit_event_locked(
+                                PlaybackFIFOEvent(kind="started", tag=tag)
+                            )
+                        state.queued -= take
+                        state.played += take
+                    span[1] -= take
+                    remaining -= take
+                    if span[1] <= 0:
+                        self._spans.popleft()
+                    if state is not None:
+                        self._finish_tag_if_ready_locked(state)
             if m < n:
                 out_view[m:] = 0.0          # underrun -> silent zero-fill, never a stall
             self._cond.notify_all()         # a drain freed space: wake a blocked producer
@@ -410,19 +605,64 @@ class PlaybackFIFO:
         false self-interrupt). A ~3-5 ms faded tail makes the cut a smooth glide
         to silence instead. ``0`` = the legacy hard cut (byte-identical)."""
         with self._cond:
-            keep = min(int(fade_samples), self._count) if fade_samples > 0 else 0
-            if keep > 0:
-                idx = (self._r + np.arange(keep)) % self._cap
-                # full -> 0 raised-cosine ramp; the last kept sample lands at 0.
-                ramp = (0.5 * (1.0 + np.cos(np.pi * (np.arange(keep) + 1) / keep))
-                        ).astype(np.float32)
-                self._buf[idx] = self._buf[idx] * ramp
-                self._count = keep
-                self._w = (self._r + keep) % self._cap
-            else:
-                self._r = self._w
-                self._count = 0
-            self._cond.notify_all()
+            self._flush_locked(int(fade_samples), restrict_fade_to_head_tag=False)
+
+    def _flush_locked(
+        self,
+        fade_samples: int,
+        *,
+        restrict_fade_to_head_tag: bool,
+    ) -> None:
+        keep = min(fade_samples, self._count) if fade_samples > 0 else 0
+        if keep > 0 and restrict_fade_to_head_tag and self._spans:
+            head_tag = self._spans[0][0]
+            head_count = 0
+            for span_tag, span_count in self._spans:
+                if span_tag is not head_tag:
+                    break
+                head_count += span_count
+            if head_tag is not None:
+                state = self._tag_states.get(head_tag)
+                if state is None or not state.started:
+                    head_count = 0
+            keep = min(keep, head_count)
+
+        if keep > 0:
+            idx = (self._r + np.arange(keep)) % self._cap
+            # full -> 0 raised-cosine ramp; the last kept sample lands at 0.
+            ramp = (
+                0.5
+                * (1.0 + np.cos(np.pi * (np.arange(keep) + 1) / keep))
+            ).astype(np.float32)
+            self._buf[idx] = self._buf[idx] * ramp
+
+        remaining = keep
+        kept_spans = deque()
+        touched: dict[object, _PlaybackTagState] = {}
+        while self._spans:
+            tag, span_count = self._spans.popleft()
+            kept = min(span_count, remaining)
+            dropped = span_count - kept
+            if kept > 0:
+                if kept_spans and kept_spans[-1][0] is tag:
+                    kept_spans[-1][1] += kept
+                else:
+                    kept_spans.append([tag, kept])
+                remaining -= kept
+            if tag is not None and dropped > 0:
+                state = self._tag_states.get(tag)
+                if state is not None:
+                    state.queued -= dropped
+                    touched[tag] = state
+        self._spans = kept_spans
+        self._count = keep
+        self._w = (self._r + keep) % self._cap
+        for state in tuple(touched.values()):
+            self._finish_tag_if_ready_locked(state)
+        # Zero-sample open tags have no spans, but interrupt_tags closed them too.
+        for state in tuple(self._tag_states.values()):
+            self._finish_tag_if_ready_locked(state)
+        self._cond.notify_all()
 
     def count(self) -> int:
         """Queued-sample count (used by the idle drain-wait to know when the last

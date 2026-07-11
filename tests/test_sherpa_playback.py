@@ -8,7 +8,10 @@ testable pieces (`_synthesize`, queue/flush) are factored out of the thread.
 from __future__ import annotations
 
 import logging
+import sys
+import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -16,6 +19,7 @@ import pytest
 from core.audio_frontend import apply_gain_soft_limit
 from core.engines._aec import FarEndRing, PlaybackFIFO
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engine import PlaybackOutcome, PlaybackReceipt, TrackedSpeech
 from core.metrics import TTS_FIRST_AUDIO
 
 
@@ -60,6 +64,612 @@ def _engine(tts) -> SherpaOnnxEngine:
     eng = SherpaOnnxEngine(SherpaConfig(tts_dc_block=False))
     eng._tts = tts
     return eng
+
+
+def _wait_until(predicate, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.002)
+    return predicate()
+
+
+class _ManualOutputStream:
+    """Device-free PortAudio sink whose callback advances only on ``pull``."""
+
+    def __init__(
+        self,
+        *args,
+        samplerate=16000,
+        channels=1,
+        callback=None,
+        **kwargs,
+    ):
+        del args, kwargs
+        self.samplerate = int(samplerate)
+        self.channels = int(channels)
+        self.callback = callback
+        self.active = False
+        self.closed = False
+        self.pull_thread_ids: list[int] = []
+
+    def start(self):
+        self.active = True
+
+    def pull(self, frames):
+        out = np.zeros((int(frames), self.channels), dtype="float32")
+        self.pull_thread_ids.append(threading.get_ident())
+        if self.callback is not None:
+            self.callback(out, int(frames), None, None)
+        return out
+
+    def stop(self):
+        self.active = False
+
+    def close(self):
+        self.active = False
+        self.closed = True
+
+
+def _start_playback_harness(
+    monkeypatch,
+    engine,
+    *,
+    default_sr=16000,
+    supported_rates=None,
+):
+    holder = {"streams": []}
+
+    def output_stream(*args, **kwargs):
+        stream = _ManualOutputStream(*args, **kwargs)
+        holder["stream"] = stream
+        holder["streams"].append(stream)
+        return stream
+
+    def check_output_settings(*, samplerate, **_kwargs):
+        if supported_rates is not None and int(samplerate) not in supported_rates:
+            raise RuntimeError("scripted unsupported output rate")
+
+    fake_sd = SimpleNamespace(
+        OutputStream=output_stream,
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "manual-output",
+            "default_samplerate": default_sr,
+        },
+        check_output_settings=check_output_settings,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    engine._playback_stopping.clear()
+    engine._running.set()
+    engine._start_receipt_dispatcher()
+    engine._play_thread = threading.Thread(
+        target=engine._playback_loop,
+        name="test-sherpa-playback",
+        daemon=True,
+    )
+    engine._play_thread.start()
+    return holder
+
+
+class _ReceiptProbe:
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.started: list[tuple[str, int]] = []
+        self.receipts: list[tuple[PlaybackReceipt, int]] = []
+
+    def on_started(self, fragment_id):
+        with self.lock:
+            self.started.append((fragment_id, threading.get_ident()))
+
+    def on_terminal(self, receipt):
+        with self.lock:
+            self.receipts.append((receipt, threading.get_ident()))
+
+    def snapshot(self):
+        with self.lock:
+            return list(self.started), list(self.receipts)
+
+
+class _FixedTts:
+    sample_rate = 16000
+
+    def __init__(self, count):
+        self.samples = np.linspace(0.05, 0.25, int(count), dtype="float32")
+
+    def generate(self, text, sid=0, speed=1.0):
+        del text, sid, speed
+        return _GenAudio(self.samples.copy(), sample_rate=self.sample_rate)
+
+
+class _WedgedStreamingTts:
+    sample_rate = 16000
+
+    def __init__(self, count=200):
+        self.samples = np.ones(int(count), dtype="float32") * 0.1
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def generate(self, text, sid=0, speed=1.0, callback=None):
+        del text, sid, speed
+        assert callback is not None
+        callback(self.samples.copy(), 1.0)
+        self.entered.set()
+        self.release.wait(timeout=3.0)  # deliberately ignores cancellation
+        return _GenAudio(self.samples.copy(), sample_rate=self.sample_rate)
+
+
+def test_sherpa_tracked_receipt_waits_for_exact_sink_drain(monkeypatch):
+    engine = _engine(_StreamingTts())
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine, default_sr=22050)
+    engine.speak_tracked(
+        TrackedSpeech("fragment-1", "hello there"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 3)
+        assert probe.snapshot() == ([], [])
+
+        holder["stream"].pull(2)
+        assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
+        assert probe.snapshot()[1] == []
+
+        holder["stream"].pull(4)
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        receipt, terminal_thread = terminal[0]
+        assert started[0][0] == "fragment-1"
+        assert receipt == PlaybackReceipt(
+            fragment_id="fragment-1",
+            outcome=PlaybackOutcome.COMPLETED,
+            safe_text_prefix="hello there",
+            played_samples=3,
+            total_samples=3,
+            output_sample_rate=22050,
+        )
+        assert started[0][1] == terminal_thread
+        assert terminal_thread not in holder["stream"].pull_thread_ids
+    finally:
+        engine.stop()
+
+
+def test_sherpa_tracked_barge_receipt_waits_for_owned_fade(monkeypatch):
+    engine = _engine(_FixedTts(200))
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine)
+    engine.speak_tracked(
+        TrackedSpeech("fragment-cut", "a longer fragment"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+        holder["stream"].pull(50)
+        assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
+
+        engine.stop_speaking()
+        assert engine._fifo.count() == 64  # 4 ms at the exact 16 kHz sink rate
+        assert probe.snapshot()[1] == []
+
+        holder["stream"].pull(64)
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        [entry] = probe.snapshot()[1]
+        receipt, _thread_id = entry
+        assert receipt.outcome is PlaybackOutcome.INTERRUPTED
+        assert receipt.safe_text_prefix == ""
+        assert receipt.played_samples == 114
+        assert receipt.total_samples == 200
+        assert receipt.output_sample_rate == 16000
+    finally:
+        engine.stop()
+
+
+def test_sherpa_advertises_receipts_without_bypassing_speak_only_subclasses():
+    capabilities = SherpaOnnxEngine(SherpaConfig()).playback_capabilities
+    assert capabilities.tracked_terminal
+    assert capabilities.exact_started
+    assert capabilities.sample_counts
+
+    class _SpeakOnlySherpa(SherpaOnnxEngine):
+        def speak(self, text, on_done=None):
+            super().speak(text, on_done)
+
+    assert not _SpeakOnlySherpa(SherpaConfig()).playback_capabilities.tracked_terminal
+
+
+def test_sherpa_missing_tts_fails_tracked_request_without_start():
+    engine = SherpaOnnxEngine(SherpaConfig())
+    probe = _ReceiptProbe()
+
+    engine.speak_tracked(
+        TrackedSpeech("missing-tts", "cannot synthesize"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+
+    started, terminal = probe.snapshot()
+    assert started == []
+    assert len(terminal) == 1
+    assert terminal[0][0].outcome is PlaybackOutcome.FAILED
+    assert terminal[0][0].played_samples is None
+    assert terminal[0][0].safe_text_prefix == ""
+
+
+def test_sherpa_tracked_request_before_start_is_dropped_immediately():
+    engine = _engine(_StreamingTts())
+    probe = _ReceiptProbe()
+
+    engine.speak_tracked(
+        TrackedSpeech("pre-start", "too early"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+
+    started, terminal = probe.snapshot()
+    assert started == []
+    assert len(terminal) == 1
+    assert terminal[0][0].outcome is PlaybackOutcome.DROPPED
+    assert engine._play_q.empty()
+
+
+def test_sherpa_queue_eviction_and_stop_drop_every_unclaimed_request():
+    engine = _engine(_StreamingTts())
+    engine._play_q.maxsize = 1
+    engine._running.set()
+    engine._start_receipt_dispatcher()
+    probe = _ReceiptProbe()
+    for fragment_id in ("oldest", "newest"):
+        engine.speak_tracked(
+            TrackedSpeech(fragment_id, fragment_id),
+            on_started=probe.on_started,
+            on_terminal=probe.on_terminal,
+        )
+
+    assert _wait_until(
+        lambda: [entry[0].fragment_id for entry in probe.snapshot()[1]]
+        == ["oldest"]
+    )
+    engine.stop()
+
+    started, terminal = probe.snapshot()
+    assert started == []
+    assert [entry[0].fragment_id for entry in terminal] == ["oldest", "newest"]
+    assert all(entry[0].outcome is PlaybackOutcome.DROPPED for entry in terminal)
+
+
+def test_sherpa_claimed_pre_fifo_stop_is_interrupted_not_orphaned():
+    engine = _engine(_StreamingTts())
+    engine._running.set()
+    engine._start_receipt_dispatcher()
+    probe = _ReceiptProbe()
+    engine.speak_tracked(
+        TrackedSpeech("claimed", "claimed before device open"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    item = engine._play_q.get_nowait()
+    ticket = item[4]
+    with engine._receipt_lock:
+        assert engine._claim_utterance(item[2]) == item[2]
+        ticket.claimed = True
+
+    try:
+        engine.stop_speaking()
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        assert started == []
+        assert terminal[0][0].outcome is PlaybackOutcome.INTERRUPTED
+    finally:
+        engine.stop()
+
+
+def test_sherpa_shutdown_dispatches_partial_receipt_before_return(monkeypatch):
+    engine = _engine(_FixedTts(200))
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine)
+    engine.speak_tracked(
+        TrackedSpeech("shutdown-partial", "partial at shutdown"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+    holder["stream"].pull(20)
+    assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
+
+    engine.stop()
+
+    started, terminal = probe.snapshot()
+    assert len(started) == 1
+    assert len(terminal) == 1
+    receipt = terminal[0][0]
+    assert receipt.outcome is PlaybackOutcome.INTERRUPTED
+    assert receipt.played_samples == 20
+    assert receipt.total_samples == 200
+    assert receipt.safe_text_prefix == ""
+
+
+def test_sherpa_output_open_failure_terminalizes_current_request(monkeypatch):
+    def fail_output(*_args, **_kwargs):
+        raise RuntimeError("scripted output-open failure")
+
+    fake_sd = SimpleNamespace(
+        OutputStream=fail_output,
+        query_devices=lambda *_args, **_kwargs: {"default_samplerate": 16000},
+        check_output_settings=lambda **_kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", fake_sd)
+    engine = _engine(_FixedTts(20))
+    probe = _ReceiptProbe()
+    engine._running.set()
+    engine._start_receipt_dispatcher()
+    engine._play_thread = threading.Thread(target=engine._playback_loop, daemon=True)
+    engine._play_thread.start()
+    engine.speak_tracked(
+        TrackedSpeech("open-failure", "will fail"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        assert started == []
+        assert terminal[0][0].outcome is PlaybackOutcome.FAILED
+        assert terminal[0][0].safe_text_prefix == ""
+    finally:
+        engine.stop()
+
+
+def test_sherpa_receipt_callback_failure_does_not_kill_later_callbacks(monkeypatch):
+    engine = _engine(_StreamingTts())
+    holder = _start_playback_harness(monkeypatch, engine, default_sr=22050)
+    events = []
+    lock = threading.Lock()
+
+    def started(fragment_id):
+        with lock:
+            events.append(("started", fragment_id))
+
+    def first_terminal(receipt):
+        with lock:
+            events.append(("terminal", receipt.fragment_id))
+        raise RuntimeError("intentional callback failure")
+
+    def second_terminal(receipt):
+        with lock:
+            events.append(("terminal", receipt.fragment_id))
+
+    engine.speak_tracked(
+        TrackedSpeech("first", "first"),
+        on_started=started,
+        on_terminal=first_terminal,
+    )
+    engine.speak_tracked(
+        TrackedSpeech("second", "second"),
+        on_started=started,
+        on_terminal=second_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 6)
+        holder["stream"].pull(6)
+        assert _wait_until(
+            lambda: events.count(("terminal", "second")) == 1
+        )
+        assert events == [
+            ("started", "first"),
+            ("terminal", "first"),
+            ("started", "second"),
+            ("terminal", "second"),
+        ]
+    finally:
+        engine.stop()
+
+
+def test_sherpa_tracked_completion_attests_sanitized_markup(monkeypatch):
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            tts_markup=True,
+            tts_speaker_voices={"warm": 0},
+            tts_dc_block=False,
+        )
+    )
+    engine._tts = _StreamingTts()
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine, default_sr=22050)
+    engine.speak_tracked(
+        TrackedSpeech("markup", "[voice:warm] Hello there."),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 3)
+        holder["stream"].pull(3)
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        receipt = probe.snapshot()[1][0][0]
+        assert receipt.outcome is PlaybackOutcome.COMPLETED
+        assert receipt.safe_text_prefix == "Hello there."
+    finally:
+        engine.stop()
+
+
+def test_sherpa_tracked_counts_use_resampled_output_domain(monkeypatch):
+    engine = _engine(_FixedTts(10))
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(
+        monkeypatch,
+        engine,
+        default_sr=48000,
+        supported_rates={48000},
+    )
+    engine.speak_tracked(
+        TrackedSpeech("resampled", "resampled output"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 30)
+        holder["stream"].pull(30)
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        receipt = probe.snapshot()[1][0][0]
+        assert receipt.outcome is PlaybackOutcome.COMPLETED
+        assert receipt.played_samples == receipt.total_samples == 30
+        assert receipt.output_sample_rate == 48000
+    finally:
+        engine.stop()
+
+
+def test_sherpa_tracked_receipts_survive_idle_fifo_reopen(monkeypatch):
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            release_output_when_idle=True,
+            tts_dc_block=False,
+        )
+    )
+    engine._tts = _StreamingTts()
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine, default_sr=22050)
+    try:
+        for index in (1, 2):
+            fragment_id = f"reopen-{index}"
+            engine.speak_tracked(
+                TrackedSpeech(fragment_id, fragment_id),
+                on_started=probe.on_started,
+                on_terminal=probe.on_terminal,
+            )
+            assert _wait_until(
+                lambda: len(holder["streams"]) == index
+                and engine._fifo is not None
+                and engine._fifo.count() == 3
+            )
+            holder["streams"][index - 1].pull(3)
+            assert _wait_until(lambda: len(probe.snapshot()[1]) == index)
+            assert _wait_until(lambda: engine._fifo is None)
+
+        assert [entry[0].fragment_id for entry in probe.snapshot()[1]] == [
+            "reopen-1",
+            "reopen-2",
+        ]
+        assert all(
+            entry[0].outcome is PlaybackOutcome.COMPLETED
+            for entry in probe.snapshot()[1]
+        )
+    finally:
+        engine.stop()
+
+
+def test_sherpa_wedged_synth_cannot_orphan_stalled_barge_fade(monkeypatch):
+    tts = _WedgedStreamingTts(200)
+    engine = _engine(tts)
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine)
+    engine.speak_tracked(
+        TrackedSpeech("wedged-cut", "wedged after first chunk"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert tts.entered.wait(timeout=1.0)
+        assert _wait_until(lambda: engine._fifo.count() == 200)
+        holder["stream"].pull(50)
+        assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
+
+        engine.stop_speaking()
+
+        # Do not pull the retained fade: its independent lease timer must expire
+        # even though the playback worker remains wedged inside native TTS.
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1, timeout=0.5)
+        assert engine._play_thread.is_alive()
+        receipt = probe.snapshot()[1][0][0]
+        assert receipt.outcome is PlaybackOutcome.INTERRUPTED
+        assert receipt.played_samples == 50
+        assert receipt.total_samples == 200
+    finally:
+        tts.release.set()
+        engine.stop()
+
+
+def test_sherpa_capture_liveness_loss_fails_fifo_bound_receipt(monkeypatch):
+    engine = _engine(_FixedTts(200))
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine)
+    engine.speak_tracked(
+        TrackedSpeech("capture-fatal", "capture failed during playback"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+
+        # Capture fatal paths share this liveness flag with playback. The worker
+        # must fail—not abandon—the bound FIFO ownership on its normal loop exit.
+        engine._running.clear()
+        engine._play_thread.join(timeout=1.0)
+
+        assert not engine._play_thread.is_alive()
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        assert started == []
+        receipt = terminal[0][0]
+        assert receipt.outcome is PlaybackOutcome.FAILED
+        assert receipt.played_samples == 0
+        assert receipt.total_samples == 200
+    finally:
+        engine.stop()
+
+
+def test_sherpa_drain_timeout_fails_exact_fifo_accounting(monkeypatch):
+    engine = _engine(_FixedTts(200))
+    probe = _ReceiptProbe()
+    holder = _start_playback_harness(monkeypatch, engine)
+    engine.speak_tracked(
+        TrackedSpeech("drain-timeout", "stalled output callback"),
+        on_started=probe.on_started,
+        on_terminal=probe.on_terminal,
+    )
+    try:
+        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+        assert engine._wait_for_playback_drain(timeout_sec=0.0) is False
+        assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
+        started, terminal = probe.snapshot()
+        assert started == []
+        receipt = terminal[0][0]
+        assert receipt.outcome is PlaybackOutcome.FAILED
+        assert receipt.played_samples == 0
+        assert receipt.total_samples == 200
+        assert receipt.safe_text_prefix == ""
+    finally:
+        engine.stop()
+
+
+def test_sherpa_terminal_callback_can_reenter_stop_and_drain_later_receipts(
+    monkeypatch,
+):
+    engine = _engine(_StreamingTts())
+    holder = _start_playback_harness(monkeypatch, engine, default_sr=22050)
+    second_terminal = threading.Event()
+    stop_returned = threading.Event()
+    second_was_done_at_return = []
+
+    def first_done(_receipt):
+        engine.stop()
+        second_was_done_at_return.append(second_terminal.is_set())
+        stop_returned.set()
+
+    engine.speak_tracked(
+        TrackedSpeech("reentrant-first", "first"),
+        on_terminal=first_done,
+    )
+    engine.speak_tracked(
+        TrackedSpeech("reentrant-second", "second"),
+        on_terminal=lambda _receipt: second_terminal.set(),
+    )
+
+    assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 6)
+    holder["stream"].pull(6)
+    assert stop_returned.wait(timeout=2.0)
+    assert second_terminal.is_set()
+    assert second_was_done_at_return == [True]
 
 
 def test_synthesize_streams_chunks_as_produced():
@@ -340,6 +950,9 @@ class _FakeFIFO:
         self.flushed += 1
         self.last_fade = fade_samples
 
+    def interrupt_tags(self, _status, fade_samples=0):
+        self.flush(fade_samples)
+
     def count(self):
         return 0
 
@@ -352,6 +965,9 @@ class _StuckFIFO:
     def flush(self, fade_samples=0):
         self.flushed += 1
         self._count = 0
+
+    def interrupt_tags(self, _status, fade_samples=0):
+        self.flush(fade_samples)
 
     def count(self):
         return self._count
@@ -378,10 +994,11 @@ def test_playback_drain_timeout_flushes_before_reopening_asr(caplog):
     assert metrics == ["playback_drain_timeout"]
 
 
-def test_playback_drain_timeout_does_not_flush_during_stop():
-    # stop_speaking()/stop() own teardown flushing. The idle-drain guard should
-    # only diagnose an otherwise-healthy playback callback that missed its drain
-    # deadline, not double-report a deliberate stop.
+def test_playback_drain_timeout_expires_stalled_barge_fade_without_metric():
+    # A deliberate stop normally leaves a short de-click fade for the callback.
+    # If that callback is stalled, the worker must expire the fade after its
+    # bounded grace so a receipt cannot remain pending forever. This is still a
+    # user interruption, not a healthy-session drain-timeout diagnostic.
     eng = _engine(_StreamingTts())
     metrics: list = []
     eng._cb.on_metric = metrics.append
@@ -392,7 +1009,7 @@ def test_playback_drain_timeout_does_not_flush_during_stop():
     drained = eng._wait_for_playback_drain(timeout_sec=0.0)
 
     assert drained is False
-    assert eng._fifo.flushed == 0
+    assert eng._fifo.flushed == 1
     assert metrics == []
 
 

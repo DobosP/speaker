@@ -4,7 +4,9 @@ All pure / injected fakes -- no network, no audio, no Ollama, no models.
 """
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -31,7 +33,14 @@ from tools.doctor import (
 class _FakeSD16k:
     def query_devices(self, kind):
         return {"name": "d", "default_samplerate": 16000.0}
-from tools.setup_models import dest_for, extract_member, wire_sherpa_paths
+from tools.setup_models import (
+    FILE_KEYS,
+    dest_for,
+    extract_member,
+    publish_config_atomic,
+    required_selected_artifact_errors,
+    wire_sherpa_paths,
+)
 
 
 def test_asr_and_tts_tokens_download_to_separate_dirs():
@@ -77,6 +86,219 @@ def test_wire_sherpa_paths_creates_sherpa_section_when_absent():
     cfg: dict = {}
     wire_sherpa_paths(cfg, {"asr_tokens": "t.txt"}, abspath=lambda p: p)
     assert cfg["sherpa"]["asr_tokens"] == "t.txt"
+
+
+def test_required_selected_artifacts_cover_shipped_profile(tmp_path):
+    resolved = {}
+    for key in (
+        *FILE_KEYS,
+        "speaker_embedding_model",
+        "denoise_model",
+        "asr_final_model",
+        "asr_final_tokens",
+        "tts_voices",
+        "tts_lexicon",
+    ):
+        path = tmp_path / key
+        path.write_bytes(b"model")
+        resolved[key] = str(path)
+    data_dir = tmp_path / "tts_data_dir"
+    data_dir.mkdir()
+    resolved["tts_data_dir"] = str(data_dir)
+
+    assert required_selected_artifact_errors(
+        resolved,
+        speaker_model=True,
+        denoise_model=True,
+        sense_voice=True,
+        kokoro=True,
+    ) == []
+
+    os.unlink(resolved["denoise_model"])
+    errors = required_selected_artifact_errors(
+        resolved,
+        speaker_model=True,
+        denoise_model=True,
+        sense_voice=True,
+        kokoro=True,
+    )
+    assert errors == ["selected GTCRN denoise model is missing on disk"]
+
+    Path(resolved["denoise_model"]).write_bytes(b"model")
+    os.unlink(resolved["speaker_embedding_model"])
+    errors = required_selected_artifact_errors(
+        resolved,
+        speaker_model=True,
+        denoise_model=True,
+        sense_voice=True,
+        kokoro=True,
+    )
+    assert errors == ["default speaker-ID model is missing on disk"]
+
+
+def test_atomic_config_publish_preserves_old_bytes_on_replace_failure(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "config.local.json"
+    original = b'{"existing": true}\n'
+    target.write_bytes(original)
+
+    def fail_replace(_source, _target):
+        raise OSError("forced replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    with pytest.raises(OSError, match="forced replace failure"):
+        publish_config_atomic({"new": True}, str(target))
+
+    assert target.read_bytes() == original
+    assert list(tmp_path.glob(".config.local.json.*.tmp")) == []
+
+
+def _fake_selected_model_downloads(monkeypatch, *, fail_denoise: bool):
+    import huggingface_hub
+    import tools.bench.models as bench_models
+    import tools.setup_models as setup_models
+
+    manifest = {
+        key: {"repo": "example/models", "file": f"{key}.onnx"}
+        for key in FILE_KEYS
+    }
+    manifest["asr_encoder"]["file"] = "encoder.int8.onnx"
+    manifest["asr_joiner"]["file"] = "joiner.int8.onnx"
+    monkeypatch.setattr(bench_models, "load_manifest", lambda _path: manifest)
+
+    def hf_download(*, filename, local_dir, **_kwargs):
+        path = Path(local_dir) / Path(filename).name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"hf-model")
+        return str(path)
+
+    def snapshot_download(*, local_dir, **_kwargs):
+        data = Path(local_dir) / "espeak-ng-data"
+        data.mkdir(parents=True, exist_ok=True)
+        return str(local_dir)
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_download)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
+
+    def direct_download(dest_dir, url, *, force=False):
+        del force
+        if fail_denoise and url == "fail-denoise":
+            raise OSError("synthetic GTCRN failure")
+        path = Path(dest_dir) / (Path(url).name or "asset.bin")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"direct-model")
+        return str(path)
+
+    def fake_extract(_archive, suffix, dest_dir):
+        path = Path(dest_dir) / Path(suffix).name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"archive-model")
+        return str(path)
+
+    def fake_kokoro(dest_dir, _url, *, force=False):
+        del force
+        root = Path(dest_dir)
+        root.mkdir(parents=True, exist_ok=True)
+        files = {
+            "tts_model": root / "model.int8.onnx",
+            "tts_voices": root / "voices.bin",
+            "tts_tokens": root / "tokens.txt",
+            "tts_lexicon": root / "lexicon-us-en.txt",
+        }
+        for path in files.values():
+            path.write_bytes(b"kokoro")
+        data = root / "espeak-ng-data"
+        data.mkdir()
+        return {**{key: str(path) for key, path in files.items()}, "tts_data_dir": str(data)}
+
+    monkeypatch.setattr(setup_models, "fetch_speaker_model", direct_download)
+    monkeypatch.setattr(setup_models, "extract_member", fake_extract)
+    monkeypatch.setattr(setup_models, "fetch_kokoro_package", fake_kokoro)
+
+
+def _selected_setup_args(tmp_path):
+    return [
+        "--dest", str(tmp_path / "models"),
+        "--config", str(tmp_path / "config.local.json"),
+        "--speaker-model-url", "speaker.onnx",
+        "--denoise-model", "--denoise-model-url", "fail-denoise",
+        "--sense-voice", "--sense-voice-url", "sense-voice.tar.bz2",
+        "--kokoro", "--require-selected",
+    ]
+
+
+def test_required_selected_failure_does_not_publish_partial_config(
+    tmp_path, monkeypatch
+):
+    import tools.setup_models as setup_models
+
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=True)
+    config = tmp_path / "config.local.json"
+    original = b'{"unrelated": {"kept": true}}\n'
+    config.write_bytes(original)
+
+    assert setup_models.main(_selected_setup_args(tmp_path)) == 1
+    assert config.read_bytes() == original
+
+
+def test_require_selected_cannot_disable_default_speaker_model(tmp_path):
+    import tools.setup_models as setup_models
+
+    with pytest.raises(SystemExit) as raised:
+        setup_models.main([
+            "--dest", str(tmp_path / "models"),
+            "--config", str(tmp_path / "config.local.json"),
+            "--require-selected",
+            "--no-speaker-model",
+        ])
+
+    assert raised.value.code == 2
+    assert not (tmp_path / "config.local.json").exists()
+
+
+def test_required_selected_success_publishes_one_complete_config(
+    tmp_path, monkeypatch
+):
+    import tools.setup_models as setup_models
+
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    config = tmp_path / "config.local.json"
+    config.write_text('{"unrelated": {"kept": true}}\n', encoding="utf-8")
+
+    assert setup_models.main(_selected_setup_args(tmp_path)) == 0
+    written = json.loads(config.read_text(encoding="utf-8"))
+    sherpa = written["sherpa"]
+    assert written["unrelated"] == {"kept": True}
+    assert sherpa["asr_final_backend"] == "sense_voice"
+    assert all(
+        sherpa[key]
+        for key in (
+            *FILE_KEYS,
+            "speaker_embedding_model",
+            "denoise_model",
+            "asr_final_model",
+            "asr_final_tokens",
+            "tts_voices",
+            "tts_data_dir",
+            "tts_lexicon",
+        )
+    )
+    assert list(tmp_path.glob(".config.local.json.*.tmp")) == []
+
+
+def test_required_selected_rejects_non_object_existing_config(
+    tmp_path, monkeypatch
+):
+    import tools.setup_models as setup_models
+
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+    config = tmp_path / "config.local.json"
+    original = b"[]\n"
+    config.write_bytes(original)
+
+    assert setup_models.main(_selected_setup_args(tmp_path)) == 1
+    assert config.read_bytes() == original
 
 
 # --- setup_models.extract_member (punctuation archive unpack) ----------------
@@ -1341,6 +1563,73 @@ def test_doctor_invalid_device_is_a_clean_check_not_a_traceback(monkeypatch, cap
     text = capsys.readouterr().out.lower()
     assert "[fail] device profile" in text
     assert "desktop" in text
+
+
+def test_doctor_defer_ollama_reports_only_base_ready(monkeypatch, capsys):
+    import core.app as app
+    import tools.doctor as doctor
+
+    config = {
+        "device": "desktop",
+        "device_profiles": {},
+        "llm": {"backend": "ollama"},
+    }
+    seen = {}
+    monkeypatch.setattr(app, "_load_config", lambda *_args, **_kwargs: config)
+
+    def fake_run_all(_config, **kwargs):
+        seen.update(kwargs)
+        return [doctor.Check("base speech runtime", True, "complete")]
+
+    monkeypatch.setattr(doctor, "run_all", fake_run_all)
+
+    assert doctor.main(["--defer-ollama"]) == 0
+    assert seen["llm_mode"] == "echo"
+    output = capsys.readouterr().out
+    assert "BASE READY (Ollama deferred)" in output
+    assert "READY -> python -m core" not in output
+
+
+def test_doctor_defer_ollama_propagates_base_failure(monkeypatch, capsys):
+    import core.app as app
+    import tools.doctor as doctor
+
+    monkeypatch.setattr(app, "_load_config", lambda *_args, **_kwargs: {
+        "device": "desktop",
+        "device_profiles": {},
+        "llm": {"backend": "ollama"},
+    })
+    monkeypatch.setattr(
+        doctor,
+        "run_all",
+        lambda *_args, **_kwargs: [doctor.Check("speech models", False, "missing")],
+    )
+
+    assert doctor.main(["--defer-ollama"]) == 1
+    output = capsys.readouterr().out
+    assert "BASE NOT READY" in output
+    assert "BASE READY (Ollama deferred)" not in output
+
+
+def test_doctor_refuses_to_defer_a_non_ollama_backend(monkeypatch, capsys):
+    import core.app as app
+    import tools.doctor as doctor
+
+    monkeypatch.setattr(app, "_load_config", lambda *_args, **_kwargs: {
+        "device": "phone",
+        "device_profiles": {},
+        "llm": {"backend": "llamacpp"},
+    })
+    monkeypatch.setattr(
+        doctor,
+        "run_all",
+        lambda *_args, **_kwargs: pytest.fail("non-Ollama deferral ran checks"),
+    )
+
+    assert doctor.main(["--defer-ollama"]) == 1
+    output = capsys.readouterr().out
+    assert "selected LLM backend is 'llamacpp'" in output
+    assert "BASE NOT READY" in output
 
 
 def test_runtime_checks_echo_never_imports_or_contacts_ollama():

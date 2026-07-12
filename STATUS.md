@@ -3,8 +3,8 @@
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
 Last verified: 2026-07-12 on Linux ROG; full: 3416 passed/30 skipped/9 warnings; focused barge/APM: 16/6 passed.
-ADR-0051 v2 deterministic: 42/42; dirty full real rehearsal: MiniCPM Q8 and Gemma each 42/42.
-Clean-provenance A/B is still required; live bare-speaker A/B is red; branch unlandable.
+ADR-0051 v2 deterministic: 42/42; clean production-hybrid A/B: MiniCPM Q8 and Gemma each 42/42.
+Identity, warmup, topology, and provenance passed; live bare-speaker A/B is red; branch unlandable.
 
 ## Runtime
 

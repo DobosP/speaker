@@ -1,10 +1,10 @@
-# Task Result — MiniCPM identity and fresh-install readiness integration
+# Task Result — MiniCPM integration and deterministic injected barge gate
 
-Valid until: this integration branch lands or its implementation changes — then treat as history.
+Valid until: this branch lands or its implementation changes — then treat as history.
 
-Branch: `integration/minicpm-v5-release`
+Branch: `fix/inject-barge-gate-determinism`
 
-Status: both control-plane lanes integrated; combined headless suite green.
+Status: control-plane lanes integrated; injected barge gate fixed and headless-green.
 
 ## Outcome
 
@@ -17,6 +17,10 @@ Status: both control-plane lanes integrated; combined headless suite green.
   Setup failures propagate; skipped models are incomplete; deferred Ollama
   checks can report only `BASE READY`, never full `READY` (ADR-0063).
 - Phone llama.cpp Q4 behavior is unchanged.
+- The clean no-device barge profile no longer applies physical echo, level,
+  confirmation, or denoising gates. It retains real VAD/sustain/cancel/FIFO
+  control; failures and incomplete scenario coverage now return nonzero
+  (ADR-0064).
 
 ## Exact branch evidence
 
@@ -41,11 +45,22 @@ Status: both control-plane lanes integrated; combined headless suite green.
 - Deterministic conversation: `42/42`; every one of the fourteen scenarios
   passed 3/3 and semantic, coverage, A/B, provenance, and warmup gates were
   all true.
+- Injected-profile focused tests: `133 passed in 1.86s`.
+- Full suite after the profile and exact-coverage changes: `3737 passed,
+  31 skipped, 9 warnings in 80.18s`.
+- Strict archived recorded-owner replay after the shared profile change:
+  `9 passed in 65.78s`; fake streams, no physical hardware.
+- Reproduced baseline `203334`: cuts `1/2, 2/2, 1/2`, but old CLI exit 0.
+- Honest intermediate `204845`: cuts `1/2` in all three repeats and exit 1,
+  isolating inherited GTCRN as the remaining clean-profile mismatch.
+- Controlled no-denoise `205151`: `2/2` cuts, zero self-interrupts, exit 0.
+- Final exact gate `205351`: all three repetitions full-duplex `ok`, each `2/2`
+  cuts, zero self-interrupts; aggregate `6/6`, exit 0. No hardware opened.
 - `git diff --check`: clean.
-- Later release gates remain pending.
 
 ## Remaining validation
 
 A real installed MiniCPM alias, Docker image, fresh-install download, ordinary
 doctor `READY`, production-hybrid Ollama A/B, and live bare-speaker behavior are
-not validated by this integration. Do not claim them from the headless evidence.
+not validated by this integration. The injected result does not validate GTCRN,
+physical echo, current-room short Stop, v5 identity, or audible stop quality.

@@ -64,16 +64,24 @@ def apply_inject_profile(config: dict) -> dict:
     """Apply the explicit no-device capture profile in place and return config.
 
     Assistant output is driven through a null callback sink and never enters the
-    injected capture domain. Physical AEC/OS voice-route/word-cut authority and
-    propagation-delay learning therefore do not apply. One eligible 100 ms block
-    is sufficient in this echo-impossible capture domain; the production two-
-    block sustain gate and 5/2/400 coherence settings remain untouched unless a
-    caller explicitly selects this profile.
+    injected capture domain. Physical AEC/OS voice-route/word-cut authority,
+    playback-reference coherence, output-level comparison, word confirmation,
+    and denoising therefore do not apply. (Callers may explicitly re-enable the
+    denoiser as a separate stress diagnostic.) The real VAD, sustain window,
+    callback, task cancel, and playback FIFO still run. One eligible 100 ms block
+    is sufficient in this clean echo-impossible capture domain; production
+    acoustic settings remain untouched unless a caller explicitly selects this
+    profile.
     """
     sherpa = config.setdefault("sherpa", {})
     sherpa["aec_enabled"] = False
     sherpa["capture_voice_comm"] = False
+    sherpa["denoise_enabled"] = False
     sherpa["barge_word_cut_enabled"] = False
+    sherpa["coherence_barge_in_enabled"] = False
+    sherpa["dtd_enabled"] = False
+    sherpa["barge_in_output_margin_db"] = 0.0
+    sherpa["barge_confirm_enabled"] = False
     sherpa["coherence_warmup_frames"] = 0
     sherpa["coherence_confirm_frames"] = 1
     sherpa["coherence_max_delay_ms"] = 0.0

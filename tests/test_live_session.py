@@ -549,19 +549,29 @@ def test_no_smart_endpoint_flag_leaves_endpoint_untouched(monkeypatch):
     assert "endpoint_enabled" not in config.get("sherpa", {})
 
 
-def test_inject_disables_physical_aec_and_os_word_cut_authority(monkeypatch):
+def test_inject_disables_every_echo_only_barge_discriminator(monkeypatch):
     config = _run_main_capturing_config(
         monkeypatch,
         ["--inject"],
         initial_sherpa={
             "aec_enabled": True,
             "capture_voice_comm": True,
+            "denoise_enabled": True,
             "barge_word_cut_enabled": True,
+            "coherence_barge_in_enabled": True,
+            "dtd_enabled": True,
+            "barge_in_output_margin_db": 99.0,
+            "barge_confirm_enabled": True,
         },
     )
     assert config["sherpa"]["aec_enabled"] is False
     assert config["sherpa"]["capture_voice_comm"] is False
+    assert config["sherpa"]["denoise_enabled"] is False
     assert config["sherpa"]["barge_word_cut_enabled"] is False
+    assert config["sherpa"]["coherence_barge_in_enabled"] is False
+    assert config["sherpa"]["dtd_enabled"] is False
+    assert config["sherpa"]["barge_in_output_margin_db"] == 0.0
+    assert config["sherpa"]["barge_confirm_enabled"] is False
     assert config["sherpa"]["coherence_warmup_frames"] == 0
     assert config["sherpa"]["coherence_confirm_frames"] == 1
     assert config["sherpa"]["coherence_max_delay_ms"] == 0.0
@@ -574,7 +584,12 @@ def test_shared_inject_profile_preserves_unrelated_config():
         "sherpa": {
             "aec_enabled": True,
             "capture_voice_comm": True,
+            "denoise_enabled": True,
             "barge_word_cut_enabled": True,
+            "coherence_barge_in_enabled": True,
+            "dtd_enabled": True,
+            "barge_in_output_margin_db": 6.0,
+            "barge_confirm_enabled": True,
             "coherence_warmup_frames": 5,
             "coherence_confirm_frames": 2,
             "coherence_max_delay_ms": 400.0,
@@ -587,7 +602,12 @@ def test_shared_inject_profile_preserves_unrelated_config():
     assert config["sherpa"]["tts_speaker_id"] == 17
     assert config["sherpa"]["aec_enabled"] is False
     assert config["sherpa"]["capture_voice_comm"] is False
+    assert config["sherpa"]["denoise_enabled"] is False
     assert config["sherpa"]["barge_word_cut_enabled"] is False
+    assert config["sherpa"]["coherence_barge_in_enabled"] is False
+    assert config["sherpa"]["dtd_enabled"] is False
+    assert config["sherpa"]["barge_in_output_margin_db"] == 0.0
+    assert config["sherpa"]["barge_confirm_enabled"] is False
     assert config["sherpa"]["coherence_warmup_frames"] == 0
     assert config["sherpa"]["coherence_confirm_frames"] == 1
     assert config["sherpa"]["coherence_max_delay_ms"] == 0.0
@@ -599,51 +619,45 @@ def test_non_inject_keeps_conservative_physical_coherence_profile(monkeypatch):
         monkeypatch,
         [],
         initial_sherpa={
+            "denoise_enabled": True,
             "coherence_warmup_frames": 5,
             "coherence_confirm_frames": 2,
             "coherence_max_delay_ms": 400.0,
             "barge_in_min_speech_sec": 0.2,
+            "coherence_barge_in_enabled": True,
+            "dtd_enabled": True,
+            "barge_in_output_margin_db": 6.0,
+            "barge_confirm_enabled": True,
         },
     )
     assert config["sherpa"]["coherence_warmup_frames"] == 5
     assert config["sherpa"]["coherence_confirm_frames"] == 2
     assert config["sherpa"]["coherence_max_delay_ms"] == 400.0
     assert config["sherpa"]["barge_in_min_speech_sec"] == 0.2
+    assert config["sherpa"]["denoise_enabled"] is True
+    assert config["sherpa"]["coherence_barge_in_enabled"] is True
+    assert config["sherpa"]["dtd_enabled"] is True
+    assert config["sherpa"]["barge_in_output_margin_db"] == 6.0
+    assert config["sherpa"]["barge_confirm_enabled"] is True
 
 
-def test_inject_coherence_profile_uses_one_block_only_in_echo_free_domain(monkeypatch):
-    """Fake capture has no assistant echo; physical temporal safety is unchanged."""
-    import numpy as np
-
+def test_inject_profile_uses_one_vad_block_without_echo_discrimination():
+    """The no-device topology retains real sustain but has no echo to classify."""
     from core.engines._dtd import BargeSustain
-    from core.engines.echo_coherence import EchoCoherenceDetector
 
-    mic = np.full(1600, 0.1, dtype="float32")
-
-    def _detector(*, warmup_frames, confirm_frames):
-        det = EchoCoherenceDetector(
-            16000,
-            warmup_frames=warmup_frames,
-            confirm_frames=confirm_frames,
-        )
-        # Drive the real detector control chart with a deterministic, clearly
-        # incoherent user block after a sufficiently filled reference ring.
-        monkeypatch.setattr(
-            det, "_snapshot_ref", lambda: np.ones(8000, dtype="float32")
-        )
-        monkeypatch.setattr(det, "_estimate_delay", lambda _x, _w: 0)
-        monkeypatch.setattr(det, "_incoherent_fraction", lambda _x, _r: 0.9)
-        return det
-
-    inject = _detector(warmup_frames=0, confirm_frames=1)
+    config = {"sherpa": {}}
+    apply_inject_profile(config)
+    sherpa = config["sherpa"]
+    assert sherpa["coherence_barge_in_enabled"] is False
+    assert sherpa["dtd_enabled"] is False
+    assert sherpa["barge_in_output_margin_db"] == 0.0
+    assert sherpa["barge_confirm_enabled"] is False
     sustain = BargeSustain(
-        window_sec=0.5, block_sec=0.1, min_voiced_sec=0.1
+        window_sec=0.5,
+        block_sec=0.1,
+        min_voiced_sec=sherpa["barge_in_min_speech_sec"],
     )
-    assert sustain.update(bool(inject.decide(mic))) is True
-
-    physical = _detector(warmup_frames=5, confirm_frames=2)
-    assert physical.decide(mic) is False
-    assert physical.decide(mic) is False
+    assert sustain.update(True) is True
 
 
 def test_inject_input_stream_paces_to_absolute_device_deadlines():
@@ -1893,6 +1907,138 @@ def test_turn_expect_forbid_default_empty():
 # --- CLI: --suite / --repeat / --list-suites flags -----------------------------
 
 
+def _machine_grade(
+    *,
+    full=True,
+    barge="ok",
+    intended=2,
+    stopped=2,
+    responses=None,
+    response_count=None,
+):
+    n_response = (
+        int(response_count)
+        if response_count is not None
+        else (1 if responses is not None else 0)
+    )
+    return {
+        "full_duplex": {"ok": full},
+        "barge_in": {
+            "verdict": barge,
+            "n_intended_barges": intended,
+            "n_stopped": stopped,
+        },
+        "response": {
+            "aggregate": {
+                "n": n_response,
+                "verdict": responses if n_response else None,
+            }
+        },
+    }
+
+
+def test_injected_machine_grades_control_exit_status():
+    green = _machine_grade()
+    assert live_main._machine_grade_exit_code(
+        0, green, inject=True, expected_barges=2
+    ) == 0
+
+    assert live_main._machine_grade_exit_code(
+        0, _machine_grade(full=False), inject=True, expected_barges=2
+    ) == 1
+    assert live_main._machine_grade_exit_code(
+        0, _machine_grade(barge="FAIL"), inject=True, expected_barges=2
+    ) == 1
+    assert live_main._machine_grade_exit_code(
+        0,
+        _machine_grade(responses="FAIL"),
+        inject=True,
+        expected_barges=2,
+        expected_responses=1,
+    ) == 1
+
+
+def test_repeated_injected_failure_cannot_be_reset_by_a_later_green_run():
+    rc = 0
+    for grade in (
+        _machine_grade(barge="FAIL"),
+        _machine_grade(),
+        _machine_grade(full=False),
+    ):
+        rc = live_main._machine_grade_exit_code(
+            rc, grade, inject=True, expected_barges=2
+        )
+    assert rc == 1
+
+
+def test_acoustic_manual_run_does_not_promote_machine_grade_to_exit_failure():
+    failed = _machine_grade(full=False, barge="FAIL", responses="FAIL")
+    assert live_main._machine_grade_exit_code(0, failed, inject=False) == 0
+
+
+def test_injected_machine_grade_missing_required_blocks_fails_closed():
+    assert live_main._machine_grade_exit_code(
+        0, {}, inject=True, expected_barges=2
+    ) == 1
+    malformed = _machine_grade()
+    malformed["response"] = {}
+    assert live_main._machine_grade_exit_code(
+        0, malformed, inject=True, expected_barges=2
+    ) == 1
+
+
+def test_injected_machine_grade_requires_exact_barge_coverage():
+    for intended, stopped in ((0, 0), (1, 1), (2, 1)):
+        grade = _machine_grade(intended=intended, stopped=stopped)
+        assert live_main._machine_grade_exit_code(
+            0, grade, inject=True, expected_barges=2
+        ) == 1
+    assert live_main._machine_grade_exit_code(
+        0, _machine_grade(), inject=True, expected_barges=2
+    ) == 0
+
+
+def test_injected_zero_barge_control_preserves_exact_zero_coverage():
+    control = _machine_grade(intended=0, stopped=0)
+    assert live_main._machine_grade_exit_code(
+        0, control, inject=True, expected_barges=0
+    ) == 0
+
+
+def test_injected_machine_grade_requires_exact_response_coverage():
+    missing = _machine_grade(responses=None, response_count=0)
+    assert live_main._machine_grade_exit_code(
+        0,
+        missing,
+        inject=True,
+        expected_barges=2,
+        expected_responses=1,
+    ) == 1
+    complete = _machine_grade(responses="ok", response_count=1)
+    assert live_main._machine_grade_exit_code(
+        0,
+        complete,
+        inject=True,
+        expected_barges=2,
+        expected_responses=1,
+    ) == 0
+
+
+def test_scenario_derived_machine_grade_coverage_is_exact():
+    assert live_main._expected_machine_grade_counts(
+        by_name("barge_in_interrupt_stop")
+    ) == (2, 0)
+    assert live_main._expected_machine_grade_counts(
+        by_name("barge_multiple_in_one_turn")
+    ) == (1, 0)
+    assert live_main._expected_machine_grade_counts(
+        by_name("barge_no_barge_control")
+    ) == (0, 0)
+    assert live_main._expected_machine_grade_counts(
+        by_name("baseline_latency_single_turn_qa")
+    ) == (0, 2)
+
+
 def test_suite_flag_in_help(capsys):
     import pytest
 
@@ -1950,6 +2096,15 @@ def test_endpoint_flags_in_help(capsys):
 
 def test_denoise_flag_enables_denoise(monkeypatch):
     config = _run_main_capturing_config(monkeypatch, ["--denoise"])
+    assert config["sherpa"]["denoise_enabled"] is True
+
+
+def test_inject_denoise_flag_is_an_explicit_stress_override(monkeypatch):
+    config = _run_main_capturing_config(
+        monkeypatch,
+        ["--inject", "--denoise"],
+        initial_sherpa={"denoise_enabled": True},
+    )
     assert config["sherpa"]["denoise_enabled"] is True
 
 

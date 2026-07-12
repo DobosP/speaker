@@ -2,18 +2,18 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3690 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3714 passed/31 skipped/9 warnings; focused MiniCPM/readiness: 517 passed; APM: 6 passed; deterministic conversation: 42/42, pass^3.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–61 headless code is green.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–62 headless code is green.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block overlap is 2/2 with deterministic full-window setup; live remains red/unlandable (ADR-0052/61).
 
 ## Runtime
 
 - Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
   `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
-- Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is local text,
-  gemma3:12b is complex/vision, and warm MiniCPM TTFT was 0.12–0.14 s. Phone Q4
-  uses native XML tools; desktop Gemma/Ollama retains textual ReAct (ADR-0020/0033).
+- Desktop MiniCPM Q8 is local text; readiness pins its alias, full blob,
+  quantization, template, and parameters (ADR-0020/0062). Gemma3 is complex/
+  vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
 - Anchored high-confidence requests take deterministic ACT/search/research paths;
   ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).

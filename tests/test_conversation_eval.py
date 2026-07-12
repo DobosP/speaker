@@ -1082,6 +1082,23 @@ def test_minicpm_identity_prefers_effective_alias_modelfile_template():
     assert identity.ok is True
 
 
+def test_minicpm_identity_transport_construction_error_fails_closed(monkeypatch):
+    import tools.conversation_eval.identity as identity_module
+
+    monkeypatch.setattr(
+        identity_module,
+        "_ollama_show",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("synthetic client construction failure")
+        ),
+    )
+
+    identity = identity_module.verify_minicpm_identity()
+
+    assert identity.ok is False
+    assert "synthetic client construction failure" in identity.error
+
+
 def test_generic_ollama_identity_records_full_blob_digest():
     digest = "d" * 64
     identity = verify_ollama_blob_identity(

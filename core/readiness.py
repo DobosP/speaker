@@ -13,6 +13,12 @@ import sys
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Optional
 
+from .minicpm_identity import (
+    MINICPM_Q8_CONTRACT,
+    is_minicpm_model_name,
+    verify_minicpm_q8_identity,
+)
+
 RUNTIME_IMPORTS = ("numpy", "scipy", "sounddevice", "sherpa_onnx")
 SHERPA_REQUIRED = (
     "asr_tokens",
@@ -22,7 +28,7 @@ SHERPA_REQUIRED = (
     "tts_model",
     "tts_tokens",
 )
-DEFAULT_OLLAMA_MODELS = ("gemma3:12b", "minicpm5-1b:q8")
+DEFAULT_OLLAMA_MODELS = ("gemma3:12b", MINICPM_Q8_CONTRACT.alias)
 _PIP_NAME = {
     "sherpa_onnx": "sherpa-onnx",
     "llama_cpp": "llama-cpp-python",
@@ -220,10 +226,7 @@ def check_speaker_id(
     )
 
 
-def _default_ollama_lister() -> list[str]:
-    import ollama
-
-    data = ollama.list()
+def _ollama_model_names(data: object) -> list[str]:
     models = data.get("models", []) if isinstance(data, dict) else getattr(data, "models", [])
     names: list[str] = []
     for model in models:
@@ -236,11 +239,48 @@ def _default_ollama_lister() -> list[str]:
     return names
 
 
+def _ollama_client(
+    host: str | None = None,
+    *,
+    client_factory: Optional[Callable[..., object]] = None,
+) -> object:
+    if client_factory is None:
+        import ollama
+
+        client_factory = ollama.Client
+    kwargs: dict[str, object] = {"timeout": 5.0}
+    if host:
+        kwargs["host"] = host
+    return client_factory(**kwargs)
+
+
+def _default_ollama_lister() -> list[str]:
+    client = _ollama_client()
+    return _ollama_model_names(client.list())
+
+
 def check_ollama(
     models_needed: Iterable[str] = DEFAULT_OLLAMA_MODELS,
     lister: Optional[Callable[[], Iterable[str]]] = None,
+    show: Optional[Callable[[str], object]] = None,
+    *,
+    host: str | None = None,
+    client_factory: Optional[Callable[..., object]] = None,
 ) -> list[Check]:
-    lister = lister or _default_ollama_lister
+    shared_client: object | None = None
+    if lister is None:
+        try:
+            shared_client = _ollama_client(host, client_factory=client_factory)
+            lister = lambda: _ollama_model_names(shared_client.list())
+            if show is None:
+                show = shared_client.show
+        except Exception as exc:  # noqa: BLE001 - daemon client construction
+            return [Check(
+                "ollama",
+                False,
+                f"not reachable: {exc}",
+                "start it with `ollama serve` (install: https://ollama.com)",
+            )]
     try:
         available = set(lister())
     except Exception as exc:  # noqa: BLE001 - daemon down / not installed
@@ -251,12 +291,51 @@ def check_ollama(
             "start it with `ollama serve` (install: https://ollama.com)",
         )]
     out = [Check("ollama", True, f"{len(available)} model(s) installed")]
-    for needed in models_needed:
+    for needed in tuple(dict.fromkeys(str(model) for model in models_needed)):
+        if is_minicpm_model_name(needed) and needed != MINICPM_Q8_CONTRACT.alias:
+            out.append(Check(
+                f"ollama model {needed}",
+                False,
+                (
+                    f"unsupported MiniCPM alias; expected "
+                    f"{MINICPM_Q8_CONTRACT.alias}"
+                ),
+                "python -m tools.setup_minicpm",
+            ))
+            continue
         ok = needed in available
-        if needed == "minicpm5-1b:q8":
+        if needed == MINICPM_Q8_CONTRACT.alias:
             hint = "python -m tools.setup_minicpm"
         else:
             hint = f"ollama pull {needed}"
+        if ok and needed == MINICPM_Q8_CONTRACT.alias:
+            if show is None:
+                try:
+                    shared_client = _ollama_client(
+                        host, client_factory=client_factory
+                    )
+                    show = shared_client.show
+                except Exception as exc:  # noqa: BLE001 - fail closed below
+                    out.append(Check(
+                        f"ollama model {needed}",
+                        False,
+                        f"identity inspector unavailable: {exc}",
+                        hint,
+                    ))
+                    continue
+            identity = verify_minicpm_q8_identity(show=show)
+            out.append(Check(
+                f"ollama model {needed}",
+                identity.ok,
+                (
+                    f"pinned {identity.quantization} sha256:{identity.alias_blob}; "
+                    "template + parameters verified"
+                    if identity.ok
+                    else f"identity mismatch: {identity.error}"
+                ),
+                "" if identity.ok else hint,
+            ))
+            continue
         out.append(Check(
             f"ollama model {needed}",
             ok,
@@ -738,6 +817,7 @@ def run_runtime_checks(
     llm_mode: str = "configured",
     sd=None,
     ollama_lister: Optional[Callable[[], Iterable[str]]] = None,
+    ollama_show: Optional[Callable[[str], object]] = None,
     import_fn: Callable[[str], object] = importlib.import_module,
     exists: Callable[[str], bool] = os.path.exists,
     models_needed: Optional[Iterable[str]] = None,
@@ -771,7 +851,13 @@ def run_runtime_checks(
                 if models_needed is not None
                 else _ollama_models_from_resolved(merged)
             )
-            checks += check_ollama(needed, lister=ollama_lister)
+            host = str(llm.get("host", "") or "") or None
+            checks += check_ollama(
+                needed,
+                lister=ollama_lister,
+                show=ollama_show,
+                host=host,
+            )
 
     if require_audio_devices:
         checks += check_audio(merged, sd=sd)

@@ -804,7 +804,15 @@ def test_invalid_device_profile_fails_cleanly_before_preflight(monkeypatch, caps
 
 
 def test_preflight_missing_models_points_at_config_local():
-    problems = live_main._preflight({"sherpa": {}})
+    problems = live_main._preflight(
+        {"sherpa": {}},
+        llm="echo",
+        import_fn=lambda _name: object(),
+        exists=lambda _path: False,
+        platform="win32",
+        require_audio_devices=False,
+        require_os_echo_route=False,
+    )
     text = "\n".join(problems)
     assert "tools.setup_models" in text
     assert "config.local.json" in text

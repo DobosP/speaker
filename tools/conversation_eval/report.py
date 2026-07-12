@@ -9,14 +9,15 @@ import re
 from typing import Mapping
 from urllib.parse import urlparse
 
-from tools.setup_minicpm import (
-    LOCAL_MODEL,
-    SOURCE_MODEL,
-    SOURCE_MODEL_BLOB_SHA256,
-)
+from core.minicpm_identity import MINICPM_Q8_CONTRACT
 
 from .scenarios import SCENARIOS, SCENARIO_SET_VERSION
 from .schema import ModelSummary, SCHEMA_VERSION, ScenarioResult
+
+
+LOCAL_MODEL = MINICPM_Q8_CONTRACT.alias
+SOURCE_MODEL = MINICPM_Q8_CONTRACT.source
+SOURCE_MODEL_BLOB_SHA256 = MINICPM_Q8_CONTRACT.blob_sha256
 
 
 _STRUCTURAL_KEYS: dict[str, tuple[str, ...]] = {

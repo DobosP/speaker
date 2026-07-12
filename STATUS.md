@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3671 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3690 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; general recall stays fenced/model-routed. ADR-0055–59 headless code is green.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–60 headless code is green.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
 
 ## Runtime
@@ -16,9 +16,9 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
   uses native XML tools; desktop Gemma/Ollama retains textual ReAct (ADR-0020/0033).
 - Anchored high-confidence requests take deterministic ACT/search/research paths;
   ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
-- Postgres smart-save reuses the actual fast Ollama client in JSON mode; a
-  non-Ollama fast tier keeps deterministic filters and loads no third model
-  (ADR-0057/59). General semantic/cross-session MiniCPM recall is not proven.
+- Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
+  SQLite restart rows stay outside native history; strong one-line recall routes
+  to fenced Gemma, but final real semantic evidence is pending (ADR-0060).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are

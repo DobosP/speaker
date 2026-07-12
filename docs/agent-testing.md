@@ -12,7 +12,7 @@
 | Conversation trace (device-free) | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3` | all 14 v2 scenarios pass 3/3; aggregate 42/42 and `pass^3=True` (ADR-0051) |
 | MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, and no regression (ADR-0051) |
 | MiniCPM all-role stress | add `--topology all-roles` to the prior command | ADR-0051 replacement-stress diagnostic; never an adoption result |
-| Exact self-fact memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | retrieval available; prompt injection false on the controller read; exact grounded scalar; `answer_model=control` (ADR-0054) |
+| Cross-session semantic memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | SQLite reopen; clean native history; balanced fenced injection; `route=main`; controller false; distinct roles; grounded canary with real Ollama (Echo is incomplete diagnostic) (ADR-0060) |
 | Autonomous cable diagnostic | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest voice --acoustics cable` | pipeline checks green but report says `diagnostic_pass`, `ok=false`, and barge/self/latency `not_covered`; not a landing result (ADR-0055/0058) |
 | Autonomous silent voice gate | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest all --acoustics delay` | every selected non-barge labelled prompt has a matching final; remembered ordinary/self replies attest `completed`; talk-over attests same-task/generation `interrupted` after its barge marker; mean WER ≤0.50, zero errors/stuck/self-cuts, successful active cut in 0–1.0 s; aggregate PASS (ADR-0058) |
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | every repetition full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0052) |
@@ -60,12 +60,14 @@ the adoption gate is exactly all fourteen v2 scenarios repeated three times.
 A real-model report is provenance-red when the revision/config changes, local
 config is included, or any effective model role lacks stable identity evidence.
 
-Per ADR-0054, the autonomous memory probe distinguishes a fact being available
-from it being injected into a model prompt. Its exact live self-scalar read is a
-PRIVATE controller result (`recall_available=true`, `recall_injected=false`),
-not evidence that general or cross-session semantic recall is solved. Voice and
-barge harnesses must retain distinct main/fast model arguments; an all-role
-MiniCPM run is diagnostic only.
+Per ADR-0060, the autonomous memory probe uses a fresh SQLite backend and fresh
+capability registry for the read. A green real-model result requires
+`recall_available=true`, `recall_injected=true`, `recall_fenced=true`,
+`recent_history_clean=true`, `route=main`, `controller=false`, and a grounded
+canary. Echo diagnoses only the persistence/fence/routing plumbing and reports
+incomplete; real-model evidence also requires distinct
+shipped main/fast roles (`topology_valid=true`). Voice and barge harnesses retain distinct
+main/fast model arguments; an all-role MiniCPM run is diagnostic only.
 
 Per ADR-0058, a `speaking:` marker or quiet log interval is not sink evidence.
 Voice/stress reports match each selected non-barge labelled prompt to a new final

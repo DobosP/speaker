@@ -20,9 +20,12 @@ or `--acoustics speaker --make-sound` for audible over-the-air evidence. This is
 the fail-closed policy recorded in [ADR-0055](../../docs/adr/0055-fail-autonomous-voice-verdicts-closed.md),
 as strengthened by [ADR-0058](../../docs/adr/0058-bind-autonomous-playback-evidence-to-input.md).
 
-Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier separately
-checks retrieval plus the bounded exact self-fact controller; it does not claim
-general semantic-memory intelligence. Run from the repo root with the venv python:
+Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier closes and
+reopens a temporary SQLite backend, then requires the durable canary to stay out
+of native recent history, enter the main model only through the untrusted fence,
+and be answered without controller authority. Echo proves plumbing only; Ollama
+adds semantic evidence. Echo is labelled `DIAGNOSTIC PASS`/incomplete and can
+never make `all` green. Run from the repo root with the venv python:
 `.venv/bin/python -m tools.autotest …`. Reports land under `logs/autotest/`
 (gitignored); the `voice` tier also drops a normal `logs/runs/` bundle.
 
@@ -113,7 +116,7 @@ Any omitted role falls back to a synthesized clip.
 
 | tier | proves | needs |
 |------|--------|-------|
-| `memory` | an exact live self-fact remains retrievable at turn N and the bounded private controller returns its scalar | in-RAM memory (no DB); shipped model topology or `--llm echo` |
+| `memory` | a general fact survives SQLite restart, stays outside native history and inside balanced fences, strongly routes to main, and is used in the answer | temporary local SQLite; shipped model topology; `--llm echo` is incomplete plumbing-only diagnosis |
 | `voice`  | real engine round-trips STT→LLM→TTS; WER; barge-in cuts; self-interrupt | PipeWire, sherpa models, small LLM |
 | `replay` | delay-independent self-interrupt + AEC ERLE/delay over a bundle | a `run-<id>.wav` + `.ref.wav` |
 | `suite`  | the existing headless barge/sandbox/memory pytest gates | nothing extra |

@@ -1,7 +1,7 @@
 """Autonomous memory tier: does the assistant store a fact and *use* it later?
 
 Drives the real ``assistant.answer`` capability (the same provider the runtime
-uses) over an in-RAM :class:`SessionMemory` with recall enabled -- no Postgres,
+uses) across a temporary SQLite close/reopen with recall enabled -- no Postgres,
 no audio. Two levels of proof:
 
 * **plumbing** -- the recall block injected into the model's ``system`` on the
@@ -15,15 +15,19 @@ for again -- the canonical "remembered across turns" check.
 from __future__ import annotations
 
 import re
+import tempfile
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterator, Optional, Sequence
 
 from always_on_agent.capabilities import CapabilityRegistry
-from always_on_agent.memory import SessionMemory
+from always_on_agent.sqlite_memory import SqliteVecMemory
+from always_on_agent.untrusted import fenced_data_contains
 from core.capabilities import RecallConfig, attach_llm_capabilities
 from core.conversation import RecentContextConfig
 from core.llm import EchoLLM, OllamaLLM
+from .verdicts import DIAGNOSTIC_PASS, FAIL, PASS
 
 
 def _uses_recalled_fact(answer: str, keyword: str) -> bool:
@@ -115,6 +119,36 @@ def _uses_recalled_fact(answer: str, keyword: str) -> bool:
     return True
 
 
+def _uses_recalled_canary(
+    answer: str,
+    keyword: str,
+    subject_terms: Sequence[str],
+) -> bool:
+    """Fail-closed grounding for the probe's synthetic non-personal fact."""
+    if not _uses_recalled_fact(answer, keyword):
+        return False
+    normalized = re.sub(r"[^a-z0-9\s]", " ", answer.lower())
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    wanted = re.sub(r"[^a-z0-9\s]", " ", keyword.lower())
+    wanted = re.sub(r"\s+", " ", wanted).strip()
+    # A concise scalar is unambiguous because the prompt asks for exactly one
+    # synthetic value.
+    if normalized in {wanted, f"it is {wanted}", f"it was {wanted}"}:
+        return True
+    terms = [term.lower().strip() for term in subject_terms if term.strip()]
+    if not terms or any(re.search(rf"\b{re.escape(term)}\b", normalized) is None for term in terms):
+        return False
+    # Reject assigning the canary to the assistant or an explicitly different
+    # subject.  Neutral/the-project and second-person attribution remain valid.
+    if re.search(
+        r"\b(?:assistant(?:s)?|another|other|their|his|her)\b"
+        r"[^.!?;\n]{0,80}\bproject\b",
+        answer.replace("’", "'").lower(),
+    ):
+        return False
+    return True
+
+
 class _CapturingLLM:
     """Wraps a real LLM, recording the ``system`` prompt + output of each call
     so the probe can assert on both the injected recall block and the answer."""
@@ -123,6 +157,7 @@ class _CapturingLLM:
         self.inner = inner
         self.systems: list[str] = []
         self.outputs: list[str] = []
+        self.histories: list[list[dict]] = []
 
     def generate(
         self,
@@ -133,6 +168,7 @@ class _CapturingLLM:
         history=None,
     ) -> str:
         self.systems.append(system or "")
+        self.histories.append(list(history or []))
         out = self.inner.generate(
             prompt, system=system, images=images, history=history
         )
@@ -148,6 +184,7 @@ class _CapturingLLM:
         history=None,
     ) -> Iterator[str]:
         self.systems.append(system or "")
+        self.histories.append(list(history or []))
         chunks: list[str] = []
         for tok in self.inner.stream(
             prompt, system=system, images=images, history=history
@@ -160,14 +197,22 @@ class _CapturingLLM:
 @dataclass
 class MemoryResult:
     ok: bool
+    plumbing_ok: bool
+    complete: bool
+    outcome: str
     fact: str
     keyword: str
     recall_available: bool         # plumbing: selector returned the fact
     recall_injected: bool          # model path only: fact appeared in its prompt
+    recall_fenced: bool            # persisted fact stayed inside untrusted-data boundary
     answer_uses_fact: Optional[bool]  # semantic: answer grounds the fact (None for echo)
     answer: str
     answer_model: str
+    answer_route: str
+    topology_valid: bool
+    recent_history_clean: bool
     controller_answer: bool
+    cross_session: bool
     recall_block_preview: str
     llm_label: str
     turns: int
@@ -180,16 +225,17 @@ def run_memory_probe(
     llm_kind: str = "ollama",
     model: str = "minicpm5-1b:q8",
     main_model: Optional[str] = "gemma3:12b",
-    fact: str = "my favorite color is teal",
-    keyword: str = "teal",
-    question: str = "what is my favorite color?",
+    fact: str = "my lighthouse project codename was Amber Finch",
+    keyword: str = "Amber Finch",
+    question: str = "what was my lighthouse project codename?",
+    answer_subject_terms: Sequence[str] = ("project", "codename"),
     distractors: Sequence[str] = (
         "what time is it",
         "tell me a fun fact about the ocean",
         "how many days are in a week",
     ),
 ) -> MemoryResult:
-    """Run the fact->distractors->recall flow and return a verdict."""
+    """Run a fact -> restart -> fenced strong-recall flow and return a verdict."""
     t0 = time.monotonic()
     detail: list[str] = []
 
@@ -197,6 +243,7 @@ def run_memory_probe(
         base = EchoLLM()
         label = "echo"
         fast_llm = main_llm = _CapturingLLM(base)
+        topology_valid = True  # deterministic plumbing mode has no model roles
     else:
         fast_llm = _CapturingLLM(
             OllamaLLM(model=model, keep_alive="5m", timeout=120.0, think=False)
@@ -215,35 +262,56 @@ def run_memory_probe(
             )
         )
         label = f"ollama/fast={model},main={resolved_main}"
+        topology_valid = main_llm is not fast_llm
 
-    memory = SessionMemory()
-    registry = CapabilityRegistry()
-    attach_llm_capabilities(
-        registry,
-        main_llm,
-        fast_llm=fast_llm,
-        memory=memory,
-        recall=RecallConfig(enabled=True, max_chars=600),
-        recent_context=RecentContextConfig(enabled=False),
-    )
+    with tempfile.TemporaryDirectory(prefix="speaker-memory-probe-") as tmp:
+        path = str(Path(tmp) / "memory.db")
+        memory = SqliteVecMemory(path)
+        registry = CapabilityRegistry()
+        attach_llm_capabilities(
+            registry,
+            main_llm,
+            fast_llm=fast_llm,
+            memory=memory,
+            recall=RecallConfig(enabled=True, max_chars=600),
+            recent_context=RecentContextConfig(enabled=False),
+        )
 
-    # Turn 1: establish the fact.
-    registry.invoke("assistant.answer", fact, {})
-    detail.append(f"turn 1 (state fact): {fact!r}")
+        # Process/session 1: establish and bury the fact through the real
+        # assistant capability, then close the backend to erase every controller
+        # cache and trusted recent-history ring.
+        try:
+            registry.invoke("assistant.answer", fact, {})
+            detail.append(f"turn 1 (state fact): {fact!r}")
+            for i, d in enumerate(distractors, start=2):
+                registry.invoke("assistant.answer", d, {})
+                detail.append(f"turn {i} (distractor): {d!r}")
+        finally:
+            memory.close()
 
-    # Turns 2..n: unrelated distractors so recall must actually search, not echo
-    # the immediately-preceding turn.
-    for i, d in enumerate(distractors, start=2):
-        registry.invoke("assistant.answer", d, {})
-        detail.append(f"turn {i} (distractor): {d!r}")
-
-    # Final turn: ask for the fact back. Clear captured systems so we inspect
-    # only the recalling turn.
-    for captured in (fast_llm, main_llm):
-        captured.systems.clear()
-        captured.outputs.clear()
-    retrieval_block = memory.context_for_llm(question)
-    result = registry.invoke("assistant.answer", question, {})
+        # Process/session 2: a fresh backend + registry may see old rows only
+        # through persistent recall, never native recent history or controller
+        # state.  Inspect only this final model call.
+        for captured in (fast_llm, main_llm):
+            captured.systems.clear()
+            captured.outputs.clear()
+            captured.histories.clear()
+        memory = SqliteVecMemory(path)
+        registry = CapabilityRegistry()
+        attach_llm_capabilities(
+            registry,
+            main_llm,
+            fast_llm=fast_llm,
+            memory=memory,
+            recall=RecallConfig(enabled=True, max_chars=600),
+            recent_context=RecentContextConfig(enabled=True, as_messages=True),
+        )
+        try:
+            reopened_recent_empty = memory.all() == []
+            retrieval_block = memory.context_for_llm(question)
+            result = registry.invoke("assistant.answer", question, {})
+        finally:
+            memory.close()
     n_turns = 1 + len(distractors) + 1
     detail.append(f"turn {n_turns} (recall): {question!r}")
 
@@ -253,6 +321,8 @@ def run_memory_probe(
         answered_by.systems[-1] if answered_by.systems else ""
     )
     answer = result.text or (answered_by.outputs[-1] if answered_by.outputs else "")
+    answer_route = str(result.data.get("route", ""))
+    final_history = answered_by.histories[-1] if answered_by.histories else []
     if controller_answer:
         answer_model = "control"
     elif llm_kind == "echo":
@@ -261,16 +331,35 @@ def run_memory_probe(
         answer_model = (main_model or model) if answered_by is main_llm else model
     recall_available = keyword.lower() in retrieval_block.lower()
     recall_injected = keyword.lower() in system_used.lower()
+    recall_fenced = recall_injected and fenced_data_contains(system_used, keyword)
+    recent_history_clean = reopened_recent_empty and not final_history
+    cross_session = recall_available and recent_history_clean
 
     if controller_answer:
         answer_uses_fact = _uses_recalled_fact(answer or "", keyword)
-        ok = recall_available and bool(answer_uses_fact)
     elif llm_kind == "echo":
         answer_uses_fact: Optional[bool] = None  # echo can't reason; plumbing only
-        ok = recall_available and recall_injected
     else:
-        answer_uses_fact = _uses_recalled_fact(answer or "", keyword)
-        ok = recall_available and recall_injected and bool(answer_uses_fact)
+        answer_uses_fact = _uses_recalled_canary(
+            answer or "", keyword, answer_subject_terms
+        )
+    plumbing_ok = (
+        recall_available
+        and recall_injected
+        and recall_fenced
+        and answer_route == "main"
+        and not controller_answer
+        and recent_history_clean
+        and cross_session
+    )
+    complete = llm_kind != "echo"
+    if not plumbing_ok or (complete and not topology_valid):
+        outcome = FAIL
+    elif not complete:
+        outcome = DIAGNOSTIC_PASS
+    else:
+        outcome = PASS if bool(answer_uses_fact) else FAIL
+    ok = outcome == PASS
 
     # a compact preview of where the recall block sits in the system prompt
     preview_source = system_used or retrieval_block
@@ -283,14 +372,22 @@ def run_memory_probe(
 
     return MemoryResult(
         ok=ok,
+        plumbing_ok=plumbing_ok,
+        complete=complete,
+        outcome=outcome,
         fact=fact,
         keyword=keyword,
         recall_available=recall_available,
         recall_injected=recall_injected,
+        recall_fenced=recall_fenced,
         answer_uses_fact=answer_uses_fact,
         answer=answer.strip(),
         answer_model=answer_model,
+        answer_route=answer_route,
+        topology_valid=topology_valid,
+        recent_history_clean=recent_history_clean,
         controller_answer=controller_answer,
+        cross_session=cross_session,
         recall_block_preview=preview,
         llm_label=label,
         turns=n_turns,

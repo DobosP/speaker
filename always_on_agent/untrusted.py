@@ -109,6 +109,25 @@ def detect_injection(text: str) -> bool:
     return bool(_INJECTION_RE.search(norm))
 
 
+def fenced_data_contains(wrapped: str, needle: str) -> bool:
+    """True only when ``needle`` occurs inside one balanced spotlight fence.
+
+    Intended for evidence gates, not security enforcement: it prevents a test
+    from crediting a directive elsewhere in the prompt while the asserted fact
+    sits outside (or beside malformed/duplicated fence markers).
+    """
+    if not wrapped or not needle:
+        return False
+    if wrapped.count(_BEGIN) != 1 or wrapped.count(_END) != 1:
+        return False
+    start = wrapped.find(_BEGIN)
+    end = wrapped.find(_END, start + len(_BEGIN))
+    if start < 0 or end <= start:
+        return False
+    body_start = start + len(_BEGIN)
+    return wrapped.lower().find(needle.lower(), body_start, end) >= 0
+
+
 def wrap_untrusted(
     content: str,
     *,

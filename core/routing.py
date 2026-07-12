@@ -67,6 +67,7 @@ class LatencyPolicy(str, Enum):
 # working with no live signal at all.
 LIVE_CONTEXT_KEY = "live"
 RECENT_CONVERSATION_CONTEXT_KEY = "recent_conversation"
+RELEVANT_RECALL_CONTEXT_KEY = "relevant_recall"
 
 # Local TTFT (ms) at/above which the nudge saturates. ~2.5s to first token is
 # already a poor local experience; past it, lean on the cloud/main tier.
@@ -261,6 +262,7 @@ _CONTEXT_FOLLOWUP_MARKERS = (
     "continue", "elaborate", "expand", "also", "make it", "shorter", "longer",
 )
 _CONTEXT_FOLLOWUP_NUDGE = 0.30
+_RELEVANT_RECALL_NUDGE = 0.50
 
 
 def _compile_markers(markers: Iterable[str]) -> Pattern[str]:
@@ -290,6 +292,15 @@ _CONTEXT_FOLLOWUP_RE = _compile_markers(_CONTEXT_FOLLOWUP_MARKERS)
 def _has_recent_conversation(ctx: Mapping[str, object]) -> bool:
     recent = ctx.get(RECENT_CONVERSATION_CONTEXT_KEY)
     return isinstance(recent, str) and bool(recent.strip())
+
+
+def relevant_recall_nudge(context: Mapping[str, object]) -> float:
+    """Trusted scalar nudge shared by heuristic and learned tier routers."""
+    return (
+        _RELEVANT_RECALL_NUDGE
+        if context.get(RELEVANT_RECALL_CONTEXT_KEY) is True
+        else 0.0
+    )
 
 _GATHER_MARKERS = (
     "search",
@@ -427,6 +438,14 @@ class HeuristicRouter(BaseRouter):
         if _has_recent_conversation(ctx) and _CONTEXT_FOLLOWUP_RE.search(q):
             s += _CONTEXT_FOLLOWUP_NUDGE
 
+        # A capability may publish this trusted boolean only after a recalled
+        # line covers every substantive subject term in the live query.  The
+        # raw remembered text never enters the router, and a merely nonempty or
+        # weak recall block contributes nothing.  The nudge is sufficient at the
+        # default/desktop thresholds, while phone's 0.55 threshold retains its
+        # low-power/shared-tier policy (both phone roles share MiniCPM anyway).
+        s += relevant_recall_nudge(ctx)
+
         if q.count("?") >= 2:
             s += 0.1
 
@@ -477,8 +496,14 @@ class LearnedRouter(BaseRouter):
             inputs = self._tokenizer(query, return_tensors="pt", truncation=True)
             logits = self._model(**inputs).logits[0]
             probs = torch.softmax(logits, dim=-1)
-        # Convention: the last/highest class is "needs the strong model".
-        return float(probs[-1])
+        # Convention: the last/highest class is "needs the strong model".  The
+        # same trusted recall scalar used by the heuristic backend is additive
+        # and clamped here so switching router implementations cannot silently
+        # strand a strongly grounded memory question on the small tier.
+        return max(
+            0.0,
+            min(1.0, float(probs[-1]) + relevant_recall_nudge(context or {})),
+        )
 
 
 def build_router(config: Optional[Mapping[str, object]]) -> Router:

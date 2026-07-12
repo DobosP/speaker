@@ -65,6 +65,100 @@ _DEFAULT_DEDUP_RATIO = 0.92
 # a run of non-terminator chars followed by an optional terminator.
 _SENTENCE_RE = re.compile(r"[^.!?\n]+[.!?]*")
 
+# Query scaffold and canonical recall labels carry no subject identity.  They
+# are stripped by strong_subject_overlap() before comparing a question with one
+# recalled line.  Keep this language-light and deterministic: the helper is a
+# routing hint, not a semantic answerer, and must remain portable to the mobile
+# reference implementation.
+_SUBJECT_SCAFFOLD = frozenset({
+    "a", "about", "again", "an", "and", "are", "as", "at", "be", "been",
+    "before", "being", "but", "by", "can",
+    "conversation", "conversations", "could", "did", "do", "does", "earlier",
+    "for", "from", "had", "has", "have", "how", "i", "in", "into", "is", "it",
+    "last", "me", "memory", "mine", "my", "of", "on", "or",
+    "our", "ours", "past", "please", "previous", "previously", "recall",
+    "recalled", "remember", "remind", "said", "screen", "session", "summary",
+    "tell", "that", "the", "their", "them", "they", "this", "to", "us",
+    "user", "was", "we", "were", "what", "when", "where", "which", "who", "why",
+    "will", "with", "would", "you", "your", "yours", "assistant",
+})
+
+
+def _subject_word_forms(word: str) -> set[str]:
+    """Small inflection family used only for conservative subject matching."""
+    forms = {word}
+    if len(word) > 4 and word.endswith("ies"):
+        forms.add(word[:-3] + "y")
+    elif len(word) > 3 and word.endswith("s") and not word.endswith("ss"):
+        forms.add(word[:-1])
+    if len(word) > 4 and word.endswith("ed"):
+        forms.add(word[:-2])
+        forms.add(word[:-1])  # named -> name
+    if len(word) > 5 and word.endswith("ing"):
+        forms.add(word[:-3])
+        forms.add(word[:-3] + "e")
+    return forms
+
+
+def _subject_words(text: str) -> list[str]:
+    out: list[str] = []
+    for word in normalize_text(text).split():
+        if word in _SUBJECT_SCAFFOLD or word in out:
+            continue
+        out.append(word)
+    return out
+
+
+def _looks_like_recall_question(query: str) -> bool:
+    normalized = normalize_text(query)
+    words = normalized.split()
+    if not words:
+        return False
+    if "?" in query:
+        return True
+    if words[0] in {
+        "are", "can", "could", "did", "do", "does", "how", "is", "remember",
+        "recall", "remind", "was", "were", "what", "when", "where", "which", "who",
+    }:
+        return True
+    padded = f" {normalized} "
+    return any(
+        phrase in padded
+        for phrase in (
+            " tell me ", " have i ", " have we ", " do you remember ",
+            " can you recall ", " remind me ",
+        )
+    )
+
+
+def strong_subject_overlap(query: str, recalled: str) -> bool:
+    """Whether one recalled line covers every substantive query subject term.
+
+    This is deliberately stricter than the selector that produced ``recalled``.
+    Keyword and vector recall may conservatively render a weak candidate, but a
+    weak/nonempty block alone must never promote the turn.  A match requires at
+    least one substantive query term and requires *one line* (not a union of
+    unrelated memories) to contain an inflectional form of every term.
+
+    The result is only a trusted scalar routing hint.  Recalled text remains
+    untrusted data and still goes through the normal spotlight/sensitivity
+    boundary before either model sees it.
+    """
+    wanted = _subject_words(query)
+    if not wanted or not recalled or not _looks_like_recall_question(query):
+        return False
+    wanted_forms = [_subject_word_forms(word) for word in wanted]
+    for line in recalled.splitlines():
+        words = _subject_words(line)
+        if not words:
+            continue
+        available: set[str] = set()
+        for word in words:
+            available.update(_subject_word_forms(word))
+        if all(forms & available for forms in wanted_forms):
+            return True
+    return False
+
 
 @dataclass(frozen=True)
 class Candidate:

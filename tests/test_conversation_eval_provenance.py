@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import tools.conversation_eval.__main__ as conversation_cli
+import tools.conversation_eval.provenance as conversation_provenance
 from tools.conversation_eval.identity import _expected_template, verify_minicpm_identity
 from tools.conversation_eval.report import build_report
 from tools.conversation_eval.schema import ScenarioResult
@@ -297,19 +298,28 @@ def test_minicpm_identity_retains_full_pinned_blob_and_effective_contract():
     assert len(identity.effective_config_sha256) == 64
 
 
-def test_identity_snapshot_deduplicates_shared_roles(monkeypatch):
+def test_shared_identity_snapshot_deduplicates_roles_and_fails_on_error():
     calls: list[str] = []
 
     def record(model: str, _config: dict) -> dict[str, object]:
         calls.append(model)
         return _generic_record(model, "a" * 64, "b" * 64)
 
-    monkeypatch.setattr(conversation_cli, "_model_identity_record", record)
-
-    snapshot = conversation_cli._identity_snapshot(
+    snapshot = conversation_provenance.identity_snapshot(
         {"main": "shared:test", "fast": "shared:test"},
         {},
+        record_fn=record,
     )
 
     assert calls == ["shared:test"]
     assert snapshot["ok"] is True
+
+    failed = conversation_provenance.identity_snapshot(
+        {"main": "shared:test", "fast": "shared:test"},
+        {},
+        record_fn=lambda model, _config: {
+            **_generic_record(model, "a" * 64, "b" * 64),
+            "ok": False,
+        },
+    )
+    assert failed["ok"] is False

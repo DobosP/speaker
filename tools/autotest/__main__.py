@@ -58,6 +58,7 @@ def tier_memory(args) -> dict:
         llm_kind=args.llm,
         model=args.fast_model,
         main_model=args.model,
+        device=args.device or "desktop_gpu_4090",
     )
     rep = {"tier": "memory", **asdict(r)}
     sem = "" if r.answer_uses_fact is None else f" answer_uses_fact={r.answer_uses_fact}"
@@ -69,8 +70,13 @@ def tier_memory(args) -> dict:
           f"recall_available={r.recall_available} "
           f"recall_injected={r.recall_injected} fenced={r.recall_fenced}{sem} "
           f"answer_model={r.answer_model} route={r.answer_route} "
+          f"sensitivity={r.answer_sensitivity} attempts={list(r.attempt_order)} "
           f"topology_valid={r.topology_valid} controller={r.controller_answer} "
-          f"cross_session={r.cross_session} recent_history_clean={r.recent_history_clean}")
+          f"backend_reopened={r.backend_reopened_with_fresh_registry} "
+          f"provenance_ok={r.provenance_ok} "
+          f"repository_stable={r.provenance.repository_stable} "
+          f"identity_stable={r.provenance.model_identity_stable} "
+          f"recent_history_clean={r.recent_history_clean}")
     print(f"         answer: {r.answer[:120]!r}")
     return rep
 
@@ -399,7 +405,14 @@ def main(argv=None) -> int:
                     help="record: only this group (repeatable): questions, commands, "
                          "long, barge, memory, natural")
     ap.add_argument("--limit", type=int, default=None, help="record: cap the number of clips")
-    ap.add_argument("--device", default=None, help="record: input device index/name")
+    ap.add_argument(
+        "--device",
+        default=None,
+        help=(
+            "memory: committed device profile (default desktop_gpu_4090); "
+            "record: input device index/name"
+        ),
+    )
     ap.add_argument("--review", action="store_true", help="record: keep/redo each take")
     ap.add_argument("--dry-run", action="store_true", help="record: print the script, don't record")
     ap.add_argument("--simulate", action="store_true",

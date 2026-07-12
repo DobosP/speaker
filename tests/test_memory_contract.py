@@ -301,6 +301,36 @@ def test_strong_subject_matched_recall_routes_to_main_inside_untrusted_fence():
     assert "UNTRUSTED reference DATA" in system
 
 
+def test_reused_context_cannot_carry_strong_recall_promotion_to_next_turn():
+    memory = SessionMemory()
+    memory.add(
+        "my lighthouse project codename was Amber Finch",
+        tags=("user",),
+    )
+    main = _RecordingLLM("Amber Finch.")
+    fast = _RecordingLLM("fast answer")
+    registry = CapabilityRegistry()
+    attach_llm_capabilities(
+        registry,
+        main,
+        fast_llm=fast,
+        memory=memory,
+        recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=_NO_RECENT,
+    )
+    reused: dict[str, object] = {}
+
+    first = registry.invoke(
+        "assistant.answer",
+        "what was my lighthouse project codename?",
+        reused,
+    )
+    second = registry.invoke("assistant.answer", "hello there", reused)
+
+    assert first.data["route"] == "main"
+    assert second.data["route"] == "fast"
+
+
 def test_no_recalled_context_keeps_short_answer_on_fast_model():
     memory = SessionMemory()
     main = _RecordingLLM("main answer")

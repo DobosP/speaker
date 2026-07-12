@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 from core.minicpm_identity import MINICPM_Q8_CONTRACT
 
+from .provenance import validate_identity_bundle
 from .scenarios import SCENARIOS, SCENARIO_SET_VERSION
 from .schema import ModelSummary, SCHEMA_VERSION, ScenarioResult
 
@@ -306,88 +307,13 @@ def build_report(
     )
     identity_records = identities or {}
 
-    def identity_contract(
-        record: object,
-        model: str,
-    ) -> tuple[str, str] | None:
-        if not isinstance(record, Mapping):
-            return None
-        if (
-            str(record.get("model", "")) != model
-            or record.get("required") is not True
-            or record.get("ok") is not True
-        ):
-            return None
-        verification = str(record.get("verification", ""))
-        effective = str(record.get("effective_config_sha256", "")).lower()
-        if re.fullmatch(r"[0-9a-f]{64}", effective) is None:
-            return None
-        if model == LOCAL_MODEL:
-            alias_blob = str(record.get("alias_blob_sha256", "")).lower()
-            source_blob = str(record.get("source_blob_sha256", "")).lower()
-            if not bool(
-                verification == "minicpm_q8_blob_template_parameters"
-                and record.get("alias") == LOCAL_MODEL
-                and record.get("source") == SOURCE_MODEL
-                and alias_blob == source_blob == SOURCE_MODEL_BLOB_SHA256
-                and record.get("blob_match") is True
-                and record.get("pinned_blob_match") is True
-                and record.get("q8") is True
-                and record.get("template_match") is True
-                and record.get("parameters_match") is True
-            ):
-                return None
-            return alias_blob, effective
-        blob = str(record.get("blob_sha256", "")).lower()
-        if not bool(
-            verification == "ollama_blob_effective_config"
-            and re.fullmatch(r"[0-9a-f]{64}", blob)
-        ):
-            return None
-        return blob, effective
-
-    def suite_identity_evidence(
-        label: str,
-        role_models: object,
-    ) -> tuple[bool, dict[str, tuple[str, str]]]:
-        bundle = identity_records.get(label)
-        if not isinstance(bundle, Mapping) or not isinstance(role_models, Mapping):
-            return False, {}
-        before = bundle.get("before")
-        after = bundle.get("after")
-        if not isinstance(before, Mapping) or not isinstance(after, Mapping):
-            return False, {}
-        expected_roles = {
-            "main": str(role_models.get("main", "")),
-            "fast": str(role_models.get("fast", "")),
-        }
-        if not all(expected_roles.values()):
-            return False, {}
-        if before.get("role_models") != expected_roles or after.get("role_models") != expected_roles:
-            return False, {}
-        before_models = before.get("models")
-        after_models = after.get("models")
-        expected_models = set(expected_roles.values())
-        if not isinstance(before_models, Mapping) or not isinstance(after_models, Mapping):
-            return False, {}
-        if set(before_models) != expected_models or set(after_models) != expected_models:
-            return False, {}
-        contracts: dict[str, tuple[str, str]] = {}
-        for model in expected_models:
-            before_contract = identity_contract(before_models.get(model), model)
-            after_contract = identity_contract(after_models.get(model), model)
-            if before_contract is None or before_contract != after_contract:
-                return False, {}
-            contracts[model] = before_contract
-        return bool(bundle.get("ok") is True and bundle.get("stable") is True), contracts
-
-    candidate_identity_ok, candidate_contracts = suite_identity_evidence(
-        "candidate",
+    candidate_identity_ok, candidate_contracts = validate_identity_bundle(
         candidate_roles,
+        identity_records.get("candidate"),
     )
-    baseline_identity_ok, baseline_contracts = suite_identity_evidence(
-        "baseline",
+    baseline_identity_ok, baseline_contracts = validate_identity_bundle(
         baseline_roles,
+        identity_records.get("baseline"),
     )
     identity_evidence_ok = bool(
         mode != "ollama"

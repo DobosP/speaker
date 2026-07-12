@@ -23,9 +23,15 @@ as strengthened by [ADR-0058](../../docs/adr/0058-bind-autonomous-playback-evide
 Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier closes and
 reopens a temporary SQLite backend, then requires the durable canary to stay out
 of native recent history, enter the main model only through the untrusted fence,
-and be answered without controller authority. Echo proves plumbing only; Ollama
-adds semantic evidence. Echo is labelled `DIAGNOSTIC PASS`/incomplete and can
-never make `all` green. Run from the repo root with the venv python:
+select PRIVATE main first without fallback, and be answered without controller
+authority in one affirmative clause binding the canary value to its subject. A
+real PASS additionally requires a clean stable revision and effective probe
+contract, the exact configured MiniCPM/Gemma roles, stable full identity
+records, and one ambient-credential-isolated loopback transport. The report
+digest binds that evidence but does not reconstruct undisclosed inputs. Echo
+proves plumbing only, performs no Git/config/model inspection, and is labelled
+`DIAGNOSTIC PASS`/incomplete. Run from the
+repo root with the venv python:
 `.venv/bin/python -m tools.autotest …`. Reports land under `logs/autotest/`
 (gitignored); the `voice` tier also drops a normal `logs/runs/` bundle.
 

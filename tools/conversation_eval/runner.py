@@ -37,13 +37,12 @@ from .models import (
     StreamGate,
     _history_message_sha256,
 )
+from .provenance import LOCAL_OLLAMA_HEADERS, LOCAL_OLLAMA_HOST
 from .schema import CheckResult, ScenarioResult, ScenarioSpec, TurnResult
 from .trace import TraceRecorder
 
 
 _REPO = Path(__file__).resolve().parents[2]
-LOCAL_OLLAMA_HOST = "http://127.0.0.1:11434"
-LOCAL_OLLAMA_HEADERS = {"authorization": "Bearer speaker-local-evaluation"}
 MAX_FIRST_AUDIO_LATENCY_SEC = 2.5
 MAX_MODEL_TTFT_MS = 2500.0
 MAX_MODEL_RESPONSE_MS = 2500.0

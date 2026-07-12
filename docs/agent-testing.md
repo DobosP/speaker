@@ -12,7 +12,7 @@
 | Conversation trace (device-free) | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3` | all 14 v2 scenarios pass 3/3; aggregate 42/42 and `pass^3=True` (ADR-0051) |
 | MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, and no regression (ADR-0051) |
 | MiniCPM all-role stress | add `--topology all-roles` to the prior command | ADR-0051 replacement-stress diagnostic; never an adoption result |
-| Cross-session semantic memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | SQLite reopen; clean native history; balanced fenced injection; `route=main`; controller false; distinct roles; grounded canary with real Ollama (Echo is incomplete diagnostic) (ADR-0060) |
+| Cross-session semantic memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | SQLite reopen; clean native history; balanced fenced injection; PRIVATE first/only `route=main`; clause-grounded canary; clean/stable revision, contract, and full shipped-role identities (Echo is incomplete) (ADR-0065) |
 | Autonomous cable diagnostic | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest voice --acoustics cable` | pipeline checks green but report says `diagnostic_pass`, `ok=false`, and barge/self/latency `not_covered`; not a landing result (ADR-0055/0058) |
 | Autonomous silent voice gate | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest all --acoustics delay` | every selected non-barge labelled prompt has a matching final; remembered ordinary/self replies attest `completed`; talk-over attests same-task/generation `interrupted` after its barge marker; mean WER ≤0.50, zero errors/stuck/self-cuts, successful active cut in 0–1.0 s; aggregate PASS (ADR-0058) |
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | exit 0 only when every repetition is full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0064) |
@@ -67,14 +67,18 @@ the adoption gate is exactly all fourteen v2 scenarios repeated three times.
 A real-model report is provenance-red when the revision/config changes, local
 config is included, or any effective model role lacks stable identity evidence.
 
-Per ADR-0060, the autonomous memory probe uses a fresh SQLite backend and fresh
-capability registry for the read. A green real-model result requires
+Per ADR-0065, the autonomous memory probe reopens SQLite and creates a fresh
+capability registry in one interpreter; it does not claim a fresh OS process.
+A green real-model result requires
 `recall_available=true`, `recall_injected=true`, `recall_fenced=true`,
-`recent_history_clean=true`, `route=main`, `controller=false`, and a grounded
-canary. Echo diagnoses only the persistence/fence/routing plumbing and reports
-incomplete; real-model evidence also requires distinct
-shipped main/fast roles (`topology_valid=true`). Voice and barge harnesses retain distinct
-main/fast model arguments; an all-role MiniCPM run is diagnostic only.
+`recent_history_clean=true`, PRIVATE sensitivity, first/only `route=main`,
+`controller=false`, and one affirmative clause binding the canary value to its
+subject. It also requires one clean stable revision, a stable effective probe
+contract, an ambient-credential-isolated loopback transport, and stable full
+blob plus effective-config identities for the configured MiniCPM/Gemma roles.
+The persisted digest binds the evidence; it does not reconstruct undisclosed
+inputs. Echo performs no Git/config/model inspection and reports incomplete. Voice and barge
+harnesses retain distinct main/fast arguments; all-role MiniCPM is diagnostic.
 
 Per ADR-0058, a `speaking:` marker or quiet log interval is not sink evidence.
 Voice/stress reports match each selected non-barge labelled prompt to a new final

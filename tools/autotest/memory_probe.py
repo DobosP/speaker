@@ -14,20 +14,39 @@ for again -- the canonical "remembered across turns" check.
 """
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 import re
 import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional, Sequence
+from urllib.parse import urlparse
 
 from always_on_agent.capabilities import CapabilityRegistry
 from always_on_agent.sqlite_memory import SqliteVecMemory
 from always_on_agent.untrusted import fenced_data_contains
 from core.capabilities import RecallConfig, attach_llm_capabilities
+from core.config import apply_device_profile, load_config
 from core.conversation import RecentContextConfig
 from core.llm import EchoLLM, OllamaLLM
+from tools.conversation_eval.provenance import (
+    identity_bundle,
+    identity_snapshot,
+    json_sha256,
+    repository_metadata,
+    validate_identity_bundle,
+)
+from tools.conversation_eval.runner import LOCAL_OLLAMA_HEADERS, LOCAL_OLLAMA_HOST
+from tools.setup_minicpm import LOCAL_MODEL
 from .verdicts import DIAGNOSTIC_PASS, FAIL, PASS
+
+
+_REPO = Path(__file__).resolve().parents[2]
+_PROBE_CONTRACT_SCHEMA = 1
+_DEFAULT_DEVICE = "desktop_gpu_4090"
+_SHIPPED_MAIN_MODEL = "gemma3:12b"
 
 
 def _uses_recalled_fact(answer: str, keyword: str) -> bool:
@@ -124,37 +143,375 @@ def _uses_recalled_canary(
     keyword: str,
     subject_terms: Sequence[str],
 ) -> bool:
-    """Fail-closed grounding for the probe's synthetic non-personal fact."""
-    if not _uses_recalled_fact(answer, keyword):
+    """Require one affirmative clause to bind the canary to its subject.
+
+    Keyword and subject terms in different clauses are not grounding.  The
+    probe also abstains on corrections, contrasts, alternatives, and competing
+    subject assignments instead of trying to infer which clause should win.
+    """
+    text = re.sub(r"\s+", " ", (answer or "").replace("’", "'")).strip()
+    wanted = re.sub(r"\s+", " ", (keyword or "")).strip()
+    if not text or not wanted or not _uses_recalled_fact(text, wanted):
         return False
-    normalized = re.sub(r"[^a-z0-9\s]", " ", answer.lower())
+
+    # Explicit truth-value rejection can follow an otherwise affirmative-looking
+    # assignment in the same punctuation clause.  Do not let the expected
+    # token inside the rejected proposition mint evidence.
+    if re.search(
+        r"\b(?:false|incorrect|untrue|wrong)\b|\bnot\s+(?:really|true|correct)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return False
+
+    normalized = re.sub(r"[^a-z0-9\s]", " ", text.lower())
     normalized = re.sub(r"\s+", " ", normalized).strip()
-    wanted = re.sub(r"[^a-z0-9\s]", " ", keyword.lower())
-    wanted = re.sub(r"\s+", " ", wanted).strip()
+    normalized_wanted = re.sub(r"[^a-z0-9\s]", " ", wanted.lower())
+    normalized_wanted = re.sub(r"\s+", " ", normalized_wanted).strip()
     # A concise scalar is unambiguous because the prompt asks for exactly one
     # synthetic value.
-    if normalized in {wanted, f"it is {wanted}", f"it was {wanted}"}:
+    if normalized in {
+        normalized_wanted,
+        f"it is {normalized_wanted}",
+        f"it was {normalized_wanted}",
+    }:
         return True
-    terms = [term.lower().strip() for term in subject_terms if term.strip()]
-    if not terms or any(re.search(rf"\b{re.escape(term)}\b", normalized) is None for term in terms):
-        return False
-    # Reject assigning the canary to the assistant or an explicitly different
-    # subject.  Neutral/the-project and second-person attribution remain valid.
+
+    # Corrections/contrasts/alternatives can contain both the expected token
+    # and a competing answer.  Treat the complete answer as ambiguous.
     if re.search(
-        r"\b(?:assistant(?:s)?|another|other|their|his|her)\b"
+        r"(?:\b(?:but|however|although|though|yet|instead|rather|actually|"
+        r"correction|except|or)\b|(?:^|[;,.!?])\s*no\s*[,;:—-])",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        return False
+
+    terms = [
+        re.sub(r"\s+", " ", term.lower()).strip()
+        for term in subject_terms
+        if term.strip()
+    ]
+    if not terms:
+        return False
+
+    clauses = tuple(
+        clause.strip(" ,:—-")
+        for clause in re.split(
+            r"(?:[.!?;\n]+|\s+[—–-]\s+|\s*,?\s+and\s+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if clause.strip(" ,:—-")
+    )
+    keyword_pattern = r"(?<!\w)" + r"\s+".join(
+        re.escape(part) for part in wanted.split()
+    ) + r"(?!\w)"
+    grounded: list[str] = []
+    for clause in clauses:
+        clause_normalized = re.sub(r"[^a-z0-9\s]", " ", clause.lower())
+        clause_normalized = re.sub(r"\s+", " ", clause_normalized).strip()
+        has_keyword = re.search(keyword_pattern, clause, re.IGNORECASE) is not None
+        has_subject = all(
+            re.search(rf"\b{re.escape(term)}\b", clause_normalized) is not None
+            for term in terms
+        )
+        if has_keyword and has_subject:
+            grounded.append(clause)
+        elif has_subject and re.search(
+            r"\b(?:is|was|are|were|called|named|codename)\b",
+            clause_normalized,
+        ):
+            # A second assignment for the same subject competes with the
+            # expected canary even if punctuation separated the values.
+            return False
+    if len(grounded) != 1:
+        return False
+    clause = grounded[0]
+    if not _uses_recalled_fact(clause, wanted):
+        return False
+    keyword_match = re.search(keyword_pattern, clause, re.IGNORECASE)
+    term_matches = [
+        re.search(
+            r"\b" + r"\s+".join(
+                re.escape(part) for part in term.split()
+            ) + r"\b",
+            clause,
+            re.IGNORECASE,
+        )
+        for term in terms
+    ]
+    if keyword_match is None or any(match is None for match in term_matches):
+        return False
+    concrete_terms = [match for match in term_matches if match is not None]
+    if all(match.end() <= keyword_match.start() for match in concrete_terms):
+        bridge = clause[max(match.end() for match in concrete_terms):keyword_match.start()]
+        related = re.fullmatch(
+            r"\s*(?:(?:is|was|are|were|called|named)\s*|:)\s*",
+            bridge,
+            re.IGNORECASE,
+        ) is not None
+    elif all(match.start() >= keyword_match.end() for match in concrete_terms):
+        bridge = clause[keyword_match.end():min(match.start() for match in concrete_terms)]
+        related = re.fullmatch(
+            r"\s*(?:is|was|are|were)\s+"
+            r"(?:(?:the|your|my|this|that)\s+)?(?:lighthouse\s+)?",
+            bridge,
+            re.IGNORECASE,
+        ) is not None
+    else:
+        related = False
+    if not related:
+        return False
+    # Reject assigning the canary to the assistant or a different subject.
+    if re.search(
+        r"\b(?:assistant(?:'s|s)?|another|other|their|his|her)\b"
         r"[^.!?;\n]{0,80}\bproject\b",
-        answer.replace("’", "'").lower(),
+        clause.lower(),
     ):
         return False
     return True
+
+
+def _text_sha256(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _safe_loopback_host(value: object) -> tuple[str, bool]:
+    raw = str(value or LOCAL_OLLAMA_HOST).strip()
+    parsed = urlparse(raw if "://" in raw else f"http://{raw}")
+    hostname = (parsed.hostname or "").lower()
+    safe = bool(
+        parsed.scheme == "http"
+        and hostname in {"localhost", "127.0.0.1", "::1"}
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+        and parsed.path in {"", "/"}
+    )
+    if not safe:
+        return LOCAL_OLLAMA_HOST, False
+    try:
+        port = parsed.port or 11434
+    except ValueError:
+        return LOCAL_OLLAMA_HOST, False
+    display = f"[{hostname}]" if ":" in hostname else hostname
+    return f"http://{display}:{port}", True
+
+
+@dataclass(frozen=True)
+class _ReleaseContract:
+    identity_config: dict
+    configured_roles: dict[str, str]
+    host: str
+    host_safe: bool
+    shipped_roles: bool
+    contract_sha256: str
+
+
+def _release_contract(
+    *,
+    device: str,
+    role_models: dict[str, str],
+    fact: str,
+    keyword: str,
+    question: str,
+    answer_subject_terms: Sequence[str],
+    distractors: Sequence[str],
+) -> _ReleaseContract:
+    """Build the local, content-hashed contract for one real memory probe."""
+    try:
+        base = load_config(
+            str(_REPO / "config.json"),
+            local=str(_REPO / "config.local.json"),
+        )
+        resolved = apply_device_profile(base, device, strict=True)
+        llm = resolved.get("llm", {}) or {}
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        llm = {}
+    host, host_safe = _safe_loopback_host(llm.get("host"))
+    configured_roles = {
+        "main": str(llm.get("main_model", "")),
+        "fast": str(llm.get("fast_model", "")),
+    }
+    backend_ok = str(llm.get("backend", "ollama") or "ollama").lower() == "ollama"
+    shipped_roles = bool(
+        backend_ok
+        and role_models == configured_roles
+        and role_models.get("fast") == LOCAL_MODEL
+        and role_models.get("main") == _SHIPPED_MAIN_MODEL
+    )
+    contract = {
+        "schema": _PROBE_CONTRACT_SCHEMA,
+        "device": device,
+        "host": host,
+        "role_models": role_models,
+        "configured_role_models": configured_roles,
+        "transport": {
+            "loopback_only": host_safe,
+            "ambient_credentials": False,
+        },
+        "llm": {"think": False, "keep_alive": "5m", "timeout_sec": 120.0},
+        "memory": {
+            "backend": "sqlite",
+            "recall_enabled": True,
+            "recall_max_chars": 600,
+            "write_recent_context": False,
+            "read_recent_context": True,
+            "read_recent_as_messages": True,
+        },
+        "inputs": {
+            "fact_sha256": _text_sha256(fact),
+            "keyword_sha256": _text_sha256(keyword),
+            "question_sha256": _text_sha256(question),
+            "subject_terms_sha256": json_sha256(list(answer_subject_terms)),
+            "distractors_sha256": json_sha256(list(distractors)),
+        },
+    }
+    identity_config = {"llm": {"host": host}}
+    return _ReleaseContract(
+        identity_config=identity_config,
+        configured_roles=configured_roles,
+        host=host,
+        host_safe=host_safe,
+        shipped_roles=shipped_roles,
+        contract_sha256=json_sha256(contract),
+    )
+
+
+def _capture_model_identity(
+    role_models: dict[str, str], identity_config: dict
+) -> dict[str, object]:
+    """Capture model evidence; tests replace this private I/O boundary."""
+    try:
+        value = identity_snapshot(role_models, identity_config)
+        if isinstance(value, dict):
+            return value
+    except Exception as exc:  # noqa: BLE001 - evidence failure makes the gate red
+        return {"error": type(exc).__name__}
+    return {"error": "invalid identity snapshot"}
+
+
+@dataclass(frozen=True)
+class MemoryProvenance:
+    applicable: bool
+    ok: Optional[bool]
+    contract_schema: int
+    contract_sha256: str
+    contract_stable: bool
+    host: str
+    host_safe: bool
+    role_models: dict[str, str]
+    configured_role_models: dict[str, str]
+    shipped_roles: bool
+    repository_before: dict[str, object]
+    repository_after: dict[str, object]
+    repository_stable: bool
+    identity: dict[str, object]
+    model_identity_stable: bool
+
+
+def _diagnostic_provenance() -> MemoryProvenance:
+    return MemoryProvenance(
+        applicable=False,
+        ok=None,
+        contract_schema=_PROBE_CONTRACT_SCHEMA,
+        contract_sha256="",
+        contract_stable=False,
+        host="",
+        host_safe=True,
+        role_models={},
+        configured_role_models={},
+        shipped_roles=False,
+        repository_before={},
+        repository_after={},
+        repository_stable=False,
+        identity={},
+        model_identity_stable=False,
+    )
+
+
+def _build_release_provenance(
+    *,
+    role_models: dict[str, str],
+    contract_before: _ReleaseContract,
+    contract_after: _ReleaseContract,
+    repository_before: dict[str, object],
+    repository_after: dict[str, object],
+    identity_before: dict[str, object],
+    identity_after: dict[str, object],
+) -> MemoryProvenance:
+    if not isinstance(repository_before, dict):
+        repository_before = {}
+    if not isinstance(repository_after, dict):
+        repository_after = {}
+    revision = str(repository_before.get("revision", "") or "")
+    repository_stable = bool(
+        re.fullmatch(r"[0-9a-f]{40}", revision, re.IGNORECASE)
+        and repository_before.get("dirty") is False
+        and repository_after == repository_before
+    )
+    if not isinstance(identity_before, dict):
+        identity_before = {}
+    if not isinstance(identity_after, dict):
+        identity_after = {}
+    identity = identity_bundle(identity_before, identity_after)
+    model_identity_stable, _contracts = validate_identity_bundle(
+        role_models,
+        identity,
+    )
+    contract_stable = contract_before == contract_after
+    shipped_roles = bool(
+        contract_stable
+        and contract_before.shipped_roles
+        and contract_before.host_safe
+        and role_models == contract_before.configured_roles
+        and role_models.get("fast") == LOCAL_MODEL
+        and role_models.get("main") == _SHIPPED_MAIN_MODEL
+    )
+    contract_valid = bool(
+        contract_stable
+        and re.fullmatch(
+            r"[0-9a-f]{64}",
+            contract_before.contract_sha256,
+            re.IGNORECASE,
+        )
+    )
+    ok = bool(
+        contract_before.host_safe
+        and shipped_roles
+        and contract_valid
+        and repository_stable
+        and model_identity_stable
+    )
+    return MemoryProvenance(
+        applicable=True,
+        ok=ok,
+        contract_schema=_PROBE_CONTRACT_SCHEMA,
+        contract_sha256=contract_before.contract_sha256,
+        contract_stable=contract_stable,
+        host=contract_before.host,
+        host_safe=contract_before.host_safe,
+        role_models=dict(role_models),
+        configured_role_models=dict(contract_before.configured_roles),
+        shipped_roles=shipped_roles,
+        repository_before=repository_before,
+        repository_after=repository_after,
+        repository_stable=repository_stable,
+        identity=identity,
+        model_identity_stable=model_identity_stable,
+    )
 
 
 class _CapturingLLM:
     """Wraps a real LLM, recording the ``system`` prompt + output of each call
     so the probe can assert on both the injected recall block and the answer."""
 
-    def __init__(self, inner):
+    def __init__(self, inner, *, role: str, attempts: list[str]):
         self.inner = inner
+        self.role = role
+        self.attempts = attempts
         self.systems: list[str] = []
         self.outputs: list[str] = []
         self.histories: list[list[dict]] = []
@@ -167,6 +524,7 @@ class _CapturingLLM:
         images=None,
         history=None,
     ) -> str:
+        self.attempts.append(self.role)
         self.systems.append(system or "")
         self.histories.append(list(history or []))
         out = self.inner.generate(
@@ -183,6 +541,7 @@ class _CapturingLLM:
         images=None,
         history=None,
     ) -> Iterator[str]:
+        self.attempts.append(self.role)
         self.systems.append(system or "")
         self.histories.append(list(history or []))
         chunks: list[str] = []
@@ -209,10 +568,15 @@ class MemoryResult:
     answer: str
     answer_model: str
     answer_route: str
+    answer_sensitivity: str
+    attempt_order: tuple[str, ...]
+    main_selected_first: bool
     topology_valid: bool
     recent_history_clean: bool
     controller_answer: bool
-    cross_session: bool
+    backend_reopened_with_fresh_registry: bool
+    provenance_ok: Optional[bool]
+    provenance: MemoryProvenance
     recall_block_preview: str
     llm_label: str
     turns: int
@@ -228,37 +592,83 @@ def run_memory_probe(
     fact: str = "my lighthouse project codename was Amber Finch",
     keyword: str = "Amber Finch",
     question: str = "what was my lighthouse project codename?",
-    answer_subject_terms: Sequence[str] = ("project", "codename"),
+    answer_subject_terms: Sequence[str] = ("lighthouse", "project", "codename"),
     distractors: Sequence[str] = (
         "what time is it",
         "tell me a fun fact about the ocean",
         "how many days are in a week",
     ),
+    device: str = _DEFAULT_DEVICE,
 ) -> MemoryResult:
     """Run a fact -> restart -> fenced strong-recall flow and return a verdict."""
     t0 = time.monotonic()
     detail: list[str] = []
+    attempts: list[str] = []
+    role_models: dict[str, str] = {}
+    host = ""
+    repository_before: dict[str, object] = {}
+    repository_after: dict[str, object] = {}
+    identity_before: dict[str, object] = {}
+    identity_after: dict[str, object] = {}
+    contract_before: _ReleaseContract | None = None
+    contract_after: _ReleaseContract | None = None
 
     if llm_kind == "echo":
-        base = EchoLLM()
         label = "echo"
-        fast_llm = main_llm = _CapturingLLM(base)
+        fast_llm = _CapturingLLM(
+            EchoLLM(), role="fast", attempts=attempts
+        )
+        main_llm = _CapturingLLM(
+            EchoLLM(), role="main", attempts=attempts
+        )
         topology_valid = True  # deterministic plumbing mode has no model roles
     else:
-        fast_llm = _CapturingLLM(
-            OllamaLLM(model=model, keep_alive="5m", timeout=120.0, think=False)
-        )
         resolved_main = main_model or model
+        role_models = {"main": resolved_main, "fast": model}
+        # The first repository snapshot precedes every config/model read.  The
+        # exact effective contract is recomputed before the final repository
+        # snapshot so config/Git drift makes provenance red.
+        repository_before = repository_metadata()
+        contract_before = _release_contract(
+            device=device,
+            role_models=role_models,
+            fact=fact,
+            keyword=keyword,
+            question=question,
+            answer_subject_terms=answer_subject_terms,
+            distractors=distractors,
+        )
+        host = contract_before.host
+        identity_before = _capture_model_identity(
+            role_models,
+            contract_before.identity_config,
+        )
+        fast_llm = _CapturingLLM(
+            OllamaLLM(
+                model=model,
+                host=host,
+                keep_alive="5m",
+                timeout=120.0,
+                think=False,
+                client_headers=LOCAL_OLLAMA_HEADERS,
+            ),
+            role="fast",
+            attempts=attempts,
+        )
         main_llm = (
             fast_llm
             if resolved_main == model
             else _CapturingLLM(
                 OllamaLLM(
                     model=resolved_main,
+                    host=host,
                     keep_alive="5m",
                     timeout=120.0,
                     think=False,
-                )
+                    client_headers=LOCAL_OLLAMA_HEADERS,
+                ),
+                role="main",
+                attempts=attempts,
             )
         )
         label = f"ollama/fast={model},main={resolved_main}"
@@ -296,6 +706,7 @@ def run_memory_probe(
             captured.systems.clear()
             captured.outputs.clear()
             captured.histories.clear()
+        attempts.clear()
         memory = SqliteVecMemory(path)
         registry = CapabilityRegistry()
         attach_llm_capabilities(
@@ -312,6 +723,22 @@ def run_memory_probe(
             result = registry.invoke("assistant.answer", question, {})
         finally:
             memory.close()
+    if llm_kind != "echo":
+        assert contract_before is not None
+        identity_after = _capture_model_identity(
+            role_models,
+            contract_before.identity_config,
+        )
+        contract_after = _release_contract(
+            device=device,
+            role_models=role_models,
+            fact=fact,
+            keyword=keyword,
+            question=question,
+            answer_subject_terms=answer_subject_terms,
+            distractors=distractors,
+        )
+        repository_after = repository_metadata()
     n_turns = 1 + len(distractors) + 1
     detail.append(f"turn {n_turns} (recall): {question!r}")
 
@@ -322,6 +749,9 @@ def run_memory_probe(
     )
     answer = result.text or (answered_by.outputs[-1] if answered_by.outputs else "")
     answer_route = str(result.data.get("route", ""))
+    answer_sensitivity = str(result.data.get("sensitivity", "") or "")
+    attempt_order = tuple(attempts)
+    main_selected_first = attempt_order == ("main",)
     final_history = answered_by.histories[-1] if answered_by.histories else []
     if controller_answer:
         answer_model = "control"
@@ -333,7 +763,9 @@ def run_memory_probe(
     recall_injected = keyword.lower() in system_used.lower()
     recall_fenced = recall_injected and fenced_data_contains(system_used, keyword)
     recent_history_clean = reopened_recent_empty and not final_history
-    cross_session = recall_available and recent_history_clean
+    backend_reopened_with_fresh_registry = (
+        recall_available and recent_history_clean
+    )
 
     if controller_answer:
         answer_uses_fact = _uses_recalled_fact(answer or "", keyword)
@@ -343,17 +775,37 @@ def run_memory_probe(
         answer_uses_fact = _uses_recalled_canary(
             answer or "", keyword, answer_subject_terms
         )
+    provenance = (
+        _diagnostic_provenance()
+        if llm_kind == "echo"
+        else _build_release_provenance(
+            role_models=role_models,
+            contract_before=contract_before,
+            contract_after=contract_after,
+            repository_before=repository_before,
+            repository_after=repository_after,
+            identity_before=identity_before,
+            identity_after=identity_after,
+        )
+    )
+    provenance_ok = provenance.ok
     plumbing_ok = (
         recall_available
         and recall_injected
         and recall_fenced
         and answer_route == "main"
+        and answer_sensitivity == "private"
+        and main_selected_first
         and not controller_answer
         and recent_history_clean
-        and cross_session
+        and backend_reopened_with_fresh_registry
     )
     complete = llm_kind != "echo"
-    if not plumbing_ok or (complete and not topology_valid):
+    if (
+        not plumbing_ok
+        or (complete and not topology_valid)
+        or (complete and provenance_ok is not True)
+    ):
         outcome = FAIL
     elif not complete:
         outcome = DIAGNOSTIC_PASS
@@ -384,10 +836,17 @@ def run_memory_probe(
         answer=answer.strip(),
         answer_model=answer_model,
         answer_route=answer_route,
+        answer_sensitivity=answer_sensitivity,
+        attempt_order=attempt_order,
+        main_selected_first=main_selected_first,
         topology_valid=topology_valid,
         recent_history_clean=recent_history_clean,
         controller_answer=controller_answer,
-        cross_session=cross_session,
+        backend_reopened_with_fresh_registry=(
+            backend_reopened_with_fresh_registry
+        ),
+        provenance_ok=provenance_ok,
+        provenance=provenance,
         recall_block_preview=preview,
         llm_label=label,
         turns=n_turns,

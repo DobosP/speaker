@@ -13,8 +13,11 @@ import tempfile
 
 import pytest
 
+from always_on_agent.capabilities import CapabilityRegistry
 from always_on_agent.memory import Memory, MemoryItem, SessionMemory
 from always_on_agent.sqlite_memory import SqliteVecMemory
+from core.capabilities import RecallConfig, attach_llm_capabilities
+from core.conversation import RecentContextConfig
 
 
 @pytest.fixture
@@ -64,10 +67,31 @@ def test_empty_and_blank_adds_are_ignored():
         mem.close()
 
 
+def test_meeting_notes_are_process_local_and_never_recalled_after_reopen(tmp_db):
+    first = SqliteVecMemory(tmp_db)
+    first.add(
+        "private meeting note about the lighthouse budget",
+        tags=("meeting", "note"),
+    )
+    assert [item.text for item in first.all()] == [
+        "private meeting note about the lighthouse budget"
+    ]
+    assert first.search("lighthouse budget") == []
+    first.close()
+
+    reopened = SqliteVecMemory(tmp_db)
+    try:
+        assert reopened.all() == []
+        assert reopened.search("lighthouse budget") == []
+        assert reopened.context_for_llm("what was the lighthouse budget?") == ""
+    finally:
+        reopened.close()
+
+
 # --- persistence (the headline) ---------------------------------------------
 
 
-def test_rows_persist_across_reopen(tmp_db):
+def test_rows_persist_only_as_fenced_recall_across_reopen(tmp_db):
     a = SqliteVecMemory(tmp_db)
     a.add("my favorite color is teal", tags=("user",))
     a.add("we planned the trip to japan", tags=("user",))
@@ -75,14 +99,69 @@ def test_rows_persist_across_reopen(tmp_db):
 
     b = SqliteVecMemory(tmp_db)
     try:
-        texts = [i.text for i in b.all()]
-        assert "my favorite color is teal" in texts
-        assert "we planned the trip to japan" in texts
-        # And recall works against the persisted rows on the fresh process.
+        # A fresh process has no trusted recent-chat window.  Prior-session rows
+        # remain durable, but are reachable only through the recall seam where
+        # the capability layer wraps them as untrusted reference data.
+        assert b.all() == []
         block = b.context_for_llm("what is my favorite color")
         assert "favorite color is teal" in block
+        assert "we planned the trip to japan" not in block
     finally:
         b.close()
+
+
+class _RecordingLLM:
+    def __init__(self, reply: str):
+        self.reply = reply
+        self.systems: list[str] = []
+        self.histories: list[list[dict]] = []
+
+    def stream(self, prompt, *, system=None, images=None, history=None):
+        self.systems.append(system or "")
+        self.histories.append(list(history or []))
+        yield self.reply
+
+    def generate(self, prompt, *, system=None, images=None, history=None):
+        return "".join(
+            self.stream(
+                prompt, system=system, images=images, history=history
+            )
+        )
+
+
+def test_reopened_rows_reach_main_only_as_fenced_recall_not_native_history(tmp_db):
+    first = SqliteVecMemory(tmp_db)
+    first.add(
+        "my lighthouse project codename was Amber Finch",
+        tags=("user",),
+    )
+    first.close()
+
+    reopened = SqliteVecMemory(tmp_db)
+    main = _RecordingLLM("Amber Finch.")
+    fast = _RecordingLLM("fast answer")
+    registry = CapabilityRegistry()
+    attach_llm_capabilities(
+        registry,
+        main,
+        fast_llm=fast,
+        memory=reopened,
+        recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=RecentContextConfig(enabled=True, as_messages=True),
+    )
+    try:
+        result = registry.invoke(
+            "assistant.answer", "what was my lighthouse project codename?", {}
+        )
+        assert result.text == "Amber Finch."
+        assert result.data["route"] == "main"
+        assert result.data.get("recalled_self_fact") is not True
+        assert fast.systems == []
+        assert main.histories == [[]]
+        assert "my lighthouse project codename was Amber Finch" in main.systems[0]
+        assert "UNTRUSTED reference DATA" in main.systems[0]
+    finally:
+        reopened.close()
 
 
 # --- byte-identical recall parity with SessionMemory ------------------------

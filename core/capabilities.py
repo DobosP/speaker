@@ -17,6 +17,7 @@ from always_on_agent.recall import (
     VISION_LABEL,
     compress,
     estimate_tokens,
+    strong_subject_overlap,
     trim_block_to_tokens,
 )
 from always_on_agent.untrusted import detect_injection, redact_pii, wrap_untrusted
@@ -35,6 +36,7 @@ from .persona import DEFAULT_SYSTEM
 from .routing import (
     FAST,
     LIVE_CONTEXT_KEY,
+    RELEVANT_RECALL_CONTEXT_KEY,
     HeuristicRouter,
     Router,
     dynamic_hedge_delay_ms,
@@ -454,6 +456,10 @@ def attach_llm_capabilities(
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
         metric_turn = _metric_turn_token(context)
+        # This scalar is derived afresh from this turn's bounded recall.  Clear a
+        # caller-reused context so an earlier match can never promote a later
+        # no-recall query.
+        context.pop(RELEVANT_RECALL_CONTEXT_KEY, None)
         # Classify intent + sensitivity once, up front, for BOTH the one-shot and
         # the escalated path (idempotent: only fills what's absent).
         _enrich_context(query, context)
@@ -881,6 +887,10 @@ def attach_llm_capabilities(
                 # set tighter here. Replaces the old blunt recall_block[:max_chars].
                 recall_block = trim_block_to_tokens(recall_block, recall_cfg.max_tokens)
                 prefix_parts = [b for b in (last_session_block, recall_block) if b]
+                if prefix_parts and strong_subject_overlap(
+                    query, "\n\n".join(prefix_parts)
+                ):
+                    context[RELEVANT_RECALL_CONTEXT_KEY] = True
                 # Prompt-injection hardening (OWASP LLM01): the recalled/last-session
                 # blocks carry content the assistant did NOT author -- prior-session
                 # messages AND 'Screen:' OCR/caption lines (a prime indirect-injection

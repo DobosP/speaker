@@ -1,7 +1,7 @@
 # ADR-0054: Bound exact recalled self-facts without promoting memory turns
 
 Date: 2026-07-12
-Status: accepted
+Status: superseded-by ADR-0060
 
 ## Decision
 

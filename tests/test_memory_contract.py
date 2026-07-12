@@ -269,6 +269,38 @@ def test_weak_rendered_recall_does_not_override_an_always_fast_router():
     assert main.systems == []
 
 
+def test_strong_subject_matched_recall_routes_to_main_inside_untrusted_fence():
+    memory = SessionMemory()
+    memory.add(
+        "my lighthouse project codename was Amber Finch",
+        tags=("user",),
+    )
+    main = _RecordingLLM("Amber Finch.")
+    fast = _RecordingLLM("fast answer")
+    registry = CapabilityRegistry()
+    attach_llm_capabilities(
+        registry,
+        main,
+        fast_llm=fast,
+        memory=memory,
+        recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=_NO_RECENT,
+    )
+
+    result = registry.invoke(
+        "assistant.answer", "what was my lighthouse project codename?", {}
+    )
+
+    assert result.text == "Amber Finch."
+    assert result.data["route"] == "main"
+    assert result.data["sensitivity"] == "private"
+    assert fast.systems == []
+    assert len(main.systems) == 1
+    system = main.systems[0] or ""
+    assert "my lighthouse project codename was Amber Finch" in system
+    assert "UNTRUSTED reference DATA" in system
+
+
 def test_no_recalled_context_keeps_short_answer_on_fast_model():
     memory = SessionMemory()
     main = _RecordingLLM("main answer")

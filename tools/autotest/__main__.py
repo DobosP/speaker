@@ -61,11 +61,16 @@ def tier_memory(args) -> dict:
     )
     rep = {"tier": "memory", **asdict(r)}
     sem = "" if r.answer_uses_fact is None else f" answer_uses_fact={r.answer_uses_fact}"
-    print(f"[memory] {'PASS' if r.ok else 'FAIL'} "
+    label = {
+        PASS: "PASS", FAIL: "FAIL", DIAGNOSTIC_PASS: "DIAGNOSTIC PASS",
+    }[r.outcome]
+    print(f"[memory] {label} "
           f"({r.llm_label}, {r.turns} turns, {r.duration_sec}s) "
           f"recall_available={r.recall_available} "
-          f"recall_injected={r.recall_injected}{sem} "
-          f"answer_model={r.answer_model} controller={r.controller_answer}")
+          f"recall_injected={r.recall_injected} fenced={r.recall_fenced}{sem} "
+          f"answer_model={r.answer_model} route={r.answer_route} "
+          f"topology_valid={r.topology_valid} controller={r.controller_answer} "
+          f"cross_session={r.cross_session} recent_history_clean={r.recent_history_clean}")
     print(f"         answer: {r.answer[:120]!r}")
     return rep
 

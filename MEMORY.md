@@ -15,6 +15,15 @@ Long-term memory stores **only substantive user speech**, not assistant TTS echo
 
 Short-term **in-session** history still includes assistant turns for the current LLM context; Postgres + vector search use **user** rows only.
 
+`all()` is a trusted current-process working window on every backend. SQLite
+rows survive restart, but a fresh process can access them only through bounded
+`search()` / `context_for_llm()` recall; the capability layer spotlight-fences
+that text as untrusted data. A question whose substantive subject is fully
+covered by one recalled line uses the desktop main tier; a merely nonempty or
+weak block does not change MiniCPM routing ([ADR-0060](docs/adr/0060-fence-persistent-recall-and-promote-strong-subject-matches.md)).
+Meeting-tagged notes remain in the current-process ring and are never written to
+SQLite or Postgres episodic storage.
+
 ## Scheduling
 
 - Buffer fills on each final user transcript.

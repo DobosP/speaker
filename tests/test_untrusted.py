@@ -21,6 +21,7 @@ from always_on_agent.untrusted import (
     _BEGIN,
     _END,
     detect_injection,
+    fenced_data_contains,
     redact_pii,
     wrap_untrusted,
 )
@@ -41,6 +42,14 @@ def test_wrap_untrusted_fences_with_directive():
     assert _BEGIN in out and _END in out
     assert "the moon is made of cheese" in out
     assert "[untrusted web]" in out
+    assert fenced_data_contains(out, "moon is made of cheese")
+
+
+def test_fenced_data_contains_rejects_outside_or_unbalanced_evidence():
+    fenced = wrap_untrusted("inside fact", source="memory")
+    assert not fenced_data_contains("outside fact\n" + fenced, "outside fact")
+    assert not fenced_data_contains(fenced + _END, "inside fact")
+    assert not fenced_data_contains(_BEGIN + " inside fact", "inside fact")
 
 
 def test_default_wrap_output_is_byte_identical_and_compact_wrap_is_balanced():

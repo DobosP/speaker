@@ -533,7 +533,7 @@ Every memory backend conforms to `always_on_agent.memory.Memory` — a runtime-c
 
 - `add(text, tags=())` — ingest (tag = neutral channel: `"user"`, `"assistant_output"`, `"ingested"`, `"meeting"`, etc.)
 - `search(query, limit=5)` — semantic recall → neutral `MemoryItem` sequences
-- `all()` → recent window (tag-faithful, preserves what was ingested)
+- `all()` → tag-faithful current-process recent window; durable rows never re-enter it after restart
 - `context_for_llm(query)` — ready-to-prepend block or empty string
 - `prune()` — age-TTL retention/eviction; no-op when `_db_available=False`
 - `close()` — flush + release resources
@@ -560,7 +560,7 @@ Three injection seams type against `Memory`: `always_on_agent.supervisor` (inges
 - Meeting notes (R7) → in-RAM ring buffer ONLY (never persisted; the old
   `meeting_persist` toggle was never wired and is removed -- RAM-only is a hard §9.7 guarantee)
 
-**In-RAM ring buffer (R3):** The adapter keeps its own small `_ring` of raw `(text, tags)` handed to `add()`, so `all()` returns that instead of `MemoryManager.recent_messages` (which drops tags). This ensures tag fidelity: both SessionMemory and MemoryManagerAdapter pass `test_addressing`'s `("ingested",)` tag assertion identically.
+**In-RAM ring buffer (R3):** The Postgres adapter and SQLite backend keep their own bounded process-local `_ring` of raw `(text, tags)` handed to `add()`, so `all()` never turns durable prior-session rows into native recent chat. This preserves tag fidelity and the recent-versus-past authority boundary; persistent rows remain available through fenced recall (ADR-0060).
 
 **Search and recall:**
 - `search()` → wraps `MemoryManager.search_memory()` results into neutral `MemoryItem`s with defensive tag extraction (R9: summary rows have no `role`, so tags are `tuple(t for t in (d.get("type"), d.get("role")) if t)`).
@@ -639,7 +639,7 @@ In `core/capabilities.py::assistant()` (lines 260–288):
 5. **Float sensitivity:** check each recent turn for private content; float the prompt's `sensitivity` to the most-private (§9.7 — see [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97)).
 6. **Compose:** `recall + system + recent` (recall first, system stable in the middle for KV-cache reuse, recent appended).
 
-**Two-layer gate:** config flag `recall_enabled` (short-circuit before any embedding) + relevance gate (backend returns `""` when irrelevant). Never mutates `query` (keeps router/sensitivity inputs clean). Best-effort: errors return empty string, never breaking a turn.
+**Two-layer gate:** config flag `recall_enabled` (short-circuit before any embedding) + relevance gate (backend returns `""` when irrelevant). Never mutates `query` (keeps router/sensitivity inputs clean). A separate conservative one-line subject match publishes only a boolean routing hint: strong remembered questions use desktop main, while weak/nonempty recall stays fast (ADR-0060). Best-effort errors return empty string.
 
 ### 6.8 Off-thread producers (R2, R8)
 
@@ -681,7 +681,7 @@ Rolling summary and user profile run **off the bus thread** (never inside `add_m
 
 ### 6.12 Deferred to P2b/P3
 
-- **SQLite+sqlite-vec backend:** the Protocol makes it a drop-in; deferred because no consumer needs it now (mobile is Dart, desktop has Postgres).
+- **SQLite backend:** implemented as the explicit persistent desktop-without-Postgres tier using stdlib SQLite and optional injected embeddings; the Dart/mobile port and native ANN acceleration remain future work (ADR-0060).
 - **Fuzzy profile LLM:** regex deterministic floor only; soft LLM extraction deferred.
 - **Migrations consolidation:** `tools/migrate.py apply` is canonical; `setup_database.py` is a thin wrapper (psycopg3 only, imports only declared deps).
 

@@ -23,8 +23,62 @@ from always_on_agent.recall import (
     estimate_tokens,
     pack,
     render,
+    strong_subject_overlap,
     trim_block_to_tokens,
 )
+
+
+# --- conservative recall-routing signal -----------------------------------
+
+
+def test_strong_subject_overlap_requires_one_line_covering_the_question_subject():
+    block = (
+        "=== Past Conversations ===\n"
+        "User: my lighthouse project's codename was Amber Finch\n"
+        "User: we discussed the release train"
+    )
+    assert strong_subject_overlap(
+        "what was my lighthouse project codename?", block
+    )
+
+
+def test_strong_subject_overlap_rejects_weak_or_cross_line_matches():
+    favorite = "=== Past Conversations ===\nUser: my favorite color is teal"
+    assert not strong_subject_overlap("what is the capital of france?", favorite)
+
+    split = (
+        "=== Past Conversations ===\n"
+        "User: the lighthouse needs paint\n"
+        "User: the project codename is Amber Finch"
+    )
+    assert not strong_subject_overlap(
+        "what was the lighthouse project codename?", split
+    )
+
+
+def test_strong_subject_overlap_keeps_attribute_nouns_load_bearing():
+    assert strong_subject_overlap(
+        "what was my rescue dog's name?",
+        "=== Past Conversations ===\nUser: we named the rescue dog Juniper",
+    )
+    assert not strong_subject_overlap(
+        "what is my dog's name?",
+        "=== Past Conversations ===\nUser: my dog prefers kibble",
+    )
+    assert not strong_subject_overlap(
+        "what time is my dentist appointment?",
+        "=== Past Conversations ===\nUser: my dentist appointment is at Main Street",
+    )
+    assert not strong_subject_overlap(
+        "what is my lighthouse project codename?",
+        "=== Past Conversations ===\nUser: my lighthouse project needs paint",
+    )
+
+
+def test_strong_subject_overlap_needs_a_question_and_substantive_subject():
+    block = "=== Past Conversations ===\nUser: the lighthouse project is active"
+    assert not strong_subject_overlap("the lighthouse project is active", block)
+    assert not strong_subject_overlap("what was it?", block)
 
 
 # --- estimate_tokens --------------------------------------------------------

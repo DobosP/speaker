@@ -80,6 +80,12 @@ class SqliteVecMemory:
         self._ttl_days = ttl_days if (ttl_days and ttl_days > 0) else None
         self._lock = threading.Lock()
         self._closed = False
+        # Immediate conversation history is process-local, exactly like
+        # MemoryManagerAdapter._ring.  Persisted rows remain searchable through
+        # context_for_llm(), where they are spotlight-fenced as untrusted recall;
+        # they must never reappear after reopen as native user/assistant chat
+        # messages with current-session authority.
+        self._ring: list[MemoryItem] = []
         # check_same_thread=False + our own lock: the connection is shared across
         # the bus/worker threads, serialized by self._lock.
         self._conn = sqlite3.connect(path, check_same_thread=False)
@@ -111,6 +117,11 @@ class SqliteVecMemory:
 
     # --- Memory protocol ----------------------------------------------------
 
+    def _append_ring_locked(self, item: MemoryItem) -> None:
+        self._ring.append(item)
+        if len(self._ring) > self._max_items:
+            self._ring = self._ring[-self._max_items:]
+
     def add(self, text: str, tags: tuple[str, ...] = ()) -> None:
         cleaned = text.strip()
         if not cleaned:
@@ -118,6 +129,17 @@ class SqliteVecMemory:
         # Mirror SessionMemory.add: default tags to the derived keywords so the
         # two backends store -- and later recall -- identical (text, tags).
         stored_tags = tuple(tags) if tags else tuple(keywords(cleaned))
+        created_at = time.time()
+        # Meeting notes are current-process PRIVATE working memory, never
+        # durable episodic rows.  Mirror MemoryManagerAdapter's hard boundary:
+        # they remain visible through all() until shutdown but cannot surface in
+        # search/recall after reopen.
+        if "meeting" in stored_tags:
+            with self._lock:
+                self._append_ring_locked(
+                    MemoryItem(cleaned, stored_tags, created_at)
+                )
+            return
         emb: Optional[bytes] = None
         if self._embedder is not None:
             try:
@@ -127,16 +149,21 @@ class SqliteVecMemory:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO items (text, tags, ts, embedding) VALUES (?, ?, ?, ?)",
-                (cleaned, json.dumps(list(stored_tags)), time.time(), emb),
+                (cleaned, json.dumps(list(stored_tags)), created_at, emb),
             )
             self._conn.commit()
+            # Procedural rules have their own trusted, explicit injection path
+            # and never belong to episodic/recent conversation history.
+            if "procedural" not in stored_tags:
+                self._append_ring_locked(
+                    MemoryItem(cleaned, stored_tags, created_at)
+                )
 
     def _recent_rows(self) -> list[tuple[str, tuple[str, ...], float, Optional[bytes]]]:
-        # The recall candidate pool is the SAME window all() exposes and that the
-        # in-RAM SessionMemory effectively scans (it evicts beyond max_items, so
-        # its candidate set IS the last max_items). Tracking max_items here -- not
-        # a separate constant -- keeps recall byte-identical with SessionMemory at
-        # any DB size and consistent with all().
+        # Durable recall scans the most recent max_items persisted rows.  This is
+        # deliberately separate from all(), whose trusted current-process ring
+        # starts empty after reopen.  Using the same cap as SessionMemory still
+        # keeps candidate selection byte-identical for identical current data.
         with self._lock:
             cur = self._conn.execute(
                 "SELECT text, tags, ts, embedding FROM items ORDER BY id DESC LIMIT ?",
@@ -202,21 +229,11 @@ class SqliteVecMemory:
         return [MemoryItem(c.text, c.tags, c.timestamp) for c in cands[:limit]]
 
     def all(self) -> list[MemoryItem]:
+        # all() is the trusted, chronological *current-process* working window.
+        # Durable rows are intentionally available only through search() /
+        # context_for_llm(), never as native chat history after a restart.
         with self._lock:
-            cur = self._conn.execute(
-                "SELECT text, tags, ts FROM items ORDER BY id DESC LIMIT ?",
-                (self._max_items,),
-            )
-            rows = cur.fetchall()
-        items: list[MemoryItem] = []
-        for text, tags_json, ts in rows:
-            try:
-                tags = tuple(json.loads(tags_json))
-            except Exception:  # noqa: BLE001
-                tags = ()
-            items.append(MemoryItem(text, tags, float(ts)))
-        items.reverse()  # oldest -> newest, matching SessionMemory.all()
-        return items
+            return list(self._ring)
 
     def context_for_llm(self, query: str) -> str:
         return build_block(self._candidates(query), query, self._budget)

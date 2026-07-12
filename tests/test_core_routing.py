@@ -20,6 +20,7 @@ from core.routing import (
     FAST,
     HEDGE_DELAY_FLOOR_MS,
     MAIN,
+    RELEVANT_RECALL_CONTEXT_KEY,
     HeuristicRouter,
     LatencyPolicy,
     build_router,
@@ -27,6 +28,7 @@ from core.routing import (
     dynamic_hedge_delay_ms,
     live_nudge,
     order_presets_by_cost,
+    relevant_recall_nudge,
 )
 
 # A query whose static heuristic score lands just below the 0.5 threshold
@@ -144,6 +146,27 @@ def test_contextful_followup_respects_phone_threshold():
     router = HeuristicRouter(threshold=0.55)
     ctx = {"recent_conversation": "=== Recent conversation ===\nUser: tell me about apm\nYou: ..."}
     assert router.choose("tell me more about that", ctx) == FAST
+
+
+def test_strong_recall_signal_promotes_default_but_not_phone_router():
+    context = {RELEVANT_RECALL_CONTEXT_KEY: True}
+    assert HeuristicRouter().choose("what was my lighthouse codename", context) == MAIN
+    assert (
+        HeuristicRouter(threshold=0.55).choose(
+            "what was my lighthouse codename", context
+        )
+        == FAST
+    )
+    assert relevant_recall_nudge(context) == 0.5
+    assert relevant_recall_nudge({RELEVANT_RECALL_CONTEXT_KEY: "true"}) == 0.0
+    # Fail closed on truthy strings or other untrusted values.
+    assert (
+        HeuristicRouter().choose(
+            "what was my lighthouse codename",
+            {RELEVANT_RECALL_CONTEXT_KEY: "true"},
+        )
+        == FAST
+    )
 
 
 def test_latency_policy_keeps_instant_control_snappy_and_acks_slow_turns():

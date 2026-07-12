@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3737 passed/31 skipped/9 warnings; injected-profile focused: 133 passed; strict archived fake-stream replay: 9 passed; APM/DTD: 6 passed; deterministic conversation: 42/42, all 14 scenarios 3/3, every gate true.
+Last verified: 2026-07-13 on Linux ROG; integration before ADR-0065: full 3737 passed/31 skipped/9 warnings; memory feature `ed548d1`: full 3718 passed/31 skipped/9 warnings; strict recorded/APM: 9/6 passed; deterministic conversation: 42/42, every gate true.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–64 headless code is green.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–65 headless code is green.
 Inject `205351`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
 ## Runtime
@@ -17,8 +17,8 @@ Inject `205351`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overl
 - Anchored high-confidence requests take deterministic ACT/search/research paths;
   ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
-  SQLite restart rows stay outside native history; strong one-line recall routes
-  to fenced Gemma, but final real semantic evidence is pending (ADR-0060).
+  SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
+  real PASS needs clean stable revision/contract/full identities and is pending (ADR-0060/65).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are

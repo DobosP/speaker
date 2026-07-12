@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-from hashlib import sha256
 from importlib import metadata as importlib_metadata
-import json
 from pathlib import Path
-import re
-import subprocess
-from urllib.parse import urlparse
 
 from core.minicpm_identity import MINICPM_Q8_CONTRACT
 
 from .identity import verify_minicpm_identity, verify_ollama_blob_identity
+from .provenance import (
+    config_metadata,
+    failed_identity_records,
+    identity_bundle,
+    identity_contract,
+    identity_snapshot,
+    model_identity_record,
+    repository_metadata,
+)
 from .report import build_report, summarize_model, write_report
 from .runner import (
     LOCAL_OLLAMA_HEADERS,
@@ -60,62 +64,12 @@ def _print_summary(label: str, summary) -> None:
         )
 
 
-def _json_sha256(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-    return sha256(encoded.encode("utf-8")).hexdigest()
-
-
 def _repository_metadata() -> dict[str, object]:
-    root = Path(__file__).resolve().parents[2]
-    try:
-        revision = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        dirty = bool(
-            subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=root,
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-        )
-        return {"revision": revision, "dirty": dirty}
-    except (OSError, subprocess.SubprocessError):
-        return {"revision": "", "dirty": None}
+    return repository_metadata()
 
 
 def _config_metadata(config: dict, *, include_local_config: bool) -> dict[str, object]:
-    llm = config.get("llm", {}) or {}
-    raw_host = str(llm.get("host", "") or "")
-    parsed_host = urlparse(raw_host if "://" in raw_host else f"http://{raw_host}")
-    hostname = parsed_host.hostname or ""
-    try:
-        port = parsed_host.port
-    except ValueError:
-        port = None
-    display_hostname = f"[{hostname}]" if ":" in hostname else hostname
-    host_label = f"{parsed_host.scheme or 'http'}://{display_hostname}"
-    if port is not None:
-        host_label += f":{port}"
-    return {
-        "include_local_config": include_local_config,
-        # Hash the complete effective, device-profile-applied local contract.
-        # Reports disclose only the digest, never paths or local values.
-        "contract_sha256": _json_sha256(config),
-        "llm_options_sha256": _json_sha256(llm.get("options")),
-        "backend": str(llm.get("backend", "ollama")),
-        "host": host_label,
-        "keep_alive": llm.get("keep_alive"),
-        "configured_role_models": {
-            "main": str(llm.get("main_model", "")),
-            "fast": str(llm.get("fast_model", "")),
-        },
-    }
+    return config_metadata(config, include_local_config=include_local_config)
 
 
 def _ollama_version() -> str:
@@ -134,99 +88,38 @@ def _pair_metadata(models, warmup: dict[str, object]) -> dict[str, object]:
 
 
 def _model_identity_record(model: str, config: dict) -> dict[str, object]:
-    host = str((config.get("llm", {}) or {}).get("host", "") or "") or None
-    if model == LOCAL_MODEL:
-        identity = verify_minicpm_identity(
-            host=host,
-            client_headers=LOCAL_OLLAMA_HEADERS,
-        )
-        return {
-            "model": model,
-            "verification": "minicpm_q8_blob_template_parameters",
-            "required": True,
-            **identity.as_dict(),
-        }
-    identity = verify_ollama_blob_identity(
+    return model_identity_record(
         model,
-        host=host,
-        client_headers=LOCAL_OLLAMA_HEADERS,
+        config,
+        minicpm_verifier=lambda **kwargs: verify_minicpm_identity(
+            **kwargs,
+            client_headers=LOCAL_OLLAMA_HEADERS,
+        ),
+        generic_verifier=lambda name, **kwargs: verify_ollama_blob_identity(
+            name,
+            **kwargs,
+            client_headers=LOCAL_OLLAMA_HEADERS,
+        ),
     )
-    return {
-        "model": model,
-        "verification": "ollama_blob_effective_config",
-        "required": True,
-        **identity.as_dict(),
-    }
 
 
 def _identity_contract(record: object) -> tuple[str, str] | None:
-    if not isinstance(record, dict) or record.get("ok") is not True:
-        return None
-    blob = str(
-        record.get("alias_blob_sha256")
-        or record.get("blob_sha256")
-        or ""
-    ).lower()
-    effective = str(record.get("effective_config_sha256", "") or "").lower()
-    if (
-        re.fullmatch(r"[0-9a-f]{64}", blob) is None
-        or re.fullmatch(r"[0-9a-f]{64}", effective) is None
-    ):
-        return None
-    return blob, effective
+    return identity_contract(record)
 
 
 def _identity_snapshot(role_models: dict[str, str], config: dict) -> dict[str, object]:
-    models = {
-        model: _model_identity_record(model, config)
-        for model in sorted(set(role_models.values()))
-        if model
-    }
-    return {
-        "role_models": dict(role_models),
-        "models": models,
-        "ok": bool(
-            models
-            and set(models) == {model for model in role_models.values() if model}
-            and all(_identity_contract(record) is not None for record in models.values())
-        ),
-    }
+    return identity_snapshot(role_models, config, record_fn=_model_identity_record)
 
 
 def _identity_bundle(
     before: dict[str, object],
     after: dict[str, object],
 ) -> dict[str, object]:
-    before_models = before.get("models", {})
-    after_models = after.get("models", {})
-    stable = bool(
-        isinstance(before_models, dict)
-        and isinstance(after_models, dict)
-        and set(before_models) == set(after_models)
-        and all(
-            _identity_contract(before_models[model])
-            == _identity_contract(after_models[model])
-            is not None
-            for model in before_models
-        )
-    )
-    return {
-        "before": before,
-        "after": after,
-        "stable": stable,
-        "ok": bool(before.get("ok") is True and after.get("ok") is True and stable),
-    }
+    return identity_bundle(before, after)
 
 
 def _failed_identity_records(snapshot: dict[str, object]) -> dict[str, object]:
-    records = snapshot.get("models", {})
-    if not isinstance(records, dict):
-        return {"snapshot": snapshot}
-    return {
-        model: record
-        for model, record in records.items()
-        if _identity_contract(record) is None
-    }
+    return failed_identity_records(snapshot)
 
 
 def _gate_exit_code(gate: dict[str, object]) -> int:

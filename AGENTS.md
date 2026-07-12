@@ -3,6 +3,20 @@
 ## Project summary
 `speaker` is Paul's local voice/audio stack. Audio pipeline changes need deterministic headless tests plus manual live validation when hardware behavior matters.
 
+## Fleet context
+- Role: local-first always-on voice assistant (personal R&D; repo stays on the personal account).
+- Upstream: none · Downstream: none (standalone; always-on audio never leaves the machine).
+- Fleet map + parallel-agent protocol: `~/work/AGENTS.md` (agent-ops ADR-0025).
+
+## Parallel work (mandatory)
+- This shared checkout stays on `main`, clean — never switch branches or commit task work here.
+- One task = one branch (`<type>/<slug>`) = one worktree under `~/work/_worktrees/speaker/`:
+  `python3 ~/work/agent-ops/scripts/create_task_worktree.py --repo ~/work/speaker --branch <type>/<slug> --task "..." --write`
+- Never create worktrees under `/tmp` (existing `/tmp/speaker-*` worktrees are legacy — migrate at
+  next idle; backups: `refs/backups/2026-07-12/*`). Workers never push; the orchestrating session
+  lands green work on `main` (ADR-0014) and backs up unlanded branches to origin. Deletion is
+  human-confirmed only.
+
 ## Read first
 1. `CLAUDE.md` if present.
 2. `STATUS.md` for durable status.

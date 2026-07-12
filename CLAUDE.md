@@ -3,6 +3,7 @@
 Guidance for Claude Code working in this repo. Read this first every session.
 
 Docs discipline: see AGENTS.md — STATUS.md + ADR update is part of definition of done.
+Fleet context + parallel-agent protocol (ADR-0025): top stanzas of `AGENTS.md`; map: `~/work/AGENTS.md`.
 
 ## What this project is
 

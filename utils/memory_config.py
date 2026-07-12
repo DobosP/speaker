@@ -24,7 +24,7 @@ class MemoryWriterConfig:
     min_confidence: float = 0.55
     llm_cleanup: bool = True
     llm_gate: bool = True
-    cleanup_model: str = "llama3.2:3b"
+    cleanup_model: str = "minicpm5-1b:q8"
     max_buffer_items: int = 32
     min_chars: int = 3
     dedupe_similarity: float = 0.92

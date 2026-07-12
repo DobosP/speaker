@@ -39,6 +39,14 @@ class NullSink:
     module_id: str
 
 
+@dataclass
+class InjectionPlayback:
+    """One live ``paplay`` process and the expected speech-onset clock."""
+
+    process: subprocess.Popen
+    speech_onset_monotonic: float
+
+
 @contextlib.contextmanager
 def null_sink(name: str = "cc_autotest_sink") -> Iterator[NullSink]:
     """Load a null sink, yield it, unload on exit (even on error)."""
@@ -164,6 +172,56 @@ def _with_lead_in(wav_path: str, lead_in_ms: int) -> str:
     return out
 
 
+@contextlib.contextmanager
+def play_injection(
+    target_sink: Optional[str], wav_path: str, *, volume_pct: int = 100,
+    lead_in_ms: int = 0,
+) -> Iterator[InjectionPlayback]:
+    """Start a user clip and expose its causal speech-onset clock.
+
+    Unlike :func:`inject`, this context yields while ``paplay`` is still active.
+    Barge tests can therefore observe a cut *during* the talk-over instead of
+    starting their timer only after the whole user clip has finished.
+    """
+    play_path = wav_path
+    tmp: Optional[str] = None
+    if lead_in_ms > 0:
+        tmp = _with_lead_in(wav_path, lead_in_ms)
+        play_path = tmp
+    proc: Optional[subprocess.Popen] = None
+    try:
+        cmd = ["paplay"]
+        if target_sink:
+            cmd.append(f"--device={target_sink}")
+        if volume_pct != 100:
+            cmd.append(f"--volume={int(65536 * volume_pct / 100)}")
+        cmd.append(play_path)
+        launched = time.monotonic()
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        yield InjectionPlayback(
+            process=proc,
+            speech_onset_monotonic=launched + max(0, lead_in_ms) / 1000.0,
+        )
+    finally:
+        if proc is not None and proc.poll() is None:
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=30.0)
+            if proc.poll() is None:
+                proc.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=3.0)
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+        if tmp:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+
+
 def inject(
     target_sink: Optional[str], wav_path: str, *, volume_pct: int = 100,
     lead_in_ms: int = 0,
@@ -179,23 +237,13 @@ def inject(
     ``lead_in_ms`` prepends that much silence to the played clip (real over-the-
     air, esp. Bluetooth) so the sink is live + the engine's VAD has settled
     before the first word -- otherwise the clip's opening gets truncated."""
-    play_path = wav_path
-    tmp: Optional[str] = None
-    if lead_in_ms > 0:
-        tmp = _with_lead_in(wav_path, lead_in_ms)
-        play_path = tmp
-    try:
-        cmd = ["paplay"]
-        if target_sink:
-            cmd.append(f"--device={target_sink}")
-        if volume_pct != 100:
-            cmd.append(f"--volume={int(65536 * volume_pct / 100)}")
-        cmd.append(play_path)
-        subprocess.run(cmd, capture_output=True)
-    finally:
-        if tmp:
-            with contextlib.suppress(OSError):
-                os.remove(tmp)
+    with play_injection(
+        target_sink,
+        wav_path,
+        volume_pct=volume_pct,
+        lead_in_ms=lead_in_ms,
+    ) as playback:
+        playback.process.wait()
 
 
 # --------------------------------------------------------------------------- #

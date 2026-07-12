@@ -22,7 +22,7 @@ from .config import (
     resolve_device,
 )
 from .engine import AudioEngine
-from .llm import LLMClient
+from .llm import LLMClient, OllamaLLM
 from .llm_factory import (
     _build_cloud_client,
     _build_llms,
@@ -278,6 +278,28 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
 
     try:
         from always_on_agent.memory import MemoryManagerAdapter
+        from utils.memory_config import MemoryWriterConfig
+        from utils.memory_writer import LLMClientMemoryCleanup
+
+        # The Postgres writer's transcript cleanup/gate is an Ollama-specific
+        # structured call. Reuse the *actual* fast Ollama role so persistence
+        # cannot silently load a third, unprovisioned model beside the shipped
+        # MiniCPM/Gemma pair. Non-Ollama/echo profiles retain the deterministic
+        # junk, confidence, echo, control-phrase, and dedupe filters without
+        # attempting a localhost Ollama call they cannot satisfy.
+        fast_ollama_model = (
+            str(fast_llm.model or "").strip()
+            if isinstance(fast_llm, OllamaLLM)
+            else ""
+        )
+        writer_llm_client = (
+            LLMClientMemoryCleanup(fast_llm) if fast_ollama_model else None
+        )
+        writer_config = MemoryWriterConfig(
+            llm_cleanup=bool(fast_ollama_model),
+            llm_gate=bool(fast_ollama_model),
+            cleanup_model=fast_ollama_model or MemoryWriterConfig().cleanup_model,
+        )
 
         return MemoryManagerAdapter(
             summarizer=summarizer,
@@ -297,6 +319,8 @@ def _build_memory(config: dict, fast_llm: LLMClient | None = None) -> Memory:
             # lm-5: persist + recall assistant finals (default OFF) so the Postgres
             # tier matches the in-RAM/SQLite backends.
             persist_assistant=bool(mem_cfg.get("persist_assistant", False)),
+            memory_writer_config=writer_config,
+            memory_writer_llm_client=writer_llm_client,
         )
     except Exception as exc:  # noqa: BLE001 - degrade to in-RAM, never crash
         redacted = _redact_db_url(db_url) if db_url else "(no DATABASE_URL)"
@@ -699,6 +723,18 @@ def main(argv: list[str] | None = None) -> int:
         default=3,
         help="with --enroll: number of clips to average into the reference (default: 3)",
     )
+    parser.add_argument(
+        "--replace-enrollment",
+        action="store_true",
+        help="with --enroll: explicitly allow replacing a non-empty configured "
+        "speaker reference (normally refused)",
+    )
+    parser.add_argument(
+        "--require-prepared-enrollment",
+        action="store_true",
+        help="with --enroll: refuse unless tools.prepare_enrollment bound this "
+        "checkout to a verified isolated candidate",
+    )
     args = parser.parse_args(argv)
 
     if args.list_devices:
@@ -756,7 +792,11 @@ def main(argv: list[str] | None = None) -> int:
         from .enroll import run_enrollment
 
         code = run_enrollment(
-            config, passes=args.enroll_passes, seconds=args.enroll_seconds
+            config,
+            passes=args.enroll_passes,
+            seconds=args.enroll_seconds,
+            replace_existing=args.replace_enrollment,
+            require_prepared=args.require_prepared_enrollment,
         )
         try:
             monitor.stop()

@@ -706,6 +706,38 @@ class OllamaLLM:
         )
         return out
 
+    def generate_json(
+        self,
+        prompt: str,
+        *,
+        system: Optional[str] = None,
+        images: Optional[Sequence[ImageInput]] = None,
+        history: Optional[Sequence[HistoryTurn]] = None,
+    ) -> str:
+        """Use this client's transport/runtime settings with Ollama JSON mode."""
+
+        t0 = time.perf_counter()
+        kwargs = self._chat_kwargs(
+            prompt,
+            system,
+            images,
+            stream=False,
+            history=history,
+        )
+        kwargs["format"] = "json"
+        resp = self._ensure().chat(**kwargs)
+        out = resp["message"]["content"]
+        _log_llm_request(
+            _ollama_log,
+            self.model,
+            prompt,
+            system,
+            dt=time.perf_counter() - t0,
+            out_chars=len(out or ""),
+            streamed=False,
+        )
+        return out
+
     def stream(
         self,
         prompt: str,

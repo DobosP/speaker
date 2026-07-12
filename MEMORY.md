@@ -18,9 +18,12 @@ Short-term **in-session** history still includes assistant turns for the current
 ## Scheduling
 
 - Buffer fills on each final user transcript.
-- Auto-flush after `memory.save_interval_sec` (default **240s**).
-- Force flush when the buffer hits `memory.max_buffer_items` (default **32**).
+- Auto-flush after the writer's bounded debounce interval; a full buffer flushes early.
 - Flush on shutdown (`MemoryManager.close()`).
+- On the Postgres/Ollama path, cleanup uses the already-constructed fast client
+  (including its host/options/lifecycle) in JSON mode. Non-Ollama paths keep the
+  deterministic filters without making an undeclared Ollama call
+  ([ADR-0057](docs/adr/0057-reuse-fast-client-for-memory-ingest.md)).
 
 ## Schema (`messages`)
 
@@ -82,38 +85,40 @@ tracked in `_yoyo_migration`.
 
 ## Configuration
 
-Add a `memory` block to `config.json` (see below). CLI flags override file defaults:
+The live `memory` block contains backend, recall/context, persistence, and
+retention controls. Writer-internal cleanup/buffer knobs are intentionally not a
+second live config surface; see ADR-0057.
 
-| Key / flag | Default | Meaning |
-|------------|---------|---------|
-| `memory.save_interval_sec` / `--memory-flush-interval` | 180–240 | Debounce seconds |
-| `memory.min_confidence` | 0.55 | Drop low-confidence STT |
-| `memory.llm_cleanup` | true | Fix typos via Ollama JSON |
-| `memory.llm_gate` | true | Skip non-substantive lines |
-| `memory.cleanup_model` | `gemma3:1b` | Ollama model for cleanup |
-| `memory.max_buffer_items` | 32 | Max buffer before forced flush |
-| `memory.embeddings` | off | pgvector semantic search |
+| Key | Shipped value | Meaning |
+|-----|---------------|---------|
+| `memory.backend` | `auto` | in-memory unless `DATABASE_URL` selects Postgres; `sqlite` is explicit |
+| `memory.recall_enabled` | `false` | inject bounded semantic recall |
+| `memory.recent_context_enabled` | `true` | inject bounded same-session turns |
+| `memory.embeddings` | `false` | enable pgvector embeddings on Postgres |
+| `memory.profile_enabled` | `false` | enable durable profile extraction on Postgres |
+| `memory.cross_session_continuity` | `false` | seed Postgres context from prior sessions |
+| `memory.persist_assistant` | `false` | persist assistant finals as episodic rows |
+| `memory.episodic_ttl_days` | `90` | summarize then evict old messages |
+| `memory.summary_ttl_days` | `365` | remove old summaries |
 
 Environment:
 
 - `DATABASE_URL` — Postgres DSN
-- `MEMORY_CLEANUP_MODEL` — override cleanup Ollama model
 
 ## Example `config.json`
 
 ```json
 {
   "memory": {
-    "save_interval_sec": 240,
-    "min_confidence": 0.55,
-    "llm_cleanup": true,
-    "llm_gate": true,
-    "cleanup_model": "gemma3:1b",
-    "max_buffer_items": 32,
-    "min_chars": 3,
-    "dedupe_similarity": 0.92,
-    "persist_user_only": true,
-    "save_control_phrases": false
+    "backend": "auto",
+    "recall_enabled": false,
+    "recent_context_enabled": true,
+    "embeddings": false,
+    "profile_enabled": false,
+    "cross_session_continuity": false,
+    "persist_assistant": false,
+    "episodic_ttl_days": 90,
+    "summary_ttl_days": 365
   }
 }
 ```

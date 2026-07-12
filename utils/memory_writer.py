@@ -82,6 +82,78 @@ class LLMCleanupClient(Protocol):
     def cleanup(self, text: str, *, gate: bool) -> CleanupResult: ...
 
 
+class TextGenerationClient(Protocol):
+    def generate(self, prompt: str, *, system: Optional[str] = None) -> str: ...
+
+
+def _cleanup_prompt(text: str, *, gate: bool) -> tuple[str, str]:
+    system = (
+        "You normalize voice transcripts for long-term memory. "
+        "Fix obvious STT typos, punctuation, and casing. "
+        "Do not invent facts. Keep the user's meaning. "
+        "If the line is only filler, noise, or a control phrase (stop/quit), "
+        "set worth_saving false."
+    )
+    if gate:
+        system += " Only save substantive user content worth recalling later."
+    prompt = (
+        f"Transcript:\n{text}\n\n"
+        "Reply with JSON only: "
+        '{"worth_saving": bool, "cleaned_text": str, "reason": str}'
+    )
+    return system, prompt
+
+
+def _decode_cleanup(raw: str, fallback: str) -> CleanupResult:
+    """Decode one JSON object, tolerating a model's surrounding prose/fence."""
+
+    decoder = json.JSONDecoder()
+    data = None
+    for index, char in enumerate(raw or ""):
+        if char != "{":
+            continue
+        try:
+            candidate, _end = decoder.raw_decode(raw[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            data = candidate
+            break
+    if data is None:
+        raise ValueError("cleanup response contained no JSON object")
+
+    raw_worth = data.get("worth_saving", True)
+    worth = raw_worth if isinstance(raw_worth, bool) else True
+    raw_cleaned = data.get("cleaned_text", fallback)
+    cleaned = raw_cleaned.strip() if isinstance(raw_cleaned, str) else fallback.strip()
+    cleaned = cleaned or fallback.strip()
+    raw_reason = data.get("reason", "")
+    reason = raw_reason if isinstance(raw_reason, str) else ""
+    if not cleaned:
+        worth = False
+    return CleanupResult(worth, cleaned, reason)
+
+
+class LLMClientMemoryCleanup:
+    """Cleanup through the runtime's already-configured fast LLM client."""
+
+    def __init__(self, client: TextGenerationClient):
+        self.client = client
+
+    def cleanup(self, text: str, *, gate: bool) -> CleanupResult:
+        system, prompt = _cleanup_prompt(text, gate=gate)
+        try:
+            generate_json = getattr(self.client, "generate_json", None)
+            raw = (
+                generate_json(prompt, system=system)
+                if callable(generate_json)
+                else self.client.generate(prompt, system=system)
+            )
+            return _decode_cleanup(raw, text)
+        except Exception as exc:
+            return CleanupResult(True, text.strip(), f"llm_error:{exc}")
+
+
 class OllamaMemoryCleanup:
     """Structured cleanup / gate via Ollama (mockable in tests)."""
 
@@ -93,21 +165,7 @@ class OllamaMemoryCleanup:
         if not self.enabled:
             return CleanupResult(True, text.strip(), "llm_disabled")
 
-        system = (
-            "You normalize voice transcripts for long-term memory. "
-            "Fix obvious STT typos, punctuation, and casing. "
-            "Do not invent facts. Keep the user's meaning. "
-            "If the line is only filler, noise, or a control phrase (stop/quit), "
-            "set worth_saving false."
-        )
-        if gate:
-            system += " Only save substantive user content worth recalling later."
-
-        prompt = (
-            f"Transcript:\n{text}\n\n"
-            "Reply with JSON only: "
-            '{"worth_saving": bool, "cleaned_text": str, "reason": str}'
-        )
+        system, prompt = _cleanup_prompt(text, gate=gate)
         try:
             import ollama
 
@@ -121,13 +179,7 @@ class OllamaMemoryCleanup:
                 options={"temperature": 0.1, "num_predict": 256},
             )
             raw = resp.get("message", {}).get("content", "{}")
-            data = json.loads(raw)
-            worth = bool(data.get("worth_saving", True))
-            cleaned = str(data.get("cleaned_text", text)).strip() or text.strip()
-            reason = str(data.get("reason", ""))
-            if not cleaned:
-                worth = False
-            return CleanupResult(worth, cleaned, reason)
+            return _decode_cleanup(raw, text)
         except Exception as exc:
             return CleanupResult(True, text.strip(), f"llm_error:{exc}")
 

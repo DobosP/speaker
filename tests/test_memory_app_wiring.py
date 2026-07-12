@@ -13,7 +13,10 @@ setting a throwaway ``$DATABASE_URL`` under ``auto`` backend selection.
 """
 from __future__ import annotations
 
+import pytest
+
 import core.app as app
+from core.llm import OllamaLLM
 
 
 class _FakeAdapter:
@@ -35,8 +38,9 @@ class _FakeAdapter:
 class _FakeFastLLM:
     """Records the prompt the summarizer closure forwards to generate()."""
 
-    def __init__(self) -> None:
+    def __init__(self, model: str = "") -> None:
         self.prompts: list[str] = []
+        self.model = model
 
     def generate(self, prompt, *, system=None, images=None) -> str:
         self.prompts.append(prompt)
@@ -101,6 +105,42 @@ def test_build_memory_summarizer_none_without_fast_llm(monkeypatch):
 
     assert isinstance(mem, _FakeAdapter)
     assert _FakeAdapter.last_kwargs["summarizer"] is None
+
+
+@pytest.mark.parametrize("backend", ("ollama", ""))
+def test_postgres_writer_reuses_actual_ollama_fast_client(monkeypatch, backend):
+    _force_postgres(monkeypatch)
+    fast = OllamaLLM(model="minicpm5-1b:q8", client=object())
+
+    app._build_memory(
+        {
+            "llm": {"backend": backend, "fast_model": "stale-config-name"},
+            "memory": {"backend": "auto"},
+        },
+        fast,
+    )
+
+    writer = _FakeAdapter.last_kwargs["memory_writer_config"]
+    assert writer.cleanup_model == "minicpm5-1b:q8"
+    assert writer.llm_cleanup is True
+    assert writer.llm_gate is True
+    cleanup = _FakeAdapter.last_kwargs["memory_writer_llm_client"]
+    assert cleanup.client is fast
+
+
+@pytest.mark.parametrize("backend", ("llamacpp", "echo", "ollama", ""))
+def test_non_ollama_fast_client_does_not_spawn_ollama_cleanup(monkeypatch, backend):
+    _force_postgres(monkeypatch)
+
+    app._build_memory(
+        {"llm": {"backend": backend}, "memory": {"backend": "auto"}},
+        _FakeFastLLM(model="minicpm5-1b:q8"),
+    )
+
+    writer = _FakeAdapter.last_kwargs["memory_writer_config"]
+    assert writer.llm_cleanup is False
+    assert writer.llm_gate is False
+    assert _FakeAdapter.last_kwargs["memory_writer_llm_client"] is None
 
 
 def test_build_memory_inmemory_when_no_db(monkeypatch):

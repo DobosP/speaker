@@ -43,6 +43,7 @@ from typing import Optional
 
 from . import acoustics as acoustics_mod
 from . import audio, clips as clips_mod
+from .verdicts import DIAGNOSTIC_PASS, PASS, evaluate_barge_stress
 from .voice_loop import _bundle_paths, _engine_args, _running_engine
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,6 +73,9 @@ class StressResult:
     latencies: list = field(default_factory=list)
     rejected_total: int = 0
     error: str = ""
+    complete: bool = False
+    outcome: str = "fail"
+    verdict: dict = field(default_factory=dict)
 
 
 # offsets into the reply at which the talk-over is injected (cycled), so the cut
@@ -125,7 +129,7 @@ def run_barge_stress(
                 false_barges = proc.count("barge") - b0
                 trials.append(Trial(
                     kind="self_interrupt", prompt=sp.text, started=started,
-                    fired=false_barges, passed=(false_barges == 0),
+                    fired=false_barges, passed=(started and false_barges == 0),
                 ))
 
             # ---- talk-over (true-positive) trials -------------------------- #
@@ -139,23 +143,30 @@ def run_barge_stress(
                 started = proc.wait_speaking(spk, timeout=25.0)
                 time.sleep(delay)
                 b0 = proc.count("barge")
-                t_inject = time.monotonic()
                 # talk-over must out-shout the reply to clear the echo floor
-                audio.inject(tgt, bg.path, volume_pct=min(400, ac.inject_gain + 100),
-                             lead_in_ms=lead)
                 fired = 0
                 t_fired = None
-                end = time.monotonic() + barge_window_s
-                while time.monotonic() < end:
-                    if proc.count("barge") - b0 >= 1:
-                        fired = 1
-                        t_fired = time.monotonic()
-                        break
-                    time.sleep(0.05)
+                with audio.play_injection(
+                    tgt,
+                    bg.path,
+                    volume_pct=min(400, ac.inject_gain + 100),
+                    lead_in_ms=lead,
+                ) as playback:
+                    end = playback.speech_onset_monotonic + barge_window_s
+                    while time.monotonic() < end:
+                        if proc.count("barge") - b0 >= 1:
+                            fired = 1
+                            t_fired = time.monotonic()
+                            break
+                        time.sleep(0.05)
                 proc.wait_idle(timeout=20.0)
                 trials.append(Trial(
                     kind="talk_over", prompt=sp.text, started=started, fired=fired,
-                    latency_s=(round(t_fired - t_inject, 3) if t_fired else None),
+                    latency_s=(
+                        round(t_fired - playback.speech_onset_monotonic, 3)
+                        if t_fired
+                        else None
+                    ),
                     delay_s=delay, barge_phrase=bg.text, passed=(started and fired >= 1),
                 ))
 
@@ -163,18 +174,52 @@ def run_barge_stress(
             rejected_total = proc.count("barge_rejected")
 
     summary, wav, _ref = _bundle_paths(repo_root, run_id)
+    bundle_error = ""
+    first_audio_turns = 0
+    error_count = 0
+    stuck_hints = []
+    if summary is not None:
+        try:
+            with open(summary, encoding="utf-8") as fh:
+                bundle = json.load(fh)
+            turns = bundle.get("turns", []) or []
+            first_audio_turns = sum(
+                turn.get("first_audio_latency") is not None
+                for turn in turns
+                if isinstance(turn, dict)
+            )
+            error_count = max(
+                int(bundle.get("counts", {}).get("errors", 0) or 0),
+                len(bundle.get("errors", []) or []),
+            )
+            stuck_hints = bundle.get("stuck_hints", []) or []
+        except (OSError, ValueError, TypeError) as exc:
+            bundle_error = f"invalid run bundle: {type(exc).__name__}: {exc}"
     self_trials = [t for t in trials if t.kind == "self_interrupt"]
     over_trials = [t for t in trials if t.kind == "talk_over"]
-    started_overs = [t for t in over_trials if t.started]
     fp = sum(t.fired for t in self_trials)
     fp_rate = fp / max(1, len(self_trials))
-    tp = sum(1 for t in started_overs if t.fired >= 1)
-    tp_rate = tp / max(1, len(started_overs))
+    tp = sum(1 for t in over_trials if t.started and t.fired >= 1)
+    # Denominator is every intended overlap, not only the replies that happened
+    # to start. A missing assistant window is a failed trial, not invisible.
+    tp_rate = tp / max(1, len(over_trials))
     lats = [t.latency_s for t in over_trials if t.latency_s is not None]
+    trial_dicts = [asdict(t) for t in trials]
+    verdict = evaluate_barge_stress(
+        trials=trial_dicts,
+        summary_present=summary is not None and not bundle_error,
+        wav_present=wav is not None,
+        assistant_audio_turns=first_audio_turns,
+        error_count=error_count,
+        stuck_hints=stuck_hints,
+        error=bundle_error,
+    )
     return StressResult(
-        ok=True, run_id=run_id, summary_path=summary, wav_path=wav,
-        trials=[asdict(t) for t in trials], fp_rate=fp_rate, tp_rate=tp_rate,
+        ok=verdict.passed, run_id=run_id, summary_path=summary, wav_path=wav,
+        trials=trial_dicts, fp_rate=fp_rate, tp_rate=tp_rate,
         latencies=lats, rejected_total=rejected_total,
+        complete=verdict.complete, outcome=verdict.outcome,
+        verdict=asdict(verdict), error=bundle_error,
     )
 
 
@@ -245,13 +290,18 @@ def main(argv=None) -> int:
     out = os.path.join(out_dir, "scorecard.json")
     with open(out, "w") as f:
         json.dump(asdict(r), f, indent=2, default=str)
-    # verdict: the P1 requirement = no self-interrupts AND every started talk-over cut
     started_overs = sum(1 for t in r.trials if t["kind"] == "talk_over" and t["started"])
-    passed = (r.fp_rate == 0.0) and (r.tp_rate >= 1.0) and started_overs > 0
     print(f"\n  scorecard: {out}")
-    print(f"  VERDICT: {'PASS' if passed else 'REVIEW'} "
+    label = "PASS" if r.outcome == PASS else (
+        "DIAGNOSTIC — NOT COVERED" if r.outcome == DIAGNOSTIC_PASS else "FAIL"
+    )
+    print(f"  VERDICT: {label} "
           f"(fp_rate={r.fp_rate:.2f}, tp_rate={r.tp_rate:.2f}, started_overs={started_overs})")
-    return 0 if passed else 2
+    if r.verdict.get("failures"):
+        print(f"  failed checks: {', '.join(r.verdict['failures'])}")
+    if r.verdict.get("not_covered"):
+        print(f"  not covered: {', '.join(r.verdict['not_covered'])}")
+    return 0 if r.outcome == PASS else 2
 
 
 if __name__ == "__main__":

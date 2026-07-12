@@ -26,7 +26,9 @@ import logging
 import math
 import os
 import shlex
+import stat
 import sys
+import tempfile
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Callable, Mapping, Optional, Sequence
@@ -54,6 +56,13 @@ Recorder = Callable[[float], Sequence[float]]
 # The fingerprint below covers the active stage configuration; this version covers
 # the implementation/order contract itself.
 ENROLLMENT_FRONTEND_VERSION = 5
+
+# A device-free worktree preparation can bind enrollment to an isolated
+# candidate before the microphone is opened.  The marker is deliberately
+# outside the ``sherpa`` block so runtime config parsing ignores it, while this
+# one-shot persistence path can fail closed if the binding is later altered.
+ENROLLMENT_PREPARATION_KEY = "_speaker_enrollment_preparation"
+ENROLLMENT_PREPARATION_SCHEMA = 1
 
 
 def _agc_floor_bucket_db(value: float) -> int:
@@ -580,13 +589,316 @@ def average_embeddings(embeddings: Sequence[Sequence[float]]) -> list[float]:
 # --- persistence -------------------------------------------------------------
 
 
-def save_enrollment(path: str, enrollment: Enrollment) -> None:
-    """Write the enrollment vector as JSON, creating parent dirs as needed."""
-    parent = os.path.dirname(path)
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(enrollment.to_dict(), fh, indent=2)
+@dataclass(frozen=True)
+class _RegularPathSnapshot:
+    path: str
+    label: str
+    dev: int
+    ino: int
+    size: int
+    mtime_ns: int
+    ancestors: tuple[tuple[str, int, int], ...]
+
+
+def _safe_directory_chain(path: str, *, create: bool) -> tuple[tuple[str, int, int], ...]:
+    """Validate every directory component without accepting a symlink."""
+
+    absolute = os.path.abspath(path)
+    parts = absolute.split(os.sep)
+    current = os.sep
+    snapshots: list[tuple[str, int, int]] = []
+    for part in parts:
+        if not part:
+            continue
+        current = os.path.join(current, part)
+        try:
+            info = os.lstat(current)
+        except FileNotFoundError:
+            if not create:
+                raise
+            os.mkdir(current, 0o700)
+            info = os.lstat(current)
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError(f"refusing symlink directory in persistence path: {current}")
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError(f"persistence path component is not a directory: {current}")
+        snapshots.append((current, info.st_dev, info.st_ino))
+    return tuple(snapshots)
+
+
+def _lstat_regular(path: str, *, label: str) -> os.stat_result:
+    """Return ``lstat(path)`` only for a regular, non-symlink file.
+
+    Enrollment/config files carry a biometric reference and potentially local
+    credentials.  Following a worktree symlink while rewriting either file can
+    silently modify another checkout, so persistence treats a symlink as an
+    explicit error instead of relying on ``open()``'s follow-by-default policy.
+    """
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        raise
+    if stat.S_ISLNK(info.st_mode):
+        raise ValueError(f"refusing to follow symlink for {label}: {path}")
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"refusing non-regular {label}: {path}")
+    return info
+
+
+def _snapshot_regular_path(path: str, *, label: str) -> _RegularPathSnapshot:
+    absolute = os.path.abspath(path)
+    ancestors = _safe_directory_chain(os.path.dirname(absolute) or ".", create=False)
+    info = _lstat_regular(absolute, label=label)
+    return _RegularPathSnapshot(
+        path=absolute,
+        label=label,
+        dev=info.st_dev,
+        ino=info.st_ino,
+        size=info.st_size,
+        mtime_ns=info.st_mtime_ns,
+        ancestors=ancestors,
+    )
+
+
+def _revalidate_regular_path(snapshot: _RegularPathSnapshot) -> None:
+    current_ancestors = _safe_directory_chain(
+        os.path.dirname(snapshot.path) or ".",
+        create=False,
+    )
+    if current_ancestors != snapshot.ancestors:
+        raise ValueError(f"{snapshot.label} directory changed: {snapshot.path}")
+    current = _lstat_regular(snapshot.path, label=snapshot.label)
+    if (
+        current.st_dev,
+        current.st_ino,
+        current.st_size,
+        current.st_mtime_ns,
+    ) != (
+        snapshot.dev,
+        snapshot.ino,
+        snapshot.size,
+        snapshot.mtime_ns,
+    ):
+        raise ValueError(f"{snapshot.label} changed: {snapshot.path}")
+
+
+def _read_json_regular(path: str, *, label: str) -> dict:
+    """Read one regular JSON object without following its final symlink."""
+    before = _lstat_regular(path, label=label)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    try:
+        opened = os.fstat(fd)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise ValueError(f"{label} changed while it was being opened: {path}")
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            fd = -1
+            data = json.load(fh)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not isinstance(data, dict):
+        raise ValueError(f"{label} must contain a JSON object: {path}")
+    return data
+
+
+def _fsync_directory(path: str) -> None:
+    """Best-effort directory sync after an atomic publish."""
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _atomic_write_json(
+    path: str,
+    data: Mapping[str, object],
+    *,
+    label: str,
+    expected: Optional[_RegularPathSnapshot] = None,
+    require_absent: bool = False,
+) -> None:
+    """Atomically publish mode-600 JSON without ever following ``path``.
+
+    An existing destination must remain the same regular inode until the final
+    ``os.replace``.  A new destination must remain absent.  This closes both the
+    ordinary symlink foot-gun and a check/open race while keeping a failed JSON
+    write from truncating the last good enrollment/config file.
+    """
+    absolute = os.path.abspath(path)
+    parent = os.path.dirname(absolute) or "."
+    _safe_directory_chain(parent, create=True)
+
+    original: Optional[os.stat_result]
+    if os.path.lexists(absolute):
+        original = _lstat_regular(absolute, label=label)
+    else:
+        original = None
+    if expected is not None:
+        if expected.path != absolute:
+            raise ValueError(f"{label} snapshot path mismatch: {absolute}")
+        _revalidate_regular_path(expected)
+        if original is None or (original.st_dev, original.st_ino) != (
+            expected.dev,
+            expected.ino,
+        ):
+            raise ValueError(f"{label} no longer matches its preflight file: {absolute}")
+    if require_absent and original is not None:
+        raise ValueError(f"refusing newly appeared {label}: {absolute}")
+
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(absolute)}.", suffix=".tmp", dir=parent
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fd = -1
+            json.dump(data, fh, indent=2)
+            fh.flush()
+            os.fsync(fh.fileno())
+
+        _safe_directory_chain(parent, create=False)
+        if expected is not None:
+            _revalidate_regular_path(expected)
+        if original is None:
+            if os.path.lexists(absolute):
+                raise ValueError(f"refusing to replace newly appeared {label}: {absolute}")
+        else:
+            current = _lstat_regular(absolute, label=label)
+            if (current.st_dev, current.st_ino) != (
+                original.st_dev,
+                original.st_ino,
+            ):
+                raise ValueError(f"{label} changed before atomic publish: {absolute}")
+
+        os.replace(temporary, absolute)
+        temporary = ""
+        _fsync_directory(parent)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def _validate_prepared_enrollment_binding(
+    config: Mapping[str, object],
+    *,
+    config_path: str,
+    enroll_path: str,
+) -> tuple[Optional[str], tuple[_RegularPathSnapshot, ...]]:
+    """Validate and snapshot an isolated prepared-candidate binding.
+
+    Ordinary single-checkout installs have no marker and retain their existing
+    enrollment behavior.  When ``tools.prepare_enrollment`` marks an isolated
+    worktree, however, the candidate must remain inside that worktree, match the
+    configured save path exactly, and retain its verified rollback backup.
+    """
+    marker = config.get(ENROLLMENT_PREPARATION_KEY)
+    if marker is None:
+        return None, ()
+    if not isinstance(marker, Mapping):
+        return "prepared enrollment marker is not a JSON object", ()
+    try:
+        schema = int(marker.get("schema", 0))
+    except (TypeError, ValueError):
+        return "prepared enrollment marker has an invalid schema", ()
+    if schema != ENROLLMENT_PREPARATION_SCHEMA:
+        return "prepared enrollment marker schema is unsupported", ()
+    try:
+        frontend_version = int(marker.get("frontend_version", 0) or 0)
+    except (TypeError, ValueError):
+        return "prepared enrollment marker has an invalid frontend version", ()
+    if frontend_version != ENROLLMENT_FRONTEND_VERSION:
+        return "prepared enrollment marker is not bound to frontend v5", ()
+
+    worktree = marker.get("worktree")
+    candidate = marker.get("candidate")
+    backup = marker.get("backup")
+    source = marker.get("source_enrollment")
+    paths = (worktree, candidate, backup, source)
+    if not all(isinstance(value, str) and value for value in paths):
+        return "prepared enrollment marker is incomplete", ()
+    if not all(os.path.isabs(value) for value in paths):
+        return "prepared enrollment paths must be absolute", ()
+
+    candidate_abs = os.path.abspath(candidate)
+    if os.path.abspath(enroll_path) != candidate_abs:
+        return "configured enrollment no longer matches the prepared candidate", ()
+    configured_worktree = os.path.dirname(os.path.abspath(config_path)) or os.getcwd()
+    try:
+        _safe_directory_chain(worktree, create=False)
+        worktree_real = os.path.realpath(worktree)
+        configured_real = os.path.realpath(configured_worktree)
+        candidate_real = os.path.realpath(candidate_abs)
+        inside = os.path.commonpath((worktree_real, candidate_real)) == worktree_real
+    except (OSError, ValueError):
+        inside = False
+        worktree_real = configured_real = ""
+    if configured_real != worktree_real:
+        return "prepared enrollment marker belongs to another worktree", ()
+    if not inside:
+        return "prepared enrollment candidate is outside the feature worktree", ()
+    try:
+        snapshots = (
+            _snapshot_regular_path(
+                candidate_abs, label="prepared enrollment candidate"
+            ),
+            _snapshot_regular_path(backup, label="prepared enrollment backup"),
+            _snapshot_regular_path(source, label="historical enrollment"),
+        )
+    except (OSError, ValueError) as exc:
+        return str(exc), ()
+    if snapshots[0].size != 0:
+        return "prepared enrollment candidate is no longer empty", ()
+    if (snapshots[1].dev, snapshots[1].ino) == (snapshots[2].dev, snapshots[2].ino):
+        return "prepared enrollment backup aliases the historical enrollment", ()
+
+    for key, snapshot in zip(("candidate", "backup", "source"), snapshots):
+        try:
+            expected = tuple(int(marker[f"{key}_{field}"]) for field in (
+                "dev", "ino", "size", "mtime_ns"
+            ))
+        except (KeyError, TypeError, ValueError):
+            return f"prepared enrollment marker lacks {key} identity", ()
+        actual = (snapshot.dev, snapshot.ino, snapshot.size, snapshot.mtime_ns)
+        if actual != expected:
+            return f"prepared enrollment {key} identity changed", ()
+    return None, snapshots
+
+
+def save_enrollment(
+    path: str,
+    enrollment: Enrollment,
+    *,
+    expected: Optional[_RegularPathSnapshot] = None,
+    require_absent: bool = False,
+) -> None:
+    """Atomically write the mode-600 enrollment JSON.
+
+    The final path must be absent or a regular file.  In particular, enrollment
+    never follows a symlink into another worktree or a historical reference.
+    """
+    _atomic_write_json(
+        path,
+        enrollment.to_dict(),
+        label="speaker enrollment",
+        expected=expected,
+        require_absent=require_absent,
+    )
 
 
 def load_enrollment(path: str) -> Enrollment:
@@ -1067,22 +1379,34 @@ def _has_enrollment_voice_evidence(
 # --- config persistence (machine-local overrides) ----------------------------
 
 
-def _persist_local(config_path: str, updates: dict) -> None:
+def _persist_local(
+    config_path: str,
+    updates: dict,
+    *,
+    expected: Optional[_RegularPathSnapshot] = None,
+    require_absent: bool = False,
+) -> None:
     """Merge ``sherpa`` path updates into the gitignored local config file.
 
     Same contract as ``tools.setup_models``: model/enrollment paths are
     machine-specific, so they live in ``config.local.json`` (merged over the
     committed ``config.json`` template at load), not in the template itself."""
     cfg: dict = {}
-    if os.path.exists(config_path):
-        with open(config_path, "r", encoding="utf-8") as fh:
-            cfg = json.load(fh)
+    if os.path.lexists(config_path):
+        cfg = _read_json_regular(config_path, label="local config")
     sherpa = cfg.setdefault("sherpa", {})
+    if not isinstance(sherpa, dict):
+        raise ValueError("local config 'sherpa' value must be a JSON object")
     for key, val in updates.items():
         if val:
             sherpa[key] = os.path.abspath(val)
-    with open(config_path, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, indent=2)
+    _atomic_write_json(
+        config_path,
+        cfg,
+        label="local config",
+        expected=expected,
+        require_absent=require_absent,
+    )
 
 
 # --- CLI orchestration -------------------------------------------------------
@@ -1097,6 +1421,8 @@ def run_enrollment(
     recorder: Optional[Recorder] = None,
     gate: Optional[SpeakerGate] = None,
     frontend: Optional[EnrollmentFrontend] = None,
+    replace_existing: bool = False,
+    require_prepared: bool = False,
     out: Callable[[str], None] = print,
 ) -> int:
     """Record ``passes`` short clips, average them, and persist the embedding.
@@ -1106,6 +1432,21 @@ def run_enrollment(
     production both are built from the ``sherpa`` config block. Returns a shell
     exit code (0 = enrolled)."""
     sherpa = config.get("sherpa", {}) or {}
+    # Refuse unsafe persistence before opening the microphone.  Waiting until
+    # ``_persist_local`` would be too late: the embedding is saved first, so a
+    # feature-worktree symlink could already have overwritten the primary
+    # checkout's historical reference by the time the config write refused.
+    config_snapshot: Optional[_RegularPathSnapshot] = None
+    config_was_absent = not os.path.lexists(config_path)
+    try:
+        if os.path.lexists(config_path):
+            config_snapshot = _snapshot_regular_path(
+                config_path, label="local config"
+            )
+    except (OSError, ValueError) as exc:
+        out(f"Enrollment aborted: unsafe local config persistence: {exc}")
+        return 5
+
     model_path = sherpa.get("speaker_embedding_model", "")
     if not model_path:
         out(
@@ -1114,6 +1455,44 @@ def run_enrollment(
             "That downloads the speaker-ID model and writes its path into config."
         )
         return 2
+
+    enroll_path = sherpa.get("speaker_enroll_embedding") or DEFAULT_ENROLL_PATH
+    marker_present = config.get(ENROLLMENT_PREPARATION_KEY) is not None
+    if require_prepared and not marker_present:
+        out(
+            "Enrollment aborted: this command requires an isolated prepared "
+            "candidate; run tools.prepare_enrollment from the feature worktree."
+        )
+        return 5
+    binding_error, binding_snapshots = _validate_prepared_enrollment_binding(
+        config,
+        config_path=config_path,
+        enroll_path=str(enroll_path),
+    )
+    if binding_error is not None:
+        out(f"Enrollment aborted: unsafe prepared candidate: {binding_error}")
+        return 5
+    enrollment_snapshot: Optional[_RegularPathSnapshot] = None
+    enrollment_was_absent = not os.path.lexists(enroll_path)
+    try:
+        if os.path.lexists(enroll_path):
+            enrollment_snapshot = _snapshot_regular_path(
+                enroll_path, label="speaker enrollment"
+            )
+    except (OSError, ValueError) as exc:
+        out(f"Enrollment aborted: unsafe enrollment persistence: {exc}")
+        return 5
+    if (
+        enrollment_snapshot is not None
+        and enrollment_snapshot.size > 0
+        and not replace_existing
+    ):
+        out(
+            "Enrollment aborted: the configured reference is non-empty; refusing "
+            "to overwrite it. Prepare a unique candidate, or pass "
+            "--replace-enrollment for an intentional in-place replacement."
+        )
+        return 5
 
     sample_rate = int(sherpa.get("sample_rate", 16000))
     production_capture = recorder is None
@@ -1247,12 +1626,36 @@ def run_enrollment(
         )
         return 3
 
-    enroll_path = sherpa.get("speaker_enroll_embedding") or DEFAULT_ENROLL_PATH
-    save_enrollment(enroll_path, enrollment)
-    _persist_local(
-        config_path,
-        {"speaker_embedding_model": model_path, "speaker_enroll_embedding": enroll_path},
-    )
+    try:
+        if config_snapshot is not None:
+            _revalidate_regular_path(config_snapshot)
+        elif not config_was_absent or os.path.lexists(config_path):
+            raise ValueError("local config appeared during enrollment")
+        if enrollment_snapshot is not None:
+            _revalidate_regular_path(enrollment_snapshot)
+        elif not enrollment_was_absent or os.path.lexists(enroll_path):
+            raise ValueError("speaker enrollment appeared during capture")
+        for snapshot in binding_snapshots:
+            _revalidate_regular_path(snapshot)
+
+        save_enrollment(
+            enroll_path,
+            enrollment,
+            expected=enrollment_snapshot,
+            require_absent=enrollment_snapshot is None,
+        )
+        _persist_local(
+            config_path,
+            {
+                "speaker_embedding_model": model_path,
+                "speaker_enroll_embedding": enroll_path,
+            },
+            expected=config_snapshot,
+            require_absent=config_snapshot is None,
+        )
+    except (OSError, ValueError) as exc:
+        out(f"Enrollment failed to persist safely: {exc}")
+        return 5
 
     # Self-check: how consistent were the passes? Low spread => a clean
     # reference; high spread warns the user before they rely on it.

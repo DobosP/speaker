@@ -2,7 +2,8 @@
 
 Drives the **real** runtime end-to-end with **no person at the mic**, so a
 session can self-verify STT / TTS / barge-in / memory and emit a committable
-verdict. Sits between `tools.live_session` (needs a human) and `--engine replay`
+verdict when the selected acoustic mode covers every required axis. Sits between
+`tools.live_session` (needs a human) and `--engine replay`
 (only re-plays recordings).
 
 ```
@@ -12,6 +13,11 @@ python -m tools.autotest voice   [--acoustics cable|delay|speaker] [--utterances
 python -m tools.autotest replay  [--bundle logs/runs/run-<id>.wav]
 python -m tools.autotest suite                       # existing headless pytest gates
 ```
+
+The bare `all` command uses the echo-free cable and therefore exits 2 as
+`INCOMPLETE`; use `all --acoustics delay` for a silent complete barge scorecard,
+or `--acoustics speaker --make-sound` for audible over-the-air evidence. This is
+the fail-closed policy recorded in [ADR-0055](../../docs/adr/0055-fail-autonomous-voice-verdicts-closed.md).
 
 Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier separately
 checks retrieval plus the bounded exact self-fact controller; it does not claim
@@ -111,6 +117,11 @@ Any omitted role falls back to a synthesized clip.
 | `replay` | delay-independent self-interrupt + AEC ERLE/delay over a bundle | a `run-<id>.wav` + `.ref.wav` |
 | `suite`  | the existing headless barge/sandbox/memory pytest gates | nothing extra |
 
-Verdict gates on the robust signals (audio flowed + round-trip + bundle). All
-PipeWire devices it creates are reversible (unloaded on exit); the system
-default sink/source and your config are restored verbatim.
+The verdict requires a ready engine, a parseable bundle, capture RMS above 0.01,
+true first-audio delivery for every expected answer, one non-blank hypothesis per
+labelled clip, mean WER at most 0.50, and no runtime errors/stuck hints. Delay and
+speaker additionally require zero own-reply cuts plus a causal talk-over cut in
+0–1.0 seconds. Cable reports `diagnostic_pass`, `ok=false`, and explicit
+`not_covered` barge axes; it cannot make `all` green. All PipeWire devices the
+harness creates are reversible (unloaded on exit); the system default sink/source
+and config are restored verbatim.

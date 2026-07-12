@@ -29,6 +29,7 @@ from .verdicts import (
     PASS,
     aggregate_reports,
     evaluate_voice,
+    finite_nonnegative,
 )
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -72,8 +73,6 @@ def tier_memory(args) -> dict:
 def tier_voice(args) -> dict:
     from core.config import load_config
     from .voice_loop import run_voice_loop
-
-    from .score import score_transcripts
 
     cfg = load_config()
     sherpa_cfg = cfg.get("sherpa", {})
@@ -121,11 +120,13 @@ def tier_voice(args) -> dict:
         else:
             rep["bundle"] = bun
 
-    # STT accuracy: WER of the engine's recognized user finals vs the injected
-    # clips' ground-truth transcripts (real-voice or synth).
-    stt = score_transcripts(r.injected_refs, bun.get("user_finals", []))
-    rep["stt"] = {"mean_wer": stt.mean_wer, "n": stt.n,
-                  "pairs": [{"ref": a, "hyp": b, "wer": round(w, 2)} for a, b, w in stt.pairs]}
+    # Grade the exact generation-bearing final selected after each injection,
+    # not a best-match sweep over the whole transcript bundle.  The latter can
+    # pair a prompt with an unrelated earlier/later turn and false-green both
+    # STT and playback causality.
+    stt = r.prompt_score or {"mean_wer": 1.0, "n": 0, "pairs": []}
+    rep["stt"] = stt
+    prompt_evidence = r.prompt_evidence or {}
 
     sc = r.scenarios
     s1 = sc.get("s1_round_trip", {})
@@ -141,13 +142,18 @@ def tier_voice(args) -> dict:
         monitor_rms=r.monitor_rms,
         round_trip_clips=int(s1.get("clips", 0) or 0),
         assistant_spoke=s1.get("assistant_spoke") is True,
+        # Independent finalized-bundle receipt count.  Same-generation causal
+        # binding is enforced by S1/S2/S3; retaining this gate also rejects a
+        # malformed/non-finite or incomplete metrics bundle.
         assistant_audio_turns=int(bun.get("first_audio_turns", 0) or 0),
-        expected_audio_turns=(
-            int(s1.get("clips", 0) or 0) + 2 if has_echo else 1
+        expected_audio_turns=int(
+            prompt_evidence.get("expected_audio_prompts", 0) or 0
         ),
-        expected_wer_n=len([ref for ref in r.injected_refs if ref]),
-        wer_n=stt.n,
-        mean_wer=stt.mean_wer,
+        expected_wer_n=int(
+            prompt_evidence.get("expected_labelled_prompts", 0) or 0
+        ),
+        wer_n=int(stt.get("n", 0) or 0),
+        mean_wer=float(stt.get("mean_wer", 1.0)),
         error_count=error_count,
         stuck_hints=tuple(bun.get("stuck_hints", ()) or ()),
         self_interrupt_pass=s2.get("live_pass"),
@@ -169,9 +175,15 @@ def tier_voice(args) -> dict:
     }[verdict.outcome]
     print(f"[voice] {label} (pipeline) mode={r.mode} "
           f"run_id={r.run_id} clips={r.clip_source} monitor_rms={r.monitor_rms:.3f}")
-    print(f"        STT mean WER={stt.mean_wer} over {stt.n} clips")
-    for ref, hyp, w in stt.pairs:
-        print(f"          WER={w:.2f}  ref={ref!r}  hyp={hyp!r}")
+    print(
+        f"        causal STT mean WER={stt.get('mean_wer')} "
+        f"over {stt.get('n')} clips"
+    )
+    for pair in stt.get("pairs", []):
+        print(
+            f"          WER={float(pair.get('wer', 1.0)):.2f}  "
+            f"ref={pair.get('ref', '')!r}  hyp={pair.get('hyp', '')!r}"
+        )
     # the conversation: the FINAL text the LLM received -> its reply, so messy /
     # self-correcting input can be judged for whether the system made sense of it.
     convo = bun.get("conversation", [])
@@ -201,11 +213,54 @@ def tier_voice(args) -> dict:
 def _analyze_bundle(summary_path: str) -> dict:
     with open(summary_path) as f:
         d = json.load(f)
-    tr = d.get("transcript", [])
+    if not isinstance(d, dict):
+        raise TypeError("run bundle root must be an object")
+
+    def records(key: str) -> list[dict]:
+        value = d.get(key, [])
+        if not isinstance(value, list) or any(
+            not isinstance(item, dict) for item in value
+        ):
+            raise TypeError(f"run bundle {key} must be a list of objects")
+        return value
+
+    def strings(key: str) -> list[str]:
+        value = d.get(key, [])
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) for item in value
+        ):
+            raise TypeError(f"run bundle {key} must be a list of strings")
+        return value
+
+    def count_value(value: object, key: str) -> int:
+        if (
+            not finite_nonnegative(value)
+            or float(value) != int(float(value))
+        ):
+            raise ValueError(f"run bundle count {key} must be a finite integer")
+        return int(float(value))
+
+    tr = records("transcript")
+    for entry in tr:
+        if not isinstance(entry.get("role", ""), str) or not isinstance(
+            entry.get("text", ""), str
+        ):
+            raise TypeError("run bundle transcript role/text must be strings")
     users = [t for t in tr if t.get("role") == "user"]
     asst = [t for t in tr if t.get("role") == "assistant"]
-    turns = d.get("turns", [])
-    barges = [t for t in turns if t.get("barge_in_latency") is not None]
+    turns = records("turns")
+    barges = [
+        turn
+        for turn in turns
+        if finite_nonnegative(turn.get("barge_in_latency"))
+    ]
+    errors = records("errors")
+    stuck_hints = strings("stuck_hints")
+    counts = d.get("counts", {})
+    if not isinstance(counts, dict):
+        raise TypeError("run bundle counts must be an object")
+    counted_errors = count_value(counts.get("errors", 0), "errors")
+    warnings = count_value(counts.get("warnings", 0), "warnings")
     return {
         "user_finals": [t.get("text", "") for t in users],
         "assistant_replies": [t.get("text", "")[:80] for t in asst],
@@ -214,18 +269,18 @@ def _analyze_bundle(summary_path: str) -> dict:
         "conversation": [(t.get("role", ""), t.get("text", "")) for t in tr],
         "n_turns": len(turns),
         "n_barge_in_turns": len(barges),
-        "stuck_hints": d.get("stuck_hints", []),
-        "errors": d.get("errors", []),
+        "stuck_hints": stuck_hints,
+        "errors": errors,
         "first_audio_turns": sum(
-            turn.get("first_audio_latency") is not None
+            finite_nonnegative(turn.get("first_audio_latency"))
             for turn in turns
             if isinstance(turn, dict)
         ),
         "error_count": max(
-            int(d.get("counts", {}).get("errors", 0) or 0),
-            len(d.get("errors", []) or []),
+            counted_errors,
+            len(errors),
         ),
-        "warnings": d.get("counts", {}).get("warnings", 0),
+        "warnings": warnings,
     }
 
 

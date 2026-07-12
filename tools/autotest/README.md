@@ -17,7 +17,8 @@ python -m tools.autotest suite                       # existing headless pytest 
 The bare `all` command uses the echo-free cable and therefore exits 2 as
 `INCOMPLETE`; use `all --acoustics delay` for a silent complete barge scorecard,
 or `--acoustics speaker --make-sound` for audible over-the-air evidence. This is
-the fail-closed policy recorded in [ADR-0055](../../docs/adr/0055-fail-autonomous-voice-verdicts-closed.md).
+the fail-closed policy recorded in [ADR-0055](../../docs/adr/0055-fail-autonomous-voice-verdicts-closed.md),
+as strengthened by [ADR-0058](../../docs/adr/0058-bind-autonomous-playback-evidence-to-input.md).
 
 Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier separately
 checks retrieval plus the bounded exact self-fact controller; it does not claim
@@ -118,10 +119,14 @@ Any omitted role falls back to a synthesized clip.
 | `suite`  | the existing headless barge/sandbox/memory pytest gates | nothing extra |
 
 The verdict requires a ready engine, a parseable bundle, capture RMS above 0.01,
-true first-audio delivery for every expected answer, one non-blank hypothesis per
-labelled clip, mean WER at most 0.50, and no runtime errors/stuck hints. Delay and
-speaker additionally require zero own-reply cuts plus a causal talk-over cut in
-0–1.0 seconds. Cable reports `diagnostic_pass`, `ok=false`, and explicit
+each selected non-barge labelled prompt matched to a new final, and remembered
+same-generation sink evidence for every expected answer. Ordinary/self replies
+must attest aggregate `completed`; talk-over must attest same-task/generation
+`interrupted` after its barge marker. Mean WER must be at most 0.50, with no
+runtime errors/stuck hints. Delay and speaker additionally require zero own-reply
+cuts plus a successful active injection and causal talk-over cut in 0–1.0
+seconds. Cable reports
+`diagnostic_pass`, `ok=false`, and explicit
 `not_covered` barge axes; it cannot make `all` green. All PipeWire devices the
 harness creates are reversible (unloaded on exit); the system default sink/source
 and config are restored verbatim.

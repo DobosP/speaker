@@ -22,6 +22,17 @@ VOICE_MAX_MEAN_WER = 0.50
 VOICE_MAX_BARGE_LATENCY_SEC = 1.0
 
 
+def finite_nonnegative(value: object) -> bool:
+    """True only for a real finite latency in the metrics clock domain."""
+
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and float(value) >= 0.0
+    )
+
+
 @dataclass(frozen=True)
 class Check:
     name: str
@@ -185,9 +196,8 @@ def evaluate_voice(
                     PASS
                     if (
                         barge_pass is True
-                        and barge_latency_s is not None
-                        and math.isfinite(barge_latency_s)
-                        and 0.0 <= barge_latency_s <= max_barge_latency_s
+                        and finite_nonnegative(barge_latency_s)
+                        and float(barge_latency_s) <= max_barge_latency_s
                     )
                     else FAIL,
                     f"latency_s={barge_latency_s!r}; required 0..{max_barge_latency_s}",
@@ -251,6 +261,7 @@ def evaluate_barge_stress(
     else:
         self_ok = all(
             trial.get("started") is True
+            and trial.get("terminal") is True
             and int(trial.get("fired", 0) or 0) == 0
             for trial in self_trials
         )
@@ -258,7 +269,7 @@ def evaluate_barge_stress(
             Check(
                 "self_interrupt",
                 PASS if self_ok else FAIL,
-                f"passed={sum(bool(t.get('started')) and int(t.get('fired', 0) or 0) == 0 for t in self_trials)}/{len(self_trials)}",
+                f"passed={sum(bool(t.get('started')) and bool(t.get('terminal')) and int(t.get('fired', 0) or 0) == 0 for t in self_trials)}/{len(self_trials)}",
             )
         )
     if not talk_trials:
@@ -267,21 +278,24 @@ def evaluate_barge_stress(
     else:
         talk_ok = all(
             trial.get("started") is True
+            and trial.get("terminal") is True
             and int(trial.get("fired", 0) or 0) >= 1
+            and trial.get("injection_ok") is True
+            and trial.get("causal_cut") is True
             for trial in talk_trials
         )
         checks.append(
             Check(
                 "barge_in",
                 PASS if talk_ok else FAIL,
-                f"passed={sum(bool(t.get('started')) and int(t.get('fired', 0) or 0) >= 1 for t in talk_trials)}/{len(talk_trials)}",
+                f"passed={sum(bool(t.get('started')) and bool(t.get('terminal')) and int(t.get('fired', 0) or 0) >= 1 and t.get('injection_ok') is True and t.get('causal_cut') is True for t in talk_trials)}/{len(talk_trials)}",
             )
         )
         latency_ok = all(
             trial.get("started") is True
+            and trial.get("terminal") is True
             and int(trial.get("fired", 0) or 0) >= 1
-            and isinstance(trial.get("latency_s"), (int, float))
-            and math.isfinite(float(trial["latency_s"]))
+            and finite_nonnegative(trial.get("latency_s"))
             and 0.0 <= float(trial["latency_s"]) <= max_barge_latency_s
             for trial in talk_trials
         )

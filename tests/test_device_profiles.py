@@ -38,7 +38,7 @@ def _args(**kw) -> argparse.Namespace:
 # --- device profile merge ----------------------------------------------------
 
 
-def test_profile_overrides_are_shallow_merged_per_section():
+def test_profile_overrides_are_recursively_merged_per_section():
     config = {
         "llm": {"backend": "ollama", "host": "keep", "main_model": "gemma3:12b"},
         "sherpa": {"num_threads": 0, "sample_rate": 16000},

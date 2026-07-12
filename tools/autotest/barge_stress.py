@@ -43,7 +43,12 @@ from typing import Optional
 
 from . import acoustics as acoustics_mod
 from . import audio, clips as clips_mod
-from .verdicts import DIAGNOSTIC_PASS, PASS, evaluate_barge_stress
+from .verdicts import (
+    DIAGNOSTIC_PASS,
+    PASS,
+    evaluate_barge_stress,
+    finite_nonnegative,
+)
 from .voice_loop import _bundle_paths, _engine_args, _running_engine
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,6 +64,11 @@ class Trial:
     delay_s: Optional[float] = None     # talk-over: how far into the reply
     barge_phrase: str = ""
     passed: bool = False
+    injection_ok: Optional[bool] = None
+    causal_cut: Optional[bool] = None
+    terminal: bool = False
+    barge_marker_sequence: Optional[int] = None
+    prompt_binding: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -120,16 +130,23 @@ def run_barge_stress(
             # ---- self-interrupt (false-positive) trials -------------------- #
             for i in range(n_self):
                 sp = prompts[i % len(prompts)]
-                proc.wait_idle(timeout=8.0)
-                spk = proc.count("speaking")
+                marker_cursor = proc.marker_cursor()
                 b0 = proc.count("barge")
                 audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead)
-                started = proc.wait_speaking(spk, timeout=25.0)
-                proc.wait_idle(timeout=35.0)
+                binding = proc.wait_prompt_binding(
+                    sp.text,
+                    role="speak",
+                    after_sequence=marker_cursor,
+                )
+                started = binding.audio_started
+                terminal = binding.audio_quiescent
                 false_barges = proc.count("barge") - b0
                 trials.append(Trial(
                     kind="self_interrupt", prompt=sp.text, started=started,
-                    fired=false_barges, passed=(started and false_barges == 0),
+                    fired=false_barges,
+                    terminal=terminal,
+                    prompt_binding=binding.to_dict(),
+                    passed=(binding.passed and false_barges == 0),
                 ))
 
             # ---- talk-over (true-positive) trials -------------------------- #
@@ -137,29 +154,61 @@ def run_barge_stress(
                 sp = prompts[i % len(prompts)]
                 bg = barges[i % len(barges)]
                 delay = _BARGE_DELAYS[i % len(_BARGE_DELAYS)]
-                proc.wait_idle(timeout=8.0)
-                spk = proc.count("speaking")
+                marker_cursor = proc.marker_cursor()
                 audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead)
-                started = proc.wait_speaking(spk, timeout=25.0)
+                binding = proc.wait_prompt_binding(
+                    sp.text,
+                    role="speak",
+                    after_sequence=marker_cursor,
+                    terminal_timeout=None,
+                    required_terminal_outcome="interrupted",
+                )
+                started = binding.audio_started
                 time.sleep(delay)
-                b0 = proc.count("barge")
                 # talk-over must out-shout the reply to clear the echo floor
                 fired = 0
+                barge_marker = None
                 t_fired = None
+                injection_ended_at = None
+                causal_cut = False
                 with audio.play_injection(
                     tgt,
                     bg.path,
                     volume_pct=min(400, ac.inject_gain + 100),
                     lead_in_ms=lead,
                 ) as playback:
+                    # Exclude a self-cut while paplay is still being launched;
+                    # only markers after the injector exists can be causal.
+                    barge_cursor = proc.marker_cursor()
                     end = playback.speech_onset_monotonic + barge_window_s
                     while time.monotonic() < end:
-                        if proc.count("barge") - b0 >= 1:
+                        now = time.monotonic()
+                        returncode = playback.process.poll()
+                        if returncode is not None and injection_ended_at is None:
+                            injection_ended_at = now
+                        barge_marker = proc.wait_barge_marker(
+                            after_sequence=barge_cursor,
+                        )
+                        if barge_marker is not None:
                             fired = 1
-                            t_fired = time.monotonic()
+                            t_fired = now
+                            causal_cut = returncode is None or (
+                                returncode == 0
+                                and injection_ended_at is not None
+                                and now - injection_ended_at <= 0.15
+                            )
                             break
                         time.sleep(0.05)
-                proc.wait_idle(timeout=20.0)
+                injection_ok = playback.process.returncode == 0
+                if barge_marker is not None:
+                    # A terminal that predates this concrete cut is not barge
+                    # evidence, even when it has the same task/generation.
+                    binding = proc.wait_prompt_terminal(
+                        binding,
+                        timeout=20.0,
+                        after_sequence=barge_marker.sequence,
+                    )
+                terminal = binding.audio_quiescent
                 trials.append(Trial(
                     kind="talk_over", prompt=sp.text, started=started, fired=fired,
                     latency_s=(
@@ -167,7 +216,24 @@ def run_barge_stress(
                         if t_fired
                         else None
                     ),
-                    delay_s=delay, barge_phrase=bg.text, passed=(started and fired >= 1),
+                    delay_s=delay,
+                    barge_phrase=bg.text,
+                    passed=bool(
+                        started
+                        and terminal
+                        and injection_ok
+                        and causal_cut
+                        and fired >= 1
+                    ),
+                    injection_ok=injection_ok,
+                    causal_cut=causal_cut,
+                    terminal=terminal,
+                    barge_marker_sequence=(
+                        barge_marker.sequence
+                        if barge_marker is not None
+                        else None
+                    ),
+                    prompt_binding=binding.to_dict(),
                 ))
 
             run_id = proc.run_id
@@ -184,7 +250,7 @@ def run_barge_stress(
                 bundle = json.load(fh)
             turns = bundle.get("turns", []) or []
             first_audio_turns = sum(
-                turn.get("first_audio_latency") is not None
+                finite_nonnegative(turn.get("first_audio_latency"))
                 for turn in turns
                 if isinstance(turn, dict)
             )
@@ -274,12 +340,20 @@ def main(argv=None) -> int:
     print("  SELF-INTERRUPT (false-positive) trials -- want 0 barges during own reply:")
     for t in (x for x in r.trials if x["kind"] == "self_interrupt"):
         flag = "ok " if t["passed"] else "FAIL"
-        print(f"    [{flag}] started={t['started']} false_barges={t['fired']}  prompt={t['prompt'][:46]!r}")
+        print(
+            f"    [{flag}] started={t['started']} terminal={t['terminal']} "
+            f"false_barges={t['fired']}  prompt={t['prompt'][:46]!r}"
+        )
     print("  TALK-OVER (true-positive) trials -- want a cut every time:")
     for t in (x for x in r.trials if x["kind"] == "talk_over"):
         flag = "ok " if t["passed"] else "FAIL"
         lat = f"{t['latency_s']:.2f}s" if t["latency_s"] is not None else "  -  "
-        print(f"    [{flag}] @{t['delay_s']}s start cut={t['fired']} lat={lat}  over={t['barge_phrase'][:34]!r}")
+        print(
+            f"    [{flag}] @{t['delay_s']}s start={t['started']} "
+            f"terminal={t['terminal']} inject={t['injection_ok']} "
+            f"causal={t['causal_cut']} cut={t['fired']} lat={lat}  "
+            f"over={t['barge_phrase'][:34]!r}"
+        )
     lat_mean = sum(r.latencies) / len(r.latencies) if r.latencies else None
     print(f"\n  self-interrupt FP rate = {r.fp_rate:.2f} per reply   (want 0.00)")
     print(f"  talk-over cut rate     = {r.tp_rate:.2f}             (want 1.00)")

@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from core.engine import PlaybackOutcome, PlaybackReceipt
-from core.playback_history import PlaybackCommit, PlaybackHistory
+from core.playback_history import (
+    PlaybackCommit,
+    PlaybackContext,
+    PlaybackFinalization,
+    PlaybackHistory,
+)
 from core.resume import ResumeConfig, ResumeTracker
 
 
@@ -71,6 +76,174 @@ def test_completed_stream_commits_in_registration_order_after_all_receipts():
     )
     assert history.pending is False
     assert history.pending_fragments == 0
+
+
+def test_playback_context_survives_until_group_finalization():
+    history = PlaybackHistory()
+    stream_fragment = history.register(
+        task_id="stream-task",
+        epoch=9,
+        input_generation=27,
+        followup_generation=4,
+        text="Tracked stream sentence.",
+        remember=True,
+        is_followup=False,
+        streaming=True,
+    )
+    stream_context = PlaybackContext(
+        task_id="stream-task",
+        epoch=9,
+        input_generation=27,
+        remember=True,
+    )
+
+    assert history.fragment_context(stream_fragment) == stream_context
+    assert history.stream_context("stream-task", 9) == stream_context
+    assert history.drain_finalizations() == ()
+
+    # The terminal receipt alone cannot remove an open stream group.
+    resolution = history.resolve(
+        _receipt(
+            stream_fragment,
+            PlaybackOutcome.COMPLETED,
+            "Tracked stream sentence.",
+        )
+    )
+    assert resolution is not None and resolution.commits == ()
+    assert history.fragment_context(stream_fragment) == stream_context
+    assert history.stream_context("stream-task", 9) == stream_context
+    assert history.drain_finalizations() == ()
+
+    history.close_stream("stream-task", 9)
+    assert history.fragment_context(stream_fragment) is None
+    assert history.stream_context("stream-task", 9) is None
+    assert history.drain_finalizations() == (
+        PlaybackFinalization(
+            context=stream_context,
+            outcome=PlaybackOutcome.COMPLETED,
+        ),
+    )
+
+    nonstream_fragment = history.register(
+        task_id="single-task",
+        epoch=10,
+        input_generation=28,
+        followup_generation=5,
+        text="Tracked single reply.",
+        remember=True,
+        is_followup=False,
+        streaming=False,
+    )
+    assert history.fragment_context(nonstream_fragment) == PlaybackContext(
+        task_id="single-task",
+        epoch=10,
+        input_generation=28,
+        remember=True,
+    )
+    assert history.stream_context("single-task", 10) is None
+
+    resolution = history.resolve(
+        _receipt(
+            nonstream_fragment,
+            PlaybackOutcome.COMPLETED,
+            "Tracked single reply.",
+        )
+    )
+    assert resolution is not None
+    assert history.fragment_context(nonstream_fragment) is None
+    assert history.drain_finalizations() == (
+        PlaybackFinalization(
+            context=PlaybackContext(
+                task_id="single-task",
+                epoch=10,
+                input_generation=28,
+                remember=True,
+            ),
+            outcome=PlaybackOutcome.COMPLETED,
+        ),
+    )
+
+
+def test_multifragment_finalization_uses_worst_actual_receipt_outcome():
+    history = PlaybackHistory()
+    first = history.register(
+        task_id="cut-stream",
+        epoch=11,
+        input_generation=29,
+        followup_generation=6,
+        text="Completed prefix.",
+        remember=True,
+        is_followup=False,
+        streaming=True,
+    )
+    second = history.register(
+        task_id="cut-stream",
+        epoch=11,
+        input_generation=29,
+        followup_generation=6,
+        text="Interrupted suffix.",
+        remember=True,
+        is_followup=False,
+        streaming=True,
+    )
+    history.close_stream("cut-stream", 11, interrupted=True)
+
+    assert history.resolve(
+        _receipt(first, PlaybackOutcome.COMPLETED, "Completed prefix.")
+    ).commits == ()
+    resolution = history.resolve(
+        _receipt(second, PlaybackOutcome.INTERRUPTED, "Interrupted")
+    )
+
+    assert resolution is not None
+    assert history.drain_finalizations() == (
+        PlaybackFinalization(
+            context=PlaybackContext(
+                task_id="cut-stream",
+                epoch=11,
+                input_generation=29,
+                remember=True,
+            ),
+            outcome=PlaybackOutcome.INTERRUPTED,
+        ),
+    )
+
+
+def test_finalization_outcome_priority_is_fail_closed():
+    cases = (
+        (
+            (PlaybackOutcome.COMPLETED, PlaybackOutcome.DROPPED),
+            PlaybackOutcome.DROPPED,
+        ),
+        (
+            (PlaybackOutcome.DROPPED, PlaybackOutcome.INTERRUPTED),
+            PlaybackOutcome.INTERRUPTED,
+        ),
+        (
+            (PlaybackOutcome.INTERRUPTED, PlaybackOutcome.FAILED),
+            PlaybackOutcome.FAILED,
+        ),
+    )
+    for index, (outcomes, expected) in enumerate(cases, start=1):
+        history = PlaybackHistory()
+        fragments = [
+            history.register(
+                task_id=f"priority-{index}",
+                epoch=index,
+                input_generation=30 + index,
+                followup_generation=index,
+                text=f"Fragment {part}.",
+                remember=True,
+                is_followup=False,
+                streaming=True,
+            )
+            for part in range(len(outcomes))
+        ]
+        history.close_stream(f"priority-{index}", index)
+        for fragment_id, outcome in zip(fragments, outcomes):
+            history.resolve(_receipt(fragment_id, outcome))
+
+        assert history.drain_finalizations()[0].outcome is expected
 
 
 def test_interrupted_play_and_unheard_queued_fragment_commit_no_text():

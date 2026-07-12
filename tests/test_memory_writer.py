@@ -1,6 +1,7 @@
 """Unit tests for smart Postgres memory writer (no real DB or Ollama)."""
 from __future__ import annotations
 
+import threading
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -20,7 +21,11 @@ from utils.memory_writer import (
 
 
 class MockLLM:
+    def __init__(self):
+        self.calls = []
+
     def cleanup(self, text: str, *, gate: bool) -> CleanupResult:
+        self.calls.append((text, gate))
         if "skip me" in text.lower():
             return CleanupResult(False, "", "not_worthy")
         return CleanupResult(True, text.strip().title(), "ok")
@@ -125,6 +130,178 @@ def test_memory_writer_skips_gated_content():
     writer.enqueue("please skip me now")
     assert writer.flush(force=True) == 0
     assert saved == []
+
+
+def test_memory_writer_close_persists_raw_without_blocking_llm_cleanup():
+    saved = []
+    llm = MockLLM()
+
+    def must_not_run_at_shutdown(_role: str, _text: str):
+        raise AssertionError("shutdown ran the optional cleaner")
+
+    writer = MemoryWriter(
+        config=MemoryWriterConfig(save_interval_sec=999, llm_gate=True),
+        persist_fn=lambda **kw: saved.append(kw),
+        llm_client=llm,
+    )
+    writer.enqueue("a pending shutdown fact")
+
+    assert writer.close() == 1
+    assert llm.calls == []
+    assert saved[0]["raw_text"] == "a pending shutdown fact"
+    assert saved[0]["cleaned_text"] == "a pending shutdown fact"
+
+    writer = MemoryWriter(
+        config=MemoryWriterConfig(save_interval_sec=999, llm_gate=True),
+        persist_fn=lambda **kw: saved.append(kw),
+        llm_client=llm,
+        text_cleaner=must_not_run_at_shutdown,
+    )
+    writer.enqueue("another pending shutdown fact")
+    assert writer.close() == 1
+    assert saved[-1]["cleaned_text"] == "another pending shutdown fact"
+
+
+def test_memory_writer_close_reclaims_items_drained_by_blocked_flush():
+    cleaner_entered = threading.Event()
+    release_cleaner = threading.Event()
+    close_done = threading.Event()
+    pool_closed = threading.Event()
+    saved = []
+    late_pool_calls = []
+    flush_errors = []
+    close_results = []
+
+    class BlockingCleanup:
+        def cleanup(self, text: str, *, gate: bool) -> CleanupResult:
+            cleaner_entered.set()
+            assert release_cleaner.wait(timeout=2.0), "test did not release cleaner"
+            return CleanupResult(True, text.upper(), "cleaned")
+
+    def persist_fn(**kwargs):
+        if pool_closed.is_set():
+            late_pool_calls.append(kwargs["raw_text"])
+            raise AssertionError("flush persisted after the pool was closed")
+        saved.append(kwargs)
+
+    writer = MemoryWriter(
+        config=MemoryWriterConfig(save_interval_sec=999, llm_cleanup=True),
+        persist_fn=persist_fn,
+        llm_client=BlockingCleanup(),
+    )
+    assert writer.enqueue("first drained fact")
+    assert writer.enqueue("second drained fact")
+
+    def run_flush():
+        try:
+            writer.flush(force=True)
+        except Exception as exc:  # pragma: no cover - asserted below
+            flush_errors.append(exc)
+
+    flush_thread = threading.Thread(target=run_flush, daemon=True)
+    flush_thread.start()
+    assert cleaner_entered.wait(timeout=1.0)
+    # Both candidates have left the buffer, but neither has committed yet.
+    assert writer.pending_count == 2
+    # Enqueue admission cannot see the drained copy.  Close-time deterministic
+    # admission must keep this stale duplicate from becoming a second row.
+    assert writer.enqueue("first drained fact")
+    assert writer.pending_count == 3
+
+    def run_close():
+        close_results.append(writer.close())
+        close_done.set()
+
+    close_thread = threading.Thread(target=run_close, daemon=True)
+    close_thread.start()
+    try:
+        # Shutdown must reclaim and raw-persist the drained batch without
+        # waiting for the optional model call to finish.
+        assert close_done.wait(timeout=0.5)
+        assert close_results == [2]
+        assert [(row["raw_text"], row["cleaned_text"]) for row in saved] == [
+            ("first drained fact", "first drained fact"),
+            ("second drained fact", "second drained fact"),
+        ]
+        assert writer.pending_count == 0
+
+        # Model the manager closing its pool immediately after writer.close().
+        # When the obsolete flush resumes it must neither duplicate data nor
+        # access that closed pool.
+        pool_closed.set()
+    finally:
+        release_cleaner.set()
+
+    flush_thread.join(timeout=1.0)
+    close_thread.join(timeout=1.0)
+    assert not flush_thread.is_alive()
+    assert not close_thread.is_alive()
+    assert flush_errors == []
+    assert late_pool_calls == []
+    assert len(saved) == 2
+    assert writer.close() == 0
+
+
+def test_concurrent_flushes_recheck_dedupe_at_commit():
+    first_cleaner_entered = threading.Event()
+    both_cleaners_entered = threading.Event()
+    release_cleaners = threading.Event()
+    calls_lock = threading.Lock()
+    cleanup_calls = 0
+    saved = []
+    flush_results = []
+    flush_errors = []
+
+    class ConcurrentCleanup:
+        def cleanup(self, text: str, *, gate: bool) -> CleanupResult:
+            nonlocal cleanup_calls
+            with calls_lock:
+                cleanup_calls += 1
+                if cleanup_calls == 1:
+                    first_cleaner_entered.set()
+                if cleanup_calls == 2:
+                    both_cleaners_entered.set()
+            assert release_cleaners.wait(timeout=2.0), "test did not release cleaners"
+            return CleanupResult(True, text.upper(), "cleaned")
+
+    writer = MemoryWriter(
+        config=MemoryWriterConfig(save_interval_sec=999, llm_cleanup=True),
+        persist_fn=lambda **kwargs: saved.append(kwargs),
+        llm_client=ConcurrentCleanup(),
+    )
+
+    def run_flush():
+        try:
+            flush_results.append(writer.flush(force=True))
+        except Exception as exc:  # pragma: no cover - asserted below
+            flush_errors.append(exc)
+
+    assert writer.enqueue("one concurrently drained fact")
+    first = threading.Thread(target=run_flush, daemon=True)
+    first.start()
+    assert first_cleaner_entered.wait(timeout=1.0)
+
+    # The first copy is no longer in the buffer and has not committed, so a
+    # second flush can independently admit the same raw candidate.
+    assert writer.enqueue("one concurrently drained fact")
+    second = threading.Thread(target=run_flush, daemon=True)
+    second.start()
+    try:
+        assert both_cleaners_entered.wait(timeout=1.0)
+    finally:
+        release_cleaners.set()
+
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert flush_errors == []
+    assert sorted(flush_results) == [0, 1]
+    assert [row["raw_text"] for row in saved] == [
+        "one concurrently drained fact"
+    ]
+    assert writer.pending_count == 0
+    assert writer.close() == 0
 
 
 def test_memory_writer_uses_text_cleaner_hook():

@@ -1,7 +1,7 @@
 # ADR-0057: Reuse the fast client for Postgres memory ingest
 
 Date: 2026-07-12
-Status: accepted
+Status: superseded-by ADR-0059
 
 ## Decision
 

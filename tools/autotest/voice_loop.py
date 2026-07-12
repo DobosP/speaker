@@ -14,13 +14,14 @@ acoustic path is pluggable (see :mod:`.acoustics`):
                  coloring -- the genuine open-speaker condition. Makes sound;
                  gated behind ``make_sound=True``.
 
-Live signals from ``--debug`` stdout: ``[live] engine running`` (ready),
-``speaking:`` (a reply started), ``barge-in detected``, ``dropping self-echo
-final``. STT accuracy (WER) + self-interrupt analysis are folded in by the CLI
-from the recorded bundle.
+Live signals from ``--debug`` stdout: ``[live] engine running`` (ready), exact
+generation-bearing final/playback onset/playback terminal markers, ``barge-in
+detected``, and ``dropping self-echo final``. STT accuracy (WER) and finalized
+bundle evidence are folded in by the CLI.
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import json
 import os
@@ -30,13 +31,430 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from . import acoustics as acoustics_mod
 from . import audio, clips as clips_mod
+from .score import SttScore, wer
 
 _RUN_ID_RE = re.compile(r"run-(\d{8}-\d{6})")
+_FINAL_MARKER_RE = re.compile(
+    r"final -> brain:\s*(?P<text>.+)\s+"
+    r"\(mode=(?P<mode>\S+)\s+input_generation=(?P<generation>\d+)\)"
+)
+_PLAYBACK_STARTED_RE = re.compile(
+    r"playback receipt started:\s+fragment=(?P<fragment>\S+)\s+"
+    r"task=(?P<task>\S*)\s+input_generation=(?P<generation>\d+)"
+)
+_PLAYBACK_QUIESCENT_RE = re.compile(
+    r"playback quiescent:\s+tracked assistant reply terminal\s+"
+    r"task=(?P<task>\S*)\s+input_generation=(?P<generation>\d+)\s+"
+    r"outcome=(?P<outcome>\S+)"
+)
+_BARGE_IN_RE = re.compile(r"(?:^|\|\s*)barge-in detected(?:\b|$)")
+_PROMPT_MAX_WER = 0.50
+
+
+@dataclass(frozen=True)
+class RuntimeMarker:
+    """One ordered runtime marker in the autonomous harness clock domain."""
+
+    kind: str
+    input_generation: Optional[int]
+    sequence: int = 0
+    text: str = ""
+    task_id: str = ""
+    fragment_id: str = ""
+    outcome: str = ""
+
+
+def parse_runtime_marker(line: str) -> Optional[RuntimeMarker]:
+    """Parse ordered final/playback/barge evidence used by the harness.
+
+    The final text is logged with ``%r``.  ``literal_eval`` recovers quotes and
+    escapes without executing log content; malformed or generation-zero lines
+    are ignored rather than becoming evidence.
+    """
+
+    match = _FINAL_MARKER_RE.search(line or "")
+    if match is not None:
+        try:
+            text = ast.literal_eval(match.group("text"))
+            generation = int(match.group("generation"))
+        except (SyntaxError, ValueError):
+            return None
+        if not isinstance(text, str) or generation <= 0:
+            return None
+        return RuntimeMarker(
+            kind="final",
+            input_generation=generation,
+            text=text,
+        )
+
+    match = _PLAYBACK_STARTED_RE.search(line or "")
+    if match is not None:
+        generation = int(match.group("generation"))
+        if generation <= 0 or not match.group("task"):
+            return None
+        return RuntimeMarker(
+            kind="playback_started",
+            input_generation=generation,
+            task_id=match.group("task"),
+            fragment_id=match.group("fragment"),
+        )
+
+    match = _PLAYBACK_QUIESCENT_RE.search(line or "")
+    if match is not None:
+        generation = int(match.group("generation"))
+        if generation <= 0 or not match.group("task"):
+            return None
+        return RuntimeMarker(
+            kind="playback_quiescent",
+            input_generation=generation,
+            task_id=match.group("task"),
+            outcome=match.group("outcome").lower(),
+        )
+
+    if _BARGE_IN_RE.search(line or "") is not None:
+        return RuntimeMarker(kind="barge_in", input_generation=None)
+    return None
+
+
+@dataclass(frozen=True)
+class PromptPlaybackBinding:
+    """Causal proof for one injected prompt.
+
+    Ordinary prompts require ``matching final -> exact task/generation start ->
+    exact task/generation terminal`` in that order, with the scenario's
+    required terminal outcome.  Commands require the same bounded-WER final but
+    are excluded from playback grading: some mapped commands legitimately
+    acknowledge, while others stay silent.
+    """
+
+    role: str
+    reference: str
+    recognized_text: str = ""
+    input_generation: Optional[int] = None
+    word_error_rate: Optional[float] = None
+    final_sequence: Optional[int] = None
+    task_id: str = ""
+    playback_started_sequence: Optional[int] = None
+    playback_quiescent_sequence: Optional[int] = None
+    required_terminal_outcome: str = "completed"
+    terminal_outcome: str = ""
+
+    @property
+    def expects_audio(self) -> bool:
+        return self.role != "command"
+
+    @property
+    def recognized(self) -> bool:
+        if self.final_sequence is None or self.input_generation is None:
+            return False
+        if not self.reference.strip():
+            return True
+        return bool(
+            self.word_error_rate is not None
+            and self.word_error_rate <= _PROMPT_MAX_WER
+        )
+
+    @property
+    def audio_started(self) -> bool:
+        return bool(self.task_id and self.playback_started_sequence is not None)
+
+    @property
+    def audio_quiescent(self) -> bool:
+        return bool(
+            self.audio_started
+            and self.playback_quiescent_sequence is not None
+            and self.playback_started_sequence < self.playback_quiescent_sequence
+            and self.terminal_outcome == self.required_terminal_outcome
+        )
+
+    @property
+    def passed(self) -> bool:
+        if not self.recognized:
+            return False
+        if self.expects_audio:
+            return self.audio_quiescent
+        return True
+
+    def to_dict(self) -> dict:
+        return {
+            "role": self.role,
+            "reference": self.reference,
+            "recognized_text": self.recognized_text,
+            "input_generation": self.input_generation,
+            "wer": self.word_error_rate,
+            "final_sequence": self.final_sequence,
+            "task_id": self.task_id,
+            "playback_started_sequence": self.playback_started_sequence,
+            "playback_quiescent_sequence": self.playback_quiescent_sequence,
+            "required_terminal_outcome": self.required_terminal_outcome,
+            "terminal_outcome": self.terminal_outcome,
+            "expects_audio": self.expects_audio,
+            "recognized": self.recognized,
+            "audio_started": self.audio_started,
+            "audio_quiescent": self.audio_quiescent,
+            "passed": self.passed,
+        }
+
+
+def summarize_prompt_bindings(bindings: list[PromptPlaybackBinding]) -> dict:
+    """Return fail-closed counts shared by the live runner and unit tests."""
+
+    labelled = [binding for binding in bindings if binding.reference.strip()]
+    audio = [binding for binding in bindings if binding.expects_audio]
+    commands = [binding for binding in bindings if not binding.expects_audio]
+    return {
+        "expected_prompts": len(bindings),
+        "recognized_prompts": sum(binding.recognized for binding in bindings),
+        "expected_labelled_prompts": len(labelled),
+        "recognized_labelled_prompts": sum(
+            binding.recognized for binding in labelled
+        ),
+        "expected_audio_prompts": len(audio),
+        "causal_audio_prompts": sum(binding.passed for binding in audio),
+        "expected_commands": len(commands),
+        "recognized_commands": sum(binding.recognized for binding in commands),
+        "passed": bool(bindings) and all(binding.passed for binding in bindings),
+    }
+
+
+def score_prompt_bindings(bindings: list[PromptPlaybackBinding]) -> SttScore:
+    """Score the exact generation-bound final selected for every prompt."""
+
+    pairs: list[tuple[str, str, float]] = []
+    matched = 0
+    for binding in bindings:
+        if not binding.reference.strip():
+            continue
+        distance = (
+            float(binding.word_error_rate)
+            if binding.word_error_rate is not None
+            else 1.0
+        )
+        pairs.append((binding.reference, binding.recognized_text, distance))
+        matched += int(binding.recognized)
+    mean = sum(pair[2] for pair in pairs) / len(pairs) if pairs else 0.0
+    return SttScore(pairs=pairs, mean_wer=round(mean, 3), n=matched)
+
+
+class RuntimeMarkerLedger:
+    """Thread-safe ordered marker ledger used by the subprocess reader."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._markers: list[RuntimeMarker] = []
+        self._next_sequence = 0
+
+    def observe(self, line: str) -> Optional[RuntimeMarker]:
+        marker = parse_runtime_marker(line)
+        if marker is None:
+            return None
+        with self._condition:
+            self._next_sequence += 1
+            marker = replace(marker, sequence=self._next_sequence)
+            self._markers.append(marker)
+            self._condition.notify_all()
+        return marker
+
+    def cursor(self) -> int:
+        with self._condition:
+            return self._next_sequence
+
+    def snapshot(self) -> tuple[RuntimeMarker, ...]:
+        with self._condition:
+            return tuple(self._markers)
+
+    def _matching_final(
+        self,
+        reference: str,
+        *,
+        after_sequence: int,
+    ) -> tuple[Optional[RuntimeMarker], Optional[float]]:
+        for marker in self._markers:
+            if marker.sequence <= after_sequence or marker.kind != "final":
+                continue
+            if not reference.strip():
+                return marker, None
+            distance = wer(reference, marker.text)
+            if distance <= _PROMPT_MAX_WER:
+                return marker, distance
+        return None, None
+
+    def wait_matching_final(
+        self,
+        reference: str,
+        *,
+        after_sequence: int,
+        timeout: float,
+    ) -> tuple[Optional[RuntimeMarker], Optional[float]]:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            while True:
+                marker, distance = self._matching_final(
+                    reference,
+                    after_sequence=after_sequence,
+                )
+                if marker is not None:
+                    return marker, distance
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None, None
+                self._condition.wait(timeout=min(0.05, remaining))
+
+    def _first_playback(
+        self,
+        kind: str,
+        *,
+        input_generation: int,
+        after_sequence: int,
+        task_id: Optional[str] = None,
+    ) -> Optional[RuntimeMarker]:
+        for marker in self._markers:
+            if (
+                marker.sequence > after_sequence
+                and marker.kind == kind
+                and marker.input_generation == input_generation
+                and (task_id is None or marker.task_id == task_id)
+            ):
+                return marker
+        return None
+
+    def wait_playback(
+        self,
+        kind: str,
+        *,
+        input_generation: int,
+        after_sequence: int,
+        timeout: float,
+        task_id: Optional[str] = None,
+    ) -> Optional[RuntimeMarker]:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            while True:
+                marker = self._first_playback(
+                    kind,
+                    input_generation=input_generation,
+                    after_sequence=after_sequence,
+                    task_id=task_id,
+                )
+                if marker is not None:
+                    return marker
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._condition.wait(timeout=min(0.05, remaining))
+
+    def wait_barge(
+        self,
+        *,
+        after_sequence: int,
+        timeout: float,
+    ) -> Optional[RuntimeMarker]:
+        """Return the first concrete barge marker after a caller's baseline."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            while True:
+                marker = next(
+                    (
+                        candidate
+                        for candidate in self._markers
+                        if candidate.sequence > after_sequence
+                        and candidate.kind == "barge_in"
+                    ),
+                    None,
+                )
+                if marker is not None:
+                    return marker
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._condition.wait(timeout=min(0.05, remaining))
+
+    def wait_prompt_binding(
+        self,
+        reference: str,
+        *,
+        role: str,
+        after_sequence: int,
+        final_timeout: float = 25.0,
+        start_timeout: float = 25.0,
+        terminal_timeout: Optional[float] = 35.0,
+        required_terminal_outcome: str = "completed",
+    ) -> PromptPlaybackBinding:
+        final, distance = self.wait_matching_final(
+            reference,
+            after_sequence=after_sequence,
+            timeout=final_timeout,
+        )
+        if final is None:
+            return PromptPlaybackBinding(
+                role=role,
+                reference=reference,
+                required_terminal_outcome=required_terminal_outcome,
+            )
+        binding = PromptPlaybackBinding(
+            role=role,
+            reference=reference,
+            recognized_text=final.text,
+            input_generation=final.input_generation,
+            word_error_rate=distance,
+            final_sequence=final.sequence,
+            required_terminal_outcome=required_terminal_outcome,
+        )
+        if not binding.expects_audio:
+            return binding
+        started = self.wait_playback(
+            "playback_started",
+            input_generation=final.input_generation,
+            after_sequence=final.sequence,
+            timeout=start_timeout,
+        )
+        if started is None:
+            return binding
+        binding = replace(
+            binding,
+            task_id=started.task_id,
+            playback_started_sequence=started.sequence,
+        )
+        if terminal_timeout is None:
+            return binding
+        return self.wait_binding_terminal(binding, timeout=terminal_timeout)
+
+    def wait_binding_terminal(
+        self,
+        binding: PromptPlaybackBinding,
+        *,
+        timeout: float,
+        after_sequence: Optional[int] = None,
+    ) -> PromptPlaybackBinding:
+        if (
+            binding.input_generation is None
+            or binding.playback_started_sequence is None
+            or not binding.task_id
+        ):
+            return binding
+        terminal_after = binding.playback_started_sequence
+        if after_sequence is not None:
+            terminal_after = max(terminal_after, after_sequence)
+        terminal = self.wait_playback(
+            "playback_quiescent",
+            input_generation=binding.input_generation,
+            task_id=binding.task_id,
+            after_sequence=terminal_after,
+            timeout=timeout,
+        )
+        if terminal is None:
+            return binding
+        return replace(
+            binding,
+            playback_quiescent_sequence=terminal.sequence,
+            terminal_outcome=terminal.outcome,
+        )
 
 
 @dataclass
@@ -53,6 +471,9 @@ class VoiceRun:
     clip_source: str
     injected_refs: list[str]               # ground-truth transcripts injected (for WER)
     aec_delay_ms: Optional[int]
+    prompt_bindings: list[dict] = field(default_factory=list)
+    prompt_evidence: dict = field(default_factory=dict)
+    prompt_score: dict = field(default_factory=dict)
     markers: dict = field(default_factory=dict)
     scenarios: dict = field(default_factory=dict)
     detail: list[str] = field(default_factory=list)
@@ -72,8 +493,16 @@ class _Proc:
         )
         self.ready = threading.Event()
         self.run_id: Optional[str] = None
-        self.counts = {"speaking": 0, "barge": 0, "self_echo_drop": 0, "barge_rejected": 0}
+        self.counts = {
+            "speaking": 0,
+            "playback_started": 0,
+            "playback_quiescent": 0,
+            "barge": 0,
+            "self_echo_drop": 0,
+            "barge_rejected": 0,
+        }
         self._lock = threading.Lock()
+        self.marker_ledger = RuntimeMarkerLedger()
         self._t = threading.Thread(target=self._read, daemon=True)
         self._t.start()
 
@@ -81,6 +510,7 @@ class _Proc:
         for line in self.proc.stdout:  # type: ignore[union-attr]
             self._fh.write(line)
             self._fh.flush()
+            self.marker_ledger.observe(line)
             if self.run_id is None:
                 m = _RUN_ID_RE.search(line)
                 if m:
@@ -90,6 +520,10 @@ class _Proc:
             with self._lock:
                 if "speaking:" in line:
                     self.counts["speaking"] += 1
+                if "playback receipt started:" in line:
+                    self.counts["playback_started"] += 1
+                if "playback quiescent:" in line:
+                    self.counts["playback_quiescent"] += 1
                 if "barge-in detected" in line:
                     self.counts["barge"] += 1
                 if "barge-in REJECTED" in line:
@@ -101,26 +535,53 @@ class _Proc:
         with self._lock:
             return self.counts[key]
 
-    def wait_speaking(self, baseline: int, timeout: float) -> bool:
-        end = time.monotonic() + timeout
-        while time.monotonic() < end:
-            if self.count("speaking") > baseline:
-                return True
-            time.sleep(0.05)
-        return False
+    def marker_cursor(self) -> int:
+        return self.marker_ledger.cursor()
 
-    def wait_idle(self, timeout: float, quiet: float = 2.5) -> bool:
-        end = time.monotonic() + timeout
-        last = self.count("speaking")
-        last_change = time.monotonic()
-        while time.monotonic() < end:
-            c = self.count("speaking")
-            if c != last:
-                last, last_change = c, time.monotonic()
-            elif time.monotonic() - last_change >= quiet:
-                return True
-            time.sleep(0.1)
-        return False
+    def wait_prompt_binding(
+        self,
+        reference: str,
+        *,
+        role: str,
+        after_sequence: int,
+        final_timeout: float = 25.0,
+        start_timeout: float = 25.0,
+        terminal_timeout: Optional[float] = 35.0,
+        required_terminal_outcome: str = "completed",
+    ) -> PromptPlaybackBinding:
+        return self.marker_ledger.wait_prompt_binding(
+            reference,
+            role=role,
+            after_sequence=after_sequence,
+            final_timeout=final_timeout,
+            start_timeout=start_timeout,
+            terminal_timeout=terminal_timeout,
+            required_terminal_outcome=required_terminal_outcome,
+        )
+
+    def wait_prompt_terminal(
+        self,
+        binding: PromptPlaybackBinding,
+        *,
+        timeout: float,
+        after_sequence: Optional[int] = None,
+    ) -> PromptPlaybackBinding:
+        return self.marker_ledger.wait_binding_terminal(
+            binding,
+            timeout=timeout,
+            after_sequence=after_sequence,
+        )
+
+    def wait_barge_marker(
+        self,
+        *,
+        after_sequence: int,
+        timeout: float = 0.0,
+    ) -> Optional[RuntimeMarker]:
+        return self.marker_ledger.wait_barge(
+            after_sequence=after_sequence,
+            timeout=timeout,
+        )
 
     def stop(self, grace: float = 20.0) -> None:
         if self.proc.poll() is None:
@@ -265,6 +726,7 @@ def run_voice_loop(
     scenarios: dict = {}
     run_id = log_path = None
     markers: dict = {}
+    prompt_bindings: list[PromptPlaybackBinding] = []
 
     with _aec_delay_override(repo_root, aec_delay_ms):
         with ac.session():
@@ -276,23 +738,54 @@ def run_voice_loop(
                 # mode, score EVERY non-barge clip; in the echo modes keep S1 to
                 # the round_trip clips (speak/barge are used by S2/S3).
                 if ac.has_echo:
-                    rt_clips = clips_by_role.get("round_trip", [])
+                    rt_entries = [
+                        ("round_trip", clip)
+                        for clip in clips_by_role.get("round_trip", [])
+                    ]
                 else:
-                    rt_clips = [c for role, cl in clips_by_role.items()
-                                if role != "barge" for c in cl]
+                    rt_entries = [
+                        (role, clip)
+                        for role, clips in clips_by_role.items()
+                        if role != "barge"
+                        for clip in clips
+                    ]
+                rt_clips = [clip for _role, clip in rt_entries]
+                expected_audio_clips = sum(
+                    role != "command" for role, _clip in rt_entries
+                )
                 lead_in = getattr(ac, "inject_lead_in_ms", 0)
-                spoke_any = False
-                for c in rt_clips:
-                    spk = proc.count("speaking")
+                s1_bindings: list[PromptPlaybackBinding] = []
+                for role, c in rt_entries:
+                    marker_cursor = proc.marker_cursor()
                     audio.inject(tgt, c.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(c.text)
-                    spoke = proc.wait_speaking(spk, timeout=25.0)
-                    spoke_any = spoke_any or spoke
-                    proc.wait_idle(timeout=30.0)
+                    binding = proc.wait_prompt_binding(
+                        c.text,
+                        role=role,
+                        after_sequence=marker_cursor,
+                    )
+                    s1_bindings.append(binding)
+                    prompt_bindings.append(binding)
+                s1_evidence = summarize_prompt_bindings(s1_bindings)
                 scenarios["s1_round_trip"] = {
-                    "clips": len(rt_clips), "assistant_spoke": spoke_any,
+                    "clips": len(rt_clips),
+                    "expected_audio_clips": expected_audio_clips,
+                    "assistant_spoke": s1_evidence["passed"],
+                    "audio_started": sum(
+                        binding.audio_started
+                        for binding in s1_bindings
+                        if binding.expects_audio
+                    ),
+                    "audio_terminal": s1_evidence["causal_audio_prompts"],
+                    "evidence": s1_evidence,
+                    "bindings": [binding.to_dict() for binding in s1_bindings],
                 }
-                detail.append(f"S1: {len(rt_clips)} round-trip clip(s), spoke={spoke_any}")
+                detail.append(
+                    f"S1: clips={len(rt_clips)} expected_audio={expected_audio_clips} "
+                    f"recognized={s1_evidence['recognized_prompts']} "
+                    f"causal_audio={s1_evidence['causal_audio_prompts']} "
+                    f"recognized_commands={s1_evidence['recognized_commands']}"
+                )
 
                 # the speak clips: distinct prompts for S2 and S3 so the second
                 # injection isn't a same-clip repeat the engine garbles.
@@ -310,81 +803,166 @@ def run_voice_loop(
                     }
                 else:
                     # S2: self-interrupt -- inject one, NOTHING during the reply
-                    proc.wait_idle(timeout=10.0)
                     sp = speak_clips[0]
-                    spk = proc.count("speaking")
-                    # Baseline before the prompt: a self-cut can follow the
-                    # first ``speaking:`` marker immediately, so sampling only
-                    # after wait_speaking() could subtract the very event this
-                    # scenario exists to catch.
+                    marker_cursor = proc.marker_cursor()
+                    # Baseline before the prompt: a self-cut can follow reply
+                    # admission immediately, so sampling only after exact sink
+                    # onset could subtract the event this scenario must catch.
                     barge_at_start = proc.count("barge")
                     audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(sp.text)
-                    self_reply_started = proc.wait_speaking(spk, timeout=25.0)
-                    proc.wait_idle(timeout=35.0)
+                    self_binding = proc.wait_prompt_binding(
+                        sp.text,
+                        role="speak",
+                        after_sequence=marker_cursor,
+                    )
+                    prompt_bindings.append(self_binding)
+                    self_reply_started = self_binding.audio_started
+                    self_reply_terminal = self_binding.audio_quiescent
                     self_barges = proc.count("barge") - barge_at_start
                     scenarios["s2_self_interrupt"] = {
+                        "prompt_binding": self_binding.to_dict(),
                         "assistant_started": self_reply_started,
+                        "assistant_terminal": self_reply_terminal,
                         "barge_ins_during_own_reply": self_barges,
                         "self_echo_drops": proc.count("self_echo_drop"),
-                        "live_pass": self_reply_started and self_barges == 0,
+                        "live_pass": (
+                            self_reply_started
+                            and self_reply_terminal
+                            and self_barges == 0
+                        ),
                         "status": (
                             "pass"
-                            if self_reply_started and self_barges == 0
+                            if self_reply_started and self_reply_terminal and self_barges == 0
                             else "fail"
                         ),
                     }
                     detail.append(
-                        f"S2: started={self_reply_started} "
+                        f"S2: started={self_reply_started} terminal={self_reply_terminal} "
                         f"self_barges={self_barges} (want start + 0)"
                     )
 
                     # S3: barge-in cut -- talk over a long reply. Let a sentence
                     # get going, then a LOUD talk-over (must out-shout the reply),
                     # and poll for the cut.
-                    proc.wait_idle(timeout=10.0)
                     sp = speak_clips[1] if len(speak_clips) > 1 else speak_clips[0]
                     bg = first("barge")
-                    spk = proc.count("speaking")
+                    marker_cursor = proc.marker_cursor()
                     audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(sp.text)
-                    started = proc.wait_speaking(spk, timeout=25.0)
+                    barge_binding = proc.wait_prompt_binding(
+                        sp.text,
+                        role="speak",
+                        after_sequence=marker_cursor,
+                        terminal_timeout=None,
+                        required_terminal_outcome="interrupted",
+                    )
+                    started = barge_binding.audio_started
                     time.sleep(0.8)
-                    barge_before = proc.count("barge")
                     # the barge clip is NOT scored: it deliberately overlaps, so
                     # it won't transcribe cleanly. It still needs the lead-in so a
                     # Bluetooth inject sink doesn't drop the talk-over's onset.
                     barge_fired = 0
+                    barge_marker = None
                     cut_at = None
+                    injection_ended_at = None
+                    cut_causal = False
                     with audio.play_injection(
                         tgt,
                         bg.path,
                         volume_pct=min(400, ac.inject_gain + 100),
                         lead_in_ms=lead_in,
                     ) as playback:
+                        # Baseline only after paplay exists.  A self-cut while
+                        # the injector is still being launched is not causal
+                        # evidence for this talk-over.
+                        barge_cursor = proc.marker_cursor()
                         end = playback.speech_onset_monotonic + 7.0
                         while time.monotonic() < end:
-                            barge_fired = proc.count("barge") - barge_before
-                            if barge_fired >= 1:
-                                cut_at = time.monotonic()
+                            now = time.monotonic()
+                            returncode = playback.process.poll()
+                            if returncode is not None and injection_ended_at is None:
+                                injection_ended_at = now
+                            barge_marker = proc.wait_barge_marker(
+                                after_sequence=barge_cursor,
+                            )
+                            if barge_marker is not None:
+                                barge_fired = 1
+                                cut_at = now
+                                cut_causal = returncode is None or (
+                                    returncode == 0
+                                    and injection_ended_at is not None
+                                    and now - injection_ended_at <= 0.15
+                                )
                                 break
                             time.sleep(0.05)
+                    injection_ok = playback.process.returncode == 0
+                    if barge_marker is not None:
+                        # A natural/early terminal before the cut cannot satisfy
+                        # S3.  Require the exact selected task+generation group
+                        # to become terminal strictly after this concrete barge.
+                        barge_binding = proc.wait_prompt_terminal(
+                            barge_binding,
+                            timeout=20.0,
+                            after_sequence=barge_marker.sequence,
+                        )
+                    prompt_bindings.append(barge_binding)
+                    terminal = barge_binding.audio_quiescent
                     barge_latency = (
                         round(cut_at - playback.speech_onset_monotonic, 3)
                         if cut_at is not None
                         else None
                     )
                     scenarios["s3_barge_in"] = {
+                        "prompt_binding": barge_binding.to_dict(),
                         "assistant_started": started,
                         "barge_ins_after_talkover": barge_fired,
                         "barge_latency_s": barge_latency,
-                        "pass": started and barge_fired >= 1,
-                        "status": "pass" if started and barge_fired >= 1 else "fail",
+                        "assistant_terminal": terminal,
+                        "barge_marker_sequence": (
+                            barge_marker.sequence
+                            if barge_marker is not None
+                            else None
+                        ),
+                        "injection_ok": injection_ok,
+                        "causal_cut": cut_causal,
+                        "pass": (
+                            started
+                            and terminal
+                            and injection_ok
+                            and cut_causal
+                            and barge_fired >= 1
+                        ),
+                        "status": "pass" if (
+                            started
+                            and terminal
+                            and injection_ok
+                            and cut_causal
+                            and barge_fired >= 1
+                        ) else "fail",
                     }
                     detail.append(
-                        f"S3: started={started} barge_ins={barge_fired} "
-                        f"latency_s={barge_latency} (want >=1 and <=1.0s)"
+                        f"S3: started={started} terminal={terminal} "
+                        f"injection_ok={injection_ok} causal={cut_causal} "
+                        f"barge_ins={barge_fired} latency_s={barge_latency}"
                     )
+
+                # Preserve the bounded waits above as the verdict.  A reply
+                # that starts or terminates only after its deadline must remain
+                # red; later markers must never turn that late work into a pass.
+                final_s1 = prompt_bindings[: len(s1_bindings)]
+                s1_evidence = summarize_prompt_bindings(final_s1)
+                scenarios["s1_round_trip"].update(
+                    assistant_spoke=s1_evidence["passed"],
+                    audio_started=sum(
+                        binding.audio_started
+                        for binding in final_s1
+                        if binding.expects_audio
+                    ),
+                    audio_terminal=s1_evidence["causal_audio_prompts"],
+                    evidence=s1_evidence,
+                    bindings=[binding.to_dict() for binding in final_s1],
+                )
 
                 run_id = proc.run_id
                 markers = dict(proc.counts)
@@ -392,10 +970,23 @@ def run_voice_loop(
 
     summary, wav, ref = _bundle_paths(repo_root, run_id)
     monitor_rms = audio.wav_rms(wav)[0] if wav else 0.0
+    prompt_evidence = summarize_prompt_bindings(prompt_bindings)
+    prompt_score = score_prompt_bindings(prompt_bindings)
     return VoiceRun(
         ok=False,  # the CLI applies the pure WER/round-trip/coverage verdict
         mode=acoustics_mode, run_id=run_id, summary_path=summary, log_path=log_path,
         wav_path=wav, ref_wav_path=ref, ready=True, monitor_rms=monitor_rms,
         clip_source=clip_source, injected_refs=[r for r in injected_refs if r],
-        aec_delay_ms=aec_delay_ms, markers=markers, scenarios=scenarios, detail=detail,
+        aec_delay_ms=aec_delay_ms,
+        prompt_bindings=[binding.to_dict() for binding in prompt_bindings],
+        prompt_evidence=prompt_evidence,
+        prompt_score={
+            "mean_wer": prompt_score.mean_wer,
+            "n": prompt_score.n,
+            "pairs": [
+                {"ref": reference, "hyp": hypothesis, "wer": distance}
+                for reference, hypothesis, distance in prompt_score.pairs
+            ],
+        },
+        markers=markers, scenarios=scenarios, detail=detail,
     )

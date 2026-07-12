@@ -270,11 +270,20 @@ class MemoryWriter:
         self._recent_saved: List[str] = []
         self._timer: Optional[threading.Timer] = None
         self._closed = False
+        # A flush removes candidates from ``_buffer`` before optional model
+        # cleanup.  Keep those drained candidates lifecycle-visible until their
+        # persistence decision is committed.  ``close()`` can then revoke a
+        # blocked cleaner's ownership and persist the candidate raw without
+        # waiting for inference; the old worker must re-check the token before
+        # it is allowed to touch the persistence backend.
+        self._inflight: dict[int, UtteranceCandidate] = {}
+        self._next_inflight_id = 0
 
     def set_text_cleaner(
         self, cleaner: Optional[Callable[[str, str], Optional[str]]]
     ) -> None:
-        self._text_cleaner = cleaner
+        with self._lock:
+            self._text_cleaner = cleaner
 
     def enqueue(
         self,
@@ -284,7 +293,7 @@ class MemoryWriter:
         confidence: float = 1.0,
         last_assistant_text: str = "",
     ) -> bool:
-        if not self.config.enabled or self._closed:
+        if not self.config.enabled:
             return False
         candidate = UtteranceCandidate(
             raw_text=raw_text,
@@ -292,26 +301,32 @@ class MemoryWriter:
             confidence=confidence,
             last_assistant_text=last_assistant_text or "",
         )
-        ok, _reason = should_persist(
-            candidate, self.config, recent_saved=self._recent_saved
-        )
-        if not ok:
-            return False
-        added = self._buffer.add(candidate)
-        if added:
-            self._schedule_flush_timer()
-            if self._buffer.pending_count() >= self.config.max_buffer_items:
-                self.flush(force=True)
+        should_flush = False
+        with self._lock:
+            if self._closed:
+                return False
+            ok, _reason = should_persist(
+                candidate, self.config, recent_saved=self._recent_saved
+            )
+            if not ok:
+                return False
+            added = self._buffer.add(candidate)
+            if added:
+                self._schedule_flush_timer_locked()
+                should_flush = (
+                    self._buffer.pending_count() >= self.config.max_buffer_items
+                )
+        if should_flush:
+            self.flush(force=True)
         return added
 
-    def _schedule_flush_timer(self) -> None:
-        with self._lock:
-            if self._closed or self._timer is not None:
-                return
-            delay = max(0.5, self.config.save_interval_sec)
-            self._timer = threading.Timer(delay, self._timer_flush)
-            self._timer.daemon = True
-            self._timer.start()
+    def _schedule_flush_timer_locked(self) -> None:
+        if self._closed or self._timer is not None:
+            return
+        delay = max(0.5, self.config.save_interval_sec)
+        self._timer = threading.Timer(delay, self._timer_flush)
+        self._timer.daemon = True
+        self._timer.start()
 
     def schedule_job(self, fn: Callable[[], None]) -> bool:
         """Run ``fn`` on a background daemon thread, off the caller's thread.
@@ -339,67 +354,149 @@ class MemoryWriter:
             self._timer = None
         self.flush()
 
-    def flush(self, *, force: bool = False) -> int:
-        if self._closed and not force:
-            return 0
-        elapsed = time.monotonic() - self._last_flush
-        if not force and elapsed < self.config.save_interval_sec:
-            if self._buffer.pending_count() < self.config.max_buffer_items:
+    def flush(self, *, force: bool = False, use_llm: bool = True) -> int:
+        with self._lock:
+            # ``force`` bypasses the debounce interval, not lifecycle closure.
+            # Only ``close()`` may persist after marking the writer closed.
+            if self._closed:
                 return 0
+            elapsed = time.monotonic() - self._last_flush
+            if not force and elapsed < self.config.save_interval_sec:
+                if self._buffer.pending_count() < self.config.max_buffer_items:
+                    return 0
 
-        items = self._buffer.drain()
+            work: list[tuple[int, UtteranceCandidate]] = []
+            for item in self._buffer.drain():
+                token = self._next_inflight_id
+                self._next_inflight_id += 1
+                self._inflight[token] = item
+                work.append((token, item))
+
         saved = 0
-        for item in items:
-            ok, _reason = should_persist(
-                item, self.config, recent_saved=self._recent_saved
-            )
-            if not ok:
-                continue
+        for token, item in work:
+            with self._lock:
+                if self._closed or self._inflight.get(token) is not item:
+                    continue
+                ok, _reason = should_persist(
+                    item, self.config, recent_saved=self._recent_saved
+                )
+                if not ok:
+                    self._inflight.pop(token, None)
+                    continue
+                text_cleaner = self._text_cleaner
+                llm = self._llm
+
             cleaned = item.raw_text.strip()
             worth = True
-            if self._text_cleaner is not None:
+            if use_llm and text_cleaner is not None:
                 try:
-                    maybe = self._text_cleaner("user", cleaned)
+                    maybe = text_cleaner("user", cleaned)
                     if maybe is None:
+                        with self._lock:
+                            if self._inflight.get(token) is item:
+                                self._inflight.pop(token, None)
                         continue
                     cleaned = maybe.strip()
                     if not cleaned:
+                        with self._lock:
+                            if self._inflight.get(token) is item:
+                                self._inflight.pop(token, None)
                         continue
                 except Exception:
                     pass
-            elif self._llm and (self.config.llm_cleanup or self.config.llm_gate):
-                result = self._llm.cleanup(cleaned, gate=self.config.llm_gate)
+            elif (
+                use_llm
+                and llm
+                and (self.config.llm_cleanup or self.config.llm_gate)
+            ):
+                result = llm.cleanup(cleaned, gate=self.config.llm_gate)
                 worth = result.worth_saving
                 if self.config.llm_cleanup and result.cleaned_text:
                     cleaned = result.cleaned_text
             if not worth or not cleaned:
+                with self._lock:
+                    if self._inflight.get(token) is item:
+                        self._inflight.pop(token, None)
                 continue
-            captured_at = datetime.now()
-            self._persist_fn(
-                raw_text=item.raw_text,
-                cleaned_text=cleaned,
-                source=item.source,
-                confidence=item.confidence,
-                captured_at=captured_at,
-                reason="",
-            )
-            self._recent_saved.append(item.raw_text)
-            if len(self._recent_saved) > 50:
-                self._recent_saved = self._recent_saved[-50:]
-            saved += 1
 
-        if saved or force:
-            self._last_flush = time.monotonic()
+            # Persistence is the commit point.  Holding the lifecycle lock here
+            # makes it impossible for ``close()`` to close the pool underneath
+            # a call that has already committed to using it.  Slow model work is
+            # deliberately outside this lock.
+            with self._lock:
+                if self._closed or self._inflight.get(token) is not item:
+                    continue
+                ok, _reason = should_persist(
+                    item, self.config, recent_saved=self._recent_saved
+                )
+                if not ok:
+                    self._inflight.pop(token, None)
+                    continue
+                captured_at = datetime.now()
+                self._persist_fn(
+                    raw_text=item.raw_text,
+                    cleaned_text=cleaned,
+                    source=item.source,
+                    confidence=item.confidence,
+                    captured_at=captured_at,
+                    reason="",
+                )
+                self._recent_saved.append(item.raw_text)
+                if len(self._recent_saved) > 50:
+                    self._recent_saved = self._recent_saved[-50:]
+                self._inflight.pop(token, None)
+                saved += 1
+
+        with self._lock:
+            if not self._closed and (saved or force):
+                self._last_flush = time.monotonic()
         return saved
 
-    def close(self) -> None:
+    def close(self) -> int:
         with self._lock:
+            if self._closed:
+                return 0
             self._closed = True
             if self._timer:
                 self._timer.cancel()
                 self._timer = None
-        return self.flush(force=True)
+
+            # Revoke all flush ownership before persisting.  A worker blocked in
+            # optional cleanup will later find its token absent and return
+            # without touching a pool that the caller may already have closed.
+            items = list(self._inflight.values())
+            self._inflight.clear()
+            items.extend(self._buffer.drain())
+
+            # Shutdown is a bounded persistence path, not a second inference
+            # batch: up to 32 pending items times the fast client's 60s timeout
+            # could otherwise hold teardown for many minutes.  Re-run the
+            # deterministic admission because another concurrent candidate may
+            # have committed since enqueue, then persist the original text.
+            saved = 0
+            for item in items:
+                ok, _reason = should_persist(
+                    item, self.config, recent_saved=self._recent_saved
+                )
+                cleaned = item.raw_text.strip()
+                if not ok or not cleaned:
+                    continue
+                self._persist_fn(
+                    raw_text=item.raw_text,
+                    cleaned_text=cleaned,
+                    source=item.source,
+                    confidence=item.confidence,
+                    captured_at=datetime.now(),
+                    reason="",
+                )
+                self._recent_saved.append(item.raw_text)
+                if len(self._recent_saved) > 50:
+                    self._recent_saved = self._recent_saved[-50:]
+                saved += 1
+            self._last_flush = time.monotonic()
+            return saved
 
     @property
     def pending_count(self) -> int:
-        return self._buffer.pending_count()
+        with self._lock:
+            return self._buffer.pending_count() + len(self._inflight)

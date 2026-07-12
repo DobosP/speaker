@@ -601,6 +601,7 @@ class OllamaLLM:
         think: Optional[bool] = None,
         client=None,
         async_client_factory=None,
+        client_headers: Optional[Mapping[str, str]] = None,
     ):
         self.model = model
         self._host = host
@@ -620,6 +621,10 @@ class OllamaLLM:
         self._client = client
         self._client_injected = client is not None
         self._async_client_factory = async_client_factory
+        # Optional non-secret transport headers for controlled local clients
+        # (for example, an evaluator that must suppress ambient SDK auth-env
+        # inheritance).  The normal runtime passes None and is unchanged.
+        self._client_headers = dict(client_headers) if client_headers else None
         # Hedge may use this eager marker before stream construction completes.
         # The injected sync compatibility path has no cross-thread cancel seam.
         self._stream_cross_thread_cancel_safe = not (
@@ -632,6 +637,8 @@ class OllamaLLM:
             kwargs["host"] = self._host
         if self._timeout is not None:
             kwargs["timeout"] = self._timeout
+        if self._client_headers is not None:
+            kwargs["headers"] = dict(self._client_headers)
         return kwargs
 
     def _ensure(self):

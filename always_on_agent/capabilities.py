@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional, Sequence
+from enum import Enum
+from threading import Lock
+import time
+from types import MappingProxyType
+from typing import Callable, Literal, Mapping, Optional, Sequence
 
 from .memory import Memory, SessionMemory
 from .text import keywords, normalize_text
@@ -48,10 +52,126 @@ class CapabilitySpec:
 CapabilityProvider = Callable[[str, dict[str, object]], CapabilityResult]
 
 
+@dataclass(frozen=True)
+class CapabilityInvocationResult:
+    """Detached, recursively immutable result exposed to observers."""
+
+    ok: bool
+    text: str
+    data: Mapping[str, object]
+    citations: tuple[str, ...]
+    error: str
+
+
+def _freeze_observation(value: object) -> object:
+    if value is None or isinstance(value, (str, int, float, bool, Enum)):
+        return value
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {str(key): _freeze_observation(item) for key, item in value.items()}
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_observation(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_observation(item) for item in value)
+    return f"<{type(value).__name__}>"
+
+
+def _invocation_result(result: CapabilityResult) -> CapabilityInvocationResult:
+    try:
+        frozen = _freeze_observation(result.data)
+        if not isinstance(frozen, Mapping):
+            raise TypeError("capability result data is not a mapping")
+    except Exception as exc:
+        # Observation is best-effort and must never change provider semantics,
+        # including for cyclic or custom mapping values.
+        frozen = MappingProxyType(
+            {"observation_error": f"<{type(exc).__name__}>"}
+        )
+    return CapabilityInvocationResult(
+        ok=result.ok,
+        text=result.text,
+        data=frozen,
+        citations=tuple(result.citations),
+        error=result.error,
+    )
+
+
+@dataclass(frozen=True)
+class CapabilityInvocation:
+    """Opt-in observation of one registry invocation boundary.
+
+    The registry does not log or retain these records.  Evaluation and
+    diagnostics callers may subscribe explicitly when they need an exact tool
+    trajectory, including nested ReAct calls.  ``context`` is deliberately not
+    exposed: it can contain cancellation primitives and private runtime state.
+    Observer failures are isolated from capability execution.
+    """
+
+    invocation_id: int
+    phase: Literal["started", "finished"]
+    name: str
+    query: str
+    task_id: str
+    planner_tool: bool
+    timestamp: float
+    monotonic: float
+    result: CapabilityInvocationResult | None = None
+
+
+CapabilityInvocationObserver = Callable[[CapabilityInvocation], None]
+
+
 class CapabilityRegistry:
     def __init__(self):
         self._providers: dict[str, CapabilityProvider] = {}
         self._specs: dict[str, CapabilitySpec] = {}
+        self._invocation_lock = Lock()
+        self._invocation_sequence = 0
+        self._invocation_observers: list[CapabilityInvocationObserver] = []
+
+    def observe_invocations(
+        self,
+        observer: CapabilityInvocationObserver,
+    ) -> Callable[[], None]:
+        """Subscribe to invocation boundaries and return an idempotent remover.
+
+        Observation is strictly opt-in.  Callbacks run outside the registry
+        lock, and a callback exception cannot fail or alter the capability.
+        """
+
+        with self._invocation_lock:
+            self._invocation_observers.append(observer)
+
+        def remove() -> None:
+            with self._invocation_lock:
+                try:
+                    self._invocation_observers.remove(observer)
+                except ValueError:
+                    pass
+
+        return remove
+
+    def _next_invocation_id(self) -> int:
+        with self._invocation_lock:
+            self._invocation_sequence += 1
+            return self._invocation_sequence
+
+    def _invocation_observer_snapshot(self) -> tuple[CapabilityInvocationObserver, ...]:
+        with self._invocation_lock:
+            return tuple(self._invocation_observers)
+
+    @staticmethod
+    def _notify_invocation(
+        event: CapabilityInvocation,
+        observers: tuple[CapabilityInvocationObserver, ...],
+    ) -> None:
+        for observer in observers:
+            try:
+                observer(event)
+            except Exception:
+                # Diagnostics must never become an execution dependency.
+                continue
 
     def register(
         self,
@@ -70,13 +190,63 @@ class CapabilityRegistry:
         # existing spec so capability metadata survives the swap.
 
     def invoke(self, name: str, query: str, context: dict[str, object] | None = None) -> CapabilityResult:
+        context = context or {}
         provider = self._providers.get(name)
+        # The common production path stays timestamp/sequence/lock free.
+        # A subscriber added concurrently begins with the next invocation.
+        if not self._invocation_observers:
+            if provider is None:
+                return CapabilityResult(False, "", error=f"missing capability: {name}")
+            try:
+                return provider(query, context)
+            except Exception as exc:
+                return CapabilityResult(False, "", error=str(exc))
+
+        observers = self._invocation_observer_snapshot()
+        if not observers:
+            if provider is None:
+                return CapabilityResult(False, "", error=f"missing capability: {name}")
+            try:
+                return provider(query, context)
+            except Exception as exc:
+                return CapabilityResult(False, "", error=str(exc))
+
+        invocation_id = self._next_invocation_id()
+        spec = self._specs.get(name)
+        common = {
+            "invocation_id": invocation_id,
+            "name": name,
+            "query": query,
+            "task_id": str(context.get("task_id", "") or ""),
+            "planner_tool": bool(spec is not None and spec.planner_tool),
+        }
+        self._notify_invocation(
+            CapabilityInvocation(
+                phase="started",
+                timestamp=time.time(),
+                monotonic=time.monotonic(),
+                **common,
+            ),
+            observers,
+        )
         if provider is None:
-            return CapabilityResult(False, "", error=f"missing capability: {name}")
-        try:
-            return provider(query, context or {})
-        except Exception as exc:
-            return CapabilityResult(False, "", error=str(exc))
+            result = CapabilityResult(False, "", error=f"missing capability: {name}")
+        else:
+            try:
+                result = provider(query, context)
+            except Exception as exc:
+                result = CapabilityResult(False, "", error=str(exc))
+        self._notify_invocation(
+            CapabilityInvocation(
+                phase="finished",
+                timestamp=time.time(),
+                monotonic=time.monotonic(),
+                result=_invocation_result(result),
+                **common,
+            ),
+            observers,
+        )
+        return result
 
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))

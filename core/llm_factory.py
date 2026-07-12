@@ -57,6 +57,11 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
         return EchoLLM(), None
     llm_cfg = config.get("llm", {})
     options = llm_cfg.get("options")
+    # Narrow construction seam for local diagnostic/evaluation callers that
+    # must override ambient SDK authentication headers. Normal CLI args do not
+    # define it, so production construction remains byte-identical.
+    client_headers = getattr(args, "ollama_client_headers", None)
+    ollama_timeout = getattr(args, "ollama_timeout", 60.0)
     backend = llm_cfg.get("backend", "ollama")
 
     if backend == "llamacpp":
@@ -118,11 +123,23 @@ def build_llms(args_or_config, config: dict) -> tuple[LLMClient, LLMClient | Non
     main_model = args.model or llm_cfg.get("main_model") or config.get("llm_model", "gemma3:12b")
     fast_model = args.fast_model or llm_cfg.get("fast_model")
     main = OllamaLLM(
-        model=main_model, host=host, options=options, keep_alive=keep_alive, think=think
+        model=main_model,
+        host=host,
+        options=options,
+        keep_alive=keep_alive,
+        think=think,
+        timeout=ollama_timeout,
+        client_headers=client_headers,
     )
     fast = (
         OllamaLLM(
-            model=fast_model, host=host, options=options, keep_alive=keep_alive, think=think
+            model=fast_model,
+            host=host,
+            options=options,
+            keep_alive=keep_alive,
+            think=think,
+            timeout=ollama_timeout,
+            client_headers=client_headers,
         )
         if fast_model
         else None

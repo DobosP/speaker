@@ -14,6 +14,12 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 SOURCE_MODEL = "hf.co/openbmb/MiniCPM5-1B-GGUF:Q8_0"
+# Official Q8_0 model-layer digest pinned when the supported alias was adopted.
+# A changed upstream layer requires an explicit review/update, not silent trust
+# in a mutable local source tag.
+SOURCE_MODEL_BLOB_SHA256 = (
+    "0dc7638539067268774c275a14a6ec9c7e01f7eeb2cff606c8590361fa527e4c"
+)
 LOCAL_MODEL = "minicpm5-1b:q8"
 DEFAULT_MODELFILE = (
     Path(__file__).resolve().parents[1]

@@ -35,8 +35,9 @@ class Turn:
 # Reusable LONG-answer prompts. Every barge-in scenario uses at least one so
 # there is always speech in flight to cut. This fixes short-response flakiness: a
 # short answer's task finishes and every sentence drains from the play queue
-# before the VAD accumulates its required barge_in_min_speech_sec (0.2s) of voiced
-# audio, by which point _speaking has cleared and the barge watch (gated on
+# before the VAD accumulates its required voiced audio (production: 0.2s;
+# explicit echo-free inject profile: 0.1s), by which point _speaking has cleared
+# and the barge watch (gated on
 # self._speaking) is no longer armed, so nothing interrupts. The rainbow prompt
 # reliably produced a long, interruptible answer in the live run. Barge-in
 # grading is INJECT MODE ONLY and deliberately opens no physical audio hardware.

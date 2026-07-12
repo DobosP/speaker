@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3426 passed/27 skipped/9 warnings; focused barge/APM: 16/6 passed.
-ADR-0051 v2 deterministic: 42/42; clean production-hybrid A/B: MiniCPM Q8 and Gemma each 42/42.
-Inject Sherpa 3x replay: 6/6 FIFO cuts, 0 self-cuts, duplex green; live bare-speaker remains red; branch unlandable (ADR-0052).
+Last verified: 2026-07-12 on Linux ROG; full: 3500 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
+ADR-0051 v2 deterministic: 42/42; exact-revision MiniCPM Q8/Gemma production-hybrid A/B is pending after commit.
+Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
 
 ## Runtime
 
@@ -30,10 +30,10 @@ Inject Sherpa 3x replay: 6/6 FIFO cuts, 0 self-cuts, duplex green; live bare-spe
   partials/finals require periodic dynamic 80/80 ms or steady ≥120 ms calibrated
   pre-gain patterns; unavailable and bounded handoffs abstain/bypass (ADR-0046/48).
 - Word-cut uses isolated recognition and bounded PCM. Production generic cuts
-  need at least four novel words plus warmed compatible speaker authority; local
-  zero-to-three-word floors cannot reopen audio-first promotion. Canonical
-  STOP-class controls and attested `OF HE STOP` remain short exceptions; TTS
-  ambiguity uses the 0.10 s speaker window (ADR-0026/0042/0045).
+  need four novel words plus warmed compatible speaker authority; local short
+  floors cannot reopen promotion. Canonical `stop speaking`, attested short
+  repairs, and the exact SenseVoice `DON'T PLAY SPEAK` repair at owned 1.4–2.0 s
+  stay bounded exceptions; empty streaming finals fail closed (ADR-0026/42/53).
 - Capture recovery rebinds rate/resampler, preserves the first correctly timed
   block, and treats host `-9999` as REOPEN. Shutdown epoch-fences effects before
   bounded abort/teardown; active owners retain resources and block restart.

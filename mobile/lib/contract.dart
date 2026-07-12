@@ -73,6 +73,7 @@ const Set<String> stopCommands = {
   'cancel that',
   'quiet',
   'stop talking',
+  'stop speaking',
   'be quiet',
 };
 

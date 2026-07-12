@@ -6,6 +6,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from core.engines._sherpa_models import build_final_recognizer
 from core.engines._asr_segment import ASRSegment
@@ -71,6 +72,18 @@ def test_final_transcribe_empty_second_pass_falls_back():
     eng = _engine()
     eng._final_recognizer = _FakeOffline("")  # empty result -> use the streaming final
     assert eng._final_transcribe(np.ones(16000, dtype="float32"), "hello world") == "Hello world"
+
+
+def test_final_transcribe_empty_streaming_fails_closed_by_default():
+    eng = _engine()
+    eng._final_recognizer = _FakeOffline("Stop speaking.")
+    seg = np.ones(16000, dtype="float32")
+
+    assert eng._final_transcribe(seg, "") == ""
+    assert (
+        eng._final_transcribe(seg, "", allow_empty_streaming=True)
+        == "Stop speaking."
+    )
 
 
 def test_final_transcribe_min_sec_skips_short_utterance():
@@ -215,6 +228,64 @@ def test_attested_short_repair_rejects_long_vad_utterance_at_boundary():
     assert (
         eng._final_transcribe(seg, "CASTLE DEATH", speech_sec=1.2)
         == "Castle death"
+    )
+
+
+@pytest.mark.parametrize("speech_sec", [1.4, 1.5, 1.9, 2.0])
+def test_sense_voice_recovers_attested_long_stop_with_owned_speech_duration(
+    speech_sec,
+):
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Stop speaking.")
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "DON'T PLAY SPEAK", speech_sec=speech_sec)
+        == "Stop speaking."
+    )
+
+
+def test_attested_long_stop_repair_rejects_missing_or_short_owned_duration():
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Stop speaking.")
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert eng._final_transcribe(seg, "DON'T PLAY SPEAK") == "Don't play speak"
+    assert (
+        eng._final_transcribe(seg, "DON'T PLAY SPEAK", speech_sec=0.9)
+        == "Don't play speak"
+    )
+
+
+@pytest.mark.parametrize("speech_sec", [-1.0, 0.0, 1.2, 1.399, 2.001, 30.0])
+def test_attested_long_stop_repair_rejects_out_of_range_owned_duration(
+    speech_sec,
+):
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Stop speaking.")
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "DON'T PLAY SPEAK", speech_sec=speech_sec)
+        == "Don't play speak"
+    )
+
+
+@pytest.mark.parametrize("speech_sec", [float("nan"), float("inf"), float("-inf")])
+def test_attested_long_stop_repair_rejects_nonfinite_owned_duration(speech_sec):
+    eng = _engine(asr_final_backend="sense_voice")
+    eng._final_recognizer = _FakeOffline("Stop speaking.")
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "DON'T PLAY SPEAK", speech_sec=speech_sec)
+        == "Don't play speak"
+    )
+
+
+def test_attested_long_stop_repair_requires_sense_voice_backend():
+    eng = _engine(asr_final_backend="whisper")
+    eng._final_recognizer = _FakeOffline("Stop speaking.")
+    seg = np.ones(2 * 16000, dtype="float32")
+    assert (
+        eng._final_transcribe(seg, "DON'T PLAY SPEAK", speech_sec=1.9)
+        == "Don't play speak"
     )
 
 

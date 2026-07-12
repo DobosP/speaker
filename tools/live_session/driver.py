@@ -22,9 +22,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Optional
+from typing import Any, Optional
 
 from .report import summarize_capture
 from .synthetic_user import SyntheticUser, save_wav
@@ -46,11 +48,103 @@ _IDLE_SETTLE = 0.6
 # accumulation lags the inject by ~1-1.5s). The interrupted answer is flushed as
 # soon as the stop lands, or at this bound if it never does (a real no-stop).
 _BARGE_STOP_TIMEOUT = 4.0
+# Inject's capture stream is deterministic, but TTS synthesis is not: the engine
+# can enter ``is_speaking`` before the null output callback has pulled its first
+# real sample. Bound how long the harness waits for that true-audio boundary.
+_INJECT_BARGE_READY_TIMEOUT = 8.0
+_INJECT_BARGE_READY_POLL_SEC = 0.01
 
 
 def _is_answer(text: str) -> bool:
     text = (text or "").strip()
     return bool(text) and not text.startswith(_CONTROL_PREFIXES)
+
+
+def apply_inject_profile(config: dict) -> dict:
+    """Apply the explicit no-device capture profile in place and return config.
+
+    Assistant output is driven through a null callback sink and never enters the
+    injected capture domain. Physical AEC/OS voice-route/word-cut authority and
+    propagation-delay learning therefore do not apply. One eligible 100 ms block
+    is sufficient in this echo-impossible capture domain; the production two-
+    block sustain gate and 5/2/400 coherence settings remain untouched unless a
+    caller explicitly selects this profile.
+    """
+    sherpa = config.setdefault("sherpa", {})
+    sherpa["aec_enabled"] = False
+    sherpa["capture_voice_comm"] = False
+    sherpa["barge_word_cut_enabled"] = False
+    sherpa["coherence_warmup_frames"] = 0
+    sherpa["coherence_confirm_frames"] = 1
+    sherpa["coherence_max_delay_ms"] = 0.0
+    sherpa["barge_in_min_speech_sec"] = 0.1
+    return config
+
+
+@dataclass
+class InjectedAudioReceipt:
+    """Receipt for one :meth:`InjectingInputStream.push` buffer.
+
+    ``start_sample``/``end_sample`` are an exclusive range in the stream's
+    monotonically increasing *injected-sample* sequence; generated floor samples
+    are deliberately not counted.  Consumption timestamps use the stream's
+    injected monotonic clock and are set when a read containing the relevant
+    samples is delivered to the capture caller, after device pacing.  This makes
+    them safe causal bounds for later detector/metrics stamps in the same clock
+    epoch without pretending enqueue time is capture time.
+    """
+
+    start_sample: int
+    end_sample: int
+    sample_rate: int
+    enqueued_at: float
+    first_consumed_at: Optional[float] = None
+    fully_consumed_at: Optional[float] = None
+    _lock: Any = field(default_factory=threading.Lock, init=False, repr=False)
+    _started: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+    _drained: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+
+    @property
+    def sample_count(self) -> int:
+        return self.end_sample - self.start_sample
+
+    @property
+    def duration_seconds(self) -> float:
+        return self.sample_count / float(self.sample_rate)
+
+    @property
+    def last_consumed_at(self) -> Optional[float]:
+        """Alias emphasizing that full consumption includes the last sample."""
+        with self._lock:
+            return self.fully_consumed_at
+
+    def wait_started(self, timeout: Optional[float] = None) -> bool:
+        """Wait until a read has delivered at least one sample from this push."""
+        return self._started.wait(timeout)
+
+    def wait_drained(self, timeout: Optional[float] = None) -> bool:
+        """Wait until a read has delivered every sample from this push."""
+        return self._drained.wait(timeout)
+
+    def _mark_delivered(self, at: float, *, fully: bool) -> None:
+        started = False
+        drained = False
+        with self._lock:
+            if self.first_consumed_at is None:
+                self.first_consumed_at = float(at)
+                started = True
+            if fully and self.fully_consumed_at is None:
+                self.fully_consumed_at = float(at)
+                drained = True
+        # Publish only after the corresponding timestamp is visible.
+        if started:
+            self._started.set()
+        if drained:
+            self._drained.set()
 
 
 class InjectingInputStream:
@@ -72,11 +166,18 @@ class InjectingInputStream:
         # slower than wall time (GTCRN/ASR cost was added to the fake device
         # period), producing false continuous-capture failures.  Injectable time
         # functions keep this scheduling contract deterministic in unit tests.
-        self._clock = clock or time.monotonic
+        # MetricsRecorder stamps BARGE_IN/BARGE_IN_STOP with perf_counter. Use
+        # that same default epoch so receipt times can be causally ordered with
+        # those stamps; injected clocks in unit tests remain fully supported.
+        self._clock = clock or time.perf_counter
         self._sleep = sleeper or time.sleep
         self._next_read_at: Optional[float] = None
         self._buf = np.zeros(0, dtype="float32")
         self._lock = threading.Lock()
+        self._next_injected_sample = 0
+        self._consumed_injected_sample = 0
+        self._floor_samples_delivered = 0
+        self._pending_receipts: deque[InjectedAudioReceipt] = deque()
         # Between utterances, feed a low-level noise floor -- NOT digital zeros.
         # A real mic never delivers perfect silence; the streaming zipformer is
         # out-of-distribution on pure zeros and hallucinates filler words ("And")
@@ -86,10 +187,29 @@ class InjectingInputStream:
         self._noise = (np.random.default_rng(20260530).standard_normal(self._sr) * 3e-4).astype("float32")
         self._npos = 0
 
-    def push(self, samples) -> None:
+    def push(self, samples) -> InjectedAudioReceipt:
+        """Queue samples and return a receipt for their eventual consumption.
+
+        Existing callers may continue to ignore the return value.  A zero-length
+        push is immediately both started and drained at its enqueue timestamp.
+        """
         s = self._np.asarray(samples, dtype="float32").reshape(-1)
         with self._lock:
+            start = self._next_injected_sample
+            end = start + len(s)
+            receipt = InjectedAudioReceipt(
+                start_sample=start,
+                end_sample=end,
+                sample_rate=self._sr,
+                enqueued_at=float(self._clock()),
+            )
+            self._next_injected_sample = end
             self._buf = self._np.concatenate([self._buf, s])
+            if len(s):
+                self._pending_receipts.append(receipt)
+        if not len(s):
+            receipt._mark_delivered(receipt.enqueued_at, fully=True)
+        return receipt
 
     def _floor(self, n: int):
         if n <= 0:
@@ -100,14 +220,39 @@ class InjectingInputStream:
         self._npos = (self._npos + n) % len(self._noise)
         return pool[start:start + n].copy()
 
+    @property
+    def floor_samples_delivered(self) -> int:
+        """Number of generated floor samples returned to the capture caller."""
+        with self._lock:
+            return self._floor_samples_delivered
+
     def read(self, frames):
         frames = int(frames)
+        delivered: list[tuple[InjectedAudioReceipt, bool]] = []
         with self._lock:
+            injected_count = min(frames, len(self._buf))
+            floor_count = frames - injected_count
+            consumed_start = self._consumed_injected_sample
+            consumed_end = consumed_start + injected_count
             if len(self._buf) >= frames:
                 out, self._buf = self._buf[:frames], self._buf[frames:]
             else:
                 out = self._np.concatenate([self._buf, self._floor(frames - len(self._buf))])
                 self._buf = self._np.zeros(0, dtype="float32")
+            if injected_count:
+                for receipt in self._pending_receipts:
+                    if receipt.start_sample >= consumed_end:
+                        break
+                    if receipt.end_sample > consumed_start:
+                        delivered.append(
+                            (receipt, consumed_end >= receipt.end_sample)
+                        )
+                self._consumed_injected_sample = consumed_end
+                while (
+                    self._pending_receipts
+                    and self._pending_receipts[0].end_sample <= consumed_end
+                ):
+                    self._pending_receipts.popleft()
         # Pace against an absolute device clock, not "processing time + one more
         # period".  If the capture loop is briefly late, queued input is returned
         # immediately until it catches up, just like a real PortAudio stream.
@@ -125,6 +270,15 @@ class InjectingInputStream:
             # bounded device queue would overrun; re-anchor so the next read waits
             # one period and the missing wall time remains visible to the grader.
             self._next_read_at = now
+        if floor_count:
+            # Count delivery only after device pacing has completed: entering a
+            # stalled read is not evidence that the capture loop observed floor.
+            with self._lock:
+                self._floor_samples_delivered += floor_count
+        if delivered:
+            delivered_at = float(self._clock())
+            for receipt, fully in delivered:
+                receipt._mark_delivered(delivered_at, fully=fully)
         return out, False
 
     def start(self):
@@ -256,6 +410,14 @@ def make_recording_engine(config):
         def stopped_after(self, t: float) -> bool:
             with self._rec_lock:
                 return any(s >= t for s in self._stops)
+
+        def stop_count(self) -> int:
+            with self._rec_lock:
+                return len(self._stops)
+
+        def stops_since(self, n: int) -> list[float]:
+            with self._rec_lock:
+                return list(self._stops[n:])
 
     cfg = config if isinstance(config, SherpaConfig) else SherpaConfig.from_dict(config.get("sherpa", {}))
     return _RecordingEngine(cfg), cfg
@@ -541,6 +703,8 @@ class LiveConversation:
             delay = _parse_pause(turn.timing)
             if delay:
                 time.sleep(delay)
+            if turn.timing == "barge_in" and self._inject:
+                self._await_inject_barge_window()
             barge_t = time.perf_counter() if turn.timing == "barge_in" else None
             self._speak_user(turn)
             if turn.timing == "barge_in":
@@ -570,6 +734,100 @@ class LiveConversation:
         if nxt.timing == "barge_in":
             return "speaking"
         return "idle"
+
+    def _await_inject_barge_window(
+        self,
+        *,
+        clock=None,
+        sleeper=None,
+        timeout: float = _INJECT_BARGE_READY_TIMEOUT,
+        poll_sec: float = _INJECT_BARGE_READY_POLL_SEC,
+    ) -> Optional[float]:
+        """Wait until an inject barge can exercise the detector honestly.
+
+        ``engine.is_speaking`` flips at synthesis start, before a callback has
+        necessarily pulled real TTS audio.  Enqueuing a short synthetic ``Stop``
+        at that edge can put all of it before ``TTS_FIRST_AUDIO`` or inside the
+        engine's playback-onset grace, making repeats phase-dependent.  For the
+        no-device topology only, wait for a target metrics record created since
+        the preceding user line to carry ``TTS_FIRST_AUDIO`` and for the *engine's
+        effective* onset deadline (synthesis onset + configured grace) to pass.
+
+        Acoustic/live scheduling never calls this helper.  ``clock``/``sleeper``
+        are injectable solely so the boundary is deterministic in unit tests.
+        The returned value is the target record's true-first-audio metric stamp.
+        """
+        if not self._inject:
+            return None
+
+        from core.metrics import TTS_FIRST_AUDIO
+
+        clock = clock or time.monotonic
+        sleeper = sleeper or time.sleep
+        timeout = max(0.0, float(timeout))
+        poll_sec = max(0.001, float(poll_sec))
+        deadline = clock() + timeout
+        first_audio_at: Optional[float] = None
+        fallback_ready_at: Optional[float] = None
+
+        while True:
+            now = clock()
+            records = self.runtime.metrics.records()
+            # _ln_metrics was snapshotted immediately before the target user was
+            # injected. Excluding older records prevents a prior reply's first-
+            # audio stamp from making this target look ready.
+            for record in records[self._ln_metrics:]:
+                stamp = (getattr(record, "stamps", {}) or {}).get(
+                    TTS_FIRST_AUDIO
+                )
+                if isinstance(stamp, (int, float)):
+                    first_audio_at = float(stamp)
+
+            if first_audio_at is not None:
+                if not self._is_speaking():
+                    raise RuntimeError(
+                        "inject barge setup failed: target playback ended before "
+                        "the onset-grace boundary"
+                    )
+                config = getattr(self.engine, "config", None)
+                grace = max(
+                    0.0,
+                    float(
+                        getattr(
+                            config,
+                            "barge_in_playback_onset_grace_sec",
+                            0.0,
+                        )
+                        or 0.0
+                    ),
+                )
+                onset = float(
+                    getattr(self.engine, "_playback_onset_at", 0.0) or 0.0
+                )
+                if onset > 0.0:
+                    ready_at = onset + grace
+                else:
+                    # A fully constructed Sherpa engine always has the onset
+                    # stamp. Fail conservatively for minimal/future engines by
+                    # starting the same grace when first audio is observed.
+                    if fallback_ready_at is None:
+                        fallback_ready_at = now + grace
+                    ready_at = fallback_ready_at
+                if now >= ready_at:
+                    log.info(
+                        "INJECT barge target ready: true first audio observed; "
+                        "playback-onset grace %.3fs expired",
+                        grace,
+                    )
+                    return first_audio_at
+
+            if now >= deadline:
+                raise RuntimeError(
+                    "inject barge setup failed: target did not reach true first "
+                    "audio and an expired playback-onset grace within "
+                    f"{timeout:.1f}s"
+                )
+            sleeper(min(poll_sec, max(0.0, deadline - now)))
 
     def _speak_user(self, turn) -> None:
         self._uidx += 1

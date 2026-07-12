@@ -17,9 +17,9 @@ What it pins (CORPUS-grounded, latency is secondary):
   (2) An ordered multi-clip sequence from ONE recorded session runs as a real
       multi-turn conversation through the real brain in a single runtime; each
       turn produces a final and the EchoLLM response echoes that turn's final.
-  (3) A sustained owner talk-over (a manifest ``barge`` window) cuts the
-      assistant off -- or, if the inject path can't run here (no sounddevice /
-      live_session), the whole test self-skips cleanly.
+  (3) Two explicit, hash-pinned same-session owner talk-overs each cut the
+      assistant after a floor-only no-cut control, with consumed-sample and FIFO
+      timestamps bound to the target metrics turn.
 
 Tier 2 (``real_model``/``recorded``): needs the sherpa ASR models AND the locally
 extracted owner clips, so it SELF-SKIPS on the logic-only CI and on any clean
@@ -29,7 +29,6 @@ post-merge by ``perf.yml`` (which selects ``-m "real_model or recorded"``).
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 
@@ -61,16 +60,23 @@ def _load_manifest() -> dict:
     try:
         data = json.loads(_MANIFEST_PATH.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
-        return {"clips": [], "barge": []}
+        return {"clips": [], "barge": [], "barge_cases": []}
     data.setdefault("clips", [])
     data.setdefault("barge", [])
+    data.setdefault("barge_cases", [])
     return data
 
 
 _MANIFEST = _load_manifest()
 _CLIPS = [c for c in _MANIFEST["clips"] if isinstance(c, dict) and c.get("id")]
 _BARGES = [b for b in _MANIFEST["barge"] if isinstance(b, dict) and b.get("id")]
+_BARGE_CASES = [
+    case
+    for case in _MANIFEST.get("barge_cases", [])
+    if isinstance(case, dict) and case.get("id")
+]
 _CLIP_BY_ID = {c["id"]: c for c in _CLIPS}
+_BARGE_BY_ID = {b["id"]: b for b in _BARGES}
 
 
 def _normalize(text: str) -> str:
@@ -173,8 +179,10 @@ def test_real_usage_multiturn(monkeypatch):
     monkeypatch.setenv("SPEAKER_NO_LOCAL_CONFIG", "0")
 
     clip_ids = _multiturn_clip_ids()
-    if len(clip_ids) < 2:
-        pytest.skip("manifest has no multi-clip single-session sequence to replay")
+    replay_voice_driver.require_recorded_prerequisite(
+        len(clip_ids) >= 2,
+        "manifest has no multi-clip single-session sequence to replay",
+    )
 
     scfg = replay_voice_driver.sherpa_config_or_skip()
     results = replay_voice_driver.run_turns(scfg, clip_ids)
@@ -196,63 +204,92 @@ def test_real_usage_multiturn(monkeypatch):
             f"{clip_id!r}: turn ran but produced an empty final in the "
             f"multi-turn run"
         )
-        # EchoLLM is deterministic: the response carries this turn's final text.
-        # Compare on normalized words so casing/punctuation around the echoed
-        # final can't flake it.
-        ok, overlap = _matches(turn.response, turn.asr_final)
-        assert ok, (
-            f"{clip_id!r}: EchoLLM response did not echo this turn's final "
-            f"(overlap {overlap:.2f}). final={turn.asr_final!r} "
-            f"response={turn.response!r}"
-        )
+        from core.contract import is_stop_command
+
+        if is_stop_command(turn.asr_final):
+            assert turn.response == "", (
+                f"{clip_id!r}: canonical stop must cancel locally without an "
+                f"EchoLLM/TTS response, got {turn.response!r}"
+            )
+        else:
+            # EchoLLM is deterministic: ordinary turns carry this final text.
+            ok, overlap = _matches(turn.response, turn.asr_final)
+            assert ok, (
+                f"{clip_id!r}: EchoLLM response did not echo this turn's final "
+                f"(overlap {overlap:.2f}). final={turn.asr_final!r} "
+                f"response={turn.response!r}"
+            )
 
 
 # ---- (3) a sustained owner talk-over cuts the assistant off --------------------
 
-@pytest.mark.skipif(not _BARGES, reason="recorded_voice_manifest.json has no barge windows")
 @pytest.mark.skipif(
-    os.environ.get("SPEAKER_LIVE") != "1",
-    reason="barge-overlap replay opens a REAL audio device (the inject path patches "
-    "sounddevice but the engine's playback still opens the output device); gated "
-    "behind SPEAKER_LIVE=1 so it never touches hardware in a normal/CI run. "
-    "Deterministic, hardware-free barge coverage lives in tests/test_barge_*.py.",
+    not _BARGE_CASES,
+    reason="recorded_voice_manifest.json has no explicit barge cases",
 )
-def test_barge_overlap_cuts_assistant(monkeypatch):
+@pytest.mark.parametrize(
+    "case",
+    _BARGE_CASES,
+    ids=[case["id"] for case in _BARGE_CASES],
+)
+def test_barge_overlap_cuts_assistant(monkeypatch, case):
     """Push a base utterance, let the assistant start speaking, then push the
     owner's real talk-over WHILE it speaks; the assistant must be cut off
     (BARGE_IN -> BARGE_IN_STOP fired -> barge_in_latency recorded).
 
     This is the only path that needs the InjectingInputStream (FileReplay is
-    single-turn-at-a-time and can't model concurrent talk-over). It opens a real
-    audio device, so it is double-gated behind SPEAKER_LIVE=1 (like the live_output
-    tier); the deterministic barge coverage is in tests/test_barge_*.py.
+    single-turn-at-a-time and can't model concurrent talk-over). Sounddevice
+    streams and queries are replaced before startup, so it remains hardware-free.
+    It uses ADR-0052's fake-stream detector profile, not production OS word-cut.
     """
     monkeypatch.setenv("SPEAKER_NO_LOCAL_CONFIG", "0")
     scfg = replay_voice_driver.sherpa_config_or_skip()
 
-    # Pair the strongest sustained barge window with a base utterance to speak
-    # over. Prefer a long base ("Tell me a long story.") so the assistant is
-    # still speaking when the talk-over lands; fall back to any clean clip.
-    barge_id = _BARGES[0]["id"]
-    base_id = next(
-        (cid for cid in ("utterance-02", "utterance-06") if cid in _CLIP_BY_ID),
-        (_CLIPS[0]["id"] if _CLIPS else None),
-    )
-    if base_id is None:
-        pytest.skip("manifest has no base clip to speak before the barge")
+    base_id = case["base_id"]
+    barge_id = case["barge_id"]
+    assert base_id in _CLIP_BY_ID, f"barge case references unknown base {base_id!r}"
+    assert barge_id in _BARGE_BY_ID, f"barge case references unknown clip {barge_id!r}"
+    base_meta = _CLIP_BY_ID[base_id]
+    barge_meta = _BARGE_BY_ID[barge_id]
+    assert base_meta.get("run") == barge_meta.get("run") == case.get("run")
+    assert float(barge_meta["end_sec"]) - float(barge_meta["start_sec"]) >= 0.2
 
-    # run_barge self-skips (pytest.skip) if the inject path is unavailable, so a
-    # raised Skipped propagates and this test reports as skipped, not failed.
+    # The hash-pinned overlap waveform must contain sustained finite signal, not
+    # a mislabeled empty window or the fake capture floor.
+    import numpy as np
+
+    barge_samples, barge_sr = replay_voice_driver.load_clip(barge_id)
+    assert barge_sr == 16000
+    assert barge_samples.size >= int(0.2 * barge_sr)
+    assert np.isfinite(barge_samples).all()
+    assert float(np.sqrt(np.mean(np.square(barge_samples)))) > 0.001
+
+    # run_barge self-skips only when sounddevice is not installed; repository
+    # import/config defects fail rather than disappearing as optional skips.
     turn = replay_voice_driver.run_barge(scfg, base_id, barge_id)
 
     print(
         f"[barge base={base_id} barge={barge_id}] "
-        f"barge_in_latency={turn.barge_in_latency}"
+        f"token={turn.target_turn_token} "
+        f"owner_to_stop={turn.owner_to_stop_latency} "
+        f"detector_to_stop={turn.barge_in_latency}"
     )
-    # The assistant was actually cut: the metrics record stamped BARGE_IN_STOP,
-    # so barge_in_latency is recorded (this is the engine.stopped_after(...) ==
-    # True signal surfaced through the driver). Latency is presence-only.
+    expected = base_meta.get("expected_text", "")
+    base_ok, overlap = _matches(turn.asr_final, expected)
+    assert base_ok, (
+        f"base ASR did not match the explicit same-session request "
+        f"(overlap={overlap:.2f}): expected={expected!r} got={turn.asr_final!r}"
+    )
+    # The driver binds first consumed owner samples, BARGE_IN, the stop call, and
+    # BARGE_IN_STOP to one exact metrics token after a floor-only no-cut control.
+    assert turn.barged is True
     assert turn.barge_in_latency is not None, (
         f"talk-over did not cut the assistant: no BARGE_IN_STOP recorded "
         f"(base={base_id}, barge={barge_id})"
+    )
+    assert turn.barge_in_latency >= 0.0
+    assert turn.owner_to_stop_latency is not None
+    assert (
+        turn.owner_to_stop_latency
+        <= replay_voice_driver.RECORDED_OWNER_TO_STOP_MAX_SEC
     )

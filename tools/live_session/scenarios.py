@@ -354,7 +354,7 @@ SCENARIOS: tuple[Scenario, ...] = (
             Turn('Got it. And what time is it right now?', 'wait_for_response',
                  "Topic stays on planning; 'right now' is a live-clock ask the assistant can't truly answer. No reliably-checkable concept -> expect empty; graded on STT + latency. ('Got it' coreferences the prior weather reply.)"),
             Turn("While I get ready, what's the largest planet in our solar system?", 'pause:1.5',
-                 'Quick curiosity fact, famous and unambiguous. 1.5s gap separates it cleanly from the time turn. gemma3:4b will almost certainly say Jupiter.', expect=('jupiter',)),
+                 'Quick curiosity fact, famous and unambiguous. 1.5s gap separates it cleanly from the time turn. The MiniCPM fast tier should say Jupiter.', expect=('jupiter',)),
             Turn('Interesting. How many moons does it have, roughly?', 'wait_for_response',
                  "Follow-up: 'it' must resolve to Jupiter from the prior turn -> tests coreference / short-term context. Exact moon count is disputed, so grade only that the answer echoes 'moon(s)'; the bound is fair for a 4b model.", expect=('moon',)),
             Turn("Okay back to planning. If I leave in twenty minutes, what time will I get there if it's a half hour drive?", 'pause:1',
@@ -407,7 +407,7 @@ SCENARIOS: tuple[Scenario, ...] = (
             Turn("Perfect, thanks, that's everything.", 'wait_for_response',
                  'Polite closer; confirms the assistant returns to idle cleanly. No checkable fact, graded for STT and return-to-idle only.'),
         ),
-        validates="Over-the-air STT on conversational kitchen phrasing; per-turn first-audio latency under a busy hands-free chain; gemma3:4b factual accuracy on common cooking knowledge (substitution, unit conversion, egg timing, boiling point); core/conversation.py recent-context injection resolving the bare pronoun 'that'/'it' against the immediately prior egg turns without the noun being repeated.",
+        validates="Over-the-air STT on conversational kitchen phrasing; per-turn first-audio latency under a busy hands-free chain; MiniCPM factual accuracy on common cooking knowledge (substitution, unit conversion, egg timing, boiling point); core/conversation.py recent-context injection resolving the bare pronoun 'that'/'it' against the immediately prior egg turns without the noun being repeated.",
         expected_behavior="Eight clean, in-order turns each answered exactly once. Buttermilk substitution names milk soured with lemon juice or vinegar. Conversions are exact: three teaspoons per tablespoon, one thousand grams per kilogram. Hard-boiled egg is given as roughly nine to twelve minutes, soft-boiled as roughly four to seven minutes. The 'is it safe to eat that' turn treats 'that' as the soft-boiled egg (a runny-yolk safety answer) and does not ask 'eat what?'. Water boils at one hundred degrees Celsius. The closer returns the assistant to idle. No merged turns, no barge-in, no timeout apology, no duplicate answers.",
         pass_signals=(
             'Timeline strictly alternates user->assistant for all eight turns, zero overlap, each correctly attributed.',
@@ -449,7 +449,7 @@ SCENARIOS: tuple[Scenario, ...] = (
             Turn('Okay, what is the currency used in Japan?', 'wait_for_response',
                  'Returns to Japan via short-term memory after the honesty probe; unambiguous fact (yen). Confirms the pipeline recovered and context survived the off-topic turn.', expect=('yen',)),
         ),
-        validates="core/conversation.py recent-context injection (bare-pronoun + 'those two' coreference resolved by the model with no noun repeated); the answering LLM tier (gemma3:4b) on unambiguous general-knowledge facts; over-the-air sherpa STT accuracy on natural conversational phrasing; per-turn first-audio latency; and the capability-honesty guard (no confabulated note/memory store).",
+        validates="core/conversation.py recent-context injection (bare-pronoun + 'those two' coreference resolved by the model with no noun repeated); the MiniCPM answering tier on unambiguous general-knowledge facts; over-the-air sherpa STT accuracy on natural conversational phrasing; per-turn first-audio latency; and the capability-honesty guard (no confabulated note/memory store).",
         expected_behavior="A natural learning chat resolves cleanly turn by turn: France is described; 'its capital' answers Paris; 'they speak there' answers French; 'that city' population is a Paris figure in the millions; the topic shifts to Tokyo; 'those two capitals' is correctly compared (Tokyo is larger); the 'remember Tokyo' turn is answered honestly without claiming to have stored anything; and the final currency turn answers yen. No turn asks 'capital of what?' / 'remember what?'; no dead air; each answer is correctly attributed and arrives within a normal first-audio latency.",
         pass_signals=(
             'Timeline strictly alternates user->assistant across all 8 turns, zero overlap, each segment correctly attributed.',
@@ -535,7 +535,7 @@ SCENARIOS: tuple[Scenario, ...] = (
             Turn('How many players are on a baseball team on the field?', 'pause:1',
                  'Short factual counting. A baseball team fields nine players. Closes the distribution with another floor-class turn.', expect=('nine|9',)),
         ),
-        validates='core/metrics.py per-turn stage timings (speech_end -> asr_final -> llm_first_token -> tts_first_audio) across varied input lengths; sherpa over-the-air ASR accuracy per turn; gemma3:4b answer correctness on famous facts. Independent turns isolate latency-vs-input-length from conversation/context cost.',
+        validates='core/metrics.py per-turn stage timings (speech_end -> asr_final -> llm_first_token -> tts_first_audio) across varied input lengths; sherpa over-the-air ASR accuracy per turn; MiniCPM answer correctness on famous facts. Independent turns isolate latency-vs-input-length from conversation/context cost.',
         expected_behavior='Each turn is answered exactly once, correctly, with a populated first_audio_latency. Short factual turns (capital, yes/no) should hit the warm latency floor; the multi-clause and short-list turns cost more ASR + more generation and sit higher in the distribution. The spelling turn must echo the requested letters. No merges, no barge-ins, no timeouts, no clarifying questions.',
         pass_signals=(
             'Every one of the 11 turns has a non-null first_audio_latency, yielding a full per-turn distribution.',
@@ -554,10 +554,10 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="capability_latency_profile",
         capability="Per-capability / per-tier latency (fast vs main vs research)",
-        goal="Measure first-audio latency across the routing tiers on the REAL two-model setup (fast=gemma3:4b, main=gemma3:12b): short factual -> FAST; reasoning/compare/long-form -> MAIN; research -> MAIN + ReAct planner. Shows where each capability's latency lands and which tier dominates the tail.",
+        goal="Measure first-audio latency across the shipped two-model setup (fast=MiniCPM5-1B Q8, main=gemma3:12b): short factual -> FAST; reasoning/compare/long-form -> MAIN; research -> MAIN + ReAct planner. Shows where each capability's latency lands and which tier dominates the tail.",
         turns=(
             Turn("What's the capital of Japan?", "wait_for_response",
-                 "FAST tier: 5-word literal factual, no complexity/generation markers -> router score 0 < 0.3 -> fast (gemma3:4b). Latency floor.",
+                 "FAST tier: 5-word literal factual, no complexity/generation markers -> router score 0 < 0.3 -> MiniCPM. Latency floor.",
                  expect=("tokyo",)),
             Turn("What is seven times eight?", "pause:1",
                  "FAST tier: trivial arithmetic, no markers -> fast. Warm floor.",
@@ -581,8 +581,8 @@ SCENARIOS: tuple[Scenario, ...] = (
                  "MAIN/RESEARCH tier: 'summarize' + 'in detail' markers -> main-model synthesis. Synthesis latency.",
                  expect=("exercise|health|heart|muscle|fitness",)),
         ),
-        validates="core/routing.py HeuristicRouter tier selection (threshold 0.3) + the two-model split (fast=4b, main=12b) + the research/ReAct path. Run with --model gemma3:12b --fast-model gemma3:4b to exercise BOTH tiers (forcing both to 4b collapses the comparison).",
-        expected_behavior="Fast turns answer in ~1.2-1.4s first-audio (4b); main/reasoning turns are slower (12b TTFT + load); the research turn is the slowest (planner + 12b synthesis). Every turn answers correctly or reasonably; per-tier latency is separable in latency.json + the logged tier ('answering on fast/main tier').",
+        validates="core/routing.py HeuristicRouter tier selection (threshold 0.3) + the shipped MiniCPM-fast/Gemma-main split + the research/ReAct path. Run with --model gemma3:12b --fast-model minicpm5-1b:q8 to exercise both tiers; assigning one model to both roles collapses the comparison.",
+        expected_behavior="MiniCPM fast turns form the lower first-audio cluster; Gemma main/reasoning turns are slower, and the research turn is slowest (planner + main synthesis). Every turn answers correctly or reasonably; per-tier latency is separable in latency.json and the logged tier ('answering on fast/main tier').",
         pass_signals=(
             "Fast turns (1-3) route to the fast tier and answer correctly (Tokyo / 56 / Pacific).",
             "Reasoning turns (4-6) route to the main tier; the story turn produces a multi-sentence long answer.",

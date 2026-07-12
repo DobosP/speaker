@@ -336,24 +336,18 @@ A tiered routing strategy that the existing code already supports (the
 `tools.recommend_profile` script probes the host and prints the matching
 profile so users don't have to read this section first.
 
-### 10.1 Device tiers (specsim modelled estimates, 2026-05)
+### 10.1 Device-tier evidence
 
-Numbers from `python -m tools.specsim`. ✓ = inside the budget (≤1.2 s first
-audio · ≤0.3 s barge-in stop); ~ = inside the relaxed budget (≤2.5 s / ≤0.5
-s); ✗ = miss. Validate per machine with `python -m tools.bench --profile
-<name>`.
-
-| Device class | Profile | LLM tier | LLM speed | quick TTFA | research TTFA | barge-in |
-|---|---|---|---|---|---|---|
-| RTX 4090 / 5090 | `desktop_gpu_4090` | gemma3:12b on GPU | 111 tok/s | 0.96s ✓ | 1.63s ✓ | 0.30s ✓ |
-| MacBook M2/M3/M4 (16+ GB) | `macbook_m_series` | gemma3:4b on Metal | 50 tok/s | 1.46s ~ | 2.96s ✗ | 0.30s ✓ |
-| Windows/Linux laptop, no dGPU | `cpu_laptop` | gemma3:4b on CPU | 12.5 tok/s | 3.54s ✗ | 9.54s ✗ | 0.35s ~ |
-| Android 12 GB | `phone` | gemma3:4b GGUF | 8.3 tok/s | 5.26s ✗ | 14.26s ✗ | 0.40s ~ |
-| Low-end phone / web | `phone_lite` | gemma3:1b GGUF | 11.1 tok/s | 5.07s ✗ | 11.82s ✗ | 0.45s ~ |
-
-**The takeaway:** only the dGPU profile hits the snappy budget locally; the
-Mac is borderline; every other on-device target falls off a cliff.
-Barge-in is fine everywhere — the cancellation path is cheap.
+The former table here contained May 2026 single-model `tools.specsim`
+estimates. It predates the MiniCPM-fast/Gemma-main split in
+[ADR-0020](adr/0020-minicpm5-local-answering-tier.md), so its quick-turn and
+barge-in numbers are not evidence for the current runtime. The current RTX 4090
+host has measured MiniCPM Q8 warm TTFT of 0.12–0.14 s; Mac, CPU-laptop, and
+phone latency/thermal figures remain unvalidated. Use
+`python -m tools.bench --profile <name>` and the profile's live audio gate before
+making a hardware claim. `tools.specsim` now reports the distinct main/fast
+roles and labels its timing fields as fast-path estimates; those estimates still
+need per-device calibration before they are treated as hardware evidence.
 
 ### 10.2 The tiered strategy
 

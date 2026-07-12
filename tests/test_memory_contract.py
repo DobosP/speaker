@@ -237,6 +237,60 @@ def test_fact_stated_turn_1_recalled_at_turn_n():
     assert system_used.index(DEFAULT_SYSTEM) < system_used.index("favorite color is teal")
 
 
+def test_weak_rendered_recall_does_not_override_an_always_fast_router():
+    """A stopword-only recall hit is not evidence that a turn needs main."""
+    memory = SessionMemory()
+    memory.add("my favorite color is teal", tags=("user",))
+    main = _RecordingLLM("main answer")
+    fast = _RecordingLLM("fast answer")
+
+    class _AlwaysFast:
+        def choose(self, query, context):
+            return "fast"
+
+    registry = CapabilityRegistry()
+    attach_llm_capabilities(
+        registry,
+        main,
+        fast_llm=fast,
+        router=_AlwaysFast(),
+        memory=memory,
+        recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=_NO_RECENT,
+    )
+
+    result = registry.invoke(
+        "assistant.answer", "what is the capital of france?", {}
+    )
+
+    assert result.text == "fast answer"
+    assert result.data["route"] == "fast"
+    assert "favorite color is teal" in (fast.systems[0] or "")
+    assert main.systems == []
+
+
+def test_no_recalled_context_keeps_short_answer_on_fast_model():
+    memory = SessionMemory()
+    main = _RecordingLLM("main answer")
+    fast = _RecordingLLM("fast answer")
+    registry = CapabilityRegistry()
+    attach_llm_capabilities(
+        registry,
+        main,
+        fast_llm=fast,
+        memory=memory,
+        recall=RecallConfig(enabled=True, max_chars=600),
+        recent_context=_NO_RECENT,
+    )
+
+    result = registry.invoke("assistant.answer", "hello there", {})
+
+    assert result.text == "fast answer"
+    assert result.data["route"] == "fast"
+    assert fast.systems == [DEFAULT_SYSTEM]
+    assert main.systems == []
+
+
 def test_adapter_recall_degrades_to_empty_without_db():
     """The adapter's recall is the Postgres semantic path
     (``get_context_for_llm`` -> ``search_memory``), gated on embeddings + a

@@ -80,9 +80,12 @@ def _legend() -> str:
 def _model_fit_table(specs: tuple[MachineSpec, ...]) -> str:
     rows = []
     for spec in specs:
-        model = spec.configured_model
-        status = spec.fit_status(model)
-        footprint = MODEL_FOOTPRINTS_GB.get(model, 0.0)
+        fast_status = spec.fit_status(spec.fast_model)
+        fast_footprint = MODEL_FOOTPRINTS_GB.get(spec.fast_model, 0.0)
+        main_status = spec.fit_status(spec.main_model)
+        main_footprint = MODEL_FOOTPRINTS_GB.get(spec.main_model, 0.0)
+        combined_status = "good" if spec.configured_roles_fit() else "fail"
+        shared = " (shared)" if spec.shares_model_across_roles else ""
         largest = spec.largest_fitting_model() or "(none)"
         rows.append(
             "<tr>"
@@ -91,8 +94,13 @@ def _model_fit_table(specs: tuple[MachineSpec, ...]) -> str:
             f"<td>{spec.cores}</td>"
             f"<td>{spec.ram_gb:g} GB</td>"
             f"<td>{spec.model_budget_gb:g} GB</td>"
-            f"<td>{_esc(model)} ({footprint:g} GB) {_chip(status, status)}</td>"
-            f"<td>{_esc(spec.tokens_per_sec)} tok/s</td>"
+            f"<td>{_esc(spec.fast_model)} ({fast_footprint:g} GB) "
+            f"{_chip(fast_status, fast_status)}</td>"
+            f"<td>{_esc(spec.main_model)}{shared} ({main_footprint:g} GB) "
+            f"{_chip(main_status, main_status)}</td>"
+            f"<td>{spec.configured_footprint_gb:g} GB "
+            f"{_chip(combined_status, combined_status)}</td>"
+            f"<td>{_esc(spec.fast_tokens_per_sec)} tok/s</td>"
             f"<td>{_esc(largest)}</td>"
             "</tr>"
         )
@@ -100,7 +108,9 @@ def _model_fit_table(specs: tuple[MachineSpec, ...]) -> str:
         "<h2>Model fit per device</h2>"
         '<table><thead><tr>'
         "<th>Device</th><th>Platform</th><th>Cores</th><th>RAM</th>"
-        "<th>Model budget</th><th>Configured model</th><th>LLM speed</th>"
+        "<th>Model budget</th><th>Fast / ordinary model</th>"
+        "<th>Main / complex model</th><th>Combined role weights</th>"
+        "<th>Estimated fast-path speed</th>"
         "<th>Largest that fits</th>"
         "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
     )
@@ -163,8 +173,9 @@ def _spec_cards(specs: tuple[MachineSpec, ...], scenarios: tuple[Scenario, ...])
             '<div class="card">'
             f"<h3>{_esc(spec.name)}</h3>"
             f'<div class="hw">{_esc(spec.accelerator)} &middot; {spec.cores} cores '
-            f"&middot; {spec.ram_gb:g} GB RAM &middot; {_esc(spec.configured_model)} "
-            f"@ {_esc(spec.tokens_per_sec)} tok/s</div>"
+            f"&middot; {spec.ram_gb:g} GB RAM &middot; fast {_esc(spec.fast_model)} "
+            f"/ main {_esc(spec.main_model)} &middot; estimated fast path "
+            f"@ {_esc(spec.fast_tokens_per_sec)} tok/s</div>"
             + "".join(rows)
             + "</div>"
         )
@@ -202,7 +213,8 @@ def render(specs: tuple[MachineSpec, ...], scenarios: tuple[Scenario, ...] = SCE
         "<h1>On-device capability simulation</h1>"
         f"<p class='sub'>Generated {ts}. Modelled latencies for an "
         "ASR&rarr;LLM&rarr;TTS turn across target machine specs &mdash; "
-        "estimates for comparison, not measurements.</p>"
+        "fast/ordinary-path estimates for comparison, not measurements or "
+        "main-tier latency claims.</p>"
         + _legend()
         + _model_fit_table(specs)
         + _matrix(specs, scenarios)

@@ -200,7 +200,7 @@ This contract is **not** a binary core passed around; it is **reimplemented fait
 
 ### Scale: local-first with a hybrid cloud thinking tier
 
-- **Always-on loop** (on-device, every platform): STT → VAD → fast-tier LLM (Gemma 4b-class, answers in ≤2s) → TTS. Raw audio never leaves the device. This loop is always local.
+- **Always-on loop** (on-device): STT → VAD → fast-tier LLM → TTS. The current Python runtime uses MiniCPM5-1B for ordinary text/voice and retains Gemma as its complex/vision main tier; Flutter remains on its separately validated Gemma runtime ([ADR-0020](adr/0020-minicpm5-local-answering-tier.md)). Raw audio never leaves the device.
 - **Thinking tier** (optional, opt-in via config): main planner / research / multimodal summarize / web search may use cloud (§9.7 of `target_architecture.md`). Only post-ASR text + screen captures + files cross to cloud; only when the thinking tier is invoked. The boundary mechanics are detailed in [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97).
 
 ---

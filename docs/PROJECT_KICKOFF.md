@@ -89,7 +89,9 @@ draw are mirrored in `docs/target_architecture.md` §9 (decisions 7–10).
   > target_architecture.md §9.7):
   > * **Stays local:** STT (sherpa-onnx), TTS, VAD, speaker-ID, the
   >   always-on capture loop, the fast/answering LLM tier
-  >   (gemma3:4b-class), conversation memory.
+  >   (model mapping now tracked by
+  >   [ADR-0020](adr/0020-minicpm5-local-answering-tier.md)), conversation
+  >   memory.
   > * **May use cloud:** the *thinking* tier (main planner, research,
   >   multimodal summarize) and **web search** for research mode.
   > * **Raw audio never leaves the device** — only post-ASR text /
@@ -108,10 +110,11 @@ draw are mirrored in `docs/target_architecture.md` §9 (decisions 7–10).
 
 - ⭐ What machine(s) will you run this on? (CPU, RAM, GPU, OS versions.)
   This decides which LLM/STT models are realistic.
-  > _answer:_ **~16 GB VRAM GPU + 33 GB RAM workstation** (Linux). Already
-  > runs `gemma3:12b` (main) + `gemma3:4b` (fast) on Ollama; this is the
-  > `desktop` device profile in `config.json`. Cloud thinking tier (§4)
-  > extends this when local headroom isn't enough.
+  > _answer:_ **~16 GB VRAM GPU + 33 GB RAM workstation** (Linux). The current
+  > Python mapping is `gemma3:12b` main + `minicpm5-1b:q8` fast on Ollama
+  > ([ADR-0020](adr/0020-minicpm5-local-answering-tier.md)); `config.json`
+  > carries the per-device mappings. Cloud thinking tier (§4) extends this
+  > when local headroom isn't enough.
 - Which phone(s)? (Model + OS version.) On-device LLM viability depends on it.
   > _answer:_ Out of v1 scope (§7).
 - Headset/AirPods, laptop mic, or a far-field mic? (Affects echo/barge-in.)

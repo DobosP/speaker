@@ -7,14 +7,15 @@ verdict. Sits between `tools.live_session` (needs a human) and `--engine replay`
 
 ```
 python -m tools.autotest all                         # memory + voice + suite + scorecard
-python -m tools.autotest memory  [--llm echo|ollama] [--model minicpm5-1b:q8]
+python -m tools.autotest memory  [--llm echo|ollama] [--model gemma3:12b] [--fast-model minicpm5-1b:q8]
 python -m tools.autotest voice   [--acoustics cable|delay|speaker] [--utterances DIR] [--make-sound]
 python -m tools.autotest replay  [--bundle logs/runs/run-<id>.wav]
 python -m tools.autotest suite                       # existing headless pytest gates
 ```
 
-Use the shipped answering LLM (default `minicpm5-1b:q8`) — this tests the audio/memory
-plumbing, not model intelligence. Run from the repo root with the venv python:
+Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier separately
+checks retrieval plus the bounded exact self-fact controller; it does not claim
+general semantic-memory intelligence. Run from the repo root with the venv python:
 `.venv/bin/python -m tools.autotest …`. Reports land under `logs/autotest/`
 (gitignored); the `voice` tier also drops a normal `logs/runs/` bundle.
 
@@ -105,7 +106,7 @@ Any omitted role falls back to a synthesized clip.
 
 | tier | proves | needs |
 |------|--------|-------|
-| `memory` | a fact in turn 1 is recalled at turn N — injected into the prompt AND used in the answer | in-RAM memory (no DB); small LLM |
+| `memory` | an exact live self-fact remains retrievable at turn N and the bounded private controller returns its scalar | in-RAM memory (no DB); shipped model topology or `--llm echo` |
 | `voice`  | real engine round-trips STT→LLM→TTS; WER; barge-in cuts; self-interrupt | PipeWire, sherpa models, small LLM |
 | `replay` | delay-independent self-interrupt + AEC ERLE/delay over a bundle | a `run-<id>.wav` + `.ref.wav` |
 | `suite`  | the existing headless barge/sandbox/memory pytest gates | nothing extra |

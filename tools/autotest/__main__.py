@@ -1,7 +1,7 @@
 """CLI for the autonomous test harness.
 
-    python -m tools.autotest memory   [--llm echo|ollama] [--model gemma3:4b]
-    python -m tools.autotest voice    [--llm echo|ollama] [--model gemma3:4b]
+    python -m tools.autotest memory   [--llm echo|ollama] [--model minicpm5-1b:q8]
+    python -m tools.autotest voice    [--llm echo|ollama] [--model minicpm5-1b:q8]
     python -m tools.autotest replay   [--bundle logs/runs/run-<id>.wav]
     python -m tools.autotest suite                       # existing pytest gates
     python -m tools.autotest all                         # everything + scorecard
@@ -232,7 +232,7 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="tools.autotest", description=__doc__)
     ap.add_argument("tier", choices=["memory", "voice", "replay", "suite", "all", "record"])
     ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama",
-                    help="small LLM for the in-loop tiers (default ollama/gemma3:4b)")
+                    help="answering LLM for the in-loop tiers (default minicpm5-1b:q8)")
     ap.add_argument("--model", default="minicpm5-1b:q8", help="Ollama answering model")
     ap.add_argument("--bundle", default=None, help="replay: explicit run-<id>.wav")
     ap.add_argument("--acoustics", choices=["cable", "delay", "speaker"], default="cable",

@@ -26,7 +26,7 @@ Two trial types, attributed by the live stdout markers the engine already emits
 
 Run (makes real sound; assistant on the laptop speaker):
     .venv/bin/python -m tools.autotest.barge_stress \
-        --utterances recordings/owner --llm ollama --model gemma3:4b \
+        --utterances recordings/owner --llm ollama --model minicpm5-1b:q8 \
         --n-self 5 --n-barge 8
 """
 from __future__ import annotations

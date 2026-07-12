@@ -602,6 +602,34 @@ def test_minicpm_identity_requires_blob_quantization_template_and_parameters():
     assert wrong_template.ok is False and wrong_template.template_match is False
 
 
+def test_minicpm_identity_prefers_effective_alias_modelfile_template():
+    digest = SOURCE_MODEL_BLOB_SHA256
+    show = _fake_show_pair(digest=digest)
+
+    def conflicting_show(model: str):
+        value = show(model)
+        if not model.startswith("minicpm5"):
+            return value
+        expected = _expected_template()
+        return {
+            **value,
+            "template": "{{ upstream.base_template }}",
+            "modelfile": (
+                f"FROM /models/sha256-{digest}\n"
+                f'TEMPLATE "{expected}"\n'
+                + value["parameters"].replace("stop ", "PARAMETER stop ")
+                .replace("temperature ", "PARAMETER temperature ")
+                .replace("top_p ", "PARAMETER top_p ")
+                .replace("num_ctx ", "PARAMETER num_ctx ")
+            ),
+        }
+
+    identity = verify_minicpm_identity(show=conflicting_show)
+
+    assert identity.template_match is True
+    assert identity.ok is True
+
+
 def test_report_is_versioned_json_and_defines_repeat_reliability(
     tmp_path,
     evaluation_config: dict,

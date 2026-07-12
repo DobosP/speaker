@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3356 passed/30 skipped/9 warnings; focused conversation/APM: 35/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3357 passed/30 skipped/9 warnings; focused conversation/APM: 36/6 passed.
 ADR-0050 deterministic device-free trace: 36/36 scenario-runs (12 x 3), pass@1=True/pass^3=True.
-Its real Ollama/Q8 gate was not run; live bare-speaker A/B remains red.
+Real Q8 identity passed; four-scenario smoke was candidate 3/4 and baseline 1/4. Full A/B is unrun; live bare-speaker A/B remains red.
 
 ## Runtime
 

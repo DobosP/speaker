@@ -13,7 +13,10 @@ from tools.setup_minicpm import (
 )
 
 
-_TEMPLATE_RE = re.compile(r'TEMPLATE\s+"""(.*?)"""', re.DOTALL)
+_MODELFILE_TEMPLATE_RE = re.compile(
+    r"^TEMPLATE\s+(.*?)(?=^PARAMETER\s|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
 _FROM_RE = re.compile(r"^FROM\s+(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _DIGEST_RE = re.compile(r"sha256[-:]([0-9a-f]{64})", re.IGNORECASE)
 _NO_AMBIENT_AUTH = {"authorization": "Bearer speaker-local-evaluation"}
@@ -64,12 +67,27 @@ def _blob_ref(show_result: object) -> str:
     return digest.group(1).lower() if digest else ""
 
 
+def _modelfile_template(modelfile: str) -> str:
+    match = _MODELFILE_TEMPLATE_RE.search(modelfile.replace("\r\n", "\n"))
+    if match is None:
+        return ""
+    template = match.group(1).strip()
+    if template.startswith('"""') and template.endswith('"""'):
+        template = template[3:-3]
+    elif template.startswith('"') and template.endswith('"'):
+        template = template[1:-1]
+    return template.strip()
+
+
 def _template(show_result: object) -> str:
-    template = str(_field(show_result, "template", "") or "")
+    # Ollama may expose the imported base model's large upstream chat template
+    # in ``show.template`` even when the local alias's generated Modelfile has
+    # an explicit override.  The Modelfile is the effective alias contract and
+    # therefore wins when present; the field remains a compatibility fallback.
+    modelfile = str(_field(show_result, "modelfile", "") or "")
+    template = _modelfile_template(modelfile)
     if not template:
-        modelfile = str(_field(show_result, "modelfile", "") or "")
-        match = _TEMPLATE_RE.search(modelfile)
-        template = match.group(1) if match else ""
+        template = str(_field(show_result, "template", "") or "")
     return template.replace("\r\n", "\n").strip()
 
 
@@ -108,10 +126,10 @@ def _parameters_match(show_result: object) -> bool:
 
 def _expected_template(modelfile: Path = DEFAULT_MODELFILE) -> str:
     text = modelfile.read_text(encoding="utf-8").replace("\r\n", "\n")
-    match = _TEMPLATE_RE.search(text)
-    if match is None:
+    template = _modelfile_template(text)
+    if not template:
         raise ValueError(f"MiniCPM Modelfile has no TEMPLATE block: {modelfile}")
-    return match.group(1).strip()
+    return template
 
 
 def verify_minicpm_identity(

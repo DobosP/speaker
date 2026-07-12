@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; combined full: 3728 passed/31 skipped/9 warnings in 76.08s; identity/fresh branch full: 3714/3692 passed; focused identity/fresh/combined: 517/121/549 passed; strict recorded/APM: 9/6 passed; deterministic conversation: 42/42, pass^3.
+Last verified: 2026-07-12 on Linux ROG; combined full: 3728 passed/31 skipped/9 warnings in 76.08s; focused identity/fresh/combined: 517/121/549 passed; strict archived fake-stream replay (no hardware): 9 passed in 53.66s; APM/DTD: 6 passed in 0.69s; deterministic conversation: 42/42, all 14 scenarios 3/3, semantics/coverage/A-B/provenance/warmup true.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
 ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–63 headless code is green.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block overlap is 2/2 with deterministic full-window setup; live remains red/unlandable (ADR-0052/61).

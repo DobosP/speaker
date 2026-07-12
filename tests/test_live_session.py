@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 import tools.live_session.__main__ as live_main
-from tools.live_session.driver import _is_answer, _parse_pause
+from tools.live_session.driver import InjectingInputStream, _is_answer, _parse_pause
 from tools.live_session.report import (
     BARGE_STOP_RATE_MIN,
     HEARD_OK_THRESHOLD,
@@ -34,6 +34,7 @@ from tools.live_session.report import (
 from tools.live_session.scenarios import (
     BARGE_SCENARIOS,
     LONG_ANSWER,
+    LONG_ANSWER_ALT,
     SCENARIOS,
     Scenario,
     Turn,
@@ -66,11 +67,29 @@ def test_new_barge_scenarios_exist_and_use_long_answer():
         "barge_no_barge_control",
     }
     assert expected <= names
-    # Every barge scenario uses the shared LONG_ANSWER as its barge target so
-    # there is always speech to cut (the short-response-race fix).
+    # Every barge scenario uses a shared long-answer target so there is always
+    # speech to cut (the short-response-race fix).
     for name in expected:
         s = by_name(name)
-        assert any(t.text == LONG_ANSWER for t in s.turns), name
+        assert any(t.text in (LONG_ANSWER, LONG_ANSWER_ALT) for t in s.turns), name
+
+    # Multi-interrupt scenarios must not repeat the exact prompt: EchoLLM speaks
+    # that prompt verbatim, and the runtime should then classify a quick repeat as
+    # its own TTS echo rather than creating a second answer.
+    for name in (
+        "barge_in_interrupt_stop",
+        "barge_in_early_vs_late",
+        "barge_stop_command_vs_new_topic",
+    ):
+        targets = [
+            t.text for t in by_name(name).turns
+            if t.text in (LONG_ANSWER, LONG_ANSWER_ALT)
+        ]
+        assert targets == [LONG_ANSWER, LONG_ANSWER_ALT]
+
+    stop_turn = by_name("barge_in_interrupt_stop").turns[1]
+    assert stop_turn.text == "Stop."
+    assert stop_turn.timing == "barge_in"
 
 
 def test_no_barge_control_scenario_has_no_barge_line():
@@ -275,16 +294,20 @@ def test_flush_assistant_stamps_barge_intended_from_upcoming_user_timing(tmp_pat
     eng.speak("Once upon a time...", 1.0)
     eng.stop(1.2)
     c = _bare_convo(eng, _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
+    c._uidx = 2  # target user 1, then interrupter user 2
     c._upcoming_user_timing = "barge_in"
     c._flush_assistant()
     assert c.events[0]["barge_intended"] is True
+    assert c.events[0]["response_to_user_idx"] == 1
 
     eng2 = _FakeEngine()
     eng2.speak("Paris.", 2.0)
     c2 = _bare_convo(eng2, _FakeRuntime(eng2, _FakeSupervisor(), _FakeMetrics([])), tmp_path)
+    c2._uidx = 1
     c2._upcoming_user_timing = "wait_for_response"
     c2._flush_assistant()
     assert c2.events[0]["barge_intended"] is False
+    assert c2.events[0]["response_to_user_idx"] == 1
 
 
 def test_poll_capture_ignores_stale_last_partial_across_turns(tmp_path):
@@ -419,6 +442,101 @@ def test_inject_disables_physical_aec_and_os_word_cut_authority(monkeypatch):
     )
     assert config["sherpa"]["aec_enabled"] is False
     assert config["sherpa"]["barge_word_cut_enabled"] is False
+    assert config["sherpa"]["coherence_warmup_frames"] == 0
+    assert config["sherpa"]["coherence_confirm_frames"] == 1
+    assert config["sherpa"]["coherence_max_delay_ms"] == 0.0
+
+
+def test_non_inject_keeps_conservative_physical_coherence_profile(monkeypatch):
+    config = _run_main_capturing_config(
+        monkeypatch,
+        [],
+        initial_sherpa={
+            "coherence_warmup_frames": 5,
+            "coherence_confirm_frames": 2,
+            "coherence_max_delay_ms": 400.0,
+        },
+    )
+    assert config["sherpa"]["coherence_warmup_frames"] == 5
+    assert config["sherpa"]["coherence_confirm_frames"] == 2
+    assert config["sherpa"]["coherence_max_delay_ms"] == 400.0
+
+
+def test_inject_coherence_profile_still_needs_two_sustained_blocks(monkeypatch):
+    """Echo-free inject removes physical warm-up, not temporal confirmation."""
+    import numpy as np
+
+    from core.engines._dtd import BargeSustain
+    from core.engines.echo_coherence import EchoCoherenceDetector
+
+    mic = np.full(1600, 0.1, dtype="float32")
+
+    def _detector(*, warmup_frames, confirm_frames):
+        det = EchoCoherenceDetector(
+            16000,
+            warmup_frames=warmup_frames,
+            confirm_frames=confirm_frames,
+        )
+        # Drive the real detector control chart with a deterministic, clearly
+        # incoherent user block after a sufficiently filled reference ring.
+        monkeypatch.setattr(
+            det, "_snapshot_ref", lambda: np.ones(8000, dtype="float32")
+        )
+        monkeypatch.setattr(det, "_estimate_delay", lambda _x, _w: 0)
+        monkeypatch.setattr(det, "_incoherent_fraction", lambda _x, _r: 0.9)
+        return det
+
+    inject = _detector(warmup_frames=0, confirm_frames=1)
+    sustain = BargeSustain(
+        window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2
+    )
+    assert sustain.update(bool(inject.decide(mic))) is False
+    assert sustain.update(bool(inject.decide(mic))) is True
+
+    physical = _detector(warmup_frames=5, confirm_frames=2)
+    assert physical.decide(mic) is False
+    assert physical.decide(mic) is False
+
+
+def test_inject_input_stream_paces_to_absolute_device_deadlines():
+    now = [0.0]
+    sleeps = []
+
+    def _sleep(delay):
+        sleeps.append(delay)
+        now[0] += delay
+
+    stream = InjectingInputStream(
+        100, clock=lambda: now[0], sleeper=_sleep
+    )
+    stream.start()
+    stream.read(10)
+    now[0] += 0.03  # caller processing time between device reads
+    stream.read(10)
+
+    assert sleeps == [0.1, 0.07]
+
+
+def test_inject_input_stream_does_not_replay_unbounded_stall_backlog():
+    now = [0.0]
+    sleeps = []
+
+    def _sleep(delay):
+        sleeps.append(delay)
+        now[0] += delay
+
+    stream = InjectingInputStream(
+        100, clock=lambda: now[0], sleeper=_sleep
+    )
+    stream.start()
+    stream.read(10)
+    now[0] += 1.0  # a real capture-thread stall, not routine processing jitter
+    stream.read(10)
+    stream.read(10)
+
+    # The late read returns once, then the fake device resumes normal cadence;
+    # it cannot instantly backfill ten blocks and hide the missing wall time.
+    assert [round(delay, 9) for delay in sleeps] == [0.1, 0.1]
 
 
 def test_invalid_device_profile_fails_cleanly_before_preflight(monkeypatch, capsys):
@@ -848,13 +966,33 @@ def test_write_grade_emits_per_turn_and_aggregate(tmp_path):
     assert report["per_turn"][0]["first_audio_ms"] == 620.0
 
 
+def test_write_grade_uses_explicit_response_links_after_no_answer_turn(tmp_path):
+    events = [
+        {"idx": 1, "speaker": "user", "text": "first", "asr_final": "first"},
+        {
+            "idx": 1, "speaker": "assistant", "text": "answer one",
+            "response_to_user_idx": 1,
+            "latency": {"first_audio_latency": 0.5},
+        },
+        {"idx": 2, "speaker": "user", "text": "Stop.", "asr_final": None},
+        {"idx": 3, "speaker": "user", "text": "third", "asr_final": "third"},
+        {
+            "idx": 2, "speaker": "assistant", "text": "answer three",
+            "response_to_user_idx": 3,
+            "latency": {"first_audio_latency": 0.7},
+        },
+    ]
+    rows = write_grade(events, tmp_path)["per_turn"]
+    assert [row["first_audio_ms"] for row in rows] == [500.0, None, 700.0]
+
+
 # --- barge-in / interrupt grade (pure, inject-mode-only logic) ------------------
 #
 # Fakes only -- the same shape the driver writes onto each assistant event:
 #   * barge_intended (the PRECEDING user line's timing == "barge_in"),
-#   * interrupted (engine.stopped_after -- the primary "stopped" signal),
+#   * interrupted (engine.stopped_after -- proof a stop call occurred),
 #   * latency.barge_in_latency (BARGE_IN_STOP minus BARGE_IN, in SECONDS; None when
-#     stop_speaking found no live stream to abort -- the short-answer race).
+#     stop_speaking found no live FIFO to cut -- the short-answer race).
 
 
 def _user(idx, timing="wait_for_response"):
@@ -899,7 +1037,22 @@ def test_grade_barge_turns_interrupted_without_intended_is_self_interrupt():
     ]
     rows = grade_barge_turns(events)
     assert rows[0]["self_interrupt"] is True
+    assert rows[0]["stop_called"] is True
+    assert rows[0]["stopped"] is False
     assert rows[0]["stop_ms"] is None  # the short-answer race: no STOP stamp
+
+
+def test_intended_stop_call_without_fifo_cut_cannot_pass():
+    events = [
+        _user(1, "barge_in"),
+        _assistant(1, barge_intended=True, interrupted=True, barge_in_latency=None),
+    ]
+    rows = grade_barge_turns(events)
+    assert rows[0]["stop_called"] is True
+    assert rows[0]["stopped"] is False
+    summary = summarize_barge(rows)
+    assert summary["n_stopped"] == 0
+    assert summary["verdict"] == "FAIL"
 
 
 def test_summarize_barge_headline_ok_path():
@@ -1018,6 +1171,8 @@ def test_write_summary_renders_barge_section(tmp_path):
         name="barge_demo", capability="cap", goal="g",
         turns=(Turn(LONG_ANSWER), Turn("Stop.", "barge_in")),
         expected_behavior="stops on barge",
+        pass_signals=("FIFO cut",),
+        failure_modes=("answer continued",),
     )
     events = [
         _user(1, "wait_for_response"),
@@ -1031,8 +1186,34 @@ def test_write_summary_renders_barge_section(tmp_path):
     assert "INJECT MODE ONLY" in text  # the inject-mode caveat is loud
     assert "stops-when-barged" in text
     assert "self-interrupts" in text
+    assert "excludes user-onset-to-detection" in text
+    assert "Manual pass checks" in text
+    assert "[pass]" not in text and "[fail]" not in text
     # The per-turn table header is present.
     assert "barge_intended" in text and "stop_ms" in text
+
+
+def test_write_summary_labels_inject_user_time_as_enqueue(tmp_path):
+    scenario = Scenario(
+        name="inject_time", capability="cap", goal="g",
+        turns=(Turn("hello"),),
+    )
+    events = [{
+        "idx": 1,
+        "speaker": "user",
+        "text": "hello",
+        "timing": "wait_for_response",
+        "time_basis": "capture_enqueue",
+        "t_enqueue": 1.25,
+        "capture_buffered_seconds": 0.8,
+        "asr_final": "hello",
+    }]
+    text = write_summary(
+        scenario, events, tmp_path, voice={"speaker_id": 1, "speed": 1.0},
+    ).read_text()
+    assert "USER ENQUEUED" in text
+    assert "capture enqueue times" in text
+    assert "not a measured consumption/overlap interval" in text
 
 
 def test_write_summary_renders_no_barge_control_verdict(tmp_path):

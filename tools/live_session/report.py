@@ -92,12 +92,24 @@ def stt_score(scripted: str, heard: Optional[str]) -> float:
 
 def _grade_rows(events: list[dict]) -> list[dict]:
     """One row per user turn: scripted vs heard, the STT score, the heard-ok
-    boolean, and (paired in order) the answer's first-audio latency."""
+    boolean, and the explicitly attributed answer's first-audio latency. Legacy
+    event fixtures without response links retain ordinal pairing."""
     rows: list[dict] = []
+    assistants = [e for e in events if e.get("speaker") == "assistant"]
     assistant_lat = [
         _ms((e.get("latency") or {}).get("first_audio_latency"))
-        for e in events if e.get("speaker") == "assistant"
+        for e in assistants
     ]
+    attributed_lat: dict[int, Optional[float]] = {}
+    has_attribution = False
+    for assistant in assistants:
+        response_to = assistant.get("response_to_user_idx")
+        if not isinstance(response_to, int):
+            continue
+        has_attribution = True
+        value = _ms((assistant.get("latency") or {}).get("first_audio_latency"))
+        if response_to not in attributed_lat or attributed_lat[response_to] is None:
+            attributed_lat[response_to] = value
     ai = 0
     for e in events:
         if e.get("speaker") != "user":
@@ -105,7 +117,10 @@ def _grade_rows(events: list[dict]) -> list[dict]:
         scripted = e.get("text") or ""
         heard = e.get("asr_final")
         score = stt_score(scripted, heard)
-        first_audio = assistant_lat[ai] if ai < len(assistant_lat) else None
+        if has_attribution:
+            first_audio = attributed_lat.get(e.get("idx"))
+        else:
+            first_audio = assistant_lat[ai] if ai < len(assistant_lat) else None
         ai += 1
         rows.append({
             "turn": e.get("idx"),
@@ -212,19 +227,27 @@ def response_score(
 
 
 def _answers_by_user_index(events: list[dict]) -> dict[int, str]:
-    """Map the k-th user turn (0-based, in spoken order) to the assistant answer
-    text that followed it (joined). Walks the ordered events: every assistant
-    event attaches to the most-recent user turn. A turn with no answer maps to ""."""
+    """Map each 0-based user position to its explicitly attributed answers.
+
+    New driver events carry ``response_to_user_idx`` because a barge flushes the
+    interrupted prior answer after the interrupter user event. Legacy fixtures
+    without that field retain most-recent-user pairing.
+    """
     answers: dict[int, list[str]] = {}
+    user_position: dict[int, int] = {}
     ui = -1
     for e in events:
         if e.get("speaker") == "user":
             ui += 1
             answers.setdefault(ui, [])
+            if isinstance(e.get("idx"), int):
+                user_position[e["idx"]] = ui
         elif e.get("speaker") == "assistant" and ui >= 0:
             txt = (e.get("text") or "").strip()
             if txt:
-                answers[ui].append(txt)
+                response_to = e.get("response_to_user_idx")
+                target = user_position.get(response_to, ui)
+                answers.setdefault(target, []).append(txt)
     return {k: " ".join(v) for k, v in answers.items()}
 
 
@@ -325,19 +348,18 @@ def summarize_capture(
 
 # --- barge-in / interrupt grade (pure, inject-mode only) ---------------------
 #
-# Graded in INJECT MODE ONLY. A real two-stream acoustic barge-in (assistant
-# audio + interrupter audio playing at once) is physically impossible on the
-# reference box (exclusive ALSA hw -- a second output stream fails with "Device
-# unavailable"), so the LOGIC is exercised by feeding the interrupter audio into
-# the capture path during the assistant's speech. Read every verdict here as
-# "barge-in LOGIC works", not "acoustic barge-in is proven".
+# Graded in INJECT MODE ONLY. Inject mode deliberately opens no physical
+# input/output device, so the LOGIC is exercised by feeding interrupter audio
+# into capture during assistant playback.
+# Read every verdict here as "inject-profile barge logic works", not "physical
+# acoustic barge-in is proven".
 #
 # Inputs already produced upstream (reused, not re-derived):
 #   * each assistant event carries ``barge_intended`` (driver: the PRECEDING user
 #     line's timing == "barge_in") and ``interrupted`` (engine.stopped_after);
 #   * its ``latency`` dict already includes ``barge_in_latency`` = BARGE_IN_STOP
-#     minus BARGE_IN, stamped by runtime.metrics only when stop_speaking actually
-#     abort()ed a live output stream.
+#     minus BARGE_IN, stamped by runtime.metrics only when stop_speaking cut a
+#     live playback FIFO.
 #
 # A "self-interrupt" -- the self-interruption-storm regression signal -- is an
 # assistant turn that got interrupted (stopped_after, or a BARGE_IN_STOP latency
@@ -348,24 +370,28 @@ def summarize_capture(
 def grade_barge_turns(events: list[dict]) -> list[dict]:
     """One row per assistant turn for the barge-in grade.
 
-    ``stopped`` is the assistant event's ``interrupted`` flag (engine.stopped_after
-    -- the primary, always-present "the answer was cut" signal). ``stop_ms`` is the
-    barge->silence latency from BARGE_IN/BARGE_IN_STOP (None on the short-answer
-    race, where BARGE_IN may have fired with no live stream to abort, so no
-    BARGE_IN_STOP was stamped). ``self_interrupt`` flags a barge that fired with no
-    intended barge before it -- keyed on ``stopped`` OR a present ``stop_ms`` so an
-    aborted-but-mis-paired turn is still caught."""
+    ``stop_called`` is the assistant event's ``interrupted`` flag
+    (engine.stopped_after). ``stopped`` additionally requires a non-null
+    BARGE_IN_STOP interval, proving that stop_speaking cut a live FIFO rather than
+    merely being called. ``stop_ms`` is the
+    detector-fire-to-FIFO-cut interval from BARGE_IN/BARGE_IN_STOP (None on the
+    short-answer race, where BARGE_IN may have fired with no live stream to cut,
+    so no BARGE_IN_STOP was stamped). ``self_interrupt`` flags a barge that fired
+    with no intended barge before it -- keyed conservatively on ``stop_called``
+    OR a present ``stop_ms`` so a no-op/mis-paired stop is still caught."""
     rows: list[dict] = []
     for e in events:
         if e.get("speaker") != "assistant":
             continue
         intended = bool(e.get("barge_intended"))
-        stopped = bool(e.get("interrupted"))
+        stop_called = bool(e.get("interrupted"))
         stop_ms = _ms((e.get("latency") or {}).get("barge_in_latency"))
-        a_barge_fired = stopped or (stop_ms is not None)
+        stopped = bool(stop_called and stop_ms is not None)
+        a_barge_fired = stop_called or (stop_ms is not None)
         rows.append({
             "turn": e.get("idx"),
             "barge_intended": intended,
+            "stop_called": stop_called,
             "stopped": stopped,
             "stop_ms": stop_ms,
             "self_interrupt": bool(a_barge_fired and not intended),
@@ -378,10 +404,10 @@ def summarize_barge(rows: list[dict]) -> dict:
 
     ``stops_when_barged_rate`` = stopped / intended-barges (None when the scenario
     intended no barge -- the CONTROL case). ``stop_latency_ms_median`` is the median
-    barge->silence latency over the turns that both intended a barge AND stopped.
-    ``self_interrupt_count`` sums self-interrupts over ALL turns. Verdict is "ok"
-    when there are zero self-interrupts AND (no barge was intended, OR the stop rate
-    clears BARGE_STOP_RATE_MIN); else "FAIL"."""
+    detector-fire-to-FIFO-cut interval over turns that both intended a barge and
+    stopped. ``self_interrupt_count`` sums self-interrupts over ALL turns. Verdict
+    is "ok" when there are zero self-interrupts AND (no barge was intended, OR the
+    stop rate clears BARGE_STOP_RATE_MIN); else "FAIL"."""
     n_turns = len(rows)
     intended = [r for r in rows if r["barge_intended"]]
     n_intended = len(intended)
@@ -425,7 +451,7 @@ def _latencies(events: list[dict]) -> list[dict]:
             continue
         lat = e.get("latency") or {}
         rows.append({
-            "turn": e.get("idx"),
+            "turn": e.get("response_to_user_idx", e.get("idx")),
             "first_audio_ms": _ms(lat.get("first_audio_latency")),
             "endpoint_ms": _ms(lat.get("endpoint_latency")),
             "final_to_token_ms": _ms(lat.get("final_to_first_token")),
@@ -538,14 +564,31 @@ def write_summary(
     )
 
     lines.append("\n## Conversation (attributed)\n")
+    inject_enqueue = any(
+        e.get("time_basis") == "capture_enqueue" for e in events
+    )
+    if inject_enqueue:
+        lines.append(
+            "_Inject user times below are capture enqueue times. Buffered duration "
+            "is audio length, not a measured consumption/overlap interval._\n"
+        )
     for e in events:
-        who = "USER " if e["speaker"] == "user" else "ASSISTANT"
-        t = f"{e.get('t_start', 0):6.2f}s"
+        if e["speaker"] == "user" and e.get("time_basis") == "capture_enqueue":
+            who = "USER ENQUEUED"
+            t = f"{e.get('t_enqueue', 0):6.2f}s"
+        else:
+            who = "USER " if e["speaker"] == "user" else "ASSISTANT"
+            t = f"{e.get('t_start', 0):6.2f}s"
         lines.append(f"- `{t}` **{who}** - {e.get('text','')!r}")
         if e.get("audio"):
             lines.append(f"    - audio: `{e['audio']}`")
         if e["speaker"] == "user" and e.get("asr_final") is not None:
             lines.append(f"    - heard as (asr_final): `{e['asr_final']}`")
+        if e["speaker"] == "user" and e.get("time_basis") == "capture_enqueue":
+            lines.append(
+                f"    - buffered capture audio: "
+                f"{e.get('capture_buffered_seconds')}s"
+            )
         if e["speaker"] == "assistant" and e.get("latency"):
             la = e["latency"]
             lines.append(
@@ -553,6 +596,12 @@ def write_summary(
                 f"(endpoint={_ms(la.get('endpoint_latency'))} | "
                 f"final->token={_ms(la.get('final_to_first_token'))} | "
                 f"token->audio={_ms(la.get('first_token_to_audio'))})"
+            )
+        if e["speaker"] == "assistant" and isinstance(
+            e.get("response_to_user_idx"), int
+        ):
+            lines.append(
+                f"    - response_to_user_idx: {e['response_to_user_idx']}"
             )
 
     rows = _latencies(events)
@@ -583,10 +632,11 @@ def write_summary(
         if stage_bits:
             lines.append(f"\n**where the time goes (p50):** " + " | ".join(stage_bits) + " ms")
 
-    # Honest over-the-air STT grade.
+    # Honest STT grade, labelled by the event timing/source domain.
     grade_rows = _grade_rows(events)
     agg = _grade_aggregate(grade_rows)
-    lines.append("\n## STT accuracy (over-the-air)\n")
+    stt_domain = "injected capture" if inject_enqueue else "over-the-air"
+    lines.append(f"\n## STT accuracy ({stt_domain})\n")
     if agg.get("n"):
         lines.append(
             f"**Headline:** median STT score {agg['stt_score_median']} "
@@ -642,8 +692,12 @@ def write_summary(
             f"- capture-silent gap (>5s) seen: {capture.get('capture_silent_warned')} "
             f"(absence == the always-on proof)"
         )
+        partial_window = (
+            "during buffered-duration observer windows"
+            if inject_enqueue else "WHILE the user spoke"
+        )
         lines.append(
-            f"- partials produced WHILE the user spoke: "
+            f"- partials produced {partial_window}: "
             f"{capture.get('partials_during_user_total')} "
             f"(transcribed_during_user={capture.get('transcribed_during_user')})"
         )
@@ -660,40 +714,47 @@ def write_summary(
     lines.append("\n## Barge-in / interrupt\n")
     lines.append(
         "_Graded in INJECT MODE ONLY: the interrupter audio is fed into the capture "
-        "path during the assistant's speech. A real two-stream acoustic barge-in is "
-        "physically impossible on the reference box (exclusive ALSA hardware), so "
-        "this proves the barge-in LOGIC, not the acoustic path._\n"
+        "path during the assistant's speech. This run opens no physical input or "
+        "output device, so it proves inject-profile barge logic, not the acoustic "
+        "path._\n"
+    )
+    lines.append(
+        "_`stop_ms` begins when the detector fires and ends when the playback FIFO "
+        "is cut; it excludes user-onset-to-detection time._\n"
     )
     rate = barge["stops_when_barged_rate"]
     rate_str = "n/a (no barge intended -- control)" if rate is None else f"{rate}"
     lines.append(
         f"**Verdict: {barge['verdict']}** -- stops-when-barged "
         f"{barge['n_stopped']}/{barge['n_intended_barges']} (rate {rate_str}), "
-        f"median stop latency {barge['stop_latency_ms_median']}ms, "
+        f"median detector-to-FIFO cut {barge['stop_latency_ms_median']}ms, "
         f"self-interrupts {barge['self_interrupt_count']} "
         f"(barge fired with NO intended barge -- the self-interruption-storm signal; "
         f"a clean run is 0).\n"
     )
-    lines.append("| turn | barge_intended | stopped | stop_ms | self_interrupt |")
-    lines.append("|---|---|---|---|---|")
+    lines.append(
+        "| turn | barge_intended | stop_called | FIFO_cut | stop_ms | self_interrupt |"
+    )
+    lines.append("|---|---|---|---|---|---|")
     for r in barge_rows:
         bi = "yes" if r["barge_intended"] else "no"
         st = "yes" if r["stopped"] else "NO"
+        called = "yes" if r["stop_called"] else "no"
         si = "YES" if r["self_interrupt"] else "no"
         lines.append(
-            f"| {r['turn']} | {bi} | {st} | {r['stop_ms']} | {si} |"
+            f"| {r['turn']} | {bi} | {called} | {st} | {r['stop_ms']} | {si} |"
         )
 
     lines.append("\n## How to grade (from the scenario design)\n")
     lines.append(f"**Expected:** {scenario.expected_behavior}\n")
     if scenario.pass_signals:
-        lines.append("\n**Pass signals:**")
+        lines.append("\n**Manual pass checks:**")
         for s in scenario.pass_signals:
-            lines.append(f"- [pass] {s}")
+            lines.append(f"- [ ] {s}")
     if scenario.failure_modes:
-        lines.append("\n**Failure modes:**")
+        lines.append("\n**Manual failure checks:**")
         for s in scenario.failure_modes:
-            lines.append(f"- [fail] {s}")
+            lines.append(f"- [ ] {s}")
 
     path = Path(out_dir) / "summary.md"
     path.write_text("\n".join(lines) + "\n")

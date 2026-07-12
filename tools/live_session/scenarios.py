@@ -32,16 +32,24 @@ class Turn:
     forbid: tuple[str, ...] = field(default=())
 
 
-# A reused LONG-answer prompt. Every barge-in target uses it so there is always
-# speech in flight to cut -- this is the fix for the short-response flakiness: a
+# Reusable LONG-answer prompts. Every barge-in scenario uses at least one so
+# there is always speech in flight to cut. This fixes short-response flakiness: a
 # short answer's task finishes and every sentence drains from the play queue
 # before the VAD accumulates its required barge_in_min_speech_sec (0.2s) of voiced
 # audio, by which point _speaking has cleared and the barge watch (gated on
 # self._speaking) is no longer armed, so nothing interrupts. The rainbow prompt
 # reliably produced a long, interruptible answer in the live run. Barge-in
-# grading is INJECT MODE ONLY (the acoustic two-stream path is impossible on the
-# reference box's exclusive ALSA hardware).
+# grading is INJECT MODE ONLY and deliberately opens no physical audio hardware.
 LONG_ANSWER = "Give me a long, detailed explanation of how rainbows form, step by step."
+# Scenarios with two independent interrupts deliberately use a distinct second
+# target. EchoLLM speaks the prompt itself; repeating LONG_ANSWER shortly after
+# that playback correctly trips the runtime's own-echo guard and leaves no second
+# answer to interrupt. The alternate isolates barge behavior from that unrelated
+# guard while remaining long enough for a real in-flight cut.
+LONG_ANSWER_ALT = (
+    "Describe the complete lifecycle of a volcano, including magma buildup, "
+    "eruption, and recovery, with plenty of detail."
+)
 
 
 @dataclass(frozen=True)
@@ -197,15 +205,15 @@ SCENARIOS: tuple[Scenario, ...] = (
                  "Interrupt: playback should halt within a tight budget; no stale sentence after."),
             Turn("What's the capital of France?", "wait_for_response",
                  "Confirms the pipeline recovered and answers normally after the interrupt."),
-            Turn(LONG_ANSWER, "wait_for_response",
-                 "Another LONG_ANSWER to interrupt with a redirect (re-asked so there is speech to cut)."),
+            Turn(LONG_ANSWER_ALT, "wait_for_response",
+                 "A distinct long answer to interrupt with a redirect (distinct so EchoLLM's own-echo guard cannot consume a repeated prompt)."),
             Turn("Never mind, just tell me a joke.", "barge_in",
                  "Redirect mid-answer: should stop the long answer and tell a joke instead."),
         ),
         validates="runtime._on_barge_in / the engine barge-in gate + epoch staleness suppression. Graded INJECT-MODE ONLY; barge target is the shared LONG_ANSWER.",
         expected_behavior="On 'Stop' the assistant stops talking quickly; on 'just tell me a joke' it abandons the long explanation and tells a joke. No assistant audio continues after a barge-in. Barge-in grade: both barge turns stopped=yes, zero self-interrupts.",
         pass_signals=(
-            "Assistant audio stops shortly after each barge-in (measure barge_in -> stop).",
+            "The playback FIFO is cut after each detector fire (stop_ms); physical onset-to-stop remains a live measurement.",
             "No stale rainbow/story sentence plays after the interrupt; the redirect is honored.",
             "Barge-in grade: stops-when-barged 2/2, self_interrupt_count == 0.",
         ),
@@ -218,26 +226,26 @@ SCENARIOS: tuple[Scenario, ...] = (
     Scenario(
         name="barge_in_early_vs_late",
         capability="Barge-in / interrupt (timing depth)",
-        goal="A long answer is interrupted EARLY (short 'Stop.') and another is interrupted LATE (deeper into playback, via a longer interrupter); both must halt. Compares stop latency at two depths.",
+        goal="A long answer is interrupted EARLY (short 'Stop.') and another is interrupted LATE (deeper into playback, via a longer interrupter); both must halt.",
         turns=(
             Turn(LONG_ANSWER, "wait_for_response",
                  "LONG_ANSWER #1 -- interrupted EARLY with a one-word 'Stop.' that the VAD latches almost immediately."),
             Turn("Stop.", "barge_in",
                  "EARLY interrupt: a single short word; the barge lands soon after the answer starts."),
-            Turn(LONG_ANSWER, "wait_for_response",
-                 "LONG_ANSWER #2 (re-asked) -- interrupted LATE. 'Late' here means deeper into a long answer, not a precisely scheduled offset: the driver fires a barge the instant the assistant starts speaking, so depth is approximated by a LONGER interrupter line that takes longer to detect+inject."),
+            Turn(LONG_ANSWER_ALT, "wait_for_response",
+                 "Distinct long-answer target #2 -- interrupted LATE. 'Late' here means deeper into a long answer, not a precisely scheduled offset: the driver fires a barge the instant the assistant starts speaking, so depth is approximated by a LONGER interrupter line that takes longer to detect+inject."),
             Turn("Hold on a moment, I actually want you to stop talking now please.", "barge_in",
-                 "LATE interrupt: a long interrupter line lands deeper into playback than the one-word 'Stop.'. Both should stop; compare stop_ms (the EARLY one is expected sooner, but both must be non-null and the answer must halt)."),
+                 "LATE interrupt: a long interrupter line lands deeper into playback than the one-word 'Stop.'. Both should stop; stop_ms must be non-null for each and measures only detector fire to FIFO cut."),
         ),
-        validates="runtime._on_barge_in halts at two playback depths; the one-barge-per-run latch fires for each fresh speaking run. INJECT-MODE ONLY; both barge targets are the shared LONG_ANSWER.",
-        expected_behavior="Both long answers stop on their barge. The barge-in grade shows stops-when-barged 2/2 and zero self-interrupts; stop_ms is populated for both (the EARLY one typically smaller, but the harness 'late' is approximate -- read it as depth, not a scheduled offset).",
+        validates="runtime._on_barge_in halts at two playback depths; the one-barge-per-run latch fires for each fresh speaking run. INJECT-MODE ONLY; both targets are long, distinct prompts.",
+        expected_behavior="Both long answers stop on their barge. The barge-in grade shows stops-when-barged 2/2 and zero self-interrupts; stop_ms is populated for both. The harness 'late' is approximate playback depth, not a scheduled offset or an onset-to-stop measurement.",
         pass_signals=(
-            "Both LONG_ANSWER turns stopped=yes; barge-in grade rate 2/2.",
+            "Both long-answer targets stopped=yes; barge-in grade rate 2/2.",
             "stop_ms populated (non-null) for both barge turns; self_interrupt_count == 0.",
         ),
         failure_modes=(
             "Either long answer finishes anyway (a barge missed its in-flight window).",
-            "stop_ms null on a turn that DID stop (BARGE_IN fired but no live stream to abort -- the short-answer race; should not happen with LONG_ANSWER).",
+            "stop_ms null on a turn that DID stop (BARGE_IN fired but no live FIFO to cut -- the short-answer race; should not happen with a long target).",
         ),
     ),
     Scenario(
@@ -249,8 +257,8 @@ SCENARIOS: tuple[Scenario, ...] = (
                  "LONG_ANSWER #1 -- the target of a stop-class barge."),
             Turn("Stop talking.", "barge_in",
                  "STOP-class barge: should HALT and produce no follow-on answer (the assistant just goes quiet)."),
-            Turn(LONG_ANSWER, "wait_for_response",
-                 "LONG_ANSWER #2 (re-asked) -- the target of a new-topic barge."),
+            Turn(LONG_ANSWER_ALT, "wait_for_response",
+                 "Distinct long-answer target #2 -- the target of a new-topic barge."),
             Turn("Actually, what's the capital of France?", "barge_in",
                  "NEW-TOPIC barge: should halt the long answer AND answer the fresh question (Paris)."),
         ),

@@ -4,8 +4,8 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-12 on Linux ROG; full: 3690 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–60 headless code is green.
-Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–61 headless code is green.
+Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block overlap is 2/2 with deterministic full-window setup; live remains red/unlandable (ADR-0052/61).
 
 ## Runtime
 

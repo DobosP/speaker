@@ -15,7 +15,7 @@
 | Cross-session semantic memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | SQLite reopen; clean native history; balanced fenced injection; `route=main`; controller false; distinct roles; grounded canary with real Ollama (Echo is incomplete diagnostic) (ADR-0060) |
 | Autonomous cable diagnostic | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest voice --acoustics cable` | pipeline checks green but report says `diagnostic_pass`, `ok=false`, and barge/self/latency `not_covered`; not a landing result (ADR-0055/0058) |
 | Autonomous silent voice gate | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest all --acoustics delay` | every selected non-barge labelled prompt has a matching final; remembered ordinary/self replies attest `completed`; talk-over attests same-task/generation `interrupted` after its barge marker; mean WER ≤0.50, zero errors/stuck/self-cuts, successful active cut in 0–1.0 s; aggregate PASS (ADR-0058) |
-| Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | every repetition full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0052) |
+| Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | exit 0 only when every repetition is full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0064) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Whitespace | `git diff --check` | no output |
@@ -30,11 +30,15 @@ The conversation trace opens no audio device and cannot validate ASR, echo
 cancellation, TTS sound, or bare-speaker barge-in. Keep that result separate
 from the Sherpa duplex regression and manual live evidence.
 
-The injected Sherpa replay also opens no physical audio device. Per ADR-0052,
-as superseded by ADR-0053, its echo-free profile uses one eligible 100 ms block
-and validates capture continuity, real ASR/VAD/TTS workers, and interrupt control
-flow. Production retains two blocks; this does not validate physical echo,
-owner enrollment, acoustic stop latency, or the live PipeWire word-cut route.
+The injected Sherpa replay also opens no physical audio device. Per ADR-0064,
+its clean echo-impossible profile removes echo/level/word-confirm discrimination
+and denoising, uses one eligible 100 ms VAD block, and validates capture
+continuity, real ASR/VAD/TTS workers, and interrupt control flow. `--denoise`
+is a separate stress diagnostic, not the landing command. Production retains
+its physical front end and two-block policy; this does not validate physical
+echo, owner enrollment, acoustic stop latency, or the live PipeWire word-cut
+route. Any machine-owned injected grade failure or scenario-coverage shortfall
+makes the command nonzero.
 Inject timeline user times are enqueue metadata, not consumption/overlap evidence;
 assistant latency and answers bind through explicit `response_to_user_idx` links.
 

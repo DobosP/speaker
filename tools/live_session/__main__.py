@@ -31,6 +31,85 @@ from .scenarios import SCENARIOS, by_name, resolve_suite, suite_names
 log = logging.getLogger("speaker.live")
 
 
+def _expected_machine_grade_counts(scenario) -> tuple[int, int]:
+    """Return exact barge opportunities and response rows owned by a scenario."""
+    turns = tuple(getattr(scenario, "turns", ()) or ())
+    expected_barges = sum(
+        1
+        for index, turn in enumerate(turns)
+        if index > 0
+        and getattr(turn, "timing", "") == "barge_in"
+        and getattr(turns[index - 1], "timing", "") != "barge_in"
+    )
+    expected_responses = sum(
+        1
+        for turn in turns
+        if getattr(turn, "timing", "") not in ("immediately", "barge_in")
+        and bool(
+            tuple(getattr(turn, "expect", ()) or ())
+            or tuple(getattr(turn, "forbid", ()) or ())
+        )
+    )
+    return expected_barges, expected_responses
+
+
+def _inject_grade_failed(
+    grade: dict,
+    *,
+    expected_barges: int,
+    expected_responses: int,
+) -> bool:
+    """Fail closed on every machine-owned verdict in a no-device run."""
+    full_duplex = grade.get("full_duplex")
+    if not isinstance(full_duplex, dict) or full_duplex.get("ok") is not True:
+        return True
+    barge = grade.get("barge_in")
+    if not isinstance(barge, dict) or barge.get("verdict") != "ok":
+        return True
+    intended = barge.get("n_intended_barges")
+    stopped = barge.get("n_stopped")
+    if (
+        type(intended) is not int
+        or type(stopped) is not int
+        or intended != expected_barges
+        or stopped != expected_barges
+    ):
+        return True
+    response = grade.get("response")
+    if not isinstance(response, dict):
+        return True
+    aggregate = response.get("aggregate")
+    if not isinstance(aggregate, dict):
+        return True
+    response_count = aggregate.get("n")
+    if type(response_count) is not int or response_count < 0:
+        return True
+    if response_count != expected_responses:
+        return True
+    if response_count and aggregate.get("verdict") != "ok":
+        return True
+    return False
+
+
+def _machine_grade_exit_code(
+    rc: int,
+    grade: dict,
+    *,
+    inject: bool,
+    expected_barges: int = 0,
+    expected_responses: int = 0,
+) -> int:
+    """Preserve operational errors; make an injected grade failure nonzero."""
+    if rc != 0 or not inject:
+        return rc
+    failed = _inject_grade_failed(
+        grade,
+        expected_barges=expected_barges,
+        expected_responses=expected_responses,
+    )
+    return 1 if failed else 0
+
+
 def _preflight(config: dict, *, llm: str = "ollama", **check_kwargs) -> list[str]:
     """Return shared runtime-readiness failures (empty == ready to run).
 
@@ -361,6 +440,16 @@ def main(argv: list[str] | None = None) -> int:
         grade = write_grade(events, out_dir, capture=capture, scenario=scenario)
         write_summary(scenario, events, out_dir, voice=convo.user.voice, capture=capture)
         runs.append({"scenario": scenario, "events": events, "capture": capture})
+        expected_barges, expected_responses = _expected_machine_grade_counts(
+            scenario
+        )
+        rc = _machine_grade_exit_code(
+            rc,
+            grade,
+            inject=args.inject,
+            expected_barges=expected_barges,
+            expected_responses=expected_responses,
+        )
         fd = (capture or {}).get("full_duplex", "n/a")
         acc = grade.get("aggregate", {}).get("stt_score_median")
         stt_domain = "injected" if args.inject else "over-the-air"

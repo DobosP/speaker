@@ -41,6 +41,9 @@ class _FakeStream:
 class _FakeRecognizer:
     """Emits 'hello world' as final once it sees voiced audio then silence."""
 
+    def __init__(self, text: str = "hello world") -> None:
+        self.text = text
+
     def create_stream(self) -> _FakeStream:
         return _FakeStream()
 
@@ -51,7 +54,7 @@ class _FakeRecognizer:
         pass
 
     def get_result(self, stream: _FakeStream) -> str:
-        return "hello world" if stream.heard else ""
+        return self.text if stream.heard else ""
 
     def is_endpoint(self, stream: _FakeStream) -> bool:
         return stream.endpoint
@@ -185,7 +188,7 @@ def test_replay_fires_final_and_records_metrics(monkeypatch):
     )
     engine.replay_samples(samples, 16000)
 
-    assert finals == ["hello world"]
+    assert finals == ["Hello world"]
     # speech_end + asr-final stamps captured; first audio not yet (no speak()).
     [record] = recorder.records()
     assert "speech_end" in record.stamps
@@ -195,6 +198,334 @@ def test_replay_fires_final_and_records_metrics(monkeypatch):
     assert tts.calls == ["hello world"]
     assert record.stamps.get("tts_first_audio") is not None
     assert record.first_audio_latency is not None
+
+
+def test_file_replay_uses_attested_owned_timing_for_stop_repair(monkeypatch):
+    class _OfflineStream:
+        def __init__(self) -> None:
+            self.result = type("Result", (), {"text": "Stop speaking."})()
+
+        def accept_waveform(self, sample_rate, samples) -> None:
+            assert sample_rate == 16000
+            assert samples.size >= 16000
+
+    class _OfflineRecognizer:
+        def create_stream(self):
+            return _OfflineStream()
+
+        def decode_stream(self, stream) -> None:
+            del stream
+
+    rec = _FakeRecognizer("DON'T PLAY SPEAK")
+    _patch_models(monkeypatch, rec, _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: _OfflineRecognizer())
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+
+    finals: list[str] = []
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            asr_final_backend="sense_voice",
+        )
+    )
+    engine.start(EngineCallbacks(on_final=finals.append))
+    try:
+        samples = np.concatenate(
+            [np.ones(2 * 16000, dtype="float32") * 0.5, np.zeros(1600)]
+        )
+        engine.replay_samples(samples, 16000, speech_sec=1.9)
+    finally:
+        engine.stop()
+
+    assert finals == ["Stop speaking."]
+    assert engine.last_final == "Stop speaking."
+
+
+@pytest.mark.parametrize("endpoint_fires", [True, False])
+def test_file_replay_never_promotes_offline_text_when_streaming_final_is_empty(
+    monkeypatch,
+    endpoint_fires,
+):
+    class _OfflineRecognizer:
+        calls = 0
+
+        def create_stream(self):
+            self.calls += 1
+            stream = type("OfflineStream", (), {})()
+            stream.result = type("Result", (), {"text": "Invented stop speaking."})()
+            stream.accept_waveform = lambda _sr, _samples: None
+            return stream
+
+        def decode_stream(self, stream) -> None:
+            del stream
+
+    offline = _OfflineRecognizer()
+    streaming = _FakeRecognizer("")
+    streaming.is_endpoint = lambda stream: bool(
+        endpoint_fires and stream.endpoint
+    )
+    _patch_models(monkeypatch, streaming, _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: offline)
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+
+    finals: list[str] = []
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            asr_final_backend="sense_voice",
+        )
+    )
+    engine.start(EngineCallbacks(on_final=finals.append))
+    try:
+        engine.replay_samples(
+            np.ones(16000, dtype="float32") * 0.5,
+            16000,
+            speech_sec=1.9,
+        )
+    finally:
+        engine.stop()
+
+    assert finals == []
+    assert engine.last_final == ""
+    assert offline.calls == 0
+
+
+@pytest.mark.parametrize("endpoint_fires", [True, False])
+def test_file_replay_resamples_all_asr_pcm_for_offline_final(
+    monkeypatch,
+    endpoint_fires,
+):
+    accepted = {}
+    streaming_rates = []
+
+    class _OfflineRecognizer:
+        def create_stream(self):
+            stream = type("OfflineStream", (), {})()
+            stream.result = type("Result", (), {"text": "Hello world."})()
+
+            def accept(sample_rate, samples):
+                accepted["sample_rate"] = sample_rate
+                accepted["sample_count"] = samples.size
+
+            stream.accept_waveform = accept
+            return stream
+
+        def decode_stream(self, stream) -> None:
+            del stream
+
+    streaming = _FakeRecognizer()
+    streaming.is_endpoint = lambda stream: bool(
+        endpoint_fires and stream.endpoint
+    )
+    original_accept = _FakeStream.accept_waveform
+
+    def _capture_streaming_rate(stream, sample_rate, samples):
+        streaming_rates.append(sample_rate)
+        original_accept(stream, sample_rate, samples)
+
+    monkeypatch.setattr(_FakeStream, "accept_waveform", _capture_streaming_rate)
+    _patch_models(monkeypatch, streaming, _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: _OfflineRecognizer())
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            sample_rate=16000,
+            asr_encoder="x",
+            tts_model="y",
+            asr_final_backend="sense_voice",
+        )
+    )
+    engine.start(EngineCallbacks())
+    try:
+        engine.replay_samples(
+            np.ones(2 * 8000, dtype="float32") * 0.5,
+            8000,
+        )
+    finally:
+        engine.stop()
+
+    assert accepted["sample_rate"] == 16000
+    assert accepted["sample_count"] == pytest.approx(2 * 16000, abs=64)
+    assert streaming_rates and set(streaming_rates) == {16000}
+
+
+def test_file_replay_uses_configured_resampler_quality(monkeypatch):
+    seen = {}
+
+    class _SpyResampler:
+        def __init__(self, src, dst, *, quality):
+            seen["init"] = (src, dst, quality)
+
+        def process(self, samples, *, last=False):
+            seen["last"] = last
+            return np.repeat(np.asarray(samples, dtype="float32"), 2)
+
+    monkeypatch.setattr(fr, "AudioResampler", _SpyResampler)
+    _patch_models(monkeypatch, _FakeRecognizer(), _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: None)
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            sample_rate=16000,
+            resampler_quality="VHQ",
+            asr_encoder="x",
+            tts_model="y",
+        )
+    )
+    engine.start(EngineCallbacks())
+    try:
+        engine.replay_samples(np.ones(8000, dtype="float32") * 0.5, 8000)
+    finally:
+        engine.stop()
+
+    assert seen == {"init": (8000, 16000, "VHQ"), "last": True}
+
+
+def test_file_replay_resets_owned_pcm_between_multiple_endpoints(monkeypatch):
+    captured_sizes = []
+    _patch_models(monkeypatch, _FakeRecognizer(), _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: None)
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+
+    def _capture_final(_config, _offline, _punct, segment, raw, **_kwargs):
+        captured_sizes.append(segment.size)
+        return raw
+
+    monkeypatch.setattr(fr, "_transcribe_final_text", _capture_final)
+    finals = []
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(EngineCallbacks(on_final=finals.append))
+    samples = np.concatenate(
+        [
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+            np.zeros(2 * 1600, dtype="float32"),
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+        ]
+    )
+    try:
+        engine.replay_samples(samples, 16000)
+    finally:
+        engine.stop()
+
+    assert finals == ["hello world", "hello world"]
+    assert len(captured_sizes) == 2
+    assert sum(captured_sizes) == samples.size
+    assert all(size < samples.size for size in captured_sizes)
+
+
+def test_file_replay_rejects_one_attestation_across_multiple_endpoints(monkeypatch):
+    _patch_models(monkeypatch, _FakeRecognizer(), _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: None)
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(EngineCallbacks())
+    samples = np.concatenate(
+        [
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+            np.zeros(2 * 1600, dtype="float32"),
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="multiple endpoints"):
+            engine.replay_samples(samples, 16000, speech_sec=1.9)
+    finally:
+        engine.stop()
+
+
+def test_file_replay_does_not_reuse_attestation_after_empty_endpoint(monkeypatch):
+    class _SplitStream(_FakeStream):
+        def __init__(self):
+            super().__init__()
+            self.segment = 0
+
+    class _SplitRecognizer(_FakeRecognizer):
+        def create_stream(self):
+            return _SplitStream()
+
+        def get_result(self, stream):
+            if not stream.heard:
+                return ""
+            return "" if stream.segment == 0 else "DON'T PLAY SPEAK"
+
+        def is_endpoint(self, stream):
+            return stream.segment == 0 and stream.endpoint
+
+        def reset(self, stream):
+            super().reset(stream)
+            stream.segment += 1
+
+    _patch_models(monkeypatch, _SplitRecognizer(), _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: None)
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(EngineCallbacks())
+    samples = np.concatenate(
+        [
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+            np.zeros(2 * 1600, dtype="float32"),
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+        ]
+    )
+    try:
+        with pytest.raises(RuntimeError, match="already consumed"):
+            engine.replay_samples(samples, 16000, speech_sec=1.9)
+    finally:
+        engine.stop()
+
+
+@pytest.mark.parametrize("speech_sec", [None, 1.9])
+def test_file_replay_flushes_trailing_segment_after_prior_final(
+    monkeypatch,
+    speech_sec,
+):
+    class _TrailingStream(_FakeStream):
+        def __init__(self):
+            super().__init__()
+            self.segment = 0
+
+    class _TrailingRecognizer(_FakeRecognizer):
+        def create_stream(self):
+            return _TrailingStream()
+
+        def get_result(self, stream):
+            if not stream.heard:
+                return ""
+            return "FIRST" if stream.segment == 0 else "SECOND"
+
+        def is_endpoint(self, stream):
+            return stream.segment == 0 and stream.endpoint
+
+        def reset(self, stream):
+            super().reset(stream)
+            stream.segment += 1
+
+    _patch_models(monkeypatch, _TrailingRecognizer(), _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: None)
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+    finals = []
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(EngineCallbacks(on_final=finals.append))
+    samples = np.concatenate(
+        [
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+            np.zeros(2 * 1600, dtype="float32"),
+            np.ones(4 * 1600, dtype="float32") * 0.5,
+        ]
+    )
+    try:
+        if speech_sec is None:
+            engine.replay_samples(samples, 16000)
+        else:
+            with pytest.raises(RuntimeError, match="already consumed"):
+                engine.replay_samples(samples, 16000, speech_sec=speech_sec)
+    finally:
+        engine.stop()
+
+    if speech_sec is None:
+        assert finals == ["First", "Second"]
 
 
 def test_file_replay_direct_speak_uses_shared_markup_sanitizer_and_style(

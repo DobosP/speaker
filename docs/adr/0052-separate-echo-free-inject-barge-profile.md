@@ -1,7 +1,7 @@
 # ADR-0052: Separate the echo-free inject barge profile
 
 Date: 2026-07-12
-Status: accepted
+Status: superseded-by ADR-0053
 
 ## Decision
 

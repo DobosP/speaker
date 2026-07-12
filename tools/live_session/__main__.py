@@ -5,8 +5,9 @@
     python -m tools.live_session --all
     python -m tools.live_session --check          # preflight only (models/audio)
 
-Runs ONLY on request -- it needs real ASR/TTS/LLM models and real audio hardware.
-See docs/live_validation_2026-05.md.
+Runs only on request. Acoustic mode needs real audio hardware; ``--inject``
+patches both device streams and opens no microphone or speaker. Both modes need
+the configured ASR/TTS models. See docs/live_validation_2026-05.md.
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .driver import LiveConversation
+from .driver import LiveConversation, apply_inject_profile
 from .report import (
     write_grade,
     write_latency_report,
@@ -219,28 +220,9 @@ def main(argv: list[str] | None = None) -> int:
         # speech ... did not trip the gate"). Turn AEC off so barge-in gates on the
         # reference-coherence/level path over the clean injected audio -- the
         # injected barge is energy the (teed) playback can't explain, so it fires.
-        sherpa_cfg = config.setdefault("sherpa", {})
-        sherpa_cfg["aec_enabled"] = False
-        # The synthetic input is already echo-free and has no verifiable OS EC
-        # route. Disable the production word-cut authority explicitly so engine
-        # startup cannot mistake the injected stream for a raw open microphone;
-        # inject-mode barge grading uses the clean acoustic/reference path.
-        sherpa_cfg["barge_word_cut_enabled"] = False
-        # The physical coherence profile spends its first blocks learning the
-        # room/speaker echo distribution and confirms twice to reject nonlinear
-        # echo spikes. Inject capture is structurally echo-free (assistant output
-        # is a null sink), so there is no physical echo distribution to learn and
-        # no echo transient to debounce. Keeping the physical 5/2 profile here
-        # consumes a short "Stop" entirely as warm-up, a harness-only false miss.
-        # BargeSustain still requires the shipped 0.2 s / two eligible blocks.
-        # Production defaults and route provenance remain untouched.
-        sherpa_cfg["coherence_warmup_frames"] = 0
-        sherpa_cfg["coherence_confirm_frames"] = 1
-        # There is no acoustic propagation path in this topology, hence no
-        # physical echo delay to search. Leaving the production 400 ms search in
-        # place consumed most of the exact 0.395 s Stop stimulus in reference
-        # fill and made a two-block threshold phase-sensitive.
-        sherpa_cfg["coherence_max_delay_ms"] = 0.0
+        # Centralized with recorded-owner replay so every no-device caller has
+        # identical authority and detector semantics (ADR-0052/0053).
+        apply_inject_profile(config)
     if args.barge_in:
         config.setdefault("sherpa", {})["barge_in_enabled"] = True
         if not args.inject:

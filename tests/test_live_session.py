@@ -11,7 +11,12 @@ import time
 from pathlib import Path
 
 import tools.live_session.__main__ as live_main
-from tools.live_session.driver import InjectingInputStream, _is_answer, _parse_pause
+from tools.live_session.driver import (
+    InjectingInputStream,
+    _is_answer,
+    _parse_pause,
+    apply_inject_profile,
+)
 from tools.live_session.report import (
     BARGE_STOP_RATE_MIN,
     HEARD_OK_THRESHOLD,
@@ -381,6 +386,116 @@ def test_has_work_and_idle(tmp_path):
     assert c._idle() is False
 
 
+def test_inject_barge_waits_for_target_first_audio_and_effective_grace(tmp_path):
+    from core.metrics import TTS_FIRST_AUDIO
+
+    now = [10.0]
+    stale = _FakeRec({TTS_FIRST_AUDIO: 1.0})
+    target = _FakeRec({})
+    eng = _FakeEngine()
+    eng.is_speaking = True
+    eng.config = type("Cfg", (), {
+        "barge_in_playback_onset_grace_sec": 0.4,
+    })()
+    eng._playback_onset_at = 10.0
+    runtime = _FakeRuntime(
+        eng, _FakeSupervisor(), _FakeMetrics([stale, target])
+    )
+    c = _bare_convo(eng, runtime, tmp_path)
+    c._inject = True
+    c._ln_metrics = 1  # the stale reply predates the target user line
+
+    def _sleep(delay):
+        now[0] += delay
+        if now[0] >= 10.2:
+            target.stamps.setdefault(TTS_FIRST_AUDIO, 77.0)
+
+    stamp = c._await_inject_barge_window(
+        clock=lambda: now[0], sleeper=_sleep, timeout=1.0, poll_sec=0.05
+    )
+
+    assert stamp == 77.0
+    # True audio arrived at 10.2, but the effective engine guard is anchored at
+    # synthesis onset 10.0 and therefore does not expire until 10.4.
+    assert round(now[0], 6) == 10.4
+
+
+def test_inject_barge_wait_returns_at_late_first_audio_after_grace(tmp_path):
+    from core.metrics import TTS_FIRST_AUDIO
+
+    now = [20.0]
+    target = _FakeRec({})
+    eng = _FakeEngine()
+    eng.is_speaking = True
+    eng.config = type("Cfg", (), {
+        "barge_in_playback_onset_grace_sec": 0.4,
+    })()
+    eng._playback_onset_at = 20.0
+    c = _bare_convo(
+        eng,
+        _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([target])),
+        tmp_path,
+    )
+    c._inject = True
+    c._ln_metrics = 0
+
+    def _sleep(delay):
+        now[0] += delay
+        if now[0] >= 20.6:
+            target.stamps.setdefault(TTS_FIRST_AUDIO, 88.0)
+
+    stamp = c._await_inject_barge_window(
+        clock=lambda: now[0], sleeper=_sleep, timeout=1.0, poll_sec=0.1
+    )
+
+    assert stamp == 88.0
+    # The core grace already expired at 20.4; do not add a second 0.4 seconds
+    # after true first audio finally arrives.
+    assert round(now[0], 6) == 20.6
+
+
+def test_acoustic_barge_window_helper_is_a_strict_noop(tmp_path):
+    eng = _FakeEngine()
+    c = _bare_convo(
+        eng, _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([])), tmp_path
+    )
+    c._inject = False
+
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("acoustic scheduling touched inject wait machinery")
+
+    assert c._await_inject_barge_window(
+        clock=_must_not_run, sleeper=_must_not_run
+    ) is None
+
+
+def test_inject_barge_wait_fails_when_target_never_reaches_first_audio(tmp_path):
+    import pytest
+
+    now = [30.0]
+    eng = _FakeEngine()
+    eng.is_speaking = True
+    eng.config = type("Cfg", (), {
+        "barge_in_playback_onset_grace_sec": 0.4,
+    })()
+    eng._playback_onset_at = 30.0
+    c = _bare_convo(
+        eng,
+        _FakeRuntime(eng, _FakeSupervisor(), _FakeMetrics([_FakeRec({})])),
+        tmp_path,
+    )
+    c._inject = True
+    c._ln_metrics = 0
+
+    def _sleep(delay):
+        now[0] += delay
+
+    with pytest.raises(RuntimeError, match="true first audio"):
+        c._await_inject_barge_window(
+            clock=lambda: now[0], sleeper=_sleep, timeout=0.2, poll_sec=0.05
+        )
+
+
 # --- CLI flags: --smart-endpoint (experimental semantic endpoint A/B) ----------
 #
 # These pin the in-memory config mutation only (no audio/models). main() short-
@@ -438,13 +553,45 @@ def test_inject_disables_physical_aec_and_os_word_cut_authority(monkeypatch):
     config = _run_main_capturing_config(
         monkeypatch,
         ["--inject"],
-        initial_sherpa={"aec_enabled": True, "barge_word_cut_enabled": True},
+        initial_sherpa={
+            "aec_enabled": True,
+            "capture_voice_comm": True,
+            "barge_word_cut_enabled": True,
+        },
     )
     assert config["sherpa"]["aec_enabled"] is False
+    assert config["sherpa"]["capture_voice_comm"] is False
     assert config["sherpa"]["barge_word_cut_enabled"] is False
     assert config["sherpa"]["coherence_warmup_frames"] == 0
     assert config["sherpa"]["coherence_confirm_frames"] == 1
     assert config["sherpa"]["coherence_max_delay_ms"] == 0.0
+    assert config["sherpa"]["barge_in_min_speech_sec"] == 0.1
+
+
+def test_shared_inject_profile_preserves_unrelated_config():
+    config = {
+        "device": "desktop",
+        "sherpa": {
+            "aec_enabled": True,
+            "capture_voice_comm": True,
+            "barge_word_cut_enabled": True,
+            "coherence_warmup_frames": 5,
+            "coherence_confirm_frames": 2,
+            "coherence_max_delay_ms": 400.0,
+            "barge_in_min_speech_sec": 0.2,
+            "tts_speaker_id": 17,
+        },
+    }
+    assert apply_inject_profile(config) is config
+    assert config["device"] == "desktop"
+    assert config["sherpa"]["tts_speaker_id"] == 17
+    assert config["sherpa"]["aec_enabled"] is False
+    assert config["sherpa"]["capture_voice_comm"] is False
+    assert config["sherpa"]["barge_word_cut_enabled"] is False
+    assert config["sherpa"]["coherence_warmup_frames"] == 0
+    assert config["sherpa"]["coherence_confirm_frames"] == 1
+    assert config["sherpa"]["coherence_max_delay_ms"] == 0.0
+    assert config["sherpa"]["barge_in_min_speech_sec"] == 0.1
 
 
 def test_non_inject_keeps_conservative_physical_coherence_profile(monkeypatch):
@@ -455,15 +602,17 @@ def test_non_inject_keeps_conservative_physical_coherence_profile(monkeypatch):
             "coherence_warmup_frames": 5,
             "coherence_confirm_frames": 2,
             "coherence_max_delay_ms": 400.0,
+            "barge_in_min_speech_sec": 0.2,
         },
     )
     assert config["sherpa"]["coherence_warmup_frames"] == 5
     assert config["sherpa"]["coherence_confirm_frames"] == 2
     assert config["sherpa"]["coherence_max_delay_ms"] == 400.0
+    assert config["sherpa"]["barge_in_min_speech_sec"] == 0.2
 
 
-def test_inject_coherence_profile_still_needs_two_sustained_blocks(monkeypatch):
-    """Echo-free inject removes physical warm-up, not temporal confirmation."""
+def test_inject_coherence_profile_uses_one_block_only_in_echo_free_domain(monkeypatch):
+    """Fake capture has no assistant echo; physical temporal safety is unchanged."""
     import numpy as np
 
     from core.engines._dtd import BargeSustain
@@ -488,9 +637,8 @@ def test_inject_coherence_profile_still_needs_two_sustained_blocks(monkeypatch):
 
     inject = _detector(warmup_frames=0, confirm_frames=1)
     sustain = BargeSustain(
-        window_sec=0.5, block_sec=0.1, min_voiced_sec=0.2
+        window_sec=0.5, block_sec=0.1, min_voiced_sec=0.1
     )
-    assert sustain.update(bool(inject.decide(mic))) is False
     assert sustain.update(bool(inject.decide(mic))) is True
 
     physical = _detector(warmup_frames=5, confirm_frames=2)
@@ -515,6 +663,107 @@ def test_inject_input_stream_paces_to_absolute_device_deadlines():
     stream.read(10)
 
     assert sleeps == [0.1, 0.07]
+
+
+def test_inject_floor_counter_publishes_only_returned_floor_samples():
+    now = [0.0]
+
+    def _sleep(delay):
+        now[0] += delay
+
+    stream = InjectingInputStream(10, clock=lambda: now[0], sleeper=_sleep)
+    stream.push([1.0, 2.0, 3.0])
+    stream.start()
+
+    stream.read(2)
+    assert stream.floor_samples_delivered == 0
+    stream.read(2)
+    assert stream.floor_samples_delivered == 1
+    stream.read(2)
+    assert stream.floor_samples_delivered == 3
+
+
+def test_inject_push_receipts_track_partial_and_cross_buffer_consumption():
+    now = [0.0]
+
+    def _sleep(delay):
+        now[0] += delay
+
+    stream = InjectingInputStream(
+        10, clock=lambda: now[0], sleeper=_sleep
+    )
+    first = stream.push([1.0, 2.0, 3.0])
+    second = stream.push([4.0, 5.0])
+
+    assert (first.start_sample, first.end_sample) == (0, 3)
+    assert (second.start_sample, second.end_sample) == (3, 5)
+    assert first.sample_count == 3
+    assert first.duration_seconds == 0.3
+    assert first.enqueued_at == second.enqueued_at == 0.0
+    assert first.wait_started(0) is False
+    assert first.wait_drained(0) is False
+
+    stream.start()
+    stream.read(2)
+    assert first.first_consumed_at == 0.2
+    assert first.fully_consumed_at is None
+    assert second.first_consumed_at is None
+    assert first.wait_started(0) is True
+    assert first.wait_drained(0) is False
+
+    # This device block contains the final sample of the first push and the
+    # first sample of the second, so both receipts share its delivery time.
+    stream.read(2)
+    assert first.fully_consumed_at == 0.4
+    assert first.last_consumed_at == 0.4
+    assert second.first_consumed_at == 0.4
+    assert second.fully_consumed_at is None
+    assert first.wait_drained(0) is True
+
+    stream.read(1)
+    assert second.fully_consumed_at == 0.5
+    assert second.last_consumed_at == 0.5
+    assert second.wait_started(0) is True
+    assert second.wait_drained(0) is True
+
+
+def test_inject_push_receipt_publishes_only_after_paced_read_returns():
+    now = [0.0]
+    observed_during_sleep = []
+    receipt = None
+
+    def _sleep(delay):
+        observed_during_sleep.append(
+            (receipt.first_consumed_at, receipt.fully_consumed_at)
+        )
+        now[0] += delay
+
+    stream = InjectingInputStream(
+        10, clock=lambda: now[0], sleeper=_sleep
+    )
+    receipt = stream.push([1.0, 2.0])
+    stream.start()
+    stream.read(2)
+
+    assert observed_during_sleep == [(None, None)]
+    assert receipt.first_consumed_at == 0.2
+    assert receipt.fully_consumed_at == 0.2
+
+
+def test_inject_empty_push_receipt_is_immediately_drained():
+    now = [7.5]
+    stream = InjectingInputStream(10, clock=lambda: now[0])
+
+    receipt = stream.push([])
+
+    assert (receipt.start_sample, receipt.end_sample) == (0, 0)
+    assert receipt.sample_count == 0
+    assert receipt.duration_seconds == 0.0
+    assert receipt.enqueued_at == 7.5
+    assert receipt.first_consumed_at == 7.5
+    assert receipt.fully_consumed_at == 7.5
+    assert receipt.wait_started(0) is True
+    assert receipt.wait_drained(0) is True
 
 
 def test_inject_input_stream_does_not_replay_unbounded_stall_backlog():

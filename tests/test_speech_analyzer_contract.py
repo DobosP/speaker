@@ -151,6 +151,18 @@ def test_confirm_deny_only_fire_with_pending_confirmation():
                     has_pending_confirmation=True).kind == IntentKind.DENY
 
 
+def test_shared_stop_phrases_remain_immediate_analyzer_controls():
+    from core.contract import STOP_COMMANDS
+
+    analyzer = LiveSpeechAnalyzer()
+    for phrase in STOP_COMMANDS:
+        decision = analyzer.decide(
+            analyzer.observe(phrase, is_final=True),
+            Mode.ASSISTANT,
+        )
+        assert decision.kind == IntentKind.STOP, phrase
+
+
 def test_polite_search_and_research_keep_explicit_intent_and_query():
     analyzer = LiveSpeechAnalyzer()
 

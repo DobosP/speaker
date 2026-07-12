@@ -173,6 +173,20 @@ _ATTESTED_SHORT_INTERRUPT_REPAIRS = frozenset({
     (("castle", "death"), ("cancel", "that")),
 })
 
+# Owner-corpus evidence for a normal-duration stop phrase. Unlike the short
+# repair above, this is admitted only when independently owned speech timing is
+# inside the evidence window below. That preserves the short-echo guard while
+# recovering the exact streaming regression confirmed by SenseVoice.
+_ATTESTED_LONG_INTERRUPT_REPAIRS = frozenset({
+    (("don", "t", "play", "speak"), ("stop", "speaking")),
+})
+
+# The owner corpus labels 1.9 s of command speech; live VAD measured 1.5 s.
+# Admit one capture block (0.1 s) of timing tolerance around those observations,
+# never the unbounded remainder of the generic "not short" duration class.
+_ATTESTED_LONG_INTERRUPT_MIN_SEC = 1.4
+_ATTESTED_LONG_INTERRUPT_MAX_SEC = 2.0
+
 # Owner-attested playback-time ASR repair from live run 20260711-154451. Keep
 # this exact: arbitrary short phrases ending in STOP include ordinary nouns and
 # negations, and must never acquire canonical control semantics.
@@ -227,7 +241,7 @@ def _attested_repair_words(text: str) -> tuple[str, ...]:
     return tuple(words)
 
 
-def _attested_short_interrupt_repair(
+def _attested_interrupt_repair(
     streaming_final: str,
     second_pass: str,
     guarded_final: str,
@@ -236,11 +250,12 @@ def _attested_short_interrupt_repair(
     speech_sec: Optional[float],
     short_sec: float = DEFAULT_SHORT_CLIP_SEC,
 ) -> str:
-    """Admit one exact owner-attested repair after the generic guard rejects it.
+    """Admit an exact owner-attested repair after the generic guard rejects it.
 
-    The exception exists only for explicit short-speech timing owned by the live
-    segment (VAD observation or confirmed word-cut PCM). Array duration is
-    deliberately insufficient because it includes unverified pre-roll and tail.
+    Each pair is bound to its attested timing class. Timing must be explicitly
+    owned by the live segment (VAD observation or confirmed word-cut PCM); array
+    duration is deliberately insufficient because it includes unverified
+    pre-roll and tail.
     """
     if guarded_final != streaming_final:
         return guarded_final
@@ -250,7 +265,7 @@ def _attested_short_interrupt_repair(
         duration = float(speech_sec)
     except (TypeError, ValueError):
         return guarded_final
-    if not math.isfinite(duration) or not 0.0 < duration < short_sec:
+    if not math.isfinite(duration) or duration <= 0.0:
         return guarded_final
 
     # Compare complete word sequences.  Unlike command normalization, retain
@@ -261,7 +276,109 @@ def _attested_short_interrupt_repair(
         _attested_repair_words(text)
         for text in (streaming_final, second_pass)
     )
-    return second_pass if pair in _ATTESTED_SHORT_INTERRUPT_REPAIRS else guarded_final
+    if duration < short_sec:
+        return (
+            second_pass
+            if pair in _ATTESTED_SHORT_INTERRUPT_REPAIRS
+            else guarded_final
+        )
+    if not (
+        _ATTESTED_LONG_INTERRUPT_MIN_SEC
+        <= duration
+        <= _ATTESTED_LONG_INTERRUPT_MAX_SEC
+    ):
+        return guarded_final
+    return (
+        second_pass
+        if pair in _ATTESTED_LONG_INTERRUPT_REPAIRS
+        else guarded_final
+    )
+
+
+def _postprocess_final_text(config, punctuation, text: str) -> str:
+    """Apply the production punctuation/casing policy to one raw final.
+
+    Kept transport-independent so the recorded FileReplay engine and the live
+    sounddevice engine cannot silently disagree about the text sent to the
+    runtime.
+    """
+    result = text
+    if punctuation is not None:
+        try:
+            result = punctuation.add_punctuation(result)
+        except Exception:  # noqa: BLE001 - never let post-proc lose a turn
+            log.exception("punctuation model failed; using raw text")
+            result = text
+    if config.asr_restore_casing:
+        # Force lowercasing-first when a punctuation model already added
+        # terminators (its output may stay all-caps from the source model).
+        result = restore_casing(result, force=punctuation is not None)
+    return result
+
+
+def _transcribe_final_text(
+    config,
+    final_recognizer,
+    punctuation,
+    seg,
+    raw_final: str,
+    *,
+    speech_sec: Optional[float] = None,
+    segment_sample_rate: Optional[int] = None,
+    allow_empty_streaming: bool = False,
+    attested_repair: Optional[Callable[..., str]] = None,
+) -> str:
+    """Resolve the LLM-facing final with the production two-pass policy."""
+    if final_recognizer is not None and seg is not None:
+        n = int(np.asarray(seg).size)
+        decode_sample_rate = int(segment_sample_rate or config.sample_rate)
+        observed_sec = (
+            float(speech_sec)
+            if speech_sec is not None
+            else n / decode_sample_rate
+        )
+        if observed_sec >= float(config.asr_final_min_sec):
+            try:
+                stream = final_recognizer.create_stream()
+                stream.accept_waveform(
+                    decode_sample_rate,
+                    np.asarray(seg, dtype="float32"),
+                )
+                final_recognizer.decode_stream(stream)
+                text = (stream.result.text or "").strip()
+                if text:
+                    streaming_final = _postprocess_final_text(
+                        config,
+                        punctuation,
+                        raw_final,
+                    )
+                    if not streaming_final.strip():
+                        # An offline recognizer may recover a final only when
+                        # the caller has separately authorized that recovery.
+                        # Default callers fail closed: second-pass text must
+                        # never manufacture a turn (especially a STOP) from an
+                        # empty streaming result.
+                        return text if allow_empty_streaming else streaming_final
+                    guarded_final = agreement_guard(
+                        streaming_final,
+                        text,
+                        segment_sec=observed_sec,
+                    )
+                    if attested_repair is None:
+                        return guarded_final
+                    return attested_repair(
+                        streaming_final,
+                        text,
+                        guarded_final,
+                        backend=config.asr_final_backend,
+                        speech_sec=speech_sec,
+                    )
+            except Exception:  # noqa: BLE001 - use the streaming final
+                log.debug(
+                    "second-pass recognizer failed; using streaming final",
+                    exc_info=True,
+                )
+    return _postprocess_final_text(config, punctuation, raw_final)
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
@@ -3120,18 +3237,7 @@ class SherpaOnnxEngine(AudioEngine):
         Punctuation model first (when configured) so it sees the model's own
         spacing, then casing restoration. Punctuation failure is non-fatal --
         we degrade to casing-only rather than drop the turn."""
-        result = text
-        if self._punct is not None:
-            try:
-                result = self._punct.add_punctuation(result)
-            except Exception:  # noqa: BLE001 - never let post-proc lose a turn
-                log.exception("punctuation model failed; using raw text")
-                result = text
-        if self.config.asr_restore_casing:
-            # Force lowercasing-first when a punctuation model already added
-            # terminators (its output may stay all-caps from the source model).
-            result = restore_casing(result, force=self._punct is not None)
-        return result
+        return _postprocess_final_text(self.config, self._punct, text)
 
     def _final_transcribe(
         self,
@@ -3146,60 +3252,16 @@ class SherpaOnnxEngine(AudioEngine):
         run-on speech; punctuation+casing+ITN already applied -> no _postprocess).
         Otherwise (or on any failure / too-short utterance / empty result) fall
         back to the streaming final + the usual post-processing."""
-        rec = self._final_recognizer
-        if rec is not None and seg is not None:
-            import numpy as np
-
-            n = int(np.asarray(seg).size)
-            observed_sec = (
-                float(speech_sec)
-                if speech_sec is not None
-                else n / self.config.sample_rate
-            )
-            if observed_sec >= float(self.config.asr_final_min_sec):
-                try:
-                    st = rec.create_stream()
-                    st.accept_waveform(self.config.sample_rate, np.asarray(seg, dtype="float32"))
-                    rec.decode_stream(st)
-                    text = (st.result.text or "").strip()
-                    if text:
-                        # L3: the offline 2nd pass HALLUCINATES a plausible sentence
-                        # from a short open-speaker echo clip ("BEING" -> "I."). Trust
-                        # it only when it agrees with / clearly improves the streaming
-                        # final; the discriminator keys on clip LENGTH, not energy. A
-                        # rejected hallucination falls back to the (post-processed)
-                        # streaming final, which the L1 echo-floor gate then drops.
-                        streaming_final = self._postprocess_final(raw_final)
-                        if allow_empty_streaming and not streaming_final.strip():
-                            # Audio-first barge exists precisely because the
-                            # streaming decoder can remain empty in double-talk.
-                            # A finite speaker-authorized PCM handoff may use the
-                            # offline result directly; ordinary VAD-only clips
-                            # never receive this exception.
-                            return text
-                        guarded_final = agreement_guard(
-                            streaming_final,
-                            text,
-                            # The owned PCM deliberately includes model pre-roll
-                            # and endpoint tail. Hallucination risk keys on actual
-                            # owned-speech duration, not that padding. Direct
-                            # callers retain the historical array-duration fallback.
-                            segment_sec=observed_sec,
-                        )
-                        # The generic guard deliberately rejects low-overlap
-                        # short rewrites. Recover only an exact owner-attested
-                        # interrupt pair, and only when live segment timing (VAD
-                        # or confirmed word-cut ownership) proves it was short.
-                        return _attested_short_interrupt_repair(
-                            streaming_final,
-                            text,
-                            guarded_final,
-                            backend=self.config.asr_final_backend,
-                            speech_sec=speech_sec,
-                        )
-                except Exception:  # noqa: BLE001 - fall back to the streaming final
-                    log.debug("second-pass recognizer failed; using streaming final", exc_info=True)
-        return self._postprocess_final(raw_final)
+        return _transcribe_final_text(
+            self.config,
+            self._final_recognizer,
+            self._punct,
+            seg,
+            raw_final,
+            speech_sec=speech_sec,
+            allow_empty_streaming=allow_empty_streaming,
+            attested_repair=_attested_interrupt_repair,
+        )
 
     def _finalize_and_dispatch(
         self,

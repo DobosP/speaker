@@ -7,6 +7,7 @@
 - Role: local-first always-on voice assistant (personal R&D; repo stays on the personal account).
 - Upstream: none · Downstream: none (standalone; always-on audio never leaves the machine).
 - Fleet map + parallel-agent protocol: `~/work/AGENTS.md` (agent-ops ADR-0025).
+- Secrets: registry `agent-ops/secrets/secrets.manifest.yaml` (ADR-0027); repo-local names in `CREDENTIALS.md`; never commit values.
 
 ## Parallel work (mandatory)
 - This shared checkout stays on `main`, clean — never switch branches or commit task work here.

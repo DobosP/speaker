@@ -1,0 +1,551 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timezone
+from hashlib import sha256
+import json
+from pathlib import Path
+import re
+from typing import Mapping
+from urllib.parse import urlparse
+
+from tools.setup_minicpm import LOCAL_MODEL
+
+from .scenarios import SCENARIOS, SCENARIO_SET_VERSION
+from .schema import ModelSummary, SCHEMA_VERSION, ScenarioResult
+
+
+_STRUCTURAL_KEYS: dict[str, tuple[str, ...]] = {
+    "intent.decision": ("kind", "reason"),
+    "task.started": ("mode", "capability"),
+    "task.completed": ("mode", "capability"),
+    "task.cancelled": ("mode",),
+    "task.failed": ("mode",),
+    "capability.started": ("invocation_id", "name", "planner_tool"),
+    "capability.finished": ("invocation_id", "name", "planner_tool"),
+    "playback.started": ("fragment_id",),
+    "playback.attributed": (
+        "fragment_id",
+        "input_generation",
+        "auxiliary_tts",
+    ),
+    "playback.terminal": ("fragment_id", "outcome"),
+    "memory.commit": ("source", "is_followup"),
+    "control.stop": ("reason", "already_cancelled"),
+}
+
+
+def structural_trace(result: ScenarioResult) -> list[dict[str, object]]:
+    """Timing/text-independent partial-order trajectory for deterministic A/B.
+
+    Worker, bus, and playback callbacks can legitimately interleave.  Canonical
+    ordering therefore uses typed identities within each family (turn/task,
+    invocation, fragment) instead of wall-clock observation order.
+    """
+
+    rows: list[dict[str, object]] = []
+    ordinals: dict[str, int] = defaultdict(int)
+    for event in result.trace:
+        keys = _STRUCTURAL_KEYS.get(event.kind)
+        if keys is None:
+            continue
+        payload = {key: event.payload.get(key) for key in keys if key in event.payload}
+        if event.kind == "capability.finished":
+            nested = event.payload.get("result")
+            if isinstance(nested, dict):
+                payload["ok"] = nested.get("ok")
+                data = nested.get("data")
+                if isinstance(data, dict) and "route" in data:
+                    payload["route"] = data["route"]
+        if event.kind == "task.completed":
+            data = event.payload.get("data")
+            if isinstance(data, dict) and "route" in data:
+                payload["route"] = data["route"]
+        ordinals[event.kind] += 1
+        family = event.kind.split(".", 1)[0]
+        family_order = {
+            "intent": 0,
+            "task": 1,
+            "capability": 2,
+            "playback": 3,
+            "memory": 4,
+            "control": 5,
+        }.get(family, 9)
+        if family == "task":
+            identity = event.task_id
+            phase = 0 if event.kind == "task.started" else 1
+        elif family == "capability":
+            identity = f"I{int(payload.get('invocation_id', 0)):06d}"
+            phase = 0 if event.kind == "capability.started" else 1
+        elif family == "playback":
+            identity = str(payload.get("fragment_id", ""))
+            phase = 0 if event.kind == "playback.started" else 1
+        else:
+            identity = f"{event.turn_id or 0}:{ordinals[event.kind]:06d}"
+            phase = 0
+        rows.append(
+            {
+                "_sort": (family_order, identity, phase, event.kind),
+                "kind": event.kind,
+                "task_id": event.task_id,
+                "turn_id": event.turn_id,
+                "payload": payload,
+            }
+        )
+    rows.sort(key=lambda row: row["_sort"])
+    for row in rows:
+        row.pop("_sort", None)
+    return rows
+
+
+def _trace_signature(result: ScenarioResult) -> str:
+    encoded = json.dumps(structural_trace(result), sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _first_trace_difference(
+    baseline: ScenarioResult,
+    candidate: ScenarioResult,
+) -> dict[str, object] | None:
+    left = structural_trace(baseline)
+    right = structural_trace(candidate)
+    for index in range(max(len(left), len(right))):
+        before = left[index] if index < len(left) else None
+        after = right[index] if index < len(right) else None
+        if before != after:
+            return {"index": index, "baseline": before, "candidate": after}
+    return None
+
+
+def summarize_model(model: str, results: tuple[ScenarioResult, ...]) -> ModelSummary:
+    grouped: dict[str, list[ScenarioResult]] = defaultdict(list)
+    for result in results:
+        grouped[result.scenario_id].append(result)
+    for values in grouped.values():
+        values.sort(key=lambda result: result.run_index)
+    reliability = {
+        scenario_id: {
+            "runs": len(values),
+            "runs_passed": sum(1 for value in values if value.passed),
+            "pass_at_1": bool(values and values[0].passed),
+            "pass_power_k": bool(values and all(value.passed for value in values)),
+        }
+        for scenario_id, values in sorted(grouped.items())
+    }
+    runs = max((len(values) for values in grouped.values()), default=0)
+    first_run_passed = bool(
+        grouped
+        and all(values and values[0].passed for values in grouped.values())
+    )
+    all_passed = bool(results and all(result.passed for result in results))
+    return ModelSummary(
+        model=model,
+        runs=runs,
+        scenarios=len(grouped),
+        passed_results=sum(1 for result in results if result.passed),
+        total_results=len(results),
+        pass_at_1=first_run_passed,
+        pass_power_k=all_passed,
+        scenario_reliability=reliability,
+    )
+
+
+def compare_results(
+    baseline: tuple[ScenarioResult, ...],
+    candidate: tuple[ScenarioResult, ...],
+) -> dict[str, object]:
+    def grouped(results: tuple[ScenarioResult, ...]) -> dict[str, list[ScenarioResult]]:
+        output: dict[str, list[ScenarioResult]] = defaultdict(list)
+        for result in results:
+            output[result.scenario_id].append(result)
+        return output
+
+    left = grouped(baseline)
+    right = grouped(candidate)
+    rows: list[dict[str, object]] = []
+    for scenario_id in sorted(set(left) | set(right)):
+        baseline_values = sorted(left.get(scenario_id, []), key=lambda item: item.run_index)
+        candidate_values = sorted(right.get(scenario_id, []), key=lambda item: item.run_index)
+        paired = list(zip(baseline_values, candidate_values))
+        trace_differences = [
+            {
+                "run_index": before.run_index,
+                "first_difference": difference,
+            }
+            for before, after in paired
+            if (difference := _first_trace_difference(before, after)) is not None
+        ]
+        rows.append(
+            {
+                "scenario_id": scenario_id,
+                "baseline_passed": sum(value.passed for value in baseline_values),
+                "candidate_passed": sum(value.passed for value in candidate_values),
+                "runs": max(len(baseline_values), len(candidate_values)),
+                "candidate_regression": bool(
+                    baseline_values
+                    and all(value.passed for value in baseline_values)
+                    and not all(value.passed for value in candidate_values)
+                ),
+                "baseline_trace_signatures": [
+                    _trace_signature(value) for value in baseline_values
+                ],
+                "candidate_trace_signatures": [
+                    _trace_signature(value) for value in candidate_values
+                ],
+                "structural_trace_equal_runs": len(paired) - len(trace_differences),
+                "trace_differences": trace_differences,
+            }
+        )
+    return {
+        "rows": rows,
+        "regressions": [row["scenario_id"] for row in rows if row["candidate_regression"]],
+    }
+
+
+def _coverage(results: tuple[ScenarioResult, ...]) -> dict[str, object]:
+    expected_scenarios = tuple(scenario.scenario_id for scenario in SCENARIOS)
+    expected_runs = (1, 2, 3)
+    observed: dict[str, list[int]] = defaultdict(list)
+    for result in results:
+        observed[result.scenario_id].append(int(result.run_index))
+    observed_scenarios = tuple(sorted(observed))
+    exact = bool(
+        observed_scenarios == tuple(sorted(expected_scenarios))
+        and all(
+            tuple(sorted(observed[scenario_id])) == expected_runs
+            for scenario_id in expected_scenarios
+        )
+    )
+    return {
+        "required_scenarios": list(expected_scenarios),
+        "required_runs": list(expected_runs),
+        "observed": {
+            scenario_id: sorted(run_indices)
+            for scenario_id, run_indices in sorted(observed.items())
+        },
+        "ok": exact,
+    }
+
+
+def build_report(
+    *,
+    mode: str,
+    device: str,
+    candidate_results: tuple[ScenarioResult, ...],
+    baseline_results: tuple[ScenarioResult, ...] = (),
+    identities: dict[str, object] | None = None,
+    metadata: dict[str, object] | None = None,
+    candidate_metadata: dict[str, object] | None = None,
+    baseline_metadata: dict[str, object] | None = None,
+    provenance_ok: bool | None = None,
+    diagnostic_override_used: bool = False,
+) -> dict[str, object]:
+    candidate_model = candidate_results[0].model if candidate_results else ""
+    candidate_model_consistent = bool(
+        candidate_results
+        and all(result.model == candidate_model for result in candidate_results)
+    )
+    candidate_summary = summarize_model(candidate_model, candidate_results)
+    candidate_coverage = _coverage(candidate_results)
+    report: dict[str, object] = {
+        "schema_version": SCHEMA_VERSION,
+        "scenario_set_version": SCENARIO_SET_VERSION,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "device": device,
+        "scope": (
+            "Device-free conversation semantics only; no ASR, echo cancellation, "
+            "microphone, speaker, or bare-speaker validation."
+        ),
+        "metadata": metadata or {},
+        "identities": identities or {},
+        "candidate": {
+            "summary": candidate_summary.as_dict(),
+            "coverage": candidate_coverage,
+            "evaluation": candidate_metadata or {},
+            "results": [result.as_dict() for result in candidate_results],
+        },
+    }
+    baseline_required = mode == "ollama"
+    baseline_present = bool(baseline_results)
+    baseline_valid = not baseline_required or baseline_present
+    baseline_coverage: dict[str, object] | None = None
+    baseline_model_consistent = not baseline_required
+    no_candidate_regression = True
+    if baseline_results:
+        baseline_model = baseline_results[0].model
+        baseline_model_consistent = all(
+            result.model == baseline_model for result in baseline_results
+        )
+        baseline_summary = summarize_model(baseline_model, baseline_results)
+        baseline_coverage = _coverage(baseline_results)
+        comparison = compare_results(baseline_results, candidate_results)
+        baseline_valid = baseline_summary.pass_power_k
+        no_candidate_regression = not bool(comparison["regressions"])
+        report["baseline"] = {
+            "summary": baseline_summary.as_dict(),
+            "coverage": baseline_coverage,
+            "evaluation": baseline_metadata or {},
+            "results": [result.as_dict() for result in baseline_results],
+        }
+        report["comparison"] = comparison
+    identity_records = identities or {}
+
+    def identity_evidence(label: str, model: str) -> bool:
+        record = identity_records.get(label)
+        if not isinstance(record, Mapping):
+            return False
+        if str(record.get("model", "")) != model:
+            return False
+        verification = str(record.get("verification", ""))
+        if not verification:
+            return False
+        if model == LOCAL_MODEL:
+            return bool(
+                verification == "minicpm_q8_blob_template_parameters"
+                and record.get("required") is True
+                and record.get("ok") is True
+                and record.get("blob_match") is True
+                and record.get("pinned_blob_match") is True
+                and record.get("q8") is True
+                and record.get("template_match") is True
+                and record.get("parameters_match") is True
+            )
+        return bool(
+            verification == "name_only_no_digest_contract"
+            and record.get("required") is False
+        )
+
+    identity_evidence_ok = bool(
+        mode != "ollama"
+        or (
+            identity_evidence("candidate", candidate_model)
+            and baseline_results
+            and identity_evidence(
+                "baseline",
+                baseline_results[0].model,
+            )
+        )
+    )
+    provenance_asserted = provenance_ok is not None
+    effective_provenance_ok = bool(
+        (mode != "ollama" and provenance_ok is None)
+        or (
+            provenance_asserted
+            and provenance_ok
+            and identity_evidence_ok
+        )
+    )
+
+    def evaluation_evidence(details: dict[str, object] | None) -> bool:
+        if not isinstance(details, dict):
+            return False
+        role_models = details.get("role_models")
+        warmup = details.get("warmup")
+        if not isinstance(role_models, Mapping) or not isinstance(warmup, Mapping):
+            return False
+        calls = warmup.get("calls")
+        system_hash = str(warmup.get("system_prompt_sha256", ""))
+        expected_warm_roles: dict[str, set[str]] = defaultdict(set)
+        for role in ("main", "fast"):
+            expected_warm_roles[str(role_models.get(role, ""))].add(role)
+        observed_warm_roles: dict[str, set[str]] = {}
+        if isinstance(calls, list):
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                observed_warm_roles[str(call.get("model", ""))] = {
+                    str(role) for role in (call.get("roles") or ())
+                }
+        return bool(
+            details.get("model_assignment")
+            and role_models.get("main")
+            and role_models.get("fast")
+            and warmup.get("policy") == "production_system_prompt"
+            and warmup.get("performed") is True
+            and warmup.get("gate_eligible") is True
+            and warmup.get("ok") is True
+            and isinstance(calls, list)
+            and calls
+            and len(calls) == len(expected_warm_roles)
+            and all(
+                isinstance(call, Mapping) and call.get("ok") is True
+                for call in calls
+            )
+            and observed_warm_roles == expected_warm_roles
+            and len(system_hash) == 64
+        )
+
+    evaluation_evidence_ok = bool(
+        mode != "ollama"
+        or (
+            evaluation_evidence(candidate_metadata)
+            and evaluation_evidence(baseline_metadata)
+        )
+    )
+    warmup_ok = evaluation_evidence_ok
+    run_metadata = metadata or {}
+    repository_metadata = run_metadata.get("repository")
+    config_metadata = run_metadata.get("config")
+    host = (
+        str(config_metadata.get("host", ""))
+        if isinstance(config_metadata, Mapping)
+        else ""
+    )
+    parsed_host = urlparse(host)
+    run_metadata_ok = bool(
+        mode != "ollama"
+        or (
+            isinstance(repository_metadata, Mapping)
+            and re.fullmatch(
+                r"[0-9a-f]{40}",
+                str(repository_metadata.get("revision", "")),
+                flags=re.IGNORECASE,
+            )
+            is not None
+            and isinstance(repository_metadata.get("dirty"), bool)
+            and isinstance(config_metadata, Mapping)
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(config_metadata.get("contract_sha256", "")),
+                flags=re.IGNORECASE,
+            )
+            is not None
+            and re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(config_metadata.get("llm_options_sha256", "")),
+                flags=re.IGNORECASE,
+            )
+            is not None
+            and isinstance(config_metadata.get("include_local_config"), bool)
+            and config_metadata.get("backend") == "ollama"
+            and (parsed_host.hostname or "").lower()
+            in {"localhost", "127.0.0.1", "::1"}
+            and parsed_host.username is None
+            and parsed_host.password is None
+            and isinstance(config_metadata.get("configured_role_models"), Mapping)
+            and config_metadata["configured_role_models"].get("main")
+            and config_metadata["configured_role_models"].get("fast")
+            and run_metadata.get("warm_policy") == "production"
+            and run_metadata.get("execution_order") == ["baseline", "candidate"]
+            and str(run_metadata.get("ollama_python_version", ""))
+            not in {"", "unavailable", "not_applicable"}
+        )
+    )
+    candidate_roles = (
+        candidate_metadata.get("role_models", {})
+        if isinstance(candidate_metadata, dict)
+        else {}
+    )
+    baseline_roles = (
+        baseline_metadata.get("role_models", {})
+        if isinstance(baseline_metadata, dict)
+        else {}
+    )
+    topology = str((metadata or {}).get("topology", ""))
+    candidate_assignment = str(
+        (candidate_metadata or {}).get("model_assignment", "")
+    )
+    baseline_assignment = str(
+        (baseline_metadata or {}).get("model_assignment", "")
+    )
+    expected_assignment = {
+        "production-hybrid": "production_hybrid_fast_override",
+        "all-roles": "all_roles_override",
+    }.get(topology, "")
+    topology_ok = bool(
+        mode != "ollama"
+        or (
+            evaluation_evidence_ok
+            and expected_assignment
+            and candidate_assignment == baseline_assignment == expected_assignment
+            and isinstance(candidate_roles, Mapping)
+            and isinstance(baseline_roles, Mapping)
+            and candidate_roles.get("fast") == candidate_model
+            and baseline_roles.get("fast")
+            == (baseline_results[0].model if baseline_results else "")
+            and (
+                (
+                    topology == "production-hybrid"
+                    and candidate_roles.get("main") == baseline_roles.get("main")
+                )
+                or (
+                    topology == "all-roles"
+                    and candidate_roles.get("main") == candidate_model
+                    and baseline_roles.get("main")
+                    == (baseline_results[0].model if baseline_results else "")
+                )
+            )
+        )
+    )
+    prompt_contract_equal = bool(
+        mode != "ollama"
+        or (
+            evaluation_evidence_ok
+            and candidate_metadata["warmup"]["system_prompt_sha256"]
+            == baseline_metadata["warmup"]["system_prompt_sha256"]
+        )
+    )
+    ab_distinct = bool(
+        mode != "ollama"
+        or (
+            isinstance(candidate_roles, Mapping)
+            and isinstance(baseline_roles, Mapping)
+            and dict(candidate_roles) != dict(baseline_roles)
+        )
+    )
+    ab_valid = bool(topology_ok and ab_distinct)
+    coverage_ok = bool(
+        candidate_coverage["ok"]
+        and (
+            not baseline_required
+            or (
+                baseline_coverage is not None
+                and bool(baseline_coverage["ok"])
+            )
+        )
+    )
+    semantic_pass = bool(
+        candidate_summary.pass_power_k
+        and candidate_model_consistent
+        and baseline_model_consistent
+        and baseline_valid
+        and no_candidate_regression
+        and coverage_ok
+    )
+    report["gate"] = {
+        "semantic_pass": semantic_pass,
+        "baseline_required": baseline_required,
+        "baseline_present": baseline_present,
+        "suite_models_consistent": bool(
+            candidate_model_consistent and baseline_model_consistent
+        ),
+        "coverage_ok": coverage_ok,
+        "baseline_valid": baseline_valid,
+        "no_candidate_regression": no_candidate_regression,
+        "warmup_ok": warmup_ok,
+        "run_metadata_ok": run_metadata_ok,
+        "prompt_contract_equal": prompt_contract_equal,
+        "topology_ok": topology_ok,
+        "ab_distinct": ab_distinct,
+        "ab_valid": ab_valid,
+        "identity_evidence_ok": identity_evidence_ok,
+        "provenance_asserted": provenance_asserted,
+        "provenance_ok": effective_provenance_ok,
+        "diagnostic_override_used": bool(diagnostic_override_used),
+        "passed": bool(
+            semantic_pass
+            and warmup_ok
+            and run_metadata_ok
+            and prompt_contract_equal
+            and ab_valid
+            and effective_provenance_ok
+        ),
+    }
+    return report
+
+
+def write_report(path: Path, report: dict[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path

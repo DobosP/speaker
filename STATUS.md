@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-11 on Linux ROG, calibrated pre-gain evidence stacked on `2e2ddfd`;
-full: 3312 passed/30 skipped/9 warnings; focused evidence/barge/enrollment/APM:
-274 passed; compile/config JSON/whitespace passed. Live A/B is red.
+Last verified: 2026-07-12 on Linux ROG; full: 3356 passed/30 skipped/9 warnings; focused conversation/APM: 35/6 passed.
+ADR-0050 deterministic device-free trace: 36/36 scenario-runs (12 x 3), pass@1=True/pass^3=True.
+Its real Ollama/Q8 gate was not run; live bare-speaker A/B remains red.
 
 ## Runtime
 
@@ -90,7 +90,7 @@ full: 3312 passed/30 skipped/9 warnings; focused evidence/barge/enrollment/APM:
 ## Standard verification
 `/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`;
 `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q`;
-`git diff --check`.
+`/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3`; `git diff --check`.
 
 Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair: `python -m tools.llm_sanity --production-threads`; native tools: `python -m tools.minicpm_tool_sanity`; host: `python -m tools.doctor`.
 

@@ -26,7 +26,8 @@ Two trial types, attributed by the live stdout markers the engine already emits
 
 Run (makes real sound; assistant on the laptop speaker):
     .venv/bin/python -m tools.autotest.barge_stress \
-        --utterances recordings/owner --llm ollama --model minicpm5-1b:q8 \
+        --utterances recordings/owner --llm ollama \
+        --model gemma3:12b --fast-model minicpm5-1b:q8 \
         --n-self 5 --n-barge 8
 """
 from __future__ import annotations
@@ -79,7 +80,8 @@ _BARGE_DELAYS = [0.6, 1.0, 1.6, 2.3]
 
 
 def run_barge_stress(
-    *, repo_root: str, sherpa_cfg: dict, llm_kind: str, model: str, out_dir: str,
+    *, repo_root: str, sherpa_cfg: dict, llm_kind: str,
+    main_model: str, fast_model: str, out_dir: str,
     utterances_dir: Optional[str], n_self: int = 5, n_barge: int = 8,
     barge_window_s: float = 7.0, inject_sink: Optional[str] = None,
 ) -> StressResult:
@@ -99,7 +101,12 @@ def run_barge_stress(
     ac = acoustics_mod.make_acoustics("speaker", inject_sink=inject_sink)
     tgt = ac.inject_target                                            # None -> default sink
     lead = getattr(ac, "inject_lead_in_ms", 0)
-    args = _engine_args(llm_kind, model, ac.uses_real_device)
+    args = _engine_args(
+        llm_kind,
+        main_model,
+        fast_model,
+        ac.uses_real_device,
+    )
 
     trials: list[Trial] = []
     run_id = None
@@ -174,7 +181,10 @@ def run_barge_stress(
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="tools.autotest.barge_stress", description=__doc__)
     ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
-    ap.add_argument("--model", default="minicpm5-1b:q8")
+    ap.add_argument("--model", default="gemma3:12b",
+                    help="main/reasoning model")
+    ap.add_argument("--fast-model", default="minicpm5-1b:q8", dest="fast_model",
+                    help="fast/ordinary answering model")
     ap.add_argument("--utterances", default="recordings/owner")
     ap.add_argument("--n-self", type=int, default=5, dest="n_self")
     ap.add_argument("--n-barge", type=int, default=8, dest="n_barge")
@@ -203,7 +213,11 @@ def main(argv=None) -> int:
     pin = ota_setup.gain_pinner() if not args.no_setup else contextlib.nullcontext()
     with pin:
         r = run_barge_stress(
-            repo_root=REPO, sherpa_cfg=sherpa_cfg, llm_kind=args.llm, model=args.model,
+            repo_root=REPO,
+            sherpa_cfg=sherpa_cfg,
+            llm_kind=args.llm,
+            main_model=args.model,
+            fast_model=args.fast_model,
             out_dir=out_dir, utterances_dir=utt, n_self=args.n_self, n_barge=args.n_barge,
             inject_sink=inject_sink,
         )

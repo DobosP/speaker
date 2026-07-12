@@ -3,8 +3,9 @@
 A ``MachineSpec`` is a *model* of a real device: hardware summary plus the
 latency numbers that make a simulation "feel" like that machine (in the spirit
 of ``tests/sandbox/profiles.py``, extended with RAM/VRAM and platform so we can
-also answer "does the chosen model even fit?"). These are estimates for a
-comparative view, not measurements of real silicon.
+also answer "do the chosen models even fit?"). The LLM latency fields model the
+fast/ordinary path only. They are estimates for a comparative view, not
+measurements of real silicon or claims about main-tier latency.
 """
 from __future__ import annotations
 
@@ -31,8 +32,9 @@ class MachineSpec:
     # Memory actually available to the model (VRAM for GPU specs; a realistic
     # slice of RAM for CPU/unified/phone/web after OS + app + sherpa).
     model_budget_gb: float
-    configured_model: str  # the model this device's profile would run
-    # --- latency model (seconds) ---
+    fast_model: str  # ordinary local text / spoken replies
+    main_model: str  # complex, long-form, research, and image turns
+    # --- estimated fast/ordinary-path latency model (seconds) ---
     stt_partial_interval_sec: float
     stt_endpoint_delay_sec: float
     llm_ttft_sec: float
@@ -42,8 +44,38 @@ class MachineSpec:
     barge_in_stop_sec: float  # mic-voice -> playback halts
 
     @property
-    def tokens_per_sec(self) -> float:
+    def fast_tokens_per_sec(self) -> float:
         return round(1.0 / self.llm_per_token_sec, 1) if self.llm_per_token_sec else 0.0
+
+    @property
+    def tokens_per_sec(self) -> float:
+        """Backward-compatible alias for the estimated fast-path speed."""
+        return self.fast_tokens_per_sec
+
+    @property
+    def configured_model(self) -> str:
+        """Backward-compatible alias for the ordinary/fast model."""
+        return self.fast_model
+
+    @property
+    def role_models(self) -> tuple[tuple[str, str], ...]:
+        return (("fast", self.fast_model), ("main", self.main_model))
+
+    @property
+    def shares_model_across_roles(self) -> bool:
+        return self.fast_model == self.main_model
+
+    @property
+    def configured_footprint_gb(self) -> float:
+        """Combined unique weight footprint when both configured roles are resident."""
+        return sum(
+            MODEL_FOOTPRINTS_GB.get(model, 1e9)
+            for model in {self.fast_model, self.main_model}
+        )
+
+    def configured_roles_fit(self) -> bool:
+        """Return whether both roles' unique weights fit concurrently."""
+        return self.configured_footprint_gb <= self.model_budget_gb
 
     def fits(self, model: str) -> bool:
         return MODEL_FOOTPRINTS_GB.get(model, 1e9) <= self.model_budget_gb
@@ -75,7 +107,8 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=16,
         ram_gb=32,
         model_budget_gb=16.0,
-        configured_model="gemma3:12b",
+        fast_model="minicpm5-1b:q8",
+        main_model="gemma3:12b",
         stt_partial_interval_sec=0.10,
         stt_endpoint_delay_sec=0.50,
         llm_ttft_sec=0.15,
@@ -91,7 +124,8 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=10,
         ram_gb=16,
         model_budget_gb=11.0,
-        configured_model="gemma3:4b",
+        fast_model="minicpm5-1b:q8",
+        main_model="gemma3:4b",
         stt_partial_interval_sec=0.12,
         stt_endpoint_delay_sec=0.55,
         llm_ttft_sec=0.30,
@@ -107,7 +141,8 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=8,
         ram_gb=16,
         model_budget_gb=9.0,
-        configured_model="gemma3:4b",
+        fast_model="minicpm5-1b:q8",
+        main_model="gemma3:4b",
         stt_partial_interval_sec=0.15,
         stt_endpoint_delay_sec=0.60,
         llm_ttft_sec=0.80,
@@ -123,7 +158,8 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=8,
         ram_gb=12,
         model_budget_gb=5.0,
-        configured_model="minicpm5-1b:q4",
+        fast_model="minicpm5-1b:q4",
+        main_model="minicpm5-1b:q4",
         stt_partial_interval_sec=0.25,
         stt_endpoint_delay_sec=0.80,
         llm_ttft_sec=1.20,
@@ -139,7 +175,8 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=6,
         ram_gb=6,
         model_budget_gb=2.2,
-        configured_model="minicpm5-1b:q4",
+        fast_model="minicpm5-1b:q4",
+        main_model="minicpm5-1b:q4",
         stt_partial_interval_sec=0.30,
         stt_endpoint_delay_sec=0.90,
         llm_ttft_sec=1.50,
@@ -155,7 +192,8 @@ CATALOG: tuple[MachineSpec, ...] = (
         cores=4,
         ram_gb=4,
         model_budget_gb=1.5,
-        configured_model="minicpm5-1b:q4",
+        fast_model="minicpm5-1b:q4",
+        main_model="minicpm5-1b:q4",
         stt_partial_interval_sec=0.35,
         stt_endpoint_delay_sec=0.90,
         llm_ttft_sec=3.00,

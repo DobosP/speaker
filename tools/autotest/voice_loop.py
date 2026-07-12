@@ -157,13 +157,18 @@ def _aec_delay_override(repo_root: str, delay_ms: Optional[int]):
             f.write(orig)
 
 
-def _engine_args(llm_kind: str, model: str, real_device: bool) -> list[str]:
+def _engine_args(
+    llm_kind: str,
+    main_model: str,
+    fast_model: str,
+    real_device: bool,
+) -> list[str]:
     args = [sys.executable, "-m", "core", "--engine", "sherpa", "--llm", llm_kind,
             "--record", "--debug", "--stream-tts"]
     if not real_device:                       # cable/delay reach PipeWire via the bridge
         args += ["--input-device", "pipewire", "--output-device", "pipewire"]
     if llm_kind == "ollama":
-        args += ["--model", model, "--fast-model", model]
+        args += ["--model", main_model, "--fast-model", fast_model]
     return args
 
 
@@ -218,7 +223,8 @@ def run_voice_loop(
     repo_root: str,
     sherpa_cfg: dict,
     llm_kind: str = "ollama",
-    model: str = "minicpm5-1b:q8",
+    main_model: str = "gemma3:12b",
+    fast_model: str = "minicpm5-1b:q8",
     out_dir: str,
     acoustics_mode: str = "cable",
     latency_ms: int = 260,
@@ -249,7 +255,12 @@ def run_voice_loop(
         return cl[0] if cl else None
 
     ac = acoustics_mod.make_acoustics(acoustics_mode, latency_ms=latency_ms, inject_sink=inject_sink)
-    args = _engine_args(llm_kind, model, ac.uses_real_device)
+    args = _engine_args(
+        llm_kind,
+        main_model,
+        fast_model,
+        ac.uses_real_device,
+    )
     detail.append(f"acoustics={acoustics_mode}; engine={' '.join(args)}")
 
     injected_refs: list[str] = []

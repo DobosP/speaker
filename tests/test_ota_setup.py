@@ -13,6 +13,7 @@ import types
 import pytest
 
 from tools.autotest import ota_setup
+from tools.autotest.voice_loop import _engine_args
 
 
 class _FakeAmixerPactl:
@@ -73,3 +74,15 @@ def test_gain_pinner_is_safe_when_reads_return_nothing(monkeypatch):
     monkeypatch.setattr(ota_setup.subprocess, "run", blank)
     with ota_setup.gain_pinner(period_s=0.02):
         time.sleep(0.05)  # no exception
+
+
+def test_autotest_engine_args_preserve_production_hybrid_models():
+    args = _engine_args(
+        "ollama",
+        "gemma3:12b",
+        "minicpm5-1b:q8",
+        real_device=False,
+    )
+
+    assert args[args.index("--model") + 1] == "gemma3:12b"
+    assert args[args.index("--fast-model") + 1] == "minicpm5-1b:q8"

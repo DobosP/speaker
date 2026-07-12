@@ -12,6 +12,7 @@
 | Conversation trace (device-free) | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3` | all 14 v2 scenarios pass 3/3; aggregate 42/42 and `pass^3=True` (ADR-0051) |
 | MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, and no regression (ADR-0051) |
 | MiniCPM all-role stress | add `--topology all-roles` to the prior command | ADR-0051 replacement-stress diagnostic; never an adoption result |
+| Exact self-fact memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | retrieval available; prompt injection false on the controller read; exact grounded scalar; `answer_model=control` (ADR-0054) |
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | every repetition full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0052) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Whitespace | `git diff --check` | no output |
@@ -55,6 +56,13 @@ Changing `--runs` or selecting `--scenario` produces a coverage-red diagnostic;
 the adoption gate is exactly all fourteen v2 scenarios repeated three times.
 A real-model report is provenance-red when the revision/config changes, local
 config is included, or any effective model role lacks stable identity evidence.
+
+Per ADR-0054, the autonomous memory probe distinguishes a fact being available
+from it being injected into a model prompt. Its exact live self-scalar read is a
+PRIVATE controller result (`recall_available=true`, `recall_injected=false`),
+not evidence that general or cross-session semantic recall is solved. Voice and
+barge harnesses must retain distinct main/fast model arguments; an all-role
+MiniCPM run is diagnostic only.
 
 ## Known blockers
 - If `.venv` is missing, recreate/use a project venv and record the exact command.

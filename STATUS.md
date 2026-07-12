@@ -2,8 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3500 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3563 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
+ADR-0054 exact live self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; general recall stays fenced/model-routed.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
 
 ## Runtime
@@ -88,8 +89,7 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
   self-echo, override, mid-thought pause, reply-tail continuity, and STOP. Do not claim barge validated.
 
 ## Standard verification
-`/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`;
-`/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q`;
+`/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`; APM: `python -m pytest tests/test_apm_double_talk.py -q`;
 `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3`; `git diff --check`.
 
 Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair: `python -m tools.llm_sanity --production-threads`; native tools: `python -m tools.minicpm_tool_sanity`; host: `python -m tools.doctor`.

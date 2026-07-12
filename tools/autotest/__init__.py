@@ -9,10 +9,10 @@ memory and produce a committable verdict.
 Three independent tiers (run one, or ``all``):
 
 * ``memory`` -- in-process ``fact -> distractors -> recall`` over the real
-  capability stack; proves the assistant both *stores* a fact and *uses* the
-  recalled block in its answer. No audio, no DB (in-RAM :class:`SessionMemory`).
-  Uses the shipped MiniCPM5-1B Q8 answering model by default; ``--llm echo`` checks plumbing
-  only).
+  capability stack; proves an exact live self-fact is stored, remains available
+  to recall, and is returned by the bounded private controller. No audio or DB
+  (in-RAM :class:`SessionMemory`). Uses the shipped MiniCPM5-1B Q8 fast / Gemma
+  main split by default; ``--llm echo`` checks model-free plumbing.
 * ``voice`` -- stands up a PipeWire **virtual audio cable** (a null sink + its
   monitor), runs the real ``sherpa`` engine routed onto it (the runtime's own
   streams only -- the system default is never touched), and injects

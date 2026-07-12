@@ -19,7 +19,7 @@ from always_on_agent.recall import (
     estimate_tokens,
     trim_block_to_tokens,
 )
-from always_on_agent.untrusted import detect_injection, wrap_untrusted
+from always_on_agent.untrusted import detect_injection, redact_pii, wrap_untrusted
 from always_on_agent.models import IntentKind
 
 from .contract import drain_complete_sentences
@@ -61,6 +61,19 @@ _SESSION_FACT_CAPTURE_RE = re.compile(
 _SESSION_FACT_QUERY_RE = re.compile(
     r"^\s*what\s+is\s+(?P<subject>[^?]{1,80})\?\s*"
     r"(?:(?:please\s+)?answer\s+with\b[^.!?]{0,80}[.!?]?)?\s*$",
+    re.IGNORECASE,
+)
+_RECALLED_SELF_FACT_CAPTURE_RE = re.compile(
+    r"^\s*my\s+(?P<subject>[^.,;:!?\n]{1,77}?)\s+is\s+"
+    r"(?P<value>[^.,;:!?\n]{1,80})[.]?\s*$",
+    re.IGNORECASE,
+)
+_RECALLED_SELF_FACT_QUERY_RE = re.compile(
+    r"^\s*what\s+is\s+(?P<subject>my\s+[^?;\n]{1,77})\?\s*$",
+    re.IGNORECASE,
+)
+_SELF_FACT_COMPOUND_RE = re.compile(
+    r"\b(?:also|and|because|but|or|then|while)\b",
     re.IGNORECASE,
 )
 _RESPONSE_ONLY_WORD_RE = re.compile(
@@ -107,6 +120,27 @@ def _parse_session_fact(query: str) -> _SessionFact | None:
 
 def _session_fact_query_key(query: str) -> str:
     match = _SESSION_FACT_QUERY_RE.match(query or "")
+    return _session_fact_key(match.group("subject")) if match is not None else ""
+
+
+def _parse_recalled_self_fact(query: str) -> _SessionFact | None:
+    """Parse one bounded live self-scalar; never derive facts from recall text."""
+    match = _RECALLED_SELF_FACT_CAPTURE_RE.match(query or "")
+    if match is None or detect_injection(query):
+        return None
+    # A deterministic answer must never become a credential/PII exfiltration
+    # shortcut. Such statements still take the normal fenced model/memory path.
+    if redact_pii(query, force=True) != query:
+        return None
+    subject = "my " + " ".join(match.group("subject").split())
+    value = " ".join(match.group("value").split())
+    if _SELF_FACT_COMPOUND_RE.search(subject) or _SELF_FACT_COMPOUND_RE.search(value):
+        return None
+    return _SessionFact(subject, value, query.strip())
+
+
+def _recalled_self_fact_query_key(query: str) -> str:
+    match = _RECALLED_SELF_FACT_QUERY_RE.match(query or "")
     return _session_fact_key(match.group("subject")) if match is not None else ""
 
 
@@ -370,6 +404,7 @@ def attach_llm_capabilities(
     # Mutable dict so the per-turn closure can flip it without ``nonlocal``.
     memory_state = {"last_session_injected": False}
     session_facts: OrderedDict[str, _SessionFact] = OrderedDict()
+    recalled_self_facts: OrderedDict[str, _SessionFact] = OrderedDict()
     session_fact_lock = Lock()
     session_started_at = time.time()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
@@ -455,6 +490,12 @@ def attach_llm_capabilities(
                 log.exception(
                     "playback history barrier failed; skipping conversation memory"
                 )
+        recalled_self_fact = (
+            _parse_recalled_self_fact(query)
+            if recall_cfg.enabled and memory is not None and not skip_user_memory
+            else None
+        )
+        recalled_self_fact_ingest_attempted = False
         # Procedural capture (default-OFF): detect an explicit teach directive in the
         # LIVE user query and store it as a durable behavior rule -- done BEFORE the
         # escalation branch so an escalated teach utterance still registers. The rule
@@ -607,6 +648,48 @@ def attach_llm_capabilities(
                     "streamed": callable(emit),
                 },
             )
+        recalled_key = _recalled_self_fact_query_key(query)
+        with session_fact_lock:
+            recalled_fact = recalled_self_facts.get(recalled_key)
+        if recalled_fact is not None and not _memory_contains_session_fact(
+            memory, recalled_fact
+        ):
+            with session_fact_lock:
+                if recalled_self_facts.get(recalled_key) == recalled_fact:
+                    recalled_self_facts.pop(recalled_key, None)
+            recalled_fact = None
+        if recalled_fact is not None and memory is not None and not skip_user_memory:
+            if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                return CapabilityResult(
+                    True,
+                    "",
+                    data={"cancelled": True, "route": "control"},
+                )
+            try:
+                memory.add(query, tags=("user",))
+            except Exception:  # noqa: BLE001 - exact recall must fail closed
+                log.exception("recalled self-fact question memory write failed")
+            else:
+                context["sensitivity"] = most_sensitive(
+                    str(context.get("sensitivity") or PRIVATE), PRIVATE
+                )
+                answer = recalled_fact.value.rstrip()
+                if answer and answer[-1] not in ".!?":
+                    answer += "."
+                emit = context.get("emit_speech")
+                if callable(emit):
+                    emit(answer)
+                return CapabilityResult(
+                    True,
+                    answer,
+                    data={
+                        "handled_local": True,
+                        "recalled_self_fact": True,
+                        "route": "control",
+                        "sensitivity": context.get("sensitivity"),
+                        "streamed": callable(emit),
+                    },
+                )
         # Recent-conversation context (short-term memory): the PRIOR turns, built
         # ONCE here -- BEFORE the escalation branch and BEFORE ingesting the current
         # query -- so the model can resolve "its"/"the second one". Built up front
@@ -674,6 +757,24 @@ def attach_llm_capabilities(
             context[RECENT_CONVERSATION_KEY] = (
                 recent_block or planner_recent_block
             )
+        # Capture a narrow live self-scalar only after prior-turn context has
+        # been collected, so the current statement cannot masquerade as history.
+        # The cache is controller-owned but its source must remain present in the
+        # ordinary user-tagged memory window; recalled/untrusted blocks never
+        # populate it.
+        if recalled_self_fact is not None and memory is not None:
+            recalled_self_fact_ingest_attempted = True
+            try:
+                memory.add(query, tags=("user",))
+            except Exception:  # noqa: BLE001 - capture must fail closed
+                log.exception("recalled self-fact memory write failed")
+            else:
+                key = _session_fact_key(recalled_self_fact.subject)
+                with session_fact_lock:
+                    recalled_self_facts[key] = recalled_self_fact
+                    recalled_self_facts.move_to_end(key)
+                    while len(recalled_self_facts) > _SESSION_FACT_LIMIT:
+                        recalled_self_facts.popitem(last=False)
         # Smart-mode escalation: hand reasoning/gathering queries to the ReAct
         # planner (when registered) instead of a one-shot reply.
         if (
@@ -707,7 +808,7 @@ def attach_llm_capabilities(
         system_for_call = system
         if memory is not None:
             try:
-                if not skip_user_memory:
+                if not skip_user_memory and not recalled_self_fact_ingest_attempted:
                     memory.add(query, tags=("user",))
                 recall_block = ""
                 last_session_block = ""

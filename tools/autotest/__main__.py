@@ -1,7 +1,7 @@
 """CLI for the autonomous test harness.
 
-    python -m tools.autotest memory   [--llm echo|ollama] [--model minicpm5-1b:q8]
-    python -m tools.autotest voice    [--llm echo|ollama] [--model minicpm5-1b:q8]
+    python -m tools.autotest memory   [--llm echo|ollama] [--model gemma3:12b] [--fast-model minicpm5-1b:q8]
+    python -m tools.autotest voice    [--llm echo|ollama] [--model gemma3:12b] [--fast-model minicpm5-1b:q8]
     python -m tools.autotest replay   [--bundle logs/runs/run-<id>.wav]
     python -m tools.autotest suite                       # existing pytest gates
     python -m tools.autotest all                         # everything + scorecard
@@ -44,12 +44,18 @@ def _write(report: dict, name: str) -> str:
 def tier_memory(args) -> dict:
     from .memory_probe import run_memory_probe
 
-    r = run_memory_probe(llm_kind=args.llm, model=args.model)
+    r = run_memory_probe(
+        llm_kind=args.llm,
+        model=args.fast_model,
+        main_model=args.model,
+    )
     rep = {"tier": "memory", **asdict(r)}
     sem = "" if r.answer_uses_fact is None else f" answer_uses_fact={r.answer_uses_fact}"
     print(f"[memory] {'PASS' if r.ok else 'FAIL'} "
           f"({r.llm_label}, {r.turns} turns, {r.duration_sec}s) "
-          f"recall_injected={r.recall_injected}{sem}")
+          f"recall_available={r.recall_available} "
+          f"recall_injected={r.recall_injected}{sem} "
+          f"answer_model={r.answer_model} controller={r.controller_answer}")
     print(f"         answer: {r.answer[:120]!r}")
     return rep
 
@@ -65,7 +71,10 @@ def tier_voice(args) -> dict:
     out_dir = os.path.join(OUT, f"voice-{_stamp()}")
     r = run_voice_loop(
         repo_root=REPO, sherpa_cfg=sherpa_cfg,
-        llm_kind=args.llm, model=args.model, out_dir=out_dir,
+        llm_kind=args.llm,
+        main_model=args.model,
+        fast_model=args.fast_model,
+        out_dir=out_dir,
         acoustics_mode=args.acoustics, latency_ms=args.latency_ms,
         utterances_dir=args.utterances, aec_delay_ms=args.aec_delay_ms,
         make_sound=args.make_sound, inject_sink=args.inject_sink,
@@ -232,8 +241,11 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="tools.autotest", description=__doc__)
     ap.add_argument("tier", choices=["memory", "voice", "replay", "suite", "all", "record"])
     ap.add_argument("--llm", choices=["echo", "ollama"], default="ollama",
-                    help="answering LLM for the in-loop tiers (default minicpm5-1b:q8)")
-    ap.add_argument("--model", default="minicpm5-1b:q8", help="Ollama answering model")
+                    help="LLM backend for the in-loop tiers")
+    ap.add_argument("--model", default="gemma3:12b",
+                    help="main/reasoning model (default gemma3:12b)")
+    ap.add_argument("--fast-model", default="minicpm5-1b:q8", dest="fast_model",
+                    help="fast/ordinary answering model (default minicpm5-1b:q8)")
     ap.add_argument("--bundle", default=None, help="replay: explicit run-<id>.wav")
     ap.add_argument("--acoustics", choices=["cable", "delay", "speaker"], default="cable",
                     help="voice: cable=silent null-sink loopback (default); "

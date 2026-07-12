@@ -3,7 +3,7 @@
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
 Last verified: 2026-07-12 on Linux ROG; full: 3500 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
-ADR-0051 v2 deterministic: 42/42; exact-revision MiniCPM Q8/Gemma production-hybrid A/B is pending after commit.
+ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
 
 ## Runtime

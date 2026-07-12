@@ -13,7 +13,7 @@ Runs ONLY on request -- it needs real ASR/TTS/LLM models and real audio hardware
     python -m tools.real_usage --list-devices
     python -m tools.real_usage                        # default: logs/runs/run-*.wav
     python -m tools.real_usage --recordings logs/runs --output-device 4 \
-        --model gemma3:4b --fast-model gemma3:4b
+        --model gemma3:12b --fast-model minicpm5-1b:q8
     python -m tools.real_usage --wav logs/runs/run-20260530-181513.wav
 
 It writes a gradeable per-recording report (report.md + report.json) under
@@ -253,9 +253,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="speaker device index/name the assistant speaks through (e.g. 4)")
     p.add_argument("--device", default=None, help="device profile from config.json (default: desktop)")
     p.add_argument("--llm", default="ollama", choices=["echo", "ollama"])
-    p.add_argument("--model", default=None, help="main LLM model override (e.g. gemma3:4b)")
+    p.add_argument("--model", default=None, help="main LLM override (e.g. gemma3:12b)")
     p.add_argument("--fast-model", default=None, dest="fast_model",
-                   help="fast LLM model override (e.g. gemma3:4b)")
+                   help="fast LLM override (e.g. minicpm5-1b:q8)")
     p.add_argument("--response-timeout", type=float, default=60.0,
                    help="per-recording wait for the spoken response (default 60s; clips are 26-44s)")
     p.add_argument("--start-timeout", type=float, default=20.0, dest="start_timeout",

@@ -7,13 +7,13 @@ verdict. Sits between `tools.live_session` (needs a human) and `--engine replay`
 
 ```
 python -m tools.autotest all                         # memory + voice + suite + scorecard
-python -m tools.autotest memory  [--llm echo|ollama] [--model gemma3:4b]
+python -m tools.autotest memory  [--llm echo|ollama] [--model minicpm5-1b:q8]
 python -m tools.autotest voice   [--acoustics cable|delay|speaker] [--utterances DIR] [--make-sound]
 python -m tools.autotest replay  [--bundle logs/runs/run-<id>.wav]
 python -m tools.autotest suite                       # existing headless pytest gates
 ```
 
-Use a **small** LLM (default `ollama/gemma3:4b`) — this tests the audio/memory
+Use the shipped answering LLM (default `minicpm5-1b:q8`) — this tests the audio/memory
 plumbing, not model intelligence. Run from the repo root with the venv python:
 `.venv/bin/python -m tools.autotest …`. Reports land under `logs/autotest/`
 (gitignored); the `voice` tier also drops a normal `logs/runs/` bundle.

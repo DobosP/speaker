@@ -11,7 +11,7 @@ Three independent tiers (run one, or ``all``):
 * ``memory`` -- in-process ``fact -> distractors -> recall`` over the real
   capability stack; proves the assistant both *stores* a fact and *uses* the
   recalled block in its answer. No audio, no DB (in-RAM :class:`SessionMemory`).
-  Uses a small LLM (``gemma3:4b`` by default; ``--llm echo`` checks plumbing
+  Uses the shipped MiniCPM5-1B Q8 answering model by default; ``--llm echo`` checks plumbing
   only).
 * ``voice`` -- stands up a PipeWire **virtual audio cable** (a null sink + its
   monitor), runs the real ``sherpa`` engine routed onto it (the runtime's own

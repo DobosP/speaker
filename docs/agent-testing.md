@@ -44,7 +44,10 @@ consumption to one metrics token after onset grace plus a floor-only no-cut
 control with a complete post-pacing floor-sample window. Its exact corpus/pairs
 and one-final-per-clip contract prevent data-driven skips or trailing turns from
 shrinking coverage. Its sustained clips override the synthetic one-block minimum
-and run production's two-block temporal policy. Owner-to-FIFO stop must stay
+and run production's two-block temporal policy. The concurrent base setup uses a
+400 ms floor lead and a 2.4 s acoustic tail so its full pinned window commits;
+the separate per-clip replay owns production endpoint grading (ADR-0061).
+Owner-to-FIFO stop must stay
 within the verifier-owned 1.0 s ceiling. Without
 `SPEAKER_REQUIRE_RECORDED=1`, clean clones
 self-skip missing private clips/models; that diagnostic command is not a landing

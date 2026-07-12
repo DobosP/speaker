@@ -507,6 +507,7 @@ RECORDED_BARGE_DRAIN_GRACE_SEC = 0.25
 # requirement, and capture/control scheduling while remaining a usable spoken-
 # interrupt ceiling.
 RECORDED_OWNER_TO_STOP_MAX_SEC = 1.0
+RECORDED_BASE_SETTLE_SEC = 0.4
 RECORDED_BARGE_MIN_SPEECH_SEC = 0.2
 _LONG_BARGE_REPLY = (
     "The deliberate validation answer stays long enough for a real overlap. "
@@ -581,6 +582,15 @@ def run_barge(scfg, base_clip_id: str, barge_clip_id: str) -> BargeResult:
         # one-block echo-free profile, but make the promoted recorded gate run
         # the production two-block temporal policy through the full pipeline.
         barge_in_min_speech_sec=RECORDED_BARGE_MIN_SPEECH_SEC,
+        # This scenario grades the subsequent recorded talk-over, not endpoint
+        # latency.  Hold the setup utterance until its entire hash-pinned window
+        # has drained: the window contains a pause that can make the live
+        # semantic/rule-2 endpointer commit a startup hallucination before the
+        # labelled request.  Per-utterance replay separately grades production
+        # endpoint/ASR; here a 2.4 s acoustic tail makes setup deterministic.
+        endpoint_enabled=False,
+        asr_rule1_min_trailing_silence=2.4,
+        asr_rule2_min_trailing_silence=2.4,
     )
     # A SherpaOnnxEngine subclass that records spoken()/stop_speaking() so we can
     # poll stopped_after() -- the FileReplayEngine can't model concurrent
@@ -686,7 +696,19 @@ def run_barge(scfg, base_clip_id: str, barge_clip_id: str) -> BargeResult:
         transcript_base = len(
             list(getattr(runtime.supervisor.state, "transcript_log", []) or [])
         )
-        base_receipt = inject_stream.push(_to_inject_rate(base_samples, base_sr))
+        # Match the primary live-injection harness: give the streaming decoder a
+        # deterministic floor lead before speech onset.  Starting a recorded
+        # waveform on an arbitrary capture-block boundary can make Zipformer
+        # hallucinate a complete startup phrase and endpoint before the real
+        # request later in the same pinned window.  Slice the precomputed floor
+        # without mutating its cursor so this remains byte- and race-stable.
+        import numpy as np
+
+        base_at_rate = _to_inject_rate(base_samples, base_sr)
+        settle = inject_stream._noise[: round(RECORDED_BASE_SETTLE_SEC * sr)].copy()
+        base_receipt = inject_stream.push(
+            np.concatenate([settle, base_at_rate])
+        )
         if not base_receipt.wait_drained(timeout=15.0):
             raise RuntimeError("recorded barge setup failed: base clip never drained")
 
@@ -893,6 +915,7 @@ __all__ = [
     "BargeResult",
     "RECORDED_BARGE_DRAIN_GRACE_SEC",
     "RECORDED_BARGE_MIN_SPEECH_SEC",
+    "RECORDED_BASE_SETTLE_SEC",
     "RECORDED_OWNER_TO_STOP_MAX_SEC",
     "causal_barge_cut",
     "load_manifest",

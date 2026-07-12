@@ -1,7 +1,7 @@
 # ADR-0053: Make recorded-owner replay a causal no-device gate
 
 Date: 2026-07-12
-Status: accepted
+Status: superseded-by ADR-0061
 
 ## Decision
 

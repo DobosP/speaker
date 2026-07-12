@@ -6,7 +6,7 @@ One code path for Linux, Windows, and macOS. The OS-specific wrappers
 Python and hand off to this module, so the real logic lives in one place and is
 unit-testable.
 
-    python tools/install.py            # create .venv, install deps, fetch models, doctor
+    python tools/install.py            # stage 1: base runtime + speech models
     python tools/install.py --dry-run  # print the plan, change nothing
     python tools/install.py --help
 
@@ -16,10 +16,12 @@ What it does (idempotent -- safe to re-run):
   2. Install the lean runtime deps (no torch). On Windows the sounddevice wheel
      bundles PortAudio, so there is no system step; on Linux PortAudio is a
      system package (the install.sh wrapper handles the sudo apt step).
-  3. Download the speech models + wire config.local.json (tools.setup_models).
-  4. Run the preflight doctor and print OS-correct next steps.
+  3. Download every artifact selected by the desktop speech profile and
+     atomically wire config.local.json (tools.setup_models).
+  4. Run the base preflight with Ollama explicitly deferred and print the
+     separate stage-2 commands required for a full READY result.
 
-The LLM (Ollama) is separate -- see the printed notes.
+The LLM (Ollama) is separate; stage 1 never claims full runtime readiness.
 """
 from __future__ import annotations
 
@@ -35,10 +37,23 @@ RUNTIME_DEPS = [
     "sounddevice",   # mic/speaker I/O (bundles PortAudio on Windows/macOS wheels)
     "sherpa-onnx",   # STT + VAD + TTS + speaker embeddings (ONNX, CPU)
     "numpy",
+    "scipy>=1.13",   # coherence barge-in + polyphase resampling
+    "soxr>=0.3",     # stateful anti-aliased capture-path resampling
     "ollama",        # local LLM client
     "huggingface-hub",  # model downloads
     "psutil",        # CPU/RAM telemetry in the run summary
 ]
+
+# The committed desktop profile selects these speech-path components. Keep the
+# installer command explicit so ``tools.setup_models`` remains useful as a
+# general-purpose/manual downloader while a fresh install is fail-closed for
+# the shipped profile.
+SELECTED_MODEL_ARGS = (
+    "--sense-voice",
+    "--denoise-model",
+    "--kokoro",
+    "--require-selected",
+)
 
 DEFAULT_VENV = ".venv"
 
@@ -124,10 +139,17 @@ def install_plan(args, *, system: str | None = None) -> list[str]:
         f"install runtime deps into {py}: {', '.join(RUNTIME_DEPS)}",
     ]
     if not args.skip_models:
-        steps.append(f"{py} -m tools.setup_models  (download speech models + wire config.local.json)")
+        flags = " ".join(SELECTED_MODEL_ARGS)
+        steps.append(
+            f"{py} -m tools.setup_models {flags}  "
+            "(download the selected speech stack + atomically wire config.local.json)"
+        )
+        steps.append(
+            f"{py} -m tools.doctor --defer-ollama  "
+            "(base-runtime preflight; full READY still requires Ollama)"
+        )
     else:
-        steps.append("skip model download (--skip-models)")
-    steps.append(f"{py} -m tools.doctor  (preflight check)")
+        steps.append("skip model download (--skip-models; dependency-only, incomplete)")
     return steps
 
 
@@ -227,23 +249,47 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.skip_models:
         print("==> 3/4 Speech models + config wiring")
-        # Run setup_models from the repo root so relative paths resolve; it is
-        # non-fatal here because the doctor will report exactly what's missing.
-        _run([py, "-m", "tools.setup_models"], dry_run=False)
+        setup_rc = _run(
+            [py, "-m", "tools.setup_models", *SELECTED_MODEL_ARGS],
+            dry_run=False,
+        )
+        if setup_rc != 0:
+            print(
+                "    selected speech-model setup failed; config was not published.",
+                file=sys.stderr,
+            )
+            return setup_rc
     else:
         print("==> 3/4 Speech models (skipped: --skip-models)")
+        print(
+            "\nINCOMPLETE: dependencies are installed, but speech models were "
+            "deliberately skipped.\n"
+            "Run the installer again without --skip-models before using the "
+            "Sherpa runtime."
+        )
+        return 2
 
-    print("==> 4/4 Preflight check")
-    _run([py, "-m", "tools.doctor"], dry_run=False)
+    print("==> 4/4 Base-runtime preflight (Ollama deferred)")
+    doctor_rc = _run(
+        [py, "-m", "tools.doctor", "--defer-ollama"], dry_run=False
+    )
+    if doctor_rc != 0:
+        print(
+            "    base-runtime preflight failed; follow the FAIL hints above.",
+            file=sys.stderr,
+        )
+        return doctor_rc
 
-    print("\nDone. To run the assistant:\n")
+    print("\nBase speech runtime installed. Activate the environment:\n")
     print(f"    {activation_hint(args.venv)}")
-    print("    python -m core --engine sherpa\n")
-    print("Try it with no audio/models first:")
+    print("\nTry the control plane without audio or models:")
     print("    python -m core --engine console --llm echo\n")
-    print("The LLM runs in Ollama (separate; https://ollama.com). Then:")
+    print("Complete stage 2 in local Ollama (https://ollama.com):")
     print("    ollama pull gemma3:12b")
     print("    python -m tools.setup_minicpm")
+    print("    python -m tools.doctor")
+    print("\nOnly the final doctor READY result authorizes the Sherpa runtime:")
+    print("    python -m core --engine sherpa")
     return 0
 
 

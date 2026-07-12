@@ -16,6 +16,10 @@ used by the phone / phone_lite device profiles) into ``models/``. Idempotent:
 re-running only fills missing files unless you pass --force.
 
     python -m tools.setup_models --gguf   # + on-device LLM weights (phone tier)
+
+The cross-platform installer adds ``--sense-voice --denoise-model --kokoro
+--require-selected``. In that mode the default speaker model and every selected
+artifact must exist before one atomic config.local.json publication.
 """
 from __future__ import annotations
 
@@ -23,6 +27,7 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 from typing import Callable
 
 DEST = os.path.join("pretrained_models", "sherpa")
@@ -309,6 +314,88 @@ def wire_sherpa_paths(
     return config
 
 
+def required_selected_artifact_errors(
+    resolved: dict[str, str],
+    *,
+    speaker_model: bool,
+    denoise_model: bool,
+    sense_voice: bool,
+    kokoro: bool,
+    exists: Callable[[str], bool] = os.path.exists,
+) -> list[str]:
+    """Return missing artifacts for a fail-closed selected-profile publish.
+
+    The ordinary/manual downloader keeps its historical best-effort optional
+    behavior. ``--require-selected`` calls this after every fetch and before it
+    touches config, making the installer-selected desktop stack transactional
+    from the configuration's point of view.
+    """
+    required = {key: key for key in FILE_KEYS}
+    if speaker_model:
+        required["speaker_embedding_model"] = "default speaker-ID model"
+    if denoise_model:
+        required["denoise_model"] = "selected GTCRN denoise model"
+    if sense_voice:
+        required["asr_final_model"] = "selected SenseVoice model"
+        required["asr_final_tokens"] = "selected SenseVoice tokens"
+    if kokoro:
+        # tts_model/tts_tokens are already in FILE_KEYS. Voices are the switch
+        # that selects the Kokoro constructor instead of the fallback VITS one.
+        required["tts_voices"] = "selected Kokoro voices"
+        required["tts_data_dir"] = "selected Kokoro espeak data"
+        required["tts_lexicon"] = "selected Kokoro lexicon"
+
+    errors: list[str] = []
+    for key, label in required.items():
+        path = str(resolved.get(key, "") or "")
+        if not path:
+            errors.append(f"{label} was not resolved")
+        elif not exists(path):
+            errors.append(f"{label} is missing on disk")
+    return errors
+
+
+def publish_config_atomic(config: dict, path: str) -> None:
+    """Atomically replace the machine-local JSON configuration.
+
+    A failed serialization/fsync/replace leaves the previous config byte-for-
+    byte intact. The temporary file is created beside the target so ``replace``
+    stays on one filesystem on Linux, macOS, and Windows.
+    """
+    target = os.path.abspath(path)
+    parent = os.path.dirname(target) or os.curdir
+    os.makedirs(parent, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        prefix=f".{os.path.basename(target)}.", suffix=".tmp", dir=parent
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(config, fh, indent=2)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, target)
+        temporary = ""
+        directory_fd = -1
+        try:
+            directory_fd = os.open(
+                parent,
+                os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+            )
+            os.fsync(directory_fd)
+        except OSError:
+            pass
+        finally:
+            if directory_fd >= 0:
+                os.close(directory_fd)
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
 def fetch_gguf_models(
     manifest: dict,
     gguf_dir: str = GGUF_DIR,
@@ -359,6 +446,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dest", default=DEST, help=f"download dir (default: {DEST})")
     parser.add_argument(
         "--config", default=CONFIG, help=f"config file to update (default: {CONFIG})"
+    )
+    parser.add_argument(
+        "--require-selected",
+        action="store_true",
+        help=(
+            "fail without changing config unless the base models, default "
+            "speaker-ID model, and requested SenseVoice/GTCRN/Kokoro artifacts "
+            "are all present"
+        ),
     )
     parser.add_argument(
         "--speaker-model-url",
@@ -477,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
         help=f"dir for the on-device GGUF weights (default: {GGUF_DIR})",
     )
     args = parser.parse_args(argv)
+    if args.require_selected and not args.speaker_model:
+        parser.error("--require-selected cannot be combined with --no-speaker-model")
 
     try:
         from huggingface_hub import hf_hub_download, snapshot_download
@@ -490,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     os.makedirs(args.dest, exist_ok=True)
 
     resolved: dict[str, str] = {}
+    selected_failures: list[str] = []
     for key in FILE_KEYS:
         coords = manifest[key]
         dest = dest_for(args.dest, key)
@@ -530,11 +629,16 @@ def main(argv: list[str] | None = None) -> int:
                 speaker_dest, args.speaker_model_url, force=args.force
             )
         except Exception as exc:  # noqa: BLE001 - optional enhancement
-            print(
-                f"[models] speaker-ID model not fetched ({exc}); continuing without it. "
-                "Speaker gating stays off until you re-run.",
-                file=sys.stderr,
-            )
+            if args.require_selected:
+                selected_failures.append(
+                    f"default speaker-ID model fetch failed: {type(exc).__name__}: {exc}"
+                )
+            else:
+                print(
+                    f"[models] speaker-ID model not fetched ({exc}); continuing without it. "
+                    "Speaker gating stays off until you re-run.",
+                    file=sys.stderr,
+                )
 
     # Punctuation model (optional, opt-in). Same non-fatal contract: a failed
     # fetch leaves the ASR path on casing-restoration only.
@@ -563,11 +667,16 @@ def main(argv: list[str] | None = None) -> int:
                 denoise_dest, args.denoise_model_url, force=args.force
             )
         except Exception as exc:  # noqa: BLE001 - optional enhancement
-            print(
-                f"[models] speech-denoise model not fetched ({exc}); continuing without it. "
-                "Denoise stays off (sherpa.denoise_enabled) until you re-run.",
-                file=sys.stderr,
-            )
+            if args.require_selected:
+                selected_failures.append(
+                    f"selected GTCRN fetch failed: {type(exc).__name__}: {exc}"
+                )
+            else:
+                print(
+                    f"[models] speech-denoise model not fetched ({exc}); continuing without it. "
+                    "Denoise stays off (sherpa.denoise_enabled) until you re-run.",
+                    file=sys.stderr,
+                )
 
     # Prosody turn-completion model (optional, opt-in). Same non-fatal contract: a
     # failed fetch leaves the endpoint on the lexical detector (the default), never
@@ -600,11 +709,16 @@ def main(argv: list[str] | None = None) -> int:
             resolved["asr_final_tokens"] = extract_member(archive, "tokens.txt", sv_dest)
             want_sense_voice = True
         except Exception as exc:  # noqa: BLE001 - optional enhancement
-            print(
-                f"[models] SenseVoice not fetched ({exc}); continuing without it. "
-                "The final transcript stays on the streaming model until you re-run.",
-                file=sys.stderr,
-            )
+            if args.require_selected:
+                selected_failures.append(
+                    f"selected SenseVoice fetch failed: {type(exc).__name__}: {exc}"
+                )
+            else:
+                print(
+                    f"[models] SenseVoice not fetched ({exc}); continuing without it. "
+                    "The final transcript stays on the streaming model until you re-run.",
+                    file=sys.stderr,
+                )
 
     # Kokoro TTS (optional, opt-in): the ADR-0010 adopted desktop voice -- a whole
     # package (model + voices.bin + tokens + espeak-ng-data + lexicon), not a
@@ -619,11 +733,16 @@ def main(argv: list[str] | None = None) -> int:
                 fetch_kokoro_package(kokoro_dest, args.kokoro_url, force=args.force)
             )
         except Exception as exc:  # noqa: BLE001 - optional enhancement
-            print(
-                f"[models] Kokoro not fetched ({exc}); continuing on the Piper/VITS "
-                "voice. tts_voices stays unset until you re-run.",
-                file=sys.stderr,
-            )
+            if args.require_selected:
+                selected_failures.append(
+                    f"selected Kokoro fetch failed: {type(exc).__name__}: {exc}"
+                )
+            else:
+                print(
+                    f"[models] Kokoro not fetched ({exc}); continuing on the Piper/VITS "
+                    "voice. tts_voices stays unset until you re-run.",
+                    file=sys.stderr,
+                )
 
     # DTLN-aec echo canceller (optional, opt-in). Upstream ships TFLite only, so we
     # fetch the two stage tflite files and convert each to ONNX with tf2onnx. Same
@@ -687,28 +806,66 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-    # Write the absolute model paths into the machine-local overrides file
-    # (gitignored, merged over config.json at load). Start from whatever is
-    # already there so other local overrides survive.
-    cfg: dict = {}
-    if os.path.exists(args.config):
-        with open(args.config, "r", encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    wire_sherpa_paths(cfg, resolved)
-    if want_sense_voice:
-        # backend is a mode string, not a path -> set it directly (wire_sherpa_paths
-        # only handles paths). The model/tokens paths were wired above.
-        cfg.setdefault("sherpa", {})["asr_final_backend"] = "sense_voice"
-    with open(args.config, "w", encoding="utf-8") as fh:
-        json.dump(cfg, fh, indent=2)
+    if args.require_selected:
+        selected_failures.extend(
+            required_selected_artifact_errors(
+                resolved,
+                speaker_model=args.speaker_model,
+                denoise_model=args.denoise_model,
+                sense_voice=args.sense_voice,
+                kokoro=args.kokoro,
+            )
+        )
+        # Preserve order while avoiding a fetch exception + path validation
+        # printing the same root failure twice.
+        selected_failures = list(dict.fromkeys(selected_failures))
+        if selected_failures:
+            print(
+                "[models] required selected setup failed; config was not changed:",
+                file=sys.stderr,
+            )
+            for failure in selected_failures:
+                print(f"  - {failure}", file=sys.stderr)
+            return 1
+
+    # Stage the complete override in memory and publish it with one atomic
+    # replace. Start from the existing machine-local file so unrelated local
+    # overrides survive; any read/write error is a failed setup, never a
+    # partially-truncated config that the installer could mistake for success.
+    try:
+        cfg: dict = {}
+        if os.path.exists(args.config):
+            with open(args.config, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+            if not isinstance(cfg, dict):
+                raise ValueError("existing local config must contain a JSON object")
+        wire_sherpa_paths(cfg, resolved)
+        if want_sense_voice:
+            # backend is a mode string, not a path -> set it directly
+            # (wire_sherpa_paths only handles paths).
+            cfg.setdefault("sherpa", {})["asr_final_backend"] = "sense_voice"
+        publish_config_atomic(cfg, args.config)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        print(
+            f"[models] config publish failed; previous config was preserved "
+            f"({type(exc).__name__}: {exc})",
+            file=sys.stderr,
+        )
+        return 1
 
     sherpa = cfg["sherpa"]
     print(f"\n[models] {args.config} sherpa paths set:")
     for key in FILE_KEYS + [
-        "tts_data_dir", "speaker_embedding_model", "punct_model", "denoise_model",
+        "tts_voices", "tts_data_dir", "tts_lexicon",
+        "speaker_embedding_model", "punct_model", "denoise_model",
+        "asr_final_model", "asr_final_tokens",
         "endpoint_prosody_model", "aec_model",
     ]:
-        if key in ("punct_model", "denoise_model", "endpoint_prosody_model", "aec_model") and not sherpa.get(key):
+        if key in (
+            "tts_voices", "tts_data_dir", "tts_lexicon", "punct_model",
+            "denoise_model", "asr_final_model", "asr_final_tokens",
+            "endpoint_prosody_model", "aec_model",
+        ) and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
     if sherpa.get("speaker_embedding_model"):

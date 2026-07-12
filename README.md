@@ -44,9 +44,11 @@ Linux/Windows/macOS and (later) Android/iOS.
 
 ## Quick start
 
-One command sets up everything (a clean `.venv` with pip, the lean runtime
-deps, the speech models, and a preflight check). It's the same cross-platform
-code path on every OS — pick your shell:
+Installation has two fail-closed stages ([ADR-0063](docs/adr/0063-fail-fresh-install-readiness-closed.md)).
+The first command creates a clean `.venv`, installs the local audio runtime,
+downloads the selected speech stack (streaming ASR/VAD, SenseVoice, GTCRN,
+Kokoro, and speaker-ID), atomically writes `config.local.json`, and runs a base
+preflight without contacting Ollama:
 
 ```bash
 # Linux / macOS
@@ -57,19 +59,24 @@ code path on every OS — pick your shell:
 #   or double-click install.bat  (cmd.exe)
 ```
 
-Useful flags (all platforms): `--dry-run` (show the plan, change nothing),
-`--recreate` (rebuild the venv from scratch — the fix if a conda/venv mix gives
-`No module named pip`), `--skip-models` (deps only). Then activate the venv it
-created (`source .venv/bin/activate`, or `.venv\Scripts\Activate.ps1` on Windows)
-and add the local LLM:
+Stage one succeeds only with a `BASE READY (Ollama deferred)` result. Useful
+flags on every platform are `--dry-run` (show the plan, change nothing) and
+`--recreate` (rebuild the venv after a broken conda/venv mix). `--skip-models`
+installs dependencies only and exits 2 as deliberately incomplete.
+
+For stage two, activate the environment (`source .venv/bin/activate`, or
+`.venv\Scripts\Activate.ps1` on Windows), provision both local Ollama roles,
+and run the full preflight:
 
 ```bash
 ollama pull gemma3:12b                              # vision/complex main tier
 python -m tools.setup_minicpm                       # MiniCPM5-1B answering tier
+python -m tools.doctor
 ```
 
-Not sure what's missing? `python -m tools.doctor` prints a READY/NOT-READY
-report with the exact fix command (OS-aware) for each line.
+Only the final `READY -> python -m core --engine sherpa` result attests the full
+runtime. `python -m tools.doctor --defer-ollama` is a base-only diagnostic and
+can never issue that verdict. Each failing doctor line includes its fix command.
 
 Run the console (no audio/models/Ollama needed — type to talk, exercises the brain):
 

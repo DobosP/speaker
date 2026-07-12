@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3714 passed/31 skipped/9 warnings; focused MiniCPM/readiness: 517 passed; APM: 6 passed; deterministic conversation: 42/42, pass^3.
+Last verified: 2026-07-12 on Linux ROG; identity branch full: 3714 passed/31 skipped/9 warnings; fresh-install branch full: 3692 passed/31 skipped/9 warnings; focused identity/fresh/combined: 517/121/549 passed; strict recorded/APM: 9/6 passed; deterministic conversation: 42/42, pass^3. Combined full suite pending.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–62 headless code is green.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–63 headless code is green.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block overlap is 2/2 with deterministic full-window setup; live remains red/unlandable (ADR-0052/61).
 
 ## Runtime
@@ -51,10 +51,10 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block overlap is 2/2 with determin
   publishes an inode-bound config; non-empty overwrite needs explicit opt-in
   and wrong-checkout prepared enrollment refuses before capture (ADR-0047/0056).
 - Native startup, doctor, and live-session preflight share one resolved-profile
-  readiness contract. Selected ASR/TTS/VAD/denoise/KWS/punctuation/AEC artifacts
-  and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
-  Windows voice-communications/word-cut is unavailable until a constructible,
-  verified capture API replaces the unsupported setting (ADR-0019).
+  contract; selected artifacts/routes fail closed (ADR-0016). Fresh install includes
+  SciPy/soxr plus SenseVoice/GTCRN/Kokoro/speaker-ID, atomically publishes only a
+  complete selected config, and propagates failures. Stage one can say only `BASE
+  READY` with Ollama deferred; skipped models are incomplete (ADR-0063). Windows voice-communications/word-cut remains unavailable pending a verified API (ADR-0019).
 - Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
   scenario-correct terminal outcome, zero errors/stuck/self-cuts, and causal cuts.
   Cable is explicitly incomplete and cannot make `all` green (ADR-0055/58).

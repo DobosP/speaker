@@ -9,9 +9,11 @@ import argparse
 
 from tools.install import (
     RUNTIME_DEPS,
+    SELECTED_MODEL_ARGS,
     activation_hint,
     install_plan,
     is_windows,
+    main,
     needs_fresh_venv,
     portaudio_hint,
     venv_python_path,
@@ -69,16 +71,81 @@ def test_install_plan_includes_deps_and_models():
     text = "\n".join(plan)
     assert any(dep in text for dep in RUNTIME_DEPS)
     assert "setup_models" in text
-    assert "doctor" in text
+    assert all(flag in text for flag in SELECTED_MODEL_ARGS)
+    assert "doctor --defer-ollama" in text
+
+
+def test_lean_runtime_deps_include_required_signal_resamplers():
+    assert "scipy>=1.13" in RUNTIME_DEPS
+    assert "soxr>=0.3" in RUNTIME_DEPS
 
 
 def test_install_plan_respects_skip_models():
     plan = install_plan(_args(skip_models=True), system="linux")
     text = "\n".join(plan)
     assert "skip model download" in text
+    assert "incomplete" in text
     assert "tools.setup_models" not in text
+    assert "tools.doctor" not in text
 
 
 def test_install_plan_uses_windows_interpreter_path():
     plan = install_plan(_args(), system="win32")
     assert any("python.exe" in step for step in plan)
+
+
+def _run_installer(monkeypatch, responses, *argv):
+    import tools.install as installer
+
+    calls: list[list[str]] = []
+    remaining = iter(responses)
+    monkeypatch.setattr(
+        installer,
+        "create_venv",
+        lambda *_args, **_kwargs: "/venv/bin/python",
+    )
+
+    def fake_run(command, *, dry_run):
+        assert dry_run is False
+        calls.append(command)
+        return next(remaining)
+
+    monkeypatch.setattr(installer, "_run", fake_run)
+    return main(["--venv", "/venv", *argv]), calls
+
+
+def test_installer_propagates_selected_model_setup_failure(monkeypatch):
+    rc, calls = _run_installer(monkeypatch, (0, 7))
+
+    assert rc == 7
+    assert calls[1] == [
+        "/venv/bin/python", "-m", "tools.setup_models", *SELECTED_MODEL_ARGS,
+    ]
+    assert all("tools.doctor" not in command for command in calls)
+
+
+def test_installer_propagates_deferred_doctor_failure(monkeypatch):
+    rc, calls = _run_installer(monkeypatch, (0, 0, 9))
+
+    assert rc == 9
+    assert calls[-1] == [
+        "/venv/bin/python", "-m", "tools.doctor", "--defer-ollama",
+    ]
+
+
+def test_installer_skip_models_is_explicitly_incomplete(monkeypatch):
+    rc, calls = _run_installer(monkeypatch, (0,), "--skip-models")
+
+    assert rc == 2
+    assert len(calls) == 1
+    assert calls[0][2:4] == ["pip", "install"]
+
+
+def test_installer_success_stops_at_base_ready(monkeypatch, capsys):
+    rc, _calls = _run_installer(monkeypatch, (0, 0, 0))
+
+    assert rc == 0
+    output = capsys.readouterr().out
+    assert "Base speech runtime installed" in output
+    assert "python -m tools.doctor" in output
+    assert "Only the final doctor READY result" in output

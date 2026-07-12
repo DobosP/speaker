@@ -1,6 +1,7 @@
 """Runtime integration for engine-attested playback history."""
 from __future__ import annotations
 
+import logging
 import threading
 from dataclasses import dataclass
 
@@ -193,7 +194,8 @@ class _JoiningCallbackEngine(_ControlledReceiptEngine):
         self.callback_joined = not callback_thread.is_alive()
 
 
-def test_speak_tracked_can_join_callback_thread_without_deadlock():
+def test_speak_tracked_can_join_callback_thread_without_deadlock(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
     engine = _JoiningCallbackEngine()
     runtime = VoiceRuntime(engine, EchoLLM())
     runtime.start(run_bus=False)
@@ -219,7 +221,347 @@ def test_speak_tracked_can_join_callback_thread_without_deadlock():
         assert engine.callback_errors == []
         assert runtime.wait_idle()
         assert _assistant_memory(runtime) == ["Callback-thread playback."]
+        text = "\n".join(record.getMessage() for record in caplog.records)
+        assert (
+            "playback receipt started: fragment=playback-1 "
+            f"task={task.task_id} input_generation=0"
+        ) in text
+        assert (
+            "playback quiescent: tracked assistant reply terminal "
+            f"task={task.task_id} input_generation=0 outcome=completed"
+        ) in text
     finally:
+        runtime.stop()
+
+
+def test_final_brain_marker_includes_exact_input_generation(caplog):
+    caplog.set_level(logging.INFO, logger="speaker.runtime")
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    try:
+        runtime._on_final("generation tagged question")
+
+        text = "\n".join(record.getMessage() for record in caplog.records)
+        assert (
+            "final -> brain: 'generation tagged question' "
+            "(mode=assistant input_generation=1)"
+        ) in text
+    finally:
+        runtime.stop()
+
+
+def test_auxiliary_playback_emits_no_autonomous_reply_markers(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    auxiliary = history.register(
+        task_id="reply-task",
+        epoch=1,
+        input_generation=21,
+        followup_generation=1,
+        text="Please wait.",
+        remember=False,
+        is_followup=False,
+        streaming=False,
+    )
+    try:
+        runtime._on_playback_started(auxiliary)
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=auxiliary,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="Please wait.",
+            )
+        )
+
+        assert "task=reply-task input_generation=21" not in caplog.text
+        assert "playback receipt started:" not in caplog.text
+        assert "playback quiescent:" not in caplog.text
+    finally:
+        runtime.stop()
+
+
+def test_auxiliary_before_real_reply_cannot_satisfy_reply_markers(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    auxiliary = history.register(
+        task_id="shared-task",
+        epoch=2,
+        input_generation=22,
+        followup_generation=2,
+        text="One moment.",
+        remember=False,
+        is_followup=False,
+        streaming=False,
+    )
+    reply = history.register(
+        task_id="shared-task",
+        epoch=2,
+        input_generation=22,
+        followup_generation=2,
+        text="The real answer.",
+        remember=True,
+        is_followup=False,
+        streaming=False,
+    )
+    try:
+        runtime._on_playback_started(auxiliary)
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=auxiliary,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="One moment.",
+            )
+        )
+        assert "task=shared-task input_generation=22" not in caplog.text
+
+        runtime._on_playback_started(reply)
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=reply,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="The real answer.",
+            )
+        )
+
+        assert caplog.text.count("playback receipt started:") == 1
+        assert caplog.text.count("playback quiescent:") == 1
+        assert (
+            "playback receipt started: fragment=playback-2 "
+            "task=shared-task input_generation=22"
+        ) in caplog.text
+        assert (
+            "playback quiescent: tracked assistant reply terminal "
+            "task=shared-task input_generation=22 outcome=completed"
+        ) in caplog.text
+    finally:
+        runtime.bus.drain()
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    (PlaybackOutcome.DROPPED, PlaybackOutcome.FAILED),
+)
+def test_terminal_marker_surfaces_unsuccessful_group_outcome(caplog, outcome):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    fragment = history.register(
+        task_id="unsuccessful-reply",
+        epoch=3,
+        input_generation=23,
+        followup_generation=3,
+        text="Unsuccessful reply.",
+        remember=True,
+        is_followup=False,
+        streaming=False,
+    )
+    try:
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=fragment,
+                outcome=outcome,
+            )
+        )
+
+        assert (
+            "playback quiescent: tracked assistant reply terminal "
+            "task=unsuccessful-reply input_generation=23 "
+            f"outcome={outcome.value}"
+        ) in caplog.text
+    finally:
+        runtime.bus.drain()
+        runtime.stop()
+
+
+def test_terminal_marker_is_per_group_while_another_reply_is_pending(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    first = history.register(
+        task_id="reply-one",
+        epoch=1,
+        input_generation=11,
+        followup_generation=1,
+        text="First reply.",
+        remember=True,
+        is_followup=False,
+        streaming=False,
+    )
+    second = history.register(
+        task_id="reply-two",
+        epoch=2,
+        input_generation=12,
+        followup_generation=2,
+        text="Second reply.",
+        remember=True,
+        is_followup=False,
+        streaming=False,
+    )
+    try:
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=first,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="First reply.",
+            )
+        )
+
+        assert history.conversation_pending is True
+        assert (
+            "playback quiescent: tracked assistant reply terminal "
+            "task=reply-one input_generation=11 outcome=completed"
+        ) in caplog.text
+
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=second,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="Second reply.",
+            )
+        )
+        assert (
+            "playback quiescent: tracked assistant reply terminal "
+            "task=reply-two input_generation=12 outcome=completed"
+        ) in caplog.text
+    finally:
+        runtime.bus.drain()
+        runtime.stop()
+
+
+def test_stream_close_marker_keeps_context_after_early_terminal(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    fragment = history.register(
+        task_id="stream-reply",
+        epoch=3,
+        input_generation=13,
+        followup_generation=3,
+        text="Stream reply.",
+        remember=True,
+        is_followup=False,
+        streaming=True,
+    )
+    try:
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=fragment,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="Stream reply.",
+            )
+        )
+        assert "task=stream-reply input_generation=13" not in caplog.text
+
+        runtime._on_event(
+            AgentEvent(
+                EventKind.TTS_STREAM_END,
+                {"task_id": "stream-reply", "epoch": 3},
+            )
+        )
+
+        assert (
+            "playback quiescent: tracked assistant reply terminal "
+            "task=stream-reply input_generation=13 outcome=completed"
+        ) in caplog.text
+    finally:
+        runtime.bus.drain()
+        runtime.stop()
+
+
+def test_interrupt_logs_early_terminal_stream_context_once(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    fragment = history.register(
+        task_id="interrupted-reply",
+        epoch=4,
+        input_generation=14,
+        followup_generation=4,
+        text="Early terminal reply.",
+        remember=True,
+        is_followup=False,
+        streaming=True,
+    )
+    receipt = PlaybackReceipt(
+        fragment_id=fragment,
+        outcome=PlaybackOutcome.COMPLETED,
+        safe_text_prefix="Early terminal reply.",
+    )
+    marker = (
+        "playback quiescent: tracked assistant reply terminal "
+        "task=interrupted-reply input_generation=14 outcome=completed"
+    )
+    try:
+        runtime._on_playback_terminal(receipt)
+        assert marker not in caplog.text
+
+        runtime._interrupt_playback_history()
+        assert caplog.text.count(marker) == 1
+
+        # A late duplicate receipt cannot emit a second terminal marker after
+        # interrupt_all() removed the already-terminal group.
+        runtime._on_playback_terminal(receipt)
+        assert caplog.text.count(marker) == 1
+    finally:
+        runtime.bus.drain()
+        runtime.stop()
+
+
+def test_task_cancel_logs_early_terminal_stream_context_once(caplog):
+    caplog.set_level(logging.DEBUG, logger="speaker.runtime")
+    runtime = VoiceRuntime(_ControlledReceiptEngine(), EchoLLM())
+    runtime.start(run_bus=False)
+    history = runtime._playback_history
+    assert history is not None
+    fragment = history.register(
+        task_id="cancelled-reply",
+        epoch=5,
+        input_generation=15,
+        followup_generation=5,
+        text="Cancelled terminal reply.",
+        remember=True,
+        is_followup=False,
+        streaming=True,
+    )
+    marker = (
+        "playback quiescent: tracked assistant reply terminal "
+        "task=cancelled-reply input_generation=15 outcome=completed"
+    )
+    try:
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=fragment,
+                outcome=PlaybackOutcome.COMPLETED,
+                safe_text_prefix="Cancelled terminal reply.",
+            )
+        )
+        assert marker not in caplog.text
+
+        runtime._on_event(
+            AgentEvent(
+                EventKind.TASK_CANCELLED,
+                {"task_id": "cancelled-reply"},
+            )
+        )
+        assert caplog.text.count(marker) == 1
+    finally:
+        runtime.bus.drain()
         runtime.stop()
 
 

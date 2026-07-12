@@ -1,7 +1,7 @@
 # ADR-0055: Fail autonomous voice verdicts closed
 
 Date: 2026-07-12
-Status: accepted
+Status: superseded-by ADR-0058
 
 ## Decision
 

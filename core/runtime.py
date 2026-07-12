@@ -49,7 +49,12 @@ from .metrics import (
     MetricsRecorder,
 )
 from .persona import PersonaConfig, build_system_prompt
-from .playback_history import PlaybackCommit, PlaybackHistory
+from .playback_history import (
+    PlaybackCommit,
+    PlaybackContext,
+    PlaybackFinalization,
+    PlaybackHistory,
+)
 from .tts_markup import (
     ReplySpeechId,
     ReplyVoiceContinuity,
@@ -775,10 +780,22 @@ class VoiceRuntime:
         if history is None:
             return
         with self._playback_effect_lock:
+            context = history.fragment_context(fragment_id)
             attempted = history.mark_started(fragment_id)
-            if attempted is None:
+            if attempted is None or context is None:
                 return
             self._resume.note_playback_started(fragment_id)
+            if not context.remember:
+                return
+            # Receipt-dispatch thread, not the audio callback: expose an exact
+            # sink-onset marker to the autonomous harness without logging from
+            # PortAudio's real-time thread.
+            log.debug(
+                "playback receipt started: fragment=%s task=%s input_generation=%d",
+                fragment_id,
+                context.task_id,
+                context.input_generation,
+            )
 
     def _on_playback_terminal(self, receipt: PlaybackReceipt) -> None:
         """Resolve one terminal receipt without doing memory I/O on its thread."""
@@ -801,6 +818,25 @@ class VoiceRuntime:
             )
             self._publish_playback_commits(resolution.commits)
             self._playback_effect_changed.notify_all()
+            self._log_playback_finalizations(history.drain_finalizations())
+
+    @staticmethod
+    def _log_playback_finalizations(
+        finalizations: tuple[PlaybackFinalization, ...],
+    ) -> None:
+        """Expose one exact autonomous marker per remembered finalized group."""
+
+        for finalization in finalizations:
+            context = finalization.context
+            if not context.remember:
+                continue
+            log.debug(
+                "playback quiescent: tracked assistant reply terminal "
+                "task=%s input_generation=%d outcome=%s",
+                context.task_id,
+                context.input_generation,
+                finalization.outcome.value,
+            )
 
     def _interrupt_playback_history(self) -> None:
         if self._reply_voice_continuity is not None:
@@ -810,6 +846,7 @@ class VoiceRuntime:
             with self._playback_effect_lock:
                 self._publish_playback_commits(history.interrupt_all())
                 self._playback_effect_changed.notify_all()
+                self._log_playback_finalizations(history.drain_finalizations())
 
     def _new_input_generation(self) -> int:
         with self._input_generation_lock:
@@ -1281,7 +1318,10 @@ class VoiceRuntime:
         # turn (owner: a stopped story must resume, not restart or greet).
         resume_prompt = self._resume.preview_resume_prompt(text)
         log.info(
-            "final -> brain: %r (mode=%s)", text, self.mode.value,
+            "final -> brain: %r (mode=%s input_generation=%d)",
+            text,
+            self.mode.value,
+            input_generation,
             extra={"transcript": {"role": "user", "text": text, "mode": self.mode.value}},
         )
         if resume_prompt is not None:
@@ -1983,27 +2023,36 @@ class VoiceRuntime:
         if self._playback_history is not None:
             if event.kind == EventKind.TTS_STREAM_END:
                 stream_epoch = event.payload.get("epoch")
+                stream_task_id = str(event.payload.get("task_id", ""))
+                stream_epoch_value = int(
+                    stream_epoch
+                    if stream_epoch is not None
+                    else self.supervisor.speech_epoch
+                )
                 with self._playback_effect_lock:
                     self._publish_playback_commits(
                         self._playback_history.close_stream(
-                            str(event.payload.get("task_id", "")),
-                            int(
-                                stream_epoch
-                                if stream_epoch is not None
-                                else self.supervisor.speech_epoch
-                            ),
+                            stream_task_id,
+                            stream_epoch_value,
                         )
                     )
                     self._playback_effect_changed.notify_all()
+                    self._log_playback_finalizations(
+                        self._playback_history.drain_finalizations()
+                    )
             elif event.kind in {EventKind.TASK_CANCELLED, EventKind.TASK_FAILED}:
+                task_id = str(event.payload.get("task_id", ""))
                 with self._playback_effect_lock:
                     self._publish_playback_commits(
                         self._playback_history.close_task(
-                            str(event.payload.get("task_id", "")),
+                            task_id,
                             interrupted=True,
                         )
                     )
                     self._playback_effect_changed.notify_all()
+                    self._log_playback_finalizations(
+                        self._playback_history.drain_finalizations()
+                    )
         if event.kind == EventKind.TTS_REQUEST:
             text = str(event.payload.get("text", "")).strip()
             if not text:

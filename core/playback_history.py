@@ -43,6 +43,24 @@ class PlaybackResolution:
     commits: tuple[PlaybackCommit, ...] = ()
 
 
+@dataclass(frozen=True)
+class PlaybackContext:
+    """Stable task/input identity for one tracked playback group."""
+
+    task_id: str
+    epoch: int
+    input_generation: int
+    remember: bool
+
+
+@dataclass(frozen=True)
+class PlaybackFinalization:
+    """One finalized group's causal identity and aggregate sink outcome."""
+
+    context: PlaybackContext
+    outcome: PlaybackOutcome
+
+
 @dataclass
 class _Fragment:
     fragment_id: str
@@ -91,6 +109,7 @@ class PlaybackHistory:
         # newer answer and reverse recent-conversation chronology.
         self._remember_order: deque[int] = deque()
         self._ready_commits: dict[int, Optional[PlaybackCommit]] = {}
+        self._finalizations: deque[PlaybackFinalization] = deque()
 
     @property
     def pending(self) -> bool:
@@ -224,6 +243,42 @@ class PlaybackHistory:
             fragment.started = True
             return fragment.requested_text
 
+    def fragment_context(self, fragment_id: str) -> Optional[PlaybackContext]:
+        with self._lock:
+            fragment = self._fragments.get(fragment_id)
+            if fragment is None:
+                return None
+            group = self._groups.get(fragment.group_id)
+            if group is None:
+                return None
+            return PlaybackContext(
+                task_id=group.task_id,
+                epoch=group.epoch,
+                input_generation=group.input_generation,
+                remember=group.remember,
+            )
+
+    def stream_context(self, task_id: str, epoch: int) -> Optional[PlaybackContext]:
+        with self._lock:
+            group_id = self._stream_groups.get((task_id, int(epoch)))
+            group = self._groups.get(group_id) if group_id is not None else None
+            if group is None:
+                return None
+            return PlaybackContext(
+                task_id=group.task_id,
+                epoch=group.epoch,
+                input_generation=group.input_generation,
+                remember=group.remember,
+            )
+
+    def drain_finalizations(self) -> tuple[PlaybackFinalization, ...]:
+        """Consume group-terminal attestations in finalization order."""
+
+        with self._lock:
+            finalizations = tuple(self._finalizations)
+            self._finalizations.clear()
+            return finalizations
+
     def resolve(self, receipt: PlaybackReceipt) -> Optional[PlaybackResolution]:
         """Accept one terminal receipt and finalize its group when possible."""
 
@@ -326,6 +381,18 @@ class PlaybackHistory:
             and fragment.receipt.outcome == PlaybackOutcome.COMPLETED
             for fragment in fragments
         )
+        outcomes = tuple(
+            fragment.receipt.outcome
+            for fragment in fragments
+            if fragment.receipt is not None
+        )
+        outcome_priority = {
+            PlaybackOutcome.COMPLETED: 0,
+            PlaybackOutcome.DROPPED: 1,
+            PlaybackOutcome.INTERRUPTED: 2,
+            PlaybackOutcome.FAILED: 3,
+        }
+        aggregate_outcome = max(outcomes, key=outcome_priority.__getitem__)
         text = " ".join(safe_parts).strip()
         commit: Optional[PlaybackCommit] = None
         if group.remember and text:
@@ -346,6 +413,17 @@ class PlaybackHistory:
         if self._stream_groups.get(key) == group_id:
             self._stream_groups.pop(key, None)
         self._stream_metadata.pop(key, None)
+        self._finalizations.append(
+            PlaybackFinalization(
+                context=PlaybackContext(
+                    task_id=group.task_id,
+                    epoch=group.epoch,
+                    input_generation=group.input_generation,
+                    remember=group.remember,
+                ),
+                outcome=aggregate_outcome,
+            )
+        )
         if not group.remember:
             return ()
         self._ready_commits[group_id] = commit

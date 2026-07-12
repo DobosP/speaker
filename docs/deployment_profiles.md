@@ -1,7 +1,7 @@
 # Deployment & Device Profiles
 
 How the runtime is sized per machine and deployed per platform. Config lives in
-`config.json`; the loader + profile merge are in `core/app.py`.
+`config.json`; the loader + profile merge are in `core/config.py`.
 
 > **Note:** the pre-refactor knobs `profile` / `runtime_profile` /
 > `transport_mode` and the `python main.py --profile …` CLI are **gone** (they

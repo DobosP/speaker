@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3641 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3671 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; general recall stays fenced/model-routed. ADR-0055/56/57 headless code is green.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; general recall stays fenced/model-routed. ADR-0055–59 headless code is green.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
 
 ## Runtime
@@ -18,7 +18,7 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
   ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
 - Postgres smart-save reuses the actual fast Ollama client in JSON mode; a
   non-Ollama fast tier keeps deterministic filters and loads no third model
-  (ADR-0057). General semantic/cross-session MiniCPM recall is not proven.
+  (ADR-0057/59). General semantic/cross-session MiniCPM recall is not proven.
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are
@@ -55,9 +55,9 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
   Windows voice-communications/word-cut is unavailable until a constructible,
   verified capture API replaces the unsupported setting (ADR-0019).
-- Autonomous voice/stress verdicts require labelled WER coverage, true first-
-  audio turns, zero errors/stuck/self-cuts, and every talk-over cut in 0–1.0 s.
-  Cable is explicitly incomplete and cannot make `all` green (ADR-0055).
+- Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
+  scenario-correct terminal outcome, zero errors/stuck/self-cuts, and causal cuts.
+  Cable is explicitly incomplete and cannot make `all` green (ADR-0055/58).
 - Synchronous capabilities use bounded cancellable coordinators; failed plan
   tools cannot retry, and failed web may make one fenced local fallback.
   Barge/timeout blocks stale output and caps abandoned providers at six; CPU

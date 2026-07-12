@@ -3,7 +3,7 @@ Valid until: the next voice-runtime architecture or live-validation decision —
 # Comparable voice-agent parity audit
 
 This audit compares the Python/Linux voice runtime derived from `c0a26cb`, with
-the follow-up behavior in ADR-0055 through ADR-0057, against current
+the follow-up behavior in ADR-0055 through ADR-0059, against current
 primary-source behavior from LiveKit Agents, Pipecat, and Kyutai Moshi. It is a
 feature/evidence comparison, not a claim that different
 hardware, hosted services, or end-to-end speech models are interchangeable.
@@ -29,7 +29,7 @@ Primary references checked 2026-07-12:
 | Tool/cancellation safety | Modern frameworks expose interruption-aware long-running tools. | Epoch/generation fences, bounded provider bulkhead, cancel events, no duplicate failed-provider retry, and causal trace checks. | Parity for tested local tools; remote multi-participant paths are not part of the Linux-v1 proof. |
 | Noise, echo, and speaker authority | Frameworks integrate VAD and optional noise/voice cancellation; identity policy is application-specific. | PipeWire EC route, GTCRN, calibrated pre-gain evidence, DTD, speaker embedding, and current-signal AGC provenance. | Broader local acoustic policy, but fresh v5 enrollment/live validation is mandatory. |
 | Model locality and role routing | Frameworks are provider-neutral and commonly mix fast and strong models. | MiniCPM5-1B Q8 handles ordinary local text/voice; Gemma remains local complex/vision; cloud is explicit opt-in (ADR-0020). | Implemented; final clean-SHA real A/B still required. |
-| Deterministic evaluation | LiveKit documents a test framework; Pipecat exposes frame/metrics observers. | 14-scenario causal conversation gate, strict private recorded replay, APM/DTD tests, synthetic injection, run receipts, identity/provenance hashes, clean-revision model A/B, and the fail-closed WER/first-audio/barge policy in ADR-0055. | Strong headless coverage; final-revision and physical reruns remain pending. |
+| Deterministic evaluation | LiveKit documents a test framework; Pipecat exposes frame/metrics observers. | 14-scenario causal conversation gate, strict private recorded replay, APM/DTD tests, synthetic injection, run receipts, identity/provenance hashes, clean-revision model A/B, and remembered same-generation/outcome-attested playback evidence per ADR-0058. | Strong headless coverage; final-revision and physical reruns remain pending. |
 | Native end-to-end full duplex | Moshi models user and assistant audio in parallel streams and reports about 200 ms practical latency, but the official PyTorch path needs roughly 24 GB GPU memory and its bare CLI has no echo cancellation. | Cascaded local stack on a 16 GB laptop GPU; explicit STT text enables tools, privacy classification, replay grading, and MiniCPM routing. | Deliberate architectural tradeoff, not feature parity. Replacing the stack with Moshi is a separate model/product decision. |
 
 ## Current conclusion
@@ -48,9 +48,9 @@ revision:
 2. Fresh v5 enrollment on the actual PipeWire EC capture domain.
 3. Bare-speaker quiet speech, low sensitivity, self-echo, generic override,
    mid-thought pause, reply-tail continuity, and STOP acceptance.
-4. A final-revision autonomous delay/speaker report exercising ADR-0055's
-   fail-closed WER, first-audio, self-interruption, cut-latency, error, and stuck
-   checks.
+4. A final-revision autonomous delay/speaker report exercising ADR-0058's
+   fail-closed same-generation/outcome playback, WER, self-interruption,
+   cut-latency, error, and stuck checks.
 
 Smart Turn deployment is a measured follow-up, not a substitute for those live
 gates: enabling a new endpointer during the same barge-in acceptance run would

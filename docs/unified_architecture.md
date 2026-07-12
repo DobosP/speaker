@@ -329,7 +329,11 @@ Optional **capability router** (`core/capability_router.py`): When configured, i
 
 - **Seam design:** One contract (`EngineCallbacks`) + four implementations (sherpa/scripted/file-replay/livekit) lets tests, CLI, benchmarks, and the remote path all speak the same language to the brain without code duplication.
 - **Passthrough-on-error DSP:** AEC, denoiser, resampler, and addressing gate all fail open (return input unchanged) so transient model hiccups or edge cases never crash the capture daemon.
-- **Per-platform profiles:** `config.json`'s `device_profiles` (desktop/phone) and CLI `--device` flag shallow-merge engine + LLM settings, so mobile can override `engine="livekit"`, disable costly features, etc. (See [§11](#11--observability-testing--device-profiles).)
+- **Per-platform profiles:** `config.json`'s `device_profiles` (desktop/phone)
+  and CLI `--device` flag recursively merge engine + LLM settings; opaque
+  backend `options` bags replace wholesale. Profiles can therefore override
+  `engine="livekit"`, disable costly features, etc. (See
+  [§11](#11--observability-testing--device-profiles).)
 - **Session recording** (`WavRecorder`, `core/recorder.py`): Background-threaded writer of the exact 16 kHz mono audio the recognizer hears to WAV, so recorded runs can be replayed bit-for-bit and frozen as regression tests.
 
 ---
@@ -590,7 +594,8 @@ Lives in `utils/memory.py` and handles all database I/O:
 
 ### 6.6 Configuration (flat memory block, R10)
 
-Single-level keys in `config.json` → `memory` so device-profile overrides survive shallow merge:
+Single-level keys in `config.json` → `memory`; recursive device-profile merging
+preserves unspecified base keys while overriding only the selected values:
 
 ```json
 {
@@ -616,10 +621,12 @@ Single-level keys in `config.json` → `memory` so device-profile overrides surv
 Backend selection (`core.app._build_memory`): explicit `sqlite` builds the
 persistent local protocol adapter; `postgres`, or `auto` with `$DATABASE_URL`,
 builds `MemoryManagerAdapter` in a guarded block and redacts connection errors;
-other paths use `SessionMemory`. Per ADR-0057, a Postgres writer receives the
-actual fast Ollama client for structured cleanup/gating. Non-Ollama profiles use
-the deterministic filters only, and no hidden third model is constructed. The
-pruned writer-internal knobs are not live `config.json` keys.
+other paths use `SessionMemory`. Per ADR-0057, as refined by ADR-0059, a Postgres
+writer receives the actual fast Ollama client for structured cleanup/gating on
+normal flushes; shutdown reclaims buffered/in-flight text without new cleanup
+inference (configured embedding work may still run during persistence).
+Non-Ollama profiles use deterministic filters only, and no hidden third model is
+constructed. The pruned writer-internal knobs are not live `config.json` keys.
 
 ### 6.7 Recall injection workflow
 
@@ -980,7 +987,10 @@ The recorder is lock-guarded; the hot path computes nothing beyond a dict write.
 
 ### Device profiles
 
-`device_profiles` (`device` + selectable via `--device <name>`) are shallow-merged over the base config per section, so a profile only states what differs. Config loads and profile merge in `core/app.py`.
+`device_profiles` (`device` + selectable via `--device <name>`) recursively merge
+over the base config, except opaque backend `options` bags replace wholesale, so
+a profile only states what differs. Config loading and profile merging live in
+`core/config.py`.
 
 | Profile | LLM backend | Models | Notes |
 |---------|-------------|--------|-------|

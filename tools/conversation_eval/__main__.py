@@ -10,7 +10,7 @@ import re
 import subprocess
 from urllib.parse import urlparse
 
-from tools.setup_minicpm import LOCAL_MODEL
+from core.minicpm_identity import MINICPM_Q8_CONTRACT
 
 from .identity import verify_minicpm_identity, verify_ollama_blob_identity
 from .report import build_report, summarize_model, write_report
@@ -23,6 +23,9 @@ from .runner import (
     warm_models,
 )
 from .scenarios import SCENARIOS, selected
+
+
+LOCAL_MODEL = MINICPM_Q8_CONTRACT.alias
 
 
 def _default_output() -> Path:

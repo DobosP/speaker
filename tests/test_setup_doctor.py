@@ -8,6 +8,8 @@ import os
 
 import pytest
 
+import core.readiness as readiness
+from core.minicpm_identity import MINICPM_Q8_CONTRACT
 from tools.doctor import (
     PipeWireState,
     check_audio,
@@ -601,6 +603,172 @@ def test_check_ollama_minicpm_uses_template_aware_setup_hint():
     assert model.hint == "python -m tools.setup_minicpm"
 
 
+def _minicpm_show(*, digest=None, template=None, parameters=None, quantization="Q8_0"):
+    digest = digest or MINICPM_Q8_CONTRACT.blob_sha256
+    alias = {
+        "modelfile": f"FROM /models/sha256-{digest}",
+        "template": template or MINICPM_Q8_CONTRACT.template,
+        "parameters": parameters or (
+            'stop "<|im_end|>"\nstop "</s>"\n'
+            "temperature 0.7\ntop_p 0.95\nnum_ctx 8192"
+        ),
+        "details": {"quantization_level": quantization},
+    }
+    source = {"modelfile": f"FROM /models/sha256-{MINICPM_Q8_CONTRACT.blob_sha256}"}
+    return lambda model: alias if model == MINICPM_Q8_CONTRACT.alias else source
+
+
+def test_check_ollama_minicpm_present_requires_canonical_identity():
+    checks = check_ollama(
+        (MINICPM_Q8_CONTRACT.alias,),
+        lister=lambda: [MINICPM_Q8_CONTRACT.alias],
+        show=_minicpm_show(),
+    )
+    model = next(c for c in checks if c.name.endswith(MINICPM_Q8_CONTRACT.alias))
+    assert model.ok
+    assert "pinned Q8_0" in model.detail
+    assert model.hint == ""
+
+
+@pytest.mark.parametrize(
+    "show",
+    (
+        _minicpm_show(digest="a" * 64),
+        _minicpm_show(template="{{ .Prompt }}"),
+        _minicpm_show(quantization="Q4_K_M"),
+        _minicpm_show(
+            parameters=(
+                'stop "<|im_end|>"\nstop "</s>"\nstop "extra"\n'
+                "temperature 0.7\ntop_p 0.95\nnum_ctx 8192"
+            )
+        ),
+    ),
+)
+def test_check_ollama_minicpm_identity_mismatch_fails_with_setup_hint(show):
+    checks = check_ollama(
+        (MINICPM_Q8_CONTRACT.alias,),
+        lister=lambda: [MINICPM_Q8_CONTRACT.alias],
+        show=show,
+    )
+    model = next(c for c in checks if c.name.endswith(MINICPM_Q8_CONTRACT.alias))
+    assert not model.ok
+    assert "identity mismatch" in model.detail
+    assert model.hint == "python -m tools.setup_minicpm"
+
+
+def test_check_ollama_minicpm_show_error_fails_closed():
+    def boom(_model):
+        raise RuntimeError("synthetic show failure")
+
+    checks = check_ollama(
+        (MINICPM_Q8_CONTRACT.alias,),
+        lister=lambda: [MINICPM_Q8_CONTRACT.alias],
+        show=boom,
+    )
+    model = next(c for c in checks if c.name.endswith(MINICPM_Q8_CONTRACT.alias))
+    assert not model.ok
+    assert "synthetic show failure" in model.detail
+
+
+def test_check_ollama_rejects_noncanonical_minicpm_alias():
+    checks = check_ollama(
+        ("minicpm5-1b:latest",),
+        lister=lambda: ["minicpm5-1b:latest"],
+        show=lambda _model: pytest.fail("show was called"),
+    )
+    model = next(c for c in checks if c.name.endswith("minicpm5-1b:latest"))
+    assert not model.ok
+    assert MINICPM_Q8_CONTRACT.alias in model.detail
+    assert model.hint == "python -m tools.setup_minicpm"
+
+
+def test_generic_ollama_model_presence_does_not_call_identity_show():
+    checks = check_ollama(
+        ("gemma3:12b",),
+        lister=lambda: ["gemma3:12b"],
+        show=lambda _model: pytest.fail("show was called"),
+    )
+    assert all(check.ok for check in checks)
+
+
+def test_check_ollama_uses_one_host_bound_client_for_list_and_show():
+    calls = []
+
+    class Client:
+        def list(self):
+            calls.append("list")
+            return {"models": [{"model": MINICPM_Q8_CONTRACT.alias}]}
+
+        def show(self, model):
+            calls.append(("show", model))
+            return _minicpm_show()(model)
+
+    def factory(**kwargs):
+        calls.append(("factory", kwargs))
+        return Client()
+
+    checks = check_ollama(
+        (MINICPM_Q8_CONTRACT.alias,),
+        host="http://ollama.test:11434",
+        client_factory=factory,
+    )
+
+    assert all(check.ok for check in checks)
+    assert calls[0] == (
+        "factory",
+        {"timeout": 5.0, "host": "http://ollama.test:11434"},
+    )
+    assert calls[1:] == [
+        "list",
+        ("show", MINICPM_Q8_CONTRACT.alias),
+        ("show", MINICPM_Q8_CONTRACT.source),
+    ]
+
+
+def test_runtime_checks_forwards_the_resolved_ollama_host(monkeypatch):
+    captured = {}
+
+    def check(models, *, lister, show, host):
+        captured.update(models=tuple(models), lister=lister, show=show, host=host)
+        return []
+
+    monkeypatch.setattr(readiness, "check_ollama", check)
+    paths = {
+        key: f"/m/{key}"
+        for key in (
+            "asr_tokens",
+            "asr_encoder",
+            "asr_decoder",
+            "asr_joiner",
+            "tts_model",
+            "tts_tokens",
+        )
+    }
+    run_runtime_checks(
+        {
+            "sherpa": paths,
+            "llm": {
+                "backend": "ollama",
+                "host": "http://resolved-ollama.test:11434",
+                "main_model": "gemma3:12b",
+            },
+        },
+        resolved=True,
+        import_fn=lambda _name: object(),
+        exists=lambda _path: True,
+        platform="win32",
+        include_speaker=False,
+        require_audio_devices=False,
+    )
+
+    assert captured == {
+        "models": ("gemma3:12b",),
+        "lister": None,
+        "show": None,
+        "host": "http://resolved-ollama.test:11434",
+    }
+
+
 def test_check_ollama_unreachable():
     def boom():
         raise RuntimeError("connection refused")
@@ -1192,12 +1360,16 @@ def test_runtime_checks_echo_never_imports_or_contacts_ollama():
     def list_ollama():
         raise AssertionError("EchoLLM readiness contacted Ollama")
 
+    def show_ollama(_model):
+        raise AssertionError("EchoLLM readiness inspected Ollama")
+
     checks = run_runtime_checks(
         {"sherpa": paths, "llm": {"backend": "ollama"}},
         resolved=True,
         llm_mode="echo",
         sd=_FakeSD16k(),
         ollama_lister=list_ollama,
+        ollama_show=show_ollama,
         import_fn=imports,
         exists=lambda _p: True,
         platform="win32",
@@ -1252,6 +1424,7 @@ def test_run_all_ready_when_everything_passes():
         {"sherpa": paths},
         sd=FakeSD(),
         ollama_lister=lambda: ["gemma3:12b", "minicpm5-1b:q8"],
+        ollama_show=_minicpm_show(),
         import_fn=lambda name: object(),
         exists=lambda p: True,
     )

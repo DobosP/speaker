@@ -33,7 +33,7 @@ COPY config.json ./
 COPY docker/entrypoint.py docker/download_models.py /usr/local/bin/
 
 # Fail the build early if the lean dependency set can't import the entrypoints.
-RUN python -c "import core.app, remote.worker, remote.token_server"
+RUN python -c "import core.app, remote.worker, remote.token_server, tools.setup_minicpm"
 
 # Run unprivileged. Code stays root-owned (read-only to the app), and the
 # entrypoint writes its merged config to a tmpfs, so this image runs cleanly

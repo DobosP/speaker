@@ -74,12 +74,17 @@ docker compose -f docker/docker-compose.yml cp \
   deploy/ollama/Modelfile.minicpm5-1b-q8 ollama:/tmp/Modelfile.minicpm5
 docker compose -f docker/docker-compose.yml exec ollama \
   ollama create minicpm5-1b:q8 -f /tmp/Modelfile.minicpm5
+docker compose -f docker/docker-compose.yml run --rm --no-deps speaker \
+  python -m tools.setup_minicpm --verify-only
 ```
 
 Do not skip the MiniCPM alias creation: the committed fast tier references that
 exact identity so Ollama uses the validated ChatML template. The 12b model is
 also required by this profile for local complex/vision turns even when cloud
-hedging is enabled.
+hedging is enabled. The final command does not pull or recreate anything; it
+uses the speaker container's configured `OLLAMA_HOST` to prove the canonical
+alias, official pinned Q8 blob, quantization, template, and parameter set. A
+mismatch exits nonzero and must be repaired before starting the console.
 
 ## Run an interactive session
 

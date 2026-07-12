@@ -145,13 +145,10 @@ def main(argv: list[str] | None = None) -> int:
                         "--denoise and compare STT. Only the played buffer is corrupted; the saved "
                         "user/NN.wav reference clip stays clean.")
     p.add_argument("--barge-in", action="store_true",
-                   help="ACOUSTIC ONLY: force sherpa.barge_in_enabled=True for this run to MEASURE "
-                        "over-the-air talk-over behavior on the real mic. Default config keeps it OFF "
-                        "(no AEC -> the assistant's own TTS leaking into an open-speaker mic can "
-                        "self-interrupt). Use this to check whether the level-margin gate "
-                        "(barge_in_output_margin_db) holds on a clean near-field mic: 0 self-interrupts "
-                        "on a long answer means a real, LOUDER interrupter could barge without the "
-                        "assistant storming on its own voice.")
+                   help="force sherpa.barge_in_enabled=True. In acoustic mode this measures "
+                        "talk-over on the real mic and requires physical validation. With --inject "
+                        "it exercises the documented echo-free detector/control profile without "
+                        "opening audio hardware; that result is not acoustic evidence.")
     p.add_argument("--out-dir", default=None, help="artifact root (default logs/live/<run-id>)")
     args = p.parse_args(argv)
 
@@ -229,6 +226,21 @@ def main(argv: list[str] | None = None) -> int:
         # startup cannot mistake the injected stream for a raw open microphone;
         # inject-mode barge grading uses the clean acoustic/reference path.
         sherpa_cfg["barge_word_cut_enabled"] = False
+        # The physical coherence profile spends its first blocks learning the
+        # room/speaker echo distribution and confirms twice to reject nonlinear
+        # echo spikes. Inject capture is structurally echo-free (assistant output
+        # is a null sink), so there is no physical echo distribution to learn and
+        # no echo transient to debounce. Keeping the physical 5/2 profile here
+        # consumes a short "Stop" entirely as warm-up, a harness-only false miss.
+        # BargeSustain still requires the shipped 0.2 s / two eligible blocks.
+        # Production defaults and route provenance remain untouched.
+        sherpa_cfg["coherence_warmup_frames"] = 0
+        sherpa_cfg["coherence_confirm_frames"] = 1
+        # There is no acoustic propagation path in this topology, hence no
+        # physical echo delay to search. Leaving the production 400 ms search in
+        # place consumed most of the exact 0.395 s Stop stimulus in reference
+        # fill and made a two-block threshold phase-sensitive.
+        sherpa_cfg["coherence_max_delay_ms"] = 0.0
     if args.barge_in:
         config.setdefault("sherpa", {})["barge_in_enabled"] = True
         if not args.inject:
@@ -308,7 +320,10 @@ def main(argv: list[str] | None = None) -> int:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     root = Path(args.out_dir) if args.out_dir else Path("logs/live") / run_id
     print(f"\n=== live validation run {run_id} -> {root} ===")
-    print("Make sure your speakers and mic are on, at a sane volume, near each other.")
+    if args.inject:
+        print("Inject mode: physical microphone and speakers will not be opened.")
+    else:
+        print("Make sure your speakers and mic are on, at a sane volume, near each other.")
     _gain = config.get("sherpa", {}).get("input_gain")
     _uvol = args.user_volume if args.user_volume is not None else 1.0
     _denoise = bool(config.get("sherpa", {}).get("denoise_enabled"))
@@ -366,7 +381,8 @@ def main(argv: list[str] | None = None) -> int:
         runs.append({"scenario": scenario, "events": events, "capture": capture})
         fd = (capture or {}).get("full_duplex", "n/a")
         acc = grade.get("aggregate", {}).get("stt_score_median")
-        print(f"  full_duplex: {fd}  |  over-the-air STT accuracy (median): {acc}")
+        stt_domain = "injected" if args.inject else "over-the-air"
+        print(f"  full_duplex: {fd}  |  {stt_domain} STT accuracy (median): {acc}")
         r = grade.get("response", {}).get("aggregate", {})
         if r.get("n"):
             print(
@@ -381,7 +397,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  barge-in (inject-mode): stops {b.get('n_stopped')}/"
                 f"{b.get('n_intended_barges')} (rate {rate_str}), "
-                f"median stop {b.get('stop_latency_ms_median')}ms, "
+                f"median detector-to-FIFO cut {b.get('stop_latency_ms_median')}ms, "
                 f"self-interrupts {b.get('self_interrupt_count')} "
                 f"({b.get('verdict')})"
             )

@@ -61,11 +61,20 @@ class InjectingInputStream:
     STT and feeds back). Matches the read()/start/stop/close/abort surface the
     capture loop + recovering wrapper touch."""
 
-    def __init__(self, sample_rate: int):
+    def __init__(self, sample_rate: int, *, clock=None, sleeper=None):
         import numpy as np
 
         self._np = np
         self._sr = int(sample_rate)
+        # A real input stream advances on hardware deadlines: time spent by the
+        # caller processing one block is deducted from the wait for the next one.
+        # Sleeping a full block on every read made inject capture progressively
+        # slower than wall time (GTCRN/ASR cost was added to the fake device
+        # period), producing false continuous-capture failures.  Injectable time
+        # functions keep this scheduling contract deterministic in unit tests.
+        self._clock = clock or time.monotonic
+        self._sleep = sleeper or time.sleep
+        self._next_read_at: Optional[float] = None
         self._buf = np.zeros(0, dtype="float32")
         self._lock = threading.Lock()
         # Between utterances, feed a low-level noise floor -- NOT digital zeros.
@@ -99,10 +108,27 @@ class InjectingInputStream:
             else:
                 out = self._np.concatenate([self._buf, self._floor(frames - len(self._buf))])
                 self._buf = self._np.zeros(0, dtype="float32")
-        time.sleep(frames / float(self._sr))  # pace like a real mic block read
+        # Pace against an absolute device clock, not "processing time + one more
+        # period".  If the capture loop is briefly late, queued input is returned
+        # immediately until it catches up, just like a real PortAudio stream.
+        period = frames / float(self._sr)
+        now = self._clock()
+        if self._next_read_at is None:
+            self._next_read_at = now
+        self._next_read_at += period
+        delay = self._next_read_at - now
+        if delay > 0.0:
+            self._sleep(delay)
+        elif delay < -period:
+            # Do not manufacture continuous-capture coverage by replaying an
+            # arbitrarily deep backlog after a real capture-thread stall. A real
+            # bounded device queue would overrun; re-anchor so the next read waits
+            # one period and the missing wall time remains visible to the grader.
+            self._next_read_at = now
         return out, False
 
-    def start(self): pass
+    def start(self):
+        self._next_read_at = self._clock()
     def stop(self): pass
     def close(self): pass
     def abort(self): pass
@@ -567,6 +593,8 @@ class LiveConversation:
             "hb_gap_max_s": 0.0,         # worst heartbeat gap observed this turn
         }
         t_start = self._now()
+        enqueue_at = None
+        buffered_duration = None
         log.info("USER%s: %r", " (barge-in)" if turn.timing == "barge_in" else "", turn.text)
         if self._inject and self._inject_stream is not None:
             # Feed clean audio straight into the recognizer at the capture rate,
@@ -591,6 +619,8 @@ class LiveConversation:
             # push-and-return-immediately timing -- which the immediate/barge_in
             # merge cases depend on -- is unchanged.
             play_dur = len(played) / float(sr2)
+            enqueue_at = self._now()
+            buffered_duration = play_dur
             self._inject_stream.push(played)
             self._start_user_observer(duration_s=play_dur)
         else:
@@ -607,8 +637,23 @@ class LiveConversation:
         self._cur_user_event = {
             "idx": self._uidx, "speaker": "user", "text": turn.text, "timing": turn.timing,
             "audio": str(audio_path.relative_to(self._out)),
-            "t_start": round(t_start, 3), "t_end": round(self._now(), 3), "asr_final": None,
+            "asr_final": None,
         }
+        if enqueue_at is not None and buffered_duration is not None:
+            # push() is non-blocking. These are deliberately ENQUEUE metadata,
+            # not fake playback/consumption timestamps; the stream consumes the
+            # buffered duration on its independent device clock.
+            self._cur_user_event.update({
+                "time_basis": "capture_enqueue",
+                "t_enqueue": round(float(enqueue_at), 3),
+                "capture_buffered_seconds": round(float(buffered_duration), 3),
+            })
+        else:
+            self._cur_user_event.update({
+                "time_basis": "acoustic_playback",
+                "t_start": round(t_start, 3),
+                "t_end": round(self._now(), 3),
+            })
         self.events.append(self._cur_user_event)
 
     # --- continuous-capture probing during the user's audio ---
@@ -801,6 +846,16 @@ class LiveConversation:
         t_first = round(spoken[0][1] - self._t0, 3)
         interrupted = self.engine.stopped_after(spoken[0][1])
         latency = self._consume_latency()
+        barge_intended = (
+            getattr(self, "_upcoming_user_timing", None) == "barge_in"
+        )
+        # A barge line is spoken BEFORE the interrupted answer is flushed, so at
+        # that point _uidx names the interrupter and the answer belongs to the
+        # preceding user. Every other flush belongs to the current user. Persist
+        # the link explicitly; ordinal pairing shifts after a no-answer Stop.
+        response_to_user_idx = max(
+            0, self._uidx - (1 if barge_intended else 0)
+        )
         audio_rel = None
         if self._assistant_voice is not None:
             try:
@@ -816,12 +871,13 @@ class LiveConversation:
         self.events.append({
             "idx": self._aidx, "speaker": "assistant", "text": text, "audio": audio_rel,
             "t_start": t_first, "interrupted": interrupted, "latency": latency,
+            "response_to_user_idx": response_to_user_idx,
             # Did the scenario INTEND to barge before this answer? The barge-in
             # grader uses this to separate a real interrupt (intended) from a
             # self-interrupt (a barge fired with no intended barge). barge_in_ms
             # is derivable in report.py from latency.barge_in_latency, so no extra
             # field is surfaced here -- keep the driver surface minimal.
-            "barge_intended": getattr(self, "_upcoming_user_timing", None) == "barge_in",
+            "barge_intended": barge_intended,
         })
 
     def _consume_latency(self) -> Optional[dict]:

@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3416 passed/30 skipped/9 warnings; focused barge/APM: 16/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3426 passed/27 skipped/9 warnings; focused barge/APM: 16/6 passed.
 ADR-0051 v2 deterministic: 42/42; clean production-hybrid A/B: MiniCPM Q8 and Gemma each 42/42.
-Identity, warmup, topology, and provenance passed; live bare-speaker A/B is red; branch unlandable.
+Inject Sherpa 3x replay: 6/6 FIFO cuts, 0 self-cuts, duplex green; live bare-speaker remains red; branch unlandable (ADR-0052).
 
 ## Runtime
 
@@ -68,7 +68,7 @@ Identity, warmup, topology, and provenance passed; live bare-speaker A/B is red;
 
 ## Live evidence and limits
 
-- Matched-device enrollment on the PipeWire EC route: 512 dimensions, 0.58
+- Historical v4 enrollment on the PipeWire EC route: 512 dimensions, 0.58
   minimum/0.78 mean similarity; runtime `114725` accepted its fingerprint.
 - At 13% OS gain `114725` damaged/lost commands; `115512` false-cut, INGESTed the
   override, then hit -9999/corruption; `130601` had fragmented ASR (ADR-0036).
@@ -84,8 +84,8 @@ Identity, warmup, topology, and provenance passed; live bare-speaker A/B is red;
   but one echo-like tail handed off after playback. Live remains red (ADR-0045/47/48).
 - Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native cancellation,
   reuse, and two phone-lite XML tool round trips (ADR-0031/32/33). Phone thermals remain unvalidated.
-- Still required at the mic: quiet `YES`, low sensitivity, self-echo, override,
-  mid-thought pause, reply-tail continuity, and STOP. Do not claim barge validated.
+- Still required at the mic after fresh v5 enrollment: quiet `YES`, low sensitivity,
+  self-echo, override, mid-thought pause, reply-tail continuity, and STOP. Do not claim barge validated.
 
 ## Standard verification
 `/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`;

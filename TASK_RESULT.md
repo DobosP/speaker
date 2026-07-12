@@ -35,6 +35,12 @@ Status: both control-plane lanes integrated; combined headless suite green.
 
 - Combined focused identity/fresh tests: `549 passed in 9.70s`.
 - Combined full suite: `3728 passed, 31 skipped, 9 warnings in 76.08s`.
+- Strict archived recorded-owner replay: `9 passed in 53.66s`; fake streams
+  were used and no physical audio hardware was opened.
+- APM/DTD regression: `6 passed in 0.69s`.
+- Deterministic conversation: `42/42`; every one of the fourteen scenarios
+  passed 3/3 and semantic, coverage, A/B, provenance, and warmup gates were
+  all true.
 - `git diff --check`: clean.
 - Later release gates remain pending.
 

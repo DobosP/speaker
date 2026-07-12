@@ -4,7 +4,7 @@ Valid until: this integration branch lands or its implementation changes — the
 
 Branch: `integration/minicpm-v5-release`
 
-Status: both control-plane lanes integrated headlessly; combined full suite pending.
+Status: both control-plane lanes integrated; combined headless suite green.
 
 ## Outcome
 
@@ -34,8 +34,9 @@ Status: both control-plane lanes integrated headlessly; combined full suite pend
 ## Integration verification
 
 - Combined focused identity/fresh tests: `549 passed in 9.70s`.
+- Combined full suite: `3728 passed, 31 skipped, 9 warnings in 76.08s`.
 - `git diff --check`: clean.
-- Combined full suite and later release gates remain pending.
+- Later release gates remain pending.
 
 ## Remaining validation
 

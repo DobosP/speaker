@@ -41,6 +41,8 @@ CASES = [
     ("mode_alias_research", "research mode", True, Mode.PASSIVE, False),
     ("research_prefix", "research local TTS options", True, Mode.ASSISTANT, False),
     ("search_prefix", "search for pipecat", True, Mode.ASSISTANT, False),
+    ("polite_research_prefix", "Please research Pipecat and LiveKit.", True, Mode.ASSISTANT, False),
+    ("polite_search_prefix", "Please search for Pipecat.", True, Mode.ASSISTANT, False),
     ("dictate_prefix", "dictate hello world", True, Mode.ASSISTANT, False),
     ("command_prefix", "run the backup script", True, Mode.ASSISTANT, False),
     ("partial_non_control", "what is the weather", False, Mode.ASSISTANT, False),
@@ -147,6 +149,24 @@ def test_confirm_deny_only_fire_with_pending_confirmation():
                     has_pending_confirmation=True).kind == IntentKind.CONFIRM
     assert a.decide(a.observe("no", is_final=True), Mode.COMMAND,
                     has_pending_confirmation=True).kind == IntentKind.DENY
+
+
+def test_polite_search_and_research_keep_explicit_intent_and_query():
+    analyzer = LiveSpeechAnalyzer()
+
+    search = analyzer.decide(
+        analyzer.observe("Please search for Pipecat.", is_final=True),
+        Mode.ASSISTANT,
+    )
+    research = analyzer.decide(
+        analyzer.observe("Please research Pipecat and LiveKit.", is_final=True),
+        Mode.ASSISTANT,
+    )
+
+    assert search.kind == IntentKind.SEARCH
+    assert search.text == "Pipecat."
+    assert research.kind == IntentKind.RESEARCH
+    assert research.text == "Pipecat and LiveKit."
 
 
 def test_speech_analyzer_matches_golden_contract():

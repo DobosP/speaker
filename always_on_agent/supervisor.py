@@ -2453,6 +2453,9 @@ class AgentSupervisor:
                             "input_generation": event.payload.get(
                                 "input_generation"
                             ),
+                            "metrics_turn_token": event.payload.get(
+                                "metrics_turn_token"
+                            ),
                         },
                     )
                 )

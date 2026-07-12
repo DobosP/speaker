@@ -191,10 +191,22 @@ class LiveSpeechAnalyzer:
         return IntentDecision(IntentKind.ASSISTANT, 0.75, observation.text, "assistant_mode", mode=current_mode)
 
     def _explicit_intent(self, normalized: str, original: str) -> IntentDecision | None:
+        # A polite prefix must not hide an otherwise explicit search/research
+        # command.  Keep this deliberately narrow: stripping ``please`` from
+        # every utterance would turn ordinary assistant requests into control
+        # intents (and could make commands confirmation-bearing unexpectedly).
+        if normalized.startswith("please "):
+            courteous_normalized = normalized.removeprefix("please ")
+            if courteous_normalized.startswith(("research ", "search ")):
+                normalized = courteous_normalized
+                original = _after_first_word(original)
         if normalized.startswith(("research ", "cerceteaza ")):
             return IntentDecision(IntentKind.RESEARCH, 0.95, _after_first_word(original), "research_prefix", mode=Mode.RESEARCH)
         if normalized.startswith(("search ", "cauta ")):
-            return IntentDecision(IntentKind.SEARCH, 0.95, _after_first_word(original), "search_prefix", mode=Mode.SEARCH)
+            query = _after_first_word(original)
+            if normalize_text(query).startswith("for "):
+                query = _after_first_word(query)
+            return IntentDecision(IntentKind.SEARCH, 0.95, query, "search_prefix", mode=Mode.SEARCH)
         if normalized.startswith(("dictate ", "scrie ")):
             return IntentDecision(IntentKind.DICTATION, 0.95, _after_first_word(original), "dictation_prefix", mode=Mode.DICTATION, speak=False)
         if normalized.startswith(("run ", "open ", "execute ")):

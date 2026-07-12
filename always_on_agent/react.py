@@ -55,7 +55,9 @@ PLANNER_SYSTEM = (
     "to answer the user. Respond with EXACTLY one line, no extra text:\n"
     "  TOOL <tool_name>: <input>   to call a tool, or\n"
     "  FINAL: <answer>             when you can answer directly.\n"
-    "Prefer FINAL as soon as you have enough. Never invent tools."
+    "Prefer FINAL as soon as you have enough. After a tool fails, never retry "
+    "the same failed tool; choose a different relevant tool or FINAL. Never "
+    "invent tools."
 )
 
 # Re-prompt appended once when a small model's step is unparseable (P3 reliability).
@@ -370,6 +372,47 @@ class ReactPlanner:
         native_allowed = {tool.name for tool in native_tools}
         native_exchanges: list[PlannerExchange] = []
         reprompt_budget = 1  # one strict-format retry across the whole plan (P3)
+        web_local_fallback_used = False
+        failed_tools: set[str] = set()
+
+        def record_tool_result(
+            action: str,
+            tool_query: str,
+            result: CapabilityResult,
+        ) -> None:
+            """Record one actual controller-owned capability invocation."""
+
+            steps_taken.append(action)
+            exchange_text = ""
+            exchange_untrusted = False
+            if result.ok:
+                # Prompt-injection hardening (OWASP LLM01): web/external (egress)
+                # tool output is attacker-controllable webpage text -- fence it as
+                # UNTRUSTED data so an instruction smuggled into a fetched page
+                # can't steer the planner's next TOOL/FINAL step. Local tool output
+                # (no egress) is left as-is, byte-identical.
+                obs_text = result.text
+                if (result.data or {}).get("egress"):
+                    exchange_untrusted = True
+                    obs_text = wrap_untrusted(obs_text, source="web")
+                observations.append(f"{action}: {obs_text}".strip())
+                # The native backend applies a compact, bounded envelope using
+                # this explicit trust bit. Keep raw bytes here so clipping never
+                # cuts the full spotlight directive/fences before the finding.
+                exchange_text = result.text
+            else:
+                observations.append(f"{action} failed: {result.error}")
+                exchange_text = f"Tool failed: {result.error}"
+                failed_tools.add(action)
+            if native_backend is not None:
+                native_exchanges.append(
+                    PlannerExchange(
+                        call=PlannerCall(action, tool_query),
+                        result=exchange_text,
+                        ok=result.ok,
+                        untrusted=exchange_untrusted,
+                    )
+                )
 
         def native_action(reminder: bool) -> tuple[Optional[str], str]:
             """Ask the optional backend, retaining controller-side authority."""
@@ -482,42 +525,60 @@ class ReactPlanner:
                 observations.append(f"(tool '{action}' is unavailable)")
                 continue
 
+            if action in failed_tools:
+                # The model may ignore the planner prompt and request the same
+                # failed provider again. Keep that failure non-repeatable at the
+                # controller boundary; a denied retry is not an invocation.
+                observations.append(
+                    f"({action} was not retried because it already failed)"
+                )
+                if native_backend is not None:
+                    native_exchanges.append(
+                        PlannerExchange(
+                            call=PlannerCall(action, arg or query),
+                            result=(
+                                "Tool call denied: this provider already failed "
+                                "during the current plan."
+                            ),
+                            ok=False,
+                            untrusted=False,
+                        )
+                    )
+                continue
+
             if not claim_start():
                 return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
-            result = self._registry.invoke(action, arg or query, dict(context))
+            tool_query = arg or query
+            result = self._registry.invoke(action, tool_query, dict(context))
             if _cancelled(cancel):
                 return CapabilityResult(True, "", data={"cancelled": True, "agent": True})
-            steps_taken.append(action)
-            exchange_text = ""
-            exchange_untrusted = False
-            if result.ok:
-                # Prompt-injection hardening (OWASP LLM01): web/external (egress)
-                # tool output is attacker-controllable webpage text -- fence it as
-                # UNTRUSTED data so an instruction smuggled into a fetched page
-                # can't steer the planner's next TOOL/FINAL step. Local tool output
-                # (no egress) is left as-is, byte-identical.
-                obs_text = result.text
-                if (result.data or {}).get("egress"):
-                    exchange_untrusted = True
-                    obs_text = wrap_untrusted(obs_text, source="web")
-                observations.append(f"{action}: {obs_text}".strip())
-                # The native backend applies a compact, bounded envelope using
-                # this explicit trust bit. Keep raw bytes here so clipping never
-                # cuts the full spotlight directive/fences before the finding.
-                exchange_text = result.text
-            else:
-                # Recovery phase: surface the failure so the model can replan.
-                observations.append(f"{action} failed: {result.error}")
-                exchange_text = f"Tool failed: {result.error}"
-            if native_backend is not None:
-                native_exchanges.append(
-                    PlannerExchange(
-                        call=PlannerCall(action, arg or query),
-                        result=exchange_text,
-                        ok=result.ok,
-                        untrusted=exchange_untrusted,
+            record_tool_result(action, tool_query, result)
+
+            # Small planners commonly retry the just-failed web tool or stop
+            # early. Keep the recovery deterministic and bounded: the first
+            # failed web.search may make exactly one controller-owned attempt
+            # against the configured local corpus with the identical query.
+            # Every execution fence is re-checked because barge-in can arrive
+            # between the two capability calls.
+            if (
+                not result.ok
+                and action == "web.search"
+                and not web_local_fallback_used
+                and "search.local" in allowed
+            ):
+                web_local_fallback_used = True
+                if not claim_start():
+                    return CapabilityResult(
+                        True, "", data={"cancelled": True, "agent": True}
                     )
+                fallback = self._registry.invoke(
+                    "search.local", tool_query, dict(context)
                 )
+                if _cancelled(cancel):
+                    return CapabilityResult(
+                        True, "", data={"cancelled": True, "agent": True}
+                    )
+                record_tool_result("search.local", tool_query, fallback)
 
         # Step budget exhausted -> synthesize whatever we have.
         text = self._final(

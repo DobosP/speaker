@@ -15,7 +15,16 @@ from always_on_agent.capabilities import (
     CapabilitySpec,
 )
 from tools.conversation_eval.__main__ import _gate_exit_code
-from tools.conversation_eval.identity import _expected_template, verify_minicpm_identity
+from tools.conversation_eval.identity import (
+    _expected_template,
+    verify_minicpm_identity,
+    verify_ollama_blob_identity,
+)
+from tools.conversation_eval.models import (
+    ObservedLLM,
+    StreamGate,
+    _history_message_sha256,
+)
 from tools.conversation_eval.report import build_report, summarize_model, write_report
 from tools.conversation_eval.runner import (
     _grade,
@@ -37,6 +46,73 @@ def evaluation_config() -> dict:
 
 def _scenario(name: str):
     return next(item for item in SCENARIOS if item.scenario_id == name)
+
+
+class _TokenLLM:
+    model = "token-test"
+
+    def __init__(self, tokens):
+        self._tokens = tuple(tokens)
+
+    def stream(self, prompt, *, system=None, **kwargs):
+        del prompt, system, kwargs
+        yield from self._tokens
+
+
+def test_stream_gate_waits_only_after_a_real_continuation():
+    gate = StreamGate()
+    gate.arm()
+    gate.open()
+    observed = ObservedLLM(
+        _TokenLLM(("Blue.", " ", "White.")),
+        stream_gate=gate,
+    )
+
+    assert "".join(observed.stream("answer")) == "Blue. White."
+    assert gate.paused.is_set()
+    assert gate.continuation_observed.is_set()
+
+
+def test_stream_gate_does_not_pause_at_one_sentence_eos():
+    gate = StreamGate()
+    gate.arm()
+    observed = ObservedLLM(_TokenLLM(("Blue. ",)), stream_gate=gate)
+
+    assert "".join(observed.stream("answer")) == "Blue. "
+    assert not gate.paused.is_set()
+    assert not gate.continuation_observed.is_set()
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        ("Blue. White. Red.",),
+        ("Blue\nWhite\nRed",),
+    ],
+)
+def test_stream_gate_handles_shared_boundaries_with_same_token_continuation(tokens):
+    gate = StreamGate()
+    gate.arm()
+    gate.open()
+    observed = ObservedLLM(_TokenLLM(tokens), stream_gate=gate)
+
+    assert "".join(observed.stream("answer")) == "".join(tokens)
+    assert gate.paused.is_set()
+    assert gate.continuation_observed.is_set()
+
+
+def test_stream_gate_skips_empty_leading_boundaries_before_pausing():
+    gate = StreamGate()
+    gate.arm()
+    gate.open()
+    observed = ObservedLLM(
+        _TokenLLM(("\n\nBlue. White.",)),
+        stream_gate=gate,
+    )
+
+    assert "".join(observed.stream("answer")) == "\n\nBlue. White."
+    assert gate.paused.is_set()
+    assert gate.continuation_observed.is_set()
 
 
 class _FrozenTrace:
@@ -69,13 +145,14 @@ def _regrade(
     scenario,
     result,
     *,
+    turns=None,
     events=None,
     model_calls=None,
     metrics=None,
 ):
     return _grade(
         scenario,
-        result.turns,
+        result.turns if turns is None else tuple(turns),
         _FrozenTrace(result.trace if events is None else events),
         result.model_calls if model_calls is None else tuple(model_calls),
         result.memory_after,
@@ -205,6 +282,34 @@ def test_conversation_reports_are_ignored():
     assert "logs/conversation-eval/" in ignored
 
 
+def test_config_contract_hash_includes_recent_context_memory_knobs():
+    base = {
+        "llm": {
+            "backend": "ollama",
+            "host": "http://127.0.0.1:11434",
+            "main_model": "main:test",
+            "fast_model": "fast:test",
+            "options": {"num_ctx": 4096},
+        },
+        "memory": {"recent_context_as_messages": True},
+    }
+    changed = {
+        **base,
+        "memory": {"recent_context_as_messages": False},
+    }
+
+    first = conversation_cli._config_metadata(
+        base,
+        include_local_config=False,
+    )
+    second = conversation_cli._config_metadata(
+        changed,
+        include_local_config=False,
+    )
+
+    assert first["contract_sha256"] != second["contract_sha256"]
+
+
 def test_deterministic_warmup_uses_runtime_prompt_without_polluting_scenario_calls(
     evaluation_config: dict,
 ):
@@ -223,7 +328,10 @@ def test_deterministic_warmup_uses_runtime_prompt_without_polluting_scenario_cal
         "deterministic-main-v1",
         "deterministic-fast-v1",
     ]
-    assert len(result.model_calls) == 3
+    assert [call["category"] for call in result.model_calls] == [
+        "addressing",
+        "answer",
+    ]
     assert result.passed
 
 
@@ -370,10 +478,354 @@ def test_redirect_grade_rejects_stale_input_generation(
     assert generation.actual == (1,)
 
 
+def test_redirect_grade_rejects_multiple_completed_sentence_fragments(
+    evaluation_config: dict,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    final_sequence = max(event.sequence for event in result.trace)
+    final_elapsed = max(event.elapsed_ms for event in result.trace)
+    events = result.trace + (
+        TraceEvent(
+            sequence=final_sequence + 1,
+            elapsed_ms=final_elapsed + 1.0,
+            kind="playback.terminal",
+            task_id="T2",
+            turn_id=2,
+            payload={"fragment_id": "extra", "outcome": "completed"},
+        ),
+    )
+
+    checks = _regrade(scenario, result, events=events)
+    outcomes = next(
+        check for check in checks if check.name == "redirect_playback_outcomes"
+    )
+
+    assert outcomes.ok is False
+
+
+@pytest.mark.parametrize("poison", ["Tokyoish.", "Tokyo1."])
+def test_redirect_grade_requires_normalized_exact_word(
+    evaluation_config: dict,
+    poison: str,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    turns = (
+        result.turns[0],
+        replace(
+            result.turns[1],
+            attempted_output=poison,
+            sink_attested_output=poison,
+        ),
+    )
+
+    checks = _regrade(scenario, result, turns=turns)
+    exact = next(
+        check for check in checks if check.name == "turn_2_exact_response"
+    )
+
+    assert exact.ok is False
+
+
+def test_redirect_grade_requires_controller_route_and_no_model_call(
+    evaluation_config: dict,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    events = tuple(
+        replace(
+            event,
+            payload={
+                **event.payload,
+                "data": {"route": "fast", "handled_local": False},
+            },
+        )
+        if event.kind == "task.completed" and event.task_id == "T2"
+        else event
+        for event in result.trace
+    )
+    model_calls = result.model_calls + (
+        {
+            "task_id": "T2",
+            "category": "answer",
+            "kind": "stream",
+            "duration_ms": 1.0,
+            "ttft_ms": 1.0,
+        },
+    )
+
+    checks = _regrade(
+        scenario,
+        result,
+        events=events,
+        model_calls=model_calls,
+    )
+    controller = next(
+        check for check in checks if check.name == "redirect_used_controller_answer"
+    )
+    bypass = next(
+        check for check in checks if check.name == "redirect_bypassed_model"
+    )
+
+    assert controller.ok is False
+    assert bypass.ok is False
+
+
+def test_redirect_grade_joins_terminal_to_attributed_owner(
+    evaluation_config: dict,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    terminal_ids = [
+        str(event.payload.get("fragment_id", ""))
+        for event in result.trace
+        if event.kind == "playback.terminal"
+    ]
+    assert len(terminal_ids) == 2
+    swapped = {terminal_ids[0]: terminal_ids[1], terminal_ids[1]: terminal_ids[0]}
+    events = tuple(
+        replace(
+            event,
+            payload={
+                **event.payload,
+                "fragment_id": swapped[str(event.payload.get("fragment_id", ""))],
+            },
+        )
+        if event.kind == "playback.terminal"
+        else event
+        for event in result.trace
+    )
+
+    checks = _regrade(scenario, result, events=events)
+    ownership = next(
+        check
+        for check in checks
+        if check.name == "redirect_fragment_terminal_ownership"
+    )
+    outcomes = next(
+        check for check in checks if check.name == "redirect_playback_outcomes"
+    )
+    terminal_pairs = next(
+        check
+        for check in checks
+        if check.name == "one_terminal_per_playback_request"
+    )
+
+    assert outcomes.ok is True
+    assert terminal_pairs.ok is True
+    assert ownership.ok is False
+
+
+def test_redirect_grade_rejects_nonempty_victim_safe_prefix(
+    evaluation_config: dict,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    events = tuple(
+        replace(
+            event,
+            payload={**event.payload, "safe_text_prefix": "Blue."},
+        )
+        if event.kind == "playback.terminal"
+        and event.payload.get("outcome") == "interrupted"
+        else event
+        for event in result.trace
+    )
+
+    checks = _regrade(scenario, result, events=events)
+    ownership = next(
+        check
+        for check in checks
+        if check.name == "redirect_fragment_terminal_ownership"
+    )
+
+    assert ownership.ok is False
+
+
+def test_redirect_grade_binds_response_only_to_second_input(
+    evaluation_config: dict,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+
+    def poison_response_only(event):
+        if event.kind != "stt.final":
+            return event
+        metadata = dict(event.payload.get("metadata", {}))
+        metadata["post_barge_response_only"] = event.turn_id == 1
+        metadata["skip_user_memory"] = event.turn_id == 1
+        return replace(event, payload={**event.payload, "metadata": metadata})
+
+    checks = _regrade(
+        scenario,
+        result,
+        events=tuple(poison_response_only(event) for event in result.trace),
+    )
+    ownership = next(
+        check
+        for check in checks
+        if check.name == "redirect_response_only_input_ownership"
+    )
+    legacy_any = next(
+        check for check in checks if check.name == "redirect_is_response_only"
+    )
+
+    assert legacy_any.ok is True
+    assert ownership.ok is False
+
+
+def test_redirect_grade_binds_completion_and_receipt_to_generation_two(
+    evaluation_config: dict,
+):
+    scenario = _scenario("barge_redirect")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    events = tuple(
+        replace(
+            event,
+            turn_id=1,
+            payload={**event.payload, "input_generation": 1},
+        )
+        if (
+            event.kind == "task.completed" and event.task_id == "T2"
+        ) or (
+            event.kind == "memory.commit"
+            and event.payload.get("source") == "playback_receipt"
+        )
+        else event
+        for event in result.trace
+    )
+
+    checks = _regrade(scenario, result, events=events)
+    completion = next(
+        check
+        for check in checks
+        if check.name == "redirect_completion_input_ownership"
+    )
+    receipt = next(
+        check
+        for check in checks
+        if check.name == "redirect_memory_receipt_ownership"
+    )
+
+    assert completion.ok is False
+    assert receipt.ok is False
+
+
+def test_model_history_records_exact_privacy_safe_role_evidence(
+    evaluation_config: dict,
+):
+    scenario = _scenario("model_history_followup")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    answer_calls = [
+        call
+        for call in result.model_calls
+        if call.get("category") == "answer" and call.get("task_id")
+    ]
+    assert len(answer_calls) == 2
+    second = answer_calls[1]
+    expected_hashes = (
+        _history_message_sha256("user", scenario.turns[0].text),
+        _history_message_sha256(
+            "assistant", result.turns[0].sink_attested_output
+        ),
+    )
+
+    assert tuple(second["history_roles"]) == ("user", "assistant")
+    assert tuple(second["history_message_sha256"]) == expected_hashes
+    assert scenario.turns[0].text not in json.dumps(second)
+    assert result.turns[0].sink_attested_output not in json.dumps(second)
+
+
+@pytest.mark.parametrize(
+    "field,value,check_name",
+    (
+        (
+            "history_roles",
+            ("assistant", "user"),
+            "second_answer_history_roles",
+        ),
+        (
+            "history_message_sha256",
+            ("0" * 64, "1" * 64),
+            "second_answer_history_messages",
+        ),
+    ),
+)
+def test_model_history_grade_rejects_poisoned_role_evidence(
+    evaluation_config: dict,
+    field: str,
+    value: tuple[str, str],
+    check_name: str,
+):
+    scenario = _scenario("model_history_followup")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    model_calls = tuple(
+        {**call, field: value}
+        if call.get("category") == "answer" and call.get("task_id") == "T2"
+        else call
+        for call in result.model_calls
+    )
+
+    checks = _regrade(
+        scenario,
+        result,
+        model_calls=model_calls,
+    )
+    evidence = next(check for check in checks if check.name == check_name)
+
+    assert evidence.ok is False
+
+
 def test_context_grade_requires_first_audio_metric_per_generation(
     evaluation_config: dict,
 ):
-    scenario = _scenario("context_followup")
+    scenario = _scenario("typed_session_fact")
     result = run_scenario(
         scenario,
         config=evaluation_config,
@@ -396,7 +848,7 @@ def test_context_grade_requires_first_audio_metric_per_generation(
 def test_context_grade_anchors_each_turn_to_its_input_generation(
     evaluation_config: dict,
 ):
-    scenario = _scenario("context_followup")
+    scenario = _scenario("typed_session_fact")
     result = run_scenario(
         scenario,
         config=evaluation_config,
@@ -562,7 +1014,7 @@ def test_model_call_slices_do_not_leak_across_scenarios(evaluation_config: dict)
         run_index=2,
     )
 
-    assert len(first.model_calls) == len(second.model_calls) == 3
+    assert len(first.model_calls) == len(second.model_calls) == 2
     assert first.passed and second.passed
 
 
@@ -630,6 +1082,45 @@ def test_minicpm_identity_prefers_effective_alias_modelfile_template():
     assert identity.ok is True
 
 
+def test_generic_ollama_identity_records_full_blob_digest():
+    digest = "d" * 64
+    identity = verify_ollama_blob_identity(
+        "gemma:test",
+        show=lambda _model: {"modelfile": f"FROM /models/sha256-{digest}"},
+    )
+
+    assert identity.ok is True
+    assert identity.blob_sha256 == digest
+    assert len(identity.effective_config_sha256) == 64
+
+
+def test_generic_ollama_identity_changes_with_template_or_parameters():
+    digest = "d" * 64
+
+    def verify(template: str, temperature: float):
+        return verify_ollama_blob_identity(
+            "gemma:test",
+            show=lambda _model: {
+                "modelfile": (
+                    f"FROM /models/sha256-{digest}\n"
+                    f'TEMPLATE "{template}"\n'
+                    f"PARAMETER temperature {temperature}"
+                ),
+                "template": template,
+                "parameters": f"temperature {temperature}",
+            },
+        )
+
+    original = verify("{{ .Prompt }}", 0.7)
+    changed_template = verify("{{ .System }} {{ .Prompt }}", 0.7)
+    changed_parameter = verify("{{ .Prompt }}", 0.2)
+
+    assert original.blob_sha256 == changed_template.blob_sha256
+    assert original.blob_sha256 == changed_parameter.blob_sha256
+    assert original.effective_config_sha256 != changed_template.effective_config_sha256
+    assert original.effective_config_sha256 != changed_parameter.effective_config_sha256
+
+
 def test_report_is_versioned_json_and_defines_repeat_reliability(
     tmp_path,
     evaluation_config: dict,
@@ -658,7 +1149,7 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
     assert summary.pass_power_k is True
     assert summary.scenario_reliability["simple_qa"]["runs_passed"] == 3
     assert loaded["schema_version"] == 1
-    assert loaded["scenario_set_version"] == 1
+    assert loaded["scenario_set_version"] == 2
     assert loaded["candidate"]["summary"]["pass_power_k"] is True
     assert loaded["gate"]["coverage_ok"] is False
     assert loaded["gate"]["passed"] is False
@@ -721,18 +1212,49 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
             ),
         }
 
+    def identity_record(model: str, blob: str, effective: str):
+        return {
+            "model": model,
+            "verification": "ollama_blob_effective_config",
+            "required": True,
+            "ok": True,
+            "blob_sha256": blob,
+            "effective_config_sha256": effective,
+        }
+
+    def identity_bundle(fast_model: str, blob: str, effective: str):
+        role_models = {"main": "shared-main:test", "fast": fast_model}
+        before = {
+            "role_models": role_models,
+            "models": {
+                "shared-main:test": identity_record(
+                    "shared-main:test", "1" * 64, "2" * 64
+                ),
+                fast_model: identity_record(fast_model, blob, effective),
+            },
+            "ok": True,
+        }
+        return {
+            "before": before,
+            "after": json.loads(json.dumps(before)),
+            "stable": True,
+            "ok": True,
+        }
+
     identity_records = {
-        "candidate": {
-            "model": "candidate:test",
-            "verification": "name_only_no_digest_contract",
-            "required": False,
-            "ok": None,
-        },
-        "baseline": {
-            "model": "baseline:test",
-            "verification": "name_only_no_digest_contract",
-            "required": False,
-            "ok": None,
+        "candidate": identity_bundle("candidate:test", "e" * 64, "a" * 64),
+        "baseline": identity_bundle("baseline:test", "f" * 64, "b" * 64),
+    }
+    repository_metadata = {"revision": "b" * 40, "dirty": False}
+    config_metadata = {
+        "contract_sha256": "c" * 64,
+        "llm_options_sha256": "d" * 64,
+        "include_local_config": False,
+        "backend": "ollama",
+        "host": "http://127.0.0.1:11434",
+        "configured_role_models": {
+            "main": "shared-main:test",
+            "fast": "candidate:test",
         },
     }
     real_metadata = {
@@ -740,16 +1262,16 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
         "warm_policy": "production",
         "execution_order": ["baseline", "candidate"],
         "ollama_python_version": "0.test",
-        "repository": {"revision": "b" * 40, "dirty": True},
-        "config": {
-            "contract_sha256": "c" * 64,
-            "llm_options_sha256": "d" * 64,
-            "include_local_config": False,
-            "backend": "ollama",
-            "host": "http://127.0.0.1:11434",
-            "configured_role_models": {
-                "main": "shared-main:test",
-                "fast": "candidate:test",
+        "repository": repository_metadata,
+        "config": config_metadata,
+        "provenance_snapshots": {
+            "before": {
+                "repository": json.loads(json.dumps(repository_metadata)),
+                "config": json.loads(json.dumps(config_metadata)),
+            },
+            "after": {
+                "repository": json.loads(json.dumps(repository_metadata)),
+                "config": json.loads(json.dumps(config_metadata)),
             },
         },
     }
@@ -769,6 +1291,25 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
     assert valid_real["gate"]["ab_distinct"] is True
     assert valid_real["gate"]["passed"] is True
 
+    dirty_metadata = json.loads(json.dumps(real_metadata))
+    dirty_metadata["repository"]["dirty"] = True
+    dirty_metadata["provenance_snapshots"]["after"]["repository"]["dirty"] = True
+    dirty_real = build_report(
+        mode="ollama",
+        device="desktop_gpu_4090",
+        candidate_results=candidate_complete,
+        baseline_results=baseline_complete,
+        identities=identity_records,
+        metadata=dirty_metadata,
+        candidate_metadata=evaluation_details("candidate:test"),
+        baseline_metadata=evaluation_details("baseline:test"),
+        provenance_ok=True,
+    )
+    assert dirty_real["gate"]["repository_clean"] is False
+    assert dirty_real["gate"]["provenance_ok"] is False
+    assert dirty_real["gate"]["passed"] is False
+    assert _gate_exit_code(dirty_real["gate"]) == 2
+
     incomplete_warm = evaluation_details("candidate:test")
     incomplete_warm["warmup"]["calls"] = incomplete_warm["warmup"]["calls"][:1]
     missing_role_warm = build_report(
@@ -787,7 +1328,7 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
 
     same_identity_records = {
         **identity_records,
-        "baseline": {**identity_records["candidate"]},
+        "baseline": identity_bundle("candidate:test", "e" * 64, "a" * 64),
     }
     same_model_ab = build_report(
         mode="ollama",
@@ -865,6 +1406,18 @@ def test_unverified_override_writes_red_report_and_exits_two(
         lambda **_kwargs: SimpleNamespace(
             ok=False,
             as_dict=lambda: {"ok": False, "error": "synthetic mismatch"},
+        ),
+    )
+    monkeypatch.setattr(
+        conversation_cli,
+        "verify_ollama_blob_identity",
+        lambda model, **_kwargs: SimpleNamespace(
+            ok=True,
+            as_dict=lambda: {
+                "model": model,
+                "blob_sha256": "d" * 64,
+                "ok": True,
+            },
         ),
     )
     monkeypatch.setattr(

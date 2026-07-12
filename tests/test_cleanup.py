@@ -21,6 +21,7 @@ from core.addressing import ACT, ScriptedAddressingClassifier
 from core.cleanup import (
     LLMTranscriptCleaner,
     ScriptedTranscriptCleaner,
+    _explicit_self_correction_repair,
     _sanitize_reply,
     detect_signals,
     has_trailing_repeat,
@@ -63,8 +64,26 @@ def test_detect_signals_lists_repeat_and_editing_terms():
     assert "no wait" in text
 
 
+def test_detect_signals_lists_punctuation_delimited_bare_correction():
+    signals = " ".join(detect_signals("the algorithm, no, the model"))
+
+    assert "bare correction" in signals
+
+
 def test_detect_signals_empty_on_clean_text():
     assert detect_signals("what is the weather today") == []
+
+
+def test_detect_signals_lists_fillers():
+    assert "filler" in " ".join(detect_signals("um what time is it")).lower()
+    assert "filler" in " ".join(detect_signals("you know, Paris")).lower()
+
+
+def test_detect_signals_does_not_treat_content_phrases_as_fillers():
+    assert detect_signals("Do you know the answer?") == []
+    assert detect_signals("What kind of bird is that?") == []
+    assert detect_signals("ER is busy tonight.") == []
+    assert detect_signals("is er open?") == []
 
 
 def test_sanitize_reply_strips_quotes_and_labels():
@@ -111,7 +130,7 @@ def test_cleaner_returns_llm_output_for_dirty_input():
 
 def test_cleaner_passes_raw_through_when_llm_raises():
     cleaner = LLMTranscriptCleaner(_RaisingLLM())
-    assert cleaner.clean("anything") == "anything"
+    assert cleaner.clean("anything anything") == "anything anything"
 
 
 def test_cleaner_flags_word_repeat_signal_in_prompt():
@@ -132,12 +151,45 @@ def test_cleaner_flags_editing_term_in_prompt():
     assert "i mean" in prompt.lower()
 
 
-def test_cleaner_omits_signal_block_when_text_is_clean():
-    llm = _StubLLM(["what is the weather"])
+def test_cleaner_repairs_when_model_keeps_superseded_correction_target():
+    llm = _StubLLM(["What is the capital of France?"])
     cleaner = LLMTranscriptCleaner(llm)
-    cleaner.clean("what is the weather")
-    prompt, _ = llm.calls[0]
-    assert "Detected signals" not in prompt
+
+    assert cleaner.clean(
+        "What is the capital of France, I mean Japan?"
+    ) == "What is the capital of Japan?"
+
+
+def test_cleaner_keeps_valid_model_self_correction():
+    llm = _StubLLM(["What is the capital of Japan?"])
+    cleaner = LLMTranscriptCleaner(llm)
+
+    assert cleaner.clean(
+        "What is the capital of France, I mean Japan?"
+    ) == "What is the capital of Japan?"
+
+
+def test_explicit_self_correction_repair_rejects_broader_syntax():
+    assert _explicit_self_correction_repair(
+        "set a timer for five, I mean ten minutes"
+    ) is None
+    assert _explicit_self_correction_repair(
+        "send the package to my brother tomorrow, I mean on Friday"
+    ) is None
+    assert _explicit_self_correction_repair(
+        "Remember for this conversation that the codename is Atlas, I mean Orion."
+    ) is None
+    assert _explicit_self_correction_repair(
+        "Talk to John at home, I mean at work."
+    ) is None
+    assert _explicit_self_correction_repair("I mean, what time is it?") is None
+
+
+def test_cleaner_bypasses_llm_when_text_has_no_cleanup_signal():
+    llm = _StubLLM([])
+    cleaner = LLMTranscriptCleaner(llm)
+    assert cleaner.clean("what is the weather") == "what is the weather"
+    assert llm.calls == []
 
 
 def test_cleaner_includes_recent_context():
@@ -157,7 +209,7 @@ def test_cleaner_returns_input_unchanged_on_empty_text():
 
 def test_cleaner_falls_back_to_raw_on_empty_llm_reply():
     cleaner = LLMTranscriptCleaner(_StubLLM([""]))
-    assert cleaner.clean("hello there") == "hello there"
+    assert cleaner.clean("hello hello") == "hello hello"
 
 
 # --- VoiceRuntime integration tests ------------------------------------------

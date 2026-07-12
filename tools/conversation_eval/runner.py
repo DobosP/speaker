@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from always_on_agent.capabilities import CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import MemoryItem
+from always_on_agent.text import normalize_text
 from core.app import build_runtime
 from core.addressing import ACT, INGEST, ScriptedAddressingClassifier
 from core.config import apply_device_profile, deep_merge, load_config
@@ -30,7 +31,12 @@ from core.llm_factory import build_llms
 from core.routing import build_router
 from tools.live_session.report import response_score
 
-from .models import DeterministicConversationLLM, ObservedLLM, StreamGate
+from .models import (
+    DeterministicConversationLLM,
+    ObservedLLM,
+    StreamGate,
+    _history_message_sha256,
+)
 from .schema import CheckResult, ScenarioResult, ScenarioSpec, TurnResult
 from .trace import TraceRecorder
 
@@ -536,6 +542,14 @@ def _grade(
                 )
             )
         turn_spec = scenario.turns[turn.index - 1]
+        if turn_spec.exact_response:
+            checks.append(
+                _check(
+                    f"turn_{turn.index}_exact_response",
+                    normalize_text(turn_spec.exact_response),
+                    normalize_text(turn.sink_attested_output),
+                )
+            )
         if turn_spec.max_sentences is not None:
             sentence_count = len(
                 [
@@ -992,41 +1006,116 @@ def _grade(
             )
         )
 
-    if scenario.scenario_id == "context_followup":
+    if scenario.scenario_id == "typed_session_fact":
+        checks.append(
+            _check("session_fact_bypasses_model", 0, len(model_calls))
+        )
+        completed = [event for event in events if event.kind == "task.completed"]
+        checks.append(
+            _check(
+                "followup_used_typed_session_fact",
+                True,
+                bool(
+                    len(completed) == 2
+                    and isinstance(completed[1].payload.get("data"), dict)
+                    and completed[1].payload["data"].get("session_fact") is True
+                ),
+            )
+        )
+        completion_routes = tuple(
+            event.payload.get("data", {}).get("route")
+            for event in events
+            if event.kind == "task.completed"
+            and isinstance(event.payload.get("data"), dict)
+        )
+        checks.append(
+            _check(
+                "context_completion_routes",
+                ("control", "control"),
+                completion_routes,
+            )
+        )
+    if scenario.scenario_id == "model_history_followup":
         answer_calls = [
             call
             for call in model_calls
             if call.get("category") == "answer" and bool(call.get("task_id"))
         ]
-        checks.append(_check("two_context_answer_calls", 2, len(answer_calls)))
-        checks.append(
-            _check(
-                "recent_context_changed_model_system",
-                True,
-                bool(
-                    len(answer_calls) == 2
-                    and (
-                        answer_calls[0].get("system_sha256")
-                        != answer_calls[1].get("system_sha256")
-                        or (
-                            int(answer_calls[1].get("history_count", 0)) > 0
-                            and answer_calls[0].get("history_sha256")
-                            != answer_calls[1].get("history_sha256")
-                        )
-                    )
+        second = answer_calls[1] if len(answer_calls) == 2 else {}
+        expected_roles = ("user", "assistant")
+        expected_hashes = (
+            _history_message_sha256("user", scenario.turns[0].text),
+            _history_message_sha256(
+                "assistant",
+                turns[0].sink_attested_output if turns else "",
+            ),
+        )
+        checks.extend(
+            (
+                _check("two_history_answer_calls", 2, len(answer_calls)),
+                _check(
+                    "second_answer_history_roles",
+                    expected_roles,
+                    tuple(second.get("history_roles", ())),
+                ),
+                _check(
+                    "second_answer_history_messages",
+                    expected_hashes,
+                    tuple(second.get("history_message_sha256", ())),
+                ),
+                _check(
+                    "second_answer_history_count",
+                    len(expected_roles),
+                    second.get("history_count"),
                 ),
             )
         )
-        checks.append(
-            _check(
-                "followup_received_orion_context",
-                True,
-                bool(
-                    len(answer_calls) == 2
-                    and "orion" in answer_calls[1].get("context_markers", [])
+    if scenario.scenario_id == "exact_word_repeat":
+        completions = [
+            event
+            for event in events
+            if event.kind == "task.completed"
+            and event.payload.get("capability") == "assistant.answer"
+        ]
+        completion_data = tuple(
+            event.payload.get("data", {}) for event in completions
+        )
+        checks.extend(
+            (
+                _check("exact_repeat_bypasses_model", 0, len(model_calls)),
+                _check(
+                    "exact_repeat_control_routes",
+                    ("control", "control"),
+                    tuple(
+                        data.get("route") if isinstance(data, dict) else None
+                        for data in completion_data
+                    ),
+                ),
+                _check(
+                    "exact_repeat_controller_markers",
+                    (True, True),
+                    (
+                        bool(
+                            len(completion_data) > 0
+                            and isinstance(completion_data[0], dict)
+                            and completion_data[0].get("exact_word") is True
+                            and completion_data[0].get("handled_local") is True
+                        ),
+                        bool(
+                            len(completion_data) > 1
+                            and isinstance(completion_data[1], dict)
+                            and completion_data[1].get("repeat_previous") is True
+                            and completion_data[1].get("handled_local") is True
+                        ),
+                    ),
                 ),
             )
         )
+    if scenario.scenario_id in {
+        "typed_session_fact",
+        "model_history_followup",
+        "exact_word_repeat",
+    }:
         first_commit = next(
             (event.sequence for event in events if event.kind == "memory.commit"),
             None,
@@ -1395,11 +1484,167 @@ def _grade(
         )
         redirect_text = scenario.turns[1].text.lower()
         stored_texts = tuple(str(item.get("text", "")).lower() for item in memory_after)
+        redirect_completion = next(
+            (
+                event
+                for event in events
+                if event.kind == "task.completed" and event.task_id == "T2"
+            ),
+            None,
+        )
+        redirect_data = (
+            redirect_completion.payload.get("data", {})
+            if redirect_completion is not None
+            else {}
+        )
+        redirect_model_calls = tuple(
+            call for call in model_calls if call.get("task_id") == "T2"
+        )
+        redirect_attributions = sorted(
+            (
+                event
+                for event in events
+                if event.kind == "playback.attributed"
+                and not bool(event.payload.get("auxiliary_tts", False))
+            ),
+            key=lambda event: int(event.payload.get("requested_sequence", 0)),
+        )
+        redirect_requests = {
+            event.sequence: event
+            for event in events
+            if event.kind == "playback.requested"
+        }
+        redirect_terminals: dict[str, list] = {}
+        for event in events:
+            if event.kind == "playback.terminal":
+                redirect_terminals.setdefault(
+                    str(event.payload.get("fragment_id", "")), []
+                ).append(event)
+        fragment_ownership: list[tuple[object, ...]] = []
+        for attribution in redirect_attributions:
+            fragment_id = str(attribution.payload.get("fragment_id", ""))
+            requested_sequence = int(
+                attribution.payload.get("requested_sequence", 0)
+            )
+            request = redirect_requests.get(requested_sequence)
+            terminals = redirect_terminals.get(fragment_id, [])
+            terminal = terminals[0] if len(terminals) == 1 else None
+            fragment_ownership.append(
+                (
+                    attribution.task_id,
+                    int(attribution.payload.get("input_generation", 0)),
+                    (
+                        str(terminal.payload.get("outcome", ""))
+                        if terminal is not None
+                        else ""
+                    ),
+                    (
+                        str(terminal.payload.get("safe_text_prefix", "")).strip()
+                        if terminal is not None
+                        else ""
+                    ),
+                    bool(
+                        request is not None
+                        and request.payload.get("fragment_id") == fragment_id
+                    ),
+                    len(terminals),
+                )
+            )
+        expected_fragment_ownership = (
+            ("T1", 1, "interrupted", "", True, 1),
+            (
+                "T2",
+                2,
+                "completed",
+                turns[1].sink_attested_output.strip() if len(turns) > 1 else "",
+                True,
+                1,
+            ),
+        )
+        response_only_inputs = []
+        for event in events:
+            if event.kind != "stt.final":
+                continue
+            metadata = event.payload.get("metadata")
+            metadata = metadata if isinstance(metadata, dict) else {}
+            response_only_inputs.append(
+                (
+                    event.turn_id,
+                    int(metadata.get("input_generation", 0)),
+                    bool(metadata.get("post_barge_response_only", False)),
+                    bool(metadata.get("skip_user_memory", False)),
+                )
+            )
+        redirect_completion_ownership = (
+            (
+                redirect_completion.task_id,
+                redirect_completion.turn_id,
+                int(redirect_completion.payload.get("input_generation", 0)),
+            )
+            if redirect_completion is not None
+            else ()
+        )
+        receipt_ownership = tuple(
+            (
+                event.turn_id,
+                int(event.payload.get("input_generation", 0)),
+                str(event.payload.get("text", "")).strip(),
+            )
+            for event in events
+            if event.kind == "memory.commit"
+            and event.payload.get("source") == "playback_receipt"
+        )
         checks.extend(
             (
                 _check("redirect_task_terminals", ("task.cancelled", "task.completed"), task_terminals),
-                _check("redirect_playback_outcomes", ("interrupted", "completed"), playback_outcomes),
+                _check(
+                    "redirect_playback_outcomes",
+                    ("interrupted", "completed"),
+                    playback_outcomes,
+                ),
                 _check("redirect_is_response_only", True, response_only),
+                _check(
+                    "redirect_fragment_terminal_ownership",
+                    expected_fragment_ownership,
+                    tuple(fragment_ownership),
+                ),
+                _check(
+                    "redirect_response_only_input_ownership",
+                    (
+                        (1, 1, False, False),
+                        (2, 2, True, True),
+                    ),
+                    tuple(response_only_inputs),
+                ),
+                _check(
+                    "redirect_completion_input_ownership",
+                    ("T2", 2, 2),
+                    redirect_completion_ownership,
+                ),
+                _check(
+                    "redirect_memory_receipt_ownership",
+                    (
+                        (
+                            2,
+                            2,
+                            turns[1].sink_attested_output.strip()
+                            if len(turns) > 1
+                            else "",
+                        ),
+                    ),
+                    receipt_ownership,
+                ),
+                _check(
+                    "redirect_used_controller_answer",
+                    True,
+                    bool(
+                        isinstance(redirect_data, dict)
+                        and redirect_data.get("route") == "control"
+                        and redirect_data.get("handled_local") is True
+                        and redirect_data.get("response_only") is True
+                    ),
+                ),
+                _check("redirect_bypassed_model", (), redirect_model_calls),
                 _check(
                     "redirect_not_stored_as_user_memory",
                     False,

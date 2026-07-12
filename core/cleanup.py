@@ -14,8 +14,9 @@ prompt explicitly enumerates these so a small fast-tier model
 (gemma3:1b-4b class) can apply them.
 
 The runtime calls :class:`TranscriptCleaner` after the addressing gate
-(``core/addressing.py``) says ACT and before publishing to the brain bus,
-so an ingested ambient utterance never pays the cleanup cost.
+(``core/addressing.py``) says ACT and before publishing to the brain bus.
+Clean utterances pass through deterministically; only inputs with an explicit
+cleanup signal pay the model cost.
 
 UX policy (decided 2026-05): the raw final AND the cleaned final are
 both logged at INFO; the run bundle's transcript stores both entries
@@ -30,6 +31,13 @@ from typing import Iterable, Optional, Protocol, runtime_checkable
 from .llm import LLMCallCancelled, LLMClient, collect_llm_text
 
 log = logging.getLogger("speaker.cleanup")
+
+_FILLER_RE = re.compile(r"\b(?:um+|uh+)\b", re.IGNORECASE)
+_FILLER_PHRASE_RE = re.compile(
+    r"(?:^|[,;]\s*)(?:you know|sort of|kind of)(?=\s*[,;]|$)",
+    re.IGNORECASE,
+)
+_BARE_CORRECTION_RE = re.compile(r",\s*no,?\s+\S", re.IGNORECASE)
 
 
 @runtime_checkable
@@ -93,9 +101,12 @@ no trailing punctuation that the user didn't say."""
 
 
 class LLMTranscriptCleaner:
-    """Fast-tier LLM cleaner. Runs heuristic signal detection first
-    (word-repeat-at-end, editing-term presence) and annotates the prompt
-    so a small model has fewer ambiguous cases to resolve."""
+    """Fast-tier LLM cleaner for utterances with an explicit cleanup signal.
+
+    Clean text bypasses the generative rewrite.  This both avoids needless
+    latency and prevents a small model from copying recent assistant speech
+    into an otherwise valid user turn.
+    """
 
     _EDITING_TERMS = (
         "i mean", "i meant", "no wait", "actually no",
@@ -110,6 +121,8 @@ class LLMTranscriptCleaner:
         if not text.strip():
             return text
         signals = detect_signals(text)
+        if not signals:
+            return text
         prompt = self._build_prompt(text, recent, signals)
         try:
             reply = collect_llm_text(
@@ -122,7 +135,20 @@ class LLMTranscriptCleaner:
         except Exception:  # noqa: BLE001
             log.exception("cleanup LLM call failed; passing raw text through")
             return text
-        return _sanitize_reply(reply, fallback=text)
+        cleaned = _sanitize_reply(reply, fallback=text)
+        repair = _explicit_self_correction_repair(text)
+        if repair is not None:
+            deterministic, corrected_words, superseded_words = repair
+            cleaned_words = {word.lower() for word in _WORD_RE.findall(cleaned)}
+            if (
+                not set(corrected_words).issubset(cleaned_words)
+                or bool(set(superseded_words) & cleaned_words)
+            ):
+                log.info(
+                    "cleaner missed explicit self-correction; using bounded repair"
+                )
+                return deterministic
+        return cleaned
 
     def _build_prompt(self, text: str, recent: Iterable[str], signals: list[str]) -> str:
         parts: list[str] = []
@@ -153,10 +179,41 @@ def detect_signals(text: str) -> list[str]:
         if term in lower:
             found.append(f"editing term present: {term!r}")
             break
+    if _BARE_CORRECTION_RE.search(text) is not None:
+        found.append("punctuation-delimited bare correction: 'no'")
+    filler = _FILLER_RE.search(text)
+    if filler is not None and not filler.group(0).isupper():
+        found.append(f"filler term present: {filler.group(0).lower()!r}")
+    elif _FILLER_PHRASE_RE.search(text) is not None:
+        found.append("filler phrase present")
     return found
 
 
 _WORD_RE = re.compile(r"\b[\w']+\b", flags=re.UNICODE)
+_EXPLICIT_QUESTION_CORRECTION_RE = re.compile(
+    r"^(?P<prefix>\s*what\s+is\s+the\s+[^,.!?]{1,80}\s+of\s+)"
+    r"(?P<old>[\w'-]{1,40})\s*,?\s+i\s+mean\s+"
+    r"(?P<new>[\w'-]{1,40})\s*\?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _explicit_self_correction_repair(
+    text: str,
+) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+    """Repair only ``What is the <subject> of OLD, I mean NEW?``.
+
+    This single-token question grammar is intentionally much narrower than a
+    general syntactic rewrite; every other correction stays with the model.
+    """
+
+    match = _EXPLICIT_QUESTION_CORRECTION_RE.match(text or "")
+    if match is None:
+        return None
+    old = match.group("old")
+    new = match.group("new")
+    repaired = f"{match.group('prefix')}{new}?".strip()
+    return repaired, (new.lower(),), (old.lower(),)
 
 
 def has_trailing_repeat(text: str) -> bool:

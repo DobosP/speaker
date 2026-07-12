@@ -19,7 +19,7 @@ from core.engines.sherpa import SherpaConfig
 from core.engine import SpeechStyle
 from core.intents import LocalIntentHandler
 from core.llm import EchoLLM
-from core.metrics import HANDLED_LOCAL, LLM_FIRST_TOKEN
+from core.metrics import HANDLED_LOCAL, LLM_FIRST_TOKEN, TTS_REQUESTED
 from core.runtime import VoiceRuntime
 
 
@@ -73,6 +73,21 @@ def test_brain_local_task_marks_handled_local_for_watchdog():
     [record] = runtime.metrics.records()
     assert HANDLED_LOCAL in record.stamps
     assert LLM_FIRST_TOKEN not in record.stamps
+
+
+def test_controller_owned_assistant_answer_marks_handled_local():
+    runtime, engine = _runtime(reply="must not be used")
+
+    engine.final(
+        "Remember for this conversation that the project codename is Orion."
+    )
+
+    assert runtime.wait_idle()
+    assert engine.spoken == ["Okay, I'll remember that for this conversation."]
+    [record] = runtime.metrics.records()
+    assert HANDLED_LOCAL in record.stamps
+    assert LLM_FIRST_TOKEN not in record.stamps
+    assert TTS_REQUESTED in record.stamps
 
 
 def test_voice_mode_switch():

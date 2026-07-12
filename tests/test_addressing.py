@@ -69,6 +69,12 @@ def test_parse_decision_strips_punctuation_and_case():
     assert _parse_decision('"UNSURE"') == UNSURE
 
 
+def test_parse_decision_accepts_bounded_action_alias_only():
+    assert _parse_decision("ACTION") == ACT
+    assert _parse_decision("Action.") == ACT
+    assert _parse_decision("ACTIONABLE") == UNSURE
+
+
 def test_parse_decision_defaults_to_unsure_for_garbage():
     assert _parse_decision("") == UNSURE
     assert _parse_decision("   ") == UNSURE
@@ -104,6 +110,53 @@ def test_classifier_truncates_context_to_max():
     assert "alpha" not in prompt
     assert "bravo" not in prompt
     assert "charlie" not in prompt
+
+
+def test_classifier_short_circuits_high_precision_imperatives():
+    llm = _StubLLM([])
+    classifier = LLMAddressingClassifier(llm)
+
+    for text in (
+        "Remember for this conversation that the codename is Orion.",
+        "Please search for Pipecat.",
+        "Please research Pipecat and LiveKit.",
+        "Repeat your previous answer exactly.",
+        "Say exactly three short sentences: Blue. White. Red.",
+        "What is the project codename? Answer with the codename.",
+        "What is the capital of France, I mean Japan?",
+        "Which country contains the city you just named?",
+    ):
+        assert classifier.classify(text) == ACT
+
+    assert llm.calls == []
+
+
+def test_classifier_keeps_ambiguous_statements_on_the_learned_gate():
+    statements = (
+        "I remember the old kitchen table.",
+        "I heard him say hello.",
+        "I heard a question? Answer was no.",
+        "Research shows the result was negative.",
+        "Search results were inconclusive.",
+        "Name is only a label.",
+        "Open source software is useful.",
+        "Set theory is abstract.",
+        "Resume formatting matters.",
+        "Please is a polite word.",
+        "What a lovely day.",
+        "What time is dinner?",
+        "Look up is a phrasal verb.",
+        "Look up tables improve database joins.",
+        "Research ethics matter.",
+        "The quiz read: what is two plus two? Answer with a number.",
+        "What is two plus two? Answer with a number, she read aloud.",
+        'He asked, "Which country contains the city you just named?"',
+    )
+    llm = _StubLLM(["INGEST"] * len(statements))
+    classifier = LLMAddressingClassifier(llm)
+
+    assert all(classifier.classify(text) == INGEST for text in statements)
+    assert len(llm.calls) == len(statements)
 
 
 # --- VoiceRuntime integration tests ------------------------------------------

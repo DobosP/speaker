@@ -20,6 +20,7 @@ from typing import Callable, Iterator, Optional
 SPEECH_END = "speech_end"          # user stopped speaking (last voiced audio)
 ASR_FINAL = "asr_final"            # recognizer emitted the final transcript
 LLM_FIRST_TOKEN = "llm_first_token"  # first token streamed from the model
+TTS_REQUESTED = "tts_requested"      # an admitted reply is waiting for first audio
 TTS_FIRST_AUDIO = "tts_first_audio"  # assistant's first audio sample played
 BARGE_IN = "barge_in"              # user spoke over playback
 BARGE_IN_STOP = "barge_in_stop"    # playback actually halted

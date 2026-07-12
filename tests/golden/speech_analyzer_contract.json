@@ -228,7 +228,68 @@
       "decision": {
         "kind": "search",
         "confidence": 0.95,
-        "text": "for pipecat",
+        "text": "pipecat",
+        "reason": "search_prefix",
+        "mode": "search",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "polite_research_prefix",
+      "input": {
+        "text": "Please research Pipecat and LiveKit.",
+        "is_final": true,
+        "mode": "assistant",
+        "has_pending_confirmation": false
+      },
+      "observation": {
+        "normalized": "please research pipecat and livekit",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.5,
+        "keywords": [
+          "research",
+          "pipecat",
+          "livekit"
+        ]
+      },
+      "decision": {
+        "kind": "research",
+        "confidence": 0.95,
+        "text": "Pipecat and LiveKit.",
+        "reason": "research_prefix",
+        "mode": "research",
+        "target_mode": null,
+        "requires_confirmation": false,
+        "speak": true,
+        "starts_task": true
+      }
+    },
+    {
+      "name": "polite_search_prefix",
+      "input": {
+        "text": "Please search for Pipecat.",
+        "is_final": true,
+        "mode": "assistant",
+        "has_pending_confirmation": false
+      },
+      "observation": {
+        "normalized": "please search for pipecat",
+        "is_final": true,
+        "language": "en",
+        "activation_score": 0.5,
+        "keywords": [
+          "search",
+          "pipecat"
+        ]
+      },
+      "decision": {
+        "kind": "search",
+        "confidence": 0.95,
+        "text": "Pipecat.",
         "reason": "search_prefix",
         "mode": "search",
         "target_mode": null,

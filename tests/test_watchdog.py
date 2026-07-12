@@ -21,6 +21,7 @@ from core.metrics import (
     SPEECH_END,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
+    TTS_REQUESTED,
     MetricsRecorder,
 )
 from core.watchdog import StuckWatchdog
@@ -67,6 +68,24 @@ def test_handled_local_turn_is_not_flagged_stuck(fake_clock, caplog):
         wd.tick()
     assert "llm stuck" not in caplog.text
     assert "tts stuck" not in caplog.text
+
+
+def test_handled_local_spoken_reply_still_warns_when_tts_stalls(fake_clock, caplog):
+    """HANDLED_LOCAL suppresses only the absent model token. Once its reply is
+    admitted to TTS, missing first audio is still a real spoken-response stall."""
+    t, rec, wd = _make(fake_clock)
+    wd.TTS_FIRST_AUDIO_DEADLINE_SEC = 0.5
+    rec.mark(ASR_FINAL)
+    rec.mark(HANDLED_LOCAL)
+    t[0] = 0.1
+    rec.mark(TTS_REQUESTED)
+    t[0] = 0.7
+
+    with caplog.at_level(logging.WARNING, logger="speaker.watchdog"):
+        wd.tick()
+
+    assert "tts stuck: turn 0 had tts_requested" in caplog.text
+    assert "llm stuck" not in caplog.text
 
 
 def test_held_turn_without_dispatch_is_not_flagged_stuck(fake_clock, caplog):

@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
-from threading import Event
+from threading import Event, Lock
 from typing import Callable, Iterator, Mapping, Optional, Sequence
 
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import Mode
 from always_on_agent.memory import Memory
 from always_on_agent.procedural import extract_rule, render_rules
-from always_on_agent.recall import VISION_LABEL, compress, trim_block_to_tokens
+from always_on_agent.recall import (
+    VISION_LABEL,
+    compress,
+    estimate_tokens,
+    trim_block_to_tokens,
+)
 from always_on_agent.untrusted import detect_injection, wrap_untrusted
 from always_on_agent.models import IntentKind
 
@@ -41,6 +48,101 @@ log = logging.getLogger("speaker.llm")
 # one-shot answer path). Read by literal in always_on_agent/react.py (the brain
 # avoids importing core), so keep the two in sync.
 RECENT_CONVERSATION_KEY = "recent_conversation"
+
+_SESSION_FACT_RE = re.compile(
+    r"^\s*remember\s+for\s+(?:this|the)\s+conversation\s+that\s+\S",
+    re.IGNORECASE,
+)
+_SESSION_FACT_CAPTURE_RE = re.compile(
+    r"^\s*remember\s+for\s+(?:this|the)\s+conversation\s+that\s+"
+    r"(?P<subject>[^.!?]{1,80}?)\s+is\s+(?P<value>[^.!?]{1,80})[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_SESSION_FACT_QUERY_RE = re.compile(
+    r"^\s*what\s+is\s+(?P<subject>[^?]{1,80})\?\s*"
+    r"(?:(?:please\s+)?answer\s+with\b[^.!?]{0,80}[.!?]?)?\s*$",
+    re.IGNORECASE,
+)
+_RESPONSE_ONLY_WORD_RE = re.compile(
+    r"^\s*(?:actually,?\s*)?respond\s+with\s+only\s+the\s+word\s+"
+    r"(?P<word>[A-Za-z][A-Za-z'-]{0,40})[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_EXACT_ONE_WORD_RE = re.compile(
+    r"^\s*say\s+exactly\s+one\s+word\s*:?\s*"
+    r"(?P<word>[A-Za-z][A-Za-z'-]{0,40})[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_REPEAT_PREVIOUS_ANSWER_RE = re.compile(
+    r"^\s*repeat\s+your\s+previous\s+answer\s+exactly[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_SESSION_FACT_ACK = "Okay, I'll remember that for this conversation."
+_SESSION_FACT_LIMIT = 16
+
+
+@dataclass(frozen=True)
+class _SessionFact:
+    subject: str
+    value: str
+    source_text: str
+
+
+def _session_fact_key(text: str) -> str:
+    return " ".join((text or "").casefold().split())
+
+
+def _parse_session_fact(query: str) -> _SessionFact | None:
+    match = _SESSION_FACT_CAPTURE_RE.match(query or "")
+    if match is None:
+        return None
+    subject = match.group("subject").strip()
+    value = match.group("value").strip()
+    return (
+        _SessionFact(subject, value, query.strip())
+        if _session_fact_key(subject) and value
+        else None
+    )
+
+
+def _session_fact_query_key(query: str) -> str:
+    match = _SESSION_FACT_QUERY_RE.match(query or "")
+    return _session_fact_key(match.group("subject")) if match is not None else ""
+
+
+def _memory_contains_session_fact(memory: object, fact: _SessionFact) -> bool:
+    get_all = getattr(memory, "all", None)
+    if not callable(get_all):
+        return False
+    try:
+        items = get_all()
+    except Exception:  # noqa: BLE001 - stale cache must fail closed
+        return False
+    return any(
+        getattr(item, "text", "") == fact.source_text
+        and "user" in set(getattr(item, "tags", ()) or ())
+        for item in items
+    )
+
+
+def _previous_assistant_answer(memory: object, *, since: float) -> str:
+    get_all = getattr(memory, "all", None)
+    if not callable(get_all):
+        return ""
+    try:
+        items = list(get_all())
+    except Exception:  # noqa: BLE001 - controller lookup must fail closed
+        return ""
+    for item in reversed(items):
+        tags = set(getattr(item, "tags", ()) or ())
+        text = str(getattr(item, "text", "") or "").strip()
+        try:
+            timestamp = float(getattr(item, "timestamp", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            timestamp = 0.0
+        if "assistant_output" in tags and text and timestamp >= since:
+            return text
+    return ""
 
 
 def _answers_locally(model: LLMClient) -> bool:
@@ -267,6 +369,9 @@ def attach_llm_capabilities(
     # prepended on the FIRST one-shot answer turn only, then never again this run.
     # Mutable dict so the per-turn closure can flip it without ``nonlocal``.
     memory_state = {"last_session_injected": False}
+    session_facts: OrderedDict[str, _SessionFact] = OrderedDict()
+    session_fact_lock = Lock()
+    session_started_at = time.time()
     debug_routing = bool(os.environ.get("SPEAKER_DEBUG_ROUTING"))
     # Headroom-aware routing (smart-routing-2): feed the recorder's rolling
     # local TTFT into the router as a live signal that NUDGES borderline turns
@@ -362,6 +467,146 @@ def attach_llm_capabilities(
                     memory.add(rule, tags=("procedural",))
             except Exception:  # noqa: BLE001 - capture is best-effort, never fatal
                 log.exception("procedural rule capture failed; continuing")
+        only_word = _RESPONSE_ONLY_WORD_RE.match(query) if response_only else None
+        if only_word is not None:
+            if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                return CapabilityResult(
+                    True,
+                    "",
+                    data={"cancelled": True, "route": "control"},
+                )
+            answer = f"{only_word.group('word')}."
+            emit = context.get("emit_speech")
+            if callable(emit):
+                emit(answer)
+            return CapabilityResult(
+                True,
+                answer,
+                data={
+                    "handled_local": True,
+                    "response_only": True,
+                    "route": "control",
+                    "streamed": callable(emit),
+                },
+            )
+        exact_word = _EXACT_ONE_WORD_RE.match(query)
+        repeat_previous = _REPEAT_PREVIOUS_ANSWER_RE.match(query)
+        previous_answer = (
+            _previous_assistant_answer(memory, since=session_started_at)
+            if repeat_previous is not None
+            else ""
+        )
+        if exact_word is not None or previous_answer:
+            if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                return CapabilityResult(
+                    True,
+                    "",
+                    data={"cancelled": True, "route": "control"},
+                )
+            answer = (
+                f"{exact_word.group('word')}."
+                if exact_word is not None
+                else previous_answer
+            )
+            if memory is not None and not skip_user_memory:
+                try:
+                    memory.add(query, tags=("user",))
+                except Exception:  # noqa: BLE001 - speaking remains best-effort
+                    log.exception("exact-control user-memory write failed")
+            emit = context.get("emit_speech")
+            if callable(emit):
+                emit(answer)
+            return CapabilityResult(
+                True,
+                answer,
+                data={
+                    "handled_local": True,
+                    "exact_word": exact_word is not None,
+                    "repeat_previous": repeat_previous is not None,
+                    "route": "control",
+                    "streamed": callable(emit),
+                },
+            )
+        # A high-confidence session-memory command should not depend on a small
+        # model inventing a good acknowledgement. Store the exact user turn in
+        # the normal conversation window and emit one fixed, non-echoing reply;
+        # the next model turn receives the fact as role-structured user history.
+        if (
+            memory is not None
+            and not skip_user_memory
+            and _SESSION_FACT_RE.search(query) is not None
+        ):
+            if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                return CapabilityResult(
+                    True,
+                    "",
+                    data={"cancelled": True, "route": "control"},
+                )
+            try:
+                memory.add(query, tags=("user",))
+            except Exception:  # noqa: BLE001 - never claim a failed memory write
+                log.exception("session-memory acknowledgement write failed")
+            else:
+                fact = _parse_session_fact(query)
+                if fact is not None:
+                    key = _session_fact_key(fact.subject)
+                    with session_fact_lock:
+                        session_facts[key] = fact
+                        session_facts.move_to_end(key)
+                        while len(session_facts) > _SESSION_FACT_LIMIT:
+                            session_facts.popitem(last=False)
+                emit = context.get("emit_speech")
+                if callable(emit):
+                    emit(_SESSION_FACT_ACK)
+                return CapabilityResult(
+                    True,
+                    _SESSION_FACT_ACK,
+                    data={
+                        "handled_local": True,
+                        "route": "control",
+                        "streamed": callable(emit),
+                    },
+                )
+        fact_key = _session_fact_query_key(query)
+        with session_fact_lock:
+            fact = session_facts.get(fact_key)
+        if fact is not None and not _memory_contains_session_fact(memory, fact):
+            with session_fact_lock:
+                if session_facts.get(fact_key) == fact:
+                    session_facts.pop(fact_key, None)
+            fact = None
+        if fact is not None and memory is not None and not skip_user_memory:
+            if cancel is not None and cancel.is_set():  # type: ignore[union-attr]
+                return CapabilityResult(
+                    True,
+                    "",
+                    data={"cancelled": True, "route": "control"},
+                )
+            try:
+                memory.add(query, tags=("user",))
+            except Exception:  # noqa: BLE001 - fact already lives in session state
+                log.exception("session-fact follow-up memory write failed")
+            context["sensitivity"] = most_sensitive(
+                str(context.get("sensitivity") or PRIVATE),
+                classify_sensitivity(f"{fact.subject} is {fact.value}"),
+            )
+            answer = fact.value.rstrip()
+            if answer and answer[-1] not in ".!?":
+                answer += "."
+            emit = context.get("emit_speech")
+            if callable(emit):
+                emit(answer)
+            return CapabilityResult(
+                True,
+                answer,
+                data={
+                    "handled_local": True,
+                    "route": "control",
+                    "sensitivity": context.get("sensitivity"),
+                    "session_fact": True,
+                    "streamed": callable(emit),
+                },
+            )
         # Recent-conversation context (short-term memory): the PRIOR turns, built
         # ONCE here -- BEFORE the escalation branch and BEFORE ingesting the current
         # query -- so the model can resolve "its"/"the second one". Built up front
@@ -371,6 +616,7 @@ def attach_llm_capabilities(
         # sensitivity to the most-private over EVERY included prior turn before
         # EITHER path's LLM calls run. Best-effort: never break a turn.
         recent_block = ""
+        planner_recent_block = ""
         recent_history: list[dict] = []
         try:
             # current_query=query: a reset utterance ("start again") answers
@@ -392,6 +638,14 @@ def attach_llm_capabilities(
                 if (memory is not None and allow_recent_context)
                 else []
             )
+            if recent_cfg.as_messages and recent_cfg.reserve_tokens > 0:
+                while recent_turns and estimate_tokens(
+                    "\n".join(
+                        f"{role}: {turn_text}"
+                        for role, turn_text in recent_turns
+                    )
+                ) > recent_cfg.reserve_tokens:
+                    recent_turns.pop(0)
             if recent_turns:
                 sens = context.get("sensitivity") or PRIVATE
                 for _role, turn_text in recent_turns:
@@ -401,12 +655,25 @@ def attach_llm_capabilities(
                 # mode -> the historical pasted-into-system block (byte-identical).
                 if recent_cfg.as_messages:
                     recent_history = history_messages(recent_turns)
+                    # ReAct's text planner has no chat-history parameter of its
+                    # own. Preserve a separately bounded text rendering in the
+                    # capability context so an escalated follow-up keeps the
+                    # same thread while direct answers use native role messages.
+                    planner_recent_block = format_recent_block(
+                        [
+                            (role, turn_text[: recent_cfg.per_turn_chars])
+                            for role, turn_text in recent_turns
+                        ],
+                        recent_cfg,
+                    )
                 else:
                     recent_block = format_recent_block(recent_turns, recent_cfg)
         except Exception:  # noqa: BLE001 - context is best-effort, never fatal
             log.exception("recent-conversation context failed; continuing without it")
-        if recent_block:
-            context[RECENT_CONVERSATION_KEY] = recent_block
+        if recent_block or planner_recent_block:
+            context[RECENT_CONVERSATION_KEY] = (
+                recent_block or planner_recent_block
+            )
         # Smart-mode escalation: hand reasoning/gathering queries to the ReAct
         # planner (when registered) instead of a one-shot reply.
         if (

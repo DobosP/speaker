@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 import re
 from threading import Condition, Event, Lock
 import time
 from typing import Iterator, Mapping, Optional, Sequence
 
+from core.contract import _next_cut
 from core.llm import capability_context
 
 
@@ -22,6 +24,45 @@ def _prompt_category(system: str) -> str:
     if "route one turn of a voice assistant" in lowered:
         return "capability_router"
     return "answer"
+
+
+def _history_message_sha256(role: str, content: str) -> str:
+    """Privacy-safe digest of one canonical role/content message."""
+
+    encoded = json.dumps(
+        {"content": content, "role": role},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _history_evidence(
+    history: object,
+) -> tuple[tuple[str, ...], tuple[str, ...], str]:
+    """Return canonical roles and hashes without retaining message text."""
+
+    if not isinstance(history, Sequence) or isinstance(history, str):
+        return (), (), ""
+    roles: list[str] = []
+    message_hashes: list[str] = []
+    for item in history:
+        if isinstance(item, Mapping):
+            role = str(item.get("role", "") or "").strip().lower()
+            content = str(item.get("content", "") or "")
+        else:
+            role = str(getattr(item, "role", "") or "").strip().lower()
+            content = str(getattr(item, "content", "") or "")
+        roles.append(role)
+        message_hashes.append(_history_message_sha256(role, content))
+    aggregate = sha256(
+        json.dumps(
+            list(zip(roles, message_hashes)),
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest() if roles else ""
+    return tuple(roles), tuple(message_hashes), aggregate
 
 
 class StreamGate:
@@ -42,8 +83,9 @@ class StreamGate:
         self.continuation_observed.clear()
 
     def should_gate(self, category: str, prompt: str) -> bool:
+        del prompt
         with self._lock:
-            if not self._armed or category != "answer" or "french flag" not in prompt.lower():
+            if not self._armed or category != "answer":
                 return False
             self._armed = False
             return True
@@ -91,6 +133,9 @@ class ObservedLLM:
     ) -> tuple[int, float, dict[str, object]]:
         started = time.monotonic()
         context = capability_context.get()
+        history_roles, history_message_hashes, history_digest = (
+            _history_evidence(history)
+        )
         with self._lock:
             self._sequence += 1
             sequence = self._sequence
@@ -103,22 +148,11 @@ class ObservedLLM:
             "role": self.role,
             "category": _prompt_category(system or ""),
             "system_sha256": sha256((system or "").encode("utf-8")).hexdigest(),
-            "history_sha256": (
-                sha256(str(history).encode("utf-8")).hexdigest()
-                if history
-                else ""
-            ),
-            "history_count": (
-                len(history)
-                if isinstance(history, Sequence) and not isinstance(history, str)
-                else 0
-            ),
+            "history_sha256": history_digest,
+            "history_count": len(history_roles),
+            "history_roles": history_roles,
+            "history_message_sha256": history_message_hashes,
             "task_id": str(context.get("task_id", "") or ""),
-            "context_markers": [
-                marker
-                for marker in ("orion",)
-                if marker in f"{system or ''} {history or ''}".lower()
-            ],
         }
         return sequence, started, record
 
@@ -199,29 +233,40 @@ class ObservedLLM:
                         yield token
                         continue
                     buffered += token
-                    boundary = re.search(r"[.!?](?:\s|$)", buffered)
-                    if boundary is None:
-                        continue
-                    end = boundary.end()
-                    yield buffered[:end]
-                    assert gate is not None
-                    remainder = buffered[end:]
-                    buffered = ""
-                    while not remainder.strip():
-                        try:
-                            continuation = next(source_iterator)
-                        except StopIteration:
+                    while True:
+                        # Use the runtime's shared boundary primitive: newline,
+                        # or punctuation followed by whitespace. Empty leading /
+                        # consecutive newline chunks are preserved in the model
+                        # stream but cannot arm a pause: runtime TTS drops them.
+                        cut = _next_cut(buffered)
+                        if cut is None:
                             break
-                        if continuation:
-                            if first_token_at is None:
-                                first_token_at = time.monotonic()
-                            remainder += continuation
-                    if remainder.strip():
-                        gate.note_continuation()
-                    gate.pause()
-                    paused = True
-                    if remainder:
-                        yield remainder
+                        _emit_end, resume = cut
+                        completed = buffered[:resume]
+                        remainder = buffered[resume:]
+                        if not completed.strip():
+                            yield completed
+                            buffered = remainder
+                            continue
+                        yield completed
+                        assert gate is not None
+                        buffered = ""
+                        while not remainder.strip():
+                            try:
+                                continuation = next(source_iterator)
+                            except StopIteration:
+                                break
+                            if continuation:
+                                if first_token_at is None:
+                                    first_token_at = time.monotonic()
+                                remainder += continuation
+                        if remainder.strip():
+                            gate.note_continuation()
+                            gate.pause()
+                            paused = True
+                        if remainder:
+                            yield remainder
+                        break
                 if buffered:
                     yield buffered
             else:
@@ -327,8 +372,10 @@ class DeterministicConversationLLM:
     def _answer(prompt: str, system: str, history: Sequence[object] | None) -> str:
         combined = " ".join((prompt, system, str(history or ())))
         lowered = combined.lower()
-        if "tokyo instead" in lowered:
-            return "Tokyo instead."
+        if "which country contains the city you just named" in prompt.lower():
+            return "France." if "paris" in str(history or ()).lower() else "I do not know."
+        if "word tokyo" in lowered or "tokyo instead" in lowered:
+            return "Tokyo."
         if "capital of japan" in lowered:
             return "Tokyo is the capital of Japan."
         if "capital of france" in lowered:
@@ -339,8 +386,8 @@ class DeterministicConversationLLM:
             return "The project codename is Orion."
         if "codename" in lowered:
             return "I do not know the project codename."
-        if "colors" in lowered and "french flag" in lowered:
-            return "The French flag has blue. It also has white. Its third color is red."
+        if "blue. white. red" in lowered:
+            return "Blue. White. Red."
         if "lighthouse" in lowered:
             return (
                 "A lighthouse watched the harbor. "

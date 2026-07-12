@@ -72,8 +72,10 @@ class RecentContextConfig:
     # R11: send prior turns to the answering model as ROLE-STRUCTURED chat
     # messages (user/assistant) instead of a truncated text block pasted into the
     # system string -- which the small model handles far better ("continue the
-    # story" actually continues it, not a 240-char fragment). OFF by default so
-    # the shipped prompt stays byte-identical; when ON, the volume is bounded by
+    # story" actually continues it, not a 240-char fragment). The shipped app
+    # config enables it; the programmatic fallback remains False so minimal
+    # embedders whose LLM double lacks a ``history`` keyword stay compatible.
+    # When enabled, the volume is bounded by
     # the (larger) messages_* budget below instead of max_chars/per_turn_chars,
     # and the text block is dropped (the history rides the chat-messages path).
     as_messages: bool = False

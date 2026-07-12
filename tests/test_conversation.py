@@ -80,6 +80,7 @@ def test_per_turn_truncation():
 
 def test_config_from_dict_defaults_on():
     assert RecentContextConfig.from_dict(None).enabled is True
+    assert RecentContextConfig.from_dict(None).as_messages is False
     cfg = RecentContextConfig.from_dict(
         {"recent_context_enabled": False, "recent_context_turns": 3}
     )
@@ -192,17 +193,24 @@ def test_assistant_reset_query_answers_without_stale_context():
     mem = SessionMemory()
     mem.add("no i was referring to our interaction the volume", tags=("user",))
     mem.add("I apologize for the misunderstanding! ... the volume?", tags=("assistant_output",))
-    reg = _assistant(llm, mem, recent_context=RecentContextConfig(enabled=True))
+    reg = _assistant(
+        llm,
+        mem,
+        recent_context=RecentContextConfig(enabled=True, as_messages=True),
+    )
 
     reg.invoke("assistant.answer", "Never mind", {})
     assert "Recent conversation" not in llm.systems[-1]
     assert "volume" not in llm.systems[-1]
+    assert llm.histories[-1] is None
 
     # And the NEXT turn does not resurrect the pre-reset topic either.
     mem.add("Okay, fresh start!", tags=("assistant_output",))
     reg.invoke("assistant.answer", "tell me a story about a lighthouse", {})
     assert "volume" not in llm.systems[-1]
-    assert "Okay, fresh start!" in llm.systems[-1]  # post-reset context kept
+    assert llm.histories[-1] == [
+        {"role": "assistant", "content": "Okay, fresh start!"},
+    ]
 
 
 # --- assistant() injection ---------------------------------------------------
@@ -211,13 +219,19 @@ def test_assistant_reset_query_answers_without_stale_context():
 class _RecordingLLM:
     def __init__(self):
         self.systems: list = []
+        self.histories: list = []
+        self.prompts: list[str] = []
 
-    def generate(self, prompt, *, system=None, images=None):
+    def generate(self, prompt, *, system=None, images=None, history=None):
+        self.prompts.append(prompt)
         self.systems.append(system)
+        self.histories.append(history)
         return "ok"
 
-    def stream(self, prompt, *, system=None, images=None):
+    def stream(self, prompt, *, system=None, images=None, history=None):
+        self.prompts.append(prompt)
         self.systems.append(system)
+        self.histories.append(history)
         yield "ok"
 
 
@@ -227,10 +241,175 @@ def _assistant(llm, memory, **kw):
     return reg
 
 
+def test_session_fact_command_uses_fixed_ack_and_role_history():
+    llm = _RecordingLLM()
+    mem = SessionMemory()
+    reg = _assistant(llm, mem, recent_context=RecentContextConfig())
+    query = "Remember for this conversation that the project codename is Orion."
+    spoken: list[str] = []
+
+    result = reg.invoke("assistant.answer", query, {"emit_speech": spoken.append})
+
+    assert result.ok is True
+    assert result.data["route"] == "control"
+    assert spoken == ["Okay, I'll remember that for this conversation."]
+    assert llm.systems == []
+    assert any(
+        item.text == query and "user" in item.tags
+        for item in mem.all()
+    )
+
+    mem.add(result.text, tags=("assistant_output",))
+    followup = reg.invoke(
+        "assistant.answer",
+        "What is the project codename?",
+        {"emit_speech": spoken.append},
+    )
+    assert followup.text == "Orion."
+    assert followup.data["route"] == "control"
+    assert followup.data["session_fact"] is True
+    assert spoken[-1] == "Orion."
+    assert llm.systems == []
+
+
+def test_session_fact_does_not_swallow_compound_followup():
+    llm = _RecordingLLM()
+    mem = SessionMemory()
+    reg = _assistant(llm, mem)
+    reg.invoke(
+        "assistant.answer",
+        "Remember for this conversation that the project codename is Orion.",
+        {},
+    )
+
+    compound = (
+        "What is the project codename? Also what is France's capital?"
+    )
+    result = reg.invoke("assistant.answer", compound, {})
+
+    assert result.text == "ok"
+    assert llm.prompts[-1] == compound
+
+
+def test_session_fact_keys_preserve_meaningful_punctuation():
+    llm = _RecordingLLM()
+    mem = SessionMemory()
+    reg = _assistant(llm, mem)
+    reg.invoke(
+        "assistant.answer",
+        "Remember for this conversation that the C++ version is twenty.",
+        {},
+    )
+    reg.invoke(
+        "assistant.answer",
+        "Remember for this conversation that the C# version is twelve.",
+        {},
+    )
+
+    assert reg.invoke("assistant.answer", "What is the C++ version?", {}).text == "twenty."
+    assert reg.invoke("assistant.answer", "What is the C# version?", {}).text == "twelve."
+
+
+def test_session_fact_expires_with_memory_and_cache_is_bounded():
+    llm = _RecordingLLM()
+    mem = SessionMemory(max_items=64)
+    reg = _assistant(llm, mem)
+    for index in range(17):
+        reg.invoke(
+            "assistant.answer",
+            f"Remember for this conversation that item {index} is value{index}.",
+            {},
+        )
+
+    assert reg.invoke("assistant.answer", "What is item 0?", {}).text == "ok"
+    assert reg.invoke("assistant.answer", "What is item 16?", {}).text == "value16."
+
+    evicting_memory = SessionMemory(max_items=2)
+    evicting_llm = _RecordingLLM()
+    evicting = _assistant(evicting_llm, evicting_memory)
+    evicting.invoke(
+        "assistant.answer",
+        "Remember for this conversation that the codename is Orion.",
+        {},
+    )
+    evicting_memory.add("newer one", tags=("user",))
+    evicting_memory.add("newer two", tags=("assistant_output",))
+
+    assert evicting.invoke(
+        "assistant.answer", "What is the codename?", {}
+    ).text == "ok"
+
+
+def test_response_only_exact_word_is_controller_bounded():
+    llm = _RecordingLLM()
+    spoken: list[str] = []
+    reg = _assistant(llm, SessionMemory())
+
+    result = reg.invoke(
+        "assistant.answer",
+        "Actually, respond with only the word Tokyo.",
+        {
+            "emit_speech": spoken.append,
+            "metadata": {"post_barge_response_only": True},
+        },
+    )
+
+    assert result.text == "Tokyo."
+    assert result.data["handled_local"] is True
+    assert spoken == ["Tokyo."]
+    assert llm.systems == []
+
+
+def test_exact_one_word_and_repeat_are_controller_bounded():
+    llm = _RecordingLLM()
+    memory = SessionMemory()
+    spoken: list[str] = []
+    reg = _assistant(llm, memory)
+
+    first = reg.invoke(
+        "assistant.answer",
+        "Say exactly one word: Orion.",
+        {"emit_speech": spoken.append},
+    )
+    memory.add(first.text, tags=("assistant_output",))
+    second = reg.invoke(
+        "assistant.answer",
+        "Repeat your previous answer exactly.",
+        {"emit_speech": spoken.append},
+    )
+
+    assert first.text == second.text == "Orion."
+    assert first.data["exact_word"] is True
+    assert second.data["repeat_previous"] is True
+    assert first.data["route"] == second.data["route"] == "control"
+    assert spoken == ["Orion.", "Orion."]
+    assert llm.systems == []
+
+
+def test_repeat_without_a_previous_answer_falls_through_to_model():
+    llm = _RecordingLLM()
+    memory = SessionMemory()
+    memory.add("A stale answer from an earlier session.", tags=("assistant_output",))
+    reg = _assistant(llm, memory)
+
+    result = reg.invoke(
+        "assistant.answer",
+        "Repeat your previous answer exactly.",
+        {},
+    )
+
+    assert result.text == "ok"
+    assert llm.prompts == ["Repeat your previous answer exactly."]
+
+
 def test_assistant_injects_recent_conversation_on_a_later_turn():
     llm = _RecordingLLM()
     mem = SessionMemory()
-    reg = _assistant(llm, mem, recent_context=RecentContextConfig(enabled=True))
+    reg = _assistant(
+        llm,
+        mem,
+        recent_context=RecentContextConfig(enabled=True, as_messages=True),
+    )
 
     reg.invoke("assistant.answer", "what is the capital of france", {})
     mem.add("Paris.", tags=("assistant_output",))  # the supervisor remembers replies
@@ -240,24 +419,30 @@ def test_assistant_injects_recent_conversation_on_a_later_turn():
     assert "Recent conversation" not in llm.systems[0]
     assert llm.systems[0] == DEFAULT_SYSTEM
     # Turn 2 sees the prior turn so "its" has a referent. The stable system
-    # prompt stays FIRST (cacheable prefix); the volatile block is appended.
+    # prompt remains unchanged while role-structured history carries the thread.
     sys2 = llm.systems[-1]
-    assert sys2.startswith(DEFAULT_SYSTEM)
-    assert "Recent conversation" in sys2
-    assert "what is the capital of france" in sys2
-    assert "Paris." in sys2
+    assert sys2 == DEFAULT_SYSTEM
+    assert llm.histories[-1] == [
+        {"role": "user", "content": "what is the capital of france"},
+        {"role": "assistant", "content": "Paris."},
+    ]
 
 
 def test_assistant_disabled_recent_context_is_unchanged():
     llm = _RecordingLLM()
     mem = SessionMemory()
-    reg = _assistant(llm, mem, recent_context=RecentContextConfig(enabled=False))
+    reg = _assistant(
+        llm,
+        mem,
+        recent_context=RecentContextConfig(enabled=False, as_messages=True),
+    )
 
     reg.invoke("assistant.answer", "first question", {})
     mem.add("an answer.", tags=("assistant_output",))
     reg.invoke("assistant.answer", "second question", {})
 
     assert all(s == DEFAULT_SYSTEM for s in llm.systems)
+    assert all(history is None for history in llm.histories)
 
 
 def test_assistant_suppresses_recent_context_on_a_continuation_turn():
@@ -267,10 +452,15 @@ def test_assistant_suppresses_recent_context_on_a_continuation_turn():
     mem = SessionMemory()
     mem.add("what is the capital of france", tags=("user",))
     mem.add("Paris.", tags=("assistant_output",))
-    reg = _assistant(llm, mem, recent_context=RecentContextConfig(enabled=True))
+    reg = _assistant(
+        llm,
+        mem,
+        recent_context=RecentContextConfig(enabled=True, as_messages=True),
+    )
 
     reg.invoke("assistant.answer", "and also Germany", {"metadata": {"skip_user_memory": True}})
     assert "Recent conversation" not in llm.systems[-1]
+    assert llm.histories[-1] is None
 
 
 def test_assistant_floats_sensitivity_over_a_private_prior_turn():

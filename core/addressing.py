@@ -19,6 +19,7 @@ landing in a follow-up PR.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable, Optional, Protocol, runtime_checkable
 
 from .llm import LLMCallCancelled, LLMClient, collect_llm_text
@@ -30,6 +31,46 @@ INGEST = "INGEST"
 UNSURE = "UNSURE"
 
 _VALID = (ACT, INGEST, UNSURE)
+_DECISION_ALIASES = {"ACTION": ACT}
+
+# High-precision imperative forms do not need a generative classifier.  Keeping
+# this deliberately anchored and small prevents MiniCPM/Gemma label drift from
+# dropping explicit commands while leaving statements and ambiguous room speech
+# on the conservative learned gate.
+_EXPLICIT_ACT_RE = re.compile(
+    r"^\s*(?:"
+    r"please\s+(?:look\s+up|search\s+for|research)\s+\S|"
+    r"remember\s+for\s+(?:this|the)\s+conversation\b|"
+    r"repeat\s+your\s+previous\s+answer\s+exactly\b|"
+    r"say\s+exactly\s+(?:one|two|three|\d+)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+_QUESTION_STEM = (
+    r"(?:what|why|how|when|where|who|which|can|could|would|will|do|"
+    r"does|did|is|are|was|were|have|has|should|may)"
+)
+
+# These two question shortcuts are anchored at the utterance start. A quoted
+# question later in ambient speech must still reach the learned room-speech
+# gate instead of becoming a deterministic ACT.
+_EXPLICIT_ANSWER_FORMAT_RE = re.compile(
+    rf"^\s*{_QUESTION_STEM}\b[^?]{{1,240}}\?\s+"
+    r"(?:please\s+)?answer\s+with\s+(?:only\s+)?(?:the\s+)?"
+    r"(?:answer|codename|number|word)[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_EXPLICIT_CORRECTION_QUESTION_RE = re.compile(
+    rf"^\s*{_QUESTION_STEM}\b[^?]*\b"
+    r"(?:i mean|i meant|no wait|actually no)\b[^?]*\?\s*$",
+    re.IGNORECASE,
+)
+_EXPLICIT_REFERENTIAL_QUESTION_RE = re.compile(
+    r"^\s*(?:what|which|where|who)\b[^?]{1,180}\b"
+    r"you\s+(?:just\s+)?(?:named|mentioned|said)\b[^?]*\?\s*$",
+    re.IGNORECASE,
+)
 
 
 @runtime_checkable
@@ -95,6 +136,14 @@ class LLMAddressingClassifier:
         self._max_context = max_context
 
     def classify(self, text: str, recent: Iterable[str] = ()) -> str:
+        utterance = text or ""
+        if (
+            _EXPLICIT_ACT_RE.search(utterance) is not None
+            or _EXPLICIT_ANSWER_FORMAT_RE.search(utterance) is not None
+            or _EXPLICIT_CORRECTION_QUESTION_RE.search(utterance) is not None
+            or _EXPLICIT_REFERENTIAL_QUESTION_RE.search(utterance) is not None
+        ):
+            return ACT
         prompt = self._build_prompt(text, recent)
         try:
             reply = collect_llm_text(
@@ -129,6 +178,8 @@ def _parse_decision(reply: str) -> str:
     first = stripped.split()[0].strip(".,!?:;\"'").upper()
     if first in _VALID:
         return first
+    if first in _DECISION_ALIASES:
+        return _DECISION_ALIASES[first]
     log.warning("addressing classifier returned %r; defaulting to UNSURE", reply)
     return UNSURE
 

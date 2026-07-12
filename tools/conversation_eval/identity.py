@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from hashlib import sha256
+import json
 from pathlib import Path
 import re
 from typing import Callable, Mapping
@@ -26,6 +28,8 @@ _NO_AMBIENT_AUTH = {"authorization": "Bearer speaker-local-evaluation"}
 class ModelIdentity:
     alias: str
     source: str
+    alias_blob_sha256: str
+    source_blob_sha256: str
     alias_blob: str
     source_blob: str
     blob_match: bool
@@ -34,6 +38,19 @@ class ModelIdentity:
     q8: bool
     template_match: bool
     parameters_match: bool
+    effective_config_sha256: str
+    ok: bool
+    error: str = ""
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OllamaBlobIdentity:
+    model: str
+    blob_sha256: str
+    effective_config_sha256: str
     ok: bool
     error: str = ""
 
@@ -124,6 +141,22 @@ def _parameters_match(show_result: object) -> bool:
     )
 
 
+def _effective_config_digest(show_result: object) -> str:
+    modelfile = str(_field(show_result, "modelfile", "") or "")
+    payload = {
+        "modelfile": modelfile.replace("\r\n", "\n").strip(),
+        "template": _template(show_result),
+        "parameters": _parameter_values(show_result),
+    }
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _expected_template(modelfile: Path = DEFAULT_MODELFILE) -> str:
     text = modelfile.read_text(encoding="utf-8").replace("\r\n", "\n")
     template = _modelfile_template(text)
@@ -169,16 +202,23 @@ def verify_minicpm_identity(
         q8 = quantization.upper() == "Q8_0"
         template_match = _template(alias_show) == _expected_template(modelfile)
         parameters_match = _parameters_match(alias_show)
+        effective_config_sha256 = _effective_config_digest(alias_show)
         ok = bool(
             blob_match
             and pinned_blob_match
             and q8
             and template_match
             and parameters_match
+            and re.fullmatch(
+                r"[0-9a-f]{64}", effective_config_sha256, re.IGNORECASE
+            )
+            is not None
         )
         return ModelIdentity(
             alias=alias,
             source=source,
+            alias_blob_sha256=alias_blob,
+            source_blob_sha256=source_blob,
             alias_blob=alias_blob[:12],
             source_blob=source_blob[:12],
             blob_match=blob_match,
@@ -187,12 +227,15 @@ def verify_minicpm_identity(
             q8=q8,
             template_match=template_match,
             parameters_match=parameters_match,
+            effective_config_sha256=effective_config_sha256,
             ok=ok,
         )
     except Exception as exc:
         return ModelIdentity(
             alias=alias,
             source=source,
+            alias_blob_sha256="",
+            source_blob_sha256="",
             alias_blob="",
             source_blob="",
             blob_match=False,
@@ -201,6 +244,52 @@ def verify_minicpm_identity(
             q8=False,
             template_match=False,
             parameters_match=False,
+            effective_config_sha256="",
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def verify_ollama_blob_identity(
+    model: str,
+    *,
+    show: Callable[[str], object] | None = None,
+    host: str | None = None,
+    client_headers: Mapping[str, str] | None = None,
+    timeout_sec: float = 5.0,
+) -> OllamaBlobIdentity:
+    """Pin an Ollama alias's immutable blob and effective prompt parameters."""
+
+    try:
+        if show is None:
+            import ollama
+
+            client = ollama.Client(
+                host=host,
+                headers=client_headers or _NO_AMBIENT_AUTH,
+                timeout=max(0.1, float(timeout_sec)),
+            )
+            show = lambda name: client.show(name)  # noqa: E731
+        shown = show(model)
+        blob = _blob_ref(shown)
+        config_digest = _effective_config_digest(shown)
+        ok = bool(
+            re.fullmatch(r"[0-9a-f]{64}", blob, re.IGNORECASE) is not None
+            and re.fullmatch(
+                r"[0-9a-f]{64}", config_digest, re.IGNORECASE
+            ) is not None
+        )
+        return OllamaBlobIdentity(
+            model=model,
+            blob_sha256=blob,
+            effective_config_sha256=config_digest,
+            ok=ok,
+        )
+    except Exception as exc:
+        return OllamaBlobIdentity(
+            model=model,
+            blob_sha256="",
+            effective_config_sha256="",
             ok=False,
             error=f"{type(exc).__name__}: {exc}",
         )

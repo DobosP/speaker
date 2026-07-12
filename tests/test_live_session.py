@@ -1123,6 +1123,17 @@ def test_response_score_normalizes_punctuation_and_case():
     assert response_score(("m-a-r-s",), (), "You spell it M-A-R-S.")["score"] == 1.0
 
 
+def test_response_score_normalizes_temperature_symbols():
+    result = response_score(
+        ("water", "zero|0", "celsius"),
+        (),
+        "Water freezes at 0°C.",
+    )
+
+    assert result["score"] == 1.0
+    assert result["ok"] is True
+
+
 # --- response_rows pairing (scenario turns -> the answer that followed) ---------
 
 

@@ -12,11 +12,14 @@ from typing import Iterator
 from always_on_agent.capabilities import (
     CapabilityRegistry,
     CapabilityResult,
+    CapabilitySpec,
     create_default_capabilities,
 )
+from always_on_agent.planner_steps import PlannerCall, PlannerStep
 from always_on_agent.react import (
     DEFAULT_TOOLS,
     FINAL_SYSTEM,
+    PLANNER_SYSTEM,
     PlannerConfig,
     ReactPlanner,
     _parse_step,
@@ -83,6 +86,168 @@ def test_planner_recovers_from_failing_tool():
     assert result.ok
     assert result.text == "recovered without it"
     assert result.data["steps"] == ["flaky.tool"]
+
+
+def test_failed_web_search_falls_back_to_local_once_with_same_query():
+    registry = CapabilityRegistry()
+    calls: list[tuple[str, str]] = []
+
+    def web(query, context):
+        calls.append(("web.search", query))
+        return CapabilityResult(False, "", error="web offline")
+
+    def local(query, context):
+        calls.append(("search.local", query))
+        return CapabilityResult(True, "local result")
+
+    registry.register("web.search", web)
+    registry.register("search.local", local)
+    # Deliberately violate the prompt on the second step: the controller must
+    # keep both the automatic fallback and the failed provider non-repeatable.
+    llm = ScriptLLM(
+        [
+            "TOOL web.search: pipecat",
+            "TOOL web.search: pipecat",
+            "FINAL: recovered from the local corpus",
+        ]
+    )
+    planner = ReactPlanner(
+        llm, registry, max_steps=3, tools=("web.search", "search.local")
+    )
+
+    result = planner.run("research pipecat", {})
+
+    assert result.ok
+    assert result.text == "recovered from the local corpus"
+    assert calls == [
+        ("web.search", "pipecat"),
+        ("search.local", "pipecat"),
+    ]
+    assert result.data["steps"] == ["web.search", "search.local"]
+    assert "web.search failed: web offline" in llm.plan_prompts[1]
+    assert "search.local: local result" in llm.plan_prompts[1]
+    assert "web.search was not retried" in llm.plan_prompts[2]
+    assert "never retry the same failed tool" in PLANNER_SYSTEM
+
+
+def test_web_failure_cancellation_prevents_local_fallback():
+    cancel = Event()
+    registry = CapabilityRegistry()
+    local_calls: list[str] = []
+
+    def cancelling_web(query, context):
+        cancel.set()
+        return CapabilityResult(False, "", error="cancelled")
+
+    registry.register("web.search", cancelling_web)
+    registry.register(
+        "search.local",
+        lambda query, context: local_calls.append(query)
+        or CapabilityResult(True, "must not run"),
+    )
+    planner = ReactPlanner(
+        ScriptLLM(["TOOL web.search: pipecat"]),
+        registry,
+        tools=("web.search", "search.local"),
+    )
+
+    result = planner.run("research pipecat", {"cancel_event": cancel})
+
+    assert result.data.get("cancelled") is True
+    assert local_calls == []
+
+
+def test_native_web_fallback_records_both_exchanges_before_replanning():
+    registry = CapabilityRegistry()
+    registry.register(
+        "web.search",
+        lambda query, context: CapabilityResult(False, "", error="web offline"),
+        spec=CapabilitySpec("web.search", "web", planner_tool=True),
+    )
+    registry.register(
+        "search.local",
+        lambda query, context: CapabilityResult(True, "local result"),
+        spec=CapabilitySpec("search.local", "local", planner_tool=True),
+    )
+
+    class Backend:
+        name = "test-native"
+
+        def __init__(self):
+            self.steps = [
+                PlannerStep(call=PlannerCall("web.search", "pipecat")),
+                PlannerStep(final="done"),
+            ]
+            self.exchanges = []
+
+        def next_step(self, **kwargs):
+            self.exchanges.append(tuple(kwargs["exchanges"]))
+            return self.steps.pop(0)
+
+        def validate_final(self, text):
+            return text
+
+    backend = Backend()
+    planner = ReactPlanner(
+        ScriptLLM([]),
+        registry,
+        tools=("web.search", "search.local"),
+        step_backend=backend,
+    )
+
+    result = planner.run("research pipecat", {})
+
+    assert result.text == "done"
+    assert result.data["steps"] == ["web.search", "search.local"]
+    assert [exchange.call for exchange in backend.exchanges[1]] == [
+        PlannerCall("web.search", "pipecat"),
+        PlannerCall("search.local", "pipecat"),
+    ]
+    assert [exchange.ok for exchange in backend.exchanges[1]] == [False, True]
+
+
+def test_native_repeated_failed_tool_receives_denied_exchange_without_reinvoke():
+    registry = CapabilityRegistry()
+    calls: list[str] = []
+    registry.register(
+        "flaky.tool",
+        lambda query, context: calls.append(query)
+        or CapabilityResult(False, "", error="offline"),
+        spec=CapabilitySpec("flaky.tool", "flaky", planner_tool=True),
+    )
+
+    class Backend:
+        name = "test-native"
+
+        def __init__(self):
+            self.steps = [
+                PlannerStep(call=PlannerCall("flaky.tool", "x")),
+                PlannerStep(call=PlannerCall("flaky.tool", "x")),
+                PlannerStep(final="done"),
+            ]
+            self.exchanges = []
+
+        def next_step(self, **kwargs):
+            self.exchanges.append(tuple(kwargs["exchanges"]))
+            return self.steps.pop(0)
+
+        def validate_final(self, text):
+            return text
+
+    backend = Backend()
+    result = ReactPlanner(
+        ScriptLLM([]),
+        registry,
+        tools=("flaky.tool",),
+        max_steps=3,
+        step_backend=backend,
+    ).run("do it", {})
+
+    assert result.text == "done"
+    assert calls == ["x"]
+    assert result.data["steps"] == ["flaky.tool"]
+    assert len(backend.exchanges[2]) == 2
+    assert "denied" in backend.exchanges[2][-1].result.lower()
 
 
 def test_planner_handles_unavailable_tool():

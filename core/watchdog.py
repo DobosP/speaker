@@ -43,6 +43,7 @@ from .metrics import (
     MetricsRecorder,
     SUPERSEDED,
     TTS_FIRST_AUDIO,
+    TTS_REQUESTED,
 )
 
 log = logging.getLogger("speaker.watchdog")
@@ -186,22 +187,26 @@ class StuckWatchdog:
         for i, rec in enumerate(self._recorder.records()):
             stamps = rec.stamps
             # A turn the user barged into (or stopped via a "stop" command that
-            # aborted playback), one resolved with no LLM at all (HANDLED_LOCAL:
-            # the intent fast-path), or one PREEMPTED by a newer final
+            # aborted playback), or one PREEMPTED by a newer final
             # (SUPERSEDED: newest-input-wins cancelled it pre-answer) may
             # legitimately never reach llm_first_token or tts_first_audio -- that
-            # is an interrupt / no-LLM / cancelled turn, not a stall. Skip both
+            # is an interrupt / cancelled turn, not a stall. Skip both
             # stuck checks so it isn't mis-flagged as stuck (the live run surfaced
             # this false positive on a cancelled turn; rc-5 covers the no-LLM +
             # superseded cases).
             if (
                 BARGE_IN in stamps or BARGE_IN_STOP in stamps
-                or HANDLED_LOCAL in stamps or SUPERSEDED in stamps
+                or SUPERSEDED in stamps
                 or MERGED in stamps
                 or (HELD in stamps and ASR_FINAL not in stamps)
             ):
                 continue
-            if ASR_FINAL in stamps and LLM_FIRST_TOKEN not in stamps:
+            handled_local = HANDLED_LOCAL in stamps
+            if (
+                not handled_local
+                and ASR_FINAL in stamps
+                and LLM_FIRST_TOKEN not in stamps
+            ):
                 elapsed = now - stamps[ASR_FINAL]
                 deadline = self._deadline(
                     self._recorder.recent_ttft_ms(),
@@ -216,8 +221,21 @@ class StuckWatchdog:
                         "llm stuck: turn %d had asr_final but no llm_first_token after %.1fs (deadline %.1fs)"
                         % (i, elapsed, deadline),
                     )
-            if LLM_FIRST_TOKEN in stamps and TTS_FIRST_AUDIO not in stamps:
-                elapsed = now - stamps[LLM_FIRST_TOKEN]
+            # Controller-owned replies deliberately have no LLM token, but an
+            # admitted TTS request must still produce audio. Prefer that exact
+            # admission anchor; retain the first-token fallback for legacy
+            # emitters so existing LLM->TTS stalls remain visible.
+            tts_anchor = (
+                TTS_REQUESTED
+                if TTS_REQUESTED in stamps
+                else (
+                    LLM_FIRST_TOKEN
+                    if not handled_local and LLM_FIRST_TOKEN in stamps
+                    else None
+                )
+            )
+            if tts_anchor is not None and TTS_FIRST_AUDIO not in stamps:
+                elapsed = now - stamps[tts_anchor]
                 deadline = self._deadline(
                     self._recorder.recent_tts_ms(),
                     self.TTS_FIRST_AUDIO_DEADLINE_SEC,
@@ -228,8 +246,8 @@ class StuckWatchdog:
                 if elapsed >= deadline:
                     self._warn_once(
                         i, "tts_first_audio",
-                        "tts stuck: turn %d had llm_first_token but no tts_first_audio after %.1fs (deadline %.1fs)"
-                        % (i, elapsed, deadline),
+                        "tts stuck: turn %d had %s but no tts_first_audio after %.1fs (deadline %.1fs)"
+                        % (i, tts_anchor, elapsed, deadline),
                     )
 
     def _deadline(

@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3357 passed/30 skipped/9 warnings; focused conversation/APM: 36/6 passed.
-ADR-0050 deterministic device-free trace: 36/36 scenario-runs (12 x 3), pass@1=True/pass^3=True.
-Real Q8 identity passed; four-scenario smoke was candidate 3/4 and baseline 1/4. Full A/B is unrun; live bare-speaker A/B remains red.
+Last verified: 2026-07-12 on Linux ROG; full: 3416 passed/30 skipped/9 warnings; focused barge/APM: 16/6 passed.
+ADR-0051 v2 deterministic: 42/42; dirty full real rehearsal: MiniCPM Q8 and Gemma each 42/42.
+Clean-provenance A/B is still required; live bare-speaker A/B is red; branch unlandable.
 
 ## Runtime
 
@@ -13,8 +13,8 @@ Real Q8 identity passed; four-scenario smoke was candidate 3/4 and baseline 1/4.
 - Current host resolves `desktop_gpu_4090`; MiniCPM5-1B Q8 is local text,
   gemma3:12b is complex/vision, and warm MiniCPM TTFT was 0.12–0.14 s. Phone Q4
   uses native XML tools; desktop Gemma/Ollama retains textual ReAct (ADR-0020/0033).
-- ACT routing now requires command-shaped markers; informational action-word
-  questions stay on MiniCPM and ambiguous terms use it to disambiguate (ADR-0024).
+- Anchored high-confidence requests take deterministic ACT/search/research paths;
+  ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are
@@ -49,22 +49,22 @@ Real Q8 identity passed; four-scenario smoke was candidate 3/4 and baseline 1/4.
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
   Windows voice-communications/word-cut is unavailable until a constructible,
   verified capture API replaces the unsupported setting (ADR-0019).
-- Synchronous capabilities use bounded cancellable task coordinators; barge/timeout
-  blocks stale output and caps abandoned providers at six (ADR-0021). Exact CPU
-  llama.cpp cancellation clears native memory before shared-context release; a real
-  Q4 pre-token cancel took 22.4 ms with healthy reuse (ADR-0030). Model load/warm,
-  arbitrary providers, and cloud Hedge losers remain bulkhead-only.
-- Addressing, cleanup, and routing use a bounded cancellable preprocessing lease.
-  A post-barge live final may bypass `INGEST` only for a direct answer; identity,
-  private context, tools, and continuation lineage stay stripped, and synthetic
-  resumes share that envelope (ADR-0023/0025/0039). Input effects remain fenced.
+- Synchronous capabilities use bounded cancellable coordinators; failed plan
+  tools cannot retry, and failed web may make one fenced local fallback.
+  Barge/timeout blocks stale output and caps abandoned providers at six; CPU
+  llama.cpp cancellation clears memory before context release (22.4 ms Q4
+  pre-token with healthy reuse) (ADR-0021/30/51).
+- Cancellable preprocessing lets clean finals bypass model cleanup; bounded exact-
+  word/repeat/session-fact and post-barge exact-word replies are controller-owned.
+  General history uses role messages under a 320-token cap; response-only turns
+  keep identity, tools/actions, and durable-memory authority stripped (ADR-0023/39/51).
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
-- ScriptedEngine, Sherpa, and FileReplay use terminal sink receipts; sample ratios
-  never imply words. The shipped TTS speaker ID is session-locked; voice tags
-  sanitize without switching it, while emotion/rate stay fragment-local. Finite
-  unsupported control tags strip; other brackets stay visible (ADR-0027/28/29/38/41).
+- Terminal sink receipts—not sample ratios—govern spoken history; admitted replies
+  stamp `TTS_REQUESTED`, preserving first-audio watchdog coverage without a model token.
+  TTS speaker ID is session-locked; voice tags cannot switch it, while finite
+  unsupported control tags strip and other brackets remain visible (ADR-0027/28/29/38/41/51).
 
 ## Live evidence and limits
 

@@ -1,7 +1,7 @@
 # ADR-0050: Gate model adoption with versioned conversation traces
 
 Date: 2026-07-12
-Status: accepted
+Status: superseded-by ADR-0051
 
 ## Decision
 Require a versioned, device-free conversation-trace gate before adopting or

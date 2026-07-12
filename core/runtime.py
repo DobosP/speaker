@@ -39,7 +39,15 @@ from .engine import (
 )
 from .intents import LocalIntentHandler
 from .llm import EchoLLM, LLMCallCancelled, LLMClient
-from .metrics import ASR_FINAL, BARGE_IN, HANDLED_LOCAL, HELD, LLM_FIRST_TOKEN, MetricsRecorder
+from .metrics import (
+    ASR_FINAL,
+    BARGE_IN,
+    HANDLED_LOCAL,
+    HELD,
+    LLM_FIRST_TOKEN,
+    TTS_REQUESTED,
+    MetricsRecorder,
+)
 from .persona import PersonaConfig, build_system_prompt
 from .playback_history import PlaybackCommit, PlaybackHistory
 from .tts_markup import (
@@ -1917,13 +1925,26 @@ class VoiceRuntime:
                 self._playback_effect_changed.notify_all()
         if event.kind == EventKind.TASK_COMPLETED:
             capability = str(event.payload.get("capability", "") or "")
-            if capability and capability not in _LLM_BACKED_TASK_CAPABILITIES:
+            data = event.payload.get("data")
+            handled_local = bool(
+                isinstance(data, dict) and data.get("handled_local") is True
+            )
+            if handled_local or (
+                capability and capability not in _LLM_BACKED_TASK_CAPABILITIES
+            ):
                 # The brain completed a local/non-LLM capability (dictation,
-                # meeting note, local search/command staging). The turn has an
-                # ASR_FINAL but legitimately never gets an LLM_FIRST_TOKEN.
-                self.metrics.mark(HANDLED_LOCAL)
+                # meeting note, local search/command staging), or an explicitly
+                # controller-owned assistant.answer. The turn has an ASR_FINAL
+                # but legitimately never gets an LLM_FIRST_TOKEN.
+                metrics_turn_token = event.payload.get("metrics_turn_token")
+                if metrics_turn_token is None:
+                    self.metrics.mark(HANDLED_LOCAL)
+                else:
+                    self.metrics.mark(
+                        HANDLED_LOCAL,
+                        turn_token=metrics_turn_token,
+                    )
             if self._playback_history is not None:
-                data = event.payload.get("data")
                 if isinstance(data, dict) and data.get("streamed"):
                     completed_epoch = event.payload.get("epoch")
                     with self._playback_effect_lock:
@@ -2048,6 +2069,14 @@ class VoiceRuntime:
                         task_id,
                         epoch,
                         text,
+                    )
+                metrics_turn_token = event.payload.get("metrics_turn_token")
+                if metrics_turn_token is None:
+                    self.metrics.mark(TTS_REQUESTED)
+                else:
+                    self.metrics.mark(
+                        TTS_REQUESTED,
+                        turn_token=metrics_turn_token,
                     )
                 log.info(
                     "assistant: %r", text,

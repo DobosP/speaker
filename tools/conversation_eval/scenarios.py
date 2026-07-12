@@ -3,7 +3,7 @@ from __future__ import annotations
 from .schema import ScenarioSpec, TurnSpec
 
 
-SCENARIO_SET_VERSION = 1
+SCENARIO_SET_VERSION = 2
 
 
 SCENARIOS: tuple[ScenarioSpec, ...] = (
@@ -65,13 +65,12 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         require_fast_answer=True,
     ),
     ScenarioSpec(
-        "context_followup",
-        "A follow-up resolves a synthetic fact from the preceding turn.",
+        "typed_session_fact",
+        "A typed session fact resolves deterministically on a matching follow-up.",
         "conversation",
         (
             TurnSpec(
                 "Remember for this conversation that the project codename is Orion.",
-                expect=("orion",),
             ),
             TurnSpec(
                 "What is the project codename? Answer with the codename.",
@@ -82,7 +81,51 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         expected_task_terminals=("task.completed", "task.completed"),
         forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
         required_events=("task.completed", "memory.commit"),
+    ),
+    ScenarioSpec(
+        "model_history_followup",
+        "The fast model resolves a referent from role-structured history.",
+        "conversation",
+        (
+            TurnSpec(
+                "What is the capital of France?",
+                expect=("paris",),
+            ),
+            TurnSpec(
+                "Which country contains the city you just named?",
+                expect=("france",),
+            ),
+        ),
+        expected_capabilities=("assistant.answer", "assistant.answer"),
+        expected_task_terminals=("task.completed", "task.completed"),
+        forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
+        required_events=("task.completed", "memory.commit"),
         require_fast_answer=True,
+    ),
+    ScenarioSpec(
+        "exact_word_repeat",
+        "Exact-word and repeat controls are stable without model phrasing drift.",
+        "conversation",
+        (
+            TurnSpec(
+                "Say exactly one word: Orion.",
+                expect=("orion",),
+                exact_response="orion",
+                max_sentences=1,
+                max_words=1,
+            ),
+            TurnSpec(
+                "Repeat your previous answer exactly.",
+                expect=("orion",),
+                exact_response="orion",
+                max_sentences=1,
+                max_words=1,
+            ),
+        ),
+        expected_capabilities=("assistant.answer", "assistant.answer"),
+        expected_task_terminals=("task.completed", "task.completed"),
+        forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
+        required_events=("task.completed", "memory.commit"),
     ),
     ScenarioSpec(
         "local_search",
@@ -90,7 +133,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         "conversation",
         (
             TurnSpec(
-                "search pipecat",
+                "Please search for Pipecat.",
                 expect=("pipecat", "realtime|real time", "voice|multimodal"),
             ),
         ),
@@ -107,7 +150,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         "conversation",
         (
             TurnSpec(
-                "research pipecat and livekit",
+                "Please research Pipecat and LiveKit.",
                 expect=("pipecat", "livekit"),
             ),
         ),
@@ -173,7 +216,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         "barge_stop",
         (
             TurnSpec(
-                "Which colors are on the French flag? Give each color in its own short sentence."
+                "Say exactly three short sentences: Blue. White. Red."
             ),
         ),
         expected_capabilities=("assistant.answer",),
@@ -190,12 +233,15 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         "barge_redirect",
         (
             TurnSpec(
-                "Which colors are on the French flag? Give each color in its own short sentence."
+                "Say exactly three short sentences: Blue. White. Red."
             ),
             TurnSpec(
-                "Actually, Tokyo instead.",
+                "Actually, respond with only the word Tokyo.",
                 expect=("tokyo",),
                 forbid=("blue|white|red|flag",),
+                exact_response="tokyo",
+                max_sentences=1,
+                max_words=1,
             ),
         ),
         expected_capabilities=("assistant.answer", "assistant.answer"),

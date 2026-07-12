@@ -1,18 +1,25 @@
-"""R11: prior turns as role-structured chat messages (opt-in ``as_messages``).
+"""R11: prior turns as role-structured chat messages.
 
 Covers the shared history helper, the LLM message-builders that insert history
 between the system prompt and the current turn, and the end-to-end capabilities
-path -- messages mode passes ``history`` to the model and drops the pasted text
-block, while the default (text) mode stays byte-identical.
+path -- configured messages mode passes ``history`` to the model and drops the
+pasted text block, while the programmatic fallback stays compatible with text.
 """
 from __future__ import annotations
 
-from always_on_agent.capabilities import CapabilityRegistry
+import json
+from pathlib import Path
+
+from always_on_agent.capabilities import create_default_capabilities
+from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.memory import SessionMemory
+from always_on_agent.recall import estimate_tokens
 
 from core.capabilities import RecallConfig, attach_llm_capabilities
 from core.conversation import RecentContextConfig, history_messages
 from core.llm import EchoLLM, OllamaLLM, _history_messages, _openai_messages
+from core.persona import build_system_prompt
+from core.websearch import WebSearchConfig, attach_web_search_capability
 
 
 # --- the shared normalizer + role mapping ------------------------------------
@@ -124,13 +131,90 @@ def test_messages_mode_passes_history_and_drops_text_block():
     assert "Recent conversation" not in (llm.systems[-1] or "")
 
 
-def test_text_mode_default_pastes_block_and_passes_no_history():
+def test_messages_mode_still_supplies_text_context_to_escalated_planner():
+    llm = _HistoryRecordingLLM()
+    mem = _mem_with_prior_turns()
+    reg = CapabilityRegistry()
+    seen: dict = {}
+    reg.register(
+        "agent.react",
+        lambda _query, context: seen.update(context)
+        or CapabilityResult(True, "planned"),
+    )
+    attach_llm_capabilities(
+        reg,
+        llm,
+        memory=mem,
+        recent_context=RecentContextConfig(as_messages=True),
+        escalate=lambda _query, _context: True,
+    )
+
+    result = reg.invoke("assistant.answer", "continue it", {})
+
+    assert result.text == "planned"
+    assert "tell me a story" in seen["recent_conversation"]
+    assert "dragon" in seen["recent_conversation"]
+
+
+def test_messages_mode_honors_recent_token_reserve():
+    llm = _HistoryRecordingLLM()
+    mem = SessionMemory()
+    mem.add("x" * 60, tags=("user",))
+    mem.add("y" * 60, tags=("assistant_output",))
+    reg = CapabilityRegistry()
+    attach_llm_capabilities(
+        reg,
+        llm,
+        memory=mem,
+        recent_context=RecentContextConfig(
+            as_messages=True,
+            reserve_tokens=25,
+        ),
+    )
+
+    reg.invoke("assistant.answer", "continue", {})
+
+    history = llm.histories[-1]
+    assert history == [{"role": "assistant", "content": "y" * 60}]
+    rendered = "\n".join(
+        f"{item['role']}: {item['content']}" for item in history
+    )
+    assert estimate_tokens(rendered) <= 25
+
+
+def test_programmatic_default_keeps_legacy_text_mode():
+    assert RecentContextConfig().as_messages is False
+
+
+def test_shipped_history_budget_leaves_headroom_on_smallest_profile():
+    config = json.loads(
+        (Path(__file__).parents[1] / "config.json").read_text(encoding="utf-8")
+    )
+    memory = config["memory"]
+    phone_lite = config["device_profiles"]["phone_lite"]["llm"]
+    registry = create_default_capabilities(SessionMemory())
+    attach_web_search_capability(registry, WebSearchConfig())
+    system_tokens = estimate_tokens(
+        build_system_prompt(registry, web_enabled=False)
+    )
+
+    committed = (
+        system_tokens
+        + int(memory["recall_max_tokens"])
+        + int(memory["recall_recent_reserve_tokens"])
+        + int(phone_lite["options"]["num_predict"])
+    )
+
+    assert int(phone_lite["n_ctx"]) - committed >= 300
+
+
+def test_explicit_text_mode_pastes_block_and_passes_no_history():
     llm = _HistoryRecordingLLM()
     mem = _mem_with_prior_turns()
     reg = CapabilityRegistry()
     attach_llm_capabilities(
         reg, llm, memory=mem,
-        recent_context=RecentContextConfig(),  # default: text mode
+        recent_context=RecentContextConfig(as_messages=False),
     )
     reg.invoke("assistant.answer", "continue it", {})
     assert llm.histories[-1] is None  # no structured history in text mode

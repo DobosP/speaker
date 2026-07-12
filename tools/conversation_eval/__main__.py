@@ -6,12 +6,13 @@ from hashlib import sha256
 from importlib import metadata as importlib_metadata
 import json
 from pathlib import Path
+import re
 import subprocess
 from urllib.parse import urlparse
 
 from tools.setup_minicpm import LOCAL_MODEL
 
-from .identity import verify_minicpm_identity
+from .identity import verify_minicpm_identity, verify_ollama_blob_identity
 from .report import build_report, summarize_model, write_report
 from .runner import (
     LOCAL_OLLAMA_HEADERS,
@@ -98,28 +99,11 @@ def _config_metadata(config: dict, *, include_local_config: bool) -> dict[str, o
     host_label = f"{parsed_host.scheme or 'http'}://{display_hostname}"
     if port is not None:
         host_label += f":{port}"
-    contract = {
-        "input_gate": config.get("input_gate"),
-        "cleanup": config.get("cleanup"),
-        "capability_router": config.get("capability_router"),
-        "agent": config.get("agent"),
-        "recent_context": config.get("recent_context"),
-        "llm": {
-            key: llm.get(key)
-            for key in (
-                "backend",
-                "main_model",
-                "fast_model",
-                "router_model",
-                "think",
-                "options",
-                "keep_alive",
-            )
-        },
-    }
     return {
         "include_local_config": include_local_config,
-        "contract_sha256": _json_sha256(contract),
+        # Hash the complete effective, device-profile-applied local contract.
+        # Reports disclose only the digest, never paths or local values.
+        "contract_sha256": _json_sha256(config),
         "llm_options_sha256": _json_sha256(llm.get("options")),
         "backend": str(llm.get("backend", "ollama")),
         "host": host_label,
@@ -143,6 +127,102 @@ def _pair_metadata(models, warmup: dict[str, object]) -> dict[str, object]:
         "model_assignment": models.model_assignment,
         "role_models": models.role_map(),
         "warmup": warmup,
+    }
+
+
+def _model_identity_record(model: str, config: dict) -> dict[str, object]:
+    host = str((config.get("llm", {}) or {}).get("host", "") or "") or None
+    if model == LOCAL_MODEL:
+        identity = verify_minicpm_identity(
+            host=host,
+            client_headers=LOCAL_OLLAMA_HEADERS,
+        )
+        return {
+            "model": model,
+            "verification": "minicpm_q8_blob_template_parameters",
+            "required": True,
+            **identity.as_dict(),
+        }
+    identity = verify_ollama_blob_identity(
+        model,
+        host=host,
+        client_headers=LOCAL_OLLAMA_HEADERS,
+    )
+    return {
+        "model": model,
+        "verification": "ollama_blob_effective_config",
+        "required": True,
+        **identity.as_dict(),
+    }
+
+
+def _identity_contract(record: object) -> tuple[str, str] | None:
+    if not isinstance(record, dict) or record.get("ok") is not True:
+        return None
+    blob = str(
+        record.get("alias_blob_sha256")
+        or record.get("blob_sha256")
+        or ""
+    ).lower()
+    effective = str(record.get("effective_config_sha256", "") or "").lower()
+    if (
+        re.fullmatch(r"[0-9a-f]{64}", blob) is None
+        or re.fullmatch(r"[0-9a-f]{64}", effective) is None
+    ):
+        return None
+    return blob, effective
+
+
+def _identity_snapshot(role_models: dict[str, str], config: dict) -> dict[str, object]:
+    models = {
+        model: _model_identity_record(model, config)
+        for model in sorted(set(role_models.values()))
+        if model
+    }
+    return {
+        "role_models": dict(role_models),
+        "models": models,
+        "ok": bool(
+            models
+            and set(models) == {model for model in role_models.values() if model}
+            and all(_identity_contract(record) is not None for record in models.values())
+        ),
+    }
+
+
+def _identity_bundle(
+    before: dict[str, object],
+    after: dict[str, object],
+) -> dict[str, object]:
+    before_models = before.get("models", {})
+    after_models = after.get("models", {})
+    stable = bool(
+        isinstance(before_models, dict)
+        and isinstance(after_models, dict)
+        and set(before_models) == set(after_models)
+        and all(
+            _identity_contract(before_models[model])
+            == _identity_contract(after_models[model])
+            is not None
+            for model in before_models
+        )
+    )
+    return {
+        "before": before,
+        "after": after,
+        "stable": stable,
+        "ok": bool(before.get("ok") is True and after.get("ok") is True and stable),
+    }
+
+
+def _failed_identity_records(snapshot: dict[str, object]) -> dict[str, object]:
+    records = snapshot.get("models", {})
+    if not isinstance(records, dict):
+        return {"snapshot": snapshot}
+    return {
+        model: record
+        for model, record in records.items()
+        if _identity_contract(record) is None
     }
 
 
@@ -187,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         "--allow-unverified-model",
         action="store_true",
         help=(
-            "continue diagnostically after MiniCPM identity failure; the report "
+            "continue diagnostically after model identity failure; the report "
             "and process still fail provenance"
         ),
     )
@@ -200,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.runs < 1:
         parser.error("--runs must be at least 1")
+    repository_before = _repository_metadata()
     try:
         scenarios = selected(args.scenario)
         config = safe_config(
@@ -221,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     provenance_ok = True
     diagnostic_override_used = False
     execution_order: list[str] = []
+    config_before = _config_metadata(
+        config,
+        include_local_config=args.include_local_config,
+    )
+    candidate_identity_before: dict[str, object] | None = None
     if args.mode == "deterministic":
         candidate_models = deterministic_models()
         candidate_metadata = _pair_metadata(
@@ -233,54 +319,6 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
     else:
-        identity_cache: dict[str, object] = {}
-
-        def identity_record(model: str) -> dict[str, object]:
-            if model != LOCAL_MODEL:
-                return {
-                    "model": model,
-                    "verification": "name_only_no_digest_contract",
-                    "required": False,
-                    "ok": None,
-                }
-            if model not in identity_cache:
-                identity_cache[model] = verify_minicpm_identity(
-                    host=str((config.get("llm", {}) or {}).get("host", "") or "")
-                    or None,
-                    client_headers=LOCAL_OLLAMA_HEADERS,
-                )
-            identity = identity_cache[model]
-            return {
-                "model": model,
-                "verification": "minicpm_q8_blob_template_parameters",
-                "required": True,
-                **identity.as_dict(),
-            }
-
-        identities["candidate"] = identity_record(args.candidate_model)
-        if args.baseline_model:
-            identities["baseline"] = identity_record(args.baseline_model)
-        provenance_ok = all(
-            not bool(record.get("required")) or bool(record.get("ok"))
-            for record in identities.values()
-            if isinstance(record, dict)
-        )
-        diagnostic_override_used = bool(
-            args.allow_unverified_model and not provenance_ok
-        )
-        if not provenance_ok and not args.allow_unverified_model:
-            failed = {
-                label: record
-                for label, record in identities.items()
-                if isinstance(record, dict)
-                and record.get("required")
-                and not record.get("ok")
-            }
-            parser.exit(
-                2,
-                f"MiniCPM identity verification failed: {failed}\n",
-            )
-
         candidate_models = ollama_models(
             config,
             args.candidate_model,
@@ -297,6 +335,19 @@ def main(argv: list[str] | None = None) -> int:
                 args.baseline_model,
                 topology=args.topology,
             )
+            baseline_identity_before = _identity_snapshot(
+                baseline_models.role_map(),
+                config,
+            )
+            if (
+                baseline_identity_before.get("ok") is not True
+                and not args.allow_unverified_model
+            ):
+                parser.exit(
+                    2,
+                    "Baseline identity verification failed: "
+                    f"{_failed_identity_records(baseline_identity_before)}\n",
+                )
             baseline_warmup = (
                 warm_models(config, baseline_models)
                 if args.warm_policy == "production"
@@ -324,6 +375,27 @@ def main(argv: list[str] | None = None) -> int:
                 args.runs,
                 config,
             )
+            baseline_identity_after = _identity_snapshot(
+                baseline_models.role_map(),
+                config,
+            )
+            identities["baseline"] = _identity_bundle(
+                baseline_identity_before,
+                baseline_identity_after,
+            )
+        candidate_identity_before = _identity_snapshot(
+            candidate_models.role_map(),
+            config,
+        )
+        if (
+            candidate_identity_before.get("ok") is not True
+            and not args.allow_unverified_model
+        ):
+            parser.exit(
+                2,
+                "Candidate identity verification failed: "
+                f"{_failed_identity_records(candidate_identity_before)}\n",
+            )
         candidate_warmup = (
             warm_models(config, candidate_models)
             if args.warm_policy == "production"
@@ -339,11 +411,44 @@ def main(argv: list[str] | None = None) -> int:
 
     execution_order.append("candidate")
     candidate_results = _run(candidate_models, scenarios, args.runs, config)
+    if args.mode == "ollama":
+        assert candidate_identity_before is not None
+        candidate_identity_after = _identity_snapshot(
+            candidate_models.role_map(),
+            config,
+        )
+        identities["candidate"] = _identity_bundle(
+            candidate_identity_before,
+            candidate_identity_after,
+        )
+        provenance_ok = bool(
+            identities
+            and all(
+                isinstance(bundle, dict) and bundle.get("ok") is True
+                for bundle in identities.values()
+            )
+        )
+        diagnostic_override_used = bool(
+            args.allow_unverified_model and not provenance_ok
+        )
     candidate_summary = summarize_model(candidate_models.label, candidate_results)
     _print_summary("candidate", candidate_summary)
     if baseline_results:
         baseline_summary = summarize_model(args.baseline_model, baseline_results)
         _print_summary("baseline", baseline_summary)
+
+    try:
+        config_after_value = safe_config(
+            device=args.device,
+            include_local_config=args.include_local_config,
+        )
+        config_after = _config_metadata(
+            config_after_value,
+            include_local_config=args.include_local_config,
+        )
+    except (OSError, ValueError) as exc:
+        config_after = {"error": f"{type(exc).__name__}: {exc}"}
+    repository_after = _repository_metadata()
 
     report = build_report(
         mode=args.mode,
@@ -352,11 +457,18 @@ def main(argv: list[str] | None = None) -> int:
         baseline_results=baseline_results,
         identities=identities,
         metadata={
-            "repository": _repository_metadata(),
-            "config": _config_metadata(
-                config,
-                include_local_config=args.include_local_config,
-            ),
+            "repository": repository_after,
+            "config": config_after,
+            "provenance_snapshots": {
+                "before": {
+                    "repository": repository_before,
+                    "config": config_before,
+                },
+                "after": {
+                    "repository": repository_after,
+                    "config": config_after,
+                },
+            },
             "topology": (
                 args.topology if args.mode == "ollama" else "deterministic"
             ),

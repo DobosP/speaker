@@ -9,7 +9,11 @@ import re
 from typing import Mapping
 from urllib.parse import urlparse
 
-from tools.setup_minicpm import LOCAL_MODEL
+from tools.setup_minicpm import (
+    LOCAL_MODEL,
+    SOURCE_MODEL,
+    SOURCE_MODEL_BLOB_SHA256,
+)
 
 from .scenarios import SCENARIOS, SCENARIO_SET_VERSION
 from .schema import ModelSummary, SCHEMA_VERSION, ScenarioResult
@@ -289,42 +293,107 @@ def build_report(
             "results": [result.as_dict() for result in baseline_results],
         }
         report["comparison"] = comparison
+    candidate_roles = (
+        candidate_metadata.get("role_models", {})
+        if isinstance(candidate_metadata, dict)
+        else {}
+    )
+    baseline_roles = (
+        baseline_metadata.get("role_models", {})
+        if isinstance(baseline_metadata, dict)
+        else {}
+    )
     identity_records = identities or {}
 
-    def identity_evidence(label: str, model: str) -> bool:
-        record = identity_records.get(label)
+    def identity_contract(
+        record: object,
+        model: str,
+    ) -> tuple[str, str] | None:
         if not isinstance(record, Mapping):
-            return False
-        if str(record.get("model", "")) != model:
-            return False
+            return None
+        if (
+            str(record.get("model", "")) != model
+            or record.get("required") is not True
+            or record.get("ok") is not True
+        ):
+            return None
         verification = str(record.get("verification", ""))
-        if not verification:
-            return False
+        effective = str(record.get("effective_config_sha256", "")).lower()
+        if re.fullmatch(r"[0-9a-f]{64}", effective) is None:
+            return None
         if model == LOCAL_MODEL:
-            return bool(
+            alias_blob = str(record.get("alias_blob_sha256", "")).lower()
+            source_blob = str(record.get("source_blob_sha256", "")).lower()
+            if not bool(
                 verification == "minicpm_q8_blob_template_parameters"
-                and record.get("required") is True
-                and record.get("ok") is True
+                and record.get("alias") == LOCAL_MODEL
+                and record.get("source") == SOURCE_MODEL
+                and alias_blob == source_blob == SOURCE_MODEL_BLOB_SHA256
                 and record.get("blob_match") is True
                 and record.get("pinned_blob_match") is True
                 and record.get("q8") is True
                 and record.get("template_match") is True
                 and record.get("parameters_match") is True
-            )
-        return bool(
-            verification == "name_only_no_digest_contract"
-            and record.get("required") is False
-        )
+            ):
+                return None
+            return alias_blob, effective
+        blob = str(record.get("blob_sha256", "")).lower()
+        if not bool(
+            verification == "ollama_blob_effective_config"
+            and re.fullmatch(r"[0-9a-f]{64}", blob)
+        ):
+            return None
+        return blob, effective
 
+    def suite_identity_evidence(
+        label: str,
+        role_models: object,
+    ) -> tuple[bool, dict[str, tuple[str, str]]]:
+        bundle = identity_records.get(label)
+        if not isinstance(bundle, Mapping) or not isinstance(role_models, Mapping):
+            return False, {}
+        before = bundle.get("before")
+        after = bundle.get("after")
+        if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+            return False, {}
+        expected_roles = {
+            "main": str(role_models.get("main", "")),
+            "fast": str(role_models.get("fast", "")),
+        }
+        if not all(expected_roles.values()):
+            return False, {}
+        if before.get("role_models") != expected_roles or after.get("role_models") != expected_roles:
+            return False, {}
+        before_models = before.get("models")
+        after_models = after.get("models")
+        expected_models = set(expected_roles.values())
+        if not isinstance(before_models, Mapping) or not isinstance(after_models, Mapping):
+            return False, {}
+        if set(before_models) != expected_models or set(after_models) != expected_models:
+            return False, {}
+        contracts: dict[str, tuple[str, str]] = {}
+        for model in expected_models:
+            before_contract = identity_contract(before_models.get(model), model)
+            after_contract = identity_contract(after_models.get(model), model)
+            if before_contract is None or before_contract != after_contract:
+                return False, {}
+            contracts[model] = before_contract
+        return bool(bundle.get("ok") is True and bundle.get("stable") is True), contracts
+
+    candidate_identity_ok, candidate_contracts = suite_identity_evidence(
+        "candidate",
+        candidate_roles,
+    )
+    baseline_identity_ok, baseline_contracts = suite_identity_evidence(
+        "baseline",
+        baseline_roles,
+    )
     identity_evidence_ok = bool(
         mode != "ollama"
         or (
-            identity_evidence("candidate", candidate_model)
-            and baseline_results
-            and identity_evidence(
-                "baseline",
-                baseline_results[0].model,
-            )
+            baseline_results
+            and candidate_identity_ok
+            and baseline_identity_ok
         )
     )
     provenance_asserted = provenance_ok is not None
@@ -387,60 +456,127 @@ def build_report(
     run_metadata = metadata or {}
     repository_metadata = run_metadata.get("repository")
     config_metadata = run_metadata.get("config")
-    host = (
-        str(config_metadata.get("host", ""))
-        if isinstance(config_metadata, Mapping)
-        else ""
-    )
-    parsed_host = urlparse(host)
-    run_metadata_ok = bool(
-        mode != "ollama"
-        or (
-            isinstance(repository_metadata, Mapping)
+    provenance_snapshots = run_metadata.get("provenance_snapshots")
+
+    def valid_repository(value: object) -> bool:
+        return bool(
+            isinstance(value, Mapping)
             and re.fullmatch(
                 r"[0-9a-f]{40}",
-                str(repository_metadata.get("revision", "")),
+                str(value.get("revision", "")),
                 flags=re.IGNORECASE,
             )
             is not None
-            and isinstance(repository_metadata.get("dirty"), bool)
-            and isinstance(config_metadata, Mapping)
+            and value.get("dirty") is False
+        )
+
+    def valid_config(value: object) -> bool:
+        if not isinstance(value, Mapping):
+            return False
+        parsed_host = urlparse(str(value.get("host", "")))
+        configured_roles = value.get("configured_role_models")
+        return bool(
+            re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(value.get("contract_sha256", "")),
+                flags=re.IGNORECASE,
+            )
+            is not None
             and re.fullmatch(
                 r"[0-9a-f]{64}",
-                str(config_metadata.get("contract_sha256", "")),
+                str(value.get("llm_options_sha256", "")),
                 flags=re.IGNORECASE,
             )
             is not None
-            and re.fullmatch(
-                r"[0-9a-f]{64}",
-                str(config_metadata.get("llm_options_sha256", "")),
-                flags=re.IGNORECASE,
-            )
-            is not None
-            and isinstance(config_metadata.get("include_local_config"), bool)
-            and config_metadata.get("backend") == "ollama"
+            and value.get("include_local_config") is False
+            and value.get("backend") == "ollama"
             and (parsed_host.hostname or "").lower()
             in {"localhost", "127.0.0.1", "::1"}
             and parsed_host.username is None
             and parsed_host.password is None
-            and isinstance(config_metadata.get("configured_role_models"), Mapping)
-            and config_metadata["configured_role_models"].get("main")
-            and config_metadata["configured_role_models"].get("fast")
+            and isinstance(configured_roles, Mapping)
+            and configured_roles.get("main")
+            and configured_roles.get("fast")
+        )
+
+    before_snapshot = (
+        provenance_snapshots.get("before", {})
+        if isinstance(provenance_snapshots, Mapping)
+        else {}
+    )
+    after_snapshot = (
+        provenance_snapshots.get("after", {})
+        if isinstance(provenance_snapshots, Mapping)
+        else {}
+    )
+    repository_before = (
+        before_snapshot.get("repository")
+        if isinstance(before_snapshot, Mapping)
+        else None
+    )
+    repository_after = (
+        after_snapshot.get("repository")
+        if isinstance(after_snapshot, Mapping)
+        else None
+    )
+    config_before = (
+        before_snapshot.get("config")
+        if isinstance(before_snapshot, Mapping)
+        else None
+    )
+    config_after = (
+        after_snapshot.get("config")
+        if isinstance(after_snapshot, Mapping)
+        else None
+    )
+    repository_clean = bool(
+        mode != "ollama"
+        or (
+            valid_repository(repository_before)
+            and valid_repository(repository_after)
+        )
+    )
+    repository_stable = bool(
+        mode != "ollama"
+        or (
+            repository_clean
+            and repository_before == repository_after == repository_metadata
+        )
+    )
+    local_config_excluded = bool(
+        mode != "ollama"
+        or (
+            isinstance(config_before, Mapping)
+            and isinstance(config_after, Mapping)
+            and config_before.get("include_local_config") is False
+            and config_after.get("include_local_config") is False
+        )
+    )
+    config_stable = bool(
+        mode != "ollama"
+        or (
+            valid_config(config_before)
+            and valid_config(config_after)
+            and config_before == config_after == config_metadata
+        )
+    )
+    effective_provenance_ok = bool(
+        effective_provenance_ok
+        and repository_stable
+        and config_stable
+        and local_config_excluded
+    )
+    run_metadata_ok = bool(
+        mode != "ollama"
+        or (
+            repository_stable
+            and config_stable
+            and local_config_excluded
             and run_metadata.get("warm_policy") == "production"
             and run_metadata.get("execution_order") == ["baseline", "candidate"]
             and str(run_metadata.get("ollama_python_version", ""))
             not in {"", "unavailable", "not_applicable"}
         )
-    )
-    candidate_roles = (
-        candidate_metadata.get("role_models", {})
-        if isinstance(candidate_metadata, dict)
-        else {}
-    )
-    baseline_roles = (
-        baseline_metadata.get("role_models", {})
-        if isinstance(baseline_metadata, dict)
-        else {}
     )
     topology = str((metadata or {}).get("topology", ""))
     candidate_assignment = str(
@@ -449,14 +585,41 @@ def build_report(
     baseline_assignment = str(
         (baseline_metadata or {}).get("model_assignment", "")
     )
-    expected_assignment = {
-        "production-hybrid": "production_hybrid_fast_override",
-        "all-roles": "all_roles_override",
-    }.get(topology, "")
+    expected_assignment = (
+        "production_hybrid_fast_override"
+        if topology == "production-hybrid"
+        else ""
+    )
+    configured_roles = (
+        config_metadata.get("configured_role_models", {})
+        if isinstance(config_metadata, Mapping)
+        else {}
+    )
+    configured_main = (
+        str(configured_roles.get("main", ""))
+        if isinstance(configured_roles, Mapping)
+        else ""
+    )
+    candidate_main = str(candidate_roles.get("main", ""))
+    baseline_main = str(baseline_roles.get("main", ""))
+    shared_main_contract_equal = bool(
+        mode != "ollama"
+        or (
+            identity_evidence_ok
+            and configured_main
+            and candidate_contracts.get(configured_main)
+            == baseline_contracts.get(configured_main)
+            is not None
+        )
+    )
+    adoption_topology_eligible = bool(
+        mode != "ollama" or topology == "production-hybrid"
+    )
     topology_ok = bool(
         mode != "ollama"
         or (
             evaluation_evidence_ok
+            and adoption_topology_eligible
             and expected_assignment
             and candidate_assignment == baseline_assignment == expected_assignment
             and isinstance(candidate_roles, Mapping)
@@ -464,18 +627,8 @@ def build_report(
             and candidate_roles.get("fast") == candidate_model
             and baseline_roles.get("fast")
             == (baseline_results[0].model if baseline_results else "")
-            and (
-                (
-                    topology == "production-hybrid"
-                    and candidate_roles.get("main") == baseline_roles.get("main")
-                )
-                or (
-                    topology == "all-roles"
-                    and candidate_roles.get("main") == candidate_model
-                    and baseline_roles.get("main")
-                    == (baseline_results[0].model if baseline_results else "")
-                )
-            )
+            and candidate_main == baseline_main == configured_main
+            and shared_main_contract_equal
         )
     )
     prompt_contract_equal = bool(
@@ -486,12 +639,21 @@ def build_report(
             == baseline_metadata["warmup"]["system_prompt_sha256"]
         )
     )
+    candidate_fast_contract = candidate_contracts.get(
+        str(candidate_roles.get("fast", ""))
+    )
+    baseline_fast_contract = baseline_contracts.get(
+        str(baseline_roles.get("fast", ""))
+    )
     ab_distinct = bool(
         mode != "ollama"
         or (
-            isinstance(candidate_roles, Mapping)
+            identity_evidence_ok
+            and isinstance(candidate_roles, Mapping)
             and isinstance(baseline_roles, Mapping)
-            and dict(candidate_roles) != dict(baseline_roles)
+            and candidate_fast_contract is not None
+            and baseline_fast_contract is not None
+            and candidate_fast_contract[0] != baseline_fast_contract[0]
         )
     )
     ab_valid = bool(topology_ok and ab_distinct)
@@ -526,10 +688,16 @@ def build_report(
         "warmup_ok": warmup_ok,
         "run_metadata_ok": run_metadata_ok,
         "prompt_contract_equal": prompt_contract_equal,
+        "adoption_topology_eligible": adoption_topology_eligible,
         "topology_ok": topology_ok,
+        "shared_main_contract_equal": shared_main_contract_equal,
         "ab_distinct": ab_distinct,
         "ab_valid": ab_valid,
         "identity_evidence_ok": identity_evidence_ok,
+        "repository_clean": repository_clean,
+        "repository_stable": repository_stable,
+        "config_stable": config_stable,
+        "local_config_excluded": local_config_excluded,
         "provenance_asserted": provenance_asserted,
         "provenance_ok": effective_provenance_ok,
         "diagnostic_override_used": bool(diagnostic_override_used),

@@ -113,6 +113,7 @@ class TurnSpec:
     text: str
     expect: tuple[str, ...] = ()
     forbid: tuple[str, ...] = ()
+    exact_response: str = ""
     max_sentences: int | None = None
     max_words: int | None = None
 

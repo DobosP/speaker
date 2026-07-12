@@ -49,6 +49,8 @@ def _normalize(text: str) -> str:
     """Lowercase, strip punctuation, collapse whitespace -- so 'Paris.' and
     'paris' compare equal and only the words matter."""
     text = (text or "").lower()
+    text = re.sub(r"°\s*c\b", " degrees celsius", text)
+    text = re.sub(r"°\s*f\b", " degrees fahrenheit", text)
     text = re.sub(r"[^\w\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 

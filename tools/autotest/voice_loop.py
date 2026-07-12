@@ -4,11 +4,9 @@ The engine runs for real; "user" utterances are injected on a real timeline
 (synth or the owner's recordings) and the run is analyzed from its bundle. The
 acoustic path is pluggable (see :mod:`.acoustics`):
 
-* ``cable``   -- digital null-sink loopback (~tens-of-ms delay). Silent, fast.
-                 The AEC reference is auto-aligned to the cable delay (~40 ms by
-                 default) so the echo is cancelled, later clips aren't dropped as
-                 echo, and the live self-interrupt count is meaningful. The
-                 cleanest mode for STT accuracy + barge-in.
+* ``cable``   -- digital injection with playback routed to a dead sink. Silent,
+                 fast, and the cleanest mode for STT accuracy. It has no echo
+                 relationship, so self-interrupt and barge-in are not covered.
 * ``delay``   -- two sinks bridged with a ~260 ms ``module-loopback`` so the AEC
                  reference aligns the way it does on a real speaker. Silent.
 * ``speaker`` -- TRUE over-the-air: real default speaker + mic, clips play out
@@ -304,25 +302,42 @@ def run_voice_loop(
                 # echo-free cable mode (it's the clean STT path only).
                 if not ac.has_echo:
                     note = "skipped: cable has no echo (use delay/speaker)"
-                    scenarios["s2_self_interrupt"] = {"note": note}
-                    scenarios["s3_barge_in"] = {"note": note}
+                    scenarios["s2_self_interrupt"] = {
+                        "status": "not_covered", "note": note,
+                    }
+                    scenarios["s3_barge_in"] = {
+                        "status": "not_covered", "note": note,
+                    }
                 else:
                     # S2: self-interrupt -- inject one, NOTHING during the reply
                     proc.wait_idle(timeout=10.0)
                     sp = speak_clips[0]
                     spk = proc.count("speaking")
+                    # Baseline before the prompt: a self-cut can follow the
+                    # first ``speaking:`` marker immediately, so sampling only
+                    # after wait_speaking() could subtract the very event this
+                    # scenario exists to catch.
+                    barge_at_start = proc.count("barge")
                     audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(sp.text)
-                    proc.wait_speaking(spk, timeout=25.0)
-                    barge_at_start = proc.count("barge")
+                    self_reply_started = proc.wait_speaking(spk, timeout=25.0)
                     proc.wait_idle(timeout=35.0)
                     self_barges = proc.count("barge") - barge_at_start
                     scenarios["s2_self_interrupt"] = {
+                        "assistant_started": self_reply_started,
                         "barge_ins_during_own_reply": self_barges,
                         "self_echo_drops": proc.count("self_echo_drop"),
-                        "live_pass": self_barges == 0,
+                        "live_pass": self_reply_started and self_barges == 0,
+                        "status": (
+                            "pass"
+                            if self_reply_started and self_barges == 0
+                            else "fail"
+                        ),
                     }
-                    detail.append(f"S2: self_barges={self_barges} (want 0)")
+                    detail.append(
+                        f"S2: started={self_reply_started} "
+                        f"self_barges={self_barges} (want start + 0)"
+                    )
 
                     # S3: barge-in cut -- talk over a long reply. Let a sentence
                     # get going, then a LOUD talk-over (must out-shout the reply),
@@ -339,21 +354,37 @@ def run_voice_loop(
                     # the barge clip is NOT scored: it deliberately overlaps, so
                     # it won't transcribe cleanly. It still needs the lead-in so a
                     # Bluetooth inject sink doesn't drop the talk-over's onset.
-                    audio.inject(tgt, bg.path, volume_pct=min(400, ac.inject_gain + 100),
-                                 lead_in_ms=lead_in)
                     barge_fired = 0
-                    end = time.monotonic() + 7.0
-                    while time.monotonic() < end:
-                        barge_fired = proc.count("barge") - barge_before
-                        if barge_fired >= 1:
-                            break
-                        time.sleep(0.1)
+                    cut_at = None
+                    with audio.play_injection(
+                        tgt,
+                        bg.path,
+                        volume_pct=min(400, ac.inject_gain + 100),
+                        lead_in_ms=lead_in,
+                    ) as playback:
+                        end = playback.speech_onset_monotonic + 7.0
+                        while time.monotonic() < end:
+                            barge_fired = proc.count("barge") - barge_before
+                            if barge_fired >= 1:
+                                cut_at = time.monotonic()
+                                break
+                            time.sleep(0.05)
+                    barge_latency = (
+                        round(cut_at - playback.speech_onset_monotonic, 3)
+                        if cut_at is not None
+                        else None
+                    )
                     scenarios["s3_barge_in"] = {
                         "assistant_started": started,
                         "barge_ins_after_talkover": barge_fired,
+                        "barge_latency_s": barge_latency,
                         "pass": started and barge_fired >= 1,
+                        "status": "pass" if started and barge_fired >= 1 else "fail",
                     }
-                    detail.append(f"S3: started={started} barge_ins={barge_fired} (want >=1)")
+                    detail.append(
+                        f"S3: started={started} barge_ins={barge_fired} "
+                        f"latency_s={barge_latency} (want >=1 and <=1.0s)"
+                    )
 
                 run_id = proc.run_id
                 markers = dict(proc.counts)
@@ -362,7 +393,7 @@ def run_voice_loop(
     summary, wav, ref = _bundle_paths(repo_root, run_id)
     monitor_rms = audio.wav_rms(wav)[0] if wav else 0.0
     return VoiceRun(
-        ok=False,  # CLI computes ok after folding in WER + the replay probe
+        ok=False,  # the CLI applies the pure WER/round-trip/coverage verdict
         mode=acoustics_mode, run_id=run_id, summary_path=summary, log_path=log_path,
         wav_path=wav, ref_wav_path=ref, ready=True, monitor_rms=monitor_rms,
         clip_source=clip_source, injected_refs=[r for r in injected_refs if r],

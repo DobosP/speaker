@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-12 on Linux ROG; full: 3563 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
+Last verified: 2026-07-12 on Linux ROG; full: 3641 passed/19 skipped/9 warnings; strict recorded/APM: 9/6 passed.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact live self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; general recall stays fenced/model-routed.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; general recall stays fenced/model-routed. ADR-0055/56/57 headless code is green.
 Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/0.611 s; live remains red/unlandable (ADR-0052/53).
 
 ## Runtime
@@ -16,13 +16,15 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
   uses native XML tools; desktop Gemma/Ollama retains textual ReAct (ADR-0020/0033).
 - Anchored high-confidence requests take deterministic ACT/search/research paths;
   ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
+- Postgres smart-save reuses the actual fast Ollama client in JSON mode; a
+  non-Ollama fast tier keeps deterministic filters and loads no third model
+  (ADR-0057). General semantic/cross-session MiniCPM recall is not proven.
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are
   session-only, not persistent services.
-- The host-local InputAGC remains boost-only. Boost is applied only when the
-  current raw block clears its calibrated floor; below-floor PCM stays unity
-  while state is retained. The v5 behavior remains live-unvalidated (ADR-0047).
+- Host InputAGC is boost-only: only a current block above its calibrated floor
+  is boosted; below-floor PCM stays unity. V5 remains live-unvalidated (ADR-0047).
 
 ## Voice reliability now implemented
 
@@ -44,12 +46,18 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
 - Enrollment provenance v5 fingerprints current-signal-only AGC after live open;
   v2/v3/v4 InputAGC records fail open and require re-enrollment, while exact non-
   AGC aliases remain. Stable route/rates/resampler/OS processing stay covered;
-  volatile ambient stays excluded and measured voice admission stays shared (ADR-0047).
+  volatile ambient stays excluded and measured voice admission stays shared.
+  Prep backs up v4 without clobber, reserves a feature candidate, and final-
+  publishes an inode-bound config; non-empty overwrite needs explicit opt-in
+  and wrong-checkout prepared enrollment refuses before capture (ADR-0047/0056).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   readiness contract. Selected ASR/TTS/VAD/denoise/KWS/punctuation/AEC artifacts
   and active PipeWire routes fail closed instead of silently degrading (ADR-0016).
   Windows voice-communications/word-cut is unavailable until a constructible,
   verified capture API replaces the unsupported setting (ADR-0019).
+- Autonomous voice/stress verdicts require labelled WER coverage, true first-
+  audio turns, zero errors/stuck/self-cuts, and every talk-over cut in 0–1.0 s.
+  Cable is explicitly incomplete and cannot make `all` green (ADR-0055).
 - Synchronous capabilities use bounded cancellable coordinators; failed plan
   tools cannot retry, and failed web may make one fenced local fallback.
   Barge/timeout blocks stale output and caps abandoned providers at six; CPU
@@ -62,37 +70,29 @@ Inject 3x: 6/6 cuts/0 self-cuts; recorded two-block owner overlap: 2/2 at 0.414/
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
-- Terminal sink receipts—not sample ratios—govern spoken history; admitted replies
-  stamp `TTS_REQUESTED`, preserving first-audio watchdog coverage without a model token.
-  TTS speaker ID is session-locked; voice tags cannot switch it, while finite
-  unsupported control tags strip and other brackets remain visible (ADR-0027/28/29/38/41/51).
+- Terminal sink receipts govern spoken history; admitted replies stamp
+  `TTS_REQUESTED`. TTS speaker ID is session-locked; voice tags cannot switch it,
+  while finite unsupported control tags strip (ADR-0027/28/29/38/41/51).
 
 ## Live evidence and limits
 
-- Historical v4 enrollment on the PipeWire EC route: 512 dimensions, 0.58
-  minimum/0.78 mean similarity; runtime `114725` accepted its fingerprint.
-- At 13% OS gain `114725` damaged/lost commands; `115512` false-cut, INGESTed the
-  override, then hit -9999/corruption; `130601` had fragmented ASR (ADR-0036).
-- Main `75b1717` run `144211` kept `sid=18` and cut once, but INGESTed the override;
-  tag/response admission fixes remained headless-only (ADR-0038/0039).
-- Main `6d8e9c2` run `170840` stayed `sid=0` and exited cleanly once, but owner
-  talk-over decoded only `AH`, scored 0.19–0.23, and made zero cuts. Ear grade,
-  lifecycle causality, and unplug/switch remain unvalidated (ADR-0041/42/43).
-- `173340` exposed stale AGC overshoot; `193818` made two silent zero-word cuts
-  at 0.31/0.32 and spawned a raw-empty `I.` reply. The four-word guard prevents
-  that path. `200747` made zero active cuts while stale/fresh garble entered; v5
-  closes below-floor pumping and calibrated pattern evidence guards ordinary turns,
-  but one echo-like tail handed off after playback. Live remains red (ADR-0045/47/48).
-- Real Q4 MiniCPM passed no-think/pre-TTS filtering, bounded 4/8, native cancellation,
-  reuse, and two phone-lite XML tool round trips (ADR-0031/32/33). Phone thermals remain unvalidated.
+- Historical v4 on PipeWire EC: 512 dimensions, 0.58 minimum/0.78 mean; `114725`
+  accepted it. It remains unmodified; isolated v5 prep/enrollment has not run.
+- Runs `114725`/`115512`/`130601`/`144211` exposed 13%-gain loss, false cuts,
+  INGEST of an override, corruption, fragmentation, and wrong `sid` (ADR-0036/38/39).
+- Main `6d8e9c2` run `170840` kept `sid=0` and exited once but decoded the owner
+  talk-over as `AH` at 0.19–0.23 and made zero cuts. Later `173340`/`193818`/
+  `200747` exposed AGC overshoot, silent cuts, garble, and a tail handoff; v5
+  guards are headless-only and live remains red (ADR-0041/42/43/45/47/48).
+- Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
 - Still required at the mic after fresh v5 enrollment: quiet `YES`, low sensitivity,
-  self-echo, override, mid-thought pause, reply-tail continuity, and STOP. Do not claim barge validated.
+  self-echo, override, mid-thought pause, reply-tail continuity, and STOP; use
+  `docs/2026-07-12-v5-bare-speaker-acceptance.md`. Do not claim barge validated.
+- Current comparable-project audit: `docs/2026-07-12-comparable-voice-agent-parity.md`;
+  architecture is comparable, user experience is not yet proven.
 
 ## Standard verification
-`/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q`; APM: `python -m pytest tests/test_apm_double_talk.py -q`;
-`/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3`; `git diff --check`.
-
-Real models: `python tools/run_tests.py real_model`; MiniCPM auto-pair: `python -m tools.llm_sanity --production-threads`; native tools: `python -m tools.minicpm_tool_sanity`; host: `python -m tools.doctor`.
+Full: `...python -m pytest tests -q`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.
 
 ## Operating policy
 - Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.

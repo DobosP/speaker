@@ -6,9 +6,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from core.llm import OllamaLLM
 from utils.memory_config import MemoryWriterConfig, config_from_dict
 from utils.memory_writer import (
     CleanupResult,
+    LLMClientMemoryCleanup,
     MemoryWriter,
     UtteranceCandidate,
     is_junk_stt_text,
@@ -22,6 +24,38 @@ class MockLLM:
         if "skip me" in text.lower():
             return CleanupResult(False, "", "not_worthy")
         return CleanupResult(True, text.strip().title(), "ok")
+
+
+class MockGenerator:
+    def __init__(self, response: str):
+        self.response = response
+        self.calls = []
+
+    def generate(self, prompt: str, *, system=None) -> str:
+        self.calls.append((prompt, system))
+        return self.response
+
+
+class MockStructuredGenerator(MockGenerator):
+    def generate_json(self, prompt: str, *, system=None) -> str:
+        self.calls.append((prompt, system, "json"))
+        return self.response
+
+
+class MockOllamaTransport:
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "message": {
+                "content": (
+                    '{"worth_saving": true, "cleaned_text": "A fact.", '
+                    '"reason": "fact"}'
+                )
+            }
+        }
 
 
 def test_config_from_dict_nested_memory_block():
@@ -124,3 +158,63 @@ def test_memory_writer_rejects_assistant_echo():
     )
     assert ok is False
     assert writer.flush(force=True) == 0
+
+
+def test_memory_writer_default_cleanup_model_is_minicpm_fast_alias():
+    assert MemoryWriterConfig().cleanup_model == "minicpm5-1b:q8"
+
+
+def test_runtime_llm_cleanup_reuses_client_and_decodes_fenced_json():
+    generator = MockGenerator(
+        'Here is the result:\n```json\n'
+        '{"worth_saving": false, "cleaned_text": "Stop", "reason": "control"}'
+        '\n```'
+    )
+
+    result = LLMClientMemoryCleanup(generator).cleanup("stop", gate=True)
+
+    assert result == CleanupResult(False, "Stop", "control")
+    assert len(generator.calls) == 1
+    assert "substantive user content" in generator.calls[0][1]
+
+
+def test_runtime_llm_cleanup_fails_open_on_invalid_model_output():
+    result = LLMClientMemoryCleanup(MockGenerator("not json")).cleanup(
+        "keep the raw transcript", gate=True
+    )
+
+    assert result.worth_saving is True
+    assert result.cleaned_text == "keep the raw transcript"
+    assert result.reason.startswith("llm_error:")
+
+
+def test_runtime_llm_cleanup_prefers_existing_clients_structured_mode():
+    generator = MockStructuredGenerator(
+        '{"worth_saving": true, "cleaned_text": "A fact.", "reason": "fact"}'
+    )
+
+    result = LLMClientMemoryCleanup(generator).cleanup("a fact", gate=True)
+
+    assert result == CleanupResult(True, "A fact.", "fact")
+    assert generator.calls[0][2] == "json"
+
+
+def test_runtime_ollama_cleanup_preserves_fast_client_request_settings():
+    transport = MockOllamaTransport()
+    fast = OllamaLLM(
+        model="minicpm5-1b:q8",
+        options={"num_ctx": 4096},
+        keep_alive="30m",
+        think=False,
+        client=transport,
+    )
+
+    result = LLMClientMemoryCleanup(fast).cleanup("a fact", gate=True)
+
+    assert result == CleanupResult(True, "A fact.", "fact")
+    call = transport.calls[0]
+    assert call["model"] == "minicpm5-1b:q8"
+    assert call["format"] == "json"
+    assert call["options"] == {"num_ctx": 4096}
+    assert call["keep_alive"] == "30m"
+    assert call["think"] is False

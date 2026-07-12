@@ -38,7 +38,7 @@ def wer(reference: str, hypothesis: str) -> float:
 class SttScore:
     pairs: list[tuple[str, str, float]]  # (reference, hypothesis, wer)
     mean_wer: float
-    n: int
+    n: int  # labelled references that received a non-blank hypothesis
 
 
 def score_transcripts(references: list[str], hypotheses: list[str]) -> SttScore:
@@ -47,7 +47,8 @@ def score_transcripts(references: list[str], hypotheses: list[str]) -> SttScore:
     finals; references are the injected clips' ground truth. Robust to extra
     spurious finals (self-echo, fragments) by taking the min-WER hypothesis."""
     pairs: list[tuple[str, str, float]] = []
-    pool = list(hypotheses)
+    pool = [hypothesis for hypothesis in hypotheses if hypothesis.strip()]
+    matched = 0
     for ref in references:
         if not ref:
             continue
@@ -59,5 +60,6 @@ def score_transcripts(references: list[str], hypotheses: list[str]) -> SttScore:
             ((i, wer(ref, h)) for i, h in enumerate(pool)), key=lambda t: t[1]
         )
         pairs.append((ref, pool.pop(best_i), best_w))
+        matched += 1
     mean = sum(w for _, _, w in pairs) / len(pairs) if pairs else 0.0
-    return SttScore(pairs=pairs, mean_wer=round(mean, 3), n=len(pairs))
+    return SttScore(pairs=pairs, mean_wer=round(mean, 3), n=matched)

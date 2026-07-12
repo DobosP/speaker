@@ -22,6 +22,15 @@ import sys
 import time
 from dataclasses import asdict
 
+from .verdicts import (
+    DIAGNOSTIC_PASS,
+    FAIL,
+    INCOMPLETE,
+    PASS,
+    aggregate_reports,
+    evaluate_voice,
+)
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 OUT = os.path.join(REPO, "logs", "autotest")
 
@@ -82,16 +91,35 @@ def tier_voice(args) -> dict:
     rep = {"tier": "voice", **asdict(r)}
     if r.error:
         print(f"[voice] FAIL ({r.mode}): {r.error}")
-        rep["ok"] = False
+        rep.update(
+            ok=False,
+            complete=False,
+            diagnostic_ok=False,
+            outcome=FAIL,
+            verdict={
+                "passed": False,
+                "checks_ok": False,
+                "complete": False,
+                "outcome": FAIL,
+                "checks": (),
+                "failures": ("runner_error",),
+                "not_covered": (),
+            },
+        )
         return rep
 
     has_echo = r.mode in ("delay", "speaker")
 
     # bundle analysis (transcript / turns / barge)
     bun = {}
+    bundle_error = ""
     if r.summary_path and os.path.exists(r.summary_path):
-        bun = _analyze_bundle(r.summary_path)
-        rep["bundle"] = bun
+        try:
+            bun = _analyze_bundle(r.summary_path)
+        except (OSError, ValueError, TypeError) as exc:
+            bundle_error = f"{type(exc).__name__}: {exc}"
+        else:
+            rep["bundle"] = bun
 
     # STT accuracy: WER of the engine's recognized user finals vs the injected
     # clips' ground-truth transcripts (real-voice or synth).
@@ -99,20 +127,47 @@ def tier_voice(args) -> dict:
     rep["stt"] = {"mean_wer": stt.mean_wer, "n": stt.n,
                   "pairs": [{"ref": a, "hyp": b, "wer": round(w, 2)} for a, b, w in stt.pairs]}
 
-    # Verdict gates on the robust signals: audio flowed, STT->LLM->TTS round-trip,
-    # bundle produced. Self-interrupt + barge-in are reported per scenario from
-    # the LIVE engine -- in the echo modes (delay/speaker) the AEC is aligned, so
-    # the live self-interrupt count is the authoritative signal. (The standalone
-    # `replay` tier offers deeper ERLE/coherence analysis on a chosen bundle.)
     sc = r.scenarios
-    ok = (
-        r.summary_path is not None
-        and r.monitor_rms > 0.01
-        and sc.get("s1_round_trip", {}).get("assistant_spoke", False)
+    s1 = sc.get("s1_round_trip", {})
+    s2 = sc.get("s2_self_interrupt", {})
+    s3 = sc.get("s3_barge_in", {})
+    error_count = int(bun.get("error_count", 0) or 0)
+    if bundle_error:
+        error_count += 1
+    verdict = evaluate_voice(
+        mode=r.mode,
+        engine_ready=r.ready,
+        summary_present=bool(bun) and not bundle_error,
+        monitor_rms=r.monitor_rms,
+        round_trip_clips=int(s1.get("clips", 0) or 0),
+        assistant_spoke=s1.get("assistant_spoke") is True,
+        assistant_audio_turns=int(bun.get("first_audio_turns", 0) or 0),
+        expected_audio_turns=(
+            int(s1.get("clips", 0) or 0) + 2 if has_echo else 1
+        ),
+        expected_wer_n=len([ref for ref in r.injected_refs if ref]),
+        wer_n=stt.n,
+        mean_wer=stt.mean_wer,
+        error_count=error_count,
+        stuck_hints=tuple(bun.get("stuck_hints", ()) or ()),
+        self_interrupt_pass=s2.get("live_pass"),
+        barge_pass=s3.get("pass"),
+        barge_latency_s=s3.get("barge_latency_s"),
     )
-    rep["ok"] = ok
+    rep["ok"] = verdict.passed
+    rep["complete"] = verdict.complete
+    rep["diagnostic_ok"] = verdict.checks_ok
+    rep["outcome"] = verdict.outcome
+    rep["verdict"] = asdict(verdict)
+    if bundle_error:
+        rep["bundle_error"] = bundle_error
 
-    print(f"[voice] {'PASS' if ok else 'FAIL'} (pipeline) mode={r.mode} "
+    label = {
+        PASS: "PASS",
+        FAIL: "FAIL",
+        DIAGNOSTIC_PASS: "DIAGNOSTIC PASS",
+    }[verdict.outcome]
+    print(f"[voice] {label} (pipeline) mode={r.mode} "
           f"run_id={r.run_id} clips={r.clip_source} monitor_rms={r.monitor_rms:.3f}")
     print(f"        STT mean WER={stt.mean_wer} over {stt.n} clips")
     for ref, hyp, w in stt.pairs:
@@ -127,15 +182,18 @@ def tier_voice(args) -> dict:
             print(f"          {tag}: {text[:90]!r}")
         if len(convo) > 24:
             print(f"          ... (+{len(convo) - 24} more; full transcript in the report)")
-    s2, s3 = sc.get("s2_self_interrupt", {}), sc.get("s3_barge_in", {})
     if has_echo:
         print(f"        self-interrupt: live barge-ins during own reply="
               f"{s2.get('barge_ins_during_own_reply')} (pass={s2.get('live_pass')})")
         print(f"        barge-in: {s3.get('barge_ins_after_talkover')} after talk-over "
-              f"(pass={s3.get('pass')})")
+              f"in {s3.get('barge_latency_s')}s (pass={s3.get('pass')})")
     else:
         print(f"        self-interrupt / barge-in: {s2.get('note','n/a')}")
-    if not ok:
+    if verdict.failures:
+        print(f"        failed checks: {', '.join(verdict.failures)}")
+    if verdict.not_covered:
+        print(f"        not covered: {', '.join(verdict.not_covered)}")
+    if not verdict.passed:
         print(f"        (engine stdout: {r.log_path})")
     return rep
 
@@ -158,6 +216,15 @@ def _analyze_bundle(summary_path: str) -> dict:
         "n_barge_in_turns": len(barges),
         "stuck_hints": d.get("stuck_hints", []),
         "errors": d.get("errors", []),
+        "first_audio_turns": sum(
+            turn.get("first_audio_latency") is not None
+            for turn in turns
+            if isinstance(turn, dict)
+        ),
+        "error_count": max(
+            int(d.get("counts", {}).get("errors", 0) or 0),
+            len(d.get("errors", []) or []),
+        ),
         "warnings": d.get("counts", {}).get("warnings", 0),
     }
 
@@ -309,14 +376,34 @@ def main(argv=None) -> int:
     if args.tier in ("suite", "all"):
         reports.append(tier_suite(args))
 
-    bundle = {"stamp": _stamp(), "tier": args.tier, "reports": reports}
+    overall = aggregate_reports(
+        reports,
+        # ``all`` advertises the whole autonomous scorecard.  The default
+        # echo-free cable remains a useful STT diagnostic, but cannot make that
+        # aggregate complete without barge/self-interrupt coverage.
+        require_complete=args.tier == "all",
+    )
+    bundle = {
+        "stamp": _stamp(),
+        "tier": args.tier,
+        "reports": reports,
+        "overall": asdict(overall),
+    }
     path = _write(bundle, args.tier)
-    # a tier "passes" if ok is True; replay is advisory (WARN, not FAIL)
-    failed = [r for r in reports if r.get("ok") is False and r.get("tier") != "replay"]
+    label = {
+        PASS: "PASS",
+        FAIL: "FAIL",
+        DIAGNOSTIC_PASS: "DIAGNOSTIC PASS",
+        INCOMPLETE: "INCOMPLETE",
+    }[overall.outcome]
+    detail = []
+    if overall.failed_tiers:
+        detail.append("failed=" + ",".join(overall.failed_tiers))
+    if overall.incomplete_tiers:
+        detail.append("not-complete=" + ",".join(overall.incomplete_tiers))
     print(f"\nreport: {path}")
-    print(f"VERDICT: {'PASS' if not failed else 'FAIL'} "
-          f"({len(reports) - len(failed)}/{len(reports)} tiers ok)")
-    return 1 if failed else 0
+    print(f"VERDICT: {label}" + (f" ({'; '.join(detail)})" if detail else ""))
+    return overall.exit_code
 
 
 if __name__ == "__main__":

@@ -559,8 +559,8 @@ Three injection seams type against `Memory`: `always_on_agent.supervisor` (inges
 **In-RAM ring buffer (R3):** The adapter keeps its own small `_ring` of raw `(text, tags)` handed to `add()`, so `all()` returns that instead of `MemoryManager.recent_messages` (which drops tags). This ensures tag fidelity: both SessionMemory and MemoryManagerAdapter pass `test_addressing`'s `("ingested",)` tag assertion identically.
 
 **Search and recall:**
-- `search()` → wraps `MemoryManager.search_memory()` results (vector sim > 0.6) into neutral `MemoryItem`s with defensive tag extraction (R9: summary rows have no `role`, so tags are `tuple(t for t in (d.get("type"), d.get("role")) if t)`).
-- `context_for_llm()` → calls `MemoryManager.get_context_for_llm()` verbatim (top-3 messages + summaries above 0.6 similarity, plus an optional user profile block).
+- `search()` → wraps `MemoryManager.search_memory()` results into neutral `MemoryItem`s with defensive tag extraction (R9: summary rows have no `role`, so tags are `tuple(t for t in (d.get("type"), d.get("role")) if t)`).
+- `context_for_llm()` → calls `MemoryManager.get_context_for_llm()` verbatim; the shared recall selector applies its token budget, adaptive cutoff, dedupe, role handling, and optional profile block.
 
 **Retention:** `prune()` calls `MemoryManager.apply_retention()` (summarize-then-evict episodic messages past `episodic_ttl_days`, drop summaries past `summary_ttl_days`, keep user_profile forever). No-op without a live DB.
 
@@ -588,40 +588,38 @@ Lives in `utils/memory.py` and handles all database I/O:
 - Each turn truncated to `per_turn_chars` (240); the full block capped at `max_chars` (800, dropping oldest turns until it fits).
 - Rendered as a `=== Recent conversation (most recent last) ===` block or empty string when disabled/empty.
 
-### 6.6 Configuration (FLAT memory block, R10)
+### 6.6 Configuration (flat memory block, R10)
 
 Single-level keys in `config.json` → `memory` so device-profile overrides survive shallow merge:
 
 ```json
 {
   "memory": {
-    "backend": "auto",                    // auto|inmemory|postgres
-    "recall_enabled": false,              // Gated; R5 default OFF
-    "recall_min_similarity": 0.6,         // MemoryManager threshold
-    "recall_max_items": 3,                // Top-3 for injection
-    "recall_max_chars": 600,              // Cap on prepend block
-    "recent_context_enabled": true,       // Short-term ON by default
-    "recent_context_turns": 6,            // Last N turns
-    "recent_context_max_chars": 800,      // Total block cap
-    "embeddings": false,                  // Enable pgvector
-    "max_recent": 20,                     // recent_messages cap
-    "profile_enabled": false,             // R8 default OFF, Postgres-only
-    "episodic_ttl_days": 90,              // Age-TTL for messages
-    "summary_ttl_days": 365,              // Age-TTL for summaries
-    "save_interval_sec": 240,             // MemoryWriter flush interval
-    "min_confidence": 0.55,               // STT confidence floor
-    "llm_cleanup": true,                  // Ollama typo fix
-    "llm_gate": true,                     // Ollama substantive-content gate
-    "cleanup_model": "gemma3:4b",         // Ollama model
-    "max_buffer_items": 32,               // MemoryWriter buffer cap
-    "dedupe_similarity": 0.92,            // Near-duplicate threshold
-    "persist_user_only": true,            // Skip assistant rows
-    "save_control_phrases": false         // Skip 'stop' / 'quit' / etc.
+    "backend": "auto",                    // auto|inmemory|postgres|sqlite
+    "recall_enabled": false,
+    "recall_max_tokens": 150,
+    "recall_recent_reserve_tokens": 320,
+    "recent_context_enabled": true,
+    "recent_context_turns": 6,
+    "recent_context_as_messages": true,
+    "embeddings": false,
+    "max_recent": 20,
+    "profile_enabled": false,
+    "cross_session_continuity": false,
+    "persist_assistant": false,
+    "episodic_ttl_days": 90,
+    "summary_ttl_days": 365
   }
 }
 ```
 
-Backend selection (`core.app._build_memory`): if `backend=='postgres'` or (`auto` and `$DATABASE_URL` is set), build `MemoryManagerAdapter` in try/except (catches ImportError/connection), redact connection errors (R12), fall back to `SessionMemory` on failure. Passed to `VoiceRuntime(memory=...)`.
+Backend selection (`core.app._build_memory`): explicit `sqlite` builds the
+persistent local protocol adapter; `postgres`, or `auto` with `$DATABASE_URL`,
+builds `MemoryManagerAdapter` in a guarded block and redacts connection errors;
+other paths use `SessionMemory`. Per ADR-0057, a Postgres writer receives the
+actual fast Ollama client for structured cleanup/gating. Non-Ollama profiles use
+the deterministic filters only, and no hidden third model is constructed. The
+pruned writer-internal knobs are not live `config.json` keys.
 
 ### 6.7 Recall injection workflow
 

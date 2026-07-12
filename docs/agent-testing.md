@@ -13,8 +13,11 @@
 | MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, and no regression (ADR-0051) |
 | MiniCPM all-role stress | add `--topology all-roles` to the prior command | ADR-0051 replacement-stress diagnostic; never an adoption result |
 | Exact self-fact memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | retrieval available; prompt injection false on the controller read; exact grounded scalar; `answer_model=control` (ADR-0054) |
+| Autonomous cable diagnostic | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest voice --acoustics cable` | pipeline checks green but report says `diagnostic_pass`, `ok=false`, and barge/self/latency `not_covered`; not a landing result (ADR-0055) |
+| Autonomous silent voice gate | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest all --acoustics delay` | every labelled clip matched, mean WER ≤0.50, expected first-audio turns, zero errors/stuck/self-cuts, talk-over cut in 0–1.0 s; aggregate PASS (ADR-0055) |
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | every repetition full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0052) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
+| Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Whitespace | `git diff --check` | no output |
 
 ## Before commit
@@ -63,6 +66,18 @@ PRIVATE controller result (`recall_available=true`, `recall_injected=false`),
 not evidence that general or cross-session semantic recall is solved. Voice and
 barge harnesses must retain distinct main/fast model arguments; an all-role
 MiniCPM run is diagnostic only.
+
+Per ADR-0055, a `speaking:` marker is not first-audio evidence. Voice/stress
+reports count non-null first-audio turns from the finalized run bundle and fail
+on missing labels, late cuts, runtime errors, or stuck hints. The asynchronous
+injected-onset clock is causal for the harness but is not a physical human-onset
+measurement.
+
+Per ADR-0056, run preparation before any v5 capture. Its final config publish is
+already wired to the reserved candidate and its printed command includes
+`--require-prepared-enrollment`; a wrong-checkout launch then refuses before the
+microphone. Marker-free enrollment refuses a non-empty reference unless the
+operator explicitly supplies `--replace-enrollment`.
 
 ## Known blockers
 - If `.venv` is missing, recreate/use a project venv and record the exact command.

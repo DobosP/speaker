@@ -42,7 +42,7 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 
 from utils.memory_config import MemoryWriterConfig, config_from_dict
-from utils.memory_writer import MemoryWriter, is_junk_stt_text
+from utils.memory_writer import LLMCleanupClient, MemoryWriter, is_junk_stt_text
 
 # The shared, backend-neutral recall selector. Postgres-isms (SQL, pgvector,
 # pool, embedder_id) stay HERE; the selection intelligence (token budget,
@@ -285,6 +285,7 @@ class MemoryManager:
         min_user_words: int = 3,
         memory_config: Optional[Dict[str, Any]] = None,
         memory_writer_config: Optional[MemoryWriterConfig] = None,
+        memory_writer_llm_client: Optional[LLMCleanupClient] = None,
         text_cleaner: Optional[Callable[[str, str], Optional[str]]] = None,
         pool_min_size: int = 2,
         pool_max_size: int = 5,
@@ -341,6 +342,7 @@ class MemoryManager:
             self.persist_roles = self.persist_roles + ("assistant",)
         self.min_user_words = max(1, int(min_user_words))
         self._writer_config = memory_writer_config or config_from_dict(memory_config)
+        self._writer_llm_client = memory_writer_llm_client
         if flush_interval_sec is not None:
             self._writer_config.save_interval_sec = max(30.0, float(flush_interval_sec))
         self._text_cleaner = text_cleaner
@@ -472,6 +474,7 @@ class MemoryManager:
                 self._writer = MemoryWriter(
                     config=self._writer_config,
                     persist_fn=self._persist_user_message,
+                    llm_client=self._writer_llm_client,
                     text_cleaner=self._text_cleaner,
                 )
             print(f"[ok] Database connected (session: {self.session_id[:8]}...)")

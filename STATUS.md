@@ -4,7 +4,7 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-13 on Linux ROG; final integration full: 3864 passed/31 skipped/9 warnings; combined focused: 326 passed; strict recorded/APM: 9/6; deterministic conversation: 42/42, every gate true.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 are headless-green; promotion/prep/runtime focused: 107/146.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 deterministic implementation gates are green; real semantic/live gates remain pending; promotion/prep/runtime focused: 107/146.
 Inject `061522`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
 ## Runtime
@@ -76,20 +76,20 @@ Inject `061522`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overl
 
 ## Live evidence and limits
 
-- Historical v4 on PipeWire EC: 512 dimensions, 0.58 minimum/0.78 mean; `114725`
-  accepted it. It remains unmodified; isolated v5 prep/enrollment has not run.
+- Historical v4 on PipeWire EC: 512 dimensions, 0.58 minimum/0.78 mean; `114725` accepted it. It remains unmodified; isolated v5 prep/enrollment has not run.
 - Runs `114725`/`115512`/`130601`/`144211` exposed 13%-gain loss, false cuts,
   INGEST of an override, corruption, fragmentation, and wrong `sid` (ADR-0036/38/39).
-- Main `6d8e9c2` run `170840` kept `sid=0` and exited once but decoded the owner
-  talk-over as `AH` at 0.19–0.23 and made zero cuts. Later `173340`/`193818`/
-  `200747` exposed AGC overshoot, silent cuts, garble, and a tail handoff; v5
-  guards are headless-only and live remains red (ADR-0041/42/43/45/47/48).
+- Main `285d74e` run `154451` switched `sid=0→16`, missed `OF HE STOP`, then hit
+  -9999/corruption; `6d8e9c2` run `170840` held `sid=0` across replies/story and
+  exited once, but peak-0.506 talk-over decoded `AH` at 0.19–0.23: zero cuts; ear
+  grade pending. Close causality and unplug/switch stay unvalidated; later runs
+  exposed AGC overshoot/silent cuts/garble/tail handoff. V5 remains headless-only
+  and live-red (ADR-0041/42/43/45/47/48).
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
 - Still required at the mic after fresh v5 enrollment: quiet `YES`, low sensitivity,
   self-echo, override, mid-thought pause, reply-tail continuity, and STOP; use
   `docs/2026-07-12-v5-bare-speaker-acceptance.md`. Do not claim barge validated.
-- Current comparable-project audit: `docs/2026-07-12-comparable-voice-agent-parity.md`;
-  architecture is comparable, user experience is not yet proven.
+- Comparable-project audit: `docs/2026-07-12-comparable-voice-agent-parity.md`; architecture is comparable, user experience is not yet proven.
 
 ## Standard verification
 Full: `...python -m pytest tests -q`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.

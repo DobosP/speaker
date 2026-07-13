@@ -4,7 +4,7 @@ Valid until: this branch lands or its implementation changes — then treat as h
 
 Branch: `integration/minicpm-v5-release`
 
-Status: identity, install, memory, injected barge, and enrollment-promotion lanes integrated; final combined gates pending.
+Status: identity, install, memory, injected barge, and enrollment-promotion lanes integrated; final combined headless gates green, real-model and live gates pending.
 
 ## Outcome
 
@@ -75,10 +75,11 @@ Status: identity, install, memory, injected barge, and enrollment-promotion lane
 
 ## Remaining validation
 
-A real installed MiniCPM alias, Docker image, fresh-install download, ordinary
-doctor `READY`, production-hybrid Ollama A/B, and live bare-speaker behavior are
-not validated by this integration. The injected result does not validate GTCRN,
-physical echo, current-room short Stop, v5 identity, or audible stop quality.
+A clean-revision production-hybrid Ollama A/B, real semantic-memory probe,
+ordinary doctor `READY`, real installed MiniCPM alias, Docker image, fresh-install
+download, and live bare-speaker behavior are not validated by this integration.
+The injected result does not validate GTCRN, physical echo, current-room short
+Stop, v5 identity, or audible stop quality.
 
 ## Enrollment promotion outcome
 
@@ -151,12 +152,12 @@ opened or modified.
   as a refusal.
 - The advisory config lock protects cooperating promotion commands only. A
   process that ignores it remains outside the lock guarantee.
-- The focused, full-repository, and APM headless gates are green. Real-model and
-  live audio gates were not run; the orchestrator must run the final combined
-  integration gates before landing.
+- The final combined focused, full-repository, APM, deterministic conversation,
+  injected-barge, and strict-recorded headless gates are green. Real-model and
+  live audio gates were not run.
 
 ## Merge recommendation
 
-Focused promotion/preparation tests and whitespace are green. Review the new
-CLI contract and ADR, then run the combined full landing gate. Do not claim live
-v5 or bare-speaker acceptance until the operator actually completes it.
+All combined headless landing gates and the promotion review are green. Hold
+landing until the required real Ollama/memory and live hardware gates complete;
+do not claim v5 or bare-speaker acceptance until the operator actually does it.

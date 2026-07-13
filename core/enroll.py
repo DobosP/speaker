@@ -62,7 +62,7 @@ ENROLLMENT_FRONTEND_VERSION = 5
 # outside the ``sherpa`` block so runtime config parsing ignores it, while this
 # one-shot persistence path can fail closed if the binding is later altered.
 ENROLLMENT_PREPARATION_KEY = "_speaker_enrollment_preparation"
-ENROLLMENT_PREPARATION_SCHEMA = 1
+ENROLLMENT_PREPARATION_SCHEMA = 2
 
 
 def _agc_floor_bucket_db(value: float) -> int:
@@ -597,6 +597,12 @@ class _RegularPathSnapshot:
     ino: int
     size: int
     mtime_ns: int
+    ctime_ns: int
+    mode: int
+    uid: int
+    gid: int
+    nlink: int
+    content_sha256: str
     ancestors: tuple[tuple[str, int, int], ...]
 
 
@@ -648,37 +654,97 @@ def _lstat_regular(path: str, *, label: str) -> os.stat_result:
 def _snapshot_regular_path(path: str, *, label: str) -> _RegularPathSnapshot:
     absolute = os.path.abspath(path)
     ancestors = _safe_directory_chain(os.path.dirname(absolute) or ".", create=False)
-    info = _lstat_regular(absolute, label=label)
+    before = _lstat_regular(absolute, label=label)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(absolute, flags)
+    try:
+        opened = os.fstat(fd)
+        before_signature = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+            stat.S_IMODE(before.st_mode),
+            before.st_uid,
+            before.st_gid,
+            before.st_nlink,
+        )
+        opened_signature = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+            stat.S_IMODE(opened.st_mode),
+            opened.st_uid,
+            opened.st_gid,
+            opened.st_nlink,
+        )
+        if not stat.S_ISREG(opened.st_mode) or opened_signature != before_signature:
+            raise ValueError(f"{label} changed while opening: {absolute}")
+        digest = hashlib.sha256()
+        size = 0
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    current = _lstat_regular(absolute, label=label)
+    after_signature = (
+        after.st_dev,
+        after.st_ino,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        stat.S_IMODE(after.st_mode),
+        after.st_uid,
+        after.st_gid,
+        after.st_nlink,
+    )
+    current_signature = (
+        current.st_dev,
+        current.st_ino,
+        current.st_size,
+        current.st_mtime_ns,
+        current.st_ctime_ns,
+        stat.S_IMODE(current.st_mode),
+        current.st_uid,
+        current.st_gid,
+        current.st_nlink,
+    )
+    if (
+        after_signature != opened_signature
+        or current_signature != after_signature
+        or size != after.st_size
+        or _safe_directory_chain(os.path.dirname(absolute) or ".", create=False)
+        != ancestors
+    ):
+        raise ValueError(f"{label} changed while reading: {absolute}")
     return _RegularPathSnapshot(
         path=absolute,
         label=label,
-        dev=info.st_dev,
-        ino=info.st_ino,
-        size=info.st_size,
-        mtime_ns=info.st_mtime_ns,
+        dev=after.st_dev,
+        ino=after.st_ino,
+        size=after.st_size,
+        mtime_ns=after.st_mtime_ns,
+        ctime_ns=after.st_ctime_ns,
+        mode=stat.S_IMODE(after.st_mode),
+        uid=after.st_uid,
+        gid=after.st_gid,
+        nlink=after.st_nlink,
+        content_sha256=digest.hexdigest(),
         ancestors=ancestors,
     )
 
 
 def _revalidate_regular_path(snapshot: _RegularPathSnapshot) -> None:
-    current_ancestors = _safe_directory_chain(
-        os.path.dirname(snapshot.path) or ".",
-        create=False,
-    )
-    if current_ancestors != snapshot.ancestors:
-        raise ValueError(f"{snapshot.label} directory changed: {snapshot.path}")
-    current = _lstat_regular(snapshot.path, label=snapshot.label)
-    if (
-        current.st_dev,
-        current.st_ino,
-        current.st_size,
-        current.st_mtime_ns,
-    ) != (
-        snapshot.dev,
-        snapshot.ino,
-        snapshot.size,
-        snapshot.mtime_ns,
-    ):
+    current = _snapshot_regular_path(snapshot.path, label=snapshot.label)
+    if current != snapshot:
         raise ValueError(f"{snapshot.label} changed: {snapshot.path}")
 
 
@@ -812,24 +878,23 @@ def _validate_prepared_enrollment_binding(
         return None, ()
     if not isinstance(marker, Mapping):
         return "prepared enrollment marker is not a JSON object", ()
-    try:
-        schema = int(marker.get("schema", 0))
-    except (TypeError, ValueError):
+    schema = marker.get("schema")
+    if type(schema) is not int:
         return "prepared enrollment marker has an invalid schema", ()
     if schema != ENROLLMENT_PREPARATION_SCHEMA:
         return "prepared enrollment marker schema is unsupported", ()
-    try:
-        frontend_version = int(marker.get("frontend_version", 0) or 0)
-    except (TypeError, ValueError):
+    frontend_version = marker.get("frontend_version")
+    if type(frontend_version) is not int:
         return "prepared enrollment marker has an invalid frontend version", ()
     if frontend_version != ENROLLMENT_FRONTEND_VERSION:
         return "prepared enrollment marker is not bound to frontend v5", ()
 
     worktree = marker.get("worktree")
+    primary_config = marker.get("primary_config")
     candidate = marker.get("candidate")
     backup = marker.get("backup")
     source = marker.get("source_enrollment")
-    paths = (worktree, candidate, backup, source)
+    paths = (worktree, primary_config, candidate, backup, source)
     if not all(isinstance(value, str) and value for value in paths):
         return "prepared enrollment marker is incomplete", ()
     if not all(os.path.isabs(value) for value in paths):
@@ -852,6 +917,8 @@ def _validate_prepared_enrollment_binding(
         return "prepared enrollment marker belongs to another worktree", ()
     if not inside:
         return "prepared enrollment candidate is outside the feature worktree", ()
+    if os.path.abspath(primary_config) == os.path.abspath(config_path):
+        return "prepared primary config aliases the isolated config", ()
     try:
         snapshots = (
             _snapshot_regular_path(
@@ -859,6 +926,7 @@ def _validate_prepared_enrollment_binding(
             ),
             _snapshot_regular_path(backup, label="prepared enrollment backup"),
             _snapshot_regular_path(source, label="historical enrollment"),
+            _snapshot_regular_path(primary_config, label="prepared primary config"),
         )
     except (OSError, ValueError) as exc:
         return str(exc), ()
@@ -866,16 +934,44 @@ def _validate_prepared_enrollment_binding(
         return "prepared enrollment candidate is no longer empty", ()
     if (snapshots[1].dev, snapshots[1].ino) == (snapshots[2].dev, snapshots[2].ino):
         return "prepared enrollment backup aliases the historical enrollment", ()
+    if len({(snapshot.dev, snapshot.ino) for snapshot in snapshots}) != len(snapshots):
+        return "prepared enrollment state aliases one inode", ()
 
-    for key, snapshot in zip(("candidate", "backup", "source"), snapshots):
+    fields = (
+        "dev",
+        "ino",
+        "size",
+        "mtime_ns",
+        "ctime_ns",
+        "mode",
+        "uid",
+        "gid",
+        "nlink",
+    )
+    for key, snapshot in zip(
+        ("candidate", "backup", "source", "primary"), snapshots
+    ):
         try:
-            expected = tuple(int(marker[f"{key}_{field}"]) for field in (
-                "dev", "ino", "size", "mtime_ns"
-            ))
-        except (KeyError, TypeError, ValueError):
+            values = tuple(marker[f"{key}_{field}"] for field in fields)
+            digest = marker[f"{key}_sha256"]
+        except KeyError:
             return f"prepared enrollment marker lacks {key} identity", ()
-        actual = (snapshot.dev, snapshot.ino, snapshot.size, snapshot.mtime_ns)
-        if actual != expected:
+        if not all(type(value) is int and value >= 0 for value in values):
+            return f"prepared enrollment marker lacks {key} identity", ()
+        if not isinstance(digest, str) or len(digest) != 64:
+            return f"prepared enrollment marker lacks {key} identity", ()
+        actual = (
+            snapshot.dev,
+            snapshot.ino,
+            snapshot.size,
+            snapshot.mtime_ns,
+            snapshot.ctime_ns,
+            snapshot.mode,
+            snapshot.uid,
+            snapshot.gid,
+            snapshot.nlink,
+        )
+        if actual != values or snapshot.content_sha256 != digest:
             return f"prepared enrollment {key} identity changed", ()
     return None, snapshots
 

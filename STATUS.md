@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-13 on Linux ROG; integration before ADR-0065: full 3737 passed/31 skipped/9 warnings; memory feature `ed548d1`: full 3718 passed/31 skipped/9 warnings; strict recorded/APM: 9/6 passed; deterministic conversation: 42/42, every gate true.
+Last verified: 2026-07-13 on Linux ROG; pre-ADR-0065/66 integration full 3737 passed/31 skipped/9 warnings; memory feature full 3718; promotion feature full 3765; strict recorded/APM: 9/6; deterministic conversation: 42/42, every gate true.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–65 headless code is green.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 are headless-green; promotion/prep/runtime focused: 107/146.
 Inject `205351`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
 ## Runtime
@@ -47,9 +47,9 @@ Inject `205351`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overl
   v2/v3/v4 InputAGC records fail open and require re-enrollment, while exact non-
   AGC aliases remain. Stable route/rates/resampler/OS processing stay covered;
   volatile ambient stays excluded and measured voice admission stays shared.
-  Prep backs up v4 without clobber, reserves a feature candidate, and final-
-  publishes an inode-bound config; non-empty overwrite needs explicit opt-in
-  and wrong-checkout prepared enrollment refuses before capture (ADR-0047/0056).
+  Prep protects v4 and wrong-checkout capture; explicit promotion accepts exact
+  live-v5 state, publishes/adopts a unique mode-600 copy, rewires one pointer, and
+  retains v4, backup, and candidate rollback evidence (ADR-0047/0056/0066).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   contract; selected artifacts/routes fail closed (ADR-0016). Fresh install includes
   SciPy/soxr plus SenseVoice/GTCRN/Kokoro/speaker-ID, atomically publishes only a

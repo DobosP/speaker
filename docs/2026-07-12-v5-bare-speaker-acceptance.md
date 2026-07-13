@@ -47,6 +47,28 @@ repeat soft Yes, one normal question, and one seven-word override, then Ctrl-C a
 restore the exact original volume. Failure at 13% is red; never leave the source
 volume changed.
 
+Only after every item passes and the operator explicitly accepts the run, stop
+the runtime and use ADR-0066's device-free promotion command. The accepted name
+must derive from the candidate, for example:
+
+```bash
+/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment \
+  --worktree /absolute/feature/worktree \
+  --primary-config /absolute/primary/config.local.json \
+  --expected-candidate /absolute/feature/worktree/pretrained_models/sherpa/speaker/enrollment.v5-UNIQUE-ID.json \
+  --expected-source-enrollment /absolute/primary/pretrained_models/sherpa/speaker/enrollment.json \
+  --expected-backup /absolute/primary/pretrained_models/sherpa/speaker/enrollment.pre-v5-UNIQUE-ID.json \
+  --accepted-enrollment /absolute/primary/pretrained_models/sherpa/speaker/enrollment.v5-UNIQUE-ID-accepted.json \
+  --accept-live-gate
+```
+
+Exit 0 activates the new pointer. Exit 2 refuses before this invocation commits
+accepted/config state. Exit 3 proves verified accepted bytes are staged while the
+old pointer remains inactive; rerun the identical command to adopt that exact
+orphan. Exit 4 is ambiguous: inspect every supplied path before deciding whether
+to retry. Never replace or delete v4, the preparation backup, or the isolated
+candidate during this workflow.
+
 Logs can prove detector-to-FIFO causality. Physical onset, voice continuity, and
 ear quality require the operator's explicit grade unless WAV recording is
 separately opted in.

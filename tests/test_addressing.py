@@ -118,6 +118,9 @@ def test_classifier_short_circuits_high_precision_imperatives():
 
     for text in (
         "Remember for this conversation that the codename is Orion.",
+        "Look up Pipecat using your tools.",
+        "Search for current Pipecat releases with your tool.",
+        "Research Pipecat and LiveKit using your tools.",
         "Please search for Pipecat.",
         "Please research Pipecat and LiveKit.",
         "Repeat your previous answer exactly.",
@@ -147,6 +150,8 @@ def test_classifier_keeps_ambiguous_statements_on_the_learned_gate():
         "What time is dinner?",
         "Look up is a phrasal verb.",
         "Look up tables improve database joins.",
+        "She said, look up Pipecat using your tools.",
+        "Our guide explains how to research Pipecat with your tools.",
         "Research ethics matter.",
         "The quiz read: what is two plus two? Answer with a number.",
         "What is two plus two? Answer with a number, she read aloud.",

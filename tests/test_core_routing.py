@@ -127,6 +127,50 @@ def test_generation_verbs_compose_draft_write_an_escalate():
     assert router.choose("write an essay about the sea", {}) == MAIN
 
 
+@pytest.mark.parametrize(
+    "query",
+    (
+        "Which country contains the city you just named?",
+        "Who was the person you just mentioned?",
+        "Repeat what you just said.",
+    ),
+)
+def test_explicit_recent_thread_referent_uses_main_on_desktop_threshold(query):
+    router = HeuristicRouter(threshold=0.3)
+    ctx = {"recent_conversation": "User: What is the capital of France?\nAssistant: Paris."}
+
+    assert router.score(query, ctx) == pytest.approx(0.30)
+    assert router.choose(query, ctx) == MAIN
+    assert router.choose(query, {}) == FAST
+
+
+@pytest.mark.parametrize(
+    "recent",
+    (None, "", "   ", (), [], {}),
+)
+def test_explicit_recent_thread_referent_requires_nonblank_string_history(recent):
+    router = HeuristicRouter(threshold=0.3)
+    context = {"recent_conversation": recent}
+
+    assert router.choose("Repeat what you just said.", context) == FAST
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        "Which country contains the city she just named?",
+        "Can you just name a city?",
+        "I just said hello.",
+        "You just namedrop celebrities.",
+    ),
+)
+def test_recent_thread_referent_markers_do_not_expand_to_near_matches(query):
+    router = HeuristicRouter(threshold=0.3)
+    ctx = {"recent_conversation": "User: Earlier context.\nAssistant: Earlier answer."}
+
+    assert router.choose(query, ctx) == FAST
+
+
 def test_contextful_followup_uses_main_on_desktop_threshold():
     # Recent-context injection happens before tier routing. A referential
     # follow-up that is cheap-looking in isolation should use the main tier on a
@@ -146,6 +190,7 @@ def test_contextful_followup_respects_phone_threshold():
     router = HeuristicRouter(threshold=0.55)
     ctx = {"recent_conversation": "=== Recent conversation ===\nUser: tell me about apm\nYou: ..."}
     assert router.choose("tell me more about that", ctx) == FAST
+    assert router.choose("Repeat what you just said.", ctx) == FAST
 
 
 def test_strong_recall_signal_promotes_default_but_not_phone_router():

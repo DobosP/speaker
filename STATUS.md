@@ -2,8 +2,8 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-13 on Linux ROG; final integration full: 3864 passed/31 skipped/9 warnings; combined focused: 326 passed; strict recorded/APM: 9/6; deterministic conversation: 42/42, every gate true.
-ADR-0051 real `063818` exposed one ingested tool command; its repair is now 3/3. Real `065427` then exposed exact `ACTIVE` label drift (MiniCPM 41/42); bounded ACT normalization is implemented and clean A/B is pending.
+Last verified: 2026-07-13 on Linux ROG. Integration baseline `81319b7`: full 3864 passed/31 skipped/9 warnings; combined focused 326 passed; strict recorded/APM 9/6; deterministic conversation 42/42.
+Current history-routing revision: focused 162 passed; deterministic v3 42/42 with exact `fast→main` history routes 3/3. Real `063818`/`065427` exposed two admission defects; both are repaired. Later exact-history probes exposed 18/20 semantic variance; ADR-0067 routes that referent to main, and clean A/B is pending.
 ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 deterministic implementation gates are green; real semantic/live gates remain pending; promotion/prep/runtime focused: 107/146.
 Inject `061522`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
@@ -15,7 +15,7 @@ Inject `061522`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overl
   quantization, template, and parameters (ADR-0020/0062). Gemma3 is complex/
   vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
 - Anchored high-confidence requests take deterministic ACT/search/research paths;
-  ambiguous room speech remains on MiniCPM's learned addressing (ADR-0024/0051).
+  ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
   SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
   real PASS needs clean stable revision/contract/full identities and is pending (ADR-0060/65).

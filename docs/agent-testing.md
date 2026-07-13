@@ -9,8 +9,8 @@
 | Scope | Command | Expected success |
 |---|---|---|
 | APM/DTD regression | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q` | `6 passed` on current setup |
-| Conversation trace (device-free) | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3` | all 14 v2 scenarios pass 3/3; aggregate 42/42 and `pass^3=True` (ADR-0051) |
-| MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, and no regression (ADR-0051) |
+| Conversation trace (device-free) | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3` | all 14 v3 scenarios pass 3/3; aggregate 42/42, `pass^3=True`, and exact declared answer routes (ADR-0051/0067) |
+| MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, exact answer routes, and no regression (ADR-0051/0067) |
 | MiniCPM all-role stress | add `--topology all-roles` to the prior command | ADR-0051 replacement-stress diagnostic; never an adoption result |
 | Cross-session semantic memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | SQLite reopen; clean native history; balanced fenced injection; PRIVATE first/only `route=main`; clause-grounded canary; clean/stable revision, contract, and full shipped-role identities (Echo is incomplete) (ADR-0065) |
 | Autonomous cable diagnostic | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest voice --acoustics cable` | pipeline checks green but report says `diagnostic_pass`, `ok=false`, and barge/self/latency `not_covered`; not a landing result (ADR-0055/0058) |
@@ -59,12 +59,12 @@ self-skip missing private clips/models; that diagnostic command is not a landing
 gate. It covers historical waveforms, not the current room, speaker output, v5
 enrollment, or live word-cut.
 
-Per ADR-0051, production-warm real-model runs prewarm each distinct model with
+Per ADR-0051/0067, production-warm real-model runs prewarm each distinct model with
 the runtime system prompt. `--warm-policy cold` is a labelled red diagnostic.
 Generated reports stay local under ignored `logs/conversation-eval/`; an
 unverified MiniCPM override still exits 2 and can never make the gate green.
 Changing `--runs` or selecting `--scenario` produces a coverage-red diagnostic;
-the adoption gate is exactly all fourteen v2 scenarios repeated three times.
+the adoption gate is exactly all fourteen v3 scenarios repeated three times.
 A real-model report is provenance-red when the revision/config changes, local
 config is included, or any effective model role lacks stable identity evidence.
 

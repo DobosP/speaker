@@ -106,6 +106,7 @@ ScenarioKind = Literal[
     "mid_tool_barge",
     "untrusted_tool_result",
 ]
+AnswerRoute = Literal["fast", "main"]
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,6 @@ class ScenarioSpec:
     required_events: tuple[str, ...] = ()
     forbidden_events: tuple[str, ...] = ()
     expected_cancel_reason: str = ""
-    require_fast_answer: bool = False
+    expected_answer_routes: tuple[AnswerRoute, ...] | None = None
     require_no_stale_output: bool = False
     timeout_sec: float = 12.0

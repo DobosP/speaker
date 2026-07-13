@@ -2,10 +2,10 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-13 on Linux ROG; pre-ADR-0065/66 integration full 3737 passed/31 skipped/9 warnings; memory feature full 3718; promotion feature full 3765; strict recorded/APM: 9/6; deterministic conversation: 42/42, every gate true.
+Last verified: 2026-07-13 on Linux ROG; final integration full: 3864 passed/31 skipped/9 warnings; combined focused: 326 passed; strict recorded/APM: 9/6; deterministic conversation: 42/42, every gate true.
 ADR-0051 exact behavioral revision `6db50a9`: deterministic 42/42; warm production-hybrid MiniCPM Q8/Gemma each 42/42 (`133003`).
 ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 are headless-green; promotion/prep/runtime focused: 107/146.
-Inject `205351`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
+Inject `061522`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
 ## Runtime
 

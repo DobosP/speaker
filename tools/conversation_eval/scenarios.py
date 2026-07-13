@@ -3,7 +3,7 @@ from __future__ import annotations
 from .schema import ScenarioSpec, TurnSpec
 
 
-SCENARIO_SET_VERSION = 3
+SCENARIO_SET_VERSION = 4
 
 
 SCENARIOS: tuple[ScenarioSpec, ...] = (
@@ -19,7 +19,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
     ),
     ScenarioSpec(
         "cleanup_self_correction",
-        "The configured transcript cleaner keeps only the user's correction.",
+        "The bounded controller repair keeps only the user's correction.",
         "conversation",
         (
             TurnSpec(

@@ -151,8 +151,21 @@ def test_cleaner_flags_editing_term_in_prompt():
     assert "i mean" in prompt.lower()
 
 
-def test_cleaner_repairs_when_model_keeps_superseded_correction_target():
-    llm = _StubLLM(["What is the capital of France?"])
+def test_cleaner_repairs_anchored_correction_without_calling_model():
+    # MiniCPM sometimes returned only "Japan" here.  That passed the old
+    # target-word check, then the runtime's overreach guard restored the raw
+    # self-correction.  The bounded grammar must not consult the model at all.
+    llm = _StubLLM(["Japan"])
+    cleaner = LLMTranscriptCleaner(llm)
+
+    assert cleaner.clean(
+        "What is the capital of France, I mean Japan?"
+    ) == "What is the capital of Japan?"
+    assert llm.calls == []
+
+
+def test_cleaner_anchored_repair_does_not_depend_on_model_availability():
+    llm = _RaisingLLM()
     cleaner = LLMTranscriptCleaner(llm)
 
     assert cleaner.clean(
@@ -160,13 +173,14 @@ def test_cleaner_repairs_when_model_keeps_superseded_correction_target():
     ) == "What is the capital of Japan?"
 
 
-def test_cleaner_keeps_valid_model_self_correction():
-    llm = _StubLLM(["What is the capital of Japan?"])
+def test_broader_self_correction_remains_model_owned():
+    llm = _StubLLM(["set a timer for ten minutes"])
     cleaner = LLMTranscriptCleaner(llm)
 
     assert cleaner.clean(
-        "What is the capital of France, I mean Japan?"
-    ) == "What is the capital of Japan?"
+        "set a timer for five, I mean ten minutes"
+    ) == "set a timer for ten minutes"
+    assert len(llm.calls) == 1
 
 
 def test_explicit_self_correction_repair_rejects_broader_syntax():

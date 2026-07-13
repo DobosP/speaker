@@ -2,9 +2,9 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-13 on Linux ROG, clean integration `53c9fff`: full 3881 passed/31 skipped/9 warnings; focused 162 passed; strict recorded/APM 9/6; deterministic v3 42/42 with exact `fast→main` history routes 3/3.
-Real `063818`/`065427` exposed two admission defects; both are repaired. Later exact-history probes exposed 18/20 semantic variance; ADR-0067 routes that referent to main, and clean production-hybrid A/B is pending.
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 deterministic implementation gates are green; real semantic/live gates remain pending; promotion/prep/runtime focused: 107/146.
+Last verified: 2026-07-13 on Linux ROG, cleanup-fix pre-commit: full 3883 passed/31 skipped/9 warnings; focused 96; deterministic v4 42/42; APM 6. Strict recorded remains 9 at clean integration `53c9fff`.
+Real admission defects and later 18/20 history variance are repaired (ADR-0067). Clean v3 A/B at `df35f5d`: Gemma 42/42, MiniCPM 40/42; only bounded correction regressed (1/3). ADR-0068 fixes that grammar; clean v4 A/B remains pending.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–68 headless implementation gates are green; real semantic/live gates remain pending; promotion/prep/runtime focused: 107/146.
 Inject `192014`: 3/3 full duplex, 6/6 cuts/0 self-cuts; strict historical-owner replay is 9/9. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
 ## Runtime
@@ -63,10 +63,10 @@ Inject `192014`: 3/3 full duplex, 6/6 cuts/0 self-cuts; strict historical-owner 
   Barge/timeout blocks stale output and caps abandoned providers at six; CPU
   llama.cpp cancellation clears memory before context release (22.4 ms Q4
   pre-token with healthy reuse) (ADR-0021/30/51).
-- Cancellable preprocessing lets clean finals bypass model cleanup; bounded exact-
-  word/repeat/session-fact and post-barge exact-word replies are controller-owned.
-  General history uses role messages under a 320-token cap; response-only turns
-  keep identity, tools/actions, and durable-memory authority stripped (ADR-0023/39/51).
+- Cancellable preprocessing lets clean finals and one anchored question repair
+  bypass model cleanup; broader signalled corrections remain model-owned. Bounded
+  replies and exact-word/repeat/session facts are controller-owned; role history
+  is capped, while response-only authority stays stripped (ADR-0023/39/51/68).
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
   Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
   unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.

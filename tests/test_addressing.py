@@ -72,7 +72,12 @@ def test_parse_decision_strips_punctuation_and_case():
 def test_parse_decision_accepts_bounded_action_alias_only():
     assert _parse_decision("ACTION") == ACT
     assert _parse_decision("Action.") == ACT
+    assert _parse_decision("ACTIVE") == ACT
+    assert _parse_decision("active.") == ACT
     assert _parse_decision("ACTIONABLE") == UNSURE
+    assert _parse_decision("ACTIVELY") == UNSURE
+    assert _parse_decision("ACTIVITY") == UNSURE
+    assert _parse_decision("INACTIVE") == UNSURE
 
 
 def test_parse_decision_defaults_to_unsure_for_garbage():
@@ -85,6 +90,14 @@ def test_parse_decision_defaults_to_unsure_for_garbage():
 def test_classifier_returns_unsure_when_llm_raises():
     cls = LLMAddressingClassifier(_RaisingLLM())
     assert cls.classify("what time is it") == UNSURE
+
+
+def test_classifier_normalizes_exact_active_alias():
+    llm = _StubLLM(["ACTIVE"])
+    cls = LLMAddressingClassifier(llm)
+
+    assert cls.classify("What is the capital of France?") == ACT
+    assert len(llm.calls) == 1
 
 
 def test_classifier_uses_system_prompt_and_includes_context():
@@ -229,6 +242,24 @@ def test_unsure_ingests_when_policy_is_conservative():
         item.text == "uh hmm yeah" and "ingested" in item.tags
         for item in runtime.memory.all()
     )
+
+
+def test_active_alias_acts_when_policy_is_conservative():
+    engine = ScriptedEngine()
+    gate = LLMAddressingClassifier(_StubLLM(["ACTIVE"]))
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(reply="Paris."),
+        start_mode=Mode.ASSISTANT,
+        addressing=gate,
+        unsure_acts=False,
+    )
+    runtime.start(run_bus=False)
+
+    engine.final("What is the capital of France?")
+
+    assert runtime.wait_idle()
+    assert engine.spoken == ["Paris."]
 
 
 def test_no_classifier_preserves_legacy_behavior():

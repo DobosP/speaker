@@ -2,10 +2,10 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-13 on Linux ROG, cleanup-fix pre-commit: full 3883 passed/31 skipped/9 warnings; focused 96; deterministic v4 42/42; APM 6. Strict recorded remains 9 at clean integration `53c9fff`.
-Real admission defects and later 18/20 history variance are repaired (ADR-0067). Clean v3 A/B at `df35f5d`: Gemma 42/42, MiniCPM 40/42; only bounded correction regressed (1/3). ADR-0068 fixes that grammar; clean v4 A/B remains pending.
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–68 headless implementation gates are green; real semantic/live gates remain pending; promotion/prep/runtime focused: 107/146.
-Inject `192014`: 3/3 full duplex, 6/6 cuts/0 self-cuts; strict historical-owner replay is 9/9. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
+Last verified: 2026-07-13 on Linux ROG, clean integration `3fda449`: full 3883 passed/31 skipped/9 warnings; focused 96; deterministic v4 42/42; APM/strict recorded 6/9.
+Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–68 headless and real-semantic gates are green; physical live remains pending; promotion/prep/runtime focused: 107/146.
+Inject `195954`: 3/3 full duplex, 6/6 cuts/0 self-cuts. Doctor and silent-delay startup are blocked only by the intentionally unloaded OS echo-cancel module; physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 
 ## Runtime
 
@@ -18,7 +18,7 @@ Inject `192014`: 3/3 full duplex, 6/6 cuts/0 self-cuts; strict historical-owner 
   ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
   SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
-  real PASS needs clean stable revision/contract/full identities and is pending (ADR-0060/65).
+  clean stable revision/contract/full identities produced real PASS (ADR-0060/65).
 - Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
   GTCRN denoise is active. Generic word-cut requires four novel words plus
   speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are

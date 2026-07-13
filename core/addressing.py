@@ -31,7 +31,7 @@ INGEST = "INGEST"
 UNSURE = "UNSURE"
 
 _VALID = (ACT, INGEST, UNSURE)
-_DECISION_ALIASES = {"ACTION": ACT}
+_DECISION_ALIASES = {"ACTION": ACT, "ACTIVE": ACT}
 
 # High-precision imperative forms do not need a generative classifier.  Keeping
 # this deliberately anchored and small prevents MiniCPM/Gemma label drift from

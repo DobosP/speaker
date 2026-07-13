@@ -3,7 +3,7 @@
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
 Last verified: 2026-07-13 on Linux ROG; final integration full: 3864 passed/31 skipped/9 warnings; combined focused: 326 passed; strict recorded/APM: 9/6; deterministic conversation: 42/42, every gate true.
-ADR-0051 revision `6db50a9` was 42/42; real `063818` exposed MiniCPM 41/42 when one explicit tool-directed command was ingested. Its anchored ACT repair is implemented; clean A/B is pending.
+ADR-0051 real `063818` exposed one ingested tool command; its repair is now 3/3. Real `065427` then exposed exact `ACTIVE` label drift (MiniCPM 41/42); bounded ACT normalization is implemented and clean A/B is pending.
 ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–66 deterministic implementation gates are green; real semantic/live gates remain pending; promotion/prep/runtime focused: 107/146.
 Inject `061522`: 3/3 full duplex, 6/6 cuts/0 self-cuts; archived two-block overlap remains 2/2. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
 

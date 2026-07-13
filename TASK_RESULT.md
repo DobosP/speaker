@@ -60,6 +60,17 @@ Status: identity, install, memory, injected barge, and enrollment-promotion lane
   31 skipped, 9 warnings`; strict recorded/APM `9/6`; deterministic conversation
   `42/42`; independent stop-ship review green. Integration-focused memory tests
   then passed `180/180`.
+- Final promotion-plus-memory integration focus: `326 passed in 8.41s`.
+- Final combined full suite: `3864 passed, 31 skipped, 9 warnings in 75.65s`.
+- Final APM/DTD regression: `6 passed in 0.67s`.
+- Final deterministic conversation: `42/42`; every scenario passed 3/3 and
+  semantic, coverage, A/B, provenance, and warmup gates were true.
+- Final injected run `061522`: all three repetitions full-duplex `ok`, each
+  `2/2` cuts, zero self-interrupts; aggregate `6/6`, exit 0; inject mode opened
+  no physical microphone or speakers.
+- Final strict archived owner replay: `9 passed in 53.49s`; fake streams, no
+  physical hardware.
+- Independent final enrollment-promotion review: green; focused rerun `146/146`.
 - `git diff --check`: clean.
 
 ## Remaining validation

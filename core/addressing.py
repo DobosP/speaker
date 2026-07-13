@@ -39,6 +39,8 @@ _DECISION_ALIASES = {"ACTION": ACT}
 # on the conservative learned gate.
 _EXPLICIT_ACT_RE = re.compile(
     r"^\s*(?:"
+    r"(?:look\s+up|search\s+for|research)\s+\S.{0,240}?\s+"
+    r"(?:using|with)\s+your\s+tools?\b|"
     r"please\s+(?:look\s+up|search\s+for|research)\s+\S|"
     r"remember\s+for\s+(?:this|the)\s+conversation\b|"
     r"repeat\s+your\s+previous\s+answer\s+exactly\b|"

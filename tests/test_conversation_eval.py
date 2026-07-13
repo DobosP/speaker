@@ -763,6 +763,8 @@ def test_model_history_records_exact_privacy_safe_role_evidence(
         if call.get("category") == "answer" and call.get("task_id")
     ]
     assert len(answer_calls) == 2
+    assert scenario.expected_answer_routes == ("fast", "main")
+    assert tuple(call["role"] for call in answer_calls) == ("fast", "main")
     second = answer_calls[1]
     expected_hashes = (
         _history_message_sha256("user", scenario.turns[0].text),
@@ -775,6 +777,73 @@ def test_model_history_records_exact_privacy_safe_role_evidence(
     assert tuple(second["history_message_sha256"]) == expected_hashes
     assert scenario.turns[0].text not in json.dumps(second)
     assert result.turns[0].sink_attested_output not in json.dumps(second)
+
+    checks = {check.name: check for check in result.checks}
+    assert checks["answer_completion_routes"].actual == ("fast", "main")
+    assert checks["answer_completion_routes"].ok is True
+    assert checks["answer_model_call_routes"].actual == ("fast", "main")
+    assert checks["answer_model_call_routes"].ok is True
+    assert checks["answer_model_calls_succeeded"].ok is True
+
+
+def test_model_history_grade_rejects_wrong_completion_route(
+    evaluation_config: dict,
+):
+    scenario = _scenario("model_history_followup")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    events = tuple(
+        replace(
+            event,
+            payload={
+                **event.payload,
+                "data": {**event.payload["data"], "route": "fast"},
+            },
+        )
+        if (
+            event.kind == "task.completed"
+            and event.task_id == "T2"
+            and event.payload.get("capability") == "assistant.answer"
+            and isinstance(event.payload.get("data"), dict)
+        )
+        else event
+        for event in result.trace
+    )
+
+    checks = _regrade(scenario, result, events=events)
+    route_check = next(
+        check for check in checks if check.name == "answer_completion_routes"
+    )
+
+    assert route_check.ok is False
+
+
+def test_model_history_grade_rejects_wrong_or_failed_model_route(
+    evaluation_config: dict,
+):
+    scenario = _scenario("model_history_followup")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    model_calls = tuple(
+        {**call, "role": "fast", "cancelled": True}
+        if call.get("category") == "answer" and call.get("task_id") == "T2"
+        else call
+        for call in result.model_calls
+    )
+
+    checks = _regrade(scenario, result, model_calls=model_calls)
+    by_name = {check.name: check for check in checks}
+
+    assert by_name["answer_model_call_routes"].ok is False
+    assert by_name["answer_model_calls_succeeded"].ok is False
 
 
 @pytest.mark.parametrize(
@@ -1166,7 +1235,7 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
     assert summary.pass_power_k is True
     assert summary.scenario_reliability["simple_qa"]["runs_passed"] == 3
     assert loaded["schema_version"] == 1
-    assert loaded["scenario_set_version"] == 2
+    assert loaded["scenario_set_version"] == 3
     assert loaded["candidate"]["summary"]["pass_power_k"] is True
     assert loaded["gate"]["coverage_ok"] is False
     assert loaded["gate"]["passed"] is False

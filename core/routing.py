@@ -258,6 +258,7 @@ _GENERATION_MARKERS = (
 _CONTEXT_FOLLOWUP_MARKERS = (
     "that", "this", "those", "them", "its",
     "the first", "the second", "the previous", "the latter", "the former",
+    "you just named", "you just mentioned", "you just said",
     "what about", "how about", "tell me more", "more about", "go on",
     "continue", "elaborate", "expand", "also", "make it", "shorter", "longer",
 )

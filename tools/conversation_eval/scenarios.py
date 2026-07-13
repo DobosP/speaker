@@ -3,7 +3,7 @@ from __future__ import annotations
 from .schema import ScenarioSpec, TurnSpec
 
 
-SCENARIO_SET_VERSION = 2
+SCENARIO_SET_VERSION = 3
 
 
 SCENARIOS: tuple[ScenarioSpec, ...] = (
@@ -32,7 +32,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         expected_task_terminals=("task.completed",),
         forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
         required_events=("task.completed", "memory.commit"),
-        require_fast_answer=True,
+        expected_answer_routes=("fast",),
     ),
     ScenarioSpec(
         "simple_qa",
@@ -43,7 +43,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         expected_task_terminals=("task.completed",),
         forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
         required_events=("task.completed", "memory.commit"),
-        require_fast_answer=True,
+        expected_answer_routes=("fast",),
     ),
     ScenarioSpec(
         "concise_instruction",
@@ -62,7 +62,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         expected_task_terminals=("task.completed",),
         forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
         required_events=("task.completed", "memory.commit"),
-        require_fast_answer=True,
+        expected_answer_routes=("fast",),
     ),
     ScenarioSpec(
         "typed_session_fact",
@@ -84,7 +84,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
     ),
     ScenarioSpec(
         "model_history_followup",
-        "The fast model resolves a referent from role-structured history.",
+        "The main model resolves an explicit referent from role-structured history.",
         "conversation",
         (
             TurnSpec(
@@ -100,7 +100,7 @@ SCENARIOS: tuple[ScenarioSpec, ...] = (
         expected_task_terminals=("task.completed", "task.completed"),
         forbidden_tools=("web.search", "search.local", "research.scope", "research.local"),
         required_events=("task.completed", "memory.commit"),
-        require_fast_answer=True,
+        expected_answer_routes=("fast", "main"),
     ),
     ScenarioSpec(
         "exact_word_repeat",

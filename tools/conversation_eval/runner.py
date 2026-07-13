@@ -974,7 +974,7 @@ def _grade(
     checks.append(_check("no_protocol_leakage", (), leaks))
     if scenario.require_no_stale_output:
         checks.append(_check("no_stale_output_after_cut", False, stale_output))
-    if scenario.require_fast_answer:
+    if scenario.expected_answer_routes is not None:
         answer_calls = [
             call
             for call in model_calls
@@ -988,20 +988,33 @@ def _grade(
             and isinstance(event.payload.get("data"), dict)
             and "route" in event.payload["data"]
         )
-        expected_fast = tuple("fast" for _ in scenario.turns)
-        successful_fast_calls = bool(
-            len(answer_calls) == len(scenario.turns)
+        expected_routes = scenario.expected_answer_routes
+        model_call_routes = tuple(call.get("role") for call in answer_calls)
+        successful_answer_calls = bool(
+            len(answer_calls) == len(expected_routes)
             and all(
-                call.get("role") == "fast"
-                and not call.get("error")
+                not call.get("error")
                 and not call.get("cancelled")
                 for call in answer_calls
             )
         )
         checks.extend(
             (
-                _check("fast_completion_routes", expected_fast, completion_routes),
-                _check("fast_model_calls_succeeded", True, successful_fast_calls),
+                _check(
+                    "answer_completion_routes",
+                    expected_routes,
+                    completion_routes,
+                ),
+                _check(
+                    "answer_model_call_routes",
+                    expected_routes,
+                    model_call_routes,
+                ),
+                _check(
+                    "answer_model_calls_succeeded",
+                    True,
+                    successful_answer_calls,
+                ),
             )
         )
 

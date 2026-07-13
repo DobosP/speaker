@@ -1175,27 +1175,40 @@ def _grade(
         )
 
     if scenario.scenario_id == "cleanup_self_correction":
+        expected_cleaned = "What is the capital of Japan?"
         finals = [
             str(event.payload.get("text", ""))
             for event in events
             if event.kind == "stt.final"
         ]
+        answer_queries = tuple(
+            str(event.payload.get("query", ""))
+            for event in events
+            if event.kind == "capability.started"
+            and event.payload.get("name") == "assistant.answer"
+            and not event.payload.get("planner_tool")
+        )
         checks.extend(
             (
                 _check("cleaned_final_count", 1, len(finals)),
                 _check(
-                    "cleaner_kept_corrected_target",
-                    True,
-                    bool(
-                        finals
-                        and "japan" in finals[0].lower()
-                        and "france" not in finals[0].lower()
-                    ),
+                    "bounded_correction_exact_final",
+                    expected_cleaned,
+                    finals[0] if finals else "",
                 ),
                 _check(
-                    "cleanup_model_was_called",
-                    True,
-                    any(call.get("category") == "cleanup" for call in model_calls),
+                    "bounded_correction_exact_answer_query",
+                    (expected_cleaned,),
+                    answer_queries,
+                ),
+                _check(
+                    "bounded_correction_bypassed_cleanup_model",
+                    (),
+                    tuple(
+                        call.get("role")
+                        for call in model_calls
+                        if call.get("category") == "cleanup"
+                    ),
                 ),
             )
         )

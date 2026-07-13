@@ -103,9 +103,10 @@ no trailing punctuation that the user didn't say."""
 class LLMTranscriptCleaner:
     """Fast-tier LLM cleaner for utterances with an explicit cleanup signal.
 
-    Clean text bypasses the generative rewrite.  This both avoids needless
-    latency and prevents a small model from copying recent assistant speech
-    into an otherwise valid user turn.
+    Clean text and the single bounded question-correction grammar bypass the
+    generative rewrite.  This both avoids needless latency and prevents a small
+    model from copying recent assistant speech into an otherwise valid user
+    turn.  Broader signalled corrections remain model-owned.
     """
 
     _EDITING_TERMS = (
@@ -120,6 +121,10 @@ class LLMTranscriptCleaner:
     def clean(self, text: str, recent: Iterable[str] = ()) -> str:
         if not text.strip():
             return text
+        repair = _explicit_self_correction_repair(text)
+        if repair is not None:
+            log.info("using bounded deterministic self-correction repair")
+            return repair
         signals = detect_signals(text)
         if not signals:
             return text
@@ -135,20 +140,7 @@ class LLMTranscriptCleaner:
         except Exception:  # noqa: BLE001
             log.exception("cleanup LLM call failed; passing raw text through")
             return text
-        cleaned = _sanitize_reply(reply, fallback=text)
-        repair = _explicit_self_correction_repair(text)
-        if repair is not None:
-            deterministic, corrected_words, superseded_words = repair
-            cleaned_words = {word.lower() for word in _WORD_RE.findall(cleaned)}
-            if (
-                not set(corrected_words).issubset(cleaned_words)
-                or bool(set(superseded_words) & cleaned_words)
-            ):
-                log.info(
-                    "cleaner missed explicit self-correction; using bounded repair"
-                )
-                return deterministic
-        return cleaned
+        return _sanitize_reply(reply, fallback=text)
 
     def _build_prompt(self, text: str, recent: Iterable[str], signals: list[str]) -> str:
         parts: list[str] = []
@@ -200,7 +192,7 @@ _EXPLICIT_QUESTION_CORRECTION_RE = re.compile(
 
 def _explicit_self_correction_repair(
     text: str,
-) -> tuple[str, tuple[str, ...], tuple[str, ...]] | None:
+) -> str | None:
     """Repair only ``What is the <subject> of OLD, I mean NEW?``.
 
     This single-token question grammar is intentionally much narrower than a
@@ -210,10 +202,8 @@ def _explicit_self_correction_repair(
     match = _EXPLICIT_QUESTION_CORRECTION_RE.match(text or "")
     if match is None:
         return None
-    old = match.group("old")
     new = match.group("new")
-    repaired = f"{match.group('prefix')}{new}?".strip()
-    return repaired, (new.lower(),), (old.lower(),)
+    return f"{match.group('prefix')}{new}?".strip()
 
 
 def has_trailing_repeat(text: str) -> bool:

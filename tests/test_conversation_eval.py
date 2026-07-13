@@ -388,6 +388,71 @@ def test_deterministic_conversation_scenario_gate(
     )
 
 
+def test_bounded_cleanup_correction_bypasses_model_and_regrade_rejects_call(
+    evaluation_config: dict,
+):
+    scenario = _scenario("cleanup_self_correction")
+    result = run_scenario(
+        scenario,
+        config=evaluation_config,
+        models=deterministic_models(),
+        run_index=1,
+    )
+    categories = tuple(call["category"] for call in result.model_calls)
+    checks = {check.name: check for check in result.checks}
+
+    assert categories == ("answer",)
+    assert checks["bounded_correction_exact_final"].ok is True
+    assert checks["bounded_correction_exact_answer_query"].ok is True
+    assert checks["bounded_correction_bypassed_cleanup_model"].ok is True
+
+    poisoned_calls = result.model_calls + (
+        {
+            "task_id": "",
+            "category": "cleanup",
+            "kind": "stream",
+            "role": "fast",
+            "cancelled": False,
+            "error": "",
+            "duration_ms": 1.0,
+            "ttft_ms": 1.0,
+        },
+    )
+    poisoned = {
+        check.name: check
+        for check in _regrade(scenario, result, model_calls=poisoned_calls)
+    }
+    raw = scenario.turns[0].text
+    final_poisoned_events = tuple(
+        replace(event, payload={**event.payload, "text": raw})
+        if event.kind == "stt.final"
+        else event
+        for event in result.trace
+    )
+    final_poisoned = {
+        check.name: check
+        for check in _regrade(scenario, result, events=final_poisoned_events)
+    }
+    query_poisoned_events = tuple(
+        replace(event, payload={**event.payload, "query": raw})
+        if (
+            event.kind == "capability.started"
+            and event.payload.get("name") == "assistant.answer"
+            and not event.payload.get("planner_tool")
+        )
+        else event
+        for event in result.trace
+    )
+    query_poisoned = {
+        check.name: check
+        for check in _regrade(scenario, result, events=query_poisoned_events)
+    }
+
+    assert poisoned["bounded_correction_bypassed_cleanup_model"].ok is False
+    assert final_poisoned["bounded_correction_exact_final"].ok is False
+    assert query_poisoned["bounded_correction_exact_answer_query"].ok is False
+
+
 def test_barge_trace_proves_interrupted_sink_without_heard_memory(
     evaluation_config: dict,
 ):
@@ -1235,7 +1300,7 @@ def test_report_is_versioned_json_and_defines_repeat_reliability(
     assert summary.pass_power_k is True
     assert summary.scenario_reliability["simple_qa"]["runs_passed"] == 3
     assert loaded["schema_version"] == 1
-    assert loaded["scenario_set_version"] == 3
+    assert loaded["scenario_set_version"] == 4
     assert loaded["candidate"]["summary"]["pass_power_k"] is True
     assert loaded["gate"]["coverage_ok"] is False
     assert loaded["gate"]["passed"] is False

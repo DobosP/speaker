@@ -126,7 +126,22 @@ def test_prepare_isolates_config_backs_up_and_reserves_candidate(tmp_path):
     marker = written["_speaker_enrollment_preparation"]
     assert marker["candidate"] == str(expected_candidate)
     assert marker["worktree"] == str(layout["feature"])
+    assert marker["primary_config"] == str(layout["config"])
     assert marker["candidate_size"] == 0
+    for key in ("primary", "candidate", "backup", "source"):
+        for field in (
+            "dev",
+            "ino",
+            "size",
+            "mtime_ns",
+            "ctime_ns",
+            "mode",
+            "uid",
+            "gid",
+            "nlink",
+            "sha256",
+        ):
+            assert f"{key}_{field}" in marker
 
 
 def test_reserved_candidate_accepts_atomic_enrollment_save(tmp_path):
@@ -183,6 +198,37 @@ def test_prepared_candidate_runs_through_enrollment_without_touching_history(tmp
     assert load_enrollment(str(result.candidate)).embedding == [1.0, 0.0]
     assert layout["enrollment"].read_bytes() == layout["enrollment_bytes"]
     assert layout["backup"].read_bytes() == layout["enrollment_bytes"]
+
+
+@pytest.mark.parametrize("mutated_key", ("config", "enrollment", "backup"))
+def test_schema2_tamper_refuses_before_recorder(tmp_path, mutated_key):
+    layout = _layout(tmp_path)
+    result = _prepare(layout)
+    config = json.loads(result.config_local.read_text())
+    target = Path(layout[mutated_key])
+    target.write_bytes(target.read_bytes() + b" ")
+    if mutated_key == "backup":
+        os.chmod(target, 0o600)
+    recorder_called = False
+
+    def recorder(_seconds):
+        nonlocal recorder_called
+        recorder_called = True
+        return [0.1, 0.2, 0.3]
+
+    code = run_enrollment(
+        config,
+        passes=1,
+        config_path=str(result.config_local),
+        recorder=recorder,
+        gate=_Gate(),
+        require_prepared=True,
+        out=lambda _line: None,
+    )
+
+    assert code == 5
+    assert recorder_called is False
+    assert result.candidate.read_bytes() == b""
 
 
 def test_prepared_candidate_swap_during_capture_refuses_publish(tmp_path):

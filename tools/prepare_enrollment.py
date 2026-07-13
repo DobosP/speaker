@@ -97,11 +97,25 @@ def _open_regular(path: Path, *, label: str) -> tuple[int, os.stat_result]:
     opened = os.fstat(fd)
     if (
         not stat.S_ISREG(opened.st_mode)
-        or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        or _stat_signature(opened) != _stat_signature(before)
     ):
         os.close(fd)
         raise PreparationError(f"{label} changed while opening: {path}")
     return fd, opened
+
+
+def _stat_signature(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        stat.S_IMODE(info.st_mode),
+        info.st_uid,
+        info.st_gid,
+        info.st_nlink,
+    )
 
 
 def _read_regular_bytes(path: Path, *, label: str) -> tuple[bytes, os.stat_result]:
@@ -118,9 +132,9 @@ def _read_regular_bytes(path: Path, *, label: str) -> tuple[bytes, os.stat_resul
         os.close(fd)
     current = _regular_stat(path, label=label)
     if (
-        (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-        != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
-        or (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino)
+        _stat_signature(after) != _stat_signature(opened)
+        or _stat_signature(current) != _stat_signature(after)
+        or sum(map(len, chunks)) != after.st_size
     ):
         raise PreparationError(f"{label} changed while reading: {path}")
     return b"".join(chunks), opened
@@ -133,6 +147,23 @@ def _write_all(fd: int, data: bytes) -> None:
         if written <= 0:
             raise OSError("short write")
         view = view[written:]
+
+
+def _marker_contract(
+    key: str, info: os.stat_result, payload: bytes
+) -> dict[str, object]:
+    return {
+        f"{key}_dev": info.st_dev,
+        f"{key}_ino": info.st_ino,
+        f"{key}_size": info.st_size,
+        f"{key}_mtime_ns": info.st_mtime_ns,
+        f"{key}_ctime_ns": info.st_ctime_ns,
+        f"{key}_mode": stat.S_IMODE(info.st_mode),
+        f"{key}_uid": info.st_uid,
+        f"{key}_gid": info.st_gid,
+        f"{key}_nlink": info.st_nlink,
+        f"{key}_sha256": hashlib.sha256(payload).hexdigest(),
+    }
 
 
 def _verified_exclusive_backup(source: Path, backup: Path) -> None:
@@ -160,12 +191,7 @@ def _verified_exclusive_backup(source: Path, backup: Path) -> None:
         if hashlib.sha256(copied).digest() != source_digest:
             raise PreparationError("backup verification failed before publish")
         current = _regular_stat(source, label="existing enrollment")
-        if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
-            source_info.st_dev,
-            source_info.st_ino,
-            source_info.st_size,
-            source_info.st_mtime_ns,
-        ):
+        if _stat_signature(current) != _stat_signature(source_info):
             raise PreparationError("existing enrollment changed during backup")
 
         try:
@@ -230,17 +256,7 @@ def _publish_isolated_config(
         ):
             raise PreparationError("feature config symlink changed before publish")
         current_target = _regular_stat(expected_target, label="primary local config")
-        if (
-            current_target.st_dev,
-            current_target.st_ino,
-            current_target.st_size,
-            current_target.st_mtime_ns,
-        ) != (
-            target_info.st_dev,
-            target_info.st_ino,
-            target_info.st_size,
-            target_info.st_mtime_ns,
-        ):
+        if _stat_signature(current_target) != _stat_signature(target_info):
             raise PreparationError("primary local config changed during preparation")
 
         os.replace(temporary, link)
@@ -322,10 +338,7 @@ def prepare_enrollment(
     config_bytes, reread_target_info = _read_regular_bytes(
         config_target, label="primary local config"
     )
-    if (target_info.st_dev, target_info.st_ino) != (
-        reread_target_info.st_dev,
-        reread_target_info.st_ino,
-    ):
+    if _stat_signature(target_info) != _stat_signature(reread_target_info):
         raise PreparationError("primary local config changed during validation")
     try:
         config_data = json.loads(config_bytes.decode("utf-8"))
@@ -402,25 +415,22 @@ def prepare_enrollment(
     # every earlier failure leaves run_enrollment's symlink guard in place, while
     # every later failure leaves a regular config naming only the isolated file.
     _verified_exclusive_backup(enrollment_path, backup_path)
-    current_source = _regular_stat(
+    current_source_bytes, current_source = _read_regular_bytes(
         enrollment_path, label="existing enrollment"
     )
     if (
-        current_source.st_dev,
-        current_source.st_ino,
-        current_source.st_size,
-        current_source.st_mtime_ns,
-    ) != (
-        source_info.st_dev,
-        source_info.st_ino,
-        source_info.st_size,
-        source_info.st_mtime_ns,
+        _stat_signature(current_source) != _stat_signature(source_info)
+        or current_source_bytes != enrollment_bytes
     ):
         raise PreparationError("existing enrollment changed before final publish")
     _ensure_candidate_parent(worktree_path, candidate.parent)
     _reserve_candidate(candidate)
-    candidate_info = _regular_stat(candidate, label="reserved v5 candidate")
-    backup_info = _regular_stat(backup_path, label="published backup")
+    candidate_bytes, candidate_info = _read_regular_bytes(
+        candidate, label="reserved v5 candidate"
+    )
+    backup_bytes, backup_info = _read_regular_bytes(
+        backup_path, label="published backup"
+    )
     wired_config = dict(config_data)
     wired_sherpa = dict(sherpa)
     wired_sherpa["speaker_enroll_embedding"] = str(candidate)
@@ -429,21 +439,14 @@ def prepare_enrollment(
         "schema": ENROLLMENT_PREPARATION_SCHEMA,
         "frontend_version": ENROLLMENT_FRONTEND_VERSION,
         "worktree": str(worktree_path),
+        "primary_config": str(config_target),
         "candidate": str(candidate),
         "backup": str(backup_path),
         "source_enrollment": str(enrollment_path),
-        "candidate_dev": candidate_info.st_dev,
-        "candidate_ino": candidate_info.st_ino,
-        "candidate_size": candidate_info.st_size,
-        "candidate_mtime_ns": candidate_info.st_mtime_ns,
-        "backup_dev": backup_info.st_dev,
-        "backup_ino": backup_info.st_ino,
-        "backup_size": backup_info.st_size,
-        "backup_mtime_ns": backup_info.st_mtime_ns,
-        "source_dev": source_info.st_dev,
-        "source_ino": source_info.st_ino,
-        "source_size": source_info.st_size,
-        "source_mtime_ns": source_info.st_mtime_ns,
+        **_marker_contract("primary", reread_target_info, config_bytes),
+        **_marker_contract("candidate", candidate_info, candidate_bytes),
+        **_marker_contract("backup", backup_info, backup_bytes),
+        **_marker_contract("source", source_info, enrollment_bytes),
     }
     wired_bytes = json.dumps(wired_config, indent=2).encode("utf-8")
     _publish_isolated_config(

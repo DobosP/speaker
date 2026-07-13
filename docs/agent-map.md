@@ -26,7 +26,7 @@
 | Fixture/test update | `tests/barge_fixtures.py`, matching tests | targeted pytest |
 | Answering-model adoption | `tools/conversation_eval/`, ADR-0050 | deterministic trace, then production-hybrid real-model A/B; label all-role stress explicitly |
 | Autonomous voice verdict | `tools/autotest/verdicts.py`, `tools/autotest/README.md` | pure verdict tests, then selected cable/delay/speaker runner; cable is incomplete |
-| Speaker enrollment | `tools/prepare_enrollment.py`, `core/enroll.py`, ADR-0056 | tempdir prep/enrollment tests first; microphone only after explicit readiness |
+| Speaker enrollment | `tools/prepare_enrollment.py`, `tools/promote_enrollment.py`, `core/enroll.py`, ADR-0056/0066 | tempdir prep/promotion tests first; microphone only after explicit readiness |
 | Live audio validation | docs/status + manual instructions | state what was and was not run |
 | Docs/status | `STATUS.md`, `README.md` | `git diff --check` |
 

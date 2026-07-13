@@ -18,6 +18,7 @@
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | exit 0 only when every repetition is full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0064) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
+| Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
 
 ## Before commit
@@ -95,6 +96,16 @@ already wired to the reserved candidate and its printed command includes
 `--require-prepared-enrollment`; a wrong-checkout launch then refuses before the
 microphone. Marker-free enrollment refuses a non-empty reference unless the
 operator explicitly supplies `--replace-enrollment`.
+
+Per ADR-0066, preparation schema v2 binds full metadata and SHA-256 lineage for
+the primary config, reservation, backup, and historical source. Promotion is a
+separate no-audio operation after the complete manual live gate passes. The
+accepted basename is the prepared candidate basename plus `-accepted`; it stays
+adjacent to historical v4 but never replaces it. Exit 3 proves an exact private
+orphan plus the unchanged inactive primary pointer, so the identical command may
+adopt it. Exit 4 is ambiguous and requires inspection before retry. The stable
+advisory lock serializes cooperating promoters only. Never interpret preparation,
+staging, or an exit-3 result as live acceptance.
 
 ## Known blockers
 - If `.venv` is missing, recreate/use a project venv and record the exact command.

@@ -15,7 +15,20 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 
 ## P0 — correctness / blocker
 - [ ] **★★★ PERMANENT open-speaker barge + voice fix (2026-07-05) — the live-test
-      thread. START HERE.** Conclusion after many live tests + a 3-verifier study:
+      thread. START HERE.** **Current next (2026-07-14, ADR-0071):** the v5
+      enrollment-on run kept one voice but failed soft speech, pause, override,
+      and exact Stop. The enrollment-off A/B also failed exact Stop with no
+      word-cut trace, so speaker identity is not the primary blocker. Start a
+      fresh session with enrollment disabled and:
+      (1) add bounded physical capture→OS-EC→calibration→AGC/GTCRN→VAD/energy→
+      decoder markers; (2) test route-settling/recalibration and the inert learned
+      echo-floor warning; (3) make exact Stop cut promptly with no self-cut and
+      add deterministic replay; (4) fix one-second-pause turn continuation; then
+      (5) rerun one multiword override before creating another v5 candidate.
+      Do not treat detection→cancel receipts as speech-onset latency. The detailed
+      plan/evidence is `docs/2026-07-14-v5-live-barge-closeout.md`; `STATUS.md`
+      and ADR-0071 override every embedded `NEXT` marker in the history below.
+      **Historical record:** Conclusion after many live tests + a 3-verifier study:
       NO clean single-mic acoustic barge fix exists (see
       `docs/session_2026-07-04_permanent_voice_barge_plan.md` + memory
       `barge-voice-no-acoustic-fix-2026-07-04`; do NOT re-try the ruled-out acoustic

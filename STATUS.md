@@ -2,10 +2,10 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-14 on Linux ROG, task branch `fix/autotest-delay-readiness`: full 4049 passed/31 skipped/9 warnings; word-cut 146; TTS construction 28; APM/strict recorded remain 6/9.
+Last verified: 2026-07-14 on Linux ROG, current main implementation `31654a2`: full 4049 passed/31 skipped/9 warnings; word-cut 146; TTS construction 28; APM/strict recorded remain 6/9.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–70 headless/virtual and real-semantic gates are green; physical live remains pending; promotion/prep/runtime focused: 107/146.
-Silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, identical command hashes, and all six route/cleanup proofs. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64/69/70).
+ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
+Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; exact Stop must pass before another enrollment A/B (ADR-0071).
 
 ## Runtime
 
@@ -19,12 +19,12 @@ Silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.81
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
   SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
   clean stable revision/contract/full identities produced real PASS (ADR-0060/65).
-- Current host capture/output use PipeWire `echo-cancel-source`/`echo-cancel-sink`.
-  GTCRN denoise is active. Generic word-cut requires four novel words plus
-  speaker authority; in-app AEC/APM are off (ADR-0045). EC nodes/Ollama are
-  session-only, not persistent services.
+- Physical open-speaker sessions require PipeWire `echo-cancel-source`/
+  `echo-cancel-sink`; those EC nodes and Ollama are session-only, not persistent
+  services. GTCRN is active. Generic word-cut requires four novel words plus
+  speaker authority; in-app AEC/APM are off (ADR-0045).
 - Host InputAGC is boost-only: only a current block above its calibrated floor
-  is boosted; below-floor PCM stays unity. V5 remains live-unvalidated (ADR-0047).
+  is boosted; below-floor PCM stays unity. V5 is live-red (ADR-0047/0071).
 
 ## Voice reliability now implemented
 
@@ -76,20 +76,20 @@ Silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.81
 
 ## Live evidence and limits
 
-- Historical v4 on PipeWire EC: 512 dimensions, 0.58 minimum/0.78 mean; `114725` accepted it. It remains unmodified; isolated v5 prep/enrollment has not run.
-- Runs `114725`/`115512`/`130601`/`144211` exposed 13%-gain loss, false cuts,
-  INGEST of an override, corruption, fragmentation, and wrong `sid` (ADR-0036/38/39).
-- Main `285d74e` run `154451` switched `sid=0→16`, missed `OF HE STOP`, then hit
-  -9999/corruption; `6d8e9c2` run `170840` held `sid=0` across replies/story and
-  exited once, but peak-0.506 talk-over decoded `AH` at 0.19–0.23: zero cuts; ear
-  grade pending. Close causality and unplug/switch stay unvalidated; later runs
-  exposed AGC overshoot/silent cuts/garble/tail handoff. V5 remains headless-only
-  and live-red (ADR-0041/42/43/45/47/48).
+- Historical v4 remains active and unmodified. Enrollment `174212` captured an
+  isolated three-pass v5 candidate (dim 512; similarity min 0.60/mean 0.67), but
+  the candidate failed its live gate and was never promoted (ADR-0071).
+- Enrollment-on `192151` held `sid=0` and answered one normal question, but
+  dropped soft Yes, split a one-second pause, cut only late with garbled handoff,
+  and did not stop promptly. The owner repeated the override; physical gate red.
+- Enrollment-off `193713` also produced no exact-Stop final, word-cut trace, or
+  cut. Playback-time VAD stayed zero despite a near-end burst and the energy
+  fallback never started, placing the blocker before speaker identity. Route/
+  calibration settling is a hypothesis, not yet a root-cause proof.
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
-- Still required at the mic after fresh v5 enrollment: quiet `YES`, low sensitivity,
-  self-echo, override, mid-thought pause, reply-tail continuity, and STOP; use
-  `docs/2026-07-12-v5-bare-speaker-acceptance.md`. Do not claim barge validated.
-- Comparable-project audit: `docs/2026-07-12-comparable-voice-agent-parity.md`; architecture is comparable, user experience is not yet proven.
+- Next: diagnose physical capture→EC→calibration→VAD/energy→decoder with
+  enrollment disabled; require prompt exact Stop before another candidate or wider
+  acceptance. Do not claim physical barge validated.
 
 ## Standard verification
 Full: `...python -m pytest tests -q`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.

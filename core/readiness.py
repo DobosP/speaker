@@ -174,13 +174,13 @@ def check_sherpa_models(
 def check_speaker_id(
     config: dict, exists: Callable[[str], bool] = os.path.exists
 ) -> Check:
-    """Check optional speaker ID, or require it for production word-cut."""
+    """Check optional speaker ID, or an explicit word-cut identity filter."""
     sherpa = (config or {}).get("sherpa", {}) or {}
     required_for_word_cut = bool(
         sherpa.get("barge_in_enabled", True)
         and sherpa.get("barge_word_cut_enabled", False)
         and not sherpa.get("aec_enabled", False)
-        and sherpa.get("barge_word_cut_require_speaker", True)
+        and sherpa.get("barge_word_cut_require_speaker", False)
     )
     model = sherpa.get("speaker_embedding_model", "")
     if not model:
@@ -194,8 +194,8 @@ def check_speaker_id(
         return Check(
             "speaker-ID",
             True,
-            "not configured (optional; barge-in/input gating off) -- "
-            "enable with `python -m tools.setup_models`",
+            "not configured (optional owner filtering off; lexical barge-in "
+            "remains available) -- enable with `python -m tools.setup_models`",
         )
     if not exists(model):
         return Check(

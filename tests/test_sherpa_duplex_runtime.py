@@ -251,9 +251,8 @@ def test_real_capture_and_playback_workers_cancel_stale_stream_on_word_cut(monke
         output_device="headless-output",
         barge_in_enabled=True,
         barge_word_cut_enabled=True,
-        # This fixture isolates FIFO/cancellation plumbing. Production
-        # enrolled-speaker authority has a separate end-to-end regression.
-        barge_word_cut_require_speaker=False,
+        # Exercise the production single-voice default: no enrollment is needed
+        # for an exact lexical control to reach FIFO cancellation.
         # The bridge injects only after actual first audio. Onset-grace policy
         # has dedicated tests; disabling it removes an unrelated clock wait.
         barge_in_playback_onset_grace_sec=0.0,

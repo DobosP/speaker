@@ -1,7 +1,7 @@
 # ADR-0045: Require the lexical floor before speaker-authorized barge-in
 
 Date: 2026-07-11
-Status: accepted
+Status: superseded-by ADR-0072
 
 ## Decision
 

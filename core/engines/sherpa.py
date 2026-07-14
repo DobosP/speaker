@@ -205,7 +205,6 @@ class _WordCutStopDecision:
     """Typed fusion of lexical STOP evidence and current-TTS ambiguity."""
 
     kind: _WordCutStopKind
-    speaker_required: bool
     reads_like_own_speech: bool
 
     @property
@@ -214,11 +213,10 @@ class _WordCutStopDecision:
 
     @property
     def needs_speaker(self) -> bool:
-        return (
-            self.requested
-            and self.speaker_required
-            and self.reads_like_own_speech
-        )
+        # ADR-0042's own-TTS ambiguity guard is independent of the optional
+        # multi-voice filter used for generic word-cut. A novel exact control is
+        # enrollment-free; a control that resembles current/recent TTS is not.
+        return self.requested and self.reads_like_own_speech
 
 
 @dataclass(frozen=True)
@@ -1110,13 +1108,14 @@ class SherpaConfig:
     barge_word_cut_energy_fallback_enabled: bool = False
     barge_word_cut_energy_margin_db: float = 9.0
     barge_word_cut_energy_min_blocks: int = 3
-    # Production word-cut authority: when enabled, a non-stop talk-over may cut
-    # only after enough candidate PCM matches the compatible enrolled speaker.
-    # This removes the impossible text-only choice between a heavily corrupted
-    # TTS echo and a real near-homophonic command. Bare stop remains immediate.
-    # The dataclass defaults this ON so any host that opts into word-cut gets the
-    # safe behavior; focused legacy state-machine fixtures explicitly turn it off.
-    barge_word_cut_require_speaker: bool = True
+    # Optional multi-voice word-cut filter. Single-voice barge-in defaults to
+    # identity-free lexical authority: a canonical control or at least four NEW
+    # non-own words on a verified echo-cancel route. Set this true only when a
+    # compatible enrollment should reject other speakers during playback. The
+    # lexical floor remains mandatory and cannot be lowered by either mode.
+    # Independently, ADR-0042 always identity-gates a STOP-class control that
+    # resembles current/recent own TTS; novel exact controls remain immediate.
+    barge_word_cut_require_speaker: bool = False
     # Compatible enrolled-speaker authority is an additional identity signal,
     # never a replacement for the generic lexical echo-safety floor above.  This
     # value may raise that floor for a profile, but neither local floor may lower
@@ -1139,8 +1138,9 @@ class SherpaConfig:
     # to the accept threshold retain bounded PCM and retry after more evidence.
     barge_word_cut_speaker_reject_threshold: float = 0.22
     barge_word_cut_speaker_retry_sec: float = 0.25
-    # Speaker-ID gate: only treat playback-time voice as barge-in if it matches
-    # the enrolled user (keeps the assistant's own TTS from self-interrupting).
+    # Optional Speaker-ID gates for normal finals, generic multi-voice word-cut,
+    # and own-TTS-ambiguous controls. Novel exact Stop/cancel stays an open
+    # fail-safe control and ordinary identity-free word-cut keeps its lexical floor.
     speaker_embedding_model: str = ""
     speaker_enroll_wav: str = ""
     # Persisted enrollment embedding (JSON written by ``python -m core --enroll``).
@@ -1520,7 +1520,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._speaker_gate: Optional[SpeakerGate] = None
         # Set only after the background engine warm pass completes a real
         # similarity call. Word-cut never pays cold ONNX construction on the
-        # 100 ms capture thread; it defers non-stop authority until this is true.
+        # 100 ms capture thread; it defers identity-gated authority until this is true.
         self._speaker_gate_warmed: bool = False
         # Sink-attested playback callbacks never run on PortAudio's hard-real-
         # time thread. PlaybackFIFO appends only tiny ownership events; this
@@ -7377,7 +7377,6 @@ class SherpaOnnxEngine(AudioEngine):
         new_text: str,
         full_text: str,
         *,
-        speaker_required: bool,
         reads_like_own_speech: bool,
     ) -> _WordCutStopDecision:
         """Classify a canonical stop in the NEW playback-time ASR suffix.
@@ -7406,25 +7405,30 @@ class SherpaOnnxEngine(AudioEngine):
             )
         return _WordCutStopDecision(
             kind=kind,
-            speaker_required=bool(speaker_required),
             reads_like_own_speech=bool(
                 reads_like_own_speech or tts_contains_stop
             ),
         )
 
     def _word_cut_speaker_decision(
-        self, *, min_sec: Optional[float] = None
+        self,
+        *,
+        min_sec: Optional[float] = None,
+        identity_required: bool = False,
     ) -> str:
         """Return ``legacy``, ``defer``, ``accept``, or ``reject`` for a cut.
 
         Text cannot reliably distinguish a near-homophonic command from nonlinear
         TTS echo. When production requires speaker authority, use the compatible
         enrolled embedding on the bounded candidate PCM. Missing/error authority
-        fails closed for non-stop talk-over; the canonical stop path bypasses this
-        method and remains immediate.
+        fails closed for generic talk-over when the optional filter is enabled.
+        ``identity_required`` preserves ADR-0042 independently: a STOP-class
+        control resembling current/recent TTS must obtain speaker authority even
+        when generic word-cut is enrollment-free. Novel canonical controls remain
+        immediate.
         """
-        if not bool(
-            getattr(self.config, "barge_word_cut_require_speaker", True)
+        if not identity_required and not bool(
+            getattr(self.config, "barge_word_cut_require_speaker", False)
         ):
             return "legacy"
         gate = self._speaker_gate
@@ -7434,7 +7438,7 @@ class SherpaOnnxEngine(AudioEngine):
             if not st.get("_speaker_unavailable_warned"):
                 st["_speaker_unavailable_warned"] = True
                 log.warning(
-                    "word-cut speaker authority unavailable; non-stop cut deferred"
+                    "word-cut speaker authority unavailable; identity-gated cut deferred"
                 )
             return "defer"
         required_sec = (
@@ -7463,7 +7467,7 @@ class SherpaOnnxEngine(AudioEngine):
             if not st.get("_speaker_cold_warned"):
                 st["_speaker_cold_warned"] = True
                 log.warning(
-                    "word-cut speaker authority not warmed; non-stop cut deferred"
+                    "word-cut speaker authority not warmed; identity-gated cut deferred"
                 )
             return "defer"
         if st.get("_speaker_error"):
@@ -7554,7 +7558,7 @@ class SherpaOnnxEngine(AudioEngine):
             st["_speaker_error"] = True
             st["speaker_errors"] = st.get("speaker_errors", 0) + 1
             log.warning(
-                "word-cut speaker decision failed; non-stop cut deferred",
+                "word-cut speaker decision failed; identity-gated cut deferred",
                 exc_info=True,
             )
             return "defer"
@@ -7640,27 +7644,30 @@ class SherpaOnnxEngine(AudioEngine):
     def _word_cut_authority_min_words(self) -> int:
         """Lexical evidence required before a generic word-cut may fire.
 
-        Speaker similarity is meaningful only after lexical evidence proves the
-        playback recognizer heard something command-like rather than an empty or
-        short garbled echo burst.  Local floor values from zero through three
-        therefore may not reopen the known 2-3-word echo failure in production
-        speaker mode. STOP-class controls are handled explicitly by their typed
-        decision and do not use this floor.
+        Lexical evidence must first prove that the playback recognizer heard
+        something command-like rather than an empty or short garbled echo burst.
+        Local floor values from zero through three therefore may not reopen the
+        known 2-3-word echo failure, with or without optional speaker filtering.
+        STOP-class controls are handled by their typed decision and do not use
+        this floor.
         """
         configured_generic = int(
             getattr(self.config, "barge_word_cut_min_words", 4)
         )
-        if bool(getattr(self.config, "barge_word_cut_require_speaker", True)):
-            return max(
-                4,
-                configured_generic,
-                int(
-                    getattr(
-                        self.config, "barge_word_cut_speaker_min_words", 0
-                    )
-                ),
+        optional_speaker_floor = (
+            int(
+                getattr(
+                    self.config, "barge_word_cut_speaker_min_words", 0
+                )
             )
-        return max(1, configured_generic)
+            if bool(
+                getattr(
+                    self.config, "barge_word_cut_require_speaker", False
+                )
+            )
+            else 0
+        )
+        return max(4, configured_generic, optional_speaker_floor)
 
     def _word_cut_new_text(self, text: str) -> str:
         """Text added after the most recent own-speech fold/burst boundary."""
@@ -7826,6 +7833,12 @@ class SherpaOnnxEngine(AudioEngine):
             self._wc_stats["decode_errors"] = self._wc_stats.get("decode_errors", 0) + 1
         new_text = self._word_cut_new_text(text)
         words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
+        reads_like_own = bool(new_text) and self._reads_like_own_speech(new_text)
+        stop = self._word_cut_stop_decision(
+            new_text,
+            text,
+            reads_like_own_speech=reads_like_own,
+        )
         debounce = max(
             1, int(getattr(self.config, "barge_word_cut_reset_quiet_blocks", 3))
         )
@@ -7837,9 +7850,10 @@ class SherpaOnnxEngine(AudioEngine):
             drop_reason = "own" if text and self._word_cut_base else "empty"
         elif (
             not bool(
-                getattr(self.config, "barge_word_cut_require_speaker", True)
+                getattr(self.config, "barge_word_cut_require_speaker", False)
             )
-            and self._reads_like_own_speech(new_text)
+            and reads_like_own
+            and not stop.requested
         ):
             drop_reason = "own"
         elif not self._word_cut_candidate_pcm:
@@ -7847,19 +7861,13 @@ class SherpaOnnxEngine(AudioEngine):
         else:
             floor = self._word_cut_authority_min_words()
             speaker_required = bool(
-                getattr(self.config, "barge_word_cut_require_speaker", True)
-            )
-            stop = self._word_cut_stop_decision(
-                new_text,
-                text,
-                speaker_required=speaker_required,
-                reads_like_own_speech=self._reads_like_own_speech(new_text),
+                getattr(self.config, "barge_word_cut_require_speaker", False)
             )
             stop_requested = stop.requested
             stop_needs_speaker = stop.needs_speaker
             speaker_decision = "legacy"
             generic_ready = not stop_requested and len(words) >= floor
-            if speaker_required and (stop_needs_speaker or generic_ready):
+            if stop_needs_speaker or (speaker_required and generic_ready):
                 speaker_decision = self._word_cut_speaker_decision(
                     min_sec=(
                         float(
@@ -7871,7 +7879,8 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                         if stop_needs_speaker
                         else None
-                    )
+                    ),
+                    identity_required=stop_needs_speaker,
                 )
             stop_authorized = stop_requested and (
                 not stop_needs_speaker or speaker_decision == "accept"
@@ -7968,13 +7977,12 @@ class SherpaOnnxEngine(AudioEngine):
         new_text = self._word_cut_new_text(text)
         words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
         speaker_required = bool(
-            getattr(self.config, "barge_word_cut_require_speaker", True)
+            getattr(self.config, "barge_word_cut_require_speaker", False)
         )
         floor = self._word_cut_authority_min_words()
         stop = self._word_cut_stop_decision(
             new_text,
             text,
-            speaker_required=speaker_required,
             reads_like_own_speech=self._reads_like_own_speech(new_text),
         )
         stop_requested = stop.requested
@@ -7999,9 +8007,10 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                         if stop_needs_speaker
                         else None
-                    )
+                    ),
+                    identity_required=stop_needs_speaker,
                 )
-                if speaker_required and (stop_needs_speaker or generic_ready)
+                if stop_needs_speaker or (speaker_required and generic_ready)
                 else "legacy"
             )
             if speaker_decision == "reject":
@@ -8410,22 +8419,18 @@ class SherpaOnnxEngine(AudioEngine):
         floor = self._word_cut_authority_min_words()
         reads_like_own = bool(new_text) and self._reads_like_own_speech(new_text)
         speaker_required = bool(
-            getattr(self.config, "barge_word_cut_require_speaker", True)
+            getattr(self.config, "barge_word_cut_require_speaker", False)
         )
         stop = self._word_cut_stop_decision(
             new_text,
             text,
-            speaker_required=speaker_required,
             reads_like_own_speech=reads_like_own,
         )
         stop_requested = bool(text) and stop.requested
         stop_needs_speaker = bool(text) and stop.needs_speaker
         speaker_decision = "legacy"
         generic_ready = not stop_requested and len(words) >= floor
-        if (
-            (speaker_required and (stop_needs_speaker or generic_ready))
-            or (not speaker_required and generic_ready and bool(new_text))
-        ):
+        if stop_needs_speaker or (speaker_required and generic_ready):
             speaker_decision = self._word_cut_speaker_decision(
                 min_sec=(
                     float(
@@ -8437,7 +8442,8 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                     if stop_needs_speaker
                     else None
-                )
+                ),
+                identity_required=stop_needs_speaker,
             )
         confirmed = (
             (stop_requested and not stop_needs_speaker)

@@ -4,8 +4,7 @@
 `speaker` is Paul's local voice/audio stack. Audio pipeline changes need deterministic headless tests plus manual live validation when hardware behavior matters.
 
 ## Fleet context
-- Role: local-first always-on voice assistant (personal R&D; repo stays on the personal account).
-- Upstream: none · Downstream: none (standalone; always-on audio never leaves the machine).
+- Canonical role/status/next for this repo: the vault note `dobo-brain/paul-brain/projects/speaker.md` (fleet view: the vault's `projects/index.md` + `NOW.md`; agent-ops ADR-0032, vault adr-0001).
 - Fleet map + parallel-agent protocol: `~/work/AGENTS.md` (agent-ops ADR-0025).
 - Secrets: registry `agent-ops/secrets/secrets.manifest.yaml` (ADR-0027); repo-local names in `CREDENTIALS.md`; never commit values.
 

@@ -133,6 +133,100 @@ def test_sherpa_readiness_failure_is_actionable_and_echo_mode_is_forwarded():
     assert captured["llm_mode"] == "echo"
 
 
+def test_sherpa_readiness_forwards_virtual_binder_only_when_supplied():
+    from tools.doctor import Check
+
+    binder = object()
+    captured = {}
+
+    def checks(_config, **kwargs):
+        captured.update(kwargs)
+        return [Check("ready", True)]
+
+    app._require_sherpa_runtime_ready(
+        {"sherpa": {}},
+        "echo",
+        run_checks=checks,
+        virtual_audio_binder=binder,
+    )
+
+    assert captured["virtual_audio_binder"] is binder
+
+
+def test_virtual_delay_profile_is_in_memory_and_drops_owner_identity():
+    original = {
+        "sherpa": {
+            "input_device": "real-mic",
+            "output_device": "real-speaker",
+            "aec_enabled": True,
+            "barge_word_cut_enabled": False,
+            "barge_word_cut_require_speaker": True,
+            "speaker_embedding_model": "/private/model.onnx",
+            "speaker_enroll_embedding": "/private/enrollment.json",
+        },
+        "llm": {
+            "host": "https://remote-ollama.invalid",
+            "live_routing": True,
+            "cloud": {"enabled": True, "strategy": "hedge"},
+        },
+        "web_search": {"enabled": True},
+        "screen_capture": {"enabled": True, "memorize": True},
+        "gui_actions": {"enabled": True},
+        "watch": {"enabled": True, "grants": ["private-window"]},
+        "memory": {
+            "backend": "postgres",
+            "embeddings": True,
+            "profile_enabled": True,
+            "procedural_enabled": True,
+            "cross_session_continuity": True,
+            "persist_assistant": True,
+        },
+        "agent_brain": {"local_only": False, "offline": False, "os_mode": True},
+        "other": {"kept": True},
+    }
+
+    isolated = app._apply_autotest_virtual_delay_profile(original)
+
+    assert original["sherpa"]["input_device"] == "real-mic"
+    assert isolated["other"] == {"kept": True}
+    assert isolated["sherpa"] | {
+        "input_device": "pipewire",
+        "output_device": "pipewire",
+    } == isolated["sherpa"]
+    assert isolated["sherpa"]["aec_enabled"] is False
+    assert isolated["sherpa"]["barge_word_cut_enabled"] is True
+    assert isolated["sherpa"]["barge_word_cut_require_speaker"] is False
+    assert isolated["sherpa"]["input_agc"] is True
+    assert isolated["sherpa"]["input_calibrate"] is True
+    assert isolated["sherpa"]["input_calibrate_sec"] == 1.5
+    assert isolated["sherpa"]["barge_word_cut_energy_fallback_enabled"] is True
+    assert isolated["sherpa"]["barge_word_cut_energy_margin_db"] == 6.0
+    assert isolated["sherpa"]["barge_word_cut_energy_min_blocks"] == 3
+    assert isolated["sherpa"]["barge_word_cut_min_words"] == 4
+    assert isolated["sherpa"]["speaker_embedding_model"] == ""
+    assert isolated["sherpa"]["speaker_enroll_embedding"] == ""
+    assert original["llm"]["cloud"]["enabled"] is True
+    assert isolated["llm"]["host"] == "http://127.0.0.1:11434"
+    assert isolated["llm"]["cloud"]["enabled"] is False
+    assert isolated["llm"]["cloud"]["strategy"] == "local_only"
+    assert isolated["llm"]["live_routing"] is False
+    assert isolated["web_search"]["enabled"] is False
+    assert isolated["screen_capture"] == {"enabled": False, "memorize": False}
+    assert isolated["gui_actions"]["enabled"] is False
+    assert isolated["watch"] == {"enabled": False, "grants": []}
+    assert isolated["memory"]["backend"] == "inmemory"
+    assert isolated["memory"]["embeddings"] is False
+    assert isolated["memory"]["profile_enabled"] is False
+    assert isolated["memory"]["procedural_enabled"] is False
+    assert isolated["memory"]["cross_session_continuity"] is False
+    assert isolated["memory"]["persist_assistant"] is False
+    assert isolated["agent_brain"] == {
+        "local_only": True,
+        "offline": True,
+        "os_mode": False,
+    }
+
+
 def test_enrollment_bypasses_normal_sherpa_runtime_preflight(tmp_path, monkeypatch):
     import core.enroll as enroll
 

@@ -544,6 +544,7 @@ def check_audio_frontend(
     pipewire_state: Optional[PipeWireState] = None,
     pipewire_probe: Callable[[], Optional[PipeWireState]] = probe_pipewire_state,
     require_os_echo_route: bool = True,
+    virtual_audio_binder=None,
 ) -> list[Check]:
     """Check active resampler, AEC backend, VAD, and OS-route prerequisites."""
     out: list[Check] = []
@@ -668,18 +669,25 @@ def check_audio_frontend(
         wants_word_cut or bool(sherpa.get("capture_voice_comm", False))
     )
     if wants_linux_ec and require_os_echo_route:
-        state = pipewire_state if pipewire_state is not None else pipewire_probe()
-        route_ok, detail = _check_pipewire_echo_route(sherpa, state)
-        name = (
-            "OS echo-cancel route for word-cut barge (ADR-0013)"
-            if wants_word_cut
-            else "OS echo-cancel route (PipeWire)"
-        )
+        if virtual_audio_binder is not None:
+            try:
+                route_ok, detail = virtual_audio_binder.verify_topology()
+            except Exception as exc:  # noqa: BLE001 - test proof must fail closed
+                route_ok, detail = False, f"virtual topology probe failed: {exc}"
+            name = "autotest virtual delay EC topology (ADR-0069)"
+        else:
+            state = pipewire_state if pipewire_state is not None else pipewire_probe()
+            route_ok, detail = _check_pipewire_echo_route(sherpa, state)
+            name = (
+                "OS echo-cancel route for word-cut barge (ADR-0013)"
+                if wants_word_cut
+                else "OS echo-cancel route (PipeWire)"
+            )
         out.append(Check(
             name,
             route_ok,
             detail,
-            "" if route_ok else (
+            "" if route_ok or virtual_audio_binder is not None else (
                 "pactl load-module module-echo-cancel aec_method=webrtc "
                 "source_name=echo-cancel-source sink_name=echo-cancel-sink "
                 'aec_args="webrtc.noise_suppression=false webrtc.gain_control=false"'
@@ -827,6 +835,7 @@ def run_runtime_checks(
     include_speaker: bool = True,
     require_audio_devices: bool = True,
     require_os_echo_route: bool = True,
+    virtual_audio_binder=None,
 ) -> list[Check]:
     """Run one shared readiness contract over one selected device profile."""
     merged = config if resolved else resolve_check_config(config, device)[0]
@@ -869,5 +878,6 @@ def run_runtime_checks(
         pipewire_state=pipewire_state,
         pipewire_probe=pipewire_probe,
         require_os_echo_route=require_os_echo_route,
+        virtual_audio_binder=virtual_audio_binder,
     )
     return checks

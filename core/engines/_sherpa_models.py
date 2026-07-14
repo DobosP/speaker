@@ -203,7 +203,7 @@ def build_keyword_spotter(c: "SherpaConfig"):
     )
 
 
-def build_tts(c: "SherpaConfig"):
+def build_tts(c: "SherpaConfig", *, deterministic_vits: bool = False):
     """Offline TTS (VITS/Piper by default, Kokoro when ``tts_voices`` is set), or
     ``None`` if no model configured.
 
@@ -215,6 +215,11 @@ def build_tts(c: "SherpaConfig"):
     ``.sample_rate`` are identical -- so voice selection stays ``tts_speaker_id`` and
     the sample rate auto-adapts (Kokoro is 24 kHz). The VITS path is byte-identical
     when ``tts_voices`` is empty (default), so this is a drop-in, opt-in addition.
+
+    ``deterministic_vits`` is a harness-only construction mode: it zeros VITS's
+    acoustic and duration noise scales so repeated renderings of one validation
+    script are byte-stable. Runtime callers keep the native stochastic defaults.
+    Kokoro does not expose those VITS controls, so the flag is inert there.
 
     Fails OPEN like ``build_final_recognizer``: a Kokoro config whose model files
     are missing (e.g. ``tts_voices`` set but the package was never fetched) is
@@ -260,10 +265,14 @@ def build_tts(c: "SherpaConfig"):
         if getattr(c, "tts_lexicon", ""):  # multi-lang packages ship a lexicon
             k.lexicon = c.tts_lexicon
     else:  # VITS / Piper (unchanged)
-        tts_config.model.vits.model = c.tts_model
-        tts_config.model.vits.tokens = c.tts_tokens
+        vits = tts_config.model.vits
+        vits.model = c.tts_model
+        vits.tokens = c.tts_tokens
         if c.tts_data_dir:
-            tts_config.model.vits.data_dir = c.tts_data_dir
+            vits.data_dir = c.tts_data_dir
+        if deterministic_vits:
+            vits.noise_scale = 0.0
+            vits.noise_scale_w = 0.0
     tts_config.model.num_threads = c.resolved_tts_threads
     tts_config.model.provider = c.provider
     try:

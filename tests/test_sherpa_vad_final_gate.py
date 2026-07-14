@@ -1011,7 +1011,7 @@ def test_stop_after_initial_read_check_fences_post_dsp_side_effects():
     engine._denoiser = _Denoiser()
     engine._stream_in = _Input()
     engine._recorder = recorder
-    engine._poll_keywords = lambda _samples: events.append("kws")
+    engine._poll_keywords = lambda _samples, **_kwargs: events.append("kws")
     engine._cb = EngineCallbacks(
         on_partial=lambda _text: events.append("partial"),
         on_final=lambda _text: events.append("final"),

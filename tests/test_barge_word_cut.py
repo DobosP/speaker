@@ -72,11 +72,13 @@ class _FakeVad:
     def __init__(self, speech: bool = True) -> None:
         self._speech = bool(speech)
         self.accepted = 0
+        self.blocks: list[np.ndarray] = []
         self.resets = 0
         self._reactivate_on_accept = False
 
     def accept_waveform(self, samples) -> None:
         self.accepted += 1
+        self.blocks.append(np.asarray(samples, dtype="float32").copy())
         if self._reactivate_on_accept:
             self._speech = True
             self._reactivate_on_accept = False
@@ -126,6 +128,35 @@ def _engine(
     return eng
 
 
+def _energy_engine(
+    rec: _Rec | None = None,
+    *,
+    vad_speech: bool = False,
+    calibrated: bool = True,
+    calibration_blocks: int = 15,
+    floor: float = 0.004,
+    clipping: float = 0.0,
+    **cfg,
+) -> SherpaOnnxEngine:
+    """Opt into the virtual-gate fallback with an explicit current calibration."""
+    cfg.setdefault("input_agc", True)
+    cfg.setdefault("input_calibrate", True)
+    cfg.setdefault("input_calibrate_sec", 1.5)
+    cfg.setdefault("barge_word_cut_energy_fallback_enabled", True)
+    cfg.setdefault("barge_word_cut_energy_margin_db", 9.0)
+    cfg.setdefault("barge_word_cut_energy_min_blocks", 3)
+    eng = _engine(rec, vad_speech=vad_speech, **cfg)
+    if calibrated:
+        eng._last_calibration = {
+            "noise_floor_rms": floor,
+            "n_blocks": calibration_blocks,
+            "clipping_fraction": clipping,
+        }
+        if eng._input_agc is not None:
+            eng._input_agc.noise_floor_rms = floor
+    return eng
+
+
 _BLOCK = np.zeros(1600, dtype="float32")  # one 0.1s block at 16kHz
 
 
@@ -137,6 +168,10 @@ def test_word_cut_disabled_by_default():
     assert c.barge_word_cut_enabled is False  # shipped default: legacy paths intact
     assert c.barge_word_cut_min_words == 4    # the garbled-echo no-false-cut floor
     assert c.barge_word_cut_reset_quiet_blocks == 3  # flicker-proof burst reset
+    assert c.barge_word_cut_decoder_flush_sec == 0.4
+    assert c.barge_word_cut_energy_fallback_enabled is False
+    assert c.barge_word_cut_energy_margin_db == 9.0
+    assert c.barge_word_cut_energy_min_blocks == 3
     assert c.barge_word_cut_require_speaker is True
     assert c.barge_word_cut_speaker_min_words == 0
     assert c.barge_word_cut_speaker_min_sec == 0.35
@@ -153,7 +188,11 @@ def test_config_from_dict_roundtrip():
             "barge_word_cut_enabled": True,
             "barge_word_cut_min_words": 3,
             "barge_word_cut_reset_quiet_blocks": 5,
+            "barge_word_cut_decoder_flush_sec": 0.25,
             "barge_word_cut_vad_preroll_sec": 0.4,
+            "barge_word_cut_energy_fallback_enabled": True,
+            "barge_word_cut_energy_margin_db": 7.0,
+            "barge_word_cut_energy_min_blocks": 3,
             "barge_word_cut_speaker_min_words": 1,
             "barge_word_cut_stop_speaker_min_sec": 0.15,
             "barge_word_cut_speaker_threshold": 0.4,
@@ -164,7 +203,11 @@ def test_config_from_dict_roundtrip():
     assert c.barge_word_cut_enabled is True
     assert c.barge_word_cut_min_words == 3
     assert c.barge_word_cut_reset_quiet_blocks == 5
+    assert c.barge_word_cut_decoder_flush_sec == 0.25
     assert c.barge_word_cut_vad_preroll_sec == 0.4
+    assert c.barge_word_cut_energy_fallback_enabled is True
+    assert c.barge_word_cut_energy_margin_db == 7.0
+    assert c.barge_word_cut_energy_min_blocks == 3
     assert c.barge_word_cut_speaker_min_words == 1
     assert c.barge_word_cut_stop_speaker_min_sec == 0.15
     assert c.barge_word_cut_speaker_threshold == 0.4
@@ -292,6 +335,414 @@ def test_vad_onset_preroll_preserves_first_word_and_bare_stop():
         np.testing.assert_array_equal(actual, expected)
     assert eng._wc_stats["vad_preroll_blocks"] == 2
     assert rec.barges == 1
+
+
+def test_sustained_calibrated_energy_feeds_when_vad_misses_and_cuts_command():
+    rec = _Rec()
+    eng = _energy_engine(rec)
+    recognizer = _FakeRecognizer(["cancel that"])
+    detect, normal = _FakeStream(), _FakeStream()
+    processed = np.full(1600, 0.003, dtype="float32")
+    evidence = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(2):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            detect,
+            processed,
+            now + index * 0.1,
+            normal_stream=normal,
+            energy_samples=evidence,
+        )
+    assert eng._barge_word_cut_step(
+        recognizer,
+        detect,
+        processed,
+        now + 0.2,
+        normal_stream=normal,
+        energy_samples=evidence,
+    )
+
+    assert detect.fed_blocks == 3
+    assert normal.fed_blocks == 3
+    for block in normal.blocks:
+        np.testing.assert_array_equal(block, processed)
+    assert eng._wc_stats["energy_fallback_starts"] == 1
+    assert eng._wc_stats["energy_fallback_blocks"] == 1
+    assert eng._wc_stats["energy_run_max"] == 3
+    assert rec.barges == 1
+
+
+def test_n_minus_one_energy_transient_never_bypasses_vad():
+    eng = _energy_engine()
+    recognizer, stream = _FakeRecognizer(["stop"]), _FakeStream()
+    high = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(2):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.2, energy_samples=_BLOCK
+    )
+
+    assert stream.fed_blocks == 0
+    assert eng._word_cut_energy_run == 0
+
+
+def test_quiet_flush_cannot_bypass_pending_energy_debounce(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+    eng = _energy_engine()
+    eng._virtual_audio_binder = object()
+    # Model an earlier admitted burst whose detector stream remains alive.
+    # The next N-1 above-floor blocks are not quiet decoder flush authority.
+    eng._word_cut_fed_stream = True
+    recognizer, stream = _FakeRecognizer([""]), _FakeStream()
+    high = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(2):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+
+    assert stream.fed_blocks == 0
+    assert eng._wc_stats.get("quiet_flush_blocks", 0) == 0
+    assert eng._word_cut_energy_run == 2
+    assert caplog.text.count("[autotest-route] near-end onset") == 1
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, high, now + 0.2, energy_samples=high
+    )
+    assert stream.fed_blocks == 3
+    assert eng._wc_stats["energy_fallback_starts"] == 1
+
+
+def test_energy_fallback_is_inert_without_input_agc_floor():
+    eng = _engine(
+        vad_speech=False,
+        input_agc=False,
+        input_calibrate=True,
+        barge_word_cut_energy_fallback_enabled=True,
+    )
+    eng._last_calibration = {
+        "noise_floor_rms": 0.004,
+        "n_blocks": 15,
+        "clipping_fraction": 0.0,
+    }
+    recognizer, stream = _FakeRecognizer(["stop"]), _FakeStream()
+    high = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for i in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer, stream, high, now + i * 0.1, energy_samples=high
+        )
+
+    assert stream.fed_blocks == 0
+
+
+def test_energy_fallback_is_inert_without_current_calibration():
+    eng = _energy_engine(calibrated=False)
+    recognizer, stream = _FakeRecognizer(["stop"]), _FakeStream()
+    high = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+
+    assert stream.fed_blocks == 0
+    assert eng._wc_stats.get("energy_above_floor", 0) == 0
+
+
+def test_energy_fallback_default_off_even_with_complete_calibration():
+    eng = _energy_engine()
+    eng.config.barge_word_cut_energy_fallback_enabled = False
+    recognizer, stream = _FakeRecognizer(["stop"]), _FakeStream()
+    high = np.full(1600, 0.2, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+
+    assert stream.fed_blocks == 0
+    assert eng._word_cut_energy_run == 0
+
+
+@pytest.mark.parametrize(
+    ("calibration_blocks", "floor", "clipping"),
+    [
+        (14, 0.004, 0.0),  # partial startup window
+        (15, float("nan"), 0.0),
+        (15, 0.004, 0.03),
+    ],
+)
+def test_energy_fallback_rejects_incomplete_or_invalid_calibration(
+    calibration_blocks, floor, clipping
+):
+    eng = _energy_engine(
+        calibration_blocks=calibration_blocks,
+        floor=floor,
+        clipping=clipping,
+    )
+    high = np.full(1600, 0.2, dtype="float32")
+
+    for _ in range(4):
+        assert not eng._word_cut_energy_fallback_voiced(high)
+
+    assert eng._word_cut_energy_run == 0
+
+
+def test_processed_loud_but_pre_gain_quiet_does_not_activate_fallback():
+    eng = _energy_engine()
+    recognizer, stream = _FakeRecognizer(["stop"]), _FakeStream()
+    processed_loud = np.full(1600, 0.5, dtype="float32")
+    pre_gain_quiet = np.full(1600, 0.001, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            processed_loud,
+            now + index * 0.1,
+            energy_samples=pre_gain_quiet,
+        )
+
+    assert stream.fed_blocks == 0
+
+
+def test_energy_debounce_does_not_bridge_a_quiet_block():
+    eng = _energy_engine()
+    high = np.full(1600, 0.02, dtype="float32")
+
+    assert not eng._word_cut_energy_fallback_voiced(high)
+    assert eng._word_cut_energy_run == 1
+    assert not eng._word_cut_energy_fallback_voiced(_BLOCK)
+    assert eng._word_cut_energy_run == 0
+    assert not eng._word_cut_energy_fallback_voiced(high)
+    assert eng._word_cut_energy_run == 1
+
+
+def test_vad_positive_blocks_do_not_warm_energy_fallback():
+    eng = _energy_engine(vad_speech=True)
+    recognizer, stream = _FakeRecognizer([""]), _FakeStream()
+    high = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(2):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+    assert eng._word_cut_energy_run == 0
+    assert eng._wc_stats.get("energy_above_floor", 0) == 0
+
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, high, now + 0.2, energy_samples=high
+    )
+    assert eng._word_cut_energy_run == 1
+    # The first two blocks were ordinary VAD feeds; the fallback did not replay
+    # the third until it independently reaches its three-block debounce.
+    assert stream.fed_blocks == 2
+
+
+def test_virtual_onset_marker_observes_vad_positive_pre_gain_energy(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+    eng = _energy_engine(vad_speech=True)
+    eng._virtual_audio_binder = object()
+    high = np.full(1600, 0.02, dtype="float32")
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer([""]),
+        _FakeStream(),
+        high,
+        time.monotonic(),
+        energy_samples=high,
+    )
+
+    assert caplog.text.count("[autotest-route] near-end onset") == 1
+    assert eng._word_cut_energy_run == 0
+    assert eng._wc_stats.get("energy_above_floor", 0) == 0
+    assert eng._wc_stats.get("energy_fallback_blocks", 0) == 0
+
+
+def test_fresh_reply_epoch_rearms_virtual_onset_marker(caplog):
+    import logging
+
+    caplog.set_level(logging.INFO, logger="speaker.sherpa")
+    eng = _energy_engine()
+    eng._virtual_audio_binder = object()
+    high = np.full(1600, 0.02, dtype="float32")
+
+    assert not eng._word_cut_energy_fallback_voiced(high)
+    assert eng._word_cut_energy_run == 1
+    eng._reset_word_cut_energy_epoch()
+    assert not eng._word_cut_energy_fallback_voiced(high)
+
+    assert caplog.text.count("[autotest-route] near-end onset") == 2
+    assert eng._word_cut_energy_run == 1
+    assert eng._wc_stats.get("energy_fallback_blocks", 0) == 0
+
+
+def test_route_loss_and_regrant_require_full_energy_debounce():
+    eng = _energy_engine()
+    recognizer, stream = _FakeRecognizer(["stop"]), _FakeStream()
+    high = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(2):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+    assert eng._word_cut_energy_run == 2
+    eng._word_cut_route_verified = False
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, high, now + 0.2, energy_samples=high
+    )
+    assert eng._word_cut_energy_run == 0
+
+    eng._word_cut_route_verified = True
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, high, now + 0.3, energy_samples=high
+    )
+    assert eng._word_cut_energy_run == 1
+    assert stream.fed_blocks == 0
+
+
+def test_concurrent_virtual_route_revocation_blocks_cut_callback():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._virtual_audio_binder = object()
+    eng._virtual_route_failure_in_progress = True
+    eng._word_cut_energy_run = 2
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["cancel that"]),
+        _FakeStream(),
+        np.full(1600, 0.2, dtype="float32"),
+        time.monotonic(),
+    )
+
+    assert rec.barges == 0
+    assert eng._wc_stats["route_revoked"] == 1
+    assert eng._wc_stats.get("cuts", 0) == 0
+    assert eng._word_cut_energy_run == 0
+
+
+def test_energy_fallback_speaker_reject_starts_a_fresh_epoch():
+    rec = _Rec()
+    eng = _energy_engine(
+        rec,
+        barge_word_cut_energy_min_blocks=1,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_sec=0.0,
+        speaker_gate_input=False,
+    )
+    eng._speaker_gate = _FakeSpeakerGate([0.1])
+    eng._speaker_gate_warmed = True
+    high = np.full(1600, 0.02, dtype="float32")
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["switch to Roman architecture"]),
+        _FakeStream(),
+        high,
+        time.monotonic(),
+        energy_samples=high,
+    )
+
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_rejects"] == 1
+    assert eng._word_cut_energy_run == 0
+
+
+def test_energy_fallback_own_speech_fold_starts_a_fresh_epoch():
+    eng = _energy_engine(barge_word_cut_energy_min_blocks=1)
+    eng._now_playing = "once upon a time there was"
+    high = np.full(1600, 0.02, dtype="float32")
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["upon a time"]),
+        _FakeStream(),
+        high,
+        time.monotonic(),
+        energy_samples=high,
+    )
+
+    assert eng._word_cut_base == "upon a time"
+    assert eng._wc_stats["own_folds"] == 1
+    assert eng._word_cut_energy_run == 0
+
+
+def test_energy_fallback_guard_starts_a_fresh_epoch():
+    eng = _energy_engine(barge_word_cut_energy_min_blocks=1)
+    eng._barge_in_suppressed_until = time.monotonic() + 10.0
+    high = np.full(1600, 0.02, dtype="float32")
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer(["cancel that"]),
+        _FakeStream(),
+        high,
+        time.monotonic(),
+        energy_samples=high,
+    )
+
+    assert eng._wc_stats["guard_suppressed"] == 1
+    assert eng._word_cut_energy_run == 0
+
+
+def test_energy_fallback_still_keeps_garbled_echo_below_lexical_floor():
+    rec = _Rec()
+    eng = _energy_engine(rec)
+    recognizer, stream = _FakeRecognizer(["you're any"]), _FakeStream()
+    high = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    for index in range(3):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            high,
+            now + index * 0.1,
+            energy_samples=high,
+        )
+
+    assert stream.fed_blocks == 3
+    assert rec.barges == 0
 
 
 def test_garbled_two_word_echo_does_not_cut():
@@ -465,10 +916,12 @@ def test_audio_first_threshold_never_undercuts_enabled_final_speaker_gate():
     eng._speaker_gate = _FakeSpeakerGate([0.49], threshold=0.50)
     eng._speaker_gate_warmed = True
     eng._append_word_cut_candidate(np.full(1600, 0.2, dtype="float32"))
+    eng._word_cut_energy_run = 2
 
     assert eng._word_cut_speaker_decision() == "defer"
     assert eng._wc_stats.get("speaker_rejects", 0) == 0
     assert eng._wc_stats["speaker_ambiguous"] == 1
+    assert eng._word_cut_energy_run == 0
 
 
 def test_audio_first_ambiguous_score_retries_after_more_pcm_then_cuts():
@@ -598,7 +1051,9 @@ def test_audio_first_minimum_counts_voiced_frames_not_preroll_envelope():
             recognizer, stream, block, now + index * 0.1
         )
 
-    assert eng._word_cut_candidate_samples == 6400  # 400 ms envelope retained
+    # The decoder saw both quiet flush blocks, but candidate/speaker authority
+    # retains only the two voiced blocks.
+    assert eng._word_cut_candidate_samples == 3200
     assert gate.calls == []  # only 200 ms is actually energy-voiced
     assert rec.barges == 0
 
@@ -1459,7 +1914,18 @@ def test_vad_quiet_run_resets_stream_and_base_after_debounce():
     assert eng._word_cut_base == ""     # ...and the novelty base with it
     assert eng._word_cut_fed_stream is False
     assert eng._word_cut_candidate_samples == 0
-    assert s.fed_blocks == 0            # quiet blocks are never fed
+    # The first two quiet blocks are a bounded decoder flush for the already-fed
+    # burst; they never become candidate/speaker evidence. The third still
+    # resets without being fed.
+    assert s.fed_blocks == 2
+    assert s.blocks[0].size == 6400
+    assert s.blocks[1].size == 1600
+    np.testing.assert_array_equal(s.blocks[0][:1600], _BLOCK)
+    np.testing.assert_array_equal(s.blocks[0][1600:], np.zeros(4800))
+    np.testing.assert_array_equal(s.blocks[1], _BLOCK)
+    assert eng._wc_stats["quiet_flush_blocks"] == 2
+    assert eng._wc_stats["quiet_flush_samples"] == 8000
+    assert eng._wc_stats["quiet_flush_padding_samples"] == 4800
     # Idempotent: further quiet blocks don't keep resetting.
     assert eng._barge_word_cut_step(r, s, _BLOCK, now + 0.3) is False
     assert r.resets == 1
@@ -1474,6 +1940,414 @@ def test_reset_quiet_blocks_one_restores_hair_trigger():
     assert eng._barge_word_cut_step(r, s, _BLOCK, time.monotonic()) is False
     assert r.resets == 1
     assert eng._word_cut_base == ""
+    assert s.fed_blocks == 0
+    assert eng._wc_stats.get("quiet_flush_blocks", 0) == 0
+    assert eng._wc_stats.get("quiet_flush_samples", 0) == 0
+    assert eng._wc_stats.get("quiet_flush_padding_samples", 0) == 0
+
+
+def test_bounded_quiet_flush_publishes_control_without_quiet_pcm_authority():
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _FakeRecognizer(["BE", "BE", "BE QUIET"])
+    voiced = np.full(1600, 0.4, dtype="float32")
+    quiet = np.full(1600, 0.02, dtype="float32")
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer, detect, voiced, now, normal_stream=normal
+    )
+    assert eng._word_cut_candidate_samples == voiced.size
+
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, detect, quiet, now + 0.1, normal_stream=normal
+    )
+    assert eng._barge_word_cut_step(
+        recognizer, detect, quiet, now + 0.2, normal_stream=normal
+    )
+
+    assert rec.barges == 1
+    assert detect.fed_blocks == 3
+    assert detect.blocks[1].size == 6400
+    np.testing.assert_array_equal(detect.blocks[1][:1600], quiet)
+    np.testing.assert_array_equal(detect.blocks[1][1600:], np.zeros(4800))
+    np.testing.assert_array_equal(detect.blocks[2], quiet)
+    # Quiet advanced the decoder only. The promoted normal-ASR handoff retains
+    # exactly the voiced candidate and cannot manufacture speaker duration.
+    assert eng._word_cut_pending_samples == voiced.size
+    assert len(eng._word_cut_pending_pcm) == 1
+    np.testing.assert_array_equal(eng._word_cut_pending_pcm[0], voiced)
+    assert normal.fed_blocks == 1
+    np.testing.assert_array_equal(normal.blocks[0], voiced)
+    assert eng._wc_stats["quiet_flush_blocks"] == 2
+    assert eng._wc_stats["quiet_flush_samples"] == 8000
+    assert eng._wc_stats["quiet_flush_padding_samples"] == 4800
+
+
+def test_padded_first_quiet_publishes_exact_command_once_from_sample_clock():
+    class _SampleClockRecognizer(_FakeRecognizer):
+        def __init__(self, threshold_samples: int):
+            super().__init__([])
+            self.threshold_samples = threshold_samples
+
+        def get_result(self, stream):
+            accepted = sum(block.size for block in stream.blocks)
+            return "BE QUIET" if accepted >= self.threshold_samples else ""
+
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        speaker_gate_input=False,
+    )
+    eng._now_playing = "Be quiet."
+    gate = _FakeSpeakerGate([0.8])
+    eng._speaker_gate = gate
+    eng._speaker_gate_warmed = True
+    detect, normal = _FakeStream(), _FakeStream()
+    recognizer = _SampleClockRecognizer(8000)
+    voiced = np.full(1600, 0.4, dtype="float32")
+    quiet = np.full(1600, 0.02, dtype="float32")
+    seen_energy: list[np.ndarray] = []
+
+    def energy_probe(samples, *, allow_admission):
+        del allow_admission
+        seen_energy.append(np.asarray(samples, dtype="float32").copy())
+        return False
+
+    eng._word_cut_energy_fallback_voiced = energy_probe
+    now = time.monotonic()
+    assert not eng._barge_word_cut_step(
+        recognizer,
+        detect,
+        voiced,
+        now,
+        normal_stream=normal,
+        energy_samples=voiced,
+    )
+    assert eng._word_cut_candidate_samples == voiced.size
+    assert eng._word_cut_candidate_observed_samples == voiced.size
+
+    eng._vad.set_speech(False)
+    assert eng._barge_word_cut_step(
+        recognizer,
+        detect,
+        quiet,
+        now + 0.1,
+        normal_stream=normal,
+        energy_samples=quiet,
+    )
+    # The detector alone receives a 400 ms clock advance. Every authority and
+    # capture-side consumer retains the real 100 ms block boundary.
+    assert detect.blocks[1].size == 6400
+    np.testing.assert_array_equal(detect.blocks[1][: quiet.size], quiet)
+    np.testing.assert_array_equal(detect.blocks[1][quiet.size:], np.zeros(4800))
+    assert eng._vad.blocks[-1].size == quiet.size
+    np.testing.assert_array_equal(eng._vad.blocks[-1], quiet)
+    assert seen_energy[-1].size == quiet.size
+    np.testing.assert_array_equal(seen_energy[-1], quiet)
+    assert len(gate.calls) == 1
+    np.testing.assert_array_equal(gate.calls[0], voiced)
+    assert normal.fed_blocks == 1
+    np.testing.assert_array_equal(normal.blocks[0], voiced)
+    assert eng._word_cut_pending_samples == voiced.size
+    np.testing.assert_array_equal(eng._word_cut_pending_pcm[0], voiced)
+    assert rec.barges == 1
+    assert eng._wc_stats["quiet_flush_padding_samples"] == 4800
+
+    # The one-cut latch makes any later block inert.
+    assert not eng._barge_word_cut_step(
+        recognizer, detect, quiet, now + 0.2, normal_stream=normal
+    )
+    assert rec.barges == 1
+    assert detect.fed_blocks == 2
+
+
+@pytest.mark.parametrize(
+    ("configured_sec", "expected_samples"),
+    [(0.25, 4000), (2.0, 8000), (0.0, 1600), (-1.0, 1600), (float("nan"), 1600)],
+)
+def test_first_quiet_decoder_flush_is_configured_and_hard_capped(
+    configured_sec, expected_samples
+):
+    eng = _engine(
+        vad_speech=False,
+        barge_word_cut_decoder_flush_sec=configured_sec,
+    )
+    eng._word_cut_fed_stream = True
+    eng._append_word_cut_candidate(np.ones(1600, dtype="float32"))
+    recognizer, stream = _FakeRecognizer([""]), _FakeStream()
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, time.monotonic()
+    )
+    assert stream.fed_blocks == 1
+    assert stream.blocks[0].size == expected_samples
+    assert eng._wc_stats["quiet_flush_samples"] == expected_samples
+    assert eng._wc_stats["quiet_flush_padding_samples"] == max(
+        0, expected_samples - _BLOCK.size
+    )
+
+
+def test_padded_quiet_result_remains_subject_to_suppress_guard():
+    class _SampleClockRecognizer(_FakeRecognizer):
+        def get_result(self, stream):
+            return (
+                "BE QUIET"
+                if sum(block.size for block in stream.blocks) >= 8000
+                else ""
+            )
+
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    recognizer = _SampleClockRecognizer([])
+    stream = _FakeStream()
+    now = time.monotonic()
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now
+    )
+
+    eng._barge_in_suppressed_until = now + 1.0
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+
+    assert stream.blocks[-1].size == 6400
+    assert rec.barges == 0
+    assert eng._wc_stats["guard_suppressed"] == 1
+    assert eng._word_cut_candidate_samples == 0
+
+
+def test_padded_quiet_result_fails_closed_after_route_revocation():
+    class _SampleClockRecognizer(_FakeRecognizer):
+        def get_result(self, stream):
+            return (
+                "BE QUIET"
+                if sum(block.size for block in stream.blocks) >= 8000
+                else ""
+            )
+
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    recognizer = _SampleClockRecognizer([])
+    stream = _FakeStream()
+    now = time.monotonic()
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now
+    )
+
+    eng._word_cut_route_verified = False
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+
+    assert stream.blocks[-1].size == 6400
+    assert rec.barges == 0
+    assert eng._wc_stats["route_revoked"] == 1
+    assert eng._word_cut_candidate_samples == 0
+
+
+def test_quiet_flush_never_starts_an_unfed_candidate():
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=False)
+    recognizer, stream = _FakeRecognizer(["BE QUIET"]), _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(recognizer, stream, _BLOCK, now)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+
+    assert rec.barges == 0
+    assert stream.fed_blocks == 0
+    assert eng._wc_stats.get("quiet_flush_blocks", 0) == 0
+
+
+def test_quiet_flush_does_not_broaden_an_ordinary_stop_suffix():
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    recognizer, stream = _FakeRecognizer(["BUS", "BUS STOP"]), _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, np.full(1600, 0.4, dtype="float32"), now
+    )
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+
+    assert rec.barges == 0
+    assert eng._wc_stats.get("cuts", 0) == 0
+    assert eng._wc_stats["max_words"] == 2
+
+
+def test_quiet_flush_is_capped_at_two_when_reset_debounce_is_longer():
+    eng = _engine(
+        vad_speech=False,
+        barge_word_cut_reset_quiet_blocks=5,
+    )
+    eng._word_cut_fed_stream = True
+    eng._append_word_cut_candidate(np.ones(1600, dtype="float32"))
+    recognizer, stream = _FakeRecognizer(["one two three"]), _FakeStream()
+    now = time.monotonic()
+
+    for index in range(4):
+        assert not eng._barge_word_cut_step(
+            recognizer, stream, _BLOCK, now + index * 0.1
+        )
+    assert stream.fed_blocks == 2
+    assert stream.blocks[0].size == 6400
+    assert stream.blocks[1].size == 1600
+    assert eng._wc_stats["quiet_flush_blocks"] == 2
+    assert eng._wc_stats["quiet_flush_samples"] == 8000
+    assert eng._wc_stats["quiet_flush_padding_samples"] == 4800
+    assert recognizer.resets == 0
+
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.4
+    )
+    assert recognizer.resets == 1
+    assert stream.fed_blocks == 2
+
+
+def test_padded_quiet_decode_failure_is_counted_and_fails_closed(caplog):
+    import logging
+
+    class _BoomOnSecondResult(_FakeRecognizer):
+        def __init__(self):
+            super().__init__([])
+            self.calls = 0
+
+        def get_result(self, stream):
+            self.calls += 1
+            if self.calls == 2:
+                raise RuntimeError("padded decoder failed")
+            return ""
+
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    recognizer, stream = _BoomOnSecondResult(), _FakeStream()
+    voiced = np.full(1600, 0.4, dtype="float32")
+    now = time.monotonic()
+
+    with caplog.at_level(logging.WARNING, logger="speaker.sherpa"):
+        assert not eng._barge_word_cut_step(recognizer, stream, voiced, now)
+        eng._vad.set_speech(False)
+        assert not eng._barge_word_cut_step(
+            recognizer, stream, _BLOCK, now + 0.1
+        )
+
+    assert rec.barges == 0
+    assert stream.blocks[-1].size == 6400
+    assert eng._word_cut_candidate_samples == voiced.size
+    assert eng._wc_stats["decode_errors"] == 1
+    assert caplog.text.count("word-cut: recognizer decode failed") == 1
+
+
+def test_flushed_quiet_cannot_enter_candidate_when_speech_resumes():
+    eng = _engine(vad_speech=True)
+    recognizer, stream = _FakeRecognizer(
+        ["HELLO", "HELLO", "HELLO THERE"]
+    ), _FakeStream()
+    first = np.full(1600, 0.3, dtype="float32")
+    second = np.full(1600, 0.5, dtype="float32")
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(recognizer, stream, first, now)
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+    eng._vad.set_speech(True)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, second, now + 0.2
+    )
+
+    assert stream.fed_blocks == 3
+    assert eng._word_cut_candidate_samples == first.size + second.size
+    candidate = list(eng._word_cut_candidate_pcm)
+    assert len(candidate) == 2
+    np.testing.assert_array_equal(candidate[0], first)
+    np.testing.assert_array_equal(candidate[1], second)
+
+
+def test_own_speech_fold_clears_quiet_flush_authority():
+    rec = _Rec()
+    eng = _engine(rec, vad_speech=True)
+    eng._now_playing = "Once upon a time in the harbor."
+    recognizer, stream = _FakeRecognizer(
+        ["ONCE UPON A TIME", "BE QUIET"]
+    ), _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer,
+        stream,
+        np.full(1600, 0.4, dtype="float32"),
+        now,
+    )
+    assert eng._wc_stats["own_folds"] == 1
+    assert eng._word_cut_candidate_samples == 0
+
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+    assert rec.barges == 0
+    assert stream.fed_blocks == 1
+    assert eng._wc_stats.get("quiet_flush_blocks", 0) == 0
+
+    # A later real voiced block starts fresh. The quiet block observed while the
+    # candidate was empty was cleared and cannot enter its evidence.
+    recognizer._partials[1] = "HELLO"
+    resumed = np.full(1600, 0.6, dtype="float32")
+    eng._vad.set_speech(True)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, resumed, now + 0.2
+    )
+    assert eng._word_cut_candidate_samples == resumed.size
+    candidate = list(eng._word_cut_candidate_pcm)
+    assert len(candidate) == 1
+    np.testing.assert_array_equal(candidate[0], resumed)
+
+
+def test_speaker_ambiguous_clear_cannot_regain_authority_on_quiet_flush():
+    rec = _Rec()
+    eng = _engine(
+        rec,
+        vad_speech=True,
+        barge_word_cut_require_speaker=True,
+        barge_word_cut_speaker_min_words=0,
+        speaker_gate_input=False,
+    )
+    eng._now_playing = "Be quiet."
+    eng._speaker_gate = _FakeSpeakerGate([0.25])
+    eng._speaker_gate_warmed = True
+    recognizer, stream = _FakeRecognizer(["BE QUIET", "BE QUIET"]), _FakeStream()
+    now = time.monotonic()
+
+    assert not eng._barge_word_cut_step(
+        recognizer,
+        stream,
+        np.full(1600, 0.4, dtype="float32"),
+        now,
+    )
+    assert eng._wc_stats["speaker_ambiguous"] == 1
+    assert eng._word_cut_candidate_samples == 0
+
+    eng._vad.set_speech(False)
+    assert not eng._barge_word_cut_step(
+        recognizer, stream, _BLOCK, now + 0.1
+    )
+    assert rec.barges == 0
+    assert stream.fed_blocks == 1
+    assert eng._wc_stats.get("quiet_flush_blocks", 0) == 0
 
 
 def test_speech_block_between_quiets_defuses_the_debounce():
@@ -1515,8 +2389,10 @@ def test_novel_short_tail_requires_generic_floor_before_handoff(caplog):
     assert eng._barge_word_cut_step(r, detect, tail_block, now) is False
     assert eng.config.barge_word_cut_min_words == 4
     # Reply end alone is NOT authority: stage it and keep normal ASR clean.
+    eng._word_cut_energy_run = 2
     assert eng._finish_word_cut_reply(r, detect, normal, now=now) is False
     assert eng._word_cut_tail_staged is True
+    assert eng._word_cut_energy_run == 0
     assert normal.fed_blocks == 0
     # The same VAD-active burst reaches four words after playback -> replay tail
     # plus continuation into normal ASR and hand off to ordinary endpointing.
@@ -1910,6 +2786,64 @@ def test_step_feeds_vad_every_block():
     assert eng._vad.accepted == 4       # ...and on quiet blocks alike
 
 
+def test_capture_word_cut_keeps_processed_and_pre_gain_domains_distinct():
+    class _CaptureRecognizer:
+        def create_stream(self, **_kwargs):
+            return _FakeStream()
+
+        def is_ready(self, _stream):
+            return False
+
+        def get_result(self, _stream):
+            return ""
+
+        def reset(self, _stream):
+            pass
+
+        def is_endpoint(self, _stream):
+            return False
+
+    class _OneBlockInput:
+        generation = 0
+
+        def __init__(self, engine, block):
+            self.engine = engine
+            self.block = block
+
+        def read(self, _frames):
+            self.engine._running.clear()
+            return self.block.copy(), False
+
+    eng = _engine(vad_speech=True, input_gain=2.0)
+    eng._recognizer = _CaptureRecognizer()
+    eng._capture_sr = eng.config.sample_rate
+    raw = np.full(1600, 0.01, dtype="float32")
+    eng._stream_in = _OneBlockInput(eng, raw)
+    eng._speaking.set()
+    eng._barge_sustain_reset_pending = True
+    observed = []
+
+    def step(_recognizer, _stream, samples, _now, **kwargs):
+        observed.append(
+            (
+                np.asarray(samples).copy(),
+                np.asarray(kwargs["energy_samples"]).copy(),
+            )
+        )
+        return False
+
+    eng._barge_word_cut_step = step
+    eng._running.set()
+    eng._capture_loop()
+
+    assert len(observed) == 1
+    processed, evidence = observed[0]
+    np.testing.assert_array_equal(evidence, raw)
+    assert float(np.sqrt(np.mean(processed ** 2))) > 0.019
+    assert float(np.sqrt(np.mean(evidence ** 2))) == pytest.approx(0.01)
+    assert not np.array_equal(processed, evidence)
+
+
 def test_capture_feeds_word_cut_before_acoustic_reference_watch():
     class _CaptureRecognizer:
         def __init__(self):
@@ -2008,7 +2942,7 @@ def test_capture_route_loss_blocks_playback_keyword_authority():
     eng._word_cut_route_verified = False
     eng._os_echo_route_verified = False
     commands = []
-    eng._poll_keywords = lambda samples: commands.append(samples)
+    eng._poll_keywords = lambda samples, **_kwargs: commands.append(samples)
 
     eng._running.set()
     thread = threading.Thread(target=eng._capture_loop)
@@ -2528,6 +3462,7 @@ def test_funnel_counters_and_emission(caplog):
     text = caplog.text
     assert "word-cut trace: 2 word(s)" in text
     assert "word-cut funnel: fed=2" in text
+    assert "quiet_flush=0 quiet_flush_ms=0 quiet_flush_pad_ms=0" in text
     assert "max_words=5" in text
     assert "cuts=1" in text
     assert "handoffs=1" in text
@@ -2537,6 +3472,32 @@ def test_funnel_counters_and_emission(caplog):
     assert eng._wc_stats == {}           # stats are per-reply, cleared on emit
 
 
+def test_funnel_reports_detector_only_quiet_flush_duration(caplog):
+    import logging
+
+    eng = _engine(vad_speech=True)
+    recognizer, stream = _FakeRecognizer(["", ""]), _FakeStream()
+    now = time.monotonic()
+    with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
+        assert not eng._barge_word_cut_step(
+            recognizer,
+            stream,
+            np.full(1600, 0.4, dtype="float32"),
+            now,
+        )
+        eng._vad.set_speech(False)
+        assert not eng._barge_word_cut_step(
+            recognizer, stream, _BLOCK, now + 0.1
+        )
+        eng._wc_reply_active = True
+        eng._emit_word_cut_funnel()
+
+    assert (
+        "quiet_flush=1 quiet_flush_ms=400 quiet_flush_pad_ms=300"
+        in caplog.text
+    )
+
+
 def test_burst_reset_logs_dropped_words(caplog):
     import logging
 
@@ -2544,13 +3505,16 @@ def test_burst_reset_logs_dropped_words(caplog):
     # the smoking gun for "user words swallowed by the burst reset".
     eng = _engine(vad_speech=False)
     eng._word_cut_fed_stream = True
-    r, s = _FakeRecognizer(["tell me something else"]), _FakeStream()
+    # Keep this deliberately below the generic four-word floor. A complete
+    # four-word result published by the bounded quiet flush is now valid cut
+    # evidence and must not be described as dropped.
+    r, s = _FakeRecognizer(["tell me something"]), _FakeStream()
     now = time.monotonic()
     with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
         for i in range(3):
             eng._barge_word_cut_step(r, s, _BLOCK, now + i * 0.1)
-    assert "word-cut burst reset: dropped 4 word(s)" in caplog.text
-    assert eng._wc_stats.get("dropped_words") == 4
+    assert "word-cut burst reset: dropped 3 word(s)" in caplog.text
+    assert eng._wc_stats.get("dropped_words") == 3
     assert eng._wc_stats.get("resets") == 1
 
 
@@ -2575,12 +3539,16 @@ def test_decode_error_counted_and_warned_once(caplog):
 def test_near_end_window_emits_after_two_seconds(caplog):
     import logging
 
-    eng = _engine(vad_speech=True)
+    eng = _energy_engine(vad_speech=True)
     r, s = _FakeRecognizer([""]), _FakeStream()
     now = time.monotonic()
     with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
-        eng._barge_word_cut_step(r, s, _BLOCK, now)         # opens the window
-        eng._barge_word_cut_step(r, s, _BLOCK, now + 2.1)   # crosses 2s -> emits
+        eng._barge_word_cut_step(
+            r, s, _BLOCK, now, energy_samples=_BLOCK
+        )  # opens the window
+        eng._barge_word_cut_step(
+            r, s, _BLOCK, now + 2.1, energy_samples=_BLOCK
+        )  # crosses 2s -> emits
     assert "word-cut near-end: rms_avg=" in caplog.text
     assert "vad_frac=1.00" in caplog.text
     assert "floor=0.0040" in caplog.text

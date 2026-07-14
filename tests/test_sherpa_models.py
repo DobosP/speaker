@@ -53,6 +53,8 @@ class _Vits:
         self.model = None
         self.tokens = None
         self.data_dir = None
+        self.noise_scale = 0.667
+        self.noise_scale_w = 0.8
 
 
 class _ModelConfig:
@@ -210,3 +212,22 @@ def test_build_tts_passes_config(fake_sherpa):
     assert tts.config.model.vits.tokens == "tts_tokens.txt"
     assert tts.config.model.vits.data_dir == "data"
     assert tts.config.model.num_threads == 1
+    assert tts.config.model.vits.noise_scale == 0.667
+    assert tts.config.model.vits.noise_scale_w == 0.8
+
+
+def test_build_tts_deterministic_vits_zeros_only_generation_noise(fake_sherpa):
+    c = SherpaConfig(
+        tts_model="tts.onnx",
+        tts_tokens="tts_tokens.txt",
+        tts_data_dir="data",
+    )
+
+    tts = build_tts(c, deterministic_vits=True)
+
+    assert isinstance(tts, _FakeOfflineTts)
+    assert tts.config.model.vits.model == "tts.onnx"
+    assert tts.config.model.vits.tokens == "tts_tokens.txt"
+    assert tts.config.model.vits.data_dir == "data"
+    assert tts.config.model.vits.noise_scale == 0.0
+    assert tts.config.model.vits.noise_scale_w == 0.0

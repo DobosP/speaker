@@ -18,7 +18,10 @@ def _fake_sherpa_onnx(captured):
     class _Cfg:
         def __init__(self):
             self.model = types.SimpleNamespace(
-                vits=types.SimpleNamespace(model="", tokens="", data_dir=""),
+                vits=types.SimpleNamespace(
+                    model="", tokens="", data_dir="",
+                    noise_scale=0.667, noise_scale_w=0.8,
+                ),
                 kokoro=types.SimpleNamespace(model="", voices="", tokens="", data_dir="", lexicon=""),
                 num_threads=0,
                 provider="",
@@ -54,6 +57,18 @@ def test_build_tts_vits_path_when_no_voices(monkeypatch):
     assert cfg.model.vits.tokens == "/m/tokens.txt"
     assert cfg.model.vits.data_dir == "/m/espeak"
     assert cfg.model.kokoro.model == ""          # Kokoro untouched -> VITS path
+
+
+def test_build_tts_deterministic_vits_is_explicit_and_default_preserving(monkeypatch):
+    captured = {}
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", _fake_sherpa_onnx(captured))
+    cfg = SherpaConfig(tts_model="/m/voice.onnx", tts_tokens="/m/tokens.txt")
+
+    out = build_tts(cfg, deterministic_vits=True)
+
+    assert out is not None
+    assert captured["cfg"].model.vits.noise_scale == 0.0
+    assert captured["cfg"].model.vits.noise_scale_w == 0.0
 
 
 def _kokoro_files(tmp_path):

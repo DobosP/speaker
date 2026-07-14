@@ -14,7 +14,7 @@
 | MiniCPM all-role stress | add `--topology all-roles` to the prior command | ADR-0051 replacement-stress diagnostic; never an adoption result |
 | Cross-session semantic memory | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest memory` | SQLite reopen; clean native history; balanced fenced injection; PRIVATE first/only `route=main`; clause-grounded canary; clean/stable revision, contract, and full shipped-role identities (Echo is incomplete) (ADR-0065) |
 | Autonomous cable diagnostic | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest voice --acoustics cable` | pipeline checks green but report says `diagnostic_pass`, `ok=false`, and barge/self/latency `not_covered`; not a landing result (ADR-0055/0058) |
-| Autonomous silent voice gate | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest all --acoustics delay` | every selected non-barge labelled prompt has a matching final; remembered ordinary/self replies attest `completed`; talk-over attests same-task/generation `interrupted` after its barge marker; mean WER ≤0.50, zero errors/stuck/self-cuts, successful active cut in 0–1.0 s; aggregate PASS (ADR-0058) |
+| Autonomous silent voice gate | `/home/dobo/work/speaker/.venv/bin/python -m tools.autotest all --acoustics delay` | exact run-owned virtual EC topology and capture/playback bindings; labelled causal finals/terminals; mean WER ≤0.50; zero errors/stuck/self-cuts; synthesized exact-command cut from engine capture onset in 0–1.4 s; all six route/exit/cleanup proofs; aggregate PASS (ADR-0058/0069/0070) |
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | exit 0 only when every repetition is full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0064) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
@@ -91,6 +91,16 @@ and fail on missing labels, failed injection, late cuts, runtime errors, or stuc
 hints. The asynchronous injected-onset clock is causal for the harness but is
 not a physical human-onset measurement.
 
+For delay, require PASS on topology, capture, duplex, digest correlation, child
+exit, and cleanup. Preserve any retained graph/files and the log on failure; do
+not load a host EC module or change desktop defaults to make the retry green.
+The synthetic delay command uses deterministic VITS `quiet`, a calibrated
+three-block admission fallback, and detector-only quiet padding. Grade its exact
+capture-onset clock at ≤1.4 s and show source-onset latency only as a diagnostic.
+Recorded-owner, generic, stress, and physical `speaker` paths retain ≤1.0 s.
+Require two fresh delay passes before calling the gate stable. See ADR-0069/0070;
+keep recorded-owner and physical acceptance separate.
+
 Per ADR-0056, run preparation before any v5 capture. Its final config publish is
 already wired to the reserved candidate and its printed command includes
 `--require-prepared-enrollment`; a wrong-checkout launch then refuses before the
@@ -109,4 +119,6 @@ staging, or an exit-3 result as live acceptance.
 
 ## Known blockers
 - If `.venv` is missing, recreate/use a project venv and record the exact command.
+- Do not bypass a red delay-route contract by loading an unrelated host EC route
+  or changing system audio defaults; preserve the failed evidence for diagnosis.
 - Do not claim live audio validation unless it was actually performed.

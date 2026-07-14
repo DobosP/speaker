@@ -1274,6 +1274,61 @@ def test_word_cut_ec_check_passes_when_module_loaded():
     assert c is not None and c.ok is True
 
 
+class _VirtualTopology:
+    def __init__(self, ok=True, detail="exact run-owned topology"):
+        self.ok = ok
+        self.detail = detail
+
+    def verify_topology(self):
+        return self.ok, self.detail
+
+
+def _virtual_route_check(checks):
+    return next(
+        (c for c in checks if "virtual delay ec topology" in c.name.lower()),
+        None,
+    )
+
+
+def test_virtual_delay_topology_replaces_unrelated_host_route_check():
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=PipeWireState(),
+        virtual_audio_binder=_VirtualTopology(),
+    )
+
+    virtual = _virtual_route_check(checks)
+    assert virtual is not None and virtual.ok
+    assert _word_cut_route_check(checks) is None
+
+
+def test_bad_virtual_delay_topology_cannot_fallback_to_valid_host_route():
+    checks = check_audio_frontend(
+        {"sherpa": {
+            "barge_word_cut_enabled": True,
+            "aec_enabled": False,
+            "vad_model": "/m/vad.onnx",
+        }},
+        import_fn=_no_livekit,
+        exists=lambda _p: True,
+        platform="linux",
+        pipewire_state=_EC_ROUTED,
+        virtual_audio_binder=_VirtualTopology(False, "loopback master drifted"),
+    )
+
+    virtual = _virtual_route_check(checks)
+    assert virtual is not None and not virtual.ok
+    assert "drifted" in virtual.detail
+    assert _word_cut_route_check(checks) is None
+
+
 def test_word_cut_ec_module_loaded_but_raw_defaults_fails_route():
     state = PipeWireState(
         modules=_EC_ROUTED.modules,

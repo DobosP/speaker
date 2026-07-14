@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import json
+import math
 import os
 import re
 import signal
@@ -32,7 +33,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
-from typing import Optional
+from typing import Callable, Optional
 
 from . import acoustics as acoustics_mod
 from . import audio, clips as clips_mod
@@ -53,6 +54,13 @@ _PLAYBACK_QUIESCENT_RE = re.compile(
     r"outcome=(?P<outcome>\S+)"
 )
 _BARGE_IN_RE = re.compile(r"(?:^|\|\s*)barge-in detected(?:\b|$)")
+_NEAR_END_ONSET_RE = re.compile(
+    r"(?:^|\|\s*)\[autotest-route\] near-end onset\s*$"
+)
+_VIRTUAL_ROUTE_RE = re.compile(
+    r"\[autotest-route\]\s+(topology|capture|duplex) verified:.*"
+    r"\bdigest=([0-9a-f]{16})\b"
+)
 _PROMPT_MAX_WER = 0.50
 
 
@@ -67,10 +75,11 @@ class RuntimeMarker:
     task_id: str = ""
     fragment_id: str = ""
     outcome: str = ""
+    observed_monotonic: Optional[float] = None
 
 
 def parse_runtime_marker(line: str) -> Optional[RuntimeMarker]:
-    """Parse ordered final/playback/barge evidence used by the harness.
+    """Parse ordered final/playback/barge/private-route harness evidence.
 
     The final text is logged with ``%r``.  ``literal_eval`` recovers quotes and
     escapes without executing log content; malformed or generation-zero lines
@@ -118,7 +127,79 @@ def parse_runtime_marker(line: str) -> Optional[RuntimeMarker]:
 
     if _BARGE_IN_RE.search(line or "") is not None:
         return RuntimeMarker(kind="barge_in", input_generation=None)
+    if _NEAR_END_ONSET_RE.search(line or "") is not None:
+        return RuntimeMarker(kind="near_end_onset", input_generation=None)
     return None
+
+
+def _barge_clip_role(*, acoustics_mode: str, clip_source: str) -> str:
+    """Choose the short typed command only for the synthetic delay gate."""
+
+    if acoustics_mode == "delay" and clip_source == "synth":
+        return "command"
+    return "barge"
+
+
+def _barge_inject_tail_ms(*, clip_role: str, latency_ms: int) -> int:
+    """Keep only the private short-command injector alive through route drain."""
+
+    if clip_role != "command":
+        return 0
+    return max(600, int(latency_ms) + 300)
+
+
+def _finite_elapsed(
+    ended_monotonic: Optional[float],
+    started_monotonic: Optional[float],
+) -> Optional[float]:
+    try:
+        ended = float(ended_monotonic)
+        started = float(started_monotonic)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(ended) or not math.isfinite(started) or ended < started:
+        return None
+    return round(ended - started, 3)
+
+
+def _barge_latency_values(
+    *,
+    speech_onset_monotonic: Optional[float],
+    barge_marker: Optional[RuntimeMarker],
+    near_end_marker: Optional[RuntimeMarker],
+    use_capture_onset: bool,
+) -> tuple[Optional[float], Optional[float]]:
+    """Return ``(graded latency, source-onset diagnostic latency)``.
+
+    The synthetic delay gate grades from the engine's first capture observation,
+    while every source keeps the injector-onset diagnostic.  Missing, nonfinite,
+    or out-of-order capture evidence is deliberately ungradeable.
+    """
+
+    cut_at = (
+        barge_marker.observed_monotonic
+        if barge_marker is not None
+        else None
+    )
+    source_latency = _finite_elapsed(cut_at, speech_onset_monotonic)
+    if not use_capture_onset:
+        return source_latency, source_latency
+    if (
+        barge_marker is None
+        or near_end_marker is None
+        or near_end_marker.sequence >= barge_marker.sequence
+    ):
+        return None, source_latency
+    if _finite_elapsed(
+        near_end_marker.observed_monotonic,
+        speech_onset_monotonic,
+    ) is None:
+        return None, source_latency
+    capture_latency = _finite_elapsed(
+        cut_at,
+        near_end_marker.observed_monotonic,
+    )
+    return capture_latency, source_latency
 
 
 @dataclass(frozen=True)
@@ -255,7 +336,11 @@ class RuntimeMarkerLedger:
             return None
         with self._condition:
             self._next_sequence += 1
-            marker = replace(marker, sequence=self._next_sequence)
+            marker = replace(
+                marker,
+                sequence=self._next_sequence,
+                observed_monotonic=time.monotonic(),
+            )
             self._markers.append(marker)
             self._condition.notify_all()
         return marker
@@ -268,7 +353,7 @@ class RuntimeMarkerLedger:
         with self._condition:
             return tuple(self._markers)
 
-    def _matching_final(
+    def _first_final(
         self,
         reference: str,
         *,
@@ -279,12 +364,13 @@ class RuntimeMarkerLedger:
                 continue
             if not reference.strip():
                 return marker, None
-            distance = wer(reference, marker.text)
-            if distance <= _PROMPT_MAX_WER:
-                return marker, distance
+            # One injection owns the first subsequently dispatched final. Keep
+            # its actual WER even when red instead of waiting for a later,
+            # unrelated final that happens to resemble the reference.
+            return marker, wer(reference, marker.text)
         return None, None
 
-    def wait_matching_final(
+    def wait_first_final(
         self,
         reference: str,
         *,
@@ -294,7 +380,7 @@ class RuntimeMarkerLedger:
         deadline = time.monotonic() + max(0.0, float(timeout))
         with self._condition:
             while True:
-                marker, distance = self._matching_final(
+                marker, distance = self._first_final(
                     reference,
                     after_sequence=after_sequence,
                 )
@@ -375,6 +461,43 @@ class RuntimeMarkerLedger:
                     return None
                 self._condition.wait(timeout=min(0.05, remaining))
 
+    def wait_near_end(
+        self,
+        *,
+        after_sequence: int,
+        timeout: float,
+        not_before_monotonic: Optional[float] = None,
+    ) -> Optional[RuntimeMarker]:
+        """Return the first private capture onset after both causal bounds."""
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._condition:
+            while True:
+                marker = next(
+                    (
+                        candidate
+                        for candidate in self._markers
+                        if candidate.sequence > after_sequence
+                        and candidate.kind == "near_end_onset"
+                        and (
+                            not_before_monotonic is None
+                            or (
+                                candidate.observed_monotonic is not None
+                                and math.isfinite(candidate.observed_monotonic)
+                                and candidate.observed_monotonic
+                                >= not_before_monotonic
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if marker is not None:
+                    return marker
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._condition.wait(timeout=min(0.05, remaining))
+
     def wait_prompt_binding(
         self,
         reference: str,
@@ -386,7 +509,7 @@ class RuntimeMarkerLedger:
         terminal_timeout: Optional[float] = 35.0,
         required_terminal_outcome: str = "completed",
     ) -> PromptPlaybackBinding:
-        final, distance = self.wait_matching_final(
+        final, distance = self.wait_first_final(
             reference,
             after_sequence=after_sequence,
             timeout=final_timeout,
@@ -475,6 +598,7 @@ class VoiceRun:
     prompt_evidence: dict = field(default_factory=dict)
     prompt_score: dict = field(default_factory=dict)
     markers: dict = field(default_factory=dict)
+    virtual_route_evidence: dict = field(default_factory=dict)
     scenarios: dict = field(default_factory=dict)
     detail: list[str] = field(default_factory=list)
     error: str = ""
@@ -483,14 +607,21 @@ class VoiceRun:
 class _Proc:
     """Runtime subprocess + a reader thread that scans stdout for markers."""
 
-    def __init__(self, args: list[str], cwd: str, log_path: str):
+    def __init__(
+        self,
+        args: list[str],
+        cwd: str,
+        log_path: str,
+        *,
+        extra_env: Optional[dict[str, str]] = None,
+        retain_on_uncertain_exit: Optional[Callable[[], None]] = None,
+    ):
         self.log_path = log_path
         self._fh = open(log_path, "w")
+        self._retain_on_uncertain_exit = retain_on_uncertain_exit
         env = dict(os.environ, PYTHONUNBUFFERED="1", SPEAKER_DEBUG="1")
-        self.proc = subprocess.Popen(
-            args, cwd=cwd, env=env,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-        )
+        if extra_env:
+            env.update(extra_env)
         self.ready = threading.Event()
         self.run_id: Optional[str] = None
         self.counts = {
@@ -500,36 +631,107 @@ class _Proc:
             "barge": 0,
             "self_echo_drop": 0,
             "barge_rejected": 0,
+            "virtual_topology": 0,
+            "virtual_capture": 0,
+            "virtual_duplex": 0,
+        }
+        self._virtual_route_digests = {
+            "topology": set(),
+            "capture": set(),
+            "duplex": set(),
         }
         self._lock = threading.Lock()
         self.marker_ledger = RuntimeMarkerLedger()
-        self._t = threading.Thread(target=self._read, daemon=True)
-        self._t.start()
+        self.reader_drained = False
+        self.reader_error = ""
+        self.exited = False
+        self._t: Optional[threading.Thread] = None
+        try:
+            self.proc = subprocess.Popen(
+                args, cwd=cwd, env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                bufsize=1,
+            )
+        except BaseException:
+            if callable(self._retain_on_uncertain_exit):
+                with contextlib.suppress(BaseException):
+                    self._retain_on_uncertain_exit()
+            with contextlib.suppress(BaseException):
+                self._fh.close()
+            raise
+        try:
+            self._t = threading.Thread(target=self._read, daemon=True)
+            self._t.start()
+        except BaseException:
+            self._abort_failed_start()
+            raise
+
+    def _abort_failed_start(self) -> None:
+        """Stop a spawned child when reader construction cannot complete.
+
+        This path runs while ``__init__`` is unwinding, so nobody else can own
+        child teardown. Retain the acoustic graph only when death cannot be
+        proved; best-effort resource closure must never mask the first error.
+        """
+
+        with contextlib.suppress(BaseException):
+            if self.proc.poll() is None:
+                self.proc.kill()
+        with contextlib.suppress(BaseException):
+            self.proc.wait(timeout=5.0)
+        with contextlib.suppress(BaseException):
+            self.exited = self.proc.poll() is not None
+        if not self.exited and callable(self._retain_on_uncertain_exit):
+            with contextlib.suppress(BaseException):
+                self._retain_on_uncertain_exit()
+
+        thread = self._t
+        if thread is not None:
+            with contextlib.suppress(BaseException):
+                thread.join(timeout=5.0)
+        with contextlib.suppress(BaseException):
+            if self.proc.stdout is not None:
+                self.proc.stdout.close()
+        if thread is not None:
+            with contextlib.suppress(BaseException):
+                thread.join(timeout=1.0)
+        with contextlib.suppress(BaseException):
+            self._fh.close()
 
     def _read(self) -> None:
-        for line in self.proc.stdout:  # type: ignore[union-attr]
-            self._fh.write(line)
-            self._fh.flush()
-            self.marker_ledger.observe(line)
-            if self.run_id is None:
-                m = _RUN_ID_RE.search(line)
-                if m:
-                    self.run_id = m.group(1)
-            if "[live] engine running" in line:
-                self.ready.set()
-            with self._lock:
-                if "speaking:" in line:
-                    self.counts["speaking"] += 1
-                if "playback receipt started:" in line:
-                    self.counts["playback_started"] += 1
-                if "playback quiescent:" in line:
-                    self.counts["playback_quiescent"] += 1
-                if "barge-in detected" in line:
-                    self.counts["barge"] += 1
-                if "barge-in REJECTED" in line:
-                    self.counts["barge_rejected"] += 1
-                if "dropping self-echo final" in line:
-                    self.counts["self_echo_drop"] += 1
+        try:
+            for line in self.proc.stdout:  # type: ignore[union-attr]
+                self._fh.write(line)
+                self._fh.flush()
+                self.marker_ledger.observe(line)
+                if self.run_id is None:
+                    m = _RUN_ID_RE.search(line)
+                    if m:
+                        self.run_id = m.group(1)
+                if "[live] engine running" in line:
+                    self.ready.set()
+                with self._lock:
+                    if "speaking:" in line:
+                        self.counts["speaking"] += 1
+                    if "playback receipt started:" in line:
+                        self.counts["playback_started"] += 1
+                    if "playback quiescent:" in line:
+                        self.counts["playback_quiescent"] += 1
+                    if "barge-in detected" in line:
+                        self.counts["barge"] += 1
+                    if "barge-in REJECTED" in line:
+                        self.counts["barge_rejected"] += 1
+                    route_match = _VIRTUAL_ROUTE_RE.search(line)
+                    if route_match is not None:
+                        phase, digest = route_match.groups()
+                        self.counts[f"virtual_{phase}"] += 1
+                        self._virtual_route_digests[phase].add(digest)
+                    if "dropping self-echo final" in line:
+                        self.counts["self_echo_drop"] += 1
+        except Exception as exc:  # noqa: BLE001 - evidence must fail closed
+            self.reader_error = f"{type(exc).__name__}: {exc}"
+        else:
+            self.reader_drained = True
 
     def count(self, key: str) -> int:
         with self._lock:
@@ -537,6 +739,21 @@ class _Proc:
 
     def marker_cursor(self) -> int:
         return self.marker_ledger.cursor()
+
+    @property
+    def exit_successful(self) -> bool:
+        return bool(
+            self.exited
+            and self.reader_drained
+            and self.proc.returncode == 0
+        )
+
+    def virtual_route_digests(self) -> dict[str, frozenset[str]]:
+        with self._lock:
+            return {
+                phase: frozenset(digests)
+                for phase, digests in self._virtual_route_digests.items()
+            }
 
     def wait_prompt_binding(
         self,
@@ -583,16 +800,47 @@ class _Proc:
             timeout=timeout,
         )
 
-    def stop(self, grace: float = 20.0) -> None:
+    def wait_near_end_marker(
+        self,
+        *,
+        after_sequence: int,
+        timeout: float = 0.0,
+        not_before_monotonic: Optional[float] = None,
+    ) -> Optional[RuntimeMarker]:
+        return self.marker_ledger.wait_near_end(
+            after_sequence=after_sequence,
+            timeout=timeout,
+            not_before_monotonic=not_before_monotonic,
+        )
+
+    def stop(self, grace: float = 20.0) -> bool:
         if self.proc.poll() is None:
             self.proc.send_signal(signal.SIGINT)
             try:
                 self.proc.wait(timeout=grace)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
-                self.proc.wait(timeout=5)
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # The acoustics owner must retain its graph while this child
+                    # could still be using it. Never fake cleanup under a live
+                    # process.
+                    return False
+        self.exited = self.proc.poll() is not None
+        if not self.exited:
+            return False
+        if self._t is None:
+            return False
+        self._t.join(timeout=5.0)
+        if self._t.is_alive():
+            return False
+        with contextlib.suppress(Exception):
+            if self.proc.stdout is not None:
+                self.proc.stdout.close()
         with contextlib.suppress(Exception):
             self._fh.close()
+        return True
 
 
 @contextlib.contextmanager
@@ -621,11 +869,17 @@ def _engine_args(
     main_model: str,
     fast_model: str,
     real_device: bool,
+    virtual_delay_contract: Optional[str] = None,
 ) -> list[str]:
     args = [sys.executable, "-m", "core", "--engine", "sherpa", "--llm", llm_kind,
             "--record", "--debug", "--stream-tts"]
     if not real_device:                       # cable/delay reach PipeWire via the bridge
         args += ["--input-device", "pipewire", "--output-device", "pipewire"]
+    if virtual_delay_contract:
+        args += [
+            "--autotest-virtual-delay-contract",
+            virtual_delay_contract,
+        ]
     if llm_kind == "ollama":
         args += ["--model", main_model, "--fast-model", fast_model]
     return args
@@ -634,20 +888,52 @@ def _engine_args(
 @contextlib.contextmanager
 def _running_engine(args, repo_root, log_path, ac):
     """Launch the engine, (optionally) pin its streams onto ``ac``, wait ready."""
-    proc = _Proc(args, cwd=repo_root, log_path=log_path)
-    stop_mover = threading.Event()
+    retain = getattr(ac, "retain_for_live_child", None)
+    release = getattr(ac, "release_after_child_exit", None)
+    cleanup_held = False
 
-    def _mover() -> None:
-        while not stop_mover.is_set():
-            with contextlib.suppress(Exception):
-                ac.route(proc.proc.pid)
-            stop_mover.wait(0.1)
+    def _retain() -> None:
+        nonlocal cleanup_held
+        if cleanup_held:
+            return
+        if callable(retain):
+            retain()
+        cleanup_held = True
 
+    def _release() -> None:
+        nonlocal cleanup_held
+        if not cleanup_held:
+            return
+        if callable(release):
+            release()
+        cleanup_held = False
+
+    # The graph starts fail-closed before Popen. Any signal or exception before
+    # the single proven release below therefore retains it automatically.
+    _retain()
+    proc: Optional[_Proc] = None
+    stop_mover: Optional[threading.Event] = None
     mt: Optional[threading.Thread] = None
-    if ac.needs_routing:
-        mt = threading.Thread(target=_mover, daemon=True)
-        mt.start()
     try:
+        proc = _Proc(
+            args,
+            cwd=repo_root,
+            log_path=log_path,
+            extra_env=getattr(ac, "child_env", None),
+            retain_on_uncertain_exit=_retain,
+        )
+        stop_mover = threading.Event()
+
+        def _mover() -> None:
+            assert stop_mover is not None
+            while not stop_mover.is_set():
+                with contextlib.suppress(Exception):
+                    ac.route(proc.proc.pid)
+                stop_mover.wait(0.1)
+
+        if ac.needs_routing:
+            mt = threading.Thread(target=_mover, daemon=True)
+            mt.start()
         ready = proc.ready.wait(timeout=90.0)
         routed = False
         end = time.monotonic() + 30.0
@@ -663,8 +949,65 @@ def _running_engine(args, repo_root, log_path, ac):
         time.sleep(1.5)   # settle (let the capture path stabilize)
         yield proc
     finally:
-        stop_mover.set()
-        proc.stop()
+        if proc is not None:
+            mover_stopped = mt is None
+            mover_error: Optional[BaseException] = None
+            if mt is not None:
+                mover_stopped = False
+            try:
+                if stop_mover is not None:
+                    stop_mover.set()
+                if mt is not None:
+                    mt.join(timeout=5.0)
+                    mover_stopped = not mt.is_alive()
+            except BaseException as exc:  # leave the lifetime hold engaged
+                mover_error = exc
+
+            stopped = False
+            stop_error: Optional[BaseException] = None
+            try:
+                stopped = proc.stop()
+            except BaseException as exc:  # leave the lifetime hold engaged
+                stop_error = exc
+
+            if (
+                stop_error is not None
+                or mover_error is not None
+                or not stopped
+                or not mover_stopped
+            ):
+                _retain()
+                if stop_error is not None:
+                    raise stop_error
+                if mover_error is not None:
+                    raise mover_error
+                if not stopped:
+                    raise RuntimeError(
+                        "engine child did not exit and drain stdout; retaining "
+                        "its acoustic graph and failing the run"
+                    )
+                raise RuntimeError(
+                    "acoustic stream mover did not stop; retaining its graph "
+                    "and failing the run"
+                )
+
+            # This is the only transition back to cleanup-permitted. An
+            # interrupt before it merely leaks private test state; an interrupt
+            # after it is safe because child EOF and mover quiescence are proven.
+            _release()
+            if not proc.exit_successful:
+                if proc.proc.returncode != 0:
+                    failure = (
+                        f"engine child exited nonzero ({proc.proc.returncode})"
+                    )
+                else:
+                    failure = (
+                        "engine stdout did not drain to EOF"
+                        + (f": {proc.reader_error}" if proc.reader_error else "")
+                    )
+                raise RuntimeError(
+                    f"{failure}; failing the run after safe teardown"
+                )
 
 
 def _bundle_paths(repo_root: str, run_id: Optional[str]):
@@ -714,22 +1057,34 @@ def run_voice_loop(
         return cl[0] if cl else None
 
     ac = acoustics_mod.make_acoustics(acoustics_mode, latency_ms=latency_ms, inject_sink=inject_sink)
-    args = _engine_args(
-        llm_kind,
-        main_model,
-        fast_model,
-        ac.uses_real_device,
-    )
-    detail.append(f"acoustics={acoustics_mode}; engine={' '.join(args)}")
-
     injected_refs: list[str] = []
     scenarios: dict = {}
     run_id = log_path = None
     markers: dict = {}
+    virtual_route_digests: dict[str, frozenset[str]] = {}
+    child_exit_ok = False
     prompt_bindings: list[PromptPlaybackBinding] = []
+
+    echo_tail_settle_sec = (
+        max(0.5, latency_ms / 1000.0 + 0.25) if ac.has_echo else 0.0
+    )
+
+    def settle_after(binding: PromptPlaybackBinding) -> None:
+        if binding.playback_quiescent_sequence is not None and echo_tail_settle_sec:
+            time.sleep(echo_tail_settle_sec)
 
     with _aec_delay_override(repo_root, aec_delay_ms):
         with ac.session():
+            args = _engine_args(
+                llm_kind,
+                main_model,
+                fast_model,
+                ac.uses_real_device,
+                virtual_delay_contract=getattr(ac, "contract_path", None),
+            )
+            detail.append(
+                f"acoustics={acoustics_mode}; engine={' '.join(args)}"
+            )
             scen_log = os.path.join(out_dir, "engine_stdout.log")
             with _running_engine(args, repo_root, scen_log, ac) as proc:
                 tgt = ac.inject_target
@@ -766,6 +1121,7 @@ def run_voice_loop(
                     )
                     s1_bindings.append(binding)
                     prompt_bindings.append(binding)
+                    settle_after(binding)
                 s1_evidence = summarize_prompt_bindings(s1_bindings)
                 scenarios["s1_round_trip"] = {
                     "clips": len(rt_clips),
@@ -841,12 +1197,28 @@ def run_voice_loop(
                         f"S2: started={self_reply_started} terminal={self_reply_terminal} "
                         f"self_barges={self_barges} (want start + 0)"
                     )
+                    settle_after(self_binding)
 
                     # S3: barge-in cut -- talk over a long reply. Let a sentence
                     # get going, then a LOUD talk-over (must out-shout the reply),
                     # and poll for the cut.
                     sp = speak_clips[1] if len(speak_clips) > 1 else speak_clips[0]
-                    bg = first("barge")
+                    # The synthetic delay gate uses its short exact command;
+                    # recorded and physical sources retain the generic barge
+                    # phrase. The private delay profile deliberately carries no
+                    # owner identity, so S2 must also prove that this exact route
+                    # produces zero self-cuts; recorded/physical gates remain
+                    # the owner-authority proof.
+                    barge_clip_role = _barge_clip_role(
+                        acoustics_mode=acoustics_mode,
+                        clip_source=clip_source,
+                    )
+                    use_capture_latency = barge_clip_role == "command"
+                    command_tail_ms = _barge_inject_tail_ms(
+                        clip_role=barge_clip_role,
+                        latency_ms=latency_ms,
+                    )
+                    bg = first(barge_clip_role)
                     marker_cursor = proc.marker_cursor()
                     audio.inject(tgt, sp.path, volume_pct=ac.inject_gain, lead_in_ms=lead_in)
                     injected_refs.append(sp.text)
@@ -864,40 +1236,58 @@ def run_voice_loop(
                     # Bluetooth inject sink doesn't drop the talk-over's onset.
                     barge_fired = 0
                     barge_marker = None
+                    near_end_marker = None
                     cut_at = None
                     injection_ended_at = None
                     cut_causal = False
-                    with audio.play_injection(
-                        tgt,
-                        bg.path,
-                        volume_pct=min(400, ac.inject_gain + 100),
-                        lead_in_ms=lead_in,
-                    ) as playback:
-                        # Baseline only after paplay exists.  A self-cut while
-                        # the injector is still being launched is not causal
-                        # evidence for this talk-over.
-                        barge_cursor = proc.marker_cursor()
-                        end = playback.speech_onset_monotonic + 7.0
-                        while time.monotonic() < end:
-                            now = time.monotonic()
-                            returncode = playback.process.poll()
-                            if returncode is not None and injection_ended_at is None:
-                                injection_ended_at = now
-                            barge_marker = proc.wait_barge_marker(
-                                after_sequence=barge_cursor,
-                            )
-                            if barge_marker is not None:
-                                barge_fired = 1
-                                cut_at = now
-                                cut_causal = returncode is None or (
-                                    returncode == 0
-                                    and injection_ended_at is not None
-                                    and now - injection_ended_at <= 0.15
+                    injection_ok = False
+                    speech_onset = None
+                    if started and bg is not None:
+                        with audio.play_injection(
+                            tgt,
+                            bg.path,
+                            volume_pct=getattr(
+                                ac,
+                                "barge_inject_gain",
+                                min(400, ac.inject_gain + 100),
+                            ),
+                            lead_in_ms=getattr(ac, "barge_lead_in_ms", lead_in),
+                            trailing_silence_ms=command_tail_ms,
+                        ) as playback:
+                            speech_onset = playback.speech_onset_monotonic
+                            # Baseline only after paplay exists. A self-cut while
+                            # the injector is still being launched is not causal
+                            # evidence for this talk-over.
+                            barge_cursor = proc.marker_cursor()
+                            end = playback.speech_onset_monotonic + 7.0
+                            while time.monotonic() < end:
+                                now = time.monotonic()
+                                returncode = playback.process.poll()
+                                if (
+                                    returncode is not None
+                                    and injection_ended_at is None
+                                ):
+                                    injection_ended_at = now
+                                barge_marker = proc.wait_barge_marker(
+                                    after_sequence=barge_cursor,
                                 )
-                                break
-                            time.sleep(0.05)
-                    injection_ok = playback.process.returncode == 0
+                                if barge_marker is not None:
+                                    barge_fired = 1
+                                    cut_at = barge_marker.observed_monotonic
+                                    if cut_at is not None and math.isfinite(cut_at):
+                                        cut_causal = returncode is None or (
+                                            returncode == 0
+                                            and injection_ended_at is not None
+                                            and cut_at - injection_ended_at <= 0.15
+                                        )
+                                    break
+                                time.sleep(0.05)
+                        injection_ok = playback.process.returncode == 0
                     if barge_marker is not None:
+                        near_end_marker = proc.wait_near_end_marker(
+                            after_sequence=barge_cursor,
+                            not_before_monotonic=speech_onset,
+                        )
                         # A natural/early terminal before the cut cannot satisfy
                         # S3.  Require the exact selected task+generation group
                         # to become terminal strictly after this concrete barge.
@@ -908,20 +1298,34 @@ def run_voice_loop(
                         )
                     prompt_bindings.append(barge_binding)
                     terminal = barge_binding.audio_quiescent
-                    barge_latency = (
-                        round(cut_at - playback.speech_onset_monotonic, 3)
-                        if cut_at is not None
-                        else None
+                    barge_latency, barge_onset_latency = _barge_latency_values(
+                        speech_onset_monotonic=speech_onset,
+                        barge_marker=barge_marker,
+                        near_end_marker=near_end_marker,
+                        use_capture_onset=use_capture_latency,
                     )
                     scenarios["s3_barge_in"] = {
                         "prompt_binding": barge_binding.to_dict(),
                         "assistant_started": started,
                         "barge_ins_after_talkover": barge_fired,
                         "barge_latency_s": barge_latency,
+                        "barge_onset_latency_s": barge_onset_latency,
+                        "barge_latency_clock": (
+                            "engine_capture_onset"
+                            if use_capture_latency
+                            else "injector_source_onset"
+                        ),
+                        "barge_clip_role": barge_clip_role,
+                        "injector_trailing_silence_ms": command_tail_ms,
                         "assistant_terminal": terminal,
                         "barge_marker_sequence": (
                             barge_marker.sequence
                             if barge_marker is not None
+                            else None
+                        ),
+                        "near_end_onset_marker_sequence": (
+                            near_end_marker.sequence
+                            if near_end_marker is not None
                             else None
                         ),
                         "injection_ok": injection_ok,
@@ -944,7 +1348,8 @@ def run_voice_loop(
                     detail.append(
                         f"S3: started={started} terminal={terminal} "
                         f"injection_ok={injection_ok} causal={cut_causal} "
-                        f"barge_ins={barge_fired} latency_s={barge_latency}"
+                        f"barge_ins={barge_fired} latency_s={barge_latency} "
+                        f"source_onset_latency_s={barge_onset_latency}"
                     )
 
                 # Preserve the bounded waits above as the verdict.  A reply
@@ -964,20 +1369,43 @@ def run_voice_loop(
                     bindings=[binding.to_dict() for binding in final_s1],
                 )
 
-                run_id = proc.run_id
-                markers = dict(proc.counts)
-                log_path = proc.log_path
+            run_id = proc.run_id
+            markers = dict(proc.counts)
+            virtual_route_digests = proc.virtual_route_digests()
+            child_exit_ok = proc.exit_successful
+            log_path = proc.log_path
 
     summary, wav, ref = _bundle_paths(repo_root, run_id)
     monitor_rms = audio.wav_rms(wav)[0] if wav else 0.0
     prompt_evidence = summarize_prompt_bindings(prompt_bindings)
     prompt_score = score_prompt_bindings(prompt_bindings)
+    virtual_route_evidence = {}
+    if acoustics_mode == "delay":
+        digest_sets = tuple(
+            virtual_route_digests.get(phase, frozenset())
+            for phase in ("topology", "capture", "duplex")
+        )
+        virtual_route_evidence = {
+            "topology": int(markers.get("virtual_topology", 0) or 0) >= 1,
+            "capture": int(markers.get("virtual_capture", 0) or 0) >= 1,
+            "duplex": int(markers.get("virtual_duplex", 0) or 0) >= 1,
+            "child_exit": child_exit_ok,
+            "cleanup": getattr(ac, "cleanup_ok", False) is True,
+            "correlated": (
+                all(len(digests) == 1 for digests in digest_sets)
+                and len(frozenset().union(*digest_sets)) == 1
+            ),
+        }
+        detail.append(
+            f"virtual cleanup: {getattr(ac, 'cleanup_detail', 'missing')}"
+        )
     return VoiceRun(
         ok=False,  # the CLI applies the pure WER/round-trip/coverage verdict
         mode=acoustics_mode, run_id=run_id, summary_path=summary, log_path=log_path,
         wav_path=wav, ref_wav_path=ref, ready=True, monitor_rms=monitor_rms,
         clip_source=clip_source, injected_refs=[r for r in injected_refs if r],
         aec_delay_ms=aec_delay_ms,
+        virtual_route_evidence=virtual_route_evidence,
         prompt_bindings=[binding.to_dict() for binding in prompt_bindings],
         prompt_evidence=prompt_evidence,
         prompt_score={

@@ -198,6 +198,69 @@ def test_open_closes_candidate_when_start_fails_before_fallback():
     assert rs.actual_device is None
 
 
+def test_initial_open_validates_candidate_before_start():
+    events = []
+
+    class _OrderedStream(_ScriptedStream):
+        def start(self):
+            events.append("start")
+            super().start()
+
+    stream = _OrderedStream([])
+    attempt = OpenAttempt(device="virtual-capture", samplerate=16000)
+
+    def opener(device, samplerate):
+        events.append("construct")
+        assert (device, samplerate) == (attempt.device, attempt.samplerate)
+        return stream
+
+    def validate(candidate, selected):
+        events.append("validate")
+        assert candidate is stream
+        assert selected is attempt
+        assert stream.start_calls == 0
+
+    rs = _RecoveringInputStream(
+        [attempt],
+        opener=opener,
+        pre_start_validate=validate,
+    )
+
+    rs.open()
+
+    assert events == ["construct", "validate", "start"]
+    assert stream.start_calls == 1
+
+
+def test_initial_validation_failure_closes_candidate_before_fallback():
+    rejected = _ScriptedStream([])
+    accepted = _ScriptedStream([])
+    streams = iter([rejected, accepted])
+    validations = []
+
+    def validate(candidate, attempt):
+        validations.append((candidate, attempt.device))
+        if candidate is rejected:
+            raise RuntimeError("route proof failed")
+
+    rs = _RecoveringInputStream(
+        [
+            OpenAttempt(device="preferred", samplerate=16000),
+            OpenAttempt(device="fallback", samplerate=16000),
+        ],
+        opener=lambda _device, _samplerate: next(streams),
+        pre_start_validate=validate,
+    )
+
+    rs.open()
+
+    assert validations == [(rejected, "preferred"), (accepted, "fallback")]
+    assert rejected.start_calls == 0
+    assert rejected.close_calls == 1
+    assert accepted.start_calls == 1
+    assert rs.actual_device == "fallback"
+
+
 def test_open_raises_when_all_attempts_fail():
     """Initial open() raises on full chain exhaustion; state does NOT
     transition to FATAL (that's reserved for runtime recovery failure --
@@ -340,6 +403,46 @@ def test_unanticipated_host_error_minus_9999_reopens_then_succeeds():
     assert failed.close_calls == 1
     assert StreamState.RECOVERING in states
     assert states[-1] is StreamState.OPEN
+
+
+@pytest.mark.parametrize("code", sorted(REOPEN_CODES))
+def test_reopen_error_fails_before_replacement_when_recovery_disabled(code):
+    error = _make_err(code)
+    failed = _ScriptedStream([error])
+    replacement = _ScriptedStream(
+        [(np.ones((100, 1), dtype="float32"), False)]
+    )
+    streams = iter([failed, replacement])
+    opens = []
+    states = []
+
+    def opener(device, samplerate):
+        opens.append((device, samplerate))
+        return next(streams)
+
+    rs = _RecoveringInputStream(
+        [OpenAttempt(device=None, samplerate=16000)],
+        opener=opener,
+        on_state=lambda state, message: states.append((state, message)),
+        recovery_enabled=False,
+    )
+    rs.open()
+
+    with pytest.raises(Exception) as raised:
+        rs.read(100)
+
+    assert raised.value is error
+    assert opens == [(None, 16000)]
+    assert failed.close_calls == 0
+    assert failed.stop_calls == 0
+    assert failed.abort_calls == 0
+    assert replacement.start_calls == 0
+    assert replacement.read_frames == []
+    assert rs.generation == 1
+    assert rs.state is StreamState.FATAL
+    assert StreamState.RECOVERING not in [state for state, _ in states]
+    assert states[-1][0] is StreamState.FATAL
+    assert "recovery disabled" in states[-1][1]
 
 
 def test_reopen_retry_uses_recovered_rate_block_duration():

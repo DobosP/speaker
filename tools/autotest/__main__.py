@@ -30,6 +30,7 @@ from .verdicts import (
     aggregate_reports,
     evaluate_voice,
     finite_nonnegative,
+    voice_barge_latency_limit,
 )
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -81,13 +82,95 @@ def tier_memory(args) -> dict:
     return rep
 
 
+def _voice_failure_report(
+    args,
+    out_dir: str,
+    *,
+    error_type: str,
+    message: str,
+    base: dict | None = None,
+) -> dict:
+    """Return the one stable schema for any voice-runner failure."""
+
+    log_path = os.path.join(out_dir, "engine_stdout.log")
+    if not os.path.isfile(log_path):
+        log_path = None
+    report = {
+        "tier": "voice",
+        "mode": args.acoustics,
+        "run_id": None,
+        "summary_path": None,
+        "log_path": log_path,
+        "wav_path": None,
+        "ref_wav_path": None,
+        "ready": False,
+        "monitor_rms": 0.0,
+        "clip_source": "",
+        "injected_refs": [],
+        "aec_delay_ms": args.aec_delay_ms,
+        "prompt_bindings": [],
+        "prompt_evidence": {},
+        "prompt_score": {},
+        "markers": {},
+        "virtual_route_evidence": {},
+        "scenarios": {},
+        "detail": [],
+    }
+    if base:
+        report.update(base)
+        if report.get("log_path") is None:
+            report["log_path"] = log_path
+    error = f"{error_type}: {message}" if message else error_type
+    detail = list(report.get("detail") or ())
+    detail.append(f"runner exception: {error}")
+    report.update(
+        ok=False,
+        complete=False,
+        diagnostic_ok=False,
+        outcome=FAIL,
+        error=error,
+        artifact_dir=out_dir,
+        runner_error={"type": error_type, "message": message},
+        detail=detail,
+        verdict={
+            "passed": False,
+            "checks_ok": False,
+            "complete": False,
+            "outcome": FAIL,
+            "checks": (),
+            "failures": ("runner_error",),
+            "not_covered": (),
+        },
+    )
+    return report
+
+
 def tier_voice(args) -> dict:
+    """Run and grade voice behind one exception-to-report boundary."""
+
+    out_dir = os.path.join(OUT, f"voice-{_stamp()}")
+    try:
+        return _tier_voice(args, out_dir)
+    except Exception as exc:  # noqa: BLE001 - persist an honest red run report
+        error_type = type(exc).__name__
+        print(f"[voice] FAIL ({args.acoustics}): {error_type}: {exc}")
+        return _voice_failure_report(
+            args,
+            out_dir,
+            error_type=error_type,
+            message=str(exc),
+        )
+
+
+def _tier_voice(args, out_dir: str) -> dict:
     from core.config import load_config
     from .voice_loop import run_voice_loop
 
+    # Allocate the artifact directory before configuration/model setup so an
+    # exception still has one stable place for any partial diagnostics.
+    os.makedirs(out_dir, exist_ok=True)
     cfg = load_config()
     sherpa_cfg = cfg.get("sherpa", {})
-    out_dir = os.path.join(OUT, f"voice-{_stamp()}")
     r = run_voice_loop(
         repo_root=REPO, sherpa_cfg=sherpa_cfg,
         llm_kind=args.llm,
@@ -101,22 +184,13 @@ def tier_voice(args) -> dict:
     rep = {"tier": "voice", **asdict(r)}
     if r.error:
         print(f"[voice] FAIL ({r.mode}): {r.error}")
-        rep.update(
-            ok=False,
-            complete=False,
-            diagnostic_ok=False,
-            outcome=FAIL,
-            verdict={
-                "passed": False,
-                "checks_ok": False,
-                "complete": False,
-                "outcome": FAIL,
-                "checks": (),
-                "failures": ("runner_error",),
-                "not_covered": (),
-            },
+        return _voice_failure_report(
+            args,
+            out_dir,
+            error_type="VoiceRunError",
+            message=r.error,
+            base=rep,
         )
-        return rep
 
     has_echo = r.mode in ("delay", "speaker")
 
@@ -143,6 +217,14 @@ def tier_voice(args) -> dict:
     s1 = sc.get("s1_round_trip", {})
     s2 = sc.get("s2_self_interrupt", {})
     s3 = sc.get("s3_barge_in", {})
+    barge_latency_limit = voice_barge_latency_limit(
+        mode=r.mode,
+        clip_source=r.clip_source,
+        clip_role=str(s3.get("barge_clip_role", "")),
+    )
+    rep_s3 = rep.get("scenarios", {}).get("s3_barge_in", {})
+    if isinstance(rep_s3, dict):
+        rep_s3["barge_latency_ceiling_s"] = barge_latency_limit
     error_count = int(bun.get("error_count", 0) or 0)
     if bundle_error:
         error_count += 1
@@ -170,6 +252,8 @@ def tier_voice(args) -> dict:
         self_interrupt_pass=s2.get("live_pass"),
         barge_pass=s3.get("pass"),
         barge_latency_s=s3.get("barge_latency_s"),
+        virtual_route_evidence=r.virtual_route_evidence,
+        max_barge_latency_s=barge_latency_limit,
     )
     rep["ok"] = verdict.passed
     rep["complete"] = verdict.complete
@@ -208,8 +292,13 @@ def tier_voice(args) -> dict:
     if has_echo:
         print(f"        self-interrupt: live barge-ins during own reply="
               f"{s2.get('barge_ins_during_own_reply')} (pass={s2.get('live_pass')})")
-        print(f"        barge-in: {s3.get('barge_ins_after_talkover')} after talk-over "
-              f"in {s3.get('barge_latency_s')}s (pass={s3.get('pass')})")
+        print(
+            f"        barge-in: {s3.get('barge_ins_after_talkover')} after talk-over "
+            f"in {s3.get('barge_latency_s')}s "
+            f"({s3.get('barge_latency_clock', 'unknown')} <= {barge_latency_limit}s; "
+            f"source_onset={s3.get('barge_onset_latency_s')}s; "
+            f"pass={s3.get('pass')})"
+        )
     else:
         print(f"        self-interrupt / barge-in: {s2.get('note','n/a')}")
     if verdict.failures:
@@ -266,6 +355,12 @@ def _analyze_bundle(summary_path: str) -> dict:
         if finite_nonnegative(turn.get("barge_in_latency"))
     ]
     errors = records("errors")
+    severe_errors = [
+        error
+        for error in errors
+        if str(error.get("level", "")).upper()
+        not in {"DEBUG", "INFO", "WARNING"}
+    ]
     stuck_hints = strings("stuck_hints")
     counts = d.get("counts", {})
     if not isinstance(counts, dict):
@@ -289,7 +384,7 @@ def _analyze_bundle(summary_path: str) -> dict:
         ),
         "error_count": max(
             counted_errors,
-            len(errors),
+            len(severe_errors),
         ),
         "warnings": warnings,
     }

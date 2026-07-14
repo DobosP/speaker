@@ -20,6 +20,25 @@ INCOMPLETE = "incomplete"
 VOICE_MIN_MONITOR_RMS = 0.01
 VOICE_MAX_MEAN_WER = 0.50
 VOICE_MAX_BARGE_LATENCY_SEC = 1.0
+VOICE_MAX_SYNTHETIC_DELAY_COMMAND_LATENCY_SEC = 1.4
+
+
+def voice_barge_latency_limit(
+    *,
+    mode: str,
+    clip_source: str,
+    clip_role: str,
+) -> float:
+    """Return the fail-closed limit for one harness-owned acoustic profile.
+
+    Only the physical-device-free, synthesized, exact-command probe carries the
+    streaming recognizer's two-word/block-quantized budget. Recorded-owner,
+    physical speaker, generic, and stress paths retain the 1.0-second ceiling.
+    """
+
+    if mode == "delay" and clip_source == "synth" and clip_role == "command":
+        return VOICE_MAX_SYNTHETIC_DELAY_COMMAND_LATENCY_SEC
+    return VOICE_MAX_BARGE_LATENCY_SEC
 
 
 def finite_nonnegative(value: object) -> bool:
@@ -103,6 +122,7 @@ def evaluate_voice(
     self_interrupt_pass: bool | None,
     barge_pass: bool | None,
     barge_latency_s: float | None,
+    virtual_route_evidence: Mapping[str, object] | None = None,
     max_mean_wer: float = VOICE_MAX_MEAN_WER,
     max_barge_latency_s: float = VOICE_MAX_BARGE_LATENCY_SEC,
 ) -> HarnessVerdict:
@@ -179,6 +199,19 @@ def evaluate_voice(
             )
         )
     elif mode in ("delay", "speaker"):
+        if mode == "delay":
+            route = virtual_route_evidence or {}
+            checks.extend(
+                Check(
+                    f"virtual_route_{axis}",
+                    PASS if route.get(axis) is True else FAIL,
+                    f"explicit_proof={route.get(axis)!r}",
+                )
+                for axis in (
+                    "topology", "capture", "duplex", "correlated",
+                    "child_exit", "cleanup",
+                )
+            )
         checks.extend(
             (
                 Check(

@@ -74,7 +74,11 @@ class RunSummary:
             stuck.append("every LLM request was cancelled (barge-in storm or no audio settle?)")
         if errors:
             stuck.append(f"{len(errors)} error(s) -- see 'errors' below and the .txt traceback")
-        if not self.llm_requests and self.meta.get("engine") in ("sherpa", "livekit"):
+        if (
+            not self.llm_requests
+            and not self.transcript
+            and self.meta.get("engine") in ("sherpa", "livekit")
+        ):
             stuck.append("no LLM request was ever issued (ASR never produced a final?)")
         if not self.transcript and self.meta.get("engine") in ("sherpa", "livekit"):
             stuck.append("empty transcript (nothing was recognized or spoken)")

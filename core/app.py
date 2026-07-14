@@ -81,6 +81,7 @@ def _require_sherpa_runtime_ready(
     *,
     models_needed=None,
     run_checks=None,
+    virtual_audio_binder=None,
 ) -> None:
     """Fail before model/device construction when sherpa cannot run correctly.
 
@@ -92,12 +93,18 @@ def _require_sherpa_runtime_ready(
         from .readiness import run_runtime_checks
 
         run_checks = run_runtime_checks
-    checks = run_checks(
-        config,
-        resolved=True,
-        llm_mode=llm_mode,
-        models_needed=models_needed,
-    )
+    check_kwargs = {
+        "resolved": True,
+        "llm_mode": llm_mode,
+        "models_needed": models_needed,
+    }
+    # The private delay harness supplies an already-validated, run-owned
+    # topology. Keep this kwarg absent on every production call so injected
+    # test doubles and the normal readiness contract remain byte-for-byte
+    # compatible.
+    if virtual_audio_binder is not None:
+        check_kwargs["virtual_audio_binder"] = virtual_audio_binder
+    checks = run_checks(config, **check_kwargs)
     failures = [check for check in checks if not check.ok]
     if not failures:
         return
@@ -114,13 +121,16 @@ def _require_sherpa_runtime_ready(
     )
 
 
-def _build_engine(args, config: dict) -> AudioEngine:
+def _build_engine(args, config: dict, *, virtual_audio_binder=None) -> AudioEngine:
     if args.engine == "sherpa":
         from .engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
         _require_asr_models(sherpa_cfg, "sherpa")
-        return SherpaOnnxEngine(sherpa_cfg)
+        return SherpaOnnxEngine(
+            sherpa_cfg,
+            virtual_audio_binder=virtual_audio_binder,
+        )
     if args.engine == "replay":
         # Headless: run the real recognizer + TTS over recorded audio (no sound
         # card), for latency measurement on a server/CI. See tools/bench.
@@ -153,6 +163,91 @@ def _build_engine(args, config: dict) -> AudioEngine:
     from .engines.scripted import ScriptedEngine
 
     return ScriptedEngine()
+
+
+def _apply_autotest_virtual_delay_profile(
+    config: dict,
+    *,
+    input_device: str = "pipewire",
+    output_device: str = "pipewire",
+) -> dict:
+    """Return the isolated synthetic-user profile for the silent delay gate.
+
+    This seam is reachable only after the hidden CLI contract has been loaded
+    and validated. It deliberately owns no persisted config or enrollment:
+    synthetic clips exercise OS-EC + lexical word-cut/control flow, while owner
+    identity remains the separate recorded/live gate.
+    """
+
+    merged = dict(config)
+    sherpa = dict(config.get("sherpa", {}) or {})
+    sherpa.update(
+        input_device=input_device,
+        output_device=output_device,
+        aec_enabled=False,
+        capture_voice_comm=False,
+        barge_in_enabled=True,
+        barge_word_cut_enabled=True,
+        barge_word_cut_require_speaker=False,
+        # The physical-device-free gate is the initial opt-in for the calibrated
+        # energy/VAD substitution. Its private capture graph supplies a complete
+        # pre-gain ambient window before scripted speech begins.
+        input_agc=True,
+        input_calibrate=True,
+        input_calibrate_sec=1.5,
+        barge_word_cut_energy_fallback_enabled=True,
+        # The private native EC left one command block just above +9 dB and
+        # starved the three-block gate. +6 dB retains the sustained debounce;
+        # the production/library default remains disabled and unchanged.
+        barge_word_cut_energy_margin_db=6.0,
+        barge_word_cut_energy_min_blocks=3,
+        # Synthetic speech has no owner embedding. Retain the production lexical
+        # safety floor (observed garbled echo is 2-3 words) and require the S2
+        # no-near-end scenario to prove zero self-cuts; identity remains a
+        # separate recorded/physical gate.
+        barge_word_cut_min_words=4,
+        speaker_gate_input=False,
+        speaker_embedding_model="",
+        speaker_enroll_wav="",
+        speaker_enroll_embedding="",
+        release_output_when_idle=False,
+    )
+    merged["sherpa"] = sherpa
+    llm = dict(config.get("llm", {}) or {})
+    cloud = dict(llm.get("cloud", {}) or {})
+    cloud.update(enabled=False, strategy="local_only")
+    llm.update(
+        host="http://127.0.0.1:11434",
+        cloud=cloud,
+        live_routing=False,
+    )
+    merged["llm"] = llm
+    web_search = dict(config.get("web_search", {}) or {})
+    web_search["enabled"] = False
+    merged["web_search"] = web_search
+    screen_capture = dict(config.get("screen_capture", {}) or {})
+    screen_capture.update(enabled=False, memorize=False)
+    merged["screen_capture"] = screen_capture
+    gui_actions = dict(config.get("gui_actions", {}) or {})
+    gui_actions["enabled"] = False
+    merged["gui_actions"] = gui_actions
+    watch = dict(config.get("watch", {}) or {})
+    watch.update(enabled=False, grants=[])
+    merged["watch"] = watch
+    memory = dict(config.get("memory", {}) or {})
+    memory.update(
+        backend="inmemory",
+        embeddings=False,
+        profile_enabled=False,
+        procedural_enabled=False,
+        cross_session_continuity=False,
+        persist_assistant=False,
+    )
+    merged["memory"] = memory
+    agent_brain = dict(config.get("agent_brain", {}) or {})
+    agent_brain.update(local_only=True, offline=True, os_mode=False)
+    merged["agent_brain"] = agent_brain
+    return merged
 
 
 def _redact_db_url(db_url: str) -> str:
@@ -387,7 +482,12 @@ def _run_live(runtime: VoiceRuntime) -> None:
         runtime.start(run_bus=True)
         print(f"[live] engine running, mode={runtime.mode.value}. Ctrl-C to quit.")
         while True:
-            time.sleep(0.5)
+            failure = str(
+                getattr(runtime.engine, "virtual_route_failure", "") or ""
+            )
+            if failure:
+                raise RuntimeError(f"virtual audio route proof lost: {failure}")
+            time.sleep(0.1)
     except KeyboardInterrupt:
         pass
     finally:
@@ -735,7 +835,33 @@ def main(argv: list[str] | None = None) -> int:
         help="with --enroll: refuse unless tools.prepare_enrollment bound this "
         "checkout to a verified isolated candidate",
     )
+    parser.add_argument(
+        "--autotest-virtual-delay-contract",
+        dest="autotest_virtual_delay_contract",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args(argv)
+
+    virtual_audio_binder = None
+    if args.autotest_virtual_delay_contract:
+        if args.engine != "sherpa" or args.enroll:
+            parser.error(
+                "--autotest-virtual-delay-contract is private to non-enrollment "
+                "--engine sherpa harness children"
+            )
+        from .virtual_audio import (
+            PreparedVirtualAudioBinder,
+            VirtualAudioContractError,
+            load_virtual_audio_contract,
+        )
+
+        try:
+            virtual_audio_binder = PreparedVirtualAudioBinder.prepare(
+                load_virtual_audio_contract(args.autotest_virtual_delay_contract)
+            )
+        except VirtualAudioContractError as exc:
+            parser.error(f"invalid virtual delay contract: {exc}")
 
     if args.list_devices:
         import sounddevice as sd
@@ -785,6 +911,18 @@ def main(argv: list[str] | None = None) -> int:
         if val is not None:
             config.setdefault("sherpa", {})[key] = val
 
+    if virtual_audio_binder is not None:
+        contract = virtual_audio_binder.contract
+        config = _apply_autotest_virtual_delay_profile(
+            config,
+            input_device=contract.capture_pcm,
+            output_device=contract.playback_pcm,
+        )
+        runlog.logger.info(
+            "[autotest-route] topology verified: %s",
+            virtual_audio_binder.topology_detail,
+        )
+
     # One-shot enrollment: record the user's voice, save the reference, exit.
     # Runs after the device profile + audio overrides so it uses the same mic
     # settings the live engine will, but before any model/LLM is built.
@@ -826,7 +964,10 @@ def main(argv: list[str] | None = None) -> int:
             ))
         try:
             _require_sherpa_runtime_ready(
-                config, args.llm, models_needed=requested_models
+                config,
+                args.llm,
+                models_needed=requested_models,
+                virtual_audio_binder=virtual_audio_binder,
             )
         except BaseException:
             # This check runs before the main runtime try/finally. Do not strand
@@ -842,7 +983,11 @@ def main(argv: list[str] | None = None) -> int:
             raise
 
     llm, fast_llm = _build_llms(args, config)
-    engine = _build_engine(args, config)
+    engine = _build_engine(
+        args,
+        config,
+        virtual_audio_binder=virtual_audio_binder,
+    )
     router = build_router(config)
     monitor.mark("after_build")  # compute reading once clients/engine are built
 

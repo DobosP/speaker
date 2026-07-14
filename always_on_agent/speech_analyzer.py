@@ -46,12 +46,63 @@ _EXPLICIT_NON_ASSISTANT_PREFIXES = (
     "run ", "open ", "execute ",
 )
 
+_VAULT_SCOPE_MARKERS = (
+    "my notes",
+    "my vault",
+    "my obsidian",
+    "my second brain",
+    "dobo brain",
+    "dobo-brain",
+    "paul brain",
+)
+
+
+def is_vault_scoped_request(text: str) -> bool:
+    """Whether an explicit search names the user's configured notes vault.
+
+    This stays metadata on the existing SEARCH intent rather than adding a new
+    mode/enum to the cross-platform brain contract.
+    """
+
+    normalized = normalize_text(text)
+    vault_positions = [
+        normalized.find(marker)
+        for marker in _VAULT_SCOPE_MARKERS
+        if marker in normalized
+    ]
+    if not vault_positions:
+        return False
+    first_vault = min(vault_positions)
+    if (
+        normalized.startswith(("web ", "the web ", "online "))
+        or " on the web" in normalized
+        or " from the web" in normalized
+        or normalized.endswith(" online")
+    ):
+        return False
+    # An embedded web-search phrase is a source override only when it appears
+    # before the private-vault marker ("search the web for my notes"). Text in
+    # the requested note topic ("my notes about search the web design") is not.
+    if any(
+        0 <= normalized.find(marker) < first_vault
+        for marker in ("search the web", "web search", "search online")
+    ):
+        return False
+    return True
+
+
+def _is_vault_lookup_request(text: str) -> bool:
+    """Recognize a clear private-vault scope without an LLM tool choice."""
+
+    return is_vault_scoped_request(text)
+
 
 def is_assistant_mode_final_candidate(
     text: str,
     current_mode: Mode,
     *,
     has_pending_confirmation: bool = False,
+    vault_search_enabled: bool = False,
 ) -> bool:
     """Whether assistant-mode default analysis can resolve ``text`` as ASSISTANT.
 
@@ -70,6 +121,8 @@ def is_assistant_mode_final_candidate(
         _CONFIRM_PHRASES | _DENY_PHRASES
     ):
         return False
+    if vault_search_enabled and _is_vault_lookup_request(normalized):
+        return False
     return not normalized.startswith(_EXPLICIT_NON_ASSISTANT_PREFIXES)
 
 
@@ -80,6 +133,7 @@ class ModePolicy:
     search_auto_reply: bool = True
     research_parallel_tasks: int = 2
     command_requires_confirmation: bool = True
+    vault_search_enabled: bool = False
 
 
 class LiveSpeechAnalyzer:
@@ -163,6 +217,20 @@ class LiveSpeechAnalyzer:
         if explicit is not None:
             return explicit
 
+        if (
+            current_mode == Mode.ASSISTANT
+            and self.policy.vault_search_enabled
+            and _is_vault_lookup_request(text)
+        ):
+            return IntentDecision(
+                IntentKind.SEARCH,
+                0.95,
+                observation.text,
+                "vault_lookup_phrase",
+                mode=Mode.SEARCH,
+                metadata={"search_scope": "vault"},
+            )
+
         if current_mode == Mode.PASSIVE and self.policy.passive_requires_explicit_action:
             if observation.activation_score < 0.65:
                 return IntentDecision(IntentKind.IGNORE, 0.9, observation.text, "passive_no_activation")
@@ -175,9 +243,33 @@ class LiveSpeechAnalyzer:
             )
 
         if current_mode == Mode.SEARCH:
-            return IntentDecision(IntentKind.SEARCH, 0.82, observation.text, "search_mode", mode=current_mode)
+            metadata = (
+                {"search_scope": "vault"}
+                if is_vault_scoped_request(text)
+                else {}
+            )
+            return IntentDecision(
+                IntentKind.SEARCH,
+                0.82,
+                observation.text,
+                "vault_search_mode" if metadata else "search_mode",
+                mode=current_mode,
+                metadata=metadata,
+            )
         if current_mode == Mode.RESEARCH:
-            return IntentDecision(IntentKind.RESEARCH, 0.82, observation.text, "research_mode", mode=current_mode)
+            metadata = (
+                {"search_scope": "vault"}
+                if is_vault_scoped_request(text)
+                else {}
+            )
+            return IntentDecision(
+                IntentKind.RESEARCH,
+                0.82,
+                observation.text,
+                "vault_research_mode" if metadata else "research_mode",
+                mode=current_mode,
+                metadata=metadata,
+            )
         if current_mode == Mode.DICTATION:
             return IntentDecision(IntentKind.DICTATION, 0.9, observation.text, "dictation_mode", speak=False)
         if current_mode == Mode.MEETING:
@@ -204,12 +296,37 @@ class LiveSpeechAnalyzer:
                 normalized = courteous_normalized
                 original = _after_first_word(original)
         if normalized.startswith(("research ", "cerceteaza ")):
-            return IntentDecision(IntentKind.RESEARCH, 0.95, _after_first_word(original), "research_prefix", mode=Mode.RESEARCH)
+            query = _after_first_word(original)
+            metadata = (
+                {"search_scope": "vault"}
+                if is_vault_scoped_request(query)
+                else {}
+            )
+            return IntentDecision(
+                IntentKind.RESEARCH,
+                0.95,
+                query,
+                "vault_research_prefix" if metadata else "research_prefix",
+                mode=Mode.RESEARCH,
+                metadata=metadata,
+            )
         if normalized.startswith(("search ", "cauta ")):
             query = _after_first_word(original)
             if normalize_text(query).startswith("for "):
                 query = _after_first_word(query)
-            return IntentDecision(IntentKind.SEARCH, 0.95, query, "search_prefix", mode=Mode.SEARCH)
+            metadata = (
+                {"search_scope": "vault"}
+                if is_vault_scoped_request(query)
+                else {}
+            )
+            return IntentDecision(
+                IntentKind.SEARCH,
+                0.95,
+                query,
+                "vault_search_prefix" if metadata else "search_prefix",
+                mode=Mode.SEARCH,
+                metadata=metadata,
+            )
         if normalized.startswith(("dictate ", "scrie ")):
             return IntentDecision(IntentKind.DICTATION, 0.95, _after_first_word(original), "dictation_prefix", mode=Mode.DICTATION, speak=False)
         if normalized.startswith(("run ", "open ", "execute ")):

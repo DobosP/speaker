@@ -45,6 +45,16 @@ _WEB = (
     "You answer mainly from your own knowledge, but you can search the web when a "
     "question needs current information; you cannot open files or apps."
 )
+_NO_WEB_WITH_VAULT = (
+    "You answer from your own knowledge and can search only the configured local "
+    "notes vault; you have no web access and cannot open other files or apps, so "
+    "never claim you searched online."
+)
+_WEB_WITH_VAULT = (
+    "You answer mainly from your own knowledge, but you can search the web for "
+    "current information and the configured local notes vault for the user's own "
+    "notes; you cannot open other files or apps."
+)
 _NO_COMMENT = "Don't comment on the user's name, tone, or mood."
 
 # --- skills block framing (registry-backed path ONLY; never part of DEFAULT_SYSTEM) ---
@@ -124,6 +134,7 @@ def build_system_prompt(
     *,
     persona: Optional[PersonaConfig] = None,
     web_enabled: bool = False,
+    vault_enabled: bool = False,
     markup_guidance: str = "",
 ) -> str:
     """Compose the answering model's system prompt.
@@ -147,7 +158,10 @@ def build_system_prompt(
         parts.append(skills)
     parts.append(_STYLE)
     parts.append(_ASR)
-    parts.append(_WEB if web_enabled else _NO_WEB)
+    if vault_enabled:
+        parts.append(_WEB_WITH_VAULT if web_enabled else _NO_WEB_WITH_VAULT)
+    else:
+        parts.append(_WEB if web_enabled else _NO_WEB)
     parts.append(_NO_COMMENT)
     if markup_guidance:
         parts.append(markup_guidance)

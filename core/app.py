@@ -31,6 +31,7 @@ from .llm_factory import (
     build_llms,
     build_router_llm,
 )
+from .obsidian import ObsidianConfig
 from .routing import build_router
 from .capability_router import build_capability_router
 from .runlog import setup_logging
@@ -225,6 +226,9 @@ def _apply_autotest_virtual_delay_profile(
     web_search = dict(config.get("web_search", {}) or {})
     web_search["enabled"] = False
     merged["web_search"] = web_search
+    obsidian = dict(config.get("obsidian", {}) or {})
+    obsidian["enabled"] = False
+    merged["obsidian"] = obsidian
     screen_capture = dict(config.get("screen_capture", {}) or {})
     screen_capture.update(enabled=False, memorize=False)
     merged["screen_capture"] = screen_capture
@@ -616,6 +620,10 @@ def build_runtime(
     # default, so the runtime ships corpus-only until a user points base_url at
     # their self-hosted SearXNG. Every query is gated (§9.7) before any egress.
     web_search_config = WebSearchConfig.from_dict(config.get("web_search"))
+    # Bounded, read-only access to the local Obsidian vault. The committed Linux
+    # path uses ``~`` and can be replaced machine-locally without baking an
+    # absolute host path into the repository.
+    obsidian_config = ObsidianConfig.from_dict(config.get("obsidian"))
 
     # Unified capability router (the "middle layer", core/capability_router.py).
     # Disabled by default; when enabled it backs the runtime's tier + escalate
@@ -640,6 +648,7 @@ def build_runtime(
         recall_config=recall_config,
         recent_context_config=recent_context_config,
         web_search_config=web_search_config,
+        obsidian_config=obsidian_config,
         start_mode=start_mode,
         agent_config=agent_config,
         computer_use_config=computer_use_config,

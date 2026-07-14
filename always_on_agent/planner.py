@@ -34,6 +34,19 @@ class TaskPlanner:
         mode = decision.mode or _mode_for_intent(decision.kind)
         tags = keywords(decision.text)
         if decision.kind == IntentKind.RESEARCH:
+            if decision.metadata.get("search_scope") == "vault":
+                return TaskPlan(
+                    intent=decision.kind,
+                    mode=mode,
+                    input_text=decision.text,
+                    steps=(
+                        PlanStep("search", "vault.search"),
+                        PlanStep("synthesize", "research.local", speak_result=True),
+                    ),
+                    priority=60,
+                    speak_final=decision.speak,
+                    tags=tags,
+                )
             return TaskPlan(
                 intent=decision.kind,
                 mode=mode,
@@ -48,6 +61,19 @@ class TaskPlanner:
                 tags=tags,
             )
         if decision.kind == IntentKind.SEARCH:
+            if decision.metadata.get("search_scope") == "vault":
+                return TaskPlan(
+                    intent=decision.kind,
+                    mode=mode,
+                    input_text=decision.text,
+                    steps=(
+                        PlanStep("search", "vault.search"),
+                        PlanStep("synthesize", "research.local", speak_result=True),
+                    ),
+                    priority=70,
+                    speak_final=decision.speak,
+                    tags=tags,
+                )
             return TaskPlan(
                 intent=decision.kind,
                 mode=mode,

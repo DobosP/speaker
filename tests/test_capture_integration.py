@@ -170,6 +170,7 @@ def test_virtual_delay_profile_is_in_memory_and_drops_owner_identity():
             "cloud": {"enabled": True, "strategy": "hedge"},
         },
         "web_search": {"enabled": True},
+        "obsidian": {"enabled": True, "vault_root": "/private/vault"},
         "screen_capture": {"enabled": True, "memorize": True},
         "gui_actions": {"enabled": True},
         "watch": {"enabled": True, "grants": ["private-window"]},
@@ -211,6 +212,10 @@ def test_virtual_delay_profile_is_in_memory_and_drops_owner_identity():
     assert isolated["llm"]["cloud"]["strategy"] == "local_only"
     assert isolated["llm"]["live_routing"] is False
     assert isolated["web_search"]["enabled"] is False
+    assert isolated["obsidian"] == {
+        "enabled": False,
+        "vault_root": "/private/vault",
+    }
     assert isolated["screen_capture"] == {"enabled": False, "memorize": False}
     assert isolated["gui_actions"]["enabled"] is False
     assert isolated["watch"] == {"enabled": False, "grants": []}

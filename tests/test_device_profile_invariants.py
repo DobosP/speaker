@@ -39,6 +39,10 @@ def _profiles() -> dict:
     return _config_template().get("device_profiles", {})
 
 
+def test_committed_template_keeps_private_vault_access_off():
+    assert (_config_template().get("obsidian", {}) or {}).get("enabled") is False
+
+
 def _merged(name: str) -> dict:
     cfg = _config_template()
     return deep_merge(cfg, cfg["device_profiles"][name])
@@ -66,6 +70,9 @@ def test_profile_never_enables_cloud_or_relaxes_owner_gates(name):
     )
     assert (merged.get("web_search", {}) or {}).get("enabled", False) is not True, (
         f"{name} enables web_search egress"
+    )
+    assert (merged.get("obsidian", {}) or {}).get("enabled", False) is not True, (
+        f"{name} enables private Obsidian access"
     )
     # The voice-identity gate and the owner-verified brain gate stay closed: a
     # profile retunes models/threads, it must never widen WHO the assistant obeys.

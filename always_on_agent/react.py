@@ -26,6 +26,8 @@ from .planner_steps import (
     PlannerStepBackend,
     PlannerTool,
 )
+from .speech_analyzer import is_vault_scoped_request
+from .text import normalize_text
 from .untrusted import wrap_untrusted
 
 
@@ -132,7 +134,14 @@ class PlannerConfig:
 
 def should_escalate(query: str, context: Mapping[str, object] | None = None) -> bool:
     """True when an ASSISTANT-mode query looks like it needs tools/gathering."""
-    q = (query or "").lower()
+    q = normalize_text(query)
+    if is_vault_scoped_request(q):
+        # A request naming private local notes must never fall through to a web
+        # gather merely because the optional machine-local vault is absent.
+        return (
+            (context or {}).get("vault_available") is True
+            and len(q.split()) >= 4
+        )
     if sum(1 for m in _ESCALATE_MARKERS if m in q) >= 1 and len(q.split()) >= 4:
         return True
     return False
@@ -226,11 +235,14 @@ class ReactPlanner:
             )
         return FINAL_SYSTEM
 
-    def _catalog(self) -> str:
+    def _catalog(self, tools: Sequence[str] | None = None) -> str:
         # Descriptions come straight from the capability manifest (planner-facing
         # ``when_to_use``), so the planner's tool catalog can never drift from
         # the actually-registered capabilities.
-        return self._registry.describe(self._tools, planner=True)
+        return self._registry.describe(
+            self._tools if tools is None else tools,
+            planner=True,
+        )
 
     def _native_tools(self) -> tuple[PlannerTool, ...]:
         """Return the safe configured/registered intersection for native calls.
@@ -260,7 +272,13 @@ class ReactPlanner:
             )
         return tuple(offered)
 
-    def _plan_prompt(self, query: str, observations: list[str], recent: str = "") -> str:
+    def _plan_prompt(
+        self,
+        query: str,
+        observations: list[str],
+        recent: str = "",
+        tools: Sequence[str] | None = None,
+    ) -> str:
         gathered = "\n".join(observations) if observations else "(none yet)"
         # The recent-conversation block (when the runtime supplies it) lets the
         # planner resolve references in the request -- "explain THAT" / "the second
@@ -269,7 +287,7 @@ class ReactPlanner:
         return (
             f"{convo}"
             f"User request: {query}\n\n"
-            f"Available tools:\n{self._catalog()}\n\n"
+            f"Available tools:\n{self._catalog(tools)}\n\n"
             f"Findings so far:\n{gathered}\n\n"
             "Next step:"
         )
@@ -368,7 +386,25 @@ class ReactPlanner:
         observations: list[str] = []
         steps_taken: list[str] = []
         native_backend = self._step_backend
-        native_tools = self._native_tools() if native_backend is not None else ()
+        vault_scoped = is_vault_scoped_request(query)
+        run_tools = self._tools
+        if vault_scoped:
+            # Controller-enforced source scope: a private local-vault request
+            # cannot select web/search.local even if a model ignores guidance.
+            # An absent/misconfigured vault yields an empty allowlist, not web.
+            run_tools = tuple(
+                name
+                for name in self._tools
+                if name == "vault.search" and name in self._registry.names()
+            )
+        if native_backend is not None and vault_scoped:
+            # ADR-0033/0073: vault.search is appended after MiniCPM's verified
+            # first four schemas. Do not filter/reorder it into native eligibility;
+            # deterministic speech analysis handles supported vault turns before
+            # ReAct, while a direct native planner call fails closed with no tools.
+            native_tools: tuple[PlannerTool, ...] = ()
+        else:
+            native_tools = self._native_tools() if native_backend is not None else ()
         native_allowed = {tool.name for tool in native_tools}
         native_exchanges: list[PlannerExchange] = []
         reprompt_budget = 1  # one strict-format retry across the whole plan (P3)
@@ -382,6 +418,17 @@ class ReactPlanner:
         ) -> None:
             """Record one actual controller-owned capability invocation."""
 
+            # A tool can discover data more sensitive than the original query
+            # (notably a local vault lookup after a public-looking question).
+            # Float PRIVATE onto the same dict held by capability_context before
+            # the planner's next LLM call; private is the dominant class, so no
+            # core import or duplicate rank table is needed in this core-free
+            # controller.
+            if (
+                (result.data or {}).get("sensitivity") == "private"
+                and isinstance(context, dict)
+            ):
+                context["sensitivity"] = "private"
             steps_taken.append(action)
             exchange_text = ""
             exchange_untrusted = False
@@ -459,7 +506,7 @@ class ReactPlanner:
                 # strips, which is parse-neutral for the text protocol.
                 raw = self._drain(
                     self._llm.stream(
-                        self._plan_prompt(query, observations, recent),
+                        self._plan_prompt(query, observations, recent, run_tools),
                         system=PLANNER_SYSTEM,
                     ),
                     cancel,
@@ -484,7 +531,7 @@ class ReactPlanner:
                 if native_backend is None:
                     raw = self._drain(
                         self._llm.stream(
-                            self._plan_prompt(query, observations, recent)
+                            self._plan_prompt(query, observations, recent, run_tools)
                             + "\n\n"
                             + _FORMAT_REMINDER,
                             system=PLANNER_SYSTEM,
@@ -519,7 +566,7 @@ class ReactPlanner:
                     data={"agent": True, "steps": steps_taken},
                 )
 
-            allowed = native_allowed if native_backend is not None else set(self._tools)
+            allowed = native_allowed if native_backend is not None else set(run_tools)
             if action not in allowed:
                 # Recover: tell the next planning turn the tool is unavailable.
                 observations.append(f"(tool '{action}' is unavailable)")

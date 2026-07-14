@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-14 on Linux ROG, task branch `fix/enrollment-optional-barge`: full 4062 passed/31 skipped/9 warnings; focused 375; APM 6; prior strict recorded evidence 9 (not rerun).
+Last verified: 2026-07-14 on Linux ROG, rebased combined branch: full 4093 passed/31 skipped/9 warnings; vault focused 29; barge focused 376; APM 6; prior strict recorded evidence 9 (not rerun in this worktree).
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
@@ -18,7 +18,7 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
   SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
-  clean stable revision/contract/full identities produced real PASS (ADR-0060/65).
+  clean stable identities passed (ADR-0060/65); default-off `vault.search` returns bounded PRIVATE Markdown excerpts only when its root is available (ADR-0073).
 - Physical open-speaker sessions require PipeWire `echo-cancel-source`/
   `echo-cancel-sink`; those EC nodes and Ollama are session-only, not persistent
   services. GTCRN is active. Generic cuts need four novel non-own words; speaker

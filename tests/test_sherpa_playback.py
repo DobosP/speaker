@@ -92,6 +92,8 @@ class _ManualOutputStream:
         self.callback = callback
         self.active = False
         self.closed = False
+        self.stop_calls = 0
+        self.close_calls = 0
         self.pull_thread_ids: list[int] = []
 
     def start(self):
@@ -105,9 +107,11 @@ class _ManualOutputStream:
         return out
 
     def stop(self):
+        self.stop_calls += 1
         self.active = False
 
     def close(self):
+        self.close_calls += 1
         self.active = False
         self.closed = True
 
@@ -1108,15 +1112,55 @@ def test_stop_flushes_and_closes_live_stream_before_join():
     eng = _engine(_StreamingTts())
     metrics: list = []
     eng._cb.on_metric = metrics.append
-    eng._out_stream = _FakeOutStream()
-    eng._fifo = _FakeFIFO()
+    out = _FakeOutStream()
+    fifo = _FakeFIFO()
+    eng._out_stream = out
+    eng._fifo = fifo
     eng._running.set()
     eng.stop()  # no capture/play threads started -> joins are no-ops
-    assert eng._out_stream.stopped == 1 and eng._out_stream.closed == 1
-    assert eng._fifo.flushed == 1
+    assert out.stopped == 1 and out.closed == 1
+    assert fifo.flushed == 1
+    assert eng._out_stream is None
+    assert eng._fifo is None
     assert "barge_in_stop" not in metrics  # teardown, not a barge-in
     assert not eng._running.is_set()
     assert eng._stop_speaking.is_set()
+
+
+def test_playback_finalizer_defers_to_coordinated_stop_without_false_error(
+    monkeypatch, caplog
+):
+    """The temporary capture hold elects stop() as the sole stream closer."""
+
+    eng = _engine(_FixedTts(200))
+    holder = _start_playback_harness(monkeypatch, eng)
+    eng.speak("open the manual output")
+    assert _wait_until(lambda: "stream" in holder and eng._out_stream is not None)
+    out = holder["stream"]
+    fifo = eng._fifo
+    assert fifo is not None
+
+    caplog.set_level(logging.DEBUG, logger="speaker.sherpa")
+    eng._capture_resource_hold.set()
+    eng._playback_stopping.set()
+    eng._running.clear()
+    eng._stop_speaking.set()
+    eng._play_q.put_nowait((None, None, 0, None, None))
+    eng._play_thread.join(timeout=1.0)
+
+    assert not eng._play_thread.is_alive()
+    assert eng._out_stream is out
+    assert out.stop_calls == 0 and out.close_calls == 0 and out.closed is False
+    assert "deferring output stream teardown" in caplog.text
+    assert not any(record.levelno >= logging.ERROR for record in caplog.records)
+
+    # A later bounded stop observes idle owners, claims the retained objects,
+    # and closes each exactly once without leaving a closed handle published.
+    eng.stop()
+    assert out.stop_calls == 1 and out.close_calls == 1 and out.closed is True
+    assert eng._out_stream is None
+    assert eng._fifo is None
+    assert not eng._capture_resource_hold.is_set()
 
 
 def test_stop_joins_capture_before_closing_input_without_read_overlap():
@@ -1615,10 +1659,10 @@ def test_stop_returns_promptly_when_producer_is_blocked():
     # producer it should finish well under that.
     assert done.wait(timeout=3.0), "stop() hung instead of returning promptly"
     assert not t.is_alive()
-    # stop() flushes the FIFO but never nulls it (the worker loop owns that, on
-    # idle-release/teardown), so the same instance survives and was emptied.
-    assert eng._fifo is fifo
-    assert eng._fifo.count() == 0
+    # stop() claims and detaches the FIFO before native teardown so neither the
+    # worker finalizer nor a later restart can observe a stale closed handle.
+    assert fifo.count() == 0
+    assert eng._fifo is None
 
 
 # --- _audio_cb: the core of the callback rewrite (drain + tee + first-audio) ---

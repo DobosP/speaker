@@ -2,10 +2,10 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-13 on Linux ROG, clean integration `3fda449`: full 3883 passed/31 skipped/9 warnings; focused 96; deterministic v4 42/42; APM/strict recorded 6/9.
+Last verified: 2026-07-14 on Linux ROG, task branch `fix/autotest-delay-readiness`: full 4049 passed/31 skipped/9 warnings; word-cut 146; TTS construction 28; APM/strict recorded remain 6/9.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
-ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–68 headless and real-semantic gates are green; physical live remains pending; promotion/prep/runtime focused: 107/146.
-Inject `195954`: 3/3 full duplex, 6/6 cuts/0 self-cuts. Doctor and silent-delay startup are blocked only by the intentionally unloaded OS echo-cancel module; physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64).
+ADR-0054 exact self-scalar: real topology 4/4, warm 1.6–2.2 s, PRIVATE/control-owned; ADR-0060 fences restart recall and promotes only strong subjects. ADR-0055–70 headless/virtual and real-semantic gates are green; physical live remains pending; promotion/prep/runtime focused: 107/146.
+Silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, identical command hashes, and all six route/cleanup proofs. Physical v5 bare-speaker barge remains red/unlandable (ADR-0061/64/69/70).
 
 ## Runtime
 
@@ -56,8 +56,8 @@ Inject `195954`: 3/3 full duplex, 6/6 cuts/0 self-cuts. Doctor and silent-delay 
   complete selected config, and propagates failures. Stage one can say only `BASE
   READY` with Ollama deferred; skipped models are incomplete (ADR-0063). Windows voice-communications/word-cut remains unavailable pending a verified API (ADR-0019).
 - Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
-  scenario-correct terminal outcome, zero errors/stuck/self-cuts, and causal cuts.
-  Cable is explicitly incomplete and cannot make `all` green (ADR-0055/58).
+  scenario-correct terminals, zero errors/stuck/self-cuts, and causal cuts. Private
+  synthetic delay has a 1.4 s capture clock; other paths stay 1.0 s (ADR-0055/58/70).
 - Synchronous capabilities use bounded cancellable coordinators; failed plan
   tools cannot retry, and failed web may make one fenced local fallback.
   Barge/timeout blocks stale output and caps abandoned providers at six; CPU

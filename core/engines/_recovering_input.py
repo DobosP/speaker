@@ -98,8 +98,9 @@ class OpenAttempt:
     samplerate: int
 
 
-# Callback shape published to the runtime.
+# Callback shapes published to / supplied by the runtime.
 StateListener = Callable[[StreamState, str], None]
+PreStartValidator = Callable[[Any, OpenAttempt], None]
 
 
 def _noop_listener(state: StreamState, message: str) -> None:
@@ -139,6 +140,12 @@ class _RecoveringInputStream:
     opens cleanly wins; on a later REOPEN we walk the chain again from
     the top, on the theory that a USB device that briefly disappeared
     may now be available at the user's preferred rate.
+
+    ``pre_start_validate`` is an optional initial-open seam for callers that
+    must attest a newly constructed native stream before it starts. Production
+    recovery remains enabled by default; safety-sensitive callers can set
+    ``recovery_enabled=False`` to turn a REOPEN error into an immediate FATAL
+    transition without retiring or replacing the current stream.
     """
 
     def __init__(
@@ -151,6 +158,8 @@ class _RecoveringInputStream:
         channels: int = 1,
         block_seconds: float = 0.1,
         sleep_fn: Callable[[float], None] = time.sleep,
+        pre_start_validate: Optional[PreStartValidator] = None,
+        recovery_enabled: bool = True,
     ):
         if not attempts:
             raise ValueError("_RecoveringInputStream needs at least one open attempt")
@@ -161,6 +170,8 @@ class _RecoveringInputStream:
         self.channels = channels
         self.block_seconds = block_seconds
         self._sleep = sleep_fn
+        self._pre_start_validate = pre_start_validate
+        self._recovery_enabled = bool(recovery_enabled)
         self._closed = threading.Event()
         # Never hold this condition across a native read.  It only linearizes
         # "a read is now active" against request_close(), then lets close() wait
@@ -217,6 +228,8 @@ class _RecoveringInputStream:
             candidate = None
             try:
                 candidate = self._opener(attempt.device, attempt.samplerate)
+                if self._pre_start_validate is not None:
+                    self._pre_start_validate(candidate, attempt)
                 candidate.start()
                 with self._lifecycle_lock:
                     if self._closed.is_set():
@@ -517,6 +530,10 @@ class _RecoveringInputStream:
             log.warning("transient PortAudio error %d: %s -- dropping frame", code, exc)
             return self._silent_block(frames), True
         if code in REOPEN_CODES:
+            if not self._recovery_enabled:
+                reason = f"recovery disabled after PortAudio error {code}: {exc}"
+                self._set_state(StreamState.FATAL, reason)
+                raise exc
             return self._recover_and_read(reason=f"PortAudio error {code}: {exc}")
         # Unknown shape -> bubble; the engine's outer except will surface it.
         log.error("unrecognized PortAudio error (code=%s): %s", code, exc)

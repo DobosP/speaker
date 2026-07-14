@@ -1,16 +1,14 @@
-"""PipeWire/PulseAudio plumbing for the autonomous ``voice`` tier.
+"""Audio helpers for the autonomous ``voice`` tier.
 
-Everything here is reversible and scoped: we create a throwaway ``module-null-
-sink`` (a virtual audio cable), route **only the runtime's own** playback +
-capture streams onto it via ``pactl move-sink-input`` / ``move-source-output``
-(matched by the runtime's PID), and unload the module on exit. The system
-default sink/source is never changed, so other apps and the user's audio are
-untouched.
+Cable mode uses scoped Pulse/PipeWire null sinks and moves only its test streams.
+Delay mode is owned by :mod:`tools.autotest.acoustics`: it opens exact private
+ALSA PCMs on a run-owned native echo-cancel graph, never a physical/default node.
+Both leave the system defaults unchanged. Injection uses ``paplay`` against the
+selected virtual sink; speaker mode is the explicit physical exception.
 
-No third-party deps -- shells out to ``pactl`` / ``paplay`` (PipeWire's pulse
-compat layer, confirmed present on the dev box). TTS synthesis reuses the same
-sherpa-onnx VITS model the engine speaks with, so the injected "user" voice is
-real speech the recognizer can transcribe.
+Synthesized inputs reuse the runtime's sherpa-onnx VITS model but construct that
+test renderer with acoustic/duration noise disabled, making repeated validation
+scripts byte-stable without changing runtime TTS.
 """
 from __future__ import annotations
 
@@ -149,9 +147,17 @@ def capture_on(pid: int, source_name: str) -> bool:
     return False
 
 
-def _with_lead_in(wav_path: str, lead_in_ms: int) -> str:
-    """Write a temp copy of ``wav_path`` with ``lead_in_ms`` of leading silence,
-    returning its path. The caller removes it.
+def _with_lead_in(
+    wav_path: str,
+    lead_in_ms: int,
+    trailing_silence_ms: int = 0,
+) -> str:
+    """Write a temp copy with bounded leading/trailing silence.
+
+    ``lead_in_ms`` protects source startup. ``trailing_silence_ms`` keeps the
+    same injector stream alive while a delayed capture route delivers the final
+    command audio and the recognizer consumes its bounded quiet flush. The
+    caller removes the returned path.
 
     Two failure modes this fixes: (1) a Bluetooth sink resuming from idle drops
     the first audio of a freshly-opened stream while the A2DP link spins up, and
@@ -161,14 +167,17 @@ def _with_lead_in(wav_path: str, lead_in_ms: int) -> str:
     with wave.open(wav_path, "rb") as w:
         nch, sw, sr = w.getnchannels(), w.getsampwidth(), w.getframerate()
         frames = w.readframes(w.getnframes())
-    pad = b"\x00" * (int(sr * lead_in_ms / 1000) * nch * sw)
+    lead = b"\x00" * (int(sr * max(0, lead_in_ms) / 1000) * nch * sw)
+    tail = b"\x00" * (
+        int(sr * max(0, trailing_silence_ms) / 1000) * nch * sw
+    )
     fd, out = tempfile.mkstemp(prefix="cc_inject_", suffix=".wav")
     os.close(fd)
     with wave.open(out, "wb") as w:
         w.setnchannels(nch)
         w.setsampwidth(sw)
         w.setframerate(sr)
-        w.writeframes(pad + frames)
+        w.writeframes(lead + frames + tail)
     return out
 
 
@@ -176,6 +185,7 @@ def _with_lead_in(wav_path: str, lead_in_ms: int) -> str:
 def play_injection(
     target_sink: Optional[str], wav_path: str, *, volume_pct: int = 100,
     lead_in_ms: int = 0,
+    trailing_silence_ms: int = 0,
 ) -> Iterator[InjectionPlayback]:
     """Start a user clip and expose its causal speech-onset clock.
 
@@ -185,8 +195,12 @@ def play_injection(
     """
     play_path = wav_path
     tmp: Optional[str] = None
-    if lead_in_ms > 0:
-        tmp = _with_lead_in(wav_path, lead_in_ms)
+    if lead_in_ms > 0 or trailing_silence_ms > 0:
+        tmp = _with_lead_in(
+            wav_path,
+            lead_in_ms,
+            trailing_silence_ms=trailing_silence_ms,
+        )
         play_path = tmp
     proc: Optional[subprocess.Popen] = None
     try:
@@ -249,6 +263,37 @@ def inject(
 # --------------------------------------------------------------------------- #
 # TTS synthesis of the injected utterances (same model the engine speaks with)
 # --------------------------------------------------------------------------- #
+def normalize_synth_injection(
+    samples: np.ndarray,
+    *,
+    target_rms: float = 0.12,
+    peak_cap: float = 0.80,
+) -> np.ndarray:
+    """Return a finite, deterministic near-field injection waveform.
+
+    Normalizing each synthesized utterance by peak alone makes dense speech much
+    louder than sparse speech.  Aim for one RMS level instead, while constraining
+    the gain so an impulsive waveform can never exceed ``peak_cap``.
+    """
+    if not (0.0 < target_rms <= peak_cap <= 1.0):
+        raise ValueError("expected 0 < target_rms <= peak_cap <= 1")
+
+    normalized = np.asarray(samples, dtype=np.float32).reshape(-1).copy()
+    if not np.all(np.isfinite(normalized)):
+        raise RuntimeError("autotest clip synth returned non-finite audio")
+    if not normalized.size:
+        return normalized
+
+    rms = float(np.sqrt(np.mean(np.square(normalized, dtype=np.float64))))
+    peak = float(np.max(np.abs(normalized)))
+    if rms <= 1e-7 or peak <= 1e-7:
+        return normalized
+
+    gain = min(target_rms / rms, peak_cap / peak)
+    normalized *= np.float32(gain)
+    return np.clip(normalized, -peak_cap, peak_cap).astype(np.float32, copy=False)
+
+
 def synth_to_wav(text: str, out_path: str, *, sherpa_cfg: dict, speed: float = 1.0) -> float:
     """Render ``text`` to a 16-bit mono WAV with the engine's configured voice.
 
@@ -261,7 +306,13 @@ def synth_to_wav(text: str, out_path: str, *, sherpa_cfg: dict, speed: float = 1
     from core.engines._sherpa_models import build_tts
     from core.engines.sherpa import SherpaConfig
 
-    tts = build_tts(SherpaConfig.from_dict(sherpa_cfg))
+    # Validation inputs must not mutate between A/B runs. VITS otherwise draws
+    # acoustic and duration noise for every generation, which changed both the
+    # command WAV hash and whether the delayed EC path decoded "be quiet".
+    # This construction-only switch does not alter the runtime's speaking voice.
+    tts = build_tts(
+        SherpaConfig.from_dict(sherpa_cfg), deterministic_vits=True
+    )
     if tts is None:
         raise RuntimeError(
             "autotest clip synth: TTS failed to build from the sherpa config -- "
@@ -272,13 +323,7 @@ def synth_to_wav(text: str, out_path: str, *, sherpa_cfg: dict, speed: float = 1
     audio = tts.generate(text, sid=0, speed=speed)
     samples = np.asarray(audio.samples, dtype=np.float32).reshape(-1)
     sr = int(audio.sample_rate)
-    # peak-normalize to a loud, consistent level so an injected "user" clip sits
-    # clearly above the engine's learned echo/quiet floor (a near-field user is
-    # louder than the assistant's open-speaker echo; a quiet clip gets dropped as
-    # "echo/ambient, not speech").
-    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
-    if peak > 1e-4:
-        samples = samples * (0.95 / peak)
+    samples = normalize_synth_injection(samples)
     pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
     with wave.open(out_path, "wb") as w:
         w.setnchannels(1)

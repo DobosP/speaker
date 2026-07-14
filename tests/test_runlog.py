@@ -176,6 +176,26 @@ def test_summary_flags_no_llm_request_for_voice_engine(tmp_path):
     assert any("no LLM request" in hint for hint in data["stuck_hints"])
 
 
+def test_summary_does_not_flag_echo_transcript_as_missing_llm(tmp_path):
+    runlog = setup_logging(
+        debug=False, log_dir=str(tmp_path), run_id="echo", console=False
+    )
+    runlog.summary.note(engine="sherpa", llm="echo")
+    logging.getLogger("speaker.runtime").info(
+        "final", extra={"transcript": {"role": "user", "text": "hello"}}
+    )
+    logging.getLogger("speaker.runtime").info(
+        "assistant",
+        extra={"transcript": {"role": "assistant", "text": "you said hello"}},
+    )
+    runlog.finalize()
+    data = json.loads(
+        (tmp_path / "run-echo.summary.json").read_text(encoding="utf-8")
+    )
+
+    assert not any("no LLM request" in hint for hint in data["stuck_hints"])
+
+
 @pytest.mark.parametrize(
     "wd_message, expected_hint_substring",
     [

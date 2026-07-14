@@ -226,6 +226,31 @@ def test_suspicious_replacement_exhausts_once_and_retains_configured_floor(caplo
     assert "retaining configured noise_floor=0.0070" in caplog.text
 
 
+def test_failed_fresh_calibration_cannot_reuse_previous_session_floor():
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            block_sec=0.1,
+            input_agc=True,
+            input_calibrate=True,
+            input_calibrate_sec=0.3,
+            input_agc_noise_floor_rms=0.007,
+        )
+    )
+    engine._stream_in = _CalibrationInput([])
+    engine._capture_sr = 16000
+    engine._last_calibration = {
+        "noise_floor_rms": 0.03,
+        "n_blocks": 3,
+        "clipping_fraction": 0.0,
+    }
+    engine._input_agc.noise_floor_rms = 0.03
+
+    engine._calibrate_input()
+
+    assert engine._last_calibration is None
+    assert engine._input_agc.noise_floor_rms == 0.007
+
+
 def test_clipped_complete_calibration_retries_then_abstains():
     railed = np.ones(1600, dtype="float32")
     stream = _CalibrationInput([railed.copy() for _ in range(4)])

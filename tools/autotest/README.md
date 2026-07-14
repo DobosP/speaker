@@ -18,7 +18,9 @@ The bare `all` command uses the echo-free cable and therefore exits 2 as
 `INCOMPLETE`; use `all --acoustics delay` for a silent complete barge scorecard,
 or `--acoustics speaker --make-sound` for audible over-the-air evidence. This is
 the fail-closed policy recorded in [ADR-0055](../../docs/adr/0055-fail-autonomous-voice-verdicts-closed.md),
-as strengthened by [ADR-0058](../../docs/adr/0058-bind-autonomous-playback-evidence-to-input.md).
+as strengthened by [ADR-0058](../../docs/adr/0058-bind-autonomous-playback-evidence-to-input.md)
+[ADR-0069](../../docs/adr/0069-bind-silent-delay-to-virtual-echo-route.md), and
+[ADR-0070](../../docs/adr/0070-calibrate-word-cut-and-bound-synthetic-command-timing.md).
 
 Use the shipped hybrid (MiniCPM fast, Gemma main). The memory tier closes and
 reopens a temporary SQLite backend, then requires the durable canary to stay out
@@ -40,7 +42,9 @@ repo root with the venv python:
 It runs the real `sherpa` engine and injects "user" utterances on a real
 timeline — either the engine's **synthesized** voice (default) or **your real
 recordings** (`--utterances DIR`). STT is scored by **WER** (word error rate)
-against each clip's ground-truth transcript.
+against each clip's ground-truth transcript. Autotest VITS renders with its two
+generation-noise scales at zero so a repeated script has identical input WAVs;
+the runtime's speaking voice keeps its normal synthesis behavior.
 
 The acoustic path (`--acoustics`) is pluggable — and which one to use depends on
 what you're testing, because the assistant's own audio interacts with the mic:
@@ -48,8 +52,23 @@ what you're testing, because the assistant's own audio interacts with the mic:
 | mode | echo? | sound? | best for |
 |------|-------|--------|----------|
 | `cable` (default) | no (playback → dead sink) | silent | **STT accuracy + round-trip** — clean, reproducible (digital injection = a perfect near-field user). Does **not** test self-interrupt/barge (no echo). |
-| `delay` | yes (loopback + ~260 ms air-gap) | silent | **self-interrupt + barge-in** with the AEC reference aligned the way it is on a real speaker. |
+| `delay` | yes (run-owned EC route + ~260 ms loopback air-gap) | silent | **self-interrupt + barge-in** through a contract-bound virtual echo route. |
 | `speaker` | yes (real speaker + mic) | **audible** | **true over-the-air** — real ~260 ms acoustic delay + room/speaker coloring. The genuine open-speaker condition; calibrates STT/TTS under real echo. Needs `--make-sound`. |
+
+### Delay's virtual echo-route contract
+
+Run delay only through the command above and inspect the report's topology,
+capture, duplex, digest-correlation, child-exit, and cleanup checks. If any is
+red, keep the log and do not compensate by loading a host echo-cancel module or
+changing desktop defaults. An unkillable child intentionally leaves its private
+graph/files in place for diagnosis. The route, child-isolation, cleanup, and
+evidence contract is specified in [ADR-0069](../../docs/adr/0069-bind-silent-delay-to-virtual-echo-route.md).
+The synthesized S3 probe uses exact `quiet`, a 600 ms same-stream tail, and a
+bounded detector-only quiet flush; see
+[ADR-0070](../../docs/adr/0070-calibrate-word-cut-and-bound-synthetic-command-timing.md).
+Require two fresh passes before treating this gate as stable. This tier remains
+synthetic; use recorded-owner and `speaker` gates for identity, audible quality,
+current-room acoustics, and physical bare-speaker acceptance.
 
 Why the split: in a loopback/over-the-air path the assistant's TTS raises the
 engine's learned **echo floor**, which then drops quiet user clips as
@@ -115,7 +134,8 @@ You can also hand-build the directory: one sentence per file, **mono WAV**
 Roles: `round_trip` (ask → expect a reply; record several for WER stats),
 `speak` (longer prompts — `speak[0]` drives the self-interrupt window,
 `speak[1]` the barge-in window), `barge` (a talk-over phrase; not WER-scored —
-it deliberately overlaps), `command` (a KWS word). `text` is the ground truth.
+it deliberately overlaps), `command` (the synthesized delay exact-control probe).
+`text` is the ground truth.
 Any omitted role falls back to a synthesized clip.
 
 ## Tiers at a glance
@@ -133,9 +153,11 @@ same-generation sink evidence for every expected answer. Ordinary/self replies
 must attest aggregate `completed`; talk-over must attest same-task/generation
 `interrupted` after its barge marker. Mean WER must be at most 0.50, with no
 runtime errors/stuck hints. Delay and speaker additionally require zero own-reply
-cuts plus a successful active injection and causal talk-over cut in 0–1.0
-seconds. Cable reports
+cuts plus a successful active injection and causal talk-over cut. Only the exact
+synthetic `delay + command` probe uses engine capture onset and a 1.4-second
+ceiling; recorded-owner, generic, stress, and physical speaker paths use source
+onset and 1.0 second. Cable reports
 `diagnostic_pass`, `ok=false`, and explicit
-`not_covered` barge axes; it cannot make `all` green. All PipeWire devices the
-harness creates are reversible (unloaded on exit); the system default sink/source
-and config are restored verbatim.
+`not_covered` barge axes; it cannot make `all` green. On a normal child exit,
+delay must report cleanup PASS. A retained-graph diagnostic or nonzero child
+exit is a failed run; follow ADR-0069 rather than removing evidence manually.

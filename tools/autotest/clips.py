@@ -29,8 +29,8 @@ _DEFAULT_SCRIPT = {
         "name three primary colors",
         # disfluent / self-correcting input: tests the final text fed to the LLM
         # and whether the system still makes sense of repeats + corrections.
-        "what what time is it",
-        "set a timer for five no wait ten minutes",
+        "which which planet is known as the red planet",
+        "name five no wait ten kinds of trees",
     ],
     # two distinct long-reply prompts: speak[0] for the self-interrupt window,
     # speak[1] for the barge-in window (so the 2nd isn't a garbled repeat).
@@ -39,8 +39,20 @@ _DEFAULT_SCRIPT = {
         "tell me everything about the planets in the solar system",
     ],
     "barge": ["excuse me wait a moment please"],
-    "command": ["stop"],
+    # Use one exact canonical word whose deterministic VITS rendering remains
+    # stable after native EC. The earlier "be quiet" varied at the capture/ASR
+    # boundary between BE QUIET and VERY QUIET, making the non-command first
+    # token decide the gate. The bounded decoder-only flush supplies the short
+    # clip's remaining acoustic clock without broadening production commands.
+    "command": ["quiet"],
 }
+
+# The streaming transducer needs roughly 0.8 s of captured context before it
+# publishes a partial. Native EC preserves only about 0.5 s of the ordinary
+# synthetic "quiet" clip; render this one validation command at a still-
+# natural slower pace so production's two-block quiet-flush safety bound need
+# not be widened merely to satisfy the physical-device-free gate.
+_SYNTH_SPEED_BY_ROLE = {"command": 0.8}
 
 
 @dataclass
@@ -58,7 +70,12 @@ def synth_clips(out_dir: str, sherpa_cfg: dict) -> dict[str, list[Clip]]:
     for role, texts in _DEFAULT_SCRIPT.items():
         for i, text in enumerate(texts):
             p = os.path.join(out_dir, f"synth_{role}_{i}.wav")
-            audio.synth_to_wav(text, p, sherpa_cfg=sherpa_cfg)
+            audio.synth_to_wav(
+                text,
+                p,
+                sherpa_cfg=sherpa_cfg,
+                speed=_SYNTH_SPEED_BY_ROLE.get(role, 1.0),
+            )
             by_role.setdefault(role, []).append(Clip(role, p, text, "synth"))
     return by_role
 

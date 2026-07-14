@@ -2,7 +2,8 @@
 
 Valid until: ADR-0072 or ADR-0073, or either implementation, changes — then treat as history.
 
-Branch: `feat/obsidian-vault-tool` rebased onto local `main` at `0820773`.
+Integration: `feat/obsidian-vault-tool` rebased cleanly, then fast-forwarded onto
+local `main` after the combined gates passed.
 
 Status: combined deterministic/headless gates green; physical bare-speaker
 barge-in remains red and unvalidated.
@@ -82,9 +83,19 @@ PASS (STATUS.md is exactly 100 lines)
 The nine full-suite warnings are the existing two endpointing divide-by-zero
 warnings and seven Pillow `getdata()` deprecation warnings.
 
-Prior strict recorded-owner evidence is 9 passed. It is historical/root-session
-evidence and is not claimed as a worktree gate here unless separately rerun and
-reported by the orchestrator.
+Final local-main recorded-owner replay:
+
+```text
+SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest \
+  tests/replay_recorded_voice_test.py -q
+9 passed in 60.26s
+```
+
+The gitignored machine-local config enables `vault.search` for
+`~/work/dobo-brain/paul-brain`. A privacy-safe real-vault smoke scanned 80
+Markdown files, returned four relative citations with PRIVATE/no-egress
+metadata, and a headless voice turn invoked exactly
+`vault.search -> research.local`; no note body or raw fenced wrapper was spoken.
 
 ## Risks and manual validation
 
@@ -96,11 +107,10 @@ reported by the orchestrator.
 - Physical acceptance still requires prompt causal exact Stop followed by a
   four-or-more-word override, with no self-cut. No live hardware validation is
   run or claimed by this combined headless gate.
-- Vault access is POSIX-only for this version and remains default off. Enable it
-  only in gitignored machine-local configuration after integration.
+- Vault access is POSIX-only for this version and remains default off in the
+  committed template; this machine enables it only in gitignored local config.
 
 ## Merge recommendation
 
-The two lanes are headless-green and compatible for orchestrator review;
-physical barge acceptance remains a separate red post-merge gate, and no push
-is performed by this worktree.
+The two lanes are headless-green and integrated locally. Physical barge
+acceptance remains a separate red post-merge gate.

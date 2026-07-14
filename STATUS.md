@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-14 on Linux ROG, rebased combined branch: full 4093 passed/31 skipped/9 warnings; vault focused 29; barge focused 376; APM 6; prior strict recorded evidence 9 (not rerun in this worktree).
+Last verified: 2026-07-14 on Linux ROG, local main: full 4093 passed/31 skipped/9 warnings; vault focused 29; barge focused 376; APM 6; strict recorded 9.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).

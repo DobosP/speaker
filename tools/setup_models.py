@@ -61,7 +61,8 @@ SUBDIR = {
     "tts_model": "tts",
     "tts_tokens": "tts",
 }
-# Speaker-embedding model for the speaker-ID gate (barge-in + input gating).
+# Speaker-embedding model for normal-input gating and optional generic word-cut
+# owner filtering (plus the own-TTS control-ambiguity guard).
 # It ships as a GitHub *release asset* (not a HF repo file), so it's fetched by
 # direct URL rather than huggingface_hub. Override with --speaker-model-url or
 # the SPEAKER_EMBEDDING_MODEL_URL env var. NOTE: the upstream release tag spells

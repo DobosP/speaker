@@ -13,7 +13,7 @@ reference; `CLAUDE.md` only points here.**
 
 | Credential | Where it comes from | Used by | Unlocks |
 |---|---|---|---|
-| `GIT_HUB_TOKEN` | session environment (this repo's web/CI sessions) | `tools/gh_admin.py`, ad-hoc `curl` | **Maximum repo access** — the privileged GitHub ops the session harness blocks. **Explicit authorization only** (see below) |
+| `GIT_HUB_ACCESS_TOKEN` | session environment (this repo's web/CI sessions) | `tools/gh_admin.py`, ad-hoc `curl` | **Maximum repo access** — the privileged GitHub ops the session harness blocks. **Explicit authorization only** (see below) |
 | `HUGGINGFACE_TOKEN` | session environment (Hugging Face read token) | `tools/bench/__main__.py`, `tools/setup_models.py` | Authenticated/rate-limit-safe model downloads in dev/bench |
 | `HF_TOKEN` | **GitHub Actions secret** | `perf.yml`, `publish-model.yml` | Model downloads inside CI, including gated mobile Gemma publishing |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | session/host environment | `remote/token_server.py`, `core/app.py` | Minting LiveKit JWTs for the remote host + thin-client path |
@@ -21,7 +21,12 @@ reference; `CLAUDE.md` only points here.**
 
 ---
 
-## `GIT_HUB_TOKEN` — maximum repo access (explicit authorization only)
+## `GIT_HUB_ACCESS_TOKEN` — maximum repo access (explicit authorization only)
+
+> **2026-07-14:** the speaker-specific `GIT_HUB_TOKEN` PAT is RETIRED. The valid GitHub
+> credentials fleet-wide are the per-device trust root `GITHUB_TOKEN` and the shared
+> `GIT_HUB_ACCESS_TOKEN` from the agent-ops SOPS bundle
+> (`agent-ops/secrets/secrets.manifest.yaml`; refresh via `bootstrap.sh secrets-pull`).
 
 > **Policy scope (fleet git standard 2026-06-24 — `AGENTS.md`, `docs/adr/0007`):**
 > having this token is **not** authorization to use it. Agents never push, merge
@@ -29,12 +34,12 @@ reference; `CLAUDE.md` only points here.**
 > Paul's **explicit ask**. The one sanctioned write path is an
 > explicitly-authorized landing — feature branch → PR → merge — per
 > [`docs/windows_landing_workflow.md`](docs/windows_landing_workflow.md), where
-> `gh`/`$GIT_HUB_TOKEN` performs the PR create/merge the SSH transport cannot.
+> `gh`/`$GIT_HUB_ACCESS_TOKEN` performs the PR create/merge the SSH transport cannot.
 
 Ordinary git transport and GitHub reads/writes go through the **session
 harness** (git proxy + repo-scoped GitHub MCP) or SSH with no stored
 credential. The harness deliberately **blocks** a handful of admin operations.
-`GIT_HUB_TOKEN` is the out-of-band key that performs exactly those, against
+`GIT_HUB_ACCESS_TOKEN` is the out-of-band key that performs exactly those, against
 the GitHub REST API on `dobosp/speaker`:
 
 | Operation | REST endpoint |
@@ -62,7 +67,7 @@ python -m tools.gh_admin rerun-failed 1234567890 --execute
 python -m tools.gh_admin delete-branch stale-feature --yes --execute
 ```
 
-The helper reads `$GIT_HUB_TOKEN` from the environment and sends it only in the
+The helper reads `$GIT_HUB_ACCESS_TOKEN` from the environment and sends it only in the
 `Authorization` header — it never prints it.
 
 ### Raw `curl` recipes
@@ -70,7 +75,7 @@ The helper reads `$GIT_HUB_TOKEN` from the environment and sends it only in the
 All calls take these headers:
 
 ```bash
-AUTH=(-H "Authorization: Bearer $GIT_HUB_TOKEN" \
+AUTH=(-H "Authorization: Bearer $GIT_HUB_ACCESS_TOKEN" \
       -H "Accept: application/vnd.github+json" \
       -H "X-GitHub-Api-Version: 2022-11-28")
 
@@ -117,7 +122,7 @@ curl -X PUT "${AUTH[@]}" \
 
 > If a push returns `403 Permission denied`, the *session* was provisioned
 > read-only. That is an environment permission, not a code problem, and
-> `GIT_HUB_TOKEN` does not change it — surface it to the user.
+> `GIT_HUB_ACCESS_TOKEN` does not change it — surface it to the user.
 
 ---
 

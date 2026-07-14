@@ -1,6 +1,6 @@
 """Privileged GitHub admin helper — the operations the session harness blocks.
 
-This is the one place that actually *uses* ``$GIT_HUB_TOKEN`` (see
+This is the one place that actually *uses* ``$GIT_HUB_ACCESS_TOKEN`` (see
 ``CREDENTIALS.md``). Routine git and GitHub reads/writes go through the session
 harness; the harness blocks a handful of admin operations (re-running and
 dispatching Actions, deleting branches, reading Actions-secret metadata), and
@@ -32,7 +32,7 @@ from typing import IO, Any, Optional
 REPO = "dobosp/speaker"
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
-TOKEN_ENV = "GIT_HUB_TOKEN"
+TOKEN_ENV = "GIT_HUB_ACCESS_TOKEN"
 
 
 class GitHubError(RuntimeError):

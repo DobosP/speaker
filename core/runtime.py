@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from dataclasses import replace
 from threading import Event, Thread
 from typing import Callable, Mapping, Optional
 
@@ -16,6 +17,7 @@ from always_on_agent.post_barge import PostBargeResponseGate
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
 from always_on_agent.speech_analyzer import (
     LiveSpeechAnalyzer,
+    ModePolicy,
     is_assistant_mode_final_candidate,
 )
 from always_on_agent.supervisor import AgentSupervisor, ArrivalContinuation
@@ -48,6 +50,7 @@ from .metrics import (
     TTS_REQUESTED,
     MetricsRecorder,
 )
+from .obsidian import ObsidianConfig, attach_obsidian_capability
 from .persona import PersonaConfig, build_system_prompt
 from .playback_history import (
     PlaybackCommit,
@@ -98,6 +101,7 @@ class VoiceRuntime:
         recall_config: Optional[RecallConfig] = None,
         recent_context_config: Optional[RecentContextConfig] = None,
         web_search_config: Optional[WebSearchConfig] = None,
+        obsidian_config: Optional[ObsidianConfig] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         computer_use_config=None,
@@ -226,6 +230,25 @@ class VoiceRuntime:
         # httpx dependency. See core/websearch.py.
         web_cfg = web_search_config or WebSearchConfig()
         attach_web_search_capability(registry, web_cfg)
+        # Local Obsidian access is read-only, bounded, and registered only when
+        # the configured vault exists. Attach it before building both the
+        # capability-aware system prompt and ReAct planner so neither can claim
+        # or offer a missing machine-local tool.
+        vault_cfg = obsidian_config or ObsidianConfig()
+        attach_obsidian_capability(registry, vault_cfg)
+        self._vault_enabled = "vault.search" in registry.names()
+        if (
+            planner_config is not None
+            and self._vault_enabled
+            and "vault.search" not in planner_config.tools
+        ):
+            # Preserve ADR-0033's verified first four phone-native tools: the
+            # optional desktop vault tool is appended and therefore remains off
+            # the four-schema MiniCPM seam unless that ADR is revisited.
+            planner_config = replace(
+                planner_config,
+                tools=(*planner_config.tools, "vault.search"),
+            )
         planner_on = planner_config is not None and planner_config.enabled
         escalate = should_escalate if (planner_on and planner_config.escalate) else None
         # Unified capability router (the "middle layer"): when configured it BACKS
@@ -262,9 +285,10 @@ class VoiceRuntime:
                 voice_continuity=self._reply_voice_continuity is not None,
                 lock_speaker_id=self._tts_lock_speaker_id,
             )
+        vault_enabled = self._vault_enabled
         system_prompt = build_system_prompt(
             registry, persona=persona, web_enabled=web_enabled,
-            markup_guidance=markup_guidance,
+            vault_enabled=vault_enabled, markup_guidance=markup_guidance,
         )
         # Kept so the startup pre-warm prefills the model's cacheable system
         # prefix with the REAL prompt (not a throwaway "hi" with no system), so
@@ -347,6 +371,9 @@ class VoiceRuntime:
         self.supervisor = AgentSupervisor(
             bus=self.bus,
             capabilities=registry,
+            analyzer=LiveSpeechAnalyzer(
+                ModePolicy(vault_search_enabled=self._vault_enabled)
+            ),
             memory=memory,
             stream_tts=stream_tts,
             followup_config=followup_config,
@@ -1542,6 +1569,8 @@ class VoiceRuntime:
                     "mode": self.mode.value,
                     "stream_tts": self._stream_tts,
                 }
+                if self._vault_enabled:
+                    route_context["vault_available"] = True
                 if cancel_event is not None:
                     route_context["cancel_event"] = cancel_event
                 route_decision = self._capability_router.route(
@@ -1570,6 +1599,8 @@ class VoiceRuntime:
             "mode": self.mode.value,
             "stream_tts": self._stream_tts,
         }
+        if self._vault_enabled:
+            latency_context["vault_available"] = True
         if post_barge_response_only:
             # Response-only means exactly that: do not ask either routing layer
             # whether this transcript should control, act, search, or research.
@@ -1715,6 +1746,7 @@ class VoiceRuntime:
                     has_pending_confirmation=bool(
                         self.supervisor.state.pending_confirmations
                     ),
+                    vault_search_enabled=self._vault_enabled,
                 )
                 and (
                     route_decision is None

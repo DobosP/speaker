@@ -456,6 +456,10 @@ def attach_llm_capabilities(
     def assistant(query: str, context: dict[str, object]) -> CapabilityResult:
         cancel = context.get("cancel_event")
         metric_turn = _metric_turn_token(context)
+        if "vault.search" in registry.names():
+            # Availability-scoped planner marker: note/vault phrases must only
+            # change routing when the optional machine-local tool really exists.
+            context["vault_available"] = True
         # This scalar is derived afresh from this turn's bounded recall.  Clear a
         # caller-reused context so an earlier match can never promote a later
         # no-recall query.
@@ -1115,6 +1119,7 @@ def attach_llm_capabilities(
         metric_turn = _metric_turn_token(context)
         previous = context.get("previous_steps", [])
         gathered_parts: list[str] = []
+        gathered_private = False
         for step in previous:
             if not (isinstance(step, dict) and step.get("text")):
                 continue
@@ -1125,6 +1130,8 @@ def attach_llm_capabilities(
             # prompt (same defense as the ReAct path) so an injected page can't steer
             # the summary. Local steps are left as-is, byte-identical.
             data = step.get("data")
+            if isinstance(data, dict) and data.get("sensitivity") == PRIVATE:
+                gathered_private = True
             if isinstance(data, dict) and data.get("egress"):
                 text = wrap_untrusted(text, source="web")
             gathered_parts.append(text)
@@ -1143,6 +1150,11 @@ def attach_llm_capabilities(
         # ContextVar and reset it in a finally so it is restored on EVERY exit
         # path -- a missed reset would leak this turn's tag into the next, unrelated
         # turn (the §9.7 cross-turn leak the isolation tests guard).
+        # A private local/file finding dominates a public-looking query. Float it
+        # before selecting the synthesis chain so vault text cannot ride a
+        # public provider route; the outer ContextVar reset still isolates turns.
+        if gathered_private:
+            context["sensitivity"] = PRIVATE
         _enrich_context(query, context)
         ctx_token = capability_context.set(context)
         try:

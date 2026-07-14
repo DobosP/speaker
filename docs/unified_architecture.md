@@ -799,6 +799,8 @@ The assistant knows what it is and what skills it has, driven by a single **capa
 
 **Web is gated on real availability.** `web.search` (egress `cloud`) is only listed in the model's "what you can do" block, and the web-access limit line is only used, when `web_search.enabled AND base_url` — matching the condition under which `attach_web_search_capability` actually reaches the network (else it silently falls back to `search.local`).
 
+**Vault access is gated on a real root.** `core/obsidian.py` registers the default-off `vault.search` only when the configured Markdown root is readable and safe POSIX descriptor traversal is available. It securely opens and retains the root, reads regular `.md` files from no-follow handles, skips `.git`/`.obsidian` and unsafe names, applies entry/directory/file/byte/result/excerpt/output caps, polls cancellation, and exposes only relative paths. Note excerpts are PRIVATE `Origin.FILE` data and are spotlight-fenced at the source; private findings float to the planner/synthesis context before the next LLM call. Explicit scoped SEARCH phrases never fall through to web and use `vault.search` followed by the existing `research.local` synthesis step when available, while assistant-mode note requests may select the same tool through ReAct. See ADR-0073.
+
 ### Layering
 
 `core/persona.py` owns system-prompt building; `core/capabilities.py` re-exports the byte-identical `DEFAULT_SYSTEM` (pinned by `tests/test_memory_contract.py`). The brain (`always_on_agent`) never imports `core`: the persona name reaches the ReAct planner as a plain string, preserving the core-free facade (see [§2](#2--the-control-plane-brain-always_on_agent)).
@@ -834,6 +836,7 @@ Tier-0 tests (no real screen/mss/Xlib/tesseract/model; tmp `config.local.json`):
 | **WebRTC APM** (production open-speaker AEC: AEC3 + RES + NS + AGC2 + HPF) | `sherpa.aec_backend='apm'` (+ `apm_always_on`) | OFF in base (**ON in the `open_speaker` profile** — the production open-speaker path) | `tests/test_apm.py`, `tests/test_apm_double_talk.py` | SHIPPED (2026-06-21) |
 | **DTLN-aec** (deep echo cancellation) | `sherpa.aec_backend='dtln'` | OFF (default: 'nlms') | `tests/test_aec_seam.py` | KEEP, gated (no models shipped) |
 | **ReAct Planner** (multi-step planning) | `agent.planner.enabled` | ON (default) | `tests/test_react_planner.py` | KEEP, gated |
+| **Obsidian Vault** (bounded read-only Markdown search) | `obsidian.enabled` | OFF | `tests/test_obsidian.py` | KEEP, gated |
 | **Continuation** (add-on merging) | `continuation.enabled` | ON (default) | `tests/test_continuation.py` | KEEP, gated |
 | **Followups** (proactive listen-ahead) | `followups.enabled` | OFF | `tests/test_followups.py` | KEEP, gated |
 | **Live Routing** (dynamic hedge nudging) | `llm.live_routing` or `SPEAKER_LIVE_ROUTING=1` | OFF | `tests/test_core_routing.py` | KEEP, gated |
@@ -841,7 +844,7 @@ Tier-0 tests (no real screen/mss/Xlib/tesseract/model; tmp `config.local.json`):
 
 ### Design & user decision
 
-Every tier below is **kept as a load-bearing gate**. The experimental ones yield **byte-identical behaviour when disabled** — the existing code path runs unchanged, no overhead; the shipped default-on ones (SenseVoice two-pass, coherence barge-in) fail safe (model absent / scipy missing → graceful fallback). The runtime wires each via a deterministic configuration block + optional env override:
+Every tier below is **kept as a load-bearing gate**. The experimental ones yield **byte-identical behaviour when disabled** — the existing code path runs unchanged, no overhead — except that explicit private-vault SEARCH/RESEARCH phrases now fail closed locally instead of retaining the old web/corpus fallback when `obsidian.enabled=false`. The shipped default-on ones (SenseVoice two-pass, coherence barge-in) fail safe (model absent / scipy missing → graceful fallback). The runtime wires each via a deterministic configuration block + optional env override:
 
 - **Capability Router** (`core/capability_router.py`): Disabled default preserves per-gate routing (the tier `Router` + `escalate` predicate stand alone). When enabled, it fuses the decision into one coherent module; the optional fast-LLM assist (`llm_assist=true` + a fast model) only disambiguates low-confidence turns. The desktop profile turns it on (`enabled=true`) with `llm_assist=true` to leverage the extra headroom. (Full composition in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
 - **Input Gate** (`core/addressing.py`): Disabled default (base config OFF; desktop ON) gates ambient speech silently. Calls the fast tier once per ASR final; on desktop where fast headroom exists, it saves replies to background noise / read-aloud text. (Gate 1 in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
@@ -856,7 +859,7 @@ Every tier below is **kept as a load-bearing gate**. The experimental ones yield
 - **Live Routing** (`core/routing.py`): Disabled by default (`llm.live_routing=false` or no `SPEAKER_LIVE_ROUTING` env). When on, feeds the tier router an additive-only, clamped live nudge from the recorder's rolling local TTFT EWMA + a cheap SystemMonitor load snapshot; shortens the HedgeLLM's `hedge_delay_ms` so cloud races start sooner when local is slow. A missing/garbage signal is a no-op. (See [§4](#4--the-decision--routing-layer-the-4-gate-ladder) and [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97).)
 - **Cost Order** (`core/routing.py::order_presets_by_cost`): Disabled by default (`llm.cloud.cost_order=false`); an optional stable reorder of `cloud_chains` presets by `(host_rank, ttft_ms, in $/Mtok, out $/Mtok)` metadata before the HedgeLLM is built. `host_rank` is the **outermost** key, so ordering is fastest-then-cheapest *within* a jurisdiction tier but never *across* it: every US/unknown-hosted preset races before any PRC-hosted (`host=CN`) one even when the CN preset is cheaper/faster (§9.7 PRC-opt-in intent); only inside a host tier does lower ttft (then input, then output $) win. Fail-safe: same multiset, original order on malformed input. Covered by the Cost Order tests in `tests/test_core_routing.py`. (See [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97).)
 
-Each tier uses the same pattern: disabled → zero cost, enabled → wired deterministically via a config block + optional env / per-device profile. No dead code, no silent fallbacks — the gate inventory is exhaustive.
+Each tier uses the same pattern: disabled → zero runtime cost, enabled → wired deterministically via a config block + optional env / per-device profile. Explicit private-vault source phrases are the narrow safety exception: they remain local-scoped even while the vault provider is disabled or unavailable. No dead code, no silent fallbacks — the gate inventory is exhaustive.
 
 ---
 

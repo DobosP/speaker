@@ -36,6 +36,19 @@
     "max_active": 2,
     "grants": []
   },
+  "_obsidian_comment": "Default OFF. Set enabled=true in gitignored config.local.json to use read-only, bounded access to Paul's local Markdown vault. The Linux path default follows the fleet workspace layout and expands ~ at runtime; override vault_root on another supported POSIX device. Safe descriptor-relative openat/no-follow support is required, otherwise no tool registers. Missing/unreadable roots register no tool and are never advertised. The provider retains a safely opened root, reads regular .md files only, never follows symlinks, skips .git/.obsidian and unsafe names, caps entries/directories/files/bytes/results/excerpts, polls cancellation, returns only relative paths, and marks/fences note text PRIVATE/untrusted. It never writes the vault.",
+  "obsidian": {
+    "enabled": false,
+    "vault_root": "~/work/dobo-brain/paul-brain",
+    "max_files": 1000,
+    "max_entries": 10000,
+    "max_directories": 1000,
+    "max_total_bytes": 4194304,
+    "max_file_bytes": 131072,
+    "max_results": 4,
+    "max_excerpt_chars": 600,
+    "max_output_chars": 3600
+  },
   "llm": {
     "backend": "ollama",
     "main_model": "gemma3:12b",

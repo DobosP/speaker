@@ -15,7 +15,15 @@ def normalize_text(text: str | None) -> str:
     # the brain -- e.g. "oprește" -> "opreste", "în schimb" -> "in schimb",
     # "Și" -> "si". Without this, _WORD_RE (ASCII-only) would *drop* the accented
     # letter entirely ("în" -> "n"), silently breaking those matches.
-    folded = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    decomposed = unicodedata.normalize("NFKD", text)
+    # Preserve a word boundary for Unicode dash punctuation before the ASCII
+    # fold. Encoding an em/en dash with ``ignore`` would otherwise collapse
+    # ``dobo—brain`` into ``dobobrain`` and bypass phrase/security markers.
+    decomposed = "".join(
+        " " if unicodedata.category(char) == "Pd" else char
+        for char in decomposed
+    )
+    folded = decomposed.encode("ascii", "ignore").decode("ascii")
     cleaned = folded.lower().strip().replace("'", "")
     return " ".join(_WORD_RE.findall(cleaned))
 

@@ -1,163 +1,124 @@
-# Task Result — MiniCPM v5 release integration
+# Task Result — 2026-07-14 v5 live barge closeout
 
-Valid until: this branch lands or its implementation changes — then treat as history.
+Valid until: ADR-0071 or its documented evidence changes — then treat as history.
 
-Branch: `integration/minicpm-v5-release`
+Branch: `docs/close-v5-live-ab`
 
-Status: identity, install, memory, injected barge, and enrollment-promotion lanes integrated; final combined headless gates green, real-model and live gates pending.
+Status: green documentation/landing gate; physical bare-speaker release gate red.
 
 ## Outcome
 
-- The canonical desktop MiniCPM Q8 alias, source blob, quantization, template,
-  and parameters are now one production contract reused by provisioning,
-  startup, doctor, live-session preflight, Docker verification, and evaluation
-  (ADR-0062).
-- Fresh installs now require SciPy/soxr and the selected SenseVoice, GTCRN,
-  Kokoro, and speaker-ID artifacts before atomically publishing local config.
-  Setup failures propagate; skipped models are incomplete; deferred Ollama
-  checks can report only `BASE READY`, never full `READY` (ADR-0063).
-- Phone llama.cpp Q4 behavior is unchanged.
-- The clean no-device barge profile no longer applies physical echo, level,
-  confirmation, or denoising gates. It retains real VAD/sustain/cancel/FIFO
-  control; failures and incomplete scenario coverage now return nonzero
-  (ADR-0064).
+- All implementation produced during the MiniCPM v5, memory, enrollment,
+  voice-continuity, and deterministic barge goal is present on main at
+  implementation commit `31654a2` and its ancestors.
+- The headless, local-model, semantic-memory, recorded-owner, private virtual
+  echo-route, and deterministic delay gates remain green.
+- Live enrollment completed and the selected voice remained stable, but the
+  physical A/B failed soft speech, a one-second pause, override handoff, and
+  exact Stop. The v5 candidate was rejected and never promoted.
+- Exact Stop also failed with enrollment disabled in memory. ADR-0071 therefore
+  moves the next investigation before speaker identity, into playback-time
+  capture, echo-cancel, calibration, VAD/energy, denoise, and decoder admission.
+- The current failure evidence and next tasks are durable in `STATUS.md`,
+  `.agents/backlog.md`, ADR-0071, and the dated live closeout.
 
-## Exact branch evidence
+## Main-integration audit
 
-- Identity branch `fix/minicpm-provision-identity` (`HEAD` before this
-  cherry-pick): full `3714 passed, 31 skipped, 9 warnings`; focused identity
-  `196 passed`; shared readiness/startup/live/import/Docker `321 passed`; APM
-  `6 passed`; deterministic conversation `42/42`, all fourteen scenarios 3/3.
-- Fresh-install branch `fix/fresh-install-readiness` (`599d125`): full
-  `3692 passed, 31 skipped, 9 warnings in 73.79s`; installer/readiness focused
-  `121 passed in 0.39s`; strict recorded/APM `9/6 passed`.
-- Both branch suites used injected or device-free boundaries. Neither lane ran
-  a model download, real Ollama/model check, network request, microphone, or
-  speaker validation.
+The goal's active worktree branches were compared with main before cleanup.
+Six branch tips are direct main ancestors. Four non-ancestor task tips were
+canonicalized during integration rather than omitted:
 
-## Integration verification
+- MiniCPM provisioning identity → `f900f9f`;
+- fail-closed fresh installation → `4bdd9d1`;
+- memory evidence provenance → `71238b7`;
+- v5 enrollment promotion → `d18276f`.
 
-- Combined focused identity/fresh tests: `549 passed in 9.70s`.
-- Combined full suite: `3728 passed, 31 skipped, 9 warnings in 76.08s`.
-- Strict archived recorded-owner replay: `9 passed in 53.66s`; fake streams
-  were used and no physical audio hardware was opened.
-- APM/DTD regression: `6 passed in 0.69s`.
-- Deterministic conversation: `42/42`; every one of the fourteen scenarios
-  passed 3/3 and semantic, coverage, A/B, provenance, and warmup gates were
-  all true.
-- Injected-profile focused tests: `133 passed in 1.86s`.
-- Full suite after the profile and exact-coverage changes: `3737 passed,
-  31 skipped, 9 warnings in 80.18s`.
-- Strict archived recorded-owner replay after the shared profile change:
-  `9 passed in 65.78s`; fake streams, no physical hardware.
-- Reproduced baseline `203334`: cuts `1/2, 2/2, 1/2`, but old CLI exit 0.
-- Honest intermediate `204845`: cuts `1/2` in all three repeats and exit 1,
-  isolating inherited GTCRN as the remaining clean-profile mismatch.
-- Controlled no-denoise `205151`: `2/2` cuts, zero self-interrupts, exit 0.
-- Final exact gate `205351`: all three repetitions full-duplex `ok`, each `2/2`
-  cuts, zero self-interrupts; aggregate `6/6`, exit 0. No hardware opened.
-- Memory provenance branch `ed548d1`: focused `179 passed`; full `3718 passed,
-  31 skipped, 9 warnings`; strict recorded/APM `9/6`; deterministic conversation
-  `42/42`; independent stop-ship review green. Integration-focused memory tests
-  then passed `180/180`.
-- Final promotion-plus-memory integration focus: `326 passed in 8.41s`.
-- Final combined full suite: `3864 passed, 31 skipped, 9 warnings in 75.65s`.
-- Final APM/DTD regression: `6 passed in 0.67s`.
-- Final deterministic conversation: `42/42`; every scenario passed 3/3 and
-  semantic, coverage, A/B, provenance, and warmup gates were true.
-- Final injected run `061522`: all three repetitions full-duplex `ok`, each
-  `2/2` cuts, zero self-interrupts; aggregate `6/6`, exit 0; inject mode opened
-  no physical microphone or speakers.
-- Final strict archived owner replay: `9 passed in 53.49s`; fake streams, no
-  physical hardware.
-- Independent final enrollment-promotion review: green; focused rerun `146/146`.
-- `git diff --check`: clean.
+Their implementation and test patches are equal; only integrated STATUS,
+TASK_RESULT, ADR numbering/cross-references, and already-landed API adaptation
+differ. No unique task implementation remains outside main.
 
-## Remaining validation
+## Verification
 
-A clean-revision production-hybrid Ollama A/B, real semantic-memory probe,
-ordinary doctor `READY`, real installed MiniCPM alias, Docker image, fresh-install
-download, and live bare-speaker behavior are not validated by this integration.
-The injected result does not validate GTCRN, physical echo, current-room short
-Stop, v5 identity, or audible stop quality.
-
-## Enrollment promotion outcome
-
-Implemented a device-free, fail-closed workflow for activating an explicitly
-accepted isolated v5 speaker enrollment. Preparation schema v2 binds paths plus
-full metadata and SHA-256 lineage for the primary config, empty reservation,
-historical v4, and backup. Promotion uses descriptor-bound reads, validates
-strict live-v5 provenance and model/rate/dimension compatibility, and requires
-all six protected config/enrollment objects to be path- and inode-disjoint. It
-publishes an independent candidate-derived mode-600 accepted copy, safely adopts
-only an exact private orphan, then atomically changes only the primary pointer.
-
-Strict file/directory fsyncs and a stable advisory lock make outcomes
-commit-aware for cooperating promoters: 0 means the primary pointer committed;
-2 means refused before this invocation committed accepted/config state; 3 means
-the accepted copy is confirmed durable while the original pointer is confirmed
-inactive; and 4 means the filesystem result is ambiguous and needs inspection.
-The lock cannot exclude a non-cooperating writer. Historical v4, its backup, the
-isolated candidate, and unrelated config values remain unchanged.
-
-## Files changed
-
-- `tools/promote_enrollment.py` — promotion API/CLI and atomic staging/adoption.
-- `tools/prepare_enrollment.py` / `core/enroll.py` — schema-v2 lineage capture
-  and pre-capture validation.
-- `tests/test_promote_enrollment.py` — deterministic success, refusal, race,
-  retry, provenance, secrecy, and commit-point coverage.
-- `tests/test_prepare_enrollment.py` — schema-v2 preparation lineage coverage.
-- `docs/adr/0066-promote-accepted-v5-enrollment-without-replacing-v4.md` —
-  decision and failure semantics.
-- `STATUS.md` — current implemented promotion state and focused evidence.
-- `docs/agent-map.md` / `docs/agent-testing.md` — task routing and exact gate.
-- `docs/2026-07-12-v5-bare-speaker-acceptance.md` — post-acceptance command and
-  exit handling.
-
-## Commands run and exact results
+On the closeout branch after rebasing onto current main:
 
 ```text
-/home/dobo/work/speaker/.venv/bin/python -m pytest \
-  tests/test_promote_enrollment.py tests/test_prepare_enrollment.py -q
-107 passed
-
-/home/dobo/work/speaker/.venv/bin/python -m pytest \
-  tests/test_promote_enrollment.py tests/test_prepare_enrollment.py \
-  tests/test_enroll.py -q
-146 passed
-
 /home/dobo/work/speaker/.venv/bin/python -m pytest tests -q
-3765 passed, 31 skipped, 9 warnings
+4049 passed, 31 skipped, 9 warnings in 78.11s
 
-/home/dobo/work/speaker/.venv/bin/python -m pytest \
-  tests/test_apm_double_talk.py -q
-6 passed
+/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q
+6 passed in 0.94s
+
+/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_gh_admin.py -q
+10 passed in 0.07s
 
 git diff --check
 PASS (no output)
+
+test $(wc -l < STATUS.md) -le 100
+PASS
 ```
 
-The focused suite is device-free and used temporary directories only. No real
-config, enrollment, audio device, model, log corpus, or network service was
-opened or modified.
+The first full run exposed four stale `GIT_HUB_TOKEN` test fixtures after main's
+new fleet credential setup had moved the helper to `GIT_HUB_ACCESS_TOKEN`. The
+minimal test-only repair landed separately as `31b5872`; the second full run
+above is green. Both execute paths were mocked; no network or real secret was
+used.
 
-## Risks / manual review
+Previously completed gates retained as implementation evidence:
 
-- `--accept-live-gate` records an explicit operator assertion; it does not
-  manufacture or independently grade physical bare-speaker evidence.
-- Accepted-copy publication and config activation are necessarily two ordered
-  filesystem commits. Exit 3 makes the confirmed safe intermediate state
-  retryable; exit 4 prevents uncertain durability or replacement from appearing
-  as a refusal.
-- The advisory config lock protects cooperating promotion commands only. A
-  process that ignores it remains outside the lock guarantee.
-- The final combined focused, full-repository, APM, deterministic conversation,
-  injected-barge, and strict-recorded headless gates are green. Real-model and
-  live audio gates were not run.
+- strict archived recorded-owner replay: 9 passed with fake streams;
+- word-cut focus: 146 passed; TTS construction focus: 28 passed;
+- production-hybrid MiniCPM/Gemma and Gemma/Gemma: 42/42 each;
+- semantic memory: PASS with PRIVATE main-only recall;
+- private delay runs `041032` and `041156`: one causal cut each at 0.509 and
+  0.818 seconds from calibrated capture onset, zero self-cuts, all route and
+  cleanup proofs green.
+
+No microphone, speakers, model server, network, enrollment, or primary local
+config were used or modified by the closeout tests.
+
+## Live gate evidence
+
+- Enrollment `174212`: three roughly 12-second clips, dimension 512, pass
+  similarity minimum 0.60 and mean 0.67; isolated candidate only.
+- Enrollment-on `192151`: all TTS resolutions stayed `sid=0`; one normal France
+  question passed. Soft Yes was dropped, a pause split the turn, the first cut
+  was very late and garbled, the override was repeated, and exact Stop failed.
+- Enrollment-off `193713`: exact Stop produced no word-cut trace, Stop final,
+  handoff, or cut. Playback-time VAD remained zero despite a near-end burst.
+- The scalar evidence points before identity but does not yet distinguish route
+  settling, signal-domain/calibration drift, VAD/energy starvation, echo-floor
+  handling, denoise, or decoder admission.
+
+## Files changed by the closeout branch
+
+- `STATUS.md` — current physical verdict and next gate.
+- `.agents/backlog.md` — prioritized new-session TODOs ahead of historical notes.
+- `docs/adr/0071-reject-current-v5-candidate-and-refocus-physical-barge-admission.md`
+  — rejection, preservation, cleanup, and direction decision.
+- `docs/2026-07-14-v5-live-barge-closeout.md` — bounded live/headless evidence.
+- `TASK_RESULT.md` — integration audit, exact tests, risks, and handoff.
+
+## Cleanup authorization and limits
+
+After this documentation is on main, the owner's explicit cleanup authorization
+covers only this goal's rejected candidate, prepared private config, test/live
+logs and caches, redundant pre-v5 backup, obsolete STATUS stash, merged task
+worktrees/branches, and dead legacy `/tmp` worktree registrations. It does not
+cover the active historical v4 enrollment, primary config, models, unrelated
+branches/worktrees, or unrelated main-run logs.
+
+## Risks and next session
+
+- Cleanup intentionally removes the detailed live artifacts and rejected
+  biometric candidate; the dated closeout retains bounded scalar evidence only.
+- Virtual and recorded gates do not prove current-room acoustics or audible cut
+  latency. Do not promote v5 or claim physical barge acceptance.
+- Begin the new session with enrollment disabled and bounded per-stage markers.
+  Exact Stop must cut promptly with no self-cut before a multiword override,
+  pause repair, new enrollment, or wider acceptance A/B.
 
 ## Merge recommendation
 
-All combined headless landing gates and the promotion review are green. Hold
-landing until the required real Ollama/memory and live hardware gates complete;
-do not claim v5 or bare-speaker acceptance until the operator actually does it.
+The current repository suite and documentation gates are green. Land and push
+the closeout, then perform only the audited, explicitly authorized cleanup.

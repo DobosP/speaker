@@ -4,7 +4,7 @@ How the capture and playback paths are cleaned today, **why Microsoft Teams
 sounds better than a raw-mic app on the same laptop**, and the concrete knobs to
 close that gap on desktop and mobile. This is the current-truth companion to
 `docs/TTS.md`; `STATUS.md` is authoritative for current barge state, and the
-decision chain continues through ADR-0036, ADR-0042, and ADR-0045 (the DTLN-era
+decision chain continues through ADR-0036, ADR-0042, and ADR-0072 (the DTLN-era
 internals doc is archived at `docs/archive/open_speaker_barge_in.md`).
 
 > **2026-07-06 historical result (ADR-0013):** the bare-open-speaker experiment
@@ -52,7 +52,12 @@ On the ADR-0013 OS-capture path the OS canceller runs *before* "mic" above
 (`aec_enabled=false` → the in-app AEC hop and the coherence/DTD tee are
 bypassed) and barge-in is the ASR **word-cut** on the OS-cancelled capture — no
 coherence/DTD trigger gate is in the loop. VAD, lexical, and speaker-authority
-checks still apply.
+checks still apply according to their configured policy: word-cut is
+enrollment-free by default, while `barge_word_cut_require_speaker=true` requires
+identity for generic overrides in a multi-voice room. Enrollment alone does not
+enable that filter. Novel exact Stop/cancel remains an open fail-safe control in
+either mode. A STOP-class control that overlaps current or recent own TTS still
+requires compatible enrolled-speaker authority under ADR-0042.
 
 - **Anti-alias resampler** (`core/audio_frontend.py::AudioResampler`) prefers
   `soxr` (stateful, no per-block seam), then `scipy.resample_poly`. Readiness

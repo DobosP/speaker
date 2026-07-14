@@ -795,6 +795,20 @@ def test_check_speaker_id_is_required_by_active_word_cut():
     assert enrolled.ok
 
 
+def test_check_speaker_id_is_advisory_for_default_identity_free_word_cut():
+    selected = {
+        "barge_in_enabled": True,
+        "barge_word_cut_enabled": True,
+        "aec_enabled": False,
+    }
+
+    check = check_speaker_id({"sherpa": selected})
+
+    assert check.ok
+    assert "optional owner filtering off" in check.detail
+    assert "lexical barge-in remains available" in check.detail
+
+
 def test_check_speaker_id_remains_advisory_when_word_cut_uses_in_app_aec():
     c = check_speaker_id(
         {

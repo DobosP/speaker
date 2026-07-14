@@ -1,124 +1,108 @@
-# Task Result — 2026-07-14 v5 live barge closeout
+# Task Result — enrollment-optional word-cut
 
-Valid until: ADR-0071 or its documented evidence changes — then treat as history.
+Valid until: ADR-0072 or the optional-enrollment implementation changes — then
+treat as history.
 
-Branch: `docs/close-v5-live-ab`
+Branch: `fix/enrollment-optional-barge`
 
-Status: green documentation/landing gate; physical bare-speaker release gate red.
+Status: green deterministic/headless gate; physical bare-speaker barge-in remains
+red and unvalidated.
 
-## Outcome
+## Summary
 
-- All implementation produced during the MiniCPM v5, memory, enrollment,
-  voice-continuity, and deterministic barge goal is present on main at
-  implementation commit `31654a2` and its ancestors.
-- The headless, local-model, semantic-memory, recorded-owner, private virtual
-  echo-route, and deterministic delay gates remain green.
-- Live enrollment completed and the selected voice remained stable, but the
-  physical A/B failed soft speech, a one-second pause, override handoff, and
-  exact Stop. The v5 candidate was rejected and never promoted.
-- Exact Stop also failed with enrollment disabled in memory. ADR-0071 therefore
-  moves the next investigation before speaker identity, into playback-time
-  capture, echo-cancel, calibration, VAD/energy, denoise, and decoder admission.
-- The current failure evidence and next tasks are durable in `STATUS.md`,
-  `.agents/backlog.md`, ADR-0071, and the dated live closeout.
+- Single-voice word-cut now defaults to enrollment-independent lexical authority.
+  Missing `barge_word_cut_require_speaker` keys resolve to false consistently in
+  runtime and readiness paths.
+- Identity-free generic cuts retain a non-lowerable four-novel-non-own-word floor.
+  Novel exact canonical controls retain their bounded short exception; silence,
+  generic own echo, empty text, and zero-to-three generic words cannot cut.
+- ADR-0042 remains accepted and independent of the optional filter: a STOP-class
+  control or attested repair that resembles current/recent own TTS still needs
+  compatible enrolled-speaker authority and otherwise fails closed.
+- `barge_word_cut_require_speaker=true` remains the explicit multi-voice filter
+  for generic overrides and still requires compatible enrollment/readiness/warm
+  authority. Novel exact Stop/cancel remains an open fail-safe control.
+- Normal-final `speaker_gate_input`, typed owner verification, sensitive action
+  gates, enrollment capture/provenance, preparation, and promotion are unchanged.
+- ADR-0072 records the owner decision and preserves ADR-0071's failed physical
+  evidence. ADR-0045 and ADR-0071 now point to ADR-0072 as their superseder.
 
-## Main-integration audit
+## Files changed
 
-The goal's active worktree branches were compared with main before cleanup.
-Six branch tips are direct main ancestors. Four non-ancestor task tips were
-canonicalized during integration rather than omitted:
-
-- MiniCPM provisioning identity → `f900f9f`;
-- fail-closed fresh installation → `4bdd9d1`;
-- memory evidence provenance → `71238b7`;
-- v5 enrollment promotion → `d18276f`.
-
-Their implementation and test patches are equal; only integrated STATUS,
-TASK_RESULT, ADR numbering/cross-references, and already-landed API adaptation
-differ. No unique task implementation remains outside main.
+- `core/engines/sherpa.py` — optional word-cut speaker default/fallbacks, the
+  unconditional four-word generic floor, and ADR-0042's independent own-TTS
+  STOP ambiguity guard across active, reply-tail, and continuation boundaries.
+- `core/readiness.py` — speaker ID is advisory unless the word-cut identity filter
+  is explicitly enabled.
+- `core/enroll.py` and `tools/setup_models.py` — enrollment guidance distinguishes
+  normal-final gating, generic multi-voice filtering, and open exact controls.
+- `config.json` — committed false default and bounded multi-voice opt-in comment.
+- `README.md`, `docs/audio_pipeline.md`, and `docs/unified_architecture.md` —
+  operator guidance now says enrollment alone does not filter word-cut; the
+  multi-voice filter requires the explicit true flag.
+- `tests/test_barge_word_cut.py` — default policy, exact/four-word success,
+  zero-to-three/echo/silence rejection, explicit speaker-filter coverage, and
+  default-policy ADR-0042 own-TTS ambiguity regressions.
+- `tests/test_setup_doctor.py` — identity-free readiness remains green while the
+  existing explicit-filter failure cases remain pinned.
+- `tests/test_sherpa_duplex_runtime.py` — the real worker/FIFO cancellation fixture
+  exercises the enrollment-free default instead of an explicit test override.
+- `STATUS.md` — current behavior, verification, preserved physical-red boundary,
+  and next live diagnostic.
+- `docs/adr/0072-make-word-cut-enrollment-optional.md` — new decision.
+- `docs/adr/0045-require-lexical-floor-before-speaker-barge.md` and
+  `docs/adr/0071-reject-current-v5-candidate-and-refocus-physical-barge-admission.md`
+  — supersession status only.
+- `TASK_RESULT.md` — this handoff.
 
 ## Verification
 
-On the closeout branch after rebasing onto current main:
-
 ```text
+/home/dobo/work/speaker/.venv/bin/python -m pytest \
+  tests/test_barge_word_cut.py tests/test_setup_doctor.py \
+  tests/test_sherpa_duplex_runtime.py tests/test_capture_integration.py \
+  tests/test_final_trust_lineage.py tests/test_barge_in_suppression.py \
+  tests/test_device_profile_invariants.py tests/test_speaker_input_gate.py -q
+375 passed in 3.96s
+
+/home/dobo/work/speaker/.venv/bin/python -m pytest \
+  tests/test_apm_double_talk.py -q
+6 passed in 0.87s
+
 /home/dobo/work/speaker/.venv/bin/python -m pytest tests -q
-4049 passed, 31 skipped, 9 warnings in 78.11s
-
-/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q
-6 passed in 0.94s
-
-/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_gh_admin.py -q
-10 passed in 0.07s
+4062 passed, 31 skipped, 9 warnings in 76.23s
 
 git diff --check
 PASS (no output)
 
-test $(wc -l < STATUS.md) -le 100
-PASS
+test "$(wc -l < STATUS.md)" -le 100
+PASS (STATUS.md is exactly 100 lines)
 ```
 
-The first full run exposed four stale `GIT_HUB_TOKEN` test fixtures after main's
-new fleet credential setup had moved the helper to `GIT_HUB_ACCESS_TOKEN`. The
-minimal test-only repair landed separately as `31b5872`; the second full run
-above is green. Both execute paths were mocked; no network or real secret was
-used.
+The first focused invocation was blocked before collection because the managed
+sandbox could not create the worktree's ignored `logs/tests` directory. The same
+command was rerun with the normal worktree-write permission and passed; this was
+an environment permission issue, not a repository failure.
 
-Previously completed gates retained as implementation evidence:
+No microphone, speaker, raw audio, enrollment file, model service, network,
+secret, or machine-local configuration was read or modified by these tests.
 
-- strict archived recorded-owner replay: 9 passed with fake streams;
-- word-cut focus: 146 passed; TTS construction focus: 28 passed;
-- production-hybrid MiniCPM/Gemma and Gemma/Gemma: 42/42 each;
-- semantic memory: PASS with PRIVATE main-only recall;
-- private delay runs `041032` and `041156`: one causal cut each at 0.509 and
-  0.818 seconds from calibrated capture onset, zero self-cuts, all route and
-  cleanup proofs green.
+## Risks and manual validation
 
-No microphone, speakers, model server, network, enrollment, or primary local
-config were used or modified by the closeout tests.
-
-## Live gate evidence
-
-- Enrollment `174212`: three roughly 12-second clips, dimension 512, pass
-  similarity minimum 0.60 and mean 0.67; isolated candidate only.
-- Enrollment-on `192151`: all TTS resolutions stayed `sid=0`; one normal France
-  question passed. Soft Yes was dropped, a pause split the turn, the first cut
-  was very late and garbled, the override was repeated, and exact Stop failed.
-- Enrollment-off `193713`: exact Stop produced no word-cut trace, Stop final,
-  handoff, or cut. Playback-time VAD remained zero despite a near-end burst.
-- The scalar evidence points before identity but does not yet distinguish route
-  settling, signal-domain/calibration drift, VAD/energy starvation, echo-floor
-  handling, denoise, or decoder admission.
-
-## Files changed by the closeout branch
-
-- `STATUS.md` — current physical verdict and next gate.
-- `.agents/backlog.md` — prioritized new-session TODOs ahead of historical notes.
-- `docs/adr/0071-reject-current-v5-candidate-and-refocus-physical-barge-admission.md`
-  — rejection, preservation, cleanup, and direction decision.
-- `docs/2026-07-14-v5-live-barge-closeout.md` — bounded live/headless evidence.
-- `TASK_RESULT.md` — integration audit, exact tests, risks, and handoff.
-
-## Cleanup authorization and limits
-
-After this documentation is on main, the owner's explicit cleanup authorization
-covers only this goal's rejected candidate, prepared private config, test/live
-logs and caches, redundant pre-v5 backup, obsolete STATUS stash, merged task
-worktrees/branches, and dead legacy `/tmp` worktree registrations. It does not
-cover the active historical v4 enrollment, primary config, models, unrelated
-branches/worktrees, or unrelated main-run logs.
-
-## Risks and next session
-
-- Cleanup intentionally removes the detailed live artifacts and rejected
-  biometric candidate; the dated closeout retains bounded scalar evidence only.
-- Virtual and recorded gates do not prove current-room acoustics or audible cut
-  latency. Do not promote v5 or claim physical barge acceptance.
-- Begin the new session with enrollment disabled and bounded per-stage markers.
-  Exact Stop must cut promptly with no self-cut before a multiword override,
-  pause repair, new enrollment, or wider acceptance A/B.
+- This policy change does not fix the 2026-07-14 physical failure. The
+  enrollment-off run already starved before identity: playback-time VAD stayed
+  zero and no energy fallback/decoder trace appeared.
+- Novel exact canonical controls deliberately remain short. A STOP-class control
+  that resembles current/recent own TTS fails closed without a compatible,
+  warmed speaker decision even when the generic multi-voice filter is off.
+  Silent control and current-TTS Stop phrasing still require live no-self-cut A/B.
+- Physical acceptance still requires prompt causal exact Stop on the bare laptop
+  speaker, followed by one four-or-more-word override, with no self-cut. No live
+  hardware validation was run or claimed here.
+- Windows voice-communications word-cut remains unavailable under ADR-0019.
 
 ## Merge recommendation
 
-The current repository suite and documentation gates are green. Land and push
-the closeout, then perform only the audited, explicitly authorized cleanup.
+The implementation and deterministic gates are green and scoped to the owner
+decision. It is ready for orchestrator review and landing, with physical
+bare-speaker validation retained as a separate red post-merge gate.

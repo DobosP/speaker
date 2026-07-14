@@ -14,6 +14,7 @@ thread: no audio device or models (Tier 0), mirroring ``test_barge_confirm``.
 """
 from __future__ import annotations
 
+from collections import deque
 import threading
 import time
 
@@ -116,9 +117,8 @@ class _Rec:
 def _engine(
     rec: _Rec | None = None, *, aec=None, vad_speech: bool = True, **cfg
 ) -> SherpaOnnxEngine:
-    # Most fixtures pin the historical identity-free state machine. Production
-    # defaults to enrolled authority; dedicated tests below exercise that gate.
-    cfg.setdefault("barge_word_cut_require_speaker", False)
+    # Identity-free lexical authority is the production default. Dedicated tests
+    # below opt into enrolled-speaker filtering explicitly.
     eng = SherpaOnnxEngine(SherpaConfig(barge_word_cut_enabled=True, **cfg))
     eng._aec = aec  # None = OS echo-cancel path -> word-cut live (ADR-0013)
     eng._vad = _FakeVad(vad_speech)
@@ -172,7 +172,7 @@ def test_word_cut_disabled_by_default():
     assert c.barge_word_cut_energy_fallback_enabled is False
     assert c.barge_word_cut_energy_margin_db == 9.0
     assert c.barge_word_cut_energy_min_blocks == 3
-    assert c.barge_word_cut_require_speaker is True
+    assert c.barge_word_cut_require_speaker is False
     assert c.barge_word_cut_speaker_min_words == 0
     assert c.barge_word_cut_speaker_min_sec == 0.35
     assert c.barge_word_cut_stop_speaker_min_sec == 0.10
@@ -193,6 +193,7 @@ def test_config_from_dict_roundtrip():
             "barge_word_cut_energy_fallback_enabled": True,
             "barge_word_cut_energy_margin_db": 7.0,
             "barge_word_cut_energy_min_blocks": 3,
+            "barge_word_cut_require_speaker": True,
             "barge_word_cut_speaker_min_words": 1,
             "barge_word_cut_stop_speaker_min_sec": 0.15,
             "barge_word_cut_speaker_threshold": 0.4,
@@ -208,6 +209,7 @@ def test_config_from_dict_roundtrip():
     assert c.barge_word_cut_energy_fallback_enabled is True
     assert c.barge_word_cut_energy_margin_db == 7.0
     assert c.barge_word_cut_energy_min_blocks == 3
+    assert c.barge_word_cut_require_speaker is True
     assert c.barge_word_cut_speaker_min_words == 1
     assert c.barge_word_cut_stop_speaker_min_sec == 0.15
     assert c.barge_word_cut_speaker_threshold == 0.4
@@ -223,10 +225,11 @@ def test_config_from_dict_roundtrip():
         (True, 3, 0, 4),
         (True, 0, 0, 4),
         (False, 4, 9, 4),
-        (False, 0, 9, 1),
+        (False, 3, 9, 4),
+        (False, 0, 9, 4),
     ],
 )
-def test_generic_floor_cannot_be_lowered_by_speaker_authority(
+def test_generic_floor_cannot_be_lowered_with_or_without_speaker_authority(
     require_speaker, generic_words, speaker_words, expected
 ):
     eng = _engine(
@@ -286,6 +289,46 @@ def test_four_novel_words_cut_with_no_duck():
     assert eng._barge_in_fired_this_run is True        # one-cut-per-run latch
     assert eng._barge_in_suppressed_until > now        # debounce armed
     assert eng._word_cut_fed_stream is False           # user words kept as pre-roll
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", "hello", "hello there", "hello there friend"],
+)
+def test_default_identity_free_zero_to_three_generic_words_never_cut(text):
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._speaker_gate = None
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer([text]), _FakeStream(), _BLOCK, time.monotonic()
+    )
+    assert rec.barges == 0
+    assert eng._wc_stats.get("cuts", 0) == 0
+
+
+def test_default_identity_free_own_echo_and_vad_silence_never_cut():
+    echo_rec = _Rec()
+    echo = _engine(echo_rec)
+    echo._now_playing = "there are rings of Saturn"
+    assert not echo._barge_word_cut_step(
+        _FakeRecognizer(["there are rings of Saturn"]),
+        _FakeStream(),
+        _BLOCK,
+        time.monotonic(),
+    )
+    assert echo_rec.barges == 0
+    assert echo._wc_stats["own_folds"] == 1
+
+    silent_rec = _Rec()
+    silent = _engine(silent_rec, vad_speech=False)
+    assert not silent._barge_word_cut_step(
+        _FakeRecognizer(["switch to ancient Roman architecture"]),
+        _FakeStream(),
+        _BLOCK,
+        time.monotonic(),
+    )
+    assert silent_rec.barges == 0
 
 
 def test_bare_stop_command_cuts_alone():
@@ -1251,11 +1294,64 @@ def test_standalone_own_tts_stop_requires_speaker_authority():
     assert eng._wc_stats["speaker_rejects"] == 1
 
 
+@pytest.mark.parametrize(
+    ("recognized", "now_playing", "recent_spoken"),
+    [
+        ("stop", "Stop.", ()),
+        ("cancel", "", ("Please cancel.",)),
+        ("OF HE STOP", "The app may stop responding.", ()),
+        ("OF HE STOP", "", ("The app may stop responding.",)),
+    ],
+)
+def test_default_policy_own_tts_ambiguous_control_fails_closed_without_enrollment(
+    recognized, now_playing, recent_spoken
+):
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._now_playing = now_playing
+    eng._recent_spoken = deque(recent_spoken)
+    eng._speaker_gate = None
+
+    assert not eng._barge_word_cut_step(
+        _FakeRecognizer([recognized]),
+        _FakeStream(),
+        np.full(1600, 0.2, dtype="float32"),
+        time.monotonic(),
+    )
+    assert rec.barges == 0
+    assert eng._wc_stats["speaker_unavailable"] == 1
+
+
+@pytest.mark.parametrize(
+    ("recognized", "now_playing"),
+    [
+        ("stop", "Stop."),
+        ("OF HE STOP", "The app may stop responding."),
+    ],
+)
+def test_default_policy_enrolled_owner_can_resolve_own_tts_control_ambiguity(
+    recognized, now_playing
+):
+    rec = _Rec()
+    eng = _engine(rec, speaker_gate_input=False)
+    eng._now_playing = now_playing
+    eng._speaker_gate = _FakeSpeakerGate([0.387])
+    eng._speaker_gate_warmed = True
+
+    assert eng._barge_word_cut_step(
+        _FakeRecognizer([recognized]),
+        _FakeStream(),
+        np.full(1600, 0.2, dtype="float32"),
+        time.monotonic(),
+    )
+    assert rec.barges == 1
+    assert eng._wc_stats["speaker_accepts"] == 1
+
+
 def test_short_owner_stop_cuts_when_recent_tts_makes_text_ambiguous():
     rec = _Rec()
     eng = _engine(
         rec,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )
@@ -1422,7 +1518,6 @@ def test_non_attested_stop_phrase_is_not_a_canonical_cut(text):
 def test_attested_stop_repair_is_shared_at_reply_tail():
     eng = _engine(
         vad_speech=True,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )
@@ -1442,7 +1537,6 @@ def test_attested_stop_repair_is_shared_at_reply_tail():
 def test_tts_ambiguous_attested_stop_uses_short_gate_at_reply_tail():
     eng = _engine(
         vad_speech=True,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )
@@ -1473,7 +1567,6 @@ def test_tts_ambiguous_exact_control_uses_short_gate_at_reply_tail(
 ):
     eng = _engine(
         vad_speech=True,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )
@@ -1499,7 +1592,6 @@ def test_tts_ambiguous_exact_control_uses_short_gate_at_reply_tail(
 def test_attested_stop_repair_is_shared_at_tail_continuation():
     eng = _engine(
         vad_speech=True,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )
@@ -1523,7 +1615,6 @@ def test_attested_stop_repair_is_shared_at_tail_continuation():
 def test_tts_ambiguous_attested_stop_uses_short_gate_at_tail_continuation():
     eng = _engine(
         vad_speech=True,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )
@@ -1558,7 +1649,6 @@ def test_tts_ambiguous_exact_control_uses_short_gate_at_tail_continuation(
 ):
     eng = _engine(
         vad_speech=True,
-        barge_word_cut_require_speaker=True,
         barge_word_cut_speaker_min_words=0,
         speaker_gate_input=False,
     )

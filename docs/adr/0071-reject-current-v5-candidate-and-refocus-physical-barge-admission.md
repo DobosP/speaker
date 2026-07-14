@@ -1,7 +1,7 @@
 # ADR-0071: Reject current v5 candidate and refocus physical barge admission
 
 Date: 2026-07-14
-Status: accepted
+Status: superseded-by ADR-0072
 
 ## Decision
 

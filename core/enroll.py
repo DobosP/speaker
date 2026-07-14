@@ -1,16 +1,21 @@
 """Speaker enrollment: capture the user's voice once and persist an embedding
-the engine loads at startup to gate barge-in and input on speaker identity.
+for optional normal-input and generic multi-voice word-cut identity gates.
 
 Why this exists (``docs/target_architecture.md`` §9.9): without speaker-ID the
-assistant's own TTS leaks into the mic on a laptop-speaker setup and triggers
-barge-in storms, and any nearby voice (a TV, another person, a read-aloud
-quotation) is answered as if addressed to it -- see
+assistant's own TTS can leak into the mic on a laptop-speaker setup, and any
+nearby voice (a TV, another person, a read-aloud quotation) can be answered as
+if addressed to it -- see
 ``logs/runs/run-20260528-004726`` for both symptoms. The gate in
 ``core/engines/speaker_gate.py`` fixes this, but only once a reference voice is
 enrolled. This module is that enrollment step:
 
     python -m core --enroll              # record + save the embedding
-    python -m core --engine sherpa       # now gated on your voice
+    python -m core --engine sherpa       # identity gates use the enrollment
+
+Normal-final identity uses ``speaker_gate_input``. Generic playback overrides
+use enrollment only when ``barge_word_cut_require_speaker=true``; novel exact
+Stop/cancel stays an open fail-safe control, while own-TTS-ambiguous controls
+retain their narrower enrolled-speaker check.
 
 The embedding (not the raw audio) is persisted as small JSON next to the
 models. Persisting the vector -- rather than re-extracting from a WAV every

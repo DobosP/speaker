@@ -2,10 +2,10 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-14 on Linux ROG, current main implementation `31654a2`: full 4049 passed/31 skipped/9 warnings; word-cut 146; TTS construction 28; APM/strict recorded remain 6/9.
+Last verified: 2026-07-14 on Linux ROG, task branch `fix/enrollment-optional-barge`: full 4062 passed/31 skipped/9 warnings; focused 375; APM 6; prior strict recorded evidence 9 (not rerun).
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
-Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; exact Stop must pass before another enrollment A/B (ADR-0071).
+Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
 
 ## Runtime
 
@@ -21,10 +21,10 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   clean stable revision/contract/full identities produced real PASS (ADR-0060/65).
 - Physical open-speaker sessions require PipeWire `echo-cancel-source`/
   `echo-cancel-sink`; those EC nodes and Ollama are session-only, not persistent
-  services. GTCRN is active. Generic word-cut requires four novel words plus
-  speaker authority; in-app AEC/APM are off (ADR-0045).
+  services. GTCRN is active. Generic cuts need four novel non-own words; speaker
+  filtering is multi-voice opt-in. Own-TTS-ambiguous STOP requires identity (ADR-0042/72).
 - Host InputAGC is boost-only: only a current block above its calibrated floor
-  is boosted; below-floor PCM stays unity. V5 is live-red (ADR-0047/0071).
+  is boosted; below-floor PCM stays unity. V5 is live-red (ADR-0047/0072).
 
 ## Voice reliability now implemented
 
@@ -33,10 +33,10 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   partials/finals require periodic dynamic 80/80 ms or steady ≥120 ms calibrated
   pre-gain patterns; unavailable and bounded handoffs abstain/bypass (ADR-0046/48).
 - Word-cut uses isolated recognition and bounded PCM. Production generic cuts
-  need four novel words plus warmed compatible speaker authority; local short
-  floors cannot reopen promotion. Canonical `stop speaking`, attested short
-  repairs, and the exact SenseVoice `DON'T PLAY SPEAK` repair at owned 1.4–2.0 s
-  stay bounded exceptions; empty streaming finals fail closed (ADR-0026/42/53).
+  need four novel non-own words; optional multi-voice mode also requires warmed
+  compatible speaker authority. Local short floors cannot reopen promotion.
+  Canonical/attested/SenseVoice short repairs stay bounded; own-TTS-ambiguous
+  STOP needs compatible speaker authority; empty finals fail closed (ADR-0026/42/53/72).
 - Capture recovery rebinds rate/resampler, preserves the first correctly timed
   block, and treats host `-9999` as REOPEN. Shutdown epoch-fences effects before
   bounded abort/teardown; active owners retain resources and block restart.
@@ -78,7 +78,7 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 
 - Historical v4 remains active and unmodified. Enrollment `174212` captured an
   isolated three-pass v5 candidate (dim 512; similarity min 0.60/mean 0.67), but
-  the candidate failed its live gate and was never promoted (ADR-0071).
+  the candidate failed its live gate and was never promoted (ADR-0072).
 - Enrollment-on `192151` held `sid=0` and answered one normal question, but
   dropped soft Yes, split a one-second pause, cut only late with garbled handoff,
   and did not stop promptly. The owner repeated the override; physical gate red.
@@ -87,9 +87,9 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   fallback never started, placing the blocker before speaker identity. Route/
   calibration settling is a hypothesis, not yet a root-cause proof.
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
-- Next: diagnose physical capture→EC→calibration→VAD/energy→decoder with
-  enrollment disabled; require prompt exact Stop before another candidate or wider
-  acceptance. Do not claim physical barge validated.
+- Next: diagnose physical capture→EC→calibration→VAD/energy→decoder with the
+  optional word-cut identity filter off; require prompt exact Stop before a new
+  candidate or wider acceptance. Do not claim physical barge validated.
 
 ## Standard verification
 Full: `...python -m pytest tests -q`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.

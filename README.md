@@ -100,25 +100,35 @@ For the host + thin-client path (browser/phone as endpoints), see
 
 ## Models (on-device, ONNX)
 
-`sherpa-onnx` provides VAD, streaming ASR, endpointing, TTS, and speaker
-embeddings from ONNX files on all desktop/mobile platforms. Download a
-streaming ASR model, a Silero VAD model, a TTS model, and (for the barge-in
-gate) a speaker-embedding model, then set their paths in `config.json`:
+`sherpa-onnx` provides VAD, streaming ASR, endpointing, TTS, and optional
+speaker embeddings from ONNX files on all desktop/mobile platforms. Download a
+streaming ASR model, a Silero VAD model, and a TTS model. Add a speaker-embedding
+model and enrollment when normal finals need identity gating or when a
+multi-voice room should restrict word-cut barge-in:
 
 ```json
 "sherpa": {
   "asr_encoder": "...", "asr_decoder": "...", "asr_joiner": "...", "asr_tokens": "...",
   "vad_model": "silero_vad.onnx",
   "tts_model": "...", "tts_tokens": "...",
-  "speaker_embedding_model": "...", "speaker_enroll_wav": "you.wav", "speaker_threshold": 0.5
+  "speaker_embedding_model": "...", "speaker_enroll_wav": "you.wav", "speaker_threshold": 0.5,
+  "speaker_gate_input": true,
+  "barge_word_cut_require_speaker": true
 }
 ```
 
-Without a speaker model the gate fails open (any voice can barge in). With
-enrollment, only your voice interrupts. For barge-in on the bare laptop
-speaker (no headphones), select the committed `open_speaker` profile
-(`--device open_speaker`): WebRTC APM echo cancellation + the AdaptiveDTD
-double-talk detector.
+Word-cut barge-in is enrollment-free by default: it admits a novel exact
+Stop/cancel control or at least four novel non-own words. Enrollment alone does
+not filter word-cut; set `barge_word_cut_require_speaker=true` to require owner
+identity for generic four-word overrides in a multi-voice room. Novel exact
+Stop/cancel remains an open fail-safe control in either mode. Controls that
+overlap current or recent TTS retain the fail-closed enrolled-speaker ambiguity
+check. `speaker_gate_input` separately controls identity gating for normal
+finals. See [ADR-0072](docs/adr/0072-make-word-cut-enrollment-optional.md)
+and [ADR-0042](docs/adr/0042-attested-canonical-stop-repair.md).
+For barge-in on the bare laptop speaker (no headphones), select the committed
+`open_speaker` profile (`--device open_speaker`): WebRTC APM echo cancellation
++ the AdaptiveDTD double-talk detector.
 
 ## Tests
 

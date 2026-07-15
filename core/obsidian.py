@@ -33,30 +33,105 @@ _DEFAULT_ROOT = "~/work/dobo-brain/paul-brain"
 _SKIP_DIRS = frozenset({".git", ".obsidian"})
 _SUMMARY_RE = re.compile(r"(?m)^summary\s*:\s*(.*?)\s*$")
 _TITLE_RE = re.compile(r"(?m)^#\s+(.+?)\s*$")
-_QUERY_NOISE = frozenset(
-    {
-        "brain",
-        "about",
-        "check",
-        "could",
-        "dobo",
-        "do",
-        "find",
-        "look",
-        "lookup",
-        "my",
-        "note",
-        "notes",
-        "obsidian",
-        "read",
-        "say",
-        "search",
-        "second",
-        "show",
-        "summarize",
-        "tell",
-        "vault",
-    }
+_VAULT_QUERY_SCOPE_PATTERN = (
+    r"(?:my (?:notes|vault|obsidian vault|obsidian notes|obsidian|second brain)|"
+    r"(?:dobo|paul|pauls) brain(?: notes)?)"
+)
+_VAULT_QUERY_JOIN_PATTERN = (
+    r"(?:across|around|at|back|in|inside|into|of|over|right|through|to|within)"
+)
+_VAULT_QUERY_SCOPE_RE = re.compile(rf"\b{_VAULT_QUERY_SCOPE_PATTERN}\b")
+_VAULT_QUERY_SCOPE_COORDINATION_RE = re.compile(
+    r"^\s+(?:and(?:\s+also)?|or|as\s+well\s+as)\s+$"
+)
+_VAULT_QUERY_SCOPE_COORDINATION_PREFIX_RE = re.compile(
+    r"\b(?:both|either)\s*$"
+)
+_VAULT_QUERY_COURTESY_RE = re.compile(
+    r"^(?:(?:please|kindly|assistant|computer|jarvis|asistent)\s+"
+    r"|(?:(?:can|could|would|will)\s+you)\s+"
+    r"|(?:i\s+(?:want|need)\s+you\s+to)\s+)+"
+)
+_VAULT_QUERY_TRAILING_COURTESY_RE = re.compile(
+    r"(?:\s+(?:please|kindly|thanks|thank\s+you|for\s+me|right\s+now|"
+    r"if\s+possible|if\s+you\s+can|when(?:ever)?\s+you\s+can)){1,3}$"
+)
+_VAULT_QUERY_LEADING_COMMAND_RE = re.compile(
+    r"^(?:search|research|find|look(?:\s+up)?|check|read(?:\s+me)?|list|browse|consult|query|summarize)\b\s*"
+)
+_VAULT_QUERY_LEADING_GO_RE = re.compile(
+    r"^go\s+(?:in|into|inside(?:\s+of)?|through|to|within)\b\s*"
+)
+_VAULT_QUERY_LEADING_QUESTION_RE = re.compile(
+    r"^(?:what\s+(?:is|do|does)|whats|do\s+i\s+have|do|does|how|when|where|"
+    r"which|who|why|is|are)\b\s*"
+)
+_VAULT_QUERY_TRAILING_JOIN_RE = re.compile(
+    rf"(?:^|\s){_VAULT_QUERY_JOIN_PATTERN}"
+    rf"(?:\s+{_VAULT_QUERY_JOIN_PATTERN})*\s*$"
+)
+_VAULT_QUERY_LEADING_RESPONSE_VERB_RE = re.compile(
+    r"^(?:say|contain|contains|mention|mentions|have|show|is|are)\b\s*"
+)
+_VAULT_QUERY_LEADING_TOPIC_JOIN_RE = re.compile(
+    r"^(?:about|concerning|discussing|for|regarding)\b\s*"
+)
+_VAULT_QUERY_LEADING_POST_SCOPE_COMMAND_RE = re.compile(
+    r"^(?:(?:(?:and\s+)?then|and|to)\s+)?"
+    r"(?:(?:(?:can|could|would|will)\s+you|kindly|please)\s+)*"
+    r"(?:search|research|find|look(?:\s+up)?|check|read(?:\s+me)?|"
+    r"list|browse|consult|query|summarize)\b"
+    r"(?:\s+for\b)?\s*"
+)
+_VAULT_QUERY_BARE_TOPIC_RE = re.compile(
+    r"^(?:search|research|find|look(?:\s+up)?|check|read(?:\s+me)?|list|"
+    r"browse|consult|query|summarize)$"
+)
+_VAULT_QUERY_TRAILING_TOPIC_JOIN_RE = re.compile(
+    r"(?:^|\s)(?:about|concerning|discussing|for|regarding)\s*$"
+)
+_VAULT_QUERY_TOPIC_GLUE_RE = re.compile(
+    r"\b(?:about|concerning|discussing|regarding)\b"
+)
+_VAULT_QUERY_COPULA_GLUE_RE = re.compile(
+    r"\b(?:am|are|been|had|has|have|is|was|were)\b"
+)
+_VAULT_QUERY_REDUNDANT_SCOPE_RE = re.compile(
+    r"\bmy (?:notes|vault|obsidian vault|obsidian notes|obsidian|second brain)\b"
+    r"(?=\s+(?:for|about|concerning|discussing|regarding)\b)"
+)
+_VAULT_QUERY_PUBLIC_SOURCE_PATTERN = (
+    r"(?:(?:the\s+)?(?:(?:public|open)\s+)?(?:web|internet)|online)"
+    r"(?:\s+(?:search\s+)?(?:documents?|pages?|sources?|results?))?"
+)
+_VAULT_QUERY_PRIVATE_CORRECTION_TAIL_RE = re.compile(
+    r"\b(?:actually|but|no(?:\s+wait)?|then)\s+"
+    r"(?:(?:actually|please|wait)\s+)*"
+    r"(?:browse|check|consult|find|go|look(?:\s+up)?|query|read|research|search|use)"
+    r"(?:\s+(?:back|only))?"
+    r"(?:\s+(?:in|inside|into|through|to|within))?\s*$"
+)
+_VAULT_QUERY_NEGATED_PUBLIC_CORRECTION_TAIL_RE = re.compile(
+    rf"\bwithout\s+"
+    rf"(?:(?:browsing|checking|consulting|going|looking|searching|using)\s+)?"
+    rf"{_VAULT_QUERY_PUBLIC_SOURCE_PATTERN}\s+"
+    r"(?:browse|check|consult|find|go|look(?:\s+up)?|query|read|research|search|use)"
+    r"(?:\s+(?:in|inside|into|through|to|within))?\s*$"
+)
+_VAULT_QUERY_PUBLIC_LOOKUP_HEAD_RE = re.compile(
+    rf"^(?:(?:search|research|find|look(?:\s+up)?|check|read|list|browse|"
+    rf"consult|query|summarize)\s+)?{_VAULT_QUERY_PUBLIC_SOURCE_PATTERN}"
+    r"(?:\s+(?:about|concerning|discussing|for|on|regarding)\b)?\s*"
+)
+_VAULT_QUERY_CORRECTION_SUFFIX_RE = re.compile(
+    r"^(?:instead|after\s+all)(?:\s+(?:please|for\s+me))?$"
+)
+_VAULT_QUERY_LOCAL_PUBLIC_EXCLUSION_RE = re.compile(
+    rf"^(?:(?:but\s+)?(?:not|never)\s+|"
+    rf"without\s+(?:(?:browsing|checking|consulting|going|looking|searching|using)\s+)?|"
+    rf"(?:rather\s+than|instead\s+of|with\s+no)\s+|"
+    rf"(?:do\s+not|dont)\s+(?:(?:browse|check|consult|go|look|search|use)\s+)?)"
+    rf"{_VAULT_QUERY_PUBLIC_SOURCE_PATTERN}$"
 )
 _MAX_QUERY_CHARS = 512
 _MAX_QUERY_BYTES = 2048
@@ -495,10 +570,118 @@ class ObsidianVault:
 
     @staticmethod
     def _terms(query: str) -> tuple[str, ...]:
-        useful = [word for word in keywords(query, limit=16) if word not in _QUERY_NOISE]
-        if useful:
-            return tuple(useful)
-        return ()
+        normalized = normalize_text(query)
+        normalized = _VAULT_QUERY_COURTESY_RE.sub("", normalized)
+        protected_topic_terms: tuple[str, ...] = ()
+        trailing_courtesy = _VAULT_QUERY_TRAILING_COURTESY_RE.search(normalized)
+        if trailing_courtesy is not None:
+            before_courtesy = normalized[: trailing_courtesy.start()].rstrip()
+            if _VAULT_QUERY_TRAILING_TOPIC_JOIN_RE.search(before_courtesy):
+                protected_topic_terms = tuple(
+                    normalize_text(trailing_courtesy.group()).split()
+                )
+            else:
+                normalized = before_courtesy
+        scopes = tuple(_VAULT_QUERY_SCOPE_RE.finditer(normalized))
+        scope = None
+        scope_index = None
+        if scopes:
+            def source_score(candidate: re.Match[str]) -> int:
+                before_scope = normalized[: candidate.start()].strip()
+                after_scope = normalized[candidate.end() :].strip()
+                score = 0
+                if _VAULT_QUERY_TRAILING_JOIN_RE.search(before_scope):
+                    score += 6
+                if _VAULT_QUERY_TRAILING_TOPIC_JOIN_RE.search(before_scope):
+                    score -= 8
+                scaffold = _VAULT_QUERY_LEADING_QUESTION_RE.sub("", before_scope)
+                scaffold = _VAULT_QUERY_LEADING_GO_RE.sub("", scaffold)
+                scaffold = _VAULT_QUERY_LEADING_COMMAND_RE.sub("", scaffold)
+                scaffold = _VAULT_QUERY_LEADING_QUESTION_RE.sub("", scaffold)
+                scaffold = _VAULT_QUERY_TRAILING_JOIN_RE.sub("", scaffold)
+                if not scaffold.strip():
+                    score += 3
+                if _VAULT_QUERY_LEADING_TOPIC_JOIN_RE.match(after_scope):
+                    score += 2
+                return score
+
+            scope_index, scope = max(
+                enumerate(scopes),
+                key=lambda item: (source_score(item[1]), -item[0]),
+            )
+        if scope is not None:
+            cluster_first = cluster_last = scope_index
+            assert cluster_first is not None
+            while (
+                cluster_first > 0
+                and _VAULT_QUERY_SCOPE_COORDINATION_RE.fullmatch(
+                    normalized[
+                        scopes[cluster_first - 1].end() : scopes[cluster_first].start()
+                    ]
+                )
+            ):
+                cluster_first -= 1
+            while (
+                cluster_last + 1 < len(scopes)
+                and _VAULT_QUERY_SCOPE_COORDINATION_RE.fullmatch(
+                    normalized[
+                        scopes[cluster_last].end() : scopes[cluster_last + 1].start()
+                    ]
+                )
+            ):
+                cluster_last += 1
+            before = normalized[: scopes[cluster_first].start()].strip()
+            after = normalized[scopes[cluster_last].end() :].strip()
+            if cluster_first != cluster_last:
+                before = _VAULT_QUERY_SCOPE_COORDINATION_PREFIX_RE.sub(
+                    "", before
+                ).strip()
+
+            # When the speaker corrects a public source to the private vault,
+            # keep the original topic but remove both source-selection clauses.
+            # This is positional so topic text such as ``ways to avoid the
+            # internet`` remains searchable.
+            correction = _VAULT_QUERY_PRIVATE_CORRECTION_TAIL_RE.search(before)
+            negated_public_correction = (
+                _VAULT_QUERY_NEGATED_PUBLIC_CORRECTION_TAIL_RE.search(before)
+            )
+            source_correction = correction or negated_public_correction
+            if source_correction is not None:
+                before = before[: source_correction.start()].strip()
+                before = _VAULT_QUERY_PUBLIC_LOOKUP_HEAD_RE.sub("", before)
+                if _VAULT_QUERY_SCOPE_RE.fullmatch(before):
+                    before = ""
+                if _VAULT_QUERY_CORRECTION_SUFFIX_RE.fullmatch(after):
+                    after = ""
+            elif _VAULT_QUERY_LOCAL_PUBLIC_EXCLUSION_RE.fullmatch(after):
+                after = ""
+
+            # Parse scaffold by position. A leading command and source-adjacent
+            # preposition are routing grammar, while the same token elsewhere is
+            # a legitimate topic (``find Search/Notes/Paul in my vault``).
+            before = _VAULT_QUERY_LEADING_QUESTION_RE.sub("", before)
+            before = _VAULT_QUERY_LEADING_GO_RE.sub("", before)
+            before = _VAULT_QUERY_LEADING_COMMAND_RE.sub("", before)
+            before = _VAULT_QUERY_LEADING_QUESTION_RE.sub("", before)
+            before = _VAULT_QUERY_TRAILING_JOIN_RE.sub("", before)
+            before = _VAULT_QUERY_REDUNDANT_SCOPE_RE.sub("", before)
+            after = _VAULT_QUERY_LEADING_POST_SCOPE_COMMAND_RE.sub("", after)
+            after = _VAULT_QUERY_LEADING_RESPONSE_VERB_RE.sub("", after)
+            after = _VAULT_QUERY_LEADING_TOPIC_JOIN_RE.sub("", after)
+            normalized = f"{before} {after}".strip()
+            normalized = _VAULT_QUERY_TOPIC_GLUE_RE.sub(" ", normalized)
+            normalized = _VAULT_QUERY_COPULA_GLUE_RE.sub(" ", normalized)
+        else:
+            bare_topic = (
+                normalized
+                if _VAULT_QUERY_BARE_TOPIC_RE.fullmatch(normalized)
+                else ""
+            )
+            normalized = _VAULT_QUERY_LEADING_GO_RE.sub("", normalized)
+            normalized = _VAULT_QUERY_LEADING_COMMAND_RE.sub("", normalized)
+            normalized = normalized or bare_topic
+        terms = keywords(normalized, limit=16)
+        return terms or protected_topic_terms[:16]
 
     @staticmethod
     def _score(
@@ -772,9 +955,10 @@ def attach_obsidian_capability(
             name=_CAPABILITY,
             summary="search and read bounded excerpts from your local Obsidian notes",
             when_to_use=(
-                "search the configured local vault only when the user explicitly "
-                "refers to their own notes, my vault, my Obsidian, or the configured "
-                "Paul/dobo brain; use web search for generic Obsidian topics"
+                "search, find, browse, list, or go into the configured local vault "
+                "only when the user explicitly refers to their own notes, my vault, "
+                "my Obsidian, or the configured Paul/dobo brain; use web search for "
+                "generic Obsidian topics"
             ),
             egress="local",
             speaks=True,

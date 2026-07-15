@@ -1,116 +1,65 @@
-# Task Result — enrollment-optional barge + read-only Obsidian vault
+# Task Result — explicit personal-vault command phrasing
 
-Valid until: ADR-0072 or ADR-0073, or either implementation, changes — then treat as history.
-
-Integration: `feat/obsidian-vault-tool` rebased cleanly, then fast-forwarded onto
-local `main` after the combined gates passed.
-
-Status: combined deterministic/headless gates green; physical bare-speaker
-barge-in remains red and unvalidated.
+Valid until: ADR-0074 or its phrase-routing implementation changes — then treat as history.
 
 ## Outcome
 
-### Enrollment-optional barge-in (ADR-0072)
+- The voice agent now treats natural personal-source forms such as `search in
+  my vault`, `go in my vault`, and `find in my vault` as the same deterministic
+  local read. Notes, Obsidian, second-brain, Dobo-brain, and Paul-brain aliases
+  use the existing SEARCH intent with `search_scope=vault`.
+- Topicless commands return the existing bounded listing. Topical commands
+  retain their actual ranking terms; routing words and ordered source-correction
+  glue are removed without globally deleting words such as `web`, `online`, or
+  action verbs when those words are the topic.
+- Source choice is ordered and polarity-aware. Explicit vault exclusions remain
+  public, explicit web/online choices cannot see the vault, and unambiguous later
+  corrections can switch back to the private source. Literal topic clauses are
+  not mistaken for corrections or exclusions.
+- Status/capability questions and requests containing a separate action or
+  mutation clause receive no private read tool. Topic phrases such as `tools to
+  edit files` remain searchable, while requests to edit a found note/result fail
+  closed.
+- Text and native ReAct allowlists enforce the same classification. Local vault
+  reads cannot acquire web tools, public searches cannot acquire `vault.search`,
+  and non-lookups receive no read tool. This does not rely on model obedience.
+- ADR-0073's default-off, no-follow, bounded, read-only, PRIVATE, no-egress
+  reader is unchanged. No write authority, general filesystem access, new
+  intent/mode, phone-native schema, or barge-in behavior was added.
 
-- Single-voice word-cut defaults to enrollment-independent lexical authority;
-  missing `barge_word_cut_require_speaker` keys resolve to false consistently.
-- Identity-free generic cuts retain a non-lowerable four-novel-non-own-word
-  floor. Exact novel controls retain their bounded short exception.
-- Own-TTS-ambiguous STOP still requires compatible warmed speaker authority;
-  silence, generic own echo, empty text, and zero-to-three generic words fail
-  closed. `barge_word_cut_require_speaker=true` remains the multi-voice opt-in.
-- Normal-final `speaker_gate_input`, typed owner verification, sensitive action
-  gates, enrollment capture/provenance, preparation, and promotion are unchanged.
-- Physical enrollment-on `192151` and enrollment-off `193713` remain failed;
-  this headless change does not claim live barge validation.
+## Verification
 
-### Read-only Obsidian vault (ADR-0073)
+- Vault and phrase matrix: `1066 passed`.
+- Vault + speech contract + ReAct + cloud-PII gate: `1108 passed`.
+- Adjacent cloud/provider integration gate: `1152 passed`.
+- Full deterministic suite: `5130 passed, 31 skipped, 9 known warnings`.
+- Required APM/double-talk regression: `6 passed`.
+- Python compilation, changed-module imports, and `git diff --check`: passed.
+- Independent read-only review matrices passed: 393 established classifier
+  cases, 80 mutation topologies, 26 topical controls, 24 common action-word
+  topics, and 12 additional mutation-safety controls.
+- A headless real-root smoke against `/home/dobo/work/dobo-brain/paul-brain`
+  ran all three requested forms with `ScriptedEngine` + `EchoLLM`. Each invoked
+  only `vault.search` then `research.local`; none invoked web or spoke a raw
+  untrusted-content fence.
 
-- A default-off `vault.search` capability reads bounded Markdown excerpts from
-  `~/work/dobo-brain/paul-brain` when enabled in machine-local configuration.
-- Explicit and conversational private-vault requests stay local, synthesize
-  before speech, and never fall through to web search. Web-source grammar is
-  shared by deterministic speech routing and the ReAct controller allowlist.
-- The POSIX reader retains a root descriptor opened component-by-component
-  without following links; descendants use verified relative handles. It skips
-  `.git`/`.obsidian`, rejects unsafe names, and caps traversal, reads, results,
-  excerpts, and output. It never mutates the vault or returns absolute paths.
-- Note text is PRIVATE file-origin data, independently output-bounded and fenced
-  as untrusted before model use. Missing/unreadable/unsupported roots are not
-  registered or advertised. The committed template remains disabled.
-- MiniCPM's verified native first-four schema is unchanged. Deterministic SEARCH
-  handles supported vault phrases; vault-scoped native ReAct fails closed.
+## Documentation
 
-## Main files
+- ADR-0074 supersedes ADR-0073's narrow phrase-routing rule while retaining the
+  reader's containment, privacy, cancellation, and output-bound decisions.
+- `docs/unified_architecture.md` and `STATUS.md` link the current decision and
+  record the final 2026-07-16 verification evidence.
 
-- Barge lane: `core/engines/sherpa.py`, `core/readiness.py`, `core/enroll.py`,
-  `tools/setup_models.py`, barge/readiness/duplex tests, ADR-0072, and related
-  operator documentation.
-- Vault lane: `core/obsidian.py`, runtime/app/config/persona/capability wiring,
-  `always_on_agent` analyzer/planner/ReAct policy, `tests/test_obsidian.py`,
-  ADR-0073, and profile/capture invariants.
-- Shared truth: `STATUS.md`, `TASK_RESULT.md`, `config.json`, and
-  `docs/unified_architecture.md` retain both lanes.
+## Manual validation and limits
 
-## Combined-tree verification
-
-```text
-PYTHONDONTWRITEBYTECODE=1 /home/dobo/work/speaker/.venv/bin/python -m pytest \
-  -p no:cacheprovider tests/test_obsidian.py -q
-29 passed in 0.36s
-
-/home/dobo/work/speaker/.venv/bin/python -m pytest \
-  tests/test_barge_word_cut.py tests/test_setup_doctor.py \
-  tests/test_sherpa_duplex_runtime.py tests/test_capture_integration.py \
-  tests/test_final_trust_lineage.py tests/test_barge_in_suppression.py \
-  tests/test_device_profile_invariants.py tests/test_speaker_input_gate.py -q
-376 passed in 4.87s
-
-/home/dobo/work/speaker/.venv/bin/python -m pytest \
-  tests/test_apm_double_talk.py -q
-6 passed in 0.97s
-
-/home/dobo/work/speaker/.venv/bin/python -m pytest tests -q
-4093 passed, 31 skipped, 9 warnings in 81.31s
-
-git diff --check
-PASS (no output)
-
-test "$(wc -l < STATUS.md)" -le 100
-PASS (STATUS.md is exactly 100 lines)
-```
-
-The nine full-suite warnings are the existing two endpointing divide-by-zero
-warnings and seven Pillow `getdata()` deprecation warnings.
-
-Final local-main recorded-owner replay:
-
-```text
-SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest \
-  tests/replay_recorded_voice_test.py -q
-9 passed in 60.26s
-```
-
-The gitignored machine-local config enables `vault.search` for
-`~/work/dobo-brain/paul-brain`. A privacy-safe real-vault smoke scanned 80
-Markdown files, returned four relative citations with PRIVATE/no-egress
-metadata, and a headless voice turn invoked exactly
-`vault.search -> research.local`; no note body or raw fenced wrapper was spoken.
-
-## Risks and manual validation
-
-- Enrollment optionality does not fix the 2026-07-14 physical failure. The
-  enrollment-off run starved before identity: playback-time VAD stayed zero and
-  no energy fallback/decoder trace appeared.
-- Novel exact controls deliberately remain short; current/recent-own-TTS STOP
-  ambiguity still fails closed without compatible warmed speaker authority.
-- Physical acceptance still requires prompt causal exact Stop followed by a
-  four-or-more-word override, with no self-cut. No live hardware validation is
-  run or claimed by this combined headless gate.
-- Vault access is POSIX-only for this version and remains default off in the
-  committed template; this machine enables it only in gitignored local config.
+- This is deterministic headless control-plane behavior. No live microphone,
+  ASR, speaker hardware, or physical audio validation ran or is claimed.
+- The smoke printed only phrases, invoked tool names, and privacy booleans. It
+  did not print note bodies, credentials, or raw transcripts, and it did not
+  modify the vault.
 
 ## Merge recommendation
 
-The two lanes are headless-green and integrated locally. Physical barge
-acceptance remains a separate red post-merge gate.
+The implementation and documentation gates are green and may be landed on
+`main`. Preserve the existing live-audio red status: this change does not resolve
+or validate the separate physical barge-in failure tracked by ADR-0072.

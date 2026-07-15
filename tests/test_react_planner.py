@@ -332,6 +332,7 @@ def test_tool_cancellation_cannot_launch_post_budget_final_model_call():
 def test_should_escalate_distinguishes_gathering_from_chitchat():
     assert should_escalate("search for the latest local TTS options") is True
     assert should_escalate("what time is it") is False
+    assert should_escalate("the browser is already open") is False
 
 
 def test_planner_config_from_dict():

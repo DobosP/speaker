@@ -26,7 +26,11 @@ from .planner_steps import (
     PlannerStepBackend,
     PlannerTool,
 )
-from .speech_analyzer import is_vault_scoped_request
+from .speech_analyzer import (
+    is_vault_lookup_request,
+    is_vault_public_source_request,
+    is_vault_scoped_request,
+)
 from .text import normalize_text
 from .untrusted import wrap_untrusted
 
@@ -135,11 +139,14 @@ class PlannerConfig:
 def should_escalate(query: str, context: Mapping[str, object] | None = None) -> bool:
     """True when an ASSISTANT-mode query looks like it needs tools/gathering."""
     q = normalize_text(query)
+    if is_vault_public_source_request(q):
+        return True
     if is_vault_scoped_request(q):
         # A request naming private local notes must never fall through to a web
         # gather merely because the optional machine-local vault is absent.
         return (
             (context or {}).get("vault_available") is True
+            and is_vault_lookup_request(q)
             and len(q.split()) >= 4
         )
     if sum(1 for m in _ESCALATE_MARKERS if m in q) >= 1 and len(q.split()) >= 4:
@@ -387,15 +394,24 @@ class ReactPlanner:
         steps_taken: list[str] = []
         native_backend = self._step_backend
         vault_scoped = is_vault_scoped_request(query)
-        run_tools = self._tools
+        vault_lookup = is_vault_lookup_request(query)
+        # Private vault reads require an explicit local lookup. Never advertise
+        # vault.search on generic or explicitly-public turns and rely on model
+        # obedience to protect the private source.
+        run_tools = tuple(name for name in self._tools if name != "vault.search")
         if vault_scoped:
             # Controller-enforced source scope: a private local-vault request
             # cannot select web/search.local even if a model ignores guidance.
-            # An absent/misconfigured vault yields an empty allowlist, not web.
-            run_tools = tuple(
-                name
-                for name in self._tools
-                if name == "vault.search" and name in self._registry.names()
+            # Only a real read lookup may see vault.search; declarations and
+            # mutation requests get no read tool at all.
+            run_tools = (
+                tuple(
+                    name
+                    for name in self._tools
+                    if name == "vault.search" and name in self._registry.names()
+                )
+                if vault_lookup
+                else ()
             )
         if native_backend is not None and vault_scoped:
             # ADR-0033/0073: vault.search is appended after MiniCPM's verified
@@ -404,7 +420,13 @@ class ReactPlanner:
             # ReAct, while a direct native planner call fails closed with no tools.
             native_tools: tuple[PlannerTool, ...] = ()
         else:
-            native_tools = self._native_tools() if native_backend is not None else ()
+            native_tools = (
+                tuple(
+                    tool for tool in self._native_tools() if tool.name in run_tools
+                )
+                if native_backend is not None
+                else ()
+            )
         native_allowed = {tool.name for tool in native_tools}
         native_exchanges: list[PlannerExchange] = []
         reprompt_budget = 1  # one strict-format retry across the whole plan (P3)

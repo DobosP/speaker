@@ -1,7 +1,7 @@
 # ADR-0073: Add bounded read-only Obsidian access
 
 Date: 2026-07-14
-Status: accepted
+Status: superseded-by ADR-0074
 
 ## Decision
 

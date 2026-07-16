@@ -1,9 +1,44 @@
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .sherpa import SherpaConfig
+
+
+log = logging.getLogger("speaker.sherpa_models")
+
+
+def create_recognizer_stream(
+    recognizer,
+    config: "SherpaConfig",
+    *,
+    hotwords: list[str] | tuple[str, ...] | None = None,
+):
+    """Create one streaming-ASR stream with production contextual biasing.
+
+    Live capture and recorded replay must use the same per-stream hotword seam;
+    otherwise a recording A/B silently measures an un-biased recognizer even
+    though the live engine is biased. Older sherpa-onnx builds may reject the
+    keyword, so retain the existing plain-stream fallback.
+    """
+    phrases = list(hotwords) if hotwords is not None else [
+        line.strip()
+        for line in (getattr(config, "asr_hotwords", "") or "").splitlines()
+        if line.strip()
+    ]
+    if (
+        phrases
+        and getattr(config, "asr_decoding_method", "") == "modified_beam_search"
+    ):
+        try:
+            return recognizer.create_stream(hotwords="\n".join(phrases))
+        except TypeError:
+            log.warning(
+                "this sherpa-onnx build ignores per-stream hotwords; biasing disabled"
+            )
+    return recognizer.create_stream()
 
 # sherpa-onnx model builders shared by the local engine (``SherpaOnnxEngine``,
 # local mic/speaker) and the remote engine (``LiveKitEngine``, a WebRTC room).

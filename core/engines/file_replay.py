@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from numbers import Real
 from typing import Callable, Optional
 
@@ -29,10 +29,13 @@ from ._sherpa_models import (
     build_punctuation,
     build_recognizer,
     build_tts,
+    create_recognizer_stream,
 )
 from .sherpa import (
+    FinalTranscriptDecision,
     SherpaConfig,
     _attested_interrupt_repair,
+    _resolve_final_transcript,
     _transcribe_final_text,
 )
 
@@ -60,6 +63,18 @@ class _TrackedReplayDelivery:
     receipt: PlaybackReceipt
 
 
+@dataclass(frozen=True)
+class ReplayAsrResult:
+    """Private in-memory ASR decisions from one diagnostic replay.
+
+    Hypotheses are deliberately excluded from the representation.  The
+    recording evaluator reduces them to aggregate counters immediately and
+    never sends them through runtime callbacks.
+    """
+
+    decisions: tuple[FinalTranscriptDecision, ...] = field(repr=False)
+
+
 # Headless engine: runs the REAL sherpa-onnx recognizer and TTS over a recorded
 # waveform instead of a live mic + sound card, so the full ASR -> LLM -> TTS
 # pipeline can run on a server/CI CPU and be measured. It reuses the same
@@ -82,9 +97,16 @@ class FileReplayEngine(AudioEngine):
     non-streaming offline TTS, is when playback would begin.
     """
 
-    def __init__(self, config: SherpaConfig, *, trailing_silence_sec: float = 0.6):
+    def __init__(
+        self,
+        config: SherpaConfig,
+        *,
+        trailing_silence_sec: float = 0.6,
+        asr_only: bool = False,
+    ):
         self.config = config
         self.trailing_silence_sec = trailing_silence_sec
+        self._asr_only = bool(asr_only)
         self._cb = EngineCallbacks()
         self._recognizer = None
         self._final_recognizer = None
@@ -129,10 +151,10 @@ class FileReplayEngine(AudioEngine):
                 "FileReplayEngine needs an ASR model: set sherpa.asr_encoder/"
                 "decoder/joiner/tokens (see tools/bench, which fetches them)."
             )
-        tts = build_tts(self.config)
+        tts = None if self._asr_only else build_tts(self.config)
         final_recognizer = build_final_recognizer(self.config)
         punctuation = build_punctuation(self.config)
-        stream = recognizer.create_stream()
+        stream = create_recognizer_stream(recognizer, self.config)
         with self._receipt_lock:
             self._stop_speaking.set()
             delivery = self._claim_active_tracked_locked(
@@ -583,6 +605,45 @@ class FileReplayEngine(AudioEngine):
         ``speech_sec`` is optional independent ownership evidence from a corpus
         manifest. Raw array duration is never promoted to attested timing.
         """
+        self._decode_samples(
+            samples,
+            sample_rate,
+            speech_sec=speech_sec,
+            publish=True,
+        )
+
+    def evaluate_samples(
+        self,
+        samples,
+        sample_rate: int,
+        *,
+        speech_sec: Optional[float] = None,
+    ) -> ReplayAsrResult:
+        """Return private raw/selected decisions without publishing a turn.
+
+        This is the ASR-only measurement seam.  It shares recognizer creation,
+        resampling, block cadence, endpointing, second-pass selection, and
+        attested repair with :meth:`replay_samples`, but invokes no partial,
+        final, or metric callback and does not mutate ``finals``/``last_final``.
+        """
+        return ReplayAsrResult(
+            self._decode_samples(
+                samples,
+                sample_rate,
+                speech_sec=speech_sec,
+                publish=False,
+            )
+        )
+
+    def _decode_samples(
+        self,
+        samples,
+        sample_rate: int,
+        *,
+        speech_sec: Optional[float],
+        publish: bool,
+    ) -> tuple[FinalTranscriptDecision, ...]:
+        """Shared recorded transport for ordinary and diagnostic replay."""
         import numpy as np
 
         recognizer = self._recognizer
@@ -609,6 +670,7 @@ class FileReplayEngine(AudioEngine):
         last_partial = ""
         segment_parts = []
         endpoint_count = 0
+        decisions: list[FinalTranscriptDecision] = []
         tail = np.zeros(int(sample_rate * self.trailing_silence_sec), dtype="float32")
         full = np.concatenate([samples, tail])
 
@@ -627,7 +689,8 @@ class FileReplayEngine(AudioEngine):
             text = recognizer.get_result(stream)
             if text and text != last_partial:
                 last_partial = text
-                self._cb.on_partial(text)
+                if publish:
+                    self._cb.on_partial(text)
             if recognizer.is_endpoint(stream):
                 raw_final = recognizer.get_result(stream)
                 segment = (
@@ -643,7 +706,19 @@ class FileReplayEngine(AudioEngine):
                     )
                 final_text = ""
                 if raw_final.strip():
-                    final_text = _transcribe_final_text(
+                    if publish:
+                        final_text = _transcribe_final_text(
+                            self.config,
+                            self._final_recognizer,
+                            self._punct,
+                            segment,
+                            raw_final,
+                            speech_sec=speech_sec,
+                            segment_sample_rate=sample_rate,
+                            attested_repair=_attested_interrupt_repair,
+                        )
+                if not publish and (raw_final.strip() or segment.size):
+                    decision = _resolve_final_transcript(
                         self.config,
                         self._final_recognizer,
                         self._punct,
@@ -653,10 +728,12 @@ class FileReplayEngine(AudioEngine):
                         segment_sample_rate=sample_rate,
                         attested_repair=_attested_interrupt_repair,
                     )
+                    decisions.append(decision)
+                    final_text = decision.selected
                 recognizer.reset(stream)
                 segment_parts.clear()
                 last_partial = ""
-                if final_text.strip():
+                if publish and final_text.strip():
                     self.last_final = final_text
                     self.finals.append(final_text)
                     self._cb.on_metric(SPEECH_END)
@@ -680,7 +757,24 @@ class FileReplayEngine(AudioEngine):
                     "speech_sec attestation was already consumed by an "
                     "earlier replay endpoint"
                 )
-            text = _transcribe_final_text(
+            if publish:
+                text = _transcribe_final_text(
+                    self.config,
+                    self._final_recognizer,
+                    self._punct,
+                    segment,
+                    raw_final,
+                    speech_sec=speech_sec,
+                    segment_sample_rate=sample_rate,
+                    attested_repair=_attested_interrupt_repair,
+                )
+        if not publish and (raw_final.strip() or segment.size):
+            if speech_sec is not None and endpoint_count:
+                raise RuntimeError(
+                    "speech_sec attestation was already consumed by an "
+                    "earlier replay endpoint"
+                )
+            decision = _resolve_final_transcript(
                 self.config,
                 self._final_recognizer,
                 self._punct,
@@ -690,12 +784,15 @@ class FileReplayEngine(AudioEngine):
                 segment_sample_rate=sample_rate,
                 attested_repair=_attested_interrupt_repair,
             )
+            decisions.append(decision)
+            text = decision.selected
         recognizer.reset(stream)
-        if text.strip():
+        if publish and text.strip():
             self.last_final = text
             self.finals.append(text)
             self._cb.on_metric(SPEECH_END)
             self._cb.on_final(text)
+        return tuple(decisions)
 
     def barge_in(self) -> None:
         """Simulate the user talking over playback (for barge-in benchmarks)."""

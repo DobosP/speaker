@@ -200,6 +200,125 @@ def test_replay_fires_final_and_records_metrics(monkeypatch):
     assert record.first_audio_latency is not None
 
 
+def test_file_replay_uses_production_stream_hotwords(monkeypatch):
+    class _HotwordRecognizer(_FakeRecognizer):
+        def __init__(self) -> None:
+            super().__init__()
+            self.hotwords = None
+
+        def create_stream(self, hotwords=None):
+            self.hotwords = hotwords
+            return _FakeStream()
+
+    recognizer = _HotwordRecognizer()
+    _patch_models(monkeypatch, recognizer, _FakeTts())
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            asr_decoding_method="modified_beam_search",
+            asr_hotwords="vault\nObsidian",
+        )
+    )
+
+    engine.start(EngineCallbacks())
+    try:
+        assert recognizer.hotwords == "vault\nObsidian"
+    finally:
+        engine.stop()
+
+
+def test_asr_only_evaluation_skips_tts_and_publishes_nothing(monkeypatch):
+    recognizer = _FakeRecognizer("private streaming hypothesis")
+    monkeypatch.setattr(fr, "build_recognizer", lambda _c: recognizer)
+
+    def _unexpected_tts(_config):
+        raise AssertionError("ASR-only replay must not construct TTS")
+
+    monkeypatch.setattr(fr, "build_tts", _unexpected_tts)
+    partials: list[str] = []
+    finals: list[str] = []
+    metrics: list[str] = []
+    engine = FileReplayEngine(
+        SherpaConfig(asr_encoder="x", tts_model="y"),
+        asr_only=True,
+    )
+    engine.start(
+        EngineCallbacks(
+            on_partial=partials.append,
+            on_final=finals.append,
+            on_metric=metrics.append,
+        )
+    )
+    try:
+        result = engine.evaluate_samples(
+            np.concatenate(
+                [np.ones(16000, dtype="float32") * 0.5, np.zeros(1600)]
+            ),
+            16000,
+        )
+    finally:
+        engine.stop()
+
+    assert partials == finals == metrics == []
+    assert engine.finals == []
+    assert engine.last_final == ""
+    assert len(result.decisions) == 1
+    [decision] = result.decisions
+    assert decision.streaming_raw == "private streaming hypothesis"
+    assert decision.selected == "Private streaming hypothesis"
+    assert decision.offline_outcome == "unavailable"
+    assert "private streaming hypothesis" not in repr(result)
+    assert "private streaming hypothesis" not in repr(decision)
+
+
+def test_asr_only_evaluation_observes_but_never_promotes_offline_recovery(
+    monkeypatch,
+):
+    class _OfflineRecognizer:
+        def create_stream(self):
+            stream = type("OfflineStream", (), {})()
+            stream.result = type(
+                "Result", (), {"text": "private offline hypothesis"}
+            )()
+            stream.accept_waveform = lambda _sr, _samples: None
+            return stream
+
+        def decode_stream(self, stream) -> None:
+            del stream
+
+    streaming = _FakeRecognizer("")
+    _patch_models(monkeypatch, streaming, _FakeTts())
+    monkeypatch.setattr(fr, "build_final_recognizer", lambda _c: _OfflineRecognizer())
+    monkeypatch.setattr(fr, "build_punctuation", lambda _c: None)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            tts_model="y",
+            asr_final_backend="sense_voice",
+        ),
+        asr_only=True,
+    )
+    engine.start(EngineCallbacks())
+    try:
+        result = engine.evaluate_samples(
+            np.concatenate(
+                [np.ones(16000, dtype="float32") * 0.5, np.zeros(1600)]
+            ),
+            16000,
+        )
+    finally:
+        engine.stop()
+
+    assert len(result.decisions) == 1
+    [decision] = result.decisions
+    assert decision.streaming_raw == ""
+    assert decision.offline_raw == "private offline hypothesis"
+    assert decision.selected == ""
+    assert decision.offline_outcome == "decoded"
+    assert engine.last_final == ""
+
+
 def test_file_replay_uses_attested_owned_timing_for_stop_repair(monkeypatch):
     class _OfflineStream:
         def __init__(self) -> None:

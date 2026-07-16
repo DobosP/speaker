@@ -235,11 +235,24 @@ def _runtime_config():
 
     Same load path as ``sherpa_config_or_skip`` but returns the whole dict so
     ``build_runtime`` sees the real ``llm``/``commands``/``memory`` blocks. The
-    sherpa block inside matches the ``SherpaConfig`` the engine is given."""
+    sherpa block inside matches the ``SherpaConfig`` the engine is given.
+
+    Machine-local capability grants are deliberately disabled for replay. A
+    recorded ASR test must never open the owner's vault, reminder database, or
+    desktop applications merely because those tools are enabled for the live
+    assistant. Model paths still come from ``config.local.json``; only the
+    unrelated providers are fenced off in this in-memory copy.
+    """
     from core.config import apply_device_profile, load_config
 
     cfg = load_config()
-    return apply_device_profile(cfg, cfg.get("device", "desktop"))
+    cfg = apply_device_profile(cfg, cfg.get("device", "desktop"))
+    isolated = dict(cfg)
+    for name in ("obsidian", "reminders", "trusted_apps"):
+        provider = dict(isolated.get(name) or {})
+        provider["enabled"] = False
+        isolated[name] = provider
+    return isolated
 
 
 def load_clip(clip_id: str):

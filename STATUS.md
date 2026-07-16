@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-16 on Linux ROG: full suite 5309 passed/31 skipped/9 warnings; launcher/capture/doctor 198; APM 6.
+Last verified: 2026-07-16 on Linux ROG: full suite 5342 passed/19 skipped/9 warnings; strict recorded 9; APM 6.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
@@ -78,19 +78,21 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 - Physical runs `192151`/`193713` failed with enrollment on and off; neither
   produced prompt exact Stop, and the second placed its blocker before identity.
   Route/calibration settling remains a hypothesis, not a root-cause proof.
-- The 2026-07-16 vault-phrase run admitted six user windows at -23.4 to -33.6
-  dBFS RMS (peaks -5.0 to -11.1), with no clipping, capture reopen, decode, or
+- The 2026-07-16 vault run admitted six windows at -23.4 to -33.6 dBFS RMS,
+  with no clipping, capture reopen, decode, or
   finalizer failure. Playback residual separation was ~50 dB, yet both
   SenseVoice final paths were poor and `vault` was recognized 0/6 times. Its
   retained mic WAV was post-GTCRN, so frontend versus recognizer/accent/domain
   failure remains unproven (ADR-0077).
+- Private ASR-only replay reports aggregate streaming/offline/selected WER+CER.
+  The six-clip baseline selected WER is 0.12; an eight-path candidate tied 6/6
+  and was rejected. No STT default changed (ADR-0078).
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
-- Next: compare the automatic aligned pre-application-DSP and processed mic
-  tracks before tuning STT/VAD/gain/denoise. Keep the agreement guard and require
-  prompt exact Stop before changing the physical barge verdict.
+- Next: label and compare aligned pre-DSP/processed target tracks before STT
+  tuning. Keep the agreement guard and prompt exact Stop requirement.
 
 ## Standard verification
-Full: `...python -m pytest tests -q`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.
+Full: `...python -m pytest tests -q`; STT aggregate: `...python -m tools.recorded_stt_eval`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.
 
 ## Operating policy
 - Queue: `.agents/backlog.md`; architecture: `docs/unified_architecture.md` and `docs/audio_pipeline.md`; decisions: append-only `docs/adr/`.

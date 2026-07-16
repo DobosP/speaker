@@ -10,7 +10,12 @@ import pytest
 
 from core.engines._sherpa_models import build_final_recognizer
 from core.engines._asr_segment import ASRSegment
-from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.sherpa import (
+    SherpaConfig,
+    SherpaOnnxEngine,
+    _resolve_final_transcript,
+    _transcribe_final_text,
+)
 
 
 class _FakeStream:
@@ -59,6 +64,70 @@ def test_final_transcribe_uses_second_pass_when_present():
     eng._final_recognizer = _FakeOffline("Hey, are you listening to me.")
     out = eng._final_transcribe(np.ones(16000, dtype="float32"), "HEY IRIC LISTENING TO ME")
     assert out == "Hey, are you listening to me."  # the clean second-pass text
+
+
+def test_final_decision_exposes_raw_hypotheses_and_preserves_selected_text():
+    cfg = SherpaConfig()
+    offline = _FakeOffline("  are you there  ")
+    segment = np.ones(2 * 16000, dtype="float32")
+
+    decision = _resolve_final_transcript(
+        cfg,
+        offline,
+        None,
+        segment,
+        "Ario der",
+    )
+
+    assert decision.streaming_raw == "Ario der"
+    assert decision.offline_raw == "  are you there  "
+    assert decision.selected == "are you there"
+    assert _transcribe_final_text(
+        cfg,
+        offline,
+        None,
+        segment,
+        "Ario der",
+    ) == decision.selected
+
+
+def test_final_decision_hypotheses_are_excluded_from_repr():
+    decision = _resolve_final_transcript(
+        SherpaConfig(),
+        _FakeOffline("private offline hypothesis"),
+        None,
+        np.ones(16000, dtype="float32"),
+        "private streaming hypothesis",
+    )
+
+    rendered = repr(decision)
+    assert "private streaming hypothesis" not in rendered
+    assert "private offline hypothesis" not in rendered
+    assert decision.selected not in rendered
+
+
+def test_final_decision_keeps_empty_streaming_fail_closed():
+    cfg = SherpaConfig()
+    segment = np.ones(16000, dtype="float32")
+
+    decision = _resolve_final_transcript(
+        cfg,
+        _FakeOffline("Stop speaking."),
+        None,
+        segment,
+        "",
+    )
+
+    assert decision.streaming_raw == ""
+    assert decision.offline_raw == "Stop speaking."
+    assert decision.selected == ""
+    assert _transcribe_final_text(
+        cfg,
+        _FakeOffline("Stop speaking."),
+        None,
+        segment,
+        "",
+    ) == ""
 
 
 def test_final_transcribe_falls_back_without_second_pass():

@@ -154,6 +154,7 @@ from ._sherpa_models import (
     build_recognizer,
     build_tts,
     build_vad,
+    create_recognizer_stream,
 )
 from .speaker_gate import (
     SpeakerGate,
@@ -223,6 +224,23 @@ class _WordCutStopDecision:
 class _FinalSpeakerDecision:
     admitted: bool
     verification: OwnerVerification
+
+
+@dataclass(frozen=True)
+class FinalTranscriptDecision:
+    """In-memory evidence for one production final-selection decision.
+
+    The raw recognizer hypotheses are intentionally excluded from ``repr`` so
+    diagnostics can inspect this object without making transcript text part of
+    an exception, assertion, or routine debug representation.  Callers remain
+    responsible for keeping the fields private and reducing them to aggregate
+    metrics before persistence.
+    """
+
+    streaming_raw: str = field(repr=False)
+    offline_raw: Optional[str] = field(repr=False)
+    selected: str = field(repr=False)
+    offline_outcome: str
 
 
 def _attested_repair_words(text: str) -> tuple[str, ...]:
@@ -315,6 +333,97 @@ def _postprocess_final_text(config, punctuation, text: str) -> str:
     return result
 
 
+def _resolve_final_transcript(
+    config,
+    final_recognizer,
+    punctuation,
+    seg,
+    raw_final: str,
+    *,
+    speech_sec: Optional[float] = None,
+    segment_sample_rate: Optional[int] = None,
+    allow_empty_streaming: bool = False,
+    attested_repair: Optional[Callable[..., str]] = None,
+) -> FinalTranscriptDecision:
+    """Resolve raw hypotheses and the unchanged production-selected final."""
+    offline_raw: Optional[str] = None
+    offline_outcome = "unavailable"
+    if final_recognizer is not None and seg is not None:
+        offline_outcome = "skipped"
+        n = int(np.asarray(seg).size)
+        decode_sample_rate = int(segment_sample_rate or config.sample_rate)
+        observed_sec = (
+            float(speech_sec)
+            if speech_sec is not None
+            else n / decode_sample_rate
+        )
+        if observed_sec >= float(config.asr_final_min_sec):
+            offline_outcome = "error"
+            try:
+                stream = final_recognizer.create_stream()
+                stream.accept_waveform(
+                    decode_sample_rate,
+                    np.asarray(seg, dtype="float32"),
+                )
+                final_recognizer.decode_stream(stream)
+                offline_raw = stream.result.text or ""
+                text = offline_raw.strip()
+                offline_outcome = "decoded" if text else "empty"
+                if text:
+                    streaming_final = _postprocess_final_text(
+                        config,
+                        punctuation,
+                        raw_final,
+                    )
+                    if not streaming_final.strip():
+                        # An offline recognizer may recover a final only when
+                        # the caller has separately authorized that recovery.
+                        # Default callers fail closed: second-pass text must
+                        # never manufacture a turn (especially a STOP) from an
+                        # empty streaming result.
+                        selected = (
+                            text if allow_empty_streaming else streaming_final
+                        )
+                        return FinalTranscriptDecision(
+                            streaming_raw=raw_final,
+                            offline_raw=offline_raw,
+                            selected=selected,
+                            offline_outcome=offline_outcome,
+                        )
+                    guarded_final = agreement_guard(
+                        streaming_final,
+                        text,
+                        segment_sec=observed_sec,
+                    )
+                    if attested_repair is None:
+                        selected = guarded_final
+                    else:
+                        selected = attested_repair(
+                            streaming_final,
+                            text,
+                            guarded_final,
+                            backend=config.asr_final_backend,
+                            speech_sec=speech_sec,
+                        )
+                    return FinalTranscriptDecision(
+                        streaming_raw=raw_final,
+                        offline_raw=offline_raw,
+                        selected=selected,
+                        offline_outcome=offline_outcome,
+                    )
+            except Exception:  # noqa: BLE001 - use the streaming final
+                log.debug(
+                    "second-pass recognizer failed; using streaming final",
+                    exc_info=True,
+                )
+    return FinalTranscriptDecision(
+        streaming_raw=raw_final,
+        offline_raw=offline_raw,
+        selected=_postprocess_final_text(config, punctuation, raw_final),
+        offline_outcome=offline_outcome,
+    )
+
+
 def _transcribe_final_text(
     config,
     final_recognizer,
@@ -328,56 +437,17 @@ def _transcribe_final_text(
     attested_repair: Optional[Callable[..., str]] = None,
 ) -> str:
     """Resolve the LLM-facing final with the production two-pass policy."""
-    if final_recognizer is not None and seg is not None:
-        n = int(np.asarray(seg).size)
-        decode_sample_rate = int(segment_sample_rate or config.sample_rate)
-        observed_sec = (
-            float(speech_sec)
-            if speech_sec is not None
-            else n / decode_sample_rate
-        )
-        if observed_sec >= float(config.asr_final_min_sec):
-            try:
-                stream = final_recognizer.create_stream()
-                stream.accept_waveform(
-                    decode_sample_rate,
-                    np.asarray(seg, dtype="float32"),
-                )
-                final_recognizer.decode_stream(stream)
-                text = (stream.result.text or "").strip()
-                if text:
-                    streaming_final = _postprocess_final_text(
-                        config,
-                        punctuation,
-                        raw_final,
-                    )
-                    if not streaming_final.strip():
-                        # An offline recognizer may recover a final only when
-                        # the caller has separately authorized that recovery.
-                        # Default callers fail closed: second-pass text must
-                        # never manufacture a turn (especially a STOP) from an
-                        # empty streaming result.
-                        return text if allow_empty_streaming else streaming_final
-                    guarded_final = agreement_guard(
-                        streaming_final,
-                        text,
-                        segment_sec=observed_sec,
-                    )
-                    if attested_repair is None:
-                        return guarded_final
-                    return attested_repair(
-                        streaming_final,
-                        text,
-                        guarded_final,
-                        backend=config.asr_final_backend,
-                        speech_sec=speech_sec,
-                    )
-            except Exception:  # noqa: BLE001 - use the streaming final
-                log.debug(
-                    "second-pass recognizer failed; using streaming final",
-                    exc_info=True,
-                )
-    return _postprocess_final_text(config, punctuation, raw_final)
+    return _resolve_final_transcript(
+        config,
+        final_recognizer,
+        punctuation,
+        seg,
+        raw_final,
+        speech_sec=speech_sec,
+        segment_sample_rate=segment_sample_rate,
+        allow_empty_streaming=allow_empty_streaming,
+        attested_repair=attested_repair,
+    ).selected
 
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
@@ -3589,14 +3659,11 @@ class SherpaOnnxEngine(AudioEngine):
         Contextual biasing is per-stream in sherpa-onnx and only honored by
         ``modified_beam_search``. We try the hotword-aware factory and fall back
         to the plain one, so an older build (or greedy decoding) still works."""
-        rec = self._recognizer
-        if self._hotwords and self.config.asr_decoding_method == "modified_beam_search":
-            try:
-                return rec.create_stream(hotwords="\n".join(self._hotwords))
-            except TypeError:
-                log.warning("this sherpa-onnx build ignores per-stream hotwords; "
-                            "biasing disabled")
-        return rec.create_stream()
+        return create_recognizer_stream(
+            self._recognizer,
+            self.config,
+            hotwords=self._hotwords,
+        )
 
     def _postprocess_final(self, text: str) -> str:
         """Turn raw recognizer text into a readable final.

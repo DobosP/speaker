@@ -413,7 +413,7 @@ def test_aec_auto_delay_wires_calibrator_into_ref_delay():
     assert eng._aec_ref_delay == 80
 
 
-def test_capture_hook_recorder_sees_denoised_block():
+def test_capture_hook_records_aligned_pre_dsp_and_denoised_blocks():
     eng = SherpaOnnxEngine(SherpaConfig())
     eng._denoiser = Denoiser(_FakeImpl(scale=0.25), sample_rate=16000)
 
@@ -425,8 +425,17 @@ def test_capture_hook_recorder_sees_denoised_block():
             self.written.append(np.asarray(samples, dtype="float32").copy())
 
     eng._recorder = _Recorder()
+    eng._pre_dsp_recorder = _Recorder()
     block = np.array([0.4, 0.8, 1.2], dtype="float32")
     _run_one_block(eng, block)
     assert eng._recorder.written, "recorder never wrote"
+    assert eng._pre_dsp_recorder.written, "pre-DSP recorder never wrote"
+    # The diagnostic sidecar owns the model-rate capture before application
+    # gain/AEC/GTCRN; it can therefore isolate front-end damage from ASR policy.
+    np.testing.assert_allclose(eng._pre_dsp_recorder.written[0], block)
     # The recorder writes the DENOISED block (so a recording is already denoised).
     np.testing.assert_allclose(eng._recorder.written[0], block * 0.25)
+    assert (
+        eng._pre_dsp_recorder.written[0].shape
+        == eng._recorder.written[0].shape
+    )

@@ -19,6 +19,7 @@ int16 is already compact (~32 KB/s). No new dependency.
 """
 from __future__ import annotations
 
+import os
 import queue
 import struct
 import threading
@@ -41,6 +42,19 @@ def _wav_header(sample_rate: int, data_bytes: int) -> bytes:
     )
 
 
+def sidecar_wav_path(record_path: str, tag: str) -> str:
+    """Return a sibling WAV path without assuming ``record_path``'s suffix.
+
+    ``tag`` is code-owned (for example ``"ref"`` or ``"pre-dsp"``), not a
+    user-supplied filename.  Keeping this transform shared prevents the runtime
+    and run-summary metadata from silently naming different artifacts.
+    """
+    suffix = f".{tag}.wav"
+    if record_path.lower().endswith(".wav"):
+        return record_path[:-4] + suffix
+    return record_path + suffix
+
+
 class WavRecorder:
     """Background-threaded 16-bit PCM WAV writer fed float32 blocks.
 
@@ -61,7 +75,25 @@ class WavRecorder:
         self.dropped = 0  # frames dropped if the writer ever falls behind
         self._closed = False
         self._flush_sec = max(0.1, float(flush_sec))
-        self._fh: Optional[object] = open(path, "wb")
+        # Raw voice is private even when the low-level core entry point is run
+        # outside the launcher's restrictive umask.  O_NOFOLLOW also prevents a
+        # stale/surprising symlink at the generated artifact path from redirecting
+        # the recording.  Windows lacks O_NOFOLLOW/fchmod; its ACLs remain the
+        # authority there, while chmod is still attempted for portable intent.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_BINARY", 0)
+        fd = os.open(path, flags, 0o600)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o600)
+            else:  # pragma: no cover - Windows permission semantics
+                os.chmod(path, 0o600)
+            self._fh: Optional[object] = os.fdopen(fd, "w+b")
+        except BaseException:
+            os.close(fd)
+            raise
         self._fh.write(_wav_header(sample_rate, 0))
         self._data_bytes = 0
         self._last_flush = time.monotonic()

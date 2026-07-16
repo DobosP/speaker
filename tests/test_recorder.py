@@ -5,12 +5,20 @@ so a recorded session can be replayed and frozen into a regression test.
 """
 from __future__ import annotations
 
+import os
+import stat
 import wave
 
 import numpy as np
 
 from core.engines.file_replay import load_waveform
-from core.recorder import WavRecorder
+from core.recorder import WavRecorder, sidecar_wav_path
+
+
+def test_sidecar_path_is_stable_with_or_without_wav_suffix():
+    assert sidecar_wav_path("run.wav", "pre-dsp") == "run.pre-dsp.wav"
+    assert sidecar_wav_path("run.WAV", "ref") == "run.ref.wav"
+    assert sidecar_wav_path("run", "pre-dsp") == "run.pre-dsp.wav"
 
 
 def test_wavrecorder_writes_16bit_mono_pcm(tmp_path):
@@ -32,6 +40,19 @@ def test_wavrecorder_writes_16bit_mono_pcm(tmp_path):
     assert data[0] == 0
     assert data[3] == 32767  # +1.0 -> max
     assert data[4] == -32767  # -1.0 -> -max
+
+
+def test_recording_file_is_private_even_under_permissive_umask(tmp_path):
+    path = tmp_path / "private.wav"
+    previous = os.umask(0)
+    try:
+        rec = WavRecorder(str(path), sample_rate=16000)
+        rec.write(np.zeros(16, dtype="float32"))
+        rec.close()
+    finally:
+        os.umask(previous)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
 def test_wavrecorder_clips_out_of_range(tmp_path):

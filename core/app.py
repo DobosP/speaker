@@ -807,6 +807,13 @@ def main(argv: list[str] | None = None) -> int:
         "open-speaker/AEC replay; implies --record",
     )
     parser.add_argument(
+        "--record-pre-dsp-reference",
+        action="store_true",
+        help="also save a private frame-aligned 16 kHz host-input reference "
+        "before application gain, in-app AEC, and denoising; diagnostic only "
+        "and implies --record",
+    )
+    parser.add_argument(
         "--list-devices",
         action="store_true",
         help="print the available audio devices (with indices) and exit",
@@ -869,7 +876,7 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
-    if args.record_playback_reference:
+    if args.record_playback_reference or args.record_pre_dsp_reference:
         args.record = True
 
     virtual_audio_binder = None
@@ -944,6 +951,10 @@ def main(argv: list[str] | None = None) -> int:
         # machine-local config key. The launcher uses this in-memory override;
         # normal runtime configuration remains unchanged on disk.
         config.setdefault("sherpa", {})["record_playback_reference"] = True
+    if args.record_pre_dsp_reference:
+        # Like the playback reference, this privacy-sensitive evidence tap is
+        # explicit for low-level core callers and enabled in-memory only.
+        config.setdefault("sherpa", {})["record_pre_dsp_reference"] = True
 
     if virtual_audio_binder is not None:
         contract = virtual_audio_binder.contract
@@ -1026,15 +1037,21 @@ def main(argv: list[str] | None = None) -> int:
     monitor.mark("after_build")  # compute reading once clients/engine are built
 
     record_path = None
+    pre_dsp_reference_path = None
     playback_reference_path = None
     if args.record and hasattr(engine, "set_record_path"):
+        from .recorder import sidecar_wav_path
+
         record_path = os.path.join(
             os.path.dirname(runlog.log_path), f"run-{runlog.run_id}.wav"
         )
         engine.set_record_path(record_path)
         runlog.summary.note(recording=record_path)
+        if bool((config.get("sherpa", {}) or {}).get("record_pre_dsp_reference")):
+            pre_dsp_reference_path = sidecar_wav_path(record_path, "pre-dsp")
+            runlog.summary.note(pre_dsp_reference=pre_dsp_reference_path)
         if bool((config.get("sherpa", {}) or {}).get("record_playback_reference")):
-            playback_reference_path = record_path[:-4] + ".ref.wav"
+            playback_reference_path = sidecar_wav_path(record_path, "ref")
             runlog.summary.note(playback_reference=playback_reference_path)
     elif args.record:
         runlog.logger.warning("--record ignored: %s engine has no recorder", args.engine)
@@ -1099,6 +1116,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[log] summary:  {runlog.summary_path}")
         if record_path is not None:
             print(f"[log] audio:    {record_path}")
+        if pre_dsp_reference_path is not None:
+            print(f"[log] pre-DSP:  {pre_dsp_reference_path}")
         if playback_reference_path is not None:
             print(f"[log] playback: {playback_reference_path}")
     return 0

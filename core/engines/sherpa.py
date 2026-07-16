@@ -1224,6 +1224,12 @@ class SherpaConfig:
     # coherence comparison (the mic-only recording can't, since the reference is
     # the engine's own playback). Off by default (no extra file).
     record_playback_reference: bool = False
+    # Diagnostic input sidecar for recorded sessions. This is the 16 kHz
+    # capture-rate-converted host input BEFORE application gain, in-app AEC, or
+    # GTCRN. It is written one frame per post-processed mic frame so the two can
+    # be compared without a second live utterance. Off by default; the normal
+    # Linux live launcher explicitly opts in for its private evidence bundle.
+    record_pre_dsp_reference: bool = False
     # Input AGC (automatic gain control): normalize the captured level toward
     # ``input_agc_target_rms`` so a deliberately-LOW (never-clipping) OS mic gain
     # still reaches the recognizer at a healthy level -- no manual ``input_gain``
@@ -1420,6 +1426,10 @@ class SherpaOnnxEngine(AudioEngine):
         # written to WAV so the run can be replayed and frozen into a test).
         self._record_path: Optional[str] = None
         self._recorder = None
+        # Optional private diagnostic sidecar: model-rate host input before
+        # application gain/AEC/GTCRN, frame-aligned to ``_recorder``. It is
+        # evidence only and is never fed back into the active recognizer.
+        self._pre_dsp_recorder = None
         # Optional second recorder: the played-back reference (far-end TTS),
         # frame-aligned with the mic recording via a small 16 kHz accumulator so a
         # replay can reproduce the open-speaker barge comparison (see
@@ -1793,6 +1803,100 @@ class SherpaOnnxEngine(AudioEngine):
     def set_record_path(self, path: Optional[str]) -> None:
         """Record this session's recognizer-rate audio to ``path`` (WAV)."""
         self._record_path = path
+
+    def _open_recorders(self) -> None:
+        """Open the configured primary recording and its optional sidecars."""
+        if not self._record_path:
+            return
+        import numpy as np
+
+        from ..recorder import WavRecorder, sidecar_wav_path
+
+        try:
+            self._recorder = WavRecorder(
+                self._record_path, self.config.sample_rate
+            )
+            log.info("recording session audio -> %s", self._record_path)
+            if self.config.record_pre_dsp_reference:
+                pre_dsp_path = sidecar_wav_path(self._record_path, "pre-dsp")
+                self._pre_dsp_recorder = WavRecorder(
+                    pre_dsp_path, self.config.sample_rate
+                )
+                log.info("recording pre-DSP input reference -> %s", pre_dsp_path)
+            if self.config.record_playback_reference:
+                ref_path = sidecar_wav_path(self._record_path, "ref")
+                self._ref_recorder = WavRecorder(
+                    ref_path, self.config.sample_rate
+                )
+                self._ref_accum = np.zeros(0, dtype="float32")
+                log.info("recording playback reference (replay) -> %s", ref_path)
+        except BaseException:
+            self._close_recorders(log_completed=False)
+            raise
+
+    @staticmethod
+    def _align_recording_frame(samples, length: int):
+        """Return exactly ``length`` float32 samples for a sibling sidecar.
+
+        The launcher's OS-EC path is naturally one-to-one. Low-level callers
+        may enable an in-app processor whose frame contract differs, so crop or
+        silence-pad only the diagnostic sibling rather than letting its timeline
+        drift from the recognizer recording.
+        """
+        import numpy as np
+
+        frame = np.asarray(samples, dtype="float32").reshape(-1)
+        if frame.shape[0] == length:
+            return frame
+        if frame.shape[0] > length:
+            return frame[:length]
+        return np.pad(frame, (0, length - frame.shape[0]))
+
+    def _write_recording_frame(self, pre_dsp_samples, processed_samples) -> None:
+        """Write one aligned post/pre-DSP/reference recording coordinate."""
+        if self._recorder is None:
+            return
+        import numpy as np
+
+        processed = np.asarray(processed_samples, dtype="float32").reshape(-1)
+        if self._pre_dsp_recorder is not None:
+            self._pre_dsp_recorder.write(
+                self._align_recording_frame(pre_dsp_samples, processed.shape[0])
+            )
+        self._recorder.write(processed)
+        if self._ref_recorder is not None:
+            self._write_reference_frame(processed.shape[0])
+
+    def _close_recorders(self, *, log_completed: bool) -> None:
+        """Close every recording owned by this engine exactly once."""
+        owned = (
+            ("_recorder", "session audio"),
+            ("_pre_dsp_recorder", "pre-DSP input reference"),
+            ("_ref_recorder", "playback reference"),
+        )
+        for attribute, label in owned:
+            recorder = getattr(self, attribute)
+            if recorder is None:
+                continue
+            if log_completed:
+                try:
+                    if attribute == "_recorder":
+                        log.info(
+                            "recorded %.1fs of session audio -> %s",
+                            recorder.seconds,
+                            recorder.path,
+                        )
+                    else:
+                        log.info("recorded %s -> %s", label, recorder.path)
+                except Exception:  # noqa: BLE001 - close every private artifact
+                    log.warning("could not summarize %s recording", label)
+            try:
+                recorder.close()
+            except Exception:  # noqa: BLE001 - one sidecar cannot strand siblings
+                log.exception("could not close %s recording", label)
+            finally:
+                setattr(self, attribute, None)
+        self._ref_accum = None
 
     def _accumulate_reference(self, blk, sr: int) -> None:
         """Append one played reference block (resampled to 16 kHz) to the
@@ -2946,25 +3050,23 @@ class SherpaOnnxEngine(AudioEngine):
                 f"{self._capture_sr} Hz and resampling to {preferred_sr} Hz ({kind})"
             )
         if self._record_path:
-            from ..recorder import WavRecorder
-
-            self._recorder = WavRecorder(self._record_path, self.config.sample_rate)
-            log.info("recording session audio -> %s", self._record_path)
-            if self.config.record_playback_reference:
-                import numpy as np
-
-                ref_path = (
-                    self._record_path[:-4] + ".ref.wav"
-                    if self._record_path.endswith(".wav")
-                    else self._record_path + ".ref.wav"
-                )
-                self._ref_recorder = WavRecorder(ref_path, self.config.sample_rate)
-                self._ref_accum = np.zeros(0, dtype="float32")
-                log.info("recording playback reference (replay) -> %s", ref_path)
-        if self.config.input_calibrate:
-            self._calibrate_input()
-        actual_selector = getattr(self._stream_in, "actual_device", in_dev)
+            try:
+                self._open_recorders()
+            except BaseException:
+                # A sidecar open failure must not strand the primary recorder or
+                # the already-open microphone before runtime ownership begins.
+                self._running.clear()
+                if self._stream_in.close(
+                    teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
+                ):
+                    self._stream_in = None
+                else:
+                    log.error("failed-recorder input cleanup retained a native stream")
+                raise
         try:
+            if self.config.input_calibrate:
+                self._calibrate_input()
+            actual_selector = getattr(self._stream_in, "actual_device", in_dev)
             self._resolve_capture_domain(sd, actual_selector, startup=True)
             self._rebind_speech_evidence_domain()
             requires_word_cut_speaker = bool(
@@ -2990,13 +3092,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self._stream_in = None
             else:
                 log.error("failed-start input cleanup retained a native stream")
-            if self._recorder is not None:
-                self._recorder.close()
-                self._recorder = None
-            if self._ref_recorder is not None:
-                self._ref_recorder.close()
-                self._ref_recorder = None
-                self._ref_accum = None
+            self._close_recorders(log_completed=False)
             raise
         self._start_virtual_route_monitor()
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -3205,16 +3301,8 @@ class SherpaOnnxEngine(AudioEngine):
         if not self._drain_receipt_dispatcher(timeout=0.5):
             log.warning("playback receipts still pending after bounded shutdown drain")
         self._stop_receipt_dispatcher()
-        if self._recorder is not None and not self._capture_resource_hold.is_set():
-            log.info("recorded %.1fs of session audio -> %s",
-                     self._recorder.seconds, self._recorder.path)
-            self._recorder.close()
-            self._recorder = None
-        if self._ref_recorder is not None and not self._capture_resource_hold.is_set():
-            log.info("recorded playback reference -> %s", self._ref_recorder.path)
-            self._ref_recorder.close()
-            self._ref_recorder = None
-            self._ref_accum = None
+        if not self._capture_resource_hold.is_set():
+            self._close_recorders(log_completed=True)
 
     def speak(self, text: str, on_done: Optional[Callable[[], None]] = None) -> None:
         self._submit_playback(text, on_done=on_done, ticket=None, style=None)
@@ -4628,11 +4716,11 @@ class SherpaOnnxEngine(AudioEngine):
                 effects_admitted = True
 
                 if self._recorder is not None:
-                    self._recorder.write(samples)
-                    # Frame-aligned reference: one ref frame per mic frame (silence
-                    # when not playing), so the .ref.wav indexes 1:1 with the mic.
-                    if self._ref_recorder is not None:
-                        self._write_reference_frame(samples.shape[0])
+                    # One coordinate owns all recording tracks: the recognizer
+                    # input, optional pre-application-DSP input, and optional
+                    # playback reference. Each sibling receives exactly this
+                    # processed frame length, preserving sample-index alignment.
+                    self._write_recording_frame(pre_gain_samples, samples)
 
                 total_blocks += 1
                 beat_blocks += 1

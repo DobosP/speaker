@@ -6,7 +6,7 @@
 * reuse a healthy Ollama server, or start one for this session;
 * reuse the canonical PipeWire echo-cancel nodes, or create them temporarily;
 * select the echo-cancel source/sink and require the shared doctor to pass;
-* run sherpa with DEBUG, mic recording, and an aligned playback reference;
+* run sherpa with DEBUG plus aligned pre-DSP, mic, and playback recordings;
 * restore defaults and stop/unload only resources created by this launcher.
 
 The orchestration is deliberately dependency-injected so its failure and
@@ -1491,6 +1491,7 @@ def run_live_session(
             "sherpa",
             "--debug",
             "--record",
+            "--record-pre-dsp-reference",
             "--record-playback-reference",
             *core_args,
         ]

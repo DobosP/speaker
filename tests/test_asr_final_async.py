@@ -416,9 +416,11 @@ def test_callback_lease_finishing_during_worker_join_releases_retained_resources
     capture_input = _Input()
     output = _Output()
     recorder = _Recorder()
+    pre_dsp_recorder = _Recorder()
     eng._stream_in = capture_input
     eng._out_stream = output
     eng._recorder = recorder
+    eng._pre_dsp_recorder = pre_dsp_recorder
     eng._play_thread = _ReleaseOnJoin()
     final_thread = _run_worker(eng)
     eng._final_thread = final_thread
@@ -443,7 +445,9 @@ def test_callback_lease_finishing_during_worker_join_releases_retained_resources
     assert output.close_calls == 1
     assert eng._out_stream is None
     assert recorder.close_calls == 1
+    assert pre_dsp_recorder.close_calls == 1
     assert eng._recorder is None
+    assert eng._pre_dsp_recorder is None
     assert not eng._capture_resource_hold.is_set()
     assert eng._capture_effects == 0
     assert finals == []

@@ -1701,6 +1701,33 @@ def test_doctor_refuses_to_defer_a_non_ollama_backend(monkeypatch, capsys):
     assert "BASE NOT READY" in output
 
 
+def test_doctor_defer_llm_accepts_llamacpp_and_runs_only_base_checks(
+    monkeypatch, capsys
+):
+    import core.app as app
+    import tools.doctor as doctor
+
+    config = {
+        "device": "phone",
+        "device_profiles": {},
+        "llm": {"backend": "llamacpp"},
+    }
+    seen = {}
+    monkeypatch.setattr(app, "_load_config", lambda *_args, **_kwargs: config)
+
+    def fake_run_all(_config, **kwargs):
+        seen.update(kwargs)
+        return [doctor.Check("base speech runtime", True, "complete")]
+
+    monkeypatch.setattr(doctor, "run_all", fake_run_all)
+
+    assert doctor.main(["--defer-llm"]) == 0
+    assert seen["llm_mode"] == "echo"
+    output = capsys.readouterr().out
+    assert "BASE READY (local LLM deferred)" in output
+    assert "READY -> python -m core" not in output
+
+
 def test_runtime_checks_echo_never_imports_or_contacts_ollama():
     paths = {
         key: f"/m/{key}"

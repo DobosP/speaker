@@ -7,8 +7,8 @@
 #   ENGINE=console ./session.sh  # text session (no audio to record)
 #   ./session.sh --llm echo      # extra args pass straight through
 #
-# On Linux, prefer ./live.sh for reversible Ollama/PipeWire setup plus a private
-# aligned mic/reference capture. Real-voice bundles stay local and ignored.
+# On Linux, prefer ./live.sh for conditional Ollama plus reversible PipeWire
+# setup and a private aligned mic/reference capture. Real-voice bundles stay local.
 set -euo pipefail
 cd "$(dirname "$0")"
 

@@ -69,7 +69,7 @@ class AgentEvent:
         payload = {
             "text": text,
             "is_final": True,
-            "owner_verified": bool(owner_verified),
+            "owner_verified": owner_verified is True,
             "origin": origin,
         }
         if metadata:
@@ -129,6 +129,8 @@ class AgentEvent:
         source: str = "voice",
         *,
         owner_verified: bool = False,
+        origin: str = "unknown",
+        direct_user_instruction: bool = False,
         input_generation: int | None = None,
         input_epoch: int | None = None,
     ) -> "AgentEvent":
@@ -137,7 +139,9 @@ class AgentEvent:
         # cannot approve a side-effecting task; only an owner-verified confirm can.
         payload: dict[str, Any] = {
             "source": source,
-            "owner_verified": bool(owner_verified),
+            "owner_verified": owner_verified is True,
+            "origin": str(origin),
+            "direct_user_instruction": direct_user_instruction is True,
         }
         if input_generation is not None:
             payload["input_generation"] = int(input_generation)

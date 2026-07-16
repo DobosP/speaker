@@ -11,6 +11,7 @@ from tools.install import (
     RUNTIME_DEPS,
     SELECTED_MODEL_ARGS,
     activation_hint,
+    capability_setup_args,
     install_plan,
     is_windows,
     main,
@@ -61,7 +62,17 @@ def test_needs_fresh_venv_when_pip_broken():
 
 
 def _args(**over):
-    base = dict(venv=".venv", recreate=False, skip_models=False)
+    base = dict(
+        venv=".venv",
+        recreate=False,
+        skip_models=False,
+        obsidian_vault=None,
+        disable_obsidian=False,
+        enable_reminders=False,
+        disable_reminders=False,
+        trust_app=[],
+        untrust_app=[],
+    )
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -92,6 +103,38 @@ def test_install_plan_respects_skip_models():
 def test_install_plan_uses_windows_interpreter_path():
     plan = install_plan(_args(), system="win32")
     assert any("python.exe" in step for step in plan)
+
+
+def test_capability_setup_args_preserve_repeated_app_options():
+    args = capability_setup_args(
+        _args(
+            obsidian_vault="/vault with spaces",
+            enable_reminders=True,
+            trust_app=["notes=notes.desktop", "browser=browser.desktop"],
+            untrust_app=["old-notes", "old-browser"],
+        )
+    )
+    assert args == [
+        "--obsidian-vault", "/vault with spaces",
+        "--enable-reminders",
+        "--trust-app", "notes=notes.desktop",
+        "--trust-app", "browser=browser.desktop",
+        "--untrust-app", "old-notes",
+        "--untrust-app", "old-browser",
+    ]
+
+
+def test_install_plan_places_capability_setup_between_models_and_doctor():
+    plan = install_plan(
+        _args(enable_reminders=True, trust_app=["notes=notes.desktop"]),
+        system="linux",
+    )
+    model_index = next(i for i, step in enumerate(plan) if "tools.setup_models" in step)
+    setup_index = next(i for i, step in enumerate(plan) if "tools.setup_assistant" in step)
+    doctor_index = next(i for i, step in enumerate(plan) if "tools.doctor" in step)
+    assert model_index < setup_index < doctor_index
+    assert "--enable-reminders" in plan[setup_index]
+    assert "notes=notes.desktop" in plan[setup_index]
 
 
 def _run_installer(monkeypatch, responses, *argv):
@@ -149,3 +192,56 @@ def test_installer_success_stops_at_base_ready(monkeypatch, capsys):
     assert "Base speech runtime installed" in output
     assert "python -m tools.doctor" in output
     assert "Only the final doctor READY result" in output
+
+
+def test_installer_runs_capability_setup_only_after_model_publication(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0, 0, 0, 0),
+        "--obsidian-vault", "/vault",
+        "--enable-reminders",
+        "--trust-app", "notes=notes.desktop",
+        "--trust-app", "browser=browser.desktop",
+        "--untrust-app", "old-notes",
+    )
+
+    assert rc == 0
+    assert calls[1][:3] == ["/venv/bin/python", "-m", "tools.setup_models"]
+    assert calls[2] == [
+        "/venv/bin/python", "-m", "tools.setup_assistant",
+        "--obsidian-vault", "/vault",
+        "--enable-reminders",
+        "--trust-app", "notes=notes.desktop",
+        "--trust-app", "browser=browser.desktop",
+        "--untrust-app", "old-notes",
+    ]
+    assert calls[3] == [
+        "/venv/bin/python", "-m", "tools.doctor", "--defer-ollama",
+    ]
+
+
+def test_installer_capability_setup_failure_stops_before_doctor(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0, 0, 6),
+        "--disable-obsidian",
+    )
+
+    assert rc == 6
+    assert calls[-1] == [
+        "/venv/bin/python", "-m", "tools.setup_assistant", "--disable-obsidian",
+    ]
+    assert all("tools.doctor" not in command for command in calls)
+
+
+def test_skip_models_never_runs_capability_setup(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0,),
+        "--skip-models",
+        "--enable-reminders",
+    )
+
+    assert rc == 2
+    assert len(calls) == 1
+    assert all("tools.setup_assistant" not in command for command in calls)

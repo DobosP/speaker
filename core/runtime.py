@@ -19,6 +19,7 @@ from always_on_agent.speech_analyzer import (
     LiveSpeechAnalyzer,
     ModePolicy,
     is_assistant_mode_final_candidate,
+    is_pending_confirmation_response,
 )
 from always_on_agent.supervisor import AgentSupervisor, ArrivalContinuation
 
@@ -52,6 +53,11 @@ from .metrics import (
 )
 from .obsidian import ObsidianConfig, attach_obsidian_capability
 from .persona import PersonaConfig, build_system_prompt
+from .reminders import (
+    ReminderConfig,
+    attach_reminder_capabilities,
+    build_reminder_manager,
+)
 from .playback_history import (
     PlaybackCommit,
     PlaybackContext,
@@ -66,6 +72,12 @@ from .tts_markup import (
 from .resume import ResumeConfig, ResumeTracker
 from .routing import LatencyPolicy, Router, classify_latency_policy
 from .turn_merge import FinalDispatcher, FinalDispatchLease, TurnMergeConfig
+from .trusted_apps import (
+    TrustedAppsConfig,
+    attach_device_tool_command_dispatcher,
+    attach_trusted_app_capability,
+    build_trusted_app_manager,
+)
 from .watchdog import StuckWatchdog
 from .websearch import WebSearchConfig, attach_web_search_capability
 
@@ -102,6 +114,8 @@ class VoiceRuntime:
         recent_context_config: Optional[RecentContextConfig] = None,
         web_search_config: Optional[WebSearchConfig] = None,
         obsidian_config: Optional[ObsidianConfig] = None,
+        reminder_config: Optional[ReminderConfig] = None,
+        trusted_apps_config: Optional[TrustedAppsConfig] = None,
         start_mode: Mode = Mode.ASSISTANT,
         agent_config=None,
         computer_use_config=None,
@@ -237,6 +251,23 @@ class VoiceRuntime:
         vault_cfg = obsidian_config or ObsidianConfig()
         attach_obsidian_capability(registry, vault_cfg)
         self._vault_enabled = "vault.search" in registry.names()
+        # Optional device functions live in the same capability registry as
+        # chat, web, and vault reads.  Setup decides which providers exist;
+        # there is no separate reminder/vault/app chatbot or live entry point.
+        self._reminder_manager = build_reminder_manager(
+            reminder_config or ReminderConfig()
+        )
+        if self._reminder_manager is not None:
+            attach_reminder_capabilities(registry, self._reminder_manager)
+        self._trusted_app_manager = build_trusted_app_manager(
+            trusted_apps_config or TrustedAppsConfig()
+        )
+        if self._trusted_app_manager is not None:
+            attach_trusted_app_capability(registry, self._trusted_app_manager)
+        self._device_tools_enabled = bool(
+            self._reminder_manager is not None
+            or self._trusted_app_manager is not None
+        )
         if (
             planner_config is not None
             and self._vault_enabled
@@ -285,10 +316,9 @@ class VoiceRuntime:
                 voice_continuity=self._reply_voice_continuity is not None,
                 lock_speaker_id=self._tts_lock_speaker_id,
             )
-        vault_enabled = self._vault_enabled
         system_prompt = build_system_prompt(
             registry, persona=persona, web_enabled=web_enabled,
-            vault_enabled=vault_enabled, markup_guidance=markup_guidance,
+            markup_guidance=markup_guidance,
         )
         # Kept so the startup pre-warm prefills the model's cacheable system
         # prefix with the REAL prompt (not a throwaway "hi" with no system), so
@@ -331,6 +361,14 @@ class VoiceRuntime:
             from .agent import attach_agent_capability
 
             attach_agent_capability(registry, agent_config)
+        # The typed, setup-approved dispatcher is a separate internal route for
+        # exact reminder/app requests.  It never replaces the historical
+        # command.stage action brain; unmatched commands keep their old path.
+        self._device_tool_dispatcher = attach_device_tool_command_dispatcher(
+            registry,
+            reminder_manager=self._reminder_manager,
+            trusted_app_manager=self._trusted_app_manager,
+        )
         if computer_use_config is not None and computer_use_config.get("enabled"):
             # Opt-in (default OFF, separate from --agent): the READ-ONLY
             # screen.identify capability. NO actuating gui.* is registered here --
@@ -372,7 +410,15 @@ class VoiceRuntime:
             bus=self.bus,
             capabilities=registry,
             analyzer=LiveSpeechAnalyzer(
-                ModePolicy(vault_search_enabled=self._vault_enabled)
+                ModePolicy(
+                    vault_search_enabled=self._vault_enabled,
+                    device_tools_enabled=self._device_tools_enabled,
+                    device_tool_matcher=(
+                        self._device_tool_dispatcher.match
+                        if self._device_tool_dispatcher is not None
+                        else None
+                    ),
+                )
             ),
             memory=memory,
             stream_tts=stream_tts,
@@ -538,7 +584,8 @@ class VoiceRuntime:
         """Periodic maintenance on the watchdog's cadence: reap hung tasks so the
         controller never stays blocked on a capability that won't return, and
         expire abandoned staged confirmations so a stray later "yes" can't approve
-        a forgotten action."""
+        a forgotten action.  A running agent also claims recent durable reminder
+        deliveries and speaks them through the normal cancellable TTS path."""
         try:
             self.supervisor.reap_overdue_tasks()
         except Exception:  # noqa: BLE001 - maintenance must never kill the watchdog
@@ -547,6 +594,28 @@ class VoiceRuntime:
             self.supervisor.sweep_expired_confirmations()
         except Exception:  # noqa: BLE001 - maintenance must never kill the watchdog
             log.exception("confirmation-TTL sweep failed")
+        if self._reminder_manager is not None:
+            try:
+                self._reminder_manager.reconcile_stale_deliveries()
+            except Exception:  # noqa: BLE001 - maintenance must keep running
+                log.exception("stale reminder delivery reconciliation failed")
+            try:
+                reminders = self._reminder_manager.claim_voice_announcements()
+                for reminder in reminders:
+                    self._publish_auxiliary_event(
+                        AgentEvent(
+                            EventKind.TTS_REQUEST,
+                            {
+                                "task_id": f"reminder:{reminder.reminder_id}",
+                                "text": f"Reminder: {reminder.message}",
+                                "reminder_due": True,
+                                "reminder_id": reminder.reminder_id,
+                                "reminder_claim_token": reminder.voice_claim_token,
+                            },
+                        )
+                    )
+            except Exception:  # noqa: BLE001 - maintenance must keep running
+                log.exception("reminder voice-announcement poll failed")
 
     # --- lifecycle ---
     def start(self, *, run_bus: bool = True) -> None:
@@ -698,6 +767,13 @@ class VoiceRuntime:
             self.supervisor.shutdown()
         except Exception:  # noqa: BLE001
             log.exception("supervisor shutdown failed")
+        if self._reminder_manager is not None:
+            try:
+                # Closing the local DB does not cancel durable systemd timers;
+                # scheduled reminders intentionally survive agent restarts.
+                self._reminder_manager.close()
+            except Exception:  # noqa: BLE001
+                log.exception("reminder manager close failed")
         if self._bus_threaded:
             try:
                 self.bus.stop()
@@ -1266,6 +1342,13 @@ class VoiceRuntime:
             "unknown" if origin == _LEGACY_TEXT_ORIGIN else origin,
         )
         legacy_text_final = origin == _LEGACY_TEXT_ORIGIN
+        direct_user_instruction = bool(
+            not legacy_text_final
+            and origin == "live_audio"
+            and post_barge_observation is None
+            and continuation is None
+            and not (lease is not None and lease.coalesced)
+        )
         if legacy_text_final:
             origin = "unknown"
         if continuation is not None and continuation_propagated:
@@ -1419,7 +1502,20 @@ class VoiceRuntime:
         # utterance doesn't trip the watchdog's "no llm_first_token" check.
         # When no classifier is configured this is a no-op (legacy behavior).
         post_barge_response_only = False
-        if self._addressing is not None:
+        exact_device_command = (
+            self._device_tool_dispatcher.match(text)
+            if direct_user_instruction and self._device_tool_dispatcher is not None
+            else None
+        )
+        pending_confirmation_response = bool(
+            direct_user_instruction
+            and self.supervisor.state.pending_confirmations
+            and is_pending_confirmation_response(text)
+        )
+        deterministic_live_control = bool(
+            exact_device_command is not None or pending_confirmation_response
+        )
+        if self._addressing is not None and not deterministic_live_control:
             # Conversation window only -- exclude non-conversational 'vision'
             # (screen) and 'procedural' (standing-rule) memories so a caption/OCR
             # trace or a behavior rule never enters the addressing classifier.
@@ -1496,6 +1592,15 @@ class VoiceRuntime:
                 cleaned = text
             if retired():
                 return
+            # Any token-changing model attempt strips action authority, even if
+            # the cleaner returns empty or a hallucination guard later keeps the
+            # raw transcript. Casing/punctuation-only cleanup remains equivalent.
+            if (
+                cleaned != text
+                and normalize_text(str(cleaned or "")) != normalize_text(text)
+            ):
+                owner_verified = False
+                direct_user_instruction = False
             if cleaned and cleaned != text:
                 # Cleaner-hallucination guards (live run-20260610-132603): the
                 # fast-tier cleaner rewrote noise fragments into the
@@ -1543,10 +1648,17 @@ class VoiceRuntime:
                         }},
                     )
                     final_text = cleaned
-                    # A model-generated rewrite is no longer an exact owner-
-                    # spoken instruction. It may be answered, but it cannot
-                    # inherit action authority from the acoustic verdict.
-                    owner_verified = False
+        if (
+            direct_user_instruction
+            and self._device_tool_dispatcher is not None
+            and self._device_tool_dispatcher.match(final_text) is not None
+            and exact_device_command is None
+        ):
+            # Punctuation cleanup may not manufacture an exact action grammar.
+            # The raw live transcript itself must already have matched a typed
+            # command before any model/cleaner touched it.
+            owner_verified = False
+            direct_user_instruction = False
         continuation_metadata: dict[str, object] = {}
         routed_text = final_text
         if continuation is not None:
@@ -1563,7 +1675,14 @@ class VoiceRuntime:
         # fast-LLM action cache, so the in-capability escalate/tier consults this
         # turn don't re-call the model. Best-effort: routing never breaks a turn.
         route_decision = None
-        if self._capability_router is not None and not post_barge_response_only:
+        if (
+            self._capability_router is not None
+            and not post_barge_response_only
+            and not (
+                direct_user_instruction
+                and exact_device_command is not None
+            )
+        ):
             try:
                 route_context: dict[str, object] = {
                     "mode": self.mode.value,
@@ -1605,6 +1724,11 @@ class VoiceRuntime:
             # Response-only means exactly that: do not ask either routing layer
             # whether this transcript should control, act, search, or research.
             latency_policy = LatencyPolicy.SNAPPY_ANSWER.value
+        elif direct_user_instruction and exact_device_command is not None:
+            # Exact controller-owned local tools do not need a model-tier
+            # latency classification. In particular, terminal question-mark
+            # punctuation must not turn an app/list command into CLARIFY.
+            latency_policy = LatencyPolicy.INSTANT_CONTROL.value
         elif route_decision is not None:
             latency_context.update({
                 "route_action": route_decision.action,
@@ -1747,6 +1871,7 @@ class VoiceRuntime:
                         self.supervisor.state.pending_confirmations
                     ),
                     vault_search_enabled=self._vault_enabled,
+                    device_tools_enabled=self._device_tools_enabled,
                 )
                 and (
                     route_decision is None
@@ -1770,6 +1895,12 @@ class VoiceRuntime:
                         "input_generation": input_generation,
                         **continuation_metadata,
                         "post_barge_response_only": post_barge_response_only,
+                        "direct_user_instruction": bool(
+                            direct_user_instruction
+                            and not post_barge_response_only
+                            and continuation is None
+                            and resume_prompt is None
+                        ),
                         "skip_user_memory": bool(
                             post_barge_response_only
                             or continuation_metadata.get("skip_user_memory", False)
@@ -1874,6 +2005,11 @@ class VoiceRuntime:
                 self.bus.publish(
                     AgentEvent.confirm(
                         "command",
+                        # Mapped KWS callbacks are emitted by the live capture
+                        # engine, not by model/file/web content. They carry no
+                        # biometric verdict, but they are a direct live control.
+                        origin="live_audio",
+                        direct_user_instruction=True,
                         input_generation=input_generation,
                         input_epoch=input_epoch,
                     )
@@ -2091,6 +2227,8 @@ class VoiceRuntime:
                 return
             style = None
             admitted_output: tuple[str, bool] | None = None
+            admitted_reminder_id = ""
+            admitted_reminder_token = ""
             with self._terminal_effect_lock:
                 # Shutdown gate: stop() sets _stopping before the bus thread is
                 # joined, so a reply racing teardown is dropped here instead of
@@ -2144,6 +2282,30 @@ class VoiceRuntime:
                             self.supervisor.note_aux_tts_admitted(aux_tts_id)
                         return
                 if auxiliary_tts:
+                    if event.payload.get("reminder_due") is True:
+                        reminder_id = str(
+                            event.payload.get("reminder_id", "") or ""
+                        )
+                        reminder_token = str(
+                            event.payload.get("reminder_claim_token", "") or ""
+                        )
+                        try:
+                            reminder_committed = bool(
+                                self._reminder_manager is not None
+                                and self._reminder_manager.renew_voice_claim(
+                                    reminder_id,
+                                    claim_token=reminder_token,
+                                )
+                            )
+                        except Exception:  # noqa: BLE001 - retry after claim lease
+                            reminder_committed = False
+                            log.exception("reminder voice-announcement commit failed")
+                        if not reminder_committed:
+                            self.supervisor.note_aux_tts_admitted(aux_tts_id)
+                            log.debug("dropping stale reminder voice claim")
+                            return
+                        admitted_reminder_id = reminder_id
+                        admitted_reminder_token = reminder_token
                     self.supervisor.note_aux_tts_admitted(aux_tts_id)
                 elif not event.payload.get("latency_ack", False):
                     admitted_output = self.supervisor.note_tts_admitted(
@@ -2166,7 +2328,18 @@ class VoiceRuntime:
                 if self._playback_history is None:
                     # Legacy engines expose admission, not sink-drain truth.
                     self._resume.note_spoken(text)
-                    self.engine.speak(text)
+                    try:
+                        self.engine.speak(text)
+                    except Exception:
+                        if admitted_reminder_id and self._reminder_manager is not None:
+                            try:
+                                self._reminder_manager.release_voice_announcement(
+                                    admitted_reminder_id,
+                                    claim_token=admitted_reminder_token,
+                                )
+                            except Exception:  # noqa: BLE001 - keep engine error primary
+                                log.exception("reminder voice claim release failed")
+                        raise
                 else:
                     epoch_value = int(
                         epoch if epoch is not None else self.supervisor.speech_epoch
@@ -2224,7 +2397,25 @@ class VoiceRuntime:
                                 outcome=PlaybackOutcome.FAILED,
                             )
                         )
+                        if admitted_reminder_id and self._reminder_manager is not None:
+                            try:
+                                self._reminder_manager.release_voice_announcement(
+                                    admitted_reminder_id,
+                                    claim_token=admitted_reminder_token,
+                                )
+                            except Exception:  # noqa: BLE001 - keep engine error primary
+                                log.exception("reminder voice claim release failed")
                         raise
+            if admitted_reminder_id and self._reminder_manager is not None:
+                try:
+                    committed = self._reminder_manager.mark_voice_announced(
+                        admitted_reminder_id,
+                        claim_token=admitted_reminder_token,
+                    )
+                    if not committed:
+                        log.warning("reminder voice-announcement claim changed after handoff")
+                except Exception:  # noqa: BLE001 - handoff succeeded; retry is safe
+                    log.exception("reminder voice-announcement handoff commit failed")
             if admitted_output is not None and self._playback_history is None:
                 output, is_followup = admitted_output
                 self.supervisor.record_admitted_output(

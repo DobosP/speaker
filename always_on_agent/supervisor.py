@@ -372,11 +372,8 @@ class AgentSupervisor:
                     recorded_addon_count=len(prior_addons),
                     merge_before_audio=False,
                     record_origin=False,
-                    victim_owner_verified=bool(
-                        queued_continuation.metadata.get(
-                            "owner_verified",
-                            False,
-                        )
+                    victim_owner_verified=(
+                        queued_continuation.metadata.get("owner_verified") is True
                     ),
                     victim_origin=str(
                         queued_continuation.metadata.get("origin", "unknown")
@@ -412,9 +409,7 @@ class AgentSupervisor:
                 recorded_addon_count=len(prior_addons),
                 merge_before_audio=merge_before_audio,
                 record_origin=merge_before_audio and not prior_addons,
-                victim_owner_verified=bool(
-                    victim.metadata.get("owner_verified", False)
-                ),
+                victim_owner_verified=(victim.metadata.get("owner_verified") is True),
                 victim_origin=str(victim.metadata.get("origin", "unknown")),
                 victim_metrics_turn_token=(
                     int(token)
@@ -476,8 +471,8 @@ class AgentSupervisor:
                     recorded_addon_count=len(prior_addons),
                     merge_before_audio=True,
                     record_origin=not prior_addons,
-                    victim_owner_verified=bool(
-                        victim.metadata.get("owner_verified", False)
+                    victim_owner_verified=(
+                        victim.metadata.get("owner_verified") is True
                     ),
                     victim_origin=str(victim.metadata.get("origin", "unknown")),
                     victim_metrics_turn_token=(
@@ -695,7 +690,7 @@ class AgentSupervisor:
                 self._handle_speech(
                     str(event.payload.get("text", "")),
                     is_final=True,
-                    owner_verified=bool(event.payload.get("owner_verified", False)),
+                    owner_verified=(event.payload.get("owner_verified") is True),
                     origin=str(event.payload.get("origin", "unknown")),
                     metadata=metadata,
                 )
@@ -752,7 +747,11 @@ class AgentSupervisor:
             return
         if event.kind == EventKind.CONTROL_CONFIRM:
             self._confirm_next(
-                owner_verified=bool(event.payload.get("owner_verified", False)),
+                owner_verified=(event.payload.get("owner_verified") is True),
+                origin=str(event.payload.get("origin", "unknown")),
+                direct_user_instruction=(
+                    event.payload.get("direct_user_instruction") is True
+                ),
                 input_generation=event.payload.get("input_generation"),
                 input_epoch=event.payload.get("input_epoch"),
                 expected_control=event.payload,
@@ -1341,6 +1340,7 @@ class AgentSupervisor:
                         "continuation_victim_metrics_turn_token",
                         "skip_user_memory",
                         "post_barge_response_only",
+                        "direct_user_instruction",
                     )
                     if key in metadata
                 }
@@ -1381,7 +1381,7 @@ class AgentSupervisor:
                 # never carry caller-supplied speaker/action trust.
                 owner_verified = False
                 origin = "unknown"
-            self.state.turn_owner_verified = bool(owner_verified)
+            self.state.turn_owner_verified = owner_verified is True
             self.state.turn_origin = str(origin)
             self.state.turn_metadata = turn_metadata
         observation = self.analyzer.observe(text, is_final=is_final)
@@ -1465,9 +1465,15 @@ class AgentSupervisor:
         the capability layer's action chokepoint (always_on_agent.origin) sees
         owner_verified/origin. Fail-closed: defaults to the not-verified turn trust."""
         task = self.tasks.create_task(decision)
-        task.metadata["owner_verified"] = bool(self.state.turn_owner_verified)
-        task.metadata["origin"] = str(self.state.turn_origin)
         task.metadata.update(self.state.turn_metadata)
+        # Stamp authority AFTER generic turn metadata so no custom analyzer or
+        # event payload can override the controller-owned trust verdict.
+        task.metadata["owner_verified"] = self.state.turn_owner_verified is True
+        task.metadata["origin"] = str(self.state.turn_origin)
+        task.metadata["direct_user_instruction"] = (
+            self.state.turn_metadata.get("direct_user_instruction") is True
+        )
+        task.metadata["confirmed"] = False
         return task
 
     def _execute_decision(self, decision: IntentDecision) -> None:
@@ -1502,6 +1508,10 @@ class AgentSupervisor:
             self.publish(
                 AgentEvent.confirm(
                     owner_verified=self.state.turn_owner_verified,
+                    origin=self.state.turn_origin,
+                    direct_user_instruction=(
+                        self.state.turn_metadata.get("direct_user_instruction") is True
+                    ),
                     **control_identity,
                 )
             )
@@ -1535,7 +1545,28 @@ class AgentSupervisor:
                     task.cancel()
                     return
                 self.state.pending_confirmations[task.task_id] = task
-            self.state.spoken_outputs.append(f"Confirm command: {task.input_text}")
+                epoch = self.speech_epoch
+                confirmation_text = f"Confirm command: {task.input_text}"
+                self.state.spoken_outputs.append(confirmation_text)
+                aux_tts_id = self._register_aux_tts_locked(
+                    task.task_id,
+                    speech_epoch=epoch,
+                    input_generation=task.metadata.get("input_generation"),
+                    input_epoch=task.metadata.get("input_epoch"),
+                )
+            self.publish(
+                AgentEvent(
+                    EventKind.TTS_REQUEST,
+                    {
+                        "task_id": task.task_id,
+                        "text": confirmation_text,
+                        "epoch": epoch,
+                        "confirmation_prompt": True,
+                        "auxiliary_tts": True,
+                        "aux_tts_id": aux_tts_id,
+                    },
+                )
+            )
             return
         if self._should_queue(task):
             if self._queue_task(task):
@@ -1860,8 +1891,8 @@ class AgentSupervisor:
         origin = combine(task.metadata.get("origin"), prior_origin)
         task.metadata["origin"] = origin.value
         task.metadata["owner_verified"] = bool(
-            task.metadata.get("owner_verified", False)
-            and bool(prior_owner_verified)
+            task.metadata.get("owner_verified") is True
+            and prior_owner_verified is True
             and origin is Origin.LIVE_AUDIO
         )
 
@@ -2275,6 +2306,8 @@ class AgentSupervisor:
         self,
         owner_verified: bool = False,
         *,
+        origin: str = "unknown",
+        direct_user_instruction: bool = False,
         input_generation: object = None,
         input_epoch: object = None,
         expected_control: Mapping[str, object] | None = None,
@@ -2312,12 +2345,24 @@ class AgentSupervisor:
             ):
                 return
             if (
-                bool(task.metadata.get("owner_verified", False))
+                task.metadata.get("owner_verified") is True
                 and owner_verified is not True
             ):
                 self.state.spoken_outputs.append(
                     f"I can't confirm '{task.input_text}' without "
                     "verified-owner authorization."
+                )
+                return
+            if (
+                str(task.metadata.get("origin", "unknown")) == "live_audio"
+                and not (
+                    origin == "live_audio"
+                    and direct_user_instruction is True
+                )
+            ):
+                self.state.spoken_outputs.append(
+                    f"I can't confirm '{task.input_text}' without a direct "
+                    "live voice confirmation."
                 )
                 return
             # Confirmation is a new, separately validated input. Rebind only
@@ -2336,6 +2381,7 @@ class AgentSupervisor:
                     self.latest_input_generation,
                 )
             )
+            task.metadata["confirmed"] = True
         if self._start_task(
             task,
             pending_confirmation_id=task_id,

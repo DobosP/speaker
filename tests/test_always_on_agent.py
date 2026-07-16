@@ -12,6 +12,7 @@ from always_on_agent.diagnostics import summarize
 from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.bridge import TranscriptBridge
 from always_on_agent.models import IntentDecision, IntentKind
+from always_on_agent.planner import TaskPlanner
 from always_on_agent.replay import replay_records
 from always_on_agent.runtime import AlwaysOnAgentRuntime
 from always_on_agent.speech_analyzer import (
@@ -79,6 +80,82 @@ def test_assistant_mode_final_candidate_excludes_builtin_nonassistant_intents():
         has_pending_confirmation=True,
     )
     assert not is_assistant_mode_final_candidate("explain the moon", Mode.RESEARCH)
+
+
+def test_setup_enabled_device_tools_are_explicit_controller_commands():
+    analyzer = LiveSpeechAnalyzer(ModePolicy(device_tools_enabled=True))
+
+    create = analyzer.decide(
+        analyzer.observe("remind me to call Ana in ten minutes", is_final=True),
+        Mode.ASSISTANT,
+    )
+    assert create.kind is IntentKind.COMMAND
+    assert create.requires_confirmation is True
+    assert create.metadata == {"device_tool": "reminder.create"}
+
+    listing = analyzer.decide(
+        analyzer.observe("show my active reminders", is_final=True),
+        Mode.ASSISTANT,
+    )
+    assert listing.kind is IntentKind.COMMAND
+    assert listing.requires_confirmation is False
+    assert listing.metadata == {"device_tool": "reminder.list"}
+
+    launch = analyzer.decide(
+        analyzer.observe("launch obsidian", is_final=True),
+        Mode.ASSISTANT,
+    )
+    assert launch.kind is IntentKind.COMMAND
+    assert launch.requires_confirmation is True
+    assert launch.metadata == {"device_tool": "app.open"}
+
+
+def test_device_tool_phrases_stay_normal_chat_when_setup_disabled():
+    analyzer = LiveSpeechAnalyzer(ModePolicy(device_tools_enabled=False))
+    decision = analyzer.decide(
+        analyzer.observe("remind me to call Ana in ten minutes", is_final=True),
+        Mode.ASSISTANT,
+    )
+    assert decision.kind is IntentKind.ASSISTANT
+    assert is_assistant_mode_final_candidate(
+        "remind me to call Ana in ten minutes",
+        Mode.ASSISTANT,
+        device_tools_enabled=False,
+    )
+    assert not is_assistant_mode_final_candidate(
+        "remind me to call Ana in ten minutes",
+        Mode.ASSISTANT,
+        device_tools_enabled=True,
+    )
+
+
+def test_task_planner_preserves_generic_command_stage_and_routes_typed_devices():
+    planner = TaskPlanner()
+    generic = planner.plan(
+        IntentDecision(
+            IntentKind.COMMAND,
+            1.0,
+            "run the existing command workflow",
+            "command_mode",
+            mode=Mode.COMMAND,
+        )
+    )
+    device = planner.plan(
+        IntentDecision(
+            IntentKind.COMMAND,
+            1.0,
+            "open obsidian",
+            "device_tool",
+            mode=Mode.ASSISTANT,
+            requires_confirmation=True,
+            metadata={"device_tool": "app.open"},
+        )
+    )
+
+    assert generic.steps[0].capability == "command.stage"
+    assert generic.requires_confirmation is True
+    assert device.steps[0].capability == "device.command"
+    assert device.requires_confirmation is True
 
 
 def test_mode_switch_then_assistant_task_emits_tts_request():

@@ -23,7 +23,7 @@
     "memorize_redact_pii": true,
     "memorize_phash_threshold": 4
   },
-  "_gui_actions_comment": "Computer-use, READ-ONLY tier (default OFF, separate opt-in from --agent). When enabled (config or --gui-actions), registers screen.identify -- a read-only capability that captures the screen, OCRs/locates UI elements, and reports what is on screen + where (e.g. 'where is the Save button'). It NEVER moves the cursor, clicks, or types. On-screen text is treated as UNTRUSTED (PII-redacted + fenced + Origin.SCREEN) so it can never originate an action. The ACTUATING tier (click/type/press) is intentionally NOT here: it requires owner speaker-ID verification + the always_on_agent/origin action chokepoint + live validation, and is a separate gated slice. Needs mss (capture) + pytesseract/Pillow/tesseract (OCR); degrades gracefully if absent.",
+  "_gui_actions_comment": "Computer-use, READ-ONLY tier (default OFF, enabled through machine-local config). It registers screen.identify, which captures the screen, OCRs/locates UI elements, and reports what is on screen + where. It NEVER moves the cursor, clicks, or types. On-screen text is treated as UNTRUSTED (PII-redacted + fenced + Origin.SCREEN) so it can never originate an action. The ACTUATING tier (click/type/press) requires owner speaker-ID verification + the always_on_agent/origin action chokepoint + live validation and is a separate gated slice. Needs mss + pytesseract/Pillow/tesseract; degrades gracefully if absent.",
   "gui_actions": {
     "enabled": false,
     "monitor": 1
@@ -36,7 +36,7 @@
     "max_active": 2,
     "grants": []
   },
-  "_obsidian_comment": "Default OFF. Set enabled=true in gitignored config.local.json to use read-only, bounded access to Paul's local Markdown vault. The Linux path default follows the fleet workspace layout and expands ~ at runtime; override vault_root on another supported POSIX device. Safe descriptor-relative openat/no-follow support is required, otherwise no tool registers. Missing/unreadable roots register no tool and are never advertised. The provider retains a safely opened root, reads regular .md files only, never follows symlinks, skips .git/.obsidian and unsafe names, caps entries/directories/files/bytes/results/excerpts, polls cancellation, returns only relative paths, and marks/fences note text PRIVATE/untrusted. It never writes the vault.",
+  "_obsidian_comment": "Default OFF. Enable through tools.setup_assistant --obsidian-vault PATH; it records a machine-local grant without reading notes. Safe descriptor-relative openat/no-follow support is required, otherwise no tool registers. Missing/unreadable roots register no tool and are never advertised. The provider retains a safely opened root, reads regular .md files only, never follows symlinks, skips .git/.obsidian and unsafe names, caps entries/directories/files/bytes/results/excerpts, polls cancellation, returns only relative paths, and marks/fences note text PRIVATE/untrusted. It never writes the vault.",
   "obsidian": {
     "enabled": false,
     "vault_root": "~/work/dobo-brain/paul-brain",
@@ -48,6 +48,19 @@
     "max_results": 4,
     "max_excerpt_chars": 600,
     "max_output_chars": 3600
+  },
+  "_reminders_comment": "Default OFF. Enable only through the machine-local setup assistant. Reminders use a private SQLite store and opaque-id systemd user timers; reminder text is never put in scheduler argv. Creating/cancelling requires a direct live-audio instruction plus spoken confirmation. Listing is read-only. Timers survive assistant restarts.",
+  "reminders": {
+    "enabled": false,
+    "store_path": "~/.local/state/speaker/reminders.sqlite3",
+    "timezone": "local",
+    "min_delay_sec": 5.0,
+    "max_horizon_days": 366
+  },
+  "_trusted_apps_comment": "Default OFF and empty. The machine-local setup assistant can add exact spoken aliases mapped to fixed .desktop IDs. Runtime revalidates the allowlist and launches with gtk-launch argv only: no shell, URI, path, option, or trailing model text. App opening requires a direct live-audio instruction plus spoken confirmation; side-effect tools are never exposed to ReAct.",
+  "trusted_apps": {
+    "enabled": false,
+    "apps": {}
   },
   "llm": {
     "backend": "ollama",

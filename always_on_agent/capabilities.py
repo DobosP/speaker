@@ -8,6 +8,7 @@ from types import MappingProxyType
 from typing import Callable, Literal, Mapping, Optional, Sequence
 
 from .memory import Memory, SessionMemory
+from .origin import Origin
 from .text import keywords, normalize_text
 
 
@@ -37,6 +38,11 @@ class CapabilitySpec:
     - ``side_effecting``: takes an action / changes state (command, note).
     - ``planner_tool``: exposed to the ReAct planner as a callable tool.
     - ``user_facing``: enumerated in the model's self-description.
+    - ``authority``: controller-enforced action provenance. ``none`` is read-only
+      or legacy behavior, ``direct_live`` accepts only an unmodified live-audio
+      request, and ``verified_owner`` additionally requires speaker identity.
+    - ``requires_confirmation``: the controller must have completed its staged
+      readback/confirmation before the provider may run.
     """
 
     name: str
@@ -47,6 +53,14 @@ class CapabilitySpec:
     side_effecting: bool = False
     planner_tool: bool = False
     user_facing: bool = True
+    authority: Literal["none", "direct_live", "verified_owner"] = "none"
+    requires_confirmation: bool = False
+
+    def __post_init__(self) -> None:
+        if self.authority not in {"none", "direct_live", "verified_owner"}:
+            raise ValueError("invalid capability authority")
+        if self.requires_confirmation and self.authority == "none":
+            raise ValueError("confirmation requires an explicit capability authority")
 
 
 CapabilityProvider = Callable[[str, dict[str, object]], CapabilityResult]
@@ -189,27 +203,71 @@ class CapabilityRegistry:
         # assistant.answer replacing the stub, or the §9.7 web.search), keep the
         # existing spec so capability metadata survives the swap.
 
+    @staticmethod
+    def _authorized(
+        spec: Optional[CapabilitySpec], context: Mapping[str, object]
+    ) -> CapabilityResult | None:
+        """Return a refusal for an unauthorized action, otherwise ``None``.
+
+        This is the common provider boundary, so direct registry calls and both
+        planner implementations share the same fail-closed rule. Read tools and
+        legacy specs (``authority=none``) remain byte-for-byte unaffected.
+        """
+        if spec is None or spec.authority == "none":
+            return None
+        origin = context.get("origin")
+        if isinstance(origin, Origin):
+            origin_value: str | None = origin.value
+        elif isinstance(origin, str):
+            origin_value = origin
+        else:
+            # Objects that merely expose ``value = 'live_audio'`` are not a
+            # provenance tag. Accept only the concrete enum or serialized str.
+            origin_value = None
+        direct = context.get("direct_user_instruction") is True
+        confirmed = context.get("confirmed") is True
+        owner = context.get("owner_verified") is True
+        allowed = origin_value == "live_audio" and direct
+        if spec.authority == "verified_owner":
+            allowed = allowed and owner
+        if spec.requires_confirmation:
+            allowed = allowed and confirmed
+        if allowed:
+            return None
+        return CapabilityResult(
+            True,
+            "I can't perform that action from this request.",
+            data={"executed": False, "blocked": "action_authority"},
+        )
+
+    def _call_provider(
+        self,
+        name: str,
+        provider: Optional[CapabilityProvider],
+        query: str,
+        context: dict[str, object],
+    ) -> CapabilityResult:
+        if provider is None:
+            return CapabilityResult(False, "", error=f"missing capability: {name}")
+        refusal = self._authorized(self._specs.get(name), context)
+        if refusal is not None:
+            return refusal
+        try:
+            return provider(query, context)
+        except Exception as exc:
+            return CapabilityResult(False, "", error=str(exc))
+
     def invoke(self, name: str, query: str, context: dict[str, object] | None = None) -> CapabilityResult:
         context = context or {}
         provider = self._providers.get(name)
         # The common production path stays timestamp/sequence/lock free.
         # A subscriber added concurrently begins with the next invocation.
         if not self._invocation_observers:
-            if provider is None:
-                return CapabilityResult(False, "", error=f"missing capability: {name}")
-            try:
-                return provider(query, context)
-            except Exception as exc:
-                return CapabilityResult(False, "", error=str(exc))
+            return self._call_provider(name, provider, query, context)
 
         observers = self._invocation_observer_snapshot()
         if not observers:
-            if provider is None:
-                return CapabilityResult(False, "", error=f"missing capability: {name}")
-            try:
-                return provider(query, context)
-            except Exception as exc:
-                return CapabilityResult(False, "", error=str(exc))
+            return self._call_provider(name, provider, query, context)
 
         invocation_id = self._next_invocation_id()
         spec = self._specs.get(name)
@@ -229,13 +287,7 @@ class CapabilityRegistry:
             ),
             observers,
         )
-        if provider is None:
-            result = CapabilityResult(False, "", error=f"missing capability: {name}")
-        else:
-            try:
-                result = provider(query, context)
-            except Exception as exc:
-                result = CapabilityResult(False, "", error=str(exc))
+        result = self._call_provider(name, provider, query, context)
         self._notify_invocation(
             CapabilityInvocation(
                 phase="finished",
@@ -259,8 +311,16 @@ class CapabilityRegistry:
         return tuple(self._specs[name] for name in sorted(self._specs))
 
     def planner_tools(self) -> tuple[str, ...]:
-        """Capability names the ReAct planner may call (planner_tool=True)."""
-        return tuple(spec.name for spec in self.manifest() if spec.planner_tool)
+        """Read-only capability names the ReAct planner may call."""
+        return tuple(
+            spec.name
+            for spec in self.manifest()
+            if (
+                spec.planner_tool
+                and not spec.side_effecting
+                and spec.authority == "none"
+            )
+        )
 
     def describe(self, names: Optional[Sequence[str]] = None, *, planner: bool = False) -> str:
         """Render a ``- name: description`` catalog for prompts / logs.

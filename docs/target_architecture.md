@@ -297,30 +297,30 @@ The forks that were open are now decided. Rationale is grounded in what shipped.
    given to the assistant may cross to cloud, and only when the thinking
    tier is invoked. Supersedes the earlier "fully-local, no cloud LLM"
    stance; the always-on loop is still fully local.
-8. **Input gate — implicit addressing, speaker-ID gated** (resolved
-   2026-05-28). The brain transcribes everything but only *acts* when (a)
-   the speaker-ID matches the enrolled user and (b) the model judges the
-   utterance is addressed to it (no wake word). This is the central design
-   bottleneck and the next concrete PR after this docs landing. Today's
-   behavior — every clean ASR final is a query — is explicitly rejected
-   (see `logs/runs/run-20260528-004726.summary.json` for the symptom: four
-   nonsense transcripts answered as queries because the gate doesn't
-   exist).
-9. **Microphone is variable; speaker-ID is essential** (resolved
-   2026-05-28). v1 must handle headset *and* laptop-mic-plus-speakers in
-   the same session. Without speaker-ID, TTS leaks into the mic when
-   using speakers and produces barge-in storms (see
-   `logs/runs/run-20260528-004726.txt` lines 68–75). The speaker-ID gate
-   in `core/engines/speaker_gate.py` is therefore not optional in v1.
+8. **Input gate — implicit addressing plus typed authority** (implemented;
+   refined 2026-07-16). Learned addressing decides whether an ordinary final is
+   for the assistant. Exact controller-owned controls and setup-enabled tool
+   phrases have deterministic routes. Low-risk reminder/app mutations require
+   an unchanged direct live request plus a separate direct spoken confirmation;
+   sensitive/arbitrary actions additionally require owner verification or stay
+   unsupported. Speaker identity and direct-live provenance are distinct and
+   neither may mint the other (ADR-0024/0072/0076).
+9. **Microphone and voice population are variable** (refined 2026-07-16). v1
+   must handle headset and laptop-mic-plus-speakers. Echo defenses and lexical
+   evidence protect ordinary single-voice barge-in without enrollment; the
+   optional speaker filter is retained for generic overrides in a multi-voice
+   room. Normal-final identity gating and sensitive-action policy remain
+   independently configurable. Physical exact Stop is still live-red
+   (ADR-0042/0072/0075).
 10. **v1 scope — desktop-Linux-only** (resolved 2026-05-28; mode set
     since expanded). v1 ships: desktop Linux; English; the originally-scoped
     four modes (quiet/assistant/research/command) have **grown to seven as
     implemented** (`passive`, `assistant`, `command`, `search`, `research`,
     `dictation`, `meeting` — `always_on_agent/events.py`); four background-task
-    families (research / summarize / reminders / watch), of which **only
-    `research` ships so far**, with per-task delivery
-    preference; 2–3 concurrent tasks; spoken confirmation on destructive
-    actions only; sherpa-onnx + existing brain + the cloud thinking tier
+    families (research / summarize / reminders / watch); durable reminders,
+    research, and gated watch support now ship, with per-task delivery
+    preference; 2–3 concurrent tasks; spoken confirmation on mutations;
+    sherpa-onnx + existing brain + the cloud thinking tier
     from §9.7. **Out of v1:** mobile shell, multilingual, cross-device
     sync. Hardware target: workstation with ~16 GB VRAM GPU + 32 GB RAM
     (the rig already running `gemma3:12b` + `4b` on Ollama).

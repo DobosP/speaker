@@ -2,29 +2,28 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-16 on Linux ROG: full 5205 passed/31 skipped/9 warnings; live launcher/capture/doctor 195; vault 1066; vault/planner/privacy 1108; adjacent cloud 1152; APM 6.
+Last verified: 2026-07-16 on Linux ROG: full suite 5303 passed/31 skipped/9 warnings; launcher/capture/doctor 197; APM 6.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
 
 ## Runtime
 
-- Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; low-level
-  core launch assumes prepared audio. Normal Linux physical entry is `./live.sh`; raw audio stays local (ADR-0001/0075).
+- Local-first `core/VoiceRuntime` + sherpa-onnx; normal Linux physical entry is
+  `./live.sh`, while low-level core assumes prepared audio (ADR-0001/0075).
 - Desktop MiniCPM Q8 is local text; readiness pins its alias, full blob,
   quantization, template, and parameters (ADR-0020/0062). Gemma3 is complex/
   vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
 - Anchored high-confidence requests take deterministic ACT/search/research paths;
   ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
-- Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
-  SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
-  clean stable identities passed (ADR-0060/65); default-off `vault.search` returns bounded PRIVATE Markdown excerpts, with explicit personal-vault phrases locally scoped (ADR-0074).
-- `./live.sh` owns one host-global lock, conditional loopback Ollama, reversible Linux
-  `echo-cancel-*` setup, doctor, and a private mic+reference bundle (ADR-0075).
-  Direct core/session remain low-level. GTCRN is active; generic cuts need four
-  novel words; speaker filtering is opt-in; own-TTS-ambiguous STOP needs identity (ADR-0042/72).
-- Host InputAGC is boost-only: only a current block above its calibrated floor
-  is boosted; below-floor PCM stays unity. V5 is live-red (ADR-0047/0072).
+- Smart-save uses fast Ollama; SQLite recall routes strong subjects to fenced
+  PRIVATE Gemma first (ADR-0057/60/65). Setup can add bounded PRIVATE vault
+  search, durable reminders, and exact trusted apps to the same chatbot; low-risk
+  mutations need unchanged direct speech plus direct confirmation and stay out of model planners (ADR-0074/76).
+- `./live.sh` owns the product entry, host lock, conditional loopback Ollama,
+  reversible Linux EC, doctor, and private mic+reference bundle (ADR-0075).
+  GTCRN is active; four-word generic cuts are identity-optional; own-TTS-ambiguous STOP is not (ADR-0042/72).
+- Host InputAGC is boost-only above its calibrated floor; below-floor PCM stays unity. V5 is live-red (ADR-0047/72).
 
 ## Voice reliability now implemented
 
@@ -43,13 +42,10 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   Same-domain recovery preserves calibration/evidence; changed domains relearn
   outside complete speech epochs. Failed retry leaves authority cleared (ADR-0043/48).
 - Startup retries transient/clipped/VAD windows once; invalid profiles abstain; recovery also retries profile instability (ADR-0048).
-- Enrollment provenance v5 fingerprints current-signal-only AGC after live open;
-  v2/v3/v4 InputAGC records fail open and require re-enrollment, while exact non-
-  AGC aliases remain. Stable route/rates/resampler/OS processing stay covered;
-  volatile ambient stays excluded and measured voice admission stays shared.
-  Prep protects v4 and wrong-checkout capture; explicit promotion accepts exact
-  live-v5 state, publishes/adopts a unique mode-600 copy, rewires one pointer, and
-  retains v4, backup, and candidate rollback evidence (ADR-0047/0056/0066).
+- Enrollment v5 fingerprints current-signal-only AGC after live open; old
+  InputAGC records require re-enrollment, exact non-AGC aliases remain, and volatile
+  ambient stays excluded. Prep protects v4/wrong checkouts; explicit promotion
+  adopts one unique mode-600 accepted copy with rollback evidence (ADR-0047/56/66).
 - Native startup, doctor, and live-session preflight share one resolved-profile
   contract; selected artifacts/routes fail closed (ADR-0016). Fresh install includes
   SciPy/soxr plus SenseVoice/GTCRN/Kokoro/speaker-ID, atomically publishes only a
@@ -58,18 +54,18 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 - Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
   scenario-correct terminals, zero errors/stuck/self-cuts, and causal cuts. Private
   synthetic delay has a 1.4 s capture clock; other paths stay 1.0 s (ADR-0055/58/70).
-- Synchronous capabilities use bounded cancellable coordinators; failed plan
-  tools cannot retry, and failed web may make one fenced local fallback.
-  Barge/timeout blocks stale output and caps abandoned providers at six; CPU
-  llama.cpp cancellation clears memory before context release (22.4 ms Q4
-  pre-token with healthy reuse) (ADR-0021/30/51).
+- Synchronous capabilities use bounded cancellable coordinators; failed plan tools
+  do not retry, while failed web gets one fenced local fallback. Barge/timeout
+  blocks stale output and caps abandoned providers at six; CPU llama.cpp cancels
+  pre-token in 22.4 ms Q4 with healthy reuse (ADR-0021/30/51).
 - Cancellable preprocessing lets clean finals and one anchored question repair
   bypass model cleanup; broader signalled corrections remain model-owned. Bounded
   replies and exact-word/repeat/session facts are controller-owned; role history
   is capped, while response-only authority stays stripped (ADR-0023/39/51/68).
 - Engine finals separate admission from `UNKNOWN`/`VERIFIED`/`REJECTED` identity.
-  Only a finite enrolled final-gate match marks live audio owner-verified; disabled,
-  unavailable, error, loudness-rescue, mixed, and 0.30-only barge paths cannot.
+  Only a finite enrolled final-gate match marks live audio owner-verified; direct-
+  live low-risk tool authority never does. Disabled, unavailable, error,
+  loudness-rescue, mixed, and 0.30-only barge paths cannot mint identity.
 - Terminal sink receipts govern spoken history; admitted replies stamp
   `TTS_REQUESTED`. TTS speaker ID is session-locked; voice tags cannot switch it,
   while finite unsupported control tags strip (ADR-0027/28/29/38/41/51).

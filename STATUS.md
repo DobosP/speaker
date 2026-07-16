@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-17 on Linux ROG: full suite 5479 passed/31 skipped/9 warnings; verifier-enabled strict recorded 9; APM 6; real RTX CUDA/model-load probe green without `LD_LIBRARY_PATH`.
+Last verified: 2026-07-17 on Linux ROG: full suite 5493 passed/31 skipped/9 warnings; verifier-enabled strict recorded 9; APM 6; real RTX CUDA/model-load probe green without `LD_LIBRARY_PATH`.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
@@ -42,7 +42,12 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   SciPy/soxr plus SenseVoice/GTCRN/Kokoro/speaker-ID, atomically publishes only a
   complete selected config, and propagates failures. Stage one can say only `BASE
   READY` with Ollama deferred; skipped models are incomplete (ADR-0063). Windows voice-communications/word-cut remains unavailable pending a verified API (ADR-0019).
-- Optional pinned Faster-Whisper Small CUDA may change a final only on exact independent acoustic quorum; Unicode is preserved, controller meaning cannot change, and rewrites lose owner/action authority. Setup stages the immutable snapshot, doctor proves model load, and live errors circuit-break. Committed config stays disabled (ADR-0079).
+- Optional pinned Faster-Whisper Small CUDA may change a final only on exact
+  independent acoustic quorum; Unicode is preserved, controller meaning cannot
+  change, and rewrites lose owner/action authority. The Linux machine-local
+  opt-in is staged/enabled; committed config stays disabled. Setup proves model
+  load, live errors circuit-break, and aggregate replay is red on any enabled-
+  verifier error or when no verifier decode completes (ADR-0078/79).
 - Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
   scenario-correct terminals, zero errors/stuck/self-cuts, and causal cuts. Private
   synthetic delay has a 1.4 s capture clock; other paths stay 1.0 s (ADR-0055/58/70).

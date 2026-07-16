@@ -215,6 +215,11 @@ class TaskRuntime:
 
     def create_task(self, decision: IntentDecision) -> AgentTask:
         plan = self._planner.plan(decision)
+        controller_metadata = {
+            key: decision.metadata[key]
+            for key in ("device_tool", "prepared_device_command")
+            if key in decision.metadata
+        }
         return AgentTask(
             mode=plan.mode,
             input_text=decision.text,
@@ -232,6 +237,7 @@ class TaskRuntime:
                     for step in plan.steps
                 ],
                 "tags": plan.tags,
+                **controller_metadata,
             },
         )
 
@@ -422,14 +428,19 @@ class TaskRuntime:
             context["intent_kind"] = task.intent.value
         if extra_context:
             context.update(extra_context)
-        # Forward the turn's speaker-ID trust to the capability's action chokepoint
-        # (always_on_agent.origin). Fail-closed: a task without a stamped verdict is
-        # treated as not-owner-verified / unknown origin, so a side-effecting
-        # capability (command.stage) refuses unless the turn was owner-verified.
+        # Forward the turn's provenance to the capability's common authority
+        # boundary. Fail-closed: a task without stamped direct/owner/confirmation
+        # verdicts receives none of them. Low-risk typed tools may require direct
+        # live speech plus confirmation; sensitive actions can additionally require
+        # an owner-verified speaker.
         # Stamped AFTER extra_context so a caller's extra_context can never override
         # the trust verdict (defense-in-depth: the trust seam stays authoritative).
-        context["owner_verified"] = bool(task.metadata.get("owner_verified", False))
+        context["owner_verified"] = task.metadata.get("owner_verified") is True
         context["origin"] = str(task.metadata.get("origin", "unknown"))
+        context["direct_user_instruction"] = (
+            task.metadata.get("direct_user_instruction") is True
+        )
+        context["confirmed"] = task.metadata.get("confirmed") is True
         return self._invoke_cancellable(
             task,
             lambda: self._capabilities.invoke(

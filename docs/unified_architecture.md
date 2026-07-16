@@ -235,7 +235,7 @@ This contract is **not** a binary core passed around; it is **reimplemented fait
 - `planner.py` (**explicit task plans**): maps intent decisions → fixed step sequences (e.g., RESEARCH → [scope, web.search, synthesize]). Always-on and deterministic. Driven by `TaskRuntime._run_plan` in the worker thread.
 - `react.py` (**bounded ReAct loop**): an LLM-backed capability that accepts a decision's text and iteratively calls tools (from the `CapabilityRegistry`) until it emits FINAL. Optional, opt-in, and slower. Sits *inside* a task step (e.g., as the `assistant.answer` capability in the ASSISTANT mode plan).
 
-The planner chooses *which* capability (e.g., `assistant.answer` vs. `web.search` vs. `command.stage`); the ReAct loop is the implementation of `assistant.answer` when enabled. (The decision/escalation ladder that triggers escalation is in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
+The planner chooses *which* capability (e.g., `assistant.answer` vs. `web.search` vs. the historical `command.stage`); the ReAct loop is the implementation of `assistant.answer` when enabled. Exact setup-approved reminder/app phrases take the separate internal `device.command` route and never replace generic command mode. (The decision/escalation ladder that triggers escalation is in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
 
 **Task lifecycle:** Before an intent exists, `FinalDispatcher` runs addressing, cleanup, and routing through cancellable leases behind a separate six-slot provider bulkhead; only the lease that wins terminal commit may publish a final (ADR-0023). `LiveSpeechAnalyzer.decide()` then emits an intent → `TaskPlanner.plan()` builds a `TaskPlan` → `AgentSupervisor` queues or starts the task → `TaskRuntime.start()` spawns a coordinator → `_run_plan()` executes steps and emits `TASK_PROGRESS`/`TASK_COMPLETED`/`TASK_FAILED`. Each synchronous capability runs in a daemon provider thread behind a `max_active_tasks` semaphore. Barge-in (`cancel_all`) sets the task's `cancel_event`; the coordinator retires without waiting for a pre-first-result provider, while that provider retains its bounded slot until it returns (ADR-0021). Task output is stamped with the `speech_epoch` at start; a later barge-in advances the epoch and stale `TTS_REQUEST`s drop via `tts_request_allowed()`.
 
@@ -258,7 +258,7 @@ synthetic prompt trust is the intersection of every origin/owner verdict
 
 **AlwaysOnAgentRuntime:** Thin ~30-line facade over `AgentSupervisor` for audio integration. Methods: `ingest_partial(text)`, `ingest_final(text)`, `stop(reason)`, `snapshot()`, `wait_idle()`. Polls the bus drain synchronously; does not spawn its own thread.
 
-**Confirmation staging:** `COMMAND` intent tasks are queued under `pending_confirmations` (not started). User says "confirm" → `CONTROL_CONFIRM` → `_confirm_next()` moves the first confirmation to active. User says "no"/"deny" → clears the queue.
+**Confirmation staging:** `COMMAND` intent tasks are queued under `pending_confirmations` (not started). The controller speaks the bound command readback. A later direct live `confirm`/`yes` moves the first task to active; `no`/`deny` clears it. For `direct_live` tools, both the staged instruction and confirmation must be literal direct live-audio turns. Any token-changing cleaner output, continuation/merge, post-barge response exception, ambient origin, or missing provenance strips action authority. Low-risk reminder/app effects do not require enrollment; `verified_owner` capabilities retain the independent speaker-ID requirement (ADR-0076).
 
 **Timeouts and reaping:** Per-mode wall-clock deadlines (ASSISTANT 25s, RESEARCH 120s, default 60s). The watchdog tick calls `reap_overdue_tasks()` (safe from the watchdog thread: uses `_cancel_lock`, never joins). A reaped task emits a timeout apology and unblocks the queue; its coordinator exits promptly, though an uncooperative bounded provider may remain until its own timeout (ADR-0021). (The watchdog itself lives in `core/`; see [§7](#7--real-time-quality-subsystems).)
 
@@ -787,12 +787,14 @@ The assistant knows what it is and what skills it has, driven by a single **capa
 | `side_effecting` | takes an action or changes state |
 | `planner_tool` | exposed to the ReAct planner as a callable tool |
 | `user_facing` | enumerated in the model's self-description |
+| `authority` | `none`, `direct_live`, or `verified_owner`; enforced at the provider boundary |
+| `requires_confirmation` | requires a completed staged readback/confirmation before invocation |
 
 `CapabilityRegistry.register(name, provider, *, spec=None)` preserves the existing spec when a provider is re-registered without one — enabling LLM-backed overrides (`assistant.answer`, `research.local`) and the §9.7 `web.search` shadow to keep their metadata. Query via `spec()`, `manifest()`, `planner_tools()`, `describe(names, planner=)`.
 
 ### What it drives (preventing drift)
 
-1. **ReAct tool catalog** (`always_on_agent/react.py`) — `_catalog()` renders from `registry.describe(tools, planner=True)` using each spec's `when_to_use`. The hand-typed `_TOOL_DESCRIPTIONS` dict is deleted. `DEFAULT_TOOLS` is asserted equal to `registry.planner_tools()` by test, and `core/runtime.py`'s `_reconcile_capabilities()` warns at startup if a configured planner tool isn't registered (see [§3](#3--the-desktop-runtime-core--the-audioengine-seam)).
+1. **ReAct tool catalog** (`always_on_agent/react.py`) — `_catalog()` renders from `registry.describe(tools, planner=True)` using each spec's `when_to_use`. The hand-typed `_TOOL_DESCRIPTIONS` dict is deleted. `registry.planner_tools()` and both textual/native planners exclude every side-effecting or authority-bearing spec even if configuration names it. `core/runtime.py` warns at startup if a configured planner tool is not registered (see [§3](#3--the-desktop-runtime-core--the-audioengine-seam)).
 2. **The model's self-description** (`core/persona.py`'s `build_system_prompt`) — the answering model's system prompt enumerates user-facing, deliverable skills from the manifest (those with `user_facing=True`). It includes a web-access line that reflects the actual §9.7 egress state: "can search the web" when `web_search.enabled AND base_url` are set, else "have no web access."
 3. **Persona** — the optional `assistant` config block (`name`, `persona`, `extra`) gives the model an identity; the ReAct planner's final answer preserves the persona name too.
 
@@ -803,6 +805,8 @@ The assistant knows what it is and what skills it has, driven by a single **capa
 **Web is gated on real availability.** `web.search` (egress `cloud`) is only listed in the model's "what you can do" block, and the web-access limit line is only used, when `web_search.enabled AND base_url` — matching the condition under which `attach_web_search_capability` actually reaches the network (else it silently falls back to `search.local`).
 
 **Vault access is gated on a real root.** `core/obsidian.py` registers the default-off `vault.search` only when the configured Markdown root is readable and safe POSIX descriptor traversal is available. It securely opens and retains the root, reads regular `.md` files from no-follow handles, skips `.git`/`.obsidian` and unsafe names, applies entry/directory/file/byte/result/excerpt/output caps, polls cancellation, and exposes only relative paths. Note excerpts are PRIVATE `Origin.FILE` data and are spotlight-fenced at the source; private findings float to the planner/synthesis context before the next LLM call. Explicit personal-vault lookup/navigation forms such as `search in`, `go in`, and `find in my vault` share SEARCH plus `search_scope=vault`; topicless forms list within the normal bounds and topical forms rank the requested topic. That local scope never falls through to web when the provider is unavailable, while explicit web source overrides and non-request mentions remain non-vault. Results use `vault.search` followed by the existing `research.local` synthesis step. See ADR-0074 (superseding ADR-0073).
+
+**Setup-enabled mutations stay controller-owned.** `reminder.create`, `reminder.cancel`, and `app.open` are registered only when their machine-local grants exist. They are `planner_tool=False` and `user_facing=False`: the answering model neither calls them nor claims success. Exact deterministic phrases bind typed provider arguments before confirmation and execute through `device.command`; unmatched commands retain `command.stage`. `reminder.list` is read-only and may be described. The common registry boundary rechecks strict direct/confirmed/owner booleans. Reminder timers carry opaque ids rather than text, use delivery leases to avoid restart duplication, and notify independently of the running agent; a cancellable voice request is claimed and committed only after TTS handoff. Trusted app launch accepts one allowlisted alias and one fixed `.desktop` id, never a URI/path/option/shell fragment. See ADR-0076.
 
 ### Layering
 
@@ -840,6 +844,8 @@ Tier-0 tests (no real screen/mss/Xlib/tesseract/model; tmp `config.local.json`):
 | **DTLN-aec** (deep echo cancellation) | `sherpa.aec_backend='dtln'` | OFF (default: 'nlms') | `tests/test_aec_seam.py` | KEEP, gated (no models shipped) |
 | **ReAct Planner** (multi-step planning) | `agent.planner.enabled` | ON (default) | `tests/test_react_planner.py` | KEEP, gated |
 | **Obsidian Vault** (bounded read-only Markdown search) | `obsidian.enabled` | OFF | `tests/test_obsidian.py` | KEEP, gated |
+| **Durable Reminders** (private store + opaque local timer) | `reminders.enabled` | OFF | `tests/test_reminders.py`, `tests/test_device_tools_runtime.py` | KEEP, setup-gated |
+| **Trusted Desktop Apps** (exact alias → `.desktop` open) | `trusted_apps.enabled` | OFF/empty | `tests/test_trusted_apps.py`, `tests/test_device_tools_runtime.py` | KEEP, setup allowlist |
 | **Continuation** (add-on merging) | `continuation.enabled` | ON (default) | `tests/test_continuation.py` | KEEP, gated |
 | **Followups** (proactive listen-ahead) | `followups.enabled` | OFF | `tests/test_followups.py` | KEEP, gated |
 | **Live Routing** (dynamic hedge nudging) | `llm.live_routing` or `SPEAKER_LIVE_ROUTING=1` | OFF | `tests/test_core_routing.py` | KEEP, gated |

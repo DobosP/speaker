@@ -1302,6 +1302,9 @@ def test_concurrent_launcher_is_rejected_without_touching_audio(tmp_path):
         ["--input-device", "raw-source"],
         ["--enroll"],
         ["--device", "open_speaker"],
+        ["--agent"],
+        ["--gui-actions"],
+        ["--planner"],
     ],
 )
 def test_launcher_rejects_options_that_break_its_evidence_contract(arguments):
@@ -1316,7 +1319,6 @@ def test_launcher_rejects_options_that_break_its_evidence_contract(arguments):
         ["--model", "first", "--model", "second"],
         ["--model=first", "--model=second"],
         ["--model", "first", "--model=second"],
-        ["--agent", "--agent"],
         ["--run-label", "first", "--run-label=second"],
     ],
 )

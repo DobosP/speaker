@@ -176,7 +176,7 @@ class FinalDispatchLease:
         self.submitted_at = submitted_at
         self.input_generation = input_generation
         self.input_epoch = input_epoch
-        self.owner_verified = bool(owner_verified)
+        self.owner_verified = owner_verified is True
         self.origin = str(origin or "unknown")
         self.cancel_event = threading.Event()
         self._committed = False
@@ -281,7 +281,7 @@ class FinalDispatcher:
     ) -> None:
         """Engine-thread entry: queue a final, merging into an open hold."""
         now = time.monotonic()
-        owner_verified = bool(owner_verified)
+        owner_verified = owner_verified is True
         origin = str(origin or "unknown")
         with self._cv:
             if not self._running:
@@ -311,7 +311,8 @@ class FinalDispatcher:
                     )
                 ):
                     owner_verified = bool(
-                        self._active_lease.owner_verified and owner_verified
+                        self._active_lease.owner_verified is True
+                        and owner_verified is True
                     )
                     origin = (
                         origin
@@ -366,7 +367,8 @@ class FinalDispatcher:
                 self._pending_input_generation = input_generation
                 self._pending_input_epoch = input_epoch
                 self._pending_owner_verified = bool(
-                    self._pending_owner_verified and owner_verified
+                    self._pending_owner_verified is True
+                    and owner_verified is True
                 )
                 self._pending_origin = (
                     origin if self._pending_origin == origin else "unknown"

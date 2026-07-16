@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 import re
 import time
+from typing import Callable
 
 from .events import Mode
 from .models import IntentDecision, IntentKind, SpeechObservation
@@ -46,6 +47,54 @@ _EXPLICIT_NON_ASSISTANT_PREFIXES = (
     "dictate ", "scrie ",
     "run ", "open ", "execute ",
 )
+
+# Setup-enabled device tools remain deterministic controller routes.  The
+# answering model may describe registered skills, but it never gets authority
+# to invent or execute a local action.  Keep the grammar deliberately small and
+# user-shaped; the typed providers do the stricter argument validation.
+_REMINDER_LIST_RE = re.compile(
+    r"^(?:please\s+)?(?:list|show)(?:\s+me)?\s+(?:(?:my|the|active)\s+){0,2}reminders?\s*[.!?]?\s*$|"
+    r"^(?:please\s+)?(?:what|which)\s+reminders?\s+(?:do\s+i\s+have|are\s+(?:active|set))\s*[.!?]?\s*$",
+    re.IGNORECASE,
+)
+_REMINDER_CANCEL_RE = re.compile(
+    r"^(?:please\s+)?(?:cancel|delete|remove)\s+(?:my\s+|the\s+)?reminder\b",
+    re.IGNORECASE,
+)
+_REMINDER_CREATE_RE = re.compile(
+    r"^(?:please\s+)?(?:remind\s+me\b|(?:set|add|create)\s+(?:me\s+)?(?:a\s+)?reminder\b)",
+    re.IGNORECASE,
+)
+_TRUSTED_APP_RE = re.compile(
+    r"^(?:please\s+)?(?:launch\s+|start\s+(?:the\s+)?(?:app|application)\s+)",
+    re.IGNORECASE,
+)
+
+
+def device_tool_command(text: str) -> tuple[str, bool] | None:
+    """Return ``(tool_hint, needs_confirmation)`` for an explicit device tool.
+
+    This only classifies.  Exact app allowlisting and reminder argument parsing
+    happen at the capability boundary.
+    """
+
+    normalized = normalize_text(text)
+    if _REMINDER_LIST_RE.fullmatch(normalized):
+        return ("reminder.list", False)
+    if _REMINDER_CANCEL_RE.match(normalized):
+        return ("reminder.cancel", True)
+    if _REMINDER_CREATE_RE.match(normalized):
+        return ("reminder.create", True)
+    if _TRUSTED_APP_RE.match(normalized):
+        return ("app.open", True)
+    return None
+
+
+def is_pending_confirmation_response(text: str) -> bool:
+    """Whether raw text is an exact built-in confirm/deny control reply."""
+
+    normalized = normalize_text(text)
+    return normalized in (_CONFIRM_PHRASES | _DENY_PHRASES)
 
 _VAULT_SCOPE_MARKERS = (
     "my notes",
@@ -1251,6 +1300,7 @@ def is_assistant_mode_final_candidate(
     *,
     has_pending_confirmation: bool = False,
     vault_search_enabled: bool = False,
+    device_tools_enabled: bool = False,
 ) -> bool:
     """Whether assistant-mode default analysis can resolve ``text`` as ASSISTANT.
 
@@ -1271,6 +1321,8 @@ def is_assistant_mode_final_candidate(
         return False
     if vault_search_enabled and is_vault_lookup_request(normalized):
         return False
+    if device_tools_enabled and device_tool_command(normalized) is not None:
+        return False
     if (
         normalized.startswith(("research ", "search "))
         and is_vault_scoped_request(normalized)
@@ -1288,6 +1340,8 @@ class ModePolicy:
     research_parallel_tasks: int = 2
     command_requires_confirmation: bool = True
     vault_search_enabled: bool = False
+    device_tools_enabled: bool = False
+    device_tool_matcher: Callable[[str], object | None] | None = None
 
 
 class LiveSpeechAnalyzer:
@@ -1366,6 +1420,44 @@ class LiveSpeechAnalyzer:
 
         if not observation.is_final:
             return IntentDecision(IntentKind.IGNORE, 0.8, observation.text, "partial_non_control")
+
+        if self.policy.device_tools_enabled:
+            prepared_device_command = None
+            if self.policy.device_tool_matcher is not None:
+                try:
+                    prepared_device_command = self.policy.device_tool_matcher(
+                        observation.text
+                    )
+                except Exception:
+                    # A local parser/store failure must never turn into an
+                    # untyped action.  The ordinary bounded phrase classifier
+                    # below may still stage a request that the provider refuses.
+                    prepared_device_command = None
+            prepared_name = getattr(
+                prepared_device_command, "capability_name", ""
+            )
+            prepared_confirmation = prepared_name != "reminder.list"
+            device_command = (
+                (str(prepared_name), prepared_confirmation)
+                if prepared_name
+                else None
+            )
+            if self.policy.device_tool_matcher is None:
+                device_command = device_tool_command(text)
+            if device_command is not None:
+                tool_hint, requires_confirmation = device_command
+                metadata: dict[str, object] = {"device_tool": tool_hint}
+                if prepared_device_command is not None:
+                    metadata["prepared_device_command"] = prepared_device_command
+                return IntentDecision(
+                    IntentKind.COMMAND,
+                    0.97,
+                    observation.text,
+                    "device_tool_phrase",
+                    mode=Mode.COMMAND,
+                    requires_confirmation=requires_confirmation,
+                    metadata=metadata,
+                )
 
         explicit = self._explicit_intent(text, observation.text)
         if explicit is not None:

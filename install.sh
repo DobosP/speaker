@@ -5,6 +5,8 @@
 #   ./install.sh --skip-system   skip the apt/brew PortAudio step (no sudo)
 #   ./install.sh --recreate      rebuild the venv from scratch (fixes conda/venv mixes)
 #   ./install.sh --dry-run       print the plan, change nothing
+#   ./install.sh --obsidian-vault PATH --enable-reminders
+#                                configure optional assistant capabilities
 #
 # Thin wrapper: it does the OS-specific PortAudio step, then hands the
 # cross-platform work (venv with pip, deps, models, doctor) to tools/install.py
@@ -18,7 +20,7 @@ FORWARD=()
 for arg in "$@"; do
   case "$arg" in
     --skip-system) SKIP_SYSTEM=1 ;;
-    *) FORWARD+=("$arg") ;;   # --recreate / --dry-run / --skip-models / --venv ...
+    *) FORWARD+=("$arg") ;;   # all cross-platform installer/setup options
   esac
 done
 

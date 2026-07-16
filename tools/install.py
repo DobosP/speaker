@@ -18,7 +18,9 @@ What it does (idempotent -- safe to re-run):
      system package (the install.sh wrapper handles the sudo apt step).
   3. Download every artifact selected by the desktop speech profile and
      atomically wire config.local.json (tools.setup_models).
-  4. Run the base preflight with Ollama explicitly deferred and print the
+  4. If capability options were supplied, atomically record those explicit
+     local grants (tools.setup_assistant).
+  5. Run the base preflight with Ollama explicitly deferred and print the
      separate stage-2 commands required for a full READY result.
 
 The LLM (Ollama) is separate; stage 1 never claims full runtime readiness.
@@ -144,6 +146,12 @@ def install_plan(args, *, system: str | None = None) -> list[str]:
             f"{py} -m tools.setup_models {flags}  "
             "(download the selected speech stack + atomically wire config.local.json)"
         )
+        setup_args = capability_setup_args(args)
+        if setup_args:
+            steps.append(
+                f"{py} -m tools.setup_assistant {' '.join(setup_args)}  "
+                "(atomically configure optional assistant capabilities)"
+            )
         steps.append(
             f"{py} -m tools.doctor --defer-ollama  "
             "(base-runtime preflight; full READY still requires Ollama)"
@@ -151,6 +159,25 @@ def install_plan(args, *, system: str | None = None) -> list[str]:
     else:
         steps.append("skip model download (--skip-models; dependency-only, incomplete)")
     return steps
+
+
+def capability_setup_args(args: argparse.Namespace) -> list[str]:
+    """Translate installer capability options to ``tools.setup_assistant``."""
+    result: list[str] = []
+    vault = getattr(args, "obsidian_vault", None)
+    if vault is not None:
+        result.extend(["--obsidian-vault", vault])
+    if getattr(args, "disable_obsidian", False):
+        result.append("--disable-obsidian")
+    if getattr(args, "enable_reminders", False):
+        result.append("--enable-reminders")
+    if getattr(args, "disable_reminders", False):
+        result.append("--disable-reminders")
+    for value in getattr(args, "trust_app", ()):
+        result.extend(["--trust-app", value])
+    for value in getattr(args, "untrust_app", ()):
+        result.extend(["--untrust-app", value])
+    return result
 
 
 # --- orchestration (subprocess-driven; exercised via --dry-run) --------------
@@ -221,7 +248,44 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true",
         help="print the plan and the exact commands, but change nothing",
     )
+    obsidian = parser.add_mutually_exclusive_group()
+    obsidian.add_argument(
+        "--obsidian-vault",
+        metavar="PATH",
+        help="enable assistant access to this exact Obsidian vault",
+    )
+    obsidian.add_argument(
+        "--disable-obsidian",
+        action="store_true",
+        help="disable assistant Obsidian access",
+    )
+    reminders = parser.add_mutually_exclusive_group()
+    reminders.add_argument(
+        "--enable-reminders",
+        action="store_true",
+        help="enable the reminders capability",
+    )
+    reminders.add_argument(
+        "--disable-reminders",
+        action="store_true",
+        help="disable the reminders capability",
+    )
+    parser.add_argument(
+        "--trust-app",
+        action="append",
+        default=[],
+        metavar="ALIAS=DESKTOP-ID",
+        help="allow the assistant to open one exact desktop app (repeatable)",
+    )
+    parser.add_argument(
+        "--untrust-app",
+        action="append",
+        default=[],
+        metavar="ALIAS",
+        help="remove one trusted desktop app alias (repeatable)",
+    )
     args = parser.parse_args(argv)
+    setup_args = capability_setup_args(args)
 
     print("== Voice assistant installer ==")
     print(f"   OS: {sys.platform}   base python: {args.base_python}")
@@ -238,17 +302,18 @@ def main(argv: list[str] | None = None) -> int:
         print("\nRun without --dry-run to execute.")
         return 0
 
-    print("==> 1/4 Python virtual environment")
+    step_count = 5 if setup_args else 4
+    print(f"==> 1/{step_count} Python virtual environment")
     py = create_venv(args.venv, base_python=args.base_python,
                      recreate=args.recreate, dry_run=False)
 
-    print("==> 2/4 Runtime dependencies (lean, no torch)")
+    print(f"==> 2/{step_count} Runtime dependencies (lean, no torch)")
     if _run([py, "-m", "pip", "install", *RUNTIME_DEPS], dry_run=False) != 0:
         print("    dependency install failed -- see the pip output above.", file=sys.stderr)
         return 1
 
     if not args.skip_models:
-        print("==> 3/4 Speech models + config wiring")
+        print(f"==> 3/{step_count} Speech models + config wiring")
         setup_rc = _run(
             [py, "-m", "tools.setup_models", *SELECTED_MODEL_ARGS],
             dry_run=False,
@@ -260,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return setup_rc
     else:
-        print("==> 3/4 Speech models (skipped: --skip-models)")
+        print(f"==> 3/{step_count} Speech models (skipped: --skip-models)")
         print(
             "\nINCOMPLETE: dependencies are installed, but speech models were "
             "deliberately skipped.\n"
@@ -269,7 +334,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
-    print("==> 4/4 Base-runtime preflight (Ollama deferred)")
+    if setup_args:
+        print(f"==> 4/{step_count} Optional assistant capabilities")
+        capability_rc = _run(
+            [py, "-m", "tools.setup_assistant", *setup_args],
+            dry_run=False,
+        )
+        if capability_rc != 0:
+            print(
+                "    assistant capability setup failed; the prior config was preserved.",
+                file=sys.stderr,
+            )
+            return capability_rc
+
+    doctor_step = 5 if setup_args else 4
+    print(f"==> {doctor_step}/{step_count} Base-runtime preflight (Ollama deferred)")
     doctor_rc = _run(
         [py, "-m", "tools.doctor", "--defer-ollama"], dry_run=False
     )

@@ -64,6 +64,28 @@ flags on every platform are `--dry-run` (show the plan, change nothing) and
 `--recreate` (rebuild the venv after a broken conda/venv mix). `--skip-models`
 installs dependencies only and exits 2 as deliberately incomplete.
 
+Optional local tools are setup-time additions to the same chatbot. They can be
+granted during installation or changed later without a tool-specific launcher:
+
+```bash
+./install.sh \
+  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
+  --enable-reminders \
+  --trust-app obsidian=obsidian.desktop
+
+# Equivalent after installation:
+.venv/bin/python -m tools.setup_assistant \
+  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
+  --enable-reminders \
+  --trust-app obsidian=obsidian.desktop
+```
+
+The setup command writes only machine-local `config.local.json`. It validates
+the vault directory without reading notes and records an exact desktop ID
+without launching it. Use `--disable-obsidian`, `--disable-reminders`, or
+`--untrust-app ALIAS` to remove grants. Trusted-app v1 opens an allowlisted app;
+it does not generalize to shell commands, URLs, files, typing, or clicks.
+
 For stage two, activate the environment (`source .venv/bin/activate`, or
 `.venv\Scripts\Activate.ps1` on Windows) and, with Ollama running, provision both
 local Ollama roles:
@@ -93,6 +115,12 @@ press Ctrl-C ([ADR-0075](docs/adr/0075-make-recorded-linux-live-session-one-comm
 ```bash
 ./live.sh
 ```
+
+That one session includes every capability enabled at setup. For example, say
+`search in my vault for speaker`, `show my active reminders`, `remind me to
+stretch in ten minutes`, or `open obsidian`. Reminder changes and app opening
+are read back and require a later spoken `confirm`; vault search and reminder
+listing are read-only. There are no vault/reminder/app variants of `live.sh`.
 
 The portable low-level entry point remains available when platform audio is
 already prepared (needs sherpa-onnx model files + a mic):

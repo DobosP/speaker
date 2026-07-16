@@ -78,7 +78,11 @@ def test_planner_recovers_from_failing_tool():
     def flaky(query, context):
         return CapabilityResult(False, "", error="boom")
 
-    registry.register("flaky.tool", flaky)
+    registry.register(
+        "flaky.tool",
+        flaky,
+        spec=CapabilitySpec("flaky.tool", "flaky", planner_tool=True),
+    )
     llm = ScriptLLM(["TOOL flaky.tool: x", "FINAL: recovered without it"])
     planner = ReactPlanner(llm, registry, tools=("flaky.tool",))
 
@@ -100,8 +104,16 @@ def test_failed_web_search_falls_back_to_local_once_with_same_query():
         calls.append(("search.local", query))
         return CapabilityResult(True, "local result")
 
-    registry.register("web.search", web)
-    registry.register("search.local", local)
+    registry.register(
+        "web.search",
+        web,
+        spec=CapabilitySpec("web.search", "web", planner_tool=True),
+    )
+    registry.register(
+        "search.local",
+        local,
+        spec=CapabilitySpec("search.local", "local", planner_tool=True),
+    )
     # Deliberately violate the prompt on the second step: the controller must
     # keep both the automatic fallback and the failed provider non-repeatable.
     llm = ScriptLLM(
@@ -139,11 +151,16 @@ def test_web_failure_cancellation_prevents_local_fallback():
         cancel.set()
         return CapabilityResult(False, "", error="cancelled")
 
-    registry.register("web.search", cancelling_web)
+    registry.register(
+        "web.search",
+        cancelling_web,
+        spec=CapabilitySpec("web.search", "web", planner_tool=True),
+    )
     registry.register(
         "search.local",
         lambda query, context: local_calls.append(query)
         or CapabilityResult(True, "must not run"),
+        spec=CapabilitySpec("search.local", "local", planner_tool=True),
     )
     planner = ReactPlanner(
         ScriptLLM(["TOOL web.search: pipecat"]),
@@ -260,6 +277,41 @@ def test_planner_handles_unavailable_tool():
     assert result.data["steps"] == []
 
 
+def test_text_planner_cannot_invoke_side_effecting_tool_even_if_configured():
+    registry = CapabilityRegistry()
+    calls: list[str] = []
+    registry.register(
+        "app.open",
+        lambda query, context: calls.append(query) or CapabilityResult(True, "opened"),
+        spec=CapabilitySpec(
+            "app.open",
+            "open app",
+            planner_tool=True,
+            side_effecting=True,
+            authority="direct_live",
+            requires_confirmation=True,
+        ),
+    )
+    planner = ReactPlanner(
+        ScriptLLM(["TOOL app.open: browser", "FINAL: cannot do that"]),
+        registry,
+        tools=("app.open",),
+    )
+
+    result = planner.run(
+        "open browser",
+        {
+            "origin": "live_audio",
+            "direct_user_instruction": True,
+            "confirmed": True,
+        },
+    )
+
+    assert result.text == "cannot do that"
+    assert result.data["steps"] == []
+    assert calls == []
+
+
 def test_planner_respects_step_budget():
     registry = create_default_capabilities()
     # Always asks for another tool -> never finalizes on its own.
@@ -319,7 +371,11 @@ def test_tool_cancellation_cannot_launch_post_budget_final_model_call():
         cancel.set()
         return CapabilityResult(True, "late tool result")
 
-    registry.register("cancel.tool", cancelling_tool)
+    registry.register(
+        "cancel.tool",
+        cancelling_tool,
+        spec=CapabilitySpec("cancel.tool", "cancel", planner_tool=True),
+    )
     llm = ScriptLLM(["TOOL cancel.tool: x"], final="must not run")
     planner = ReactPlanner(llm, registry, max_steps=1, tools=("cancel.tool",))
 

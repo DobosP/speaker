@@ -50,6 +50,117 @@ def test_register_override_without_spec_preserves_metadata():
     assert reg.invoke("assistant.answer", "hi").text == "llm"
 
 
+def test_direct_live_capability_authority_is_strict_and_central():
+    calls: list[str] = []
+    reg = CapabilityRegistry()
+    reg.register(
+        "device.open",
+        lambda query, context: calls.append(query) or CapabilityResult(True, "opened"),
+        spec=CapabilitySpec(
+            "device.open",
+            "open a trusted app",
+            side_effecting=True,
+            authority="direct_live",
+            requires_confirmation=True,
+        ),
+    )
+
+    for context in (
+        {},
+        {"origin": "live_audio"},
+        {"origin": "live_audio", "direct_user_instruction": True},
+        {
+            "origin": "unknown",
+            "direct_user_instruction": True,
+            "confirmed": True,
+        },
+        {
+            "origin": type("ForgedOrigin", (), {"value": "live_audio"})(),
+            "direct_user_instruction": True,
+            "confirmed": True,
+        },
+        {
+            "origin": "live_audio",
+            "direct_user_instruction": 1,
+            "confirmed": True,
+        },
+        {
+            "origin": "live_audio",
+            "direct_user_instruction": True,
+            "confirmed": "yes",
+        },
+    ):
+        result = reg.invoke("device.open", "notes", context)
+        assert result.ok is True
+        assert result.data == {"executed": False, "blocked": "action_authority"}
+    assert calls == []
+
+    result = reg.invoke(
+        "device.open",
+        "notes",
+        {
+            "origin": "live_audio",
+            "direct_user_instruction": True,
+            "confirmed": True,
+        },
+    )
+    assert result.text == "opened"
+    assert calls == ["notes"]
+
+
+def test_verified_owner_authority_adds_identity_requirement():
+    calls: list[str] = []
+    reg = CapabilityRegistry()
+    reg.register(
+        "device.sensitive",
+        lambda query, context: calls.append(query) or CapabilityResult(True, "done"),
+        spec=CapabilitySpec(
+            "device.sensitive",
+            "sensitive action",
+            side_effecting=True,
+            authority="verified_owner",
+            requires_confirmation=True,
+        ),
+    )
+    base = {
+        "origin": "live_audio",
+        "direct_user_instruction": True,
+        "confirmed": True,
+    }
+    assert reg.invoke("device.sensitive", "x", base).data["executed"] is False
+    assert calls == []
+    assert reg.invoke(
+        "device.sensitive", "x", {**base, "owner_verified": True}
+    ).text == "done"
+    assert calls == ["x"]
+
+
+def test_capability_authority_schema_rejects_typos_and_unbound_confirmation():
+    import pytest
+
+    with pytest.raises(ValueError, match="authority"):
+        CapabilitySpec("x", "x", authority="verified-onwer")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="confirmation"):
+        CapabilitySpec("x", "x", requires_confirmation=True)
+
+
+def test_planner_catalog_excludes_every_side_effecting_capability():
+    reg = CapabilityRegistry()
+    reg.register(
+        "safe.read",
+        _ok,
+        spec=CapabilitySpec("safe.read", "read", planner_tool=True),
+    )
+    reg.register(
+        "unsafe.write",
+        _ok,
+        spec=CapabilitySpec(
+            "unsafe.write", "write", planner_tool=True, side_effecting=True
+        ),
+    )
+    assert reg.planner_tools() == ("safe.read",)
+
+
 def test_default_capabilities_all_have_specs():
     reg = create_default_capabilities()
     for name in reg.names():

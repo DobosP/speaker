@@ -45,15 +45,18 @@ _WEB = (
     "You answer mainly from your own knowledge, but you can search the web when a "
     "question needs current information; you cannot open files or apps."
 )
-_NO_WEB_WITH_VAULT = (
-    "You answer from your own knowledge and can search only the configured local "
-    "notes vault; you have no web access and cannot open other files or apps, so "
-    "never claim you searched online."
+_NO_WEB_WITH_LOCAL_TOOLS = (
+    "You answer from your own knowledge and can use only the configured local "
+    "tools listed above; you have no web access, so never claim you searched "
+    "online or accessed an unlisted file or app."
 )
-_WEB_WITH_VAULT = (
+_WEB_WITH_LOCAL_TOOLS = (
     "You answer mainly from your own knowledge, but you can search the web for "
-    "current information and the configured local notes vault for the user's own "
-    "notes; you cannot open other files or apps."
+    "current information and use only the configured local tools listed above; "
+    "never claim you accessed an unlisted file or app."
+)
+_OPTIONAL_LOCAL_TOOLS = frozenset(
+    {"vault.search", "reminder.create", "reminder.list", "reminder.cancel", "app.open"}
 )
 _NO_COMMENT = "Don't comment on the user's name, tone, or mood."
 
@@ -158,8 +161,21 @@ def build_system_prompt(
         parts.append(skills)
     parts.append(_STYLE)
     parts.append(_ASR)
-    if vault_enabled:
-        parts.append(_WEB_WITH_VAULT if web_enabled else _NO_WEB_WITH_VAULT)
+    registered_names: set[str] = set()
+    names = getattr(registry, "names", None)
+    if callable(names):
+        registered_names = set(names())
+    # ``vault_enabled`` remains a compatibility input for direct callers, while
+    # production derives the limit line from the same registered tool manifest
+    # as the skills block.  Obsidian is therefore one optional function, not a
+    # separate assistant persona or prompt mode.
+    local_tools_enabled = bool(
+        vault_enabled or registered_names.intersection(_OPTIONAL_LOCAL_TOOLS)
+    )
+    if local_tools_enabled:
+        parts.append(
+            _WEB_WITH_LOCAL_TOOLS if web_enabled else _NO_WEB_WITH_LOCAL_TOOLS
+        )
     else:
         parts.append(_WEB if web_enabled else _NO_WEB)
     parts.append(_NO_COMMENT)

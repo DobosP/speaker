@@ -84,13 +84,31 @@ class TaskPlanner:
                 tags=tags,
             )
         if decision.kind == IntentKind.COMMAND:
+            # Generic commands keep the historical mandatory readback.  The
+            # only no-confirm command is the exact controller-classified,
+            # read-only reminder listing route.
+            read_only_device_command = (
+                decision.metadata.get("device_tool") == "reminder.list"
+                and decision.requires_confirmation is False
+            )
+            device_capabilities = {
+                "reminder.create",
+                "reminder.list",
+                "reminder.cancel",
+                "app.open",
+            }
+            command_capability = (
+                "device.command"
+                if decision.metadata.get("device_tool") in device_capabilities
+                else "command.stage"
+            )
             return TaskPlan(
                 intent=decision.kind,
                 mode=mode,
                 input_text=decision.text,
-                steps=(PlanStep("stage", "command.stage", speak_result=True),),
+                steps=(PlanStep("stage", command_capability, speak_result=True),),
                 priority=30,
-                requires_confirmation=True,
+                requires_confirmation=not read_only_device_command,
                 speak_final=decision.speak,
                 tags=tags,
             )

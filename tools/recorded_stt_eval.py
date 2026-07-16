@@ -28,7 +28,7 @@ import os
 import re
 import tempfile
 from collections import Counter
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from numbers import Real
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
@@ -47,6 +47,7 @@ _ARTIFACT_FIELDS = (
     "asr_final_model",
     "asr_final_tokens",
     "asr_final_decoder",
+    "asr_final_verifier_model",
     "punct_model",
     "asr_final_hr_dict_dir",
     "asr_final_hr_lexicon",
@@ -133,6 +134,7 @@ class EvaluationTotals:
     clips: int
     decisions: int
     offline_outcomes: Mapping[str, int]
+    verifier_outcomes: Mapping[str, int] = field(default_factory=dict)
 
     @property
     def complete(self) -> bool:
@@ -144,6 +146,7 @@ class EvaluationTotals:
             "decisions": self.decisions,
             "complete": self.complete,
             "offline_outcomes": dict(sorted(self.offline_outcomes.items())),
+            "verifier_outcomes": dict(sorted(self.verifier_outcomes.items())),
             "streaming": self.streaming.as_dict(),
             "offline": self.offline.as_dict(),
             "selected": self.selected.as_dict(),
@@ -423,6 +426,16 @@ def _model_digest(config) -> str:
             raw_value = str(getattr(config, name, "") or "").strip()
             if not raw_value:
                 continue
+            if (
+                name == "asr_final_verifier_model"
+                and hasattr(config, "asr_final_verifier_backend")
+                and not str(
+                    getattr(config, "asr_final_verifier_backend", "") or ""
+                ).strip()
+            ):
+                # Match readiness/runtime semantics: a disabled backend makes a
+                # stale local path inert and it must not poison baseline proof.
+                continue
             digest.update(name.encode("ascii"))
             values = (
                 [part.strip() for part in raw_value.split(",") if part.strip()]
@@ -452,6 +465,7 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
         selected_errors: list[tuple[int, int]] = []
         decisions_total = 0
         outcomes: Counter[str] = Counter()
+        verifier_outcomes: Counter[str] = Counter()
         for item in corpus:
             result = engine.evaluate_samples(
                 item.samples,
@@ -461,6 +475,9 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
             decisions = tuple(result.decisions)
             decisions_total += len(decisions)
             outcomes.update(decision.offline_outcome for decision in decisions)
+            verifier_outcomes.update(
+                decision.verifier_outcome for decision in decisions
+            )
             streaming = " ".join(
                 decision.streaming_raw.strip()
                 for decision in decisions
@@ -501,6 +518,7 @@ def _evaluate(config, corpus: Sequence[_CorpusItem], keywords: Sequence[str]):
         clips=len(corpus),
         decisions=decisions_total,
         offline_outcomes=dict(outcomes),
+        verifier_outcomes=dict(verifier_outcomes),
     )
     return totals, tuple(selected_errors)
 

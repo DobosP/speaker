@@ -160,6 +160,45 @@ def build_final_recognizer(c: "SherpaConfig"):
     return None
 
 
+def build_final_verifier(c: "SherpaConfig"):
+    """Optional local-only Faster-Whisper verifier for endpointed finals.
+
+    The verifier is independent of the existing streaming and offline
+    recognizers.  It is disabled unless an explicit backend and existing local
+    model directory are configured.  Construction failures fail open to the
+    established final-selection baseline.
+    """
+    backend = (
+        getattr(c, "asr_final_verifier_backend", "") or ""
+    ).strip().lower()
+    if not backend:
+        return None
+    if backend != "faster_whisper":
+        log.warning(
+            "unsupported final verifier backend %r; verifier disabled",
+            backend,
+        )
+        return None
+
+    model = getattr(c, "asr_final_verifier_model", "") or ""
+    if not model:
+        log.warning(
+            "faster_whisper final verifier has no local model path; "
+            "verifier disabled"
+        )
+        return None
+    try:
+        from ._faster_whisper import FasterWhisperEndpointRecognizer
+
+        return FasterWhisperEndpointRecognizer(model)
+    except Exception:  # noqa: BLE001 - preserve the established final baseline
+        log.warning(
+            "faster_whisper final verifier failed to build; verifier disabled",
+            exc_info=True,
+        )
+        return None
+
+
 def _supported(fn, kwargs: dict) -> dict:
     """Drop kwargs the target callable doesn't accept.
 

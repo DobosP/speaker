@@ -2,28 +2,18 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-16 on Linux ROG: full suite 5342 passed/19 skipped/9 warnings; strict recorded 9; APM 6.
+Last verified: 2026-07-17 on Linux ROG: full suite 5479 passed/31 skipped/9 warnings; verifier-enabled strict recorded 9; APM 6; real RTX CUDA/model-load probe green without `LD_LIBRARY_PATH`.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
 
 ## Runtime
 
-- Local-first `core/VoiceRuntime` + sherpa-onnx; normal Linux physical entry is
-  `./live.sh`, while low-level core assumes prepared audio (ADR-0001/0075).
-- Desktop MiniCPM Q8 is local text; readiness pins its alias, full blob,
-  quantization, template, and parameters (ADR-0020/0062). Gemma3 is complex/
-  vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
-- Anchored high-confidence requests take deterministic ACT/search/research paths;
-  ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
-- Smart-save uses fast Ollama; SQLite recall routes strong subjects to fenced
-  PRIVATE Gemma first (ADR-0057/60/65). Setup can add bounded PRIVATE vault
-  search, durable reminders, and exact trusted apps to the same chatbot; low-risk
-  mutations need unchanged direct speech plus direct confirmation and stay out of model planners (ADR-0074/76).
-- `./live.sh` owns the product entry, host lock, conditional loopback Ollama,
-  reversible Linux EC, doctor, and aligned private pre-DSP/processed-mic/
-  playback-reference bundle (ADR-0075/77).
-  GTCRN is active; four-word generic cuts are identity-optional; own-TTS-ambiguous STOP is not (ADR-0042/72).
+- Local-first `core/VoiceRuntime` + sherpa-onnx; normal Linux physical entry is `./live.sh`, while low-level core assumes prepared audio (ADR-0001/0075).
+- Desktop MiniCPM Q8 is local text; readiness pins alias/blob/quantization/template/parameters (ADR-0020/0062). Gemma3 is complex/vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
+- Anchored high-confidence requests take deterministic ACT/search/research paths; ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
+- Smart-save uses fast Ollama; SQLite recall routes strong subjects to fenced PRIVATE Gemma first (ADR-0057/60/65). Setup can add bounded PRIVATE vault search, durable reminders, and exact trusted apps; mutations need unchanged direct speech plus confirmation and stay out of planners (ADR-0074/76).
+- `./live.sh` owns entry, host lock, conditional loopback Ollama, reversible Linux EC, doctor, and aligned private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/77). GTCRN is active; four-word generic cuts are identity-optional; own-TTS-ambiguous STOP is not (ADR-0042/72).
 - Host InputAGC is boost-only above its calibrated floor; below-floor PCM stays unity. V5 is live-red (ADR-0047/72).
 
 ## Voice reliability now implemented
@@ -52,6 +42,7 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   SciPy/soxr plus SenseVoice/GTCRN/Kokoro/speaker-ID, atomically publishes only a
   complete selected config, and propagates failures. Stage one can say only `BASE
   READY` with Ollama deferred; skipped models are incomplete (ADR-0063). Windows voice-communications/word-cut remains unavailable pending a verified API (ADR-0019).
+- Optional pinned Faster-Whisper Small CUDA may change a final only on exact independent acoustic quorum; Unicode is preserved, controller meaning cannot change, and rewrites lose owner/action authority. Setup stages the immutable snapshot, doctor proves model load, and live errors circuit-break. Committed config stays disabled (ADR-0079).
 - Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
   scenario-correct terminals, zero errors/stuck/self-cuts, and causal cuts. Private
   synthetic delay has a 1.4 s capture clock; other paths stay 1.0 s (ADR-0055/58/70).
@@ -84,12 +75,15 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   SenseVoice final paths were poor and `vault` was recognized 0/6 times. Its
   retained mic WAV was post-GTCRN, so frontend versus recognizer/accent/domain
   failure remains unproven (ADR-0077).
-- Private ASR-only replay reports aggregate streaming/offline/selected WER+CER.
-  The six-clip baseline selected WER is 0.12; an eight-path candidate tied 6/6
-  and was rejected. No STT default changed (ADR-0078).
+- Private six-clip replay measured baseline selected WER 0.12. GPU Small was
+  deterministic and direct WER 0.00/6 exact; Turbo reached 0.08 but regressed
+  STOP, while strict MiniCPM/Gemma choice arbiters made no gain. Production-path
+  exact Small consensus reached WER 0.04, one win/zero losses, and strict recorded
+  9/9. This is development evidence only; no STT default changed (ADR-0078/79).
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
-- Next: label and compare aligned pre-DSP/processed target tracks before STT
-  tuning. Keep the agreement guard and prompt exact Stop requirement.
+- Next: build a disjoint held-out set spanning vault terms, controls/near-controls,
+  numerals, negation, silence/noise/echo, bystanders and multiple voices; then run
+  a new `./live.sh` physical A/B. Prompt exact Stop remains physically required.
 
 ## Standard verification
 Full: `...python -m pytest tests -q`; STT aggregate: `...python -m tools.recorded_stt_eval`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.

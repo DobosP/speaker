@@ -8,15 +8,19 @@ from __future__ import annotations
 import argparse
 
 from tools.install import (
+    FINAL_VERIFIER_RUNTIME_DEPS,
     RUNTIME_DEPS,
     SELECTED_MODEL_ARGS,
     activation_hint,
     capability_setup_args,
+    final_verifier_supported,
     install_plan,
     is_windows,
     main,
     needs_fresh_venv,
     portaudio_hint,
+    runtime_deps,
+    selected_model_args,
     venv_python_path,
 )
 
@@ -66,6 +70,7 @@ def _args(**over):
         venv=".venv",
         recreate=False,
         skip_models=False,
+        final_verifier=None,
         obsidian_vault=None,
         disable_obsidian=False,
         enable_reminders=False,
@@ -89,6 +94,37 @@ def test_install_plan_includes_deps_and_models():
 def test_lean_runtime_deps_include_required_signal_resamplers():
     assert "scipy>=1.13" in RUNTIME_DEPS
     assert "soxr>=0.3" in RUNTIME_DEPS
+
+
+def test_final_verifier_is_explicit_linux_x86_64_opt_in():
+    default = _args()
+    selected = _args(final_verifier="faster-whisper-small")
+
+    assert not any(dep in runtime_deps(default) for dep in FINAL_VERIFIER_RUNTIME_DEPS)
+    assert all(dep in runtime_deps(selected) for dep in FINAL_VERIFIER_RUNTIME_DEPS)
+    assert selected_model_args(default) == SELECTED_MODEL_ARGS
+    assert selected_model_args(selected)[-2:] == (
+        "--final-verifier",
+        "faster-whisper-small",
+    )
+    assert final_verifier_supported(system="linux", machine="x86_64")
+    assert not final_verifier_supported(system="win32", machine="AMD64")
+    assert not final_verifier_supported(system="linux", machine="aarch64")
+
+
+def test_install_plan_includes_selected_final_verifier_only_when_requested():
+    default = "\n".join(install_plan(_args(), system="linux"))
+    selected = "\n".join(
+        install_plan(
+            _args(final_verifier="faster-whisper-small"),
+            system="linux",
+        )
+    )
+
+    assert "faster-whisper==1.2.1" not in default
+    assert "--final-verifier" not in default
+    assert "faster-whisper==1.2.1" in selected
+    assert "--final-verifier faster-whisper-small" in selected
 
 
 def test_install_plan_respects_skip_models():
@@ -165,6 +201,19 @@ def test_installer_propagates_selected_model_setup_failure(monkeypatch):
         "/venv/bin/python", "-m", "tools.setup_models", *SELECTED_MODEL_ARGS,
     ]
     assert all("tools.doctor" not in command for command in calls)
+
+
+def test_installer_final_verifier_installs_pins_then_forwards_setup(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0, 0, 0),
+        "--final-verifier",
+        "faster-whisper-small",
+    )
+
+    assert rc == 0
+    assert all(dep in calls[0] for dep in FINAL_VERIFIER_RUNTIME_DEPS)
+    assert calls[1][-2:] == ["--final-verifier", "faster-whisper-small"]
 
 
 def test_installer_propagates_deferred_doctor_failure(monkeypatch):

@@ -7,6 +7,8 @@
 #   ./install.sh --dry-run       print the plan, change nothing
 #   ./install.sh --obsidian-vault PATH --enable-reminders
 #                                configure optional assistant capabilities
+#   ./install.sh --final-verifier faster-whisper-small
+#                                opt in to the local Linux/NVIDIA STT verifier
 #
 # Thin wrapper: it does the OS-specific PortAudio step, then hands the
 # cross-platform work (venv with pip, deps, models, doctor) to tools/install.py

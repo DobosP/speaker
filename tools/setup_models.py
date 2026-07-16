@@ -114,6 +114,25 @@ SENSE_VOICE_MODEL_URL = (
     "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
 )
 
+# Optional independent endpointed-ASR verifier. The empirically selected local
+# development candidate is Faster-Whisper Small; it runs through CTranslate2 on
+# CUDA and votes only in exact acoustic consensus. The setup publishes a local
+# directory, never a remote model identifier, so normal runtime cannot download.
+FASTER_WHISPER_VERIFIER_REPO = os.environ.get(
+    "FASTER_WHISPER_VERIFIER_REPO",
+    "Systran/faster-whisper-small",
+)
+# Exact snapshot used by the locked 2026-07-17 recording/GPU evaluation.
+FASTER_WHISPER_VERIFIER_REVISION = (
+    "536b0662742c02347bc0e980a01041f333bce120"
+)
+FASTER_WHISPER_REQUIRED_FILES = (
+    "config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.txt",
+)
+
 # Optional Kokoro TTS (ADR-0010: the adopted desktop voice). Ships as a
 # sherpa-onnx tts-models release .tar.bz2 bundling model.int8.onnx + voices.bin
 # + tokens.txt + lexicon-*.txt + espeak-ng-data/ (+ dict/), so unlike the
@@ -129,6 +148,64 @@ KOKORO_URL = (
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
     return os.path.join(base, SUBDIR.get(key, ""))
+
+
+def fetch_faster_whisper_verifier(
+    dest_root: str,
+    *,
+    repo_id: str,
+    revision: str,
+    token: str | None,
+    force: bool,
+    snapshot_download_fn: Callable[..., str],
+) -> str:
+    """Stage and atomically publish one immutable verifier snapshot.
+
+    Downloads never write into the active model directory. A failed fetch
+    leaves both that directory and config untouched; a forced replacement
+    retains the previous directory under a unique sibling name instead of
+    deleting it. ``revision`` must be a full commit hash so a setup rerun cannot
+    silently drift to a mutable repository head.
+    """
+    import re
+
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise ValueError("Faster-Whisper revision must be a full commit hash")
+    os.makedirs(dest_root, exist_ok=True)
+    basename = f"faster_whisper_small-{revision[:12]}"
+    destination = os.path.join(dest_root, basename)
+
+    def complete(path: str) -> bool:
+        return os.path.isdir(path) and all(
+            os.path.isfile(os.path.join(path, name))
+            for name in FASTER_WHISPER_REQUIRED_FILES
+        )
+
+    if complete(destination) and not force:
+        return destination
+
+    staging = tempfile.mkdtemp(prefix=f".{basename}-staging-", dir=dest_root)
+    snapshot_download_fn(
+        repo_id=repo_id,
+        revision=revision,
+        local_dir=staging,
+        token=token,
+        force_download=force,
+    )
+    if not complete(staging):
+        raise FileNotFoundError("incomplete Faster-Whisper snapshot")
+
+    backup = None
+    if os.path.lexists(destination):
+        backup = f"{destination}.previous-{os.path.basename(staging)}"
+        os.replace(destination, backup)
+    try:
+        os.replace(staging, destination)
+    except Exception:
+        if backup is not None:
+            os.replace(backup, destination)
+        raise
+    return destination
 
 
 def fetch_speaker_model(dest_dir: str, url: str, *, force: bool = False) -> str:
@@ -322,6 +399,7 @@ def required_selected_artifact_errors(
     denoise_model: bool,
     sense_voice: bool,
     kokoro: bool,
+    final_verifier: bool = False,
     exists: Callable[[str], bool] = os.path.exists,
 ) -> list[str]:
     """Return missing artifacts for a fail-closed selected-profile publish.
@@ -339,6 +417,10 @@ def required_selected_artifact_errors(
     if sense_voice:
         required["asr_final_model"] = "selected SenseVoice model"
         required["asr_final_tokens"] = "selected SenseVoice tokens"
+    if final_verifier:
+        required["asr_final_verifier_model"] = (
+            "selected Faster-Whisper verifier model"
+        )
     if kokoro:
         # tts_model/tts_tokens are already in FILE_KEYS. Voices are the switch
         # that selects the Kokoro constructor instead of the fallback VITS one.
@@ -528,6 +610,30 @@ def main(argv: list[str] | None = None) -> int:
         help="also download the optional SenseVoice offline second-pass ASR (~230 MB) "
         "and wire asr_final_backend=sense_voice in config; off by default. Robust on "
         "run-on/casual speech (the streaming zipformer garbles it).",
+    )
+    parser.add_argument(
+        "--final-verifier",
+        choices=["faster-whisper-small"],
+        help=(
+            "download and configure the local CUDA Faster-Whisper Small final "
+            "verifier; normal startup remains ./live.sh"
+        ),
+    )
+    parser.add_argument(
+        "--final-verifier-repo",
+        default=FASTER_WHISPER_VERIFIER_REPO,
+        help=(
+            "Hugging Face repo for --final-verifier "
+            f"(default: {FASTER_WHISPER_VERIFIER_REPO})"
+        ),
+    )
+    parser.add_argument(
+        "--final-verifier-revision",
+        default=FASTER_WHISPER_VERIFIER_REVISION,
+        help=(
+            "full immutable commit for --final-verifier "
+            f"(default: {FASTER_WHISPER_VERIFIER_REVISION})"
+        ),
     )
     parser.add_argument(
         "--kokoro-url",
@@ -721,6 +827,39 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
+    # Independent Faster-Whisper acoustic verifier (optional, opt-in). The
+    # complete CTranslate2 snapshot is staged in a dedicated directory and the
+    # config receives only its absolute local path. A partial snapshot is never
+    # published as an enabled verifier.
+    want_final_verifier = False
+    if args.final_verifier:
+        print(
+            "[models] fetching Faster-Whisper final verifier: "
+            f"{args.final_verifier_repo}@{args.final_verifier_revision}"
+        )
+        try:
+            verifier_path = fetch_faster_whisper_verifier(
+                args.dest,
+                repo_id=args.final_verifier_repo,
+                revision=args.final_verifier_revision,
+                token=token,
+                force=args.force,
+                snapshot_download_fn=snapshot_download,
+            )
+            resolved["asr_final_verifier_model"] = verifier_path
+            want_final_verifier = True
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            if args.require_selected:
+                selected_failures.append(
+                    "selected Faster-Whisper verifier fetch failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                print(
+                    "[models] Faster-Whisper verifier not fetched; continuing "
+                    "with the established final selector until you re-run.",
+                    file=sys.stderr,
+                )
     # Kokoro TTS (optional, opt-in): the ADR-0010 adopted desktop voice -- a whole
     # package (model + voices.bin + tokens + espeak-ng-data + lexicon), not a
     # single file. Same non-fatal contract: a failed fetch leaves synthesis on the
@@ -815,6 +954,7 @@ def main(argv: list[str] | None = None) -> int:
                 denoise_model=args.denoise_model,
                 sense_voice=args.sense_voice,
                 kokoro=args.kokoro,
+                final_verifier=bool(args.final_verifier),
             )
         )
         # Preserve order while avoiding a fetch exception + path validation
@@ -845,6 +985,10 @@ def main(argv: list[str] | None = None) -> int:
             # backend is a mode string, not a path -> set it directly
             # (wire_sherpa_paths only handles paths).
             cfg.setdefault("sherpa", {})["asr_final_backend"] = "sense_voice"
+        if want_final_verifier:
+            cfg.setdefault("sherpa", {})[
+                "asr_final_verifier_backend"
+            ] = "faster_whisper"
         publish_config_atomic(cfg, args.config)
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(
@@ -860,11 +1004,13 @@ def main(argv: list[str] | None = None) -> int:
         "tts_voices", "tts_data_dir", "tts_lexicon",
         "speaker_embedding_model", "punct_model", "denoise_model",
         "asr_final_model", "asr_final_tokens",
+        "asr_final_verifier_model",
         "endpoint_prosody_model", "aec_model",
     ]:
         if key in (
             "tts_voices", "tts_data_dir", "tts_lexicon", "punct_model",
             "denoise_model", "asr_final_model", "asr_final_tokens",
+            "asr_final_verifier_model",
             "endpoint_prosody_model", "aec_model",
         ) and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default

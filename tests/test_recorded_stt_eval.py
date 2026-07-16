@@ -132,6 +132,27 @@ def test_artifact_digest_binds_bias_dictionary_contents(tmp_path):
     assert first != second
 
 
+def test_artifact_digest_binds_final_verifier_snapshot_contents(tmp_path):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_encoder: str
+        asr_final_verifier_model: str
+
+    model = tmp_path / "streaming.onnx"
+    verifier = tmp_path / "verifier"
+    verifier.mkdir()
+    weights = verifier / "model.bin"
+    model.write_bytes(b"streaming")
+    weights.write_bytes(b"first")
+    config = _Config(str(model), str(verifier))
+
+    first = stt_eval._model_digest(config)
+    weights.write_bytes(b"second")
+    second = stt_eval._model_digest(config)
+
+    assert first != second
+
+
 def test_artifact_digest_fails_when_configured_resource_is_missing(tmp_path):
     @dataclass(frozen=True)
     class _Config:
@@ -144,6 +165,23 @@ def test_artifact_digest_fails_when_configured_resource_is_missing(tmp_path):
 
     with pytest.raises(stt_eval.EvaluationPrerequisiteError):
         stt_eval._model_digest(config)
+
+
+def test_artifact_digest_ignores_stale_disabled_verifier_path(tmp_path):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_encoder: str
+        asr_final_verifier_backend: str
+        asr_final_verifier_model: str
+
+    model = tmp_path / "streaming.onnx"
+    model.write_bytes(b"model")
+    stale = str(tmp_path / "missing-verifier")
+
+    disabled = _Config(str(model), "", stale)
+    clean = _Config(str(model), "", "")
+
+    assert stt_eval._model_digest(disabled) == stt_eval._model_digest(clean)
 
 
 @pytest.mark.parametrize("speech_sec", [True, float("inf"), 1.1])

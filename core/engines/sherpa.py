@@ -96,6 +96,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
+from ..asr_verifier import verify_asr_consensus
 from ..contract import is_stop_command, normalize_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
@@ -150,6 +151,7 @@ from ._aec import (
 from ._sherpa_models import (
     build_keyword_spotter,
     build_final_recognizer,
+    build_final_verifier,
     build_punctuation,
     build_recognizer,
     build_tts,
@@ -241,6 +243,10 @@ class FinalTranscriptDecision:
     offline_raw: Optional[str] = field(repr=False)
     selected: str = field(repr=False)
     offline_outcome: str
+    verifier_raw: Optional[str] = field(default=None, repr=False)
+    verifier_outcome: str = "unavailable"
+    verifier_support: int = 0
+    verifier_changed: bool = False
 
 
 def _attested_repair_words(text: str) -> tuple[str, ...]:
@@ -340,87 +346,139 @@ def _resolve_final_transcript(
     seg,
     raw_final: str,
     *,
+    final_verifier=None,
     speech_sec: Optional[float] = None,
     segment_sample_rate: Optional[int] = None,
     allow_empty_streaming: bool = False,
     attested_repair: Optional[Callable[..., str]] = None,
 ) -> FinalTranscriptDecision:
-    """Resolve raw hypotheses and the unchanged production-selected final."""
+    """Resolve the established final, then apply exact acoustic consensus.
+
+    The current streaming/offline selection is computed first and remains the
+    baseline on verifier unavailability, error, empty output, or lack of an
+    independent quorum.  The verifier sees the exact same endpoint-owned PCM as
+    the offline recognizer.  An empty streaming hypothesis remains fail-closed
+    unless its caller separately authorized offline recovery.
+    """
     offline_raw: Optional[str] = None
     offline_outcome = "unavailable"
-    if final_recognizer is not None and seg is not None:
-        offline_outcome = "skipped"
-        n = int(np.asarray(seg).size)
-        decode_sample_rate = int(segment_sample_rate or config.sample_rate)
+    offline_text: Optional[str] = None
+    streaming_final = _postprocess_final_text(config, punctuation, raw_final)
+    baseline_selected = streaming_final
+
+    segment_samples = None
+    decode_sample_rate = int(segment_sample_rate or config.sample_rate)
+    observed_sec = 0.0
+    if seg is not None:
+        segment_samples = np.asarray(seg, dtype="float32")
         observed_sec = (
             float(speech_sec)
             if speech_sec is not None
-            else n / decode_sample_rate
+            else int(segment_samples.size) / decode_sample_rate
         )
+
+    if final_recognizer is not None and seg is not None:
+        offline_outcome = "skipped"
         if observed_sec >= float(config.asr_final_min_sec):
             offline_outcome = "error"
             try:
                 stream = final_recognizer.create_stream()
                 stream.accept_waveform(
                     decode_sample_rate,
-                    np.asarray(seg, dtype="float32"),
+                    segment_samples,
                 )
                 final_recognizer.decode_stream(stream)
                 offline_raw = stream.result.text or ""
-                text = offline_raw.strip()
-                offline_outcome = "decoded" if text else "empty"
-                if text:
-                    streaming_final = _postprocess_final_text(
-                        config,
-                        punctuation,
-                        raw_final,
-                    )
+                offline_text = offline_raw.strip()
+                offline_outcome = "decoded" if offline_text else "empty"
+                if offline_text:
                     if not streaming_final.strip():
                         # An offline recognizer may recover a final only when
                         # the caller has separately authorized that recovery.
                         # Default callers fail closed: second-pass text must
                         # never manufacture a turn (especially a STOP) from an
                         # empty streaming result.
-                        selected = (
-                            text if allow_empty_streaming else streaming_final
+                        baseline_selected = (
+                            offline_text
+                            if allow_empty_streaming
+                            else streaming_final
                         )
-                        return FinalTranscriptDecision(
-                            streaming_raw=raw_final,
-                            offline_raw=offline_raw,
-                            selected=selected,
-                            offline_outcome=offline_outcome,
-                        )
-                    guarded_final = agreement_guard(
-                        streaming_final,
-                        text,
-                        segment_sec=observed_sec,
-                    )
-                    if attested_repair is None:
-                        selected = guarded_final
                     else:
-                        selected = attested_repair(
+                        guarded_final = agreement_guard(
                             streaming_final,
-                            text,
-                            guarded_final,
-                            backend=config.asr_final_backend,
-                            speech_sec=speech_sec,
+                            offline_text,
+                            segment_sec=observed_sec,
                         )
-                    return FinalTranscriptDecision(
-                        streaming_raw=raw_final,
-                        offline_raw=offline_raw,
-                        selected=selected,
-                        offline_outcome=offline_outcome,
-                    )
+                        if attested_repair is None:
+                            baseline_selected = guarded_final
+                        else:
+                            baseline_selected = attested_repair(
+                                streaming_final,
+                                offline_text,
+                                guarded_final,
+                                backend=config.asr_final_backend,
+                                speech_sec=speech_sec,
+                            )
             except Exception:  # noqa: BLE001 - use the streaming final
                 log.debug(
                     "second-pass recognizer failed; using streaming final",
                     exc_info=True,
                 )
+
+    verifier_raw: Optional[str] = None
+    verifier_outcome = "unavailable"
+    verifier_support = 0
+    verifier_changed = False
+    selected = baseline_selected
+    if final_verifier is not None and segment_samples is not None:
+        verifier_outcome = "skipped"
+        if observed_sec >= float(config.asr_final_min_sec):
+            verifier_outcome = "error"
+            try:
+                verifier_result = final_verifier.transcribe(
+                    segment_samples,
+                    decode_sample_rate,
+                )
+                verifier_raw = verifier_result.text or ""
+                verifier_text = verifier_raw.strip()
+                if verifier_text:
+                    consensus = verify_asr_consensus(
+                        baseline_selected=baseline_selected,
+                        streaming=streaming_final,
+                        offline=offline_text or None,
+                        verifier=verifier_text,
+                    )
+                    verifier_outcome = consensus.outcome.value
+                    verifier_support = consensus.support
+                    if (
+                        consensus.changed
+                        and not streaming_final.strip()
+                        and not allow_empty_streaming
+                    ):
+                        # Preserve the pre-existing rule that an empty streaming
+                        # hypothesis cannot become a turn without explicit,
+                        # separately attested recovery authority.
+                        verifier_outcome = "empty_streaming_guard"
+                    else:
+                        selected = consensus.chosen
+                        verifier_changed = consensus.changed
+                else:
+                    verifier_outcome = "empty"
+            except Exception:  # noqa: BLE001 - preserve the established baseline
+                log.debug(
+                    "final verifier failed; using established ASR final",
+                    exc_info=True,
+                )
+
     return FinalTranscriptDecision(
         streaming_raw=raw_final,
         offline_raw=offline_raw,
-        selected=_postprocess_final_text(config, punctuation, raw_final),
+        selected=selected,
         offline_outcome=offline_outcome,
+        verifier_raw=verifier_raw,
+        verifier_outcome=verifier_outcome,
+        verifier_support=verifier_support,
+        verifier_changed=verifier_changed,
     )
 
 
@@ -431,6 +489,7 @@ def _transcribe_final_text(
     seg,
     raw_final: str,
     *,
+    final_verifier=None,
     speech_sec: Optional[float] = None,
     segment_sample_rate: Optional[int] = None,
     allow_empty_streaming: bool = False,
@@ -443,6 +502,7 @@ def _transcribe_final_text(
         punctuation,
         seg,
         raw_final,
+        final_verifier=final_verifier,
         speech_sec=speech_sec,
         segment_sample_rate=segment_sample_rate,
         allow_empty_streaming=allow_empty_streaming,
@@ -546,6 +606,12 @@ class SherpaConfig:
     asr_final_decoder: str = ""          # Whisper only
     asr_final_use_itn: bool = True       # SenseVoice inverse-text-normalization
     asr_final_language: str = ""         # SenseVoice language hint ("en", "" = auto)
+    # Optional independent endpoint verifier. Empty backend (default) preserves
+    # the established streaming + SenseVoice final byte-for-byte. The model must
+    # be an existing local Faster-Whisper directory; remote model IDs and
+    # downloads are rejected by the adapter.
+    asr_final_verifier_backend: str = ""  # "" | "faster_whisper"
+    asr_final_verifier_model: str = ""
     # Contextual biasing for the SECOND-PASS final (the only biasing that reaches
     # the text the LLM sees -- ``asr_hotwords`` biases ONLY the streaming pass,
     # which the SenseVoice second pass overrides for normal-length turns). These
@@ -559,11 +625,11 @@ class SherpaConfig:
     asr_final_hr_lexicon: str = ""
     asr_final_hr_rule_fsts: str = ""
     asr_final_rule_fsts: str = ""
-    # Skip the second pass on utterances shorter than this (a tiny "yes"/"stop"
-    # the streaming model already nails) to save the offline-decode latency.
+    # Skip optional endpoint models on utterances shorter than this (a tiny
+    # "yes"/"stop" the streaming model already nails) to save decode latency.
     asr_final_min_sec: float = 0.0
-    # Run the offline second pass (+ the L1 echo-floor and speaker-ID gates) on a
-    # DEDICATED worker thread instead of inline on the capture loop. Default ON:
+    # Run optional endpoint models (+ the L1 echo-floor and speaker-ID gates) on
+    # a DEDICATED worker thread instead of inline on the capture loop. Default ON:
     # the synchronous decode (~150ms, longer on weak CPU) stalls the one thread
     # that also reads the mic and services barge-in -- measured in
     # run-20260617-103630 to starve TTS playback (white-noise output) and
@@ -571,11 +637,11 @@ class SherpaConfig:
     # self-interrupts). The worker dispatches the SINGLE upgraded final in capture
     # order (the runtime is one-final-per-utterance: newest-input-wins is a
     # cancel, not an upgrade, so streaming-first-then-correct would speak garbage
-    # then supersede it). Only engages when a second-pass recognizer is actually
-    # built; off = the legacy inline path (kept for A/B + as the queue-full
+    # then supersede it). Only engages when an offline recognizer or verifier is
+    # actually built; off = the legacy inline path (kept for A/B + queue-full
     # fallback). asr-tts-2.
     asr_final_async: bool = True
-    # Audio owned by the offline finalizer before the first VAD speech block.
+    # Audio owned by the endpoint finalizer before the first VAD speech block.
     # This is a model-lookback bound (not a machine operating value): preserve
     # the leading phoneme without making a short request inherit minutes of idle
     # silence in SenseVoice, the floor gate, and speaker-ID.
@@ -1485,6 +1551,8 @@ class SherpaOnnxEngine(AudioEngine):
         )
         self._recognizer = None
         self._final_recognizer = None
+        self._final_verifier = None
+        self._final_verifier_lock = threading.Lock()
         self._vad = None
         self._tts = None
         self._kws = None
@@ -1564,11 +1632,12 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts_dc_blocker: "Optional[DCBlocker]" = None
         self._tts_dc_sr = 0
         self._capture_thread: Optional[threading.Thread] = None
-        # asr-tts-2: dedicated second-pass worker. The queue (work items
+        # asr-tts-2: dedicated endpoint-final worker. The queue (work items
         # ``(seg, raw_final, speech_end_ts)``) + thread are created in ``_build``
-        # ONLY when a second-pass recognizer is built and ``asr_final_async`` is
-        # on; left None otherwise so the finalize path runs inline (byte-identical
-        # to the legacy behaviour). A small bound is plenty -- utterances arrive
+        # ONLY when an offline recognizer or verifier is built and
+        # ``asr_final_async`` is on; left None otherwise so finalization runs
+        # inline (byte-identical to the legacy behaviour). A small bound is
+        # plenty -- utterances arrive
         # seconds apart and a decode is ~150ms -- and on the rare overflow the
         # capture loop finalizes inline rather than blocking real-time.
         self._final_q: "Optional[queue.Queue[Optional[tuple]]]" = None
@@ -2027,6 +2096,12 @@ class SherpaOnnxEngine(AudioEngine):
         self._final_recognizer = build_final_recognizer(c)
         if self._final_recognizer is not None:
             log.info("second-pass final ASR: %s (%s)", c.asr_final_backend, c.asr_final_model)
+        self._final_verifier = build_final_verifier(c)
+        if self._final_verifier is not None:
+            log.info(
+                "independent final ASR verifier: %s",
+                c.asr_final_verifier_backend,
+            )
         self._maybe_setup_async_final()
         self._vad = build_vad(c)
         # Scale-invariant reference-coherence barge-in detector (volume-
@@ -3170,8 +3245,8 @@ class SherpaOnnxEngine(AudioEngine):
         self._start_receipt_dispatcher()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._play_thread.start()
-        # asr-tts-2: the second-pass worker (only when async + a recognizer were
-        # wired in _build). Keeps the slow offline decode off the capture loop.
+        # asr-tts-2: endpoint-final worker (only when async + an endpoint model
+        # was wired in _build). Keeps slow decode off the capture loop.
         if self._final_q is not None:
             self._final_thread = threading.Thread(target=self._final_worker, daemon=True)
             self._final_thread.start()
@@ -3303,7 +3378,7 @@ class SherpaOnnxEngine(AudioEngine):
             # (like _play_q) -- dispatching a final into a tearing-down runtime is
             # wrong, and the window is sub-second.
             try:
-                self._final_q.put_nowait(None)  # sentinel: wake the second-pass worker
+                self._final_q.put_nowait(None)  # sentinel: wake final worker
             except queue.Full:
                 pass  # _running is already clear; it exits on its own next loop
         if self._play_thread is not None:
@@ -3313,7 +3388,7 @@ class SherpaOnnxEngine(AudioEngine):
         if self._final_thread is not None:
             self._final_thread.join(timeout=1.0)
             if self._final_thread.is_alive():
-                log.warning("second-pass thread did not exit within 1.0s; proceeding")
+                log.warning("final ASR thread did not exit within 1.0s; proceeding")
         # An admitted async-final callback can be the only capture effect still
         # active at the first snapshot above, then finish while the worker joins.
         # Re-evaluate once after both shared audio workers have had their bounded
@@ -3626,6 +3701,19 @@ class SherpaOnnxEngine(AudioEngine):
                 self._punct.add_punctuation("ok")
             except Exception:  # noqa: BLE001 - best-effort
                 log.debug("punctuation warm-up failed", exc_info=True)
+        # The opt-in endpoint verifier is lazy so default startup remains
+        # byte-identical. When selected, pay its model-load cost on the shared
+        # background warm path instead of the first user's final.
+        verifier_warm = getattr(self._final_verifier, "warm", None)
+        if callable(verifier_warm):
+            try:
+                verifier_warm()
+                log.info("final ASR verifier warm-up complete")
+            except Exception:  # noqa: BLE001 - first decode still fails open
+                log.debug("final ASR verifier warm-up failed", exc_info=True)
+                self._disable_final_verifier_after_error(
+                    "asr_final_verifier_disabled_after_warm_error"
+                )
         # Word-cut startup already warms required speaker authority synchronously
         # before capture. Keep this idempotent retry for optional input gating.
         self._warm_speaker_gate()
@@ -3673,6 +3761,51 @@ class SherpaOnnxEngine(AudioEngine):
         we degrade to casing-only rather than drop the turn."""
         return _postprocess_final_text(self.config, self._punct, text)
 
+    def _final_decision(
+        self,
+        seg,
+        raw_final: str,
+        *,
+        speech_sec: Optional[float] = None,
+        allow_empty_streaming: bool = False,
+    ) -> FinalTranscriptDecision:
+        """Resolve one endpoint while retaining private verifier provenance."""
+        return _resolve_final_transcript(
+            self.config,
+            self._final_recognizer,
+            self._punct,
+            seg,
+            raw_final,
+            final_verifier=self._final_verifier,
+            speech_sec=speech_sec,
+            allow_empty_streaming=allow_empty_streaming,
+            attested_repair=_attested_interrupt_repair,
+        )
+
+    def _disable_final_verifier_after_error(
+        self,
+        metric: str,
+        *,
+        capture_epoch: Optional[int] = None,
+    ) -> None:
+        """Circuit-break one failed opt-in verifier for the current session."""
+        with self._final_verifier_lock:
+            if self._final_verifier is None:
+                return
+            self._final_verifier = None
+        log.warning(
+            "final ASR verifier disabled after a local error; retaining the "
+            "established ASR final"
+        )
+        try:
+            self._emit_capture_callback(
+                self._cb.on_metric,
+                metric,
+                capture_epoch=capture_epoch,
+            )
+        except Exception:  # noqa: BLE001 - metrics cannot break ASR fallback
+            log.debug("final ASR verifier failure metric callback failed")
+
     def _final_transcribe(
         self,
         seg,
@@ -3681,21 +3814,13 @@ class SherpaOnnxEngine(AudioEngine):
         speech_sec: Optional[float] = None,
         allow_empty_streaming: bool = False,
     ) -> str:
-        """The FINAL transcript for ``seg``. When a second-pass offline recognizer
-        is configured, RE-transcribe the endpointed utterance with it (robust on
-        run-on speech; punctuation+casing+ITN already applied -> no _postprocess).
-        Otherwise (or on any failure / too-short utterance / empty result) fall
-        back to the streaming final + the usual post-processing."""
-        return _transcribe_final_text(
-            self.config,
-            self._final_recognizer,
-            self._punct,
+        """Return the LLM-facing text from :meth:`_final_decision`."""
+        return self._final_decision(
             seg,
             raw_final,
             speech_sec=speech_sec,
             allow_empty_streaming=allow_empty_streaming,
-            attested_repair=_attested_interrupt_repair,
-        )
+        ).selected
 
     def _finalize_and_dispatch(
         self,
@@ -3711,48 +3836,65 @@ class SherpaOnnxEngine(AudioEngine):
         """Produce the FINAL transcript and deliver it (or its drop metric).
 
         Pulled out of the capture loop so the SAME logic can run either inline
-        (no second pass, or ``asr_final_async`` off) or on the dedicated
-        second-pass worker (:meth:`_final_worker`). It does the three heavy,
-        capture-thread-hostile steps -- the offline second-pass decode
-        (``_final_transcribe``), the L1 echo-floor gate, and the speaker-ID gate
+        (no endpoint model, or ``asr_final_async`` off) or on the dedicated
+        endpoint-final worker (:meth:`_final_worker`). It does the heavy,
+        capture-thread-hostile model decode (``_final_transcribe``), the L1
+        echo-floor gate, and the speaker-ID gate
         (CAM++ embedding) -- then dispatches at most one final per utterance.
         Every input is owned by the work item (``seg`` is an already-concatenated
         copy; ``speech_end_ts`` a captured ``perf_counter`` so SPEECH_END stays
         correctly backdated however late this runs), so it is safe off-thread.
 
-        ``asr_seg`` (fix 2): the NS-RELAXED copy of the utterance for the offline
-        2nd-pass decode under ``_apm_owns_ns`` (so the LLM-facing final also keeps
-        the near-end words NS erased). The L1 echo-floor gate + the speaker-ID gate
-        deliberately keep the NS-ON ``seg`` (their learned floor + enrolled
-        embedding live in the NS-on domain; the louder NS-off signal would clear
-        the floor too easily and re-open the echo-final cascade). ``None`` (every
-        non-apm-owns-ns path) -> decode ``seg``, byte-identical."""
+        ``asr_seg`` (fix 2): the NS-RELAXED copy of the utterance for endpoint
+        model decode under ``_apm_owns_ns`` (so the LLM-facing final also keeps
+        the near-end words NS erased). The L1 echo-floor gate + speaker-ID keep
+        the NS-ON ``seg`` (their learned floor + enrolled embedding live in the
+        NS-on domain; the louder NS-off signal would clear the floor too easily
+        and re-open the echo-final cascade). ``None`` (every non-apm-owns-ns
+        path) -> decode ``seg``, byte-identical."""
         decode_seg = asr_seg if asr_seg is not None else seg
-        if speech_sec is None:
-            final_text = (
-                self._final_transcribe(
-                    decode_seg,
-                    raw_final,
-                    allow_empty_streaming=True,
+        final_decision = None
+        if self._final_verifier is None:
+            # Preserve the long-standing text-only test/embedding seam when no
+            # verifier can change provenance.
+            if speech_sec is None:
+                final_text = (
+                    self._final_transcribe(
+                        decode_seg,
+                        raw_final,
+                        allow_empty_streaming=True,
+                    )
+                    if offline_recovery_authorized
+                    else self._final_transcribe(decode_seg, raw_final)
                 )
-                if offline_recovery_authorized
-                else self._final_transcribe(decode_seg, raw_final)
-            )
+            else:
+                final_text = (
+                    self._final_transcribe(
+                        decode_seg,
+                        raw_final,
+                        speech_sec=speech_sec,
+                        allow_empty_streaming=True,
+                    )
+                    if offline_recovery_authorized
+                    else self._final_transcribe(
+                        decode_seg,
+                        raw_final,
+                        speech_sec=speech_sec,
+                    )
+                )
         else:
-            final_text = (
-                self._final_transcribe(
-                    decode_seg,
-                    raw_final,
-                    speech_sec=speech_sec,
-                    allow_empty_streaming=True,
-                )
-                if offline_recovery_authorized
-                else self._final_transcribe(
-                    decode_seg,
-                    raw_final,
-                    speech_sec=speech_sec,
-                )
+            final_decision = self._final_decision(
+                decode_seg,
+                raw_final,
+                speech_sec=speech_sec,
+                allow_empty_streaming=offline_recovery_authorized,
             )
+            final_text = final_decision.selected
+            if final_decision.verifier_outcome == "error":
+                self._disable_final_verifier_after_error(
+                    "asr_final_verifier_disabled_after_decode_error",
+                    capture_epoch=capture_epoch,
+                )
         log.info("asr final: %r (raw %r)", final_text, raw_final)
         if not self._capture_callback_is_current(capture_epoch):
             return
@@ -3811,6 +3953,21 @@ class SherpaOnnxEngine(AudioEngine):
                     capture_epoch=capture_epoch,
                 )
                 return
+            origin = "live_audio"
+            if final_decision is not None and final_decision.verifier_changed:
+                # A verifier-backed rewrite is useful acoustic evidence but is
+                # no longer an exact, owner-attested live-audio instruction.
+                # Keep it available for ordinary dialogue while structurally
+                # preventing it from gaining device-action authority.
+                verification = OwnerVerification.UNKNOWN
+                origin = "unknown"
+                if not self._capture_callback_is_current(capture_epoch):
+                    return
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "asr_verifier_changed_final_untrusted",
+                    capture_epoch=capture_epoch,
+                )
             if not self._capture_callback_is_current(capture_epoch):
                 return
             if not self._emit_capture_callback(
@@ -3823,7 +3980,7 @@ class SherpaOnnxEngine(AudioEngine):
             result = FinalTranscript(
                 final_text,
                 owner_verification=verification,
-                origin="live_audio",
+                origin=origin,
             )
             if not self._capture_callback_is_current(capture_epoch):
                 return
@@ -3841,14 +3998,17 @@ class SherpaOnnxEngine(AudioEngine):
                 )
 
     def _maybe_setup_async_final(self) -> None:
-        """Create the second-pass worker queue iff a 2nd-pass recognizer was built
-        AND ``asr_final_async`` is on. Split out of ``_build`` so the gate -- the
+        """Create the final worker queue iff an endpoint model was built and
+        ``asr_final_async`` is on. Split out of ``_build`` so the gate -- the
         thing that decides "async worker vs byte-identical inline" -- is unit-
         testable without standing up every model. ``_final_q`` left None otherwise
         (the capture loop then finalizes inline). asr-tts-2."""
-        if self._final_recognizer is not None and self.config.asr_final_async:
+        if (
+            self._final_recognizer is not None
+            or self._final_verifier is not None
+        ) and self.config.asr_final_async:
             self._final_q = queue.Queue(maxsize=8)
-            log.info("second-pass final ASR runs ASYNC (off the capture thread)")
+            log.info("final ASR models run ASYNC (off the capture thread)")
 
     def _enqueue_final(
         self,
@@ -3861,7 +4021,7 @@ class SherpaOnnxEngine(AudioEngine):
         owner_lineage_intact: bool = True,
         capture_epoch: Optional[int] = None,
     ) -> None:
-        """Hand an endpointed utterance to the second-pass worker WITHOUT ever
+        """Hand an endpointed utterance to the final worker WITHOUT ever
         blocking the capture loop. On overflow (the worker is wedged/very slow --
         normally the queue sits near-empty), drop the OLDEST queued utterance to
         make room for this newer one, mirroring ``_play_q``'s drop-oldest
@@ -3889,7 +4049,7 @@ class SherpaOnnxEngine(AudioEngine):
             return
         except queue.Full:
             pass
-        log.warning("second-pass queue full; dropping the oldest pending final")
+        log.warning("final ASR queue full; dropping the oldest pending final")
         try:
             self._final_q.get_nowait()
             # Make the drop visible in the run bundle, like the floor/speaker
@@ -3906,7 +4066,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._final_q.put_nowait(_item())
         except queue.Full:
             # Only reachable if a sentinel raced in; never block capture.
-            log.warning("second-pass queue still full; finalizing inline")
+            log.warning("final ASR queue still full; finalizing inline")
             if offline_recovery_authorized or not owner_lineage_intact:
                 self._finalize_and_dispatch(
                     seg,
@@ -3925,10 +4085,10 @@ class SherpaOnnxEngine(AudioEngine):
                 )
 
     def _final_worker(self) -> None:
-        """Drain the second-pass work queue, finalizing one utterance at a time.
+        """Drain the endpoint-final queue, finalizing one utterance at a time.
 
         Single consumer -> finals dispatch in capture order even though the
-        offline decode is slow; running off the capture thread is the whole point
+        model decode is slow; running off the capture thread is the whole point
         (asr-tts-2): the real-time loop keeps reading the mic, updating the echo
         reference, and servicing barge-in while this decodes. A broad guard keeps
         the worker alive across a bad turn -- a finalize failure drops that one
@@ -4016,7 +4176,7 @@ class SherpaOnnxEngine(AudioEngine):
                         capture_epoch=capture_epoch,
                     )
             except Exception:  # noqa: BLE001 - never let the worker die on one turn
-                log.exception("second-pass finalize failed; dropping this turn")
+                log.exception("final ASR processing failed; dropping this turn")
             finally:
                 if previous_callback_epoch is None:
                     try:
@@ -5502,12 +5662,12 @@ class SherpaOnnxEngine(AudioEngine):
                             ):
                                 continue
                             finals += 1
-                            # Finalize (second-pass re-transcription, when
-                            # configured, + the echo-floor/speaker gates) and
-                            # dispatch the single final. asr-tts-2: when the async
-                            # worker is live, hand it the segment so the heavy
-                            # offline decode never stalls this real-time loop;
-                            # otherwise finalize inline (legacy, byte-identical).
+                            # Finalize (optional endpoint models + the echo-floor/
+                            # speaker gates) and dispatch the single final.
+                            # asr-tts-2: when the async worker is live, hand it the
+                            # segment so model decode never stalls this real-time
+                            # loop; otherwise finalize inline (legacy,
+                            # byte-identical).
                             if self._final_q is not None:
                                 if recover_empty_streaming or not owner_lineage_intact:
                                     self._enqueue_final(

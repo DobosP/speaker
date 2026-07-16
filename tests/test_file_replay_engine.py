@@ -319,6 +319,78 @@ def test_asr_only_evaluation_observes_but_never_promotes_offline_recovery(
     assert engine.last_final == ""
 
 
+def test_asr_only_evaluation_constructs_and_applies_endpoint_verifier(
+    monkeypatch,
+):
+    class _OfflineRecognizer:
+        def create_stream(self):
+            stream = type("OfflineStream", (), {})()
+            stream.result = type(
+                "Result", (), {"text": "private corrected phrase"}
+            )()
+            stream.accept_waveform = lambda _sr, _samples: None
+            return stream
+
+        def decode_stream(self, stream) -> None:
+            del stream
+
+    class _Verifier:
+        def __init__(self):
+            self.calls = 0
+
+        def transcribe(self, samples, sample_rate):
+            self.calls += 1
+            assert samples.dtype == np.float32
+            assert sample_rate == 16000
+            return type(
+                "VerifierResult", (), {"text": "private corrected phrase"}
+            )()
+
+    verifier = _Verifier()
+    _patch_models(
+        monkeypatch,
+        _FakeRecognizer("unrelated private streaming words"),
+        _FakeTts(),
+    )
+    monkeypatch.setattr(
+        fr,
+        "build_final_recognizer",
+        lambda _config: _OfflineRecognizer(),
+    )
+    monkeypatch.setattr(
+        fr,
+        "build_final_verifier",
+        lambda _config: verifier,
+    )
+    monkeypatch.setattr(fr, "build_punctuation", lambda _config: None)
+    engine = FileReplayEngine(
+        SherpaConfig(
+            asr_encoder="x",
+            asr_final_backend="sense_voice",
+            asr_final_verifier_backend="faster_whisper",
+            asr_final_verifier_model="/local/model",
+        ),
+        asr_only=True,
+    )
+    engine.start(EngineCallbacks())
+    try:
+        result = engine.evaluate_samples(
+            np.ones(2 * 16000, dtype="float32") * 0.5,
+            16000,
+            speech_sec=2.0,
+        )
+    finally:
+        engine.stop()
+
+    assert verifier.calls == 1
+    [decision] = result.decisions
+    assert decision.selected == "private corrected phrase"
+    assert decision.verifier_outcome == "consensus"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed is True
+    assert "private corrected phrase" not in repr(decision)
+
+
 def test_file_replay_uses_attested_owned_timing_for_stop_repair(monkeypatch):
     class _OfflineStream:
         def __init__(self) -> None:

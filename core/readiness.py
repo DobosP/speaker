@@ -32,7 +32,16 @@ DEFAULT_OLLAMA_MODELS = ("gemma3:12b", MINICPM_Q8_CONTRACT.alias)
 _PIP_NAME = {
     "sherpa_onnx": "sherpa-onnx",
     "llama_cpp": "llama-cpp-python",
+    "nvidia.cublas": "nvidia-cublas-cu12",
+    "nvidia.cudnn": "nvidia-cudnn-cu12",
+    "nvidia.cuda_nvrtc": "nvidia-cuda-nvrtc-cu12",
 }
+_FASTER_WHISPER_SNAPSHOT_FILES = (
+    "config.json",
+    "model.bin",
+    "tokenizer.json",
+    "vocabulary.txt",
+)
 
 
 @dataclass(frozen=True)
@@ -142,6 +151,33 @@ def check_sherpa_models(
             "(expected sense_voice or whisper)"
         )
 
+    # The independent verifier is inert while its backend is empty, even if a
+    # stale local path remains. Once selected, every CTranslate2 snapshot file
+    # is load-bearing and readiness fails before opening the microphone.
+    verifier_backend = str(
+        sherpa.get("asr_final_verifier_backend", "") or ""
+    ).strip().lower()
+    if verifier_backend == "faster_whisper":
+        verifier_model = str(
+            sherpa.get("asr_final_verifier_model", "") or ""
+        )
+        require(
+            "asr_final_verifier_model",
+            label="Faster-Whisper verifier model directory",
+        )
+        if verifier_model:
+            for filename in _FASTER_WHISPER_SNAPSHOT_FILES:
+                path = os.path.join(verifier_model, filename)
+                if not exists(path):
+                    problems.append(
+                        f"Faster-Whisper verifier {filename} missing on disk"
+                    )
+    elif verifier_backend:
+        problems.append(
+            f"asr_final_verifier_backend={verifier_backend!r} unsupported "
+            "(expected faster_whisper)"
+        )
+
     # A configured VAD is eagerly built during engine start.  It remains optional
     # when unset; feature-specific requirements (word-cut) are checked below.
     require_if_configured("vad_model")
@@ -169,6 +205,71 @@ def check_sherpa_models(
             "python -m tools.setup_models  # writes config.local.json",
         )
     return Check("sherpa models", True, "selected ASR + TTS/frontend paths set")
+
+
+def check_asr_final_verifier_runtime(
+    config: dict,
+    *,
+    import_fn: Callable[[str], object] = importlib.import_module,
+    preload_fn: Callable[[], None] | None = None,
+    model_probe_fn: Callable[[str], None] | None = None,
+) -> Check:
+    """Prove the selected verifier has a CUDA FP16 CTranslate2 runtime."""
+    sherpa = (config or {}).get("sherpa", {}) or {}
+    backend = str(
+        sherpa.get("asr_final_verifier_backend", "") or ""
+    ).strip().lower()
+    if not backend:
+        return Check("ASR final verifier runtime", True, "disabled")
+    if backend != "faster_whisper":
+        return Check(
+            "ASR final verifier runtime",
+            False,
+            f"unsupported backend {backend!r}",
+            "python -m tools.setup_models --final-verifier faster-whisper-small",
+        )
+    try:
+        if preload_fn is None:
+            from .engines._cuda_wheels import preload_cuda_wheel_libraries
+
+            preload_fn = preload_cuda_wheel_libraries
+        # CTranslate2 discovers cuBLAS/cuDNN dynamically. Prove the exact
+        # wheel-owned libraries before either CTranslate2 or Faster-Whisper is
+        # imported; normal startup must not depend on ambient LD_LIBRARY_PATH.
+        preload_fn()
+        import_fn("faster_whisper")
+        ctranslate2 = import_fn("ctranslate2")
+        compute_types = set(ctranslate2.get_supported_compute_types("cuda", 0))
+        if "float16" not in compute_types:
+            raise RuntimeError("CUDA FP16 is unavailable")
+        model_path = str(
+            sherpa.get("asr_final_verifier_model", "") or ""
+        ).strip()
+        if not model_path:
+            raise RuntimeError("selected verifier model is unavailable")
+        if model_probe_fn is None:
+            from .engines._faster_whisper import FasterWhisperEndpointRecognizer
+
+            def model_probe_fn(path: str) -> None:
+                FasterWhisperEndpointRecognizer(path).warm()
+
+        # Required files alone cannot prove that CTranslate2 can load this exact
+        # snapshot. Pay the selected model-load cost before microphone startup;
+        # a corrupt or incompatible opt-in must fail doctor, not silently retry
+        # and fall back on every live turn.
+        model_probe_fn(model_path)
+    except Exception as exc:  # noqa: BLE001 - selected GPU runtime fails closed
+        return Check(
+            "ASR final verifier runtime",
+            False,
+            f"{type(exc).__name__}: {exc}",
+            "install the selected CUDA runtime, then rerun tools.doctor",
+        )
+    return Check(
+        "ASR final verifier runtime",
+        True,
+        "local Faster-Whisper CUDA FP16 available",
+    )
 
 
 def check_speaker_id(
@@ -843,10 +944,32 @@ def run_runtime_checks(
     backend = str(llm.get("backend", "ollama") or "ollama").lower()
 
     imports = list(RUNTIME_IMPORTS)
+    verifier_backend = str(
+        ((merged.get("sherpa", {}) or {}).get("asr_final_verifier_backend", ""))
+        or ""
+    ).strip().lower()
+    verifier_check = None
+    if verifier_backend:
+        verifier_check = check_asr_final_verifier_runtime(
+            merged,
+            import_fn=import_fn,
+        )
+        if verifier_check.ok:
+            imports.extend(
+                (
+                    "faster_whisper",
+                    "ctranslate2",
+                    "nvidia.cublas",
+                    "nvidia.cudnn",
+                    "nvidia.cuda_nvrtc",
+                )
+            )
     if llm_mode != "echo":
         imports.append("llama_cpp" if backend == "llamacpp" else "ollama")
     checks = check_imports(imports, import_fn=import_fn)
     checks.append(check_sherpa_models(merged, exists=exists))
+    if verifier_check is not None:
+        checks.append(verifier_check)
     if include_speaker:
         checks.append(check_speaker_id(merged, exists=exists))
 

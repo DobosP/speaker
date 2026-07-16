@@ -103,6 +103,15 @@ def test_gate_creates_queue_when_async_on_and_recognizer_present():
     assert isinstance(eng._final_q, queue.Queue)
 
 
+def test_gate_creates_queue_when_only_verifier_is_present():
+    eng = _engine(asr_final_async=True)
+    eng._final_verifier = object()
+
+    eng._maybe_setup_async_final()
+
+    assert isinstance(eng._final_q, queue.Queue)
+
+
 # --- _finalize_and_dispatch: the one shared finalize path ---------------------
 
 

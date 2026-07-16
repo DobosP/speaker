@@ -1,65 +1,57 @@
-# Task Result — explicit personal-vault command phrasing
+# Task Result — one-command recorded Linux live session
 
-Valid until: ADR-0074 or its phrase-routing implementation changes — then treat as history.
+Valid until: ADR-0075 or the `./live.sh` lifecycle changes — then treat as history.
 
 ## Outcome
 
-- The voice agent now treats natural personal-source forms such as `search in
-  my vault`, `go in my vault`, and `find in my vault` as the same deterministic
-  local read. Notes, Obsidian, second-brain, Dobo-brain, and Paul-brain aliases
-  use the existing SEARCH intent with `search_scope=vault`.
-- Topicless commands return the existing bounded listing. Topical commands
-  retain their actual ranking terms; routing words and ordered source-correction
-  glue are removed without globally deleting words such as `web`, `online`, or
-  action verbs when those words are the topic.
-- Source choice is ordered and polarity-aware. Explicit vault exclusions remain
-  public, explicit web/online choices cannot see the vault, and unambiguous later
-  corrections can switch back to the private source. Literal topic clauses are
-  not mistaken for corrections or exclusions.
-- Status/capability questions and requests containing a separate action or
-  mutation clause receive no private read tool. Topic phrases such as `tools to
-  edit files` remain searchable, while requests to edit a found note/result fail
-  closed.
-- Text and native ReAct allowlists enforce the same classification. Local vault
-  reads cannot acquire web tools, public searches cannot acquire `vault.search`,
-  and non-lookups receive no read tool. This does not rely on model obedience.
-- ADR-0073's default-off, no-follow, bounded, read-only, PRIVATE, no-egress
-  reader is unchanged. No write authority, general filesystem access, new
-  intent/mode, phone-native schema, or barge-in behavior was added.
+- `./live.sh` is the normal physical Linux entry point. It creates a private,
+  non-reused `logs/live/<label>-<timestamp>/` bundle, starts or reuses loopback
+  Ollama only for an Ollama profile, prepares or validates the canonical PipeWire echo-cancel route, runs
+  the shared readiness doctor, then starts production sherpa with DEBUG, mic
+  recording, and a frame-aligned playback reference.
+- One host-global lock prevents different checkouts/worktrees from changing the
+  same audio defaults concurrently. Exact module masters and WebRTC AEC-only
+  arguments are verified before reuse; partial, stacked, duplicate, or
+  ambiguous routes fail before the microphone opens.
+- Cleanup restores only defaults still owned by this session, unloads only an
+  exactly identified module created by the launcher, and stops only a launcher-
+  owned Ollama/voice process group. Ctrl-C, SIGTERM, and SIGHUP use bounded
+  finalization followed by TERM/KILL escalation when necessary.
+- Runtime arguments use an explicit no-abbreviation/no-duplicate allowlist.
+  Engine, recording, enrollment, raw audio-route, virtual-harness, and
+  `open_speaker` overrides remain launcher-owned or rejected.
+- Real voice, aligned reference, transcripts, prompts, and any Ollama logs stay
+  ignored and local. Configured non-loopback Ollama endpoints are rejected and
+  an ambient remote `OLLAMA_HOST` is replaced with loopback.
+- Portable `python -m core` and low-level `session.sh` do not provision host
+  services/default routes. Enrollment stays present and optional under
+  ADR-0072; no barge-in threshold or authority behavior changed.
 
 ## Verification
 
-- Vault and phrase matrix: `1066 passed`.
-- Vault + speech contract + ReAct + cloud-PII gate: `1108 passed`.
-- Adjacent cloud/provider integration gate: `1152 passed`.
-- Full deterministic suite: `5130 passed, 31 skipped, 9 known warnings`.
+- Launcher + capture + doctor integration: `195 passed`.
 - Required APM/double-talk regression: `6 passed`.
-- Python compilation, changed-module imports, and `git diff --check`: passed.
-- Independent read-only review matrices passed: 393 established classifier
-  cases, 80 mutation topologies, 26 topical controls, 24 common action-word
-  topics, and 12 additional mutation-safety controls.
-- A headless real-root smoke against `/home/dobo/work/dobo-brain/paul-brain`
-  ran all three requested forms with `ScriptedEngine` + `EchoLLM`. Each invoked
-  only `vault.search` then `research.local`; none invoked web or spoke a raw
-  untrusted-content fence.
+- Full deterministic suite: `5205 passed, 31 skipped, 9 known warnings`.
+- Shell syntax and `git diff --check`: passed.
+- No physical microphone, ASR, speaker, or live-audio validation ran.
 
-## Documentation
+## Live invocation
 
-- ADR-0074 supersedes ADR-0073's narrow phrase-routing rule while retaining the
-  reader's containment, privacy, cancellation, and output-bound decisions.
-- `docs/unified_architecture.md` and `STATUS.md` link the current decision and
-  record the final 2026-07-16 verification evidence.
+From the repository root:
 
-## Manual validation and limits
+```bash
+./live.sh --run-label vault-phrases
+```
 
-- This is deterministic headless control-plane behavior. No live microphone,
-  ASR, speaker hardware, or physical audio validation ran or is claimed.
-- The smoke printed only phrases, invoked tool names, and privacy booleans. It
-  did not print note bodies, credentials, or raw transcripts, and it did not
-  modify the vault.
+On this machine, the local private config already enables the bounded read-only
+vault rooted at `~/work/dobo-brain/paul-brain`. Say `search in my vault`, `go in
+my vault`, and `find in my vault`, waiting for each response; after the last,
+press Ctrl-C once. The launcher
+prints the private bundle directory to give a local agent for later analysis;
+do not commit, push, upload, or paste its contents.
 
-## Merge recommendation
+## Limits
 
-The implementation and documentation gates are green and may be landed on
-`main`. Preserve the existing live-audio red status: this change does not resolve
-or validate the separate physical barge-in failure tracked by ADR-0072.
+This automates safe setup and evidence capture only. Physical exact Stop and
+bare-speaker barge-in remain live-red in `STATUS.md`/ADR-0072 until a real
+recorded run passes the acceptance gate.

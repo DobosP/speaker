@@ -1,6 +1,6 @@
 # Speaker — Unified Architecture
 
-> Single current-truth architecture doc. Pairs with docs/target_architecture.md (north-star); the old as-built snapshot is archived at docs/archive/architecture.md. Last consolidated 2026-06-02.
+> Single current-truth architecture doc. Pairs with docs/target_architecture.md (north-star); the old as-built snapshot is archived at docs/archive/architecture.md. Last consolidated 2026-07-16.
 
 ## Table of contents
 
@@ -154,7 +154,8 @@ These claims in the old docs are **stale**; the codebase has these truths:
 ### Deployment topologies
 
 1. **On-device desktop** (default for this repo):
-   - `python -m core --engine sherpa --llm ollama`
+   - Normal Linux physical session: `./live.sh`; portable low-level runtime for
+     an already prepared platform route: `python -m core --engine sherpa`.
    - STT/TTS/VAD/barge-in all local (sherpa-onnx).
    - LLM: Ollama on GPU (`desktop` profile) or llama.cpp (`phone` profile).
    - Raw audio never leaves the device.
@@ -304,7 +305,7 @@ STOP-class controls and attested repairs that overlap current or recent own TTS
 fail-closed behind compatible enrolled-speaker authority. This is separate from
 normal-final `speaker_gate_input`; see ADR-0072.
 
-**Multi-signal barge-in** (`core/engines/echo_coherence.py`, `core/engines/speaker_gate.py`): The mic stays open during playback, so the assistant's own TTS can leak back and look like a barge-in. The **primary** detector is `EchoCoherenceDetector` (`sherpa.coherence_barge_in_enabled`, default on, needs scipy): it measures magnitude-squared coherence between the played TTS reference and the mic over the voiced band (300–3400 Hz) and fires only on sound the reference can't explain — **volume-independent by algebra** (works at any speaker level) and **never self-interrupts** (the assistant's own echo is fully explained). Its trigger margin is a **self-calibrating EWMA control chart** (learns the room's echo-incoherence mean + variance → zero per-room tuning), and a barge must clear it for **`coherence_confirm_frames` consecutive blocks** (default 2, ~0.1 s each) before firing — *a bit slower, higher confidence*, so a one-off over-threshold spike (cheap-speaker nonlinearity, transient noise) can't self-interrupt while a sustained talk-over still does. This is the **enrollment-free, identity-free** interrupt; speaker-ID is a separate feature used only as the abstain-time fallback below. When coherence can't decide (no reference yet, or TTS silence), it falls back, strongest-first, to: the **speaker-ID identity gate** (`SpeakerGate`, when enrolled — cosine ≥ 0.5, rejects echo by identity), optional **AEC** (relaxed margin), and a **loudness / output-margin guard** (`barge_in_output_margin_db`, default 6 dB, with optional `input_loudness_margin_db` rescue). Headsets sidestep echo entirely. Full mechanics + calibration in [§7](#7--real-time-quality-subsystems).
+**Direct/in-app fallback multi-signal barge-in** (`core/engines/echo_coherence.py`, `core/engines/speaker_gate.py`): Outside the normal Linux `./live.sh` OS-EC path, the mic stays open during playback, so the assistant's own TTS can leak back and look like a barge-in. On that direct/in-app path, the **primary** detector is `EchoCoherenceDetector` (`sherpa.coherence_barge_in_enabled`, default on, needs scipy): it measures magnitude-squared coherence between the played TTS reference and the mic over the voiced band (300–3400 Hz) and fires only on sound the reference can't explain — **volume-independent by algebra** (works at any speaker level) and **never self-interrupts** (the assistant's own echo is fully explained). Its trigger margin is a **self-calibrating EWMA control chart** (learns the room's echo-incoherence mean + variance → zero per-room tuning), and a barge must clear it for **`coherence_confirm_frames` consecutive blocks** (default 2, ~0.1 s each) before firing — *a bit slower, higher confidence*, so a one-off over-threshold spike (cheap-speaker nonlinearity, transient noise) can't self-interrupt while a sustained talk-over still does. This is the **enrollment-free, identity-free** interrupt; speaker-ID is a separate feature used only as the abstain-time fallback below. When coherence can't decide (no reference yet, or TTS silence), it falls back, strongest-first, to: the **speaker-ID identity gate** (`SpeakerGate`, when enrolled — cosine ≥ 0.5, rejects echo by identity), optional **AEC** (relaxed margin), and a **loudness / output-margin guard** (`barge_in_output_margin_db`, default 6 dB, with optional `input_loudness_margin_db` rescue). Headsets sidestep echo entirely. Full mechanics + calibration in [§7](#7--real-time-quality-subsystems).
 
 ### VoiceRuntime: event loop & metrics
 
@@ -699,7 +700,7 @@ Rolling summary and user profile run **off the bus thread** (never inside `add_m
 
 ## §7 — Real-time quality subsystems
 
-Real-time latency and speech quality depend on stacked subsystems: **two-pass ASR** (streaming zipformer for low-latency partials+endpoint; offline SenseVoice for robust, punctuated finals), **semantic turn-completion endpointing** (commit a final when the user finishes, not after a fixed acoustic timer), the **never-stuck controller** (reap hung tasks and heal on the watchdog tick), **startup pre-warm** (load models before turn 1), **barge-in** (coherence-primary, multi-signal defense against self-interruption), and **STT input-chain quality** (anti-aliased resampling, soft-limit AGC, and optional confidence gating).
+Real-time latency and speech quality depend on stacked subsystems: **two-pass ASR** (streaming zipformer for low-latency partials+endpoint; offline SenseVoice for robust, punctuated finals), **semantic turn-completion endpointing** (commit a final when the user finishes, not after a fixed acoustic timer), the **never-stuck controller** (reap hung tasks and heal on the watchdog tick), **startup pre-warm** (load models before turn 1), **barge-in** (OS-EC word-cut on normal Linux, plus a coherence-primary direct/in-app fallback), and **STT input-chain quality** (anti-aliased resampling, soft-limit AGC, and optional confidence gating).
 
 ### Semantic turn-completion endpointing
 
@@ -744,13 +745,15 @@ Models paid their cold-start cost on turn 1. `core/runtime.py` + `core/engines/s
 - **Gate + cleaner:** The addressing classifier and transcript cleaner run with their own system prefixes; `_warm()` exercises each once so their first live call isn't cold.
 - **Readiness signal:** `runtime.warm_ready` (a `threading.Event`) is raised when warm finishes — even if a step failed (raised in a `finally`, so readiness means "warm-up finished"). Set immediately when `warm_on_start=false`.
 
-### Barge-in: coherence-primary multi-signal defense against self-interruption
+### Barge-in: OS-EC word-cut plus a coherence-primary direct/in-app fallback
 
-The assistant keeps the mic open during playback to hear user talk-over. Its own TTS leaks from the speakers into the mic and looks like a barge-in — without a defense the assistant cuts itself off. The detector is **coherence-primary with strongest-first fallbacks**:
+The normal Linux physical path uses the OS-EC word-cut described in §3/ADR-0072.
+On direct/in-app fallback paths, the assistant keeps the mic open during playback
+and uses a **coherence-primary detector with strongest-first fallbacks**:
 
-1. **Reference-coherence detector (PRIMARY)** (`EchoCoherenceDetector`, `core/engines/echo_coherence.py`; `sherpa.coherence_barge_in_enabled`, default on, needs scipy): Computes the magnitude-squared coherence between the time-aligned TTS reference and the mic over the voiced band (300–3400 Hz), then the **energy-weighted incoherent fraction** — the share of mic energy the reference can't explain. It fires when that fraction clears a **self-calibrating EWMA control chart** (the room's learned echo-incoherence mean + `max(coherence_margin_delta, k·σ)`, σ accumulated on upward excursions only), so the margin auto-widens in reverberant/noisy rooms and tightens in clean ones with **zero per-room tuning**. A barge must clear that bar for **`coherence_confirm_frames` consecutive frames** (default 2; the detector class still defaults to 1 = fire-on-first-frame) before `decide()` returns True — *a bit slower, higher confidence*: one-off over-threshold spikes (cheap-speaker nonlinearity / transient noise) are rejected, a sustained talk-over fires. While a run is still building, `decide()` returns **False (echo-only), not None**, so a not-yet-confirmed moment can never fall through to the identity/level gates (the interrupt is **enrollment-free and identity-free**; speaker-ID is a separate, abstain-time fallback). The baseline/variance chart is updated only on *below-threshold* frames, so an unconfirmed candidate can't drag the chart toward itself (`test_confirm_frames_requires_consecutive_over_threshold_to_fire`, `..._run_resets_on_an_intervening_echo_frame`). **Scale-invariant by algebra** — gains cancel in the coherence ratio and the weights, so the same utterance fires identically at any playback/capture volume (`test_decision_is_invariant_to_uniform_volume_scaling`, 100× range). **Structurally never self-interrupts** — the assistant's own echo is fully explained, so the incoherent fraction ≈ 0 at any playback gain (`test_echo_only_never_fires_at_any_playback_gain`). The echo delay is tracked continuously by cross-correlation. When coherence can't decide (no reference yet at session start, or TTS silence) it abstains to the gates below; fails open to the level gate if scipy is missing.
+1. **Reference-coherence detector (PRIMARY ON THIS FALLBACK)** (`EchoCoherenceDetector`, `core/engines/echo_coherence.py`; `sherpa.coherence_barge_in_enabled`, default on, needs scipy): Computes the magnitude-squared coherence between the time-aligned TTS reference and the mic over the voiced band (300–3400 Hz), then the **energy-weighted incoherent fraction** — the share of mic energy the reference can't explain. It fires when that fraction clears a **self-calibrating EWMA control chart** (the room's learned echo-incoherence mean + `max(coherence_margin_delta, k·σ)`, σ accumulated on upward excursions only), so the margin auto-widens in reverberant/noisy rooms and tightens in clean ones with **zero per-room tuning**. A barge must clear that bar for **`coherence_confirm_frames` consecutive frames** (default 2; the detector class still defaults to 1 = fire-on-first-frame) before `decide()` returns True — *a bit slower, higher confidence*: one-off over-threshold spikes (cheap-speaker nonlinearity / transient noise) are rejected, a sustained talk-over fires. While a run is still building, `decide()` returns **False (echo-only), not None**, so a not-yet-confirmed moment can never fall through to the identity/level gates (the interrupt is **enrollment-free and identity-free**; speaker-ID is a separate, abstain-time fallback). The baseline/variance chart is updated only on *below-threshold* frames, so an unconfirmed candidate can't drag the chart toward itself (`test_confirm_frames_requires_consecutive_over_threshold_to_fire`, `..._run_resets_on_an_intervening_echo_frame`). **Scale-invariant by algebra** — gains cancel in the coherence ratio and the weights, so the same utterance fires identically at any playback/capture volume (`test_decision_is_invariant_to_uniform_volume_scaling`, 100× range). **Structurally never self-interrupts** — the assistant's own echo is fully explained, so the incoherent fraction ≈ 0 at any playback gain (`test_echo_only_never_fires_at_any_playback_gain`). The echo delay is tracked continuously by cross-correlation. When coherence can't decide (no reference yet at session start, or TTS silence) it abstains to the gates below; fails open to the level gate if scipy is missing.
 2. **Speaker-ID identity gate** (when configured): The `SpeakerGate` (`core/engines/speaker_gate.py`) compares a speaker embedding of detected speech against the enrolled user's voice via cosine similarity (≥ `threshold`, 0.5) — rejecting the assistant's echo by *identity*, independent of volume. Enrollment (`python -m core --enroll`) records a few VAD-trimmed passes and averages the embedding, **pinning `capture_samplerate` to the mic's native rate** (probing 16 kHz first self-mutes USB mics like the AT2020 — measured 2026-06-01: probe-first enrollment self-scored 0.05–0.26 vs 0.76–0.94 when pinned). Enrollment alone does not filter production word-cut; set `barge_word_cut_require_speaker=true` to require identity for generic multi-voice overrides. Novel exact Stop/cancel remains an open fail-safe control. ADR-0042's own-TTS-ambiguous STOP guard remains mandatory independently. When neither policy requires identity, generic word-cut stays enrollment-free.
-3. **Acoustic Echo Cancellation (optional):** When `aec_enabled=true`, `core/engines/_aec.py` subtracts the played TTS (the far-end reference, teed from playback into a `FarEndRing` and read at the configured speaker→mic delay) from the mic block *before* any consumer. **The production open-speaker backend is the WebRTC APM** (`aec_backend='apm'`: AEC3 + residual-echo suppression + NS + AGC2 + HPF; default in the committed `open_speaker` profile, `apm_always_on=true`) — it tolerates the nonlinear open laptop speaker where the linear NLMS filter measures ~0 dB ERLE (**NLMS live-ruled-out for open-speaker 2026-06-17**; see [`docs/audio_pipeline.md`](audio_pipeline.md) for the full capture chain). The dependency-free **NumPy FDAF/NLMS** (frequency-domain block adaptive filter, 512-tap, 50% overlap-save; ~10–20 dB real-world ERLE) remains the *base* default for headset / near-field rooms only. A **deep DTLN-aec ONNX tier** (`aec_backend='dtln'`) is reserved but currently fails open to no-AEC pending tflite→ONNX conversion (no models shipped). Double-talk freeze stops the filter diverging onto the user's voice. `aec_ref_delay_ms` (echo-probe-calibrate with `tools/echo_probe.py`, or use `aec_auto_delay` — **never hardcode 260 ms**) and `aec_filter_taps` tune per device. When AEC is on, the gate uses the smaller `aec_relaxed_margin_db` (3.0 dB) instead of `barge_in_output_margin_db`.
+3. **Acoustic Echo Cancellation (optional in-app fallback):** When `aec_enabled=true`, `core/engines/_aec.py` subtracts the played TTS (the far-end reference, teed from playback into a `FarEndRing` and read at the configured speaker→mic delay) from the mic block *before* any consumer. **The in-app open-speaker fallback is WebRTC APM** (`aec_backend='apm'`: AEC3 + residual-echo suppression + NS + AGC2 + HPF; selected by the separate `open_speaker` profile, `apm_always_on=true`) — it tolerates the nonlinear open laptop speaker where the linear NLMS filter measures ~0 dB ERLE (**NLMS live-ruled-out for open-speaker 2026-06-17**; see [`docs/audio_pipeline.md`](audio_pipeline.md) for the full capture chain). Do not combine this profile with `./live.sh`, whose normal Linux path uses OS EC. The dependency-free **NumPy FDAF/NLMS** (frequency-domain block adaptive filter, 512-tap, 50% overlap-save; ~10–20 dB real-world ERLE) remains the *base* default for headset / near-field rooms only. A **deep DTLN-aec ONNX tier** (`aec_backend='dtln'`) is reserved but currently fails open to no-AEC pending tflite→ONNX conversion (no models shipped). Double-talk freeze stops the filter diverging onto the user's voice. `aec_ref_delay_ms` (echo-probe-calibrate with `tools/echo_probe.py`, or use `aec_auto_delay` — **never hardcode 260 ms**) and `aec_filter_taps` tune per device. When AEC is on, the gate uses the smaller `aec_relaxed_margin_db` (3.0 dB) instead of `barge_in_output_margin_db`.
 4. **Loudness / output-margin guard (fallback):** When coherence abstains, the speaker gate is unenrolled, and no AEC is on, `SpeakerGate.accept()` gates on level: detected speech must sit `barge_in_output_margin_db` dB (shipped 6.0) *above* the current playback-buffer RMS. This is device-specific and volume-dependent (mic-capture RMS vs playback-buffer RMS — different scales). Calibrated on a Realtek laptop mic (`tools/echo_probe`): at 0 dB self-interruptions fire 15–21× at every volume; at 6 dB they drop to 0 across 30–100% OS volume. An optional `input_loudness_margin_db` rescue re-admits loud near-field speech whose identity dipped. When playback is silent (`playback_level ≤ 0`), the gate fails open so a real interrupt is never lost.
 
 ### STT input-chain quality
@@ -832,8 +835,8 @@ Tier-0 tests (no real screen/mss/Xlib/tesseract/model; tmp `config.local.json`):
 | **Generic word-cut multi-voice identity filter** | `sherpa.barge_word_cut_require_speaker` | OFF | `tests/test_barge_word_cut.py` | KEEP, explicit opt-in; novel exact controls stay open and ADR-0042 ambiguity stays mandatory |
 | **Smart Turn v3** (prosodic endpoint) | `sherpa.endpoint_detector='prosody'` + `sherpa.endpoint_prosody_model` | OFF | `tests/test_endpointing.py` | KEEP, real-voice scored |
 | **SenseVoice two-pass ASR** (offline final recognizer) | `sherpa.asr_final_backend` + `sherpa.asr_final_model` | ON (model present) | `tests/test_asr_final.py` | SHIPPED |
-| **Coherence barge-in** (scale-invariant primary) | `sherpa.coherence_barge_in_enabled` (+ scipy) | ON | `tests/test_echo_coherence.py` | SHIPPED |
-| **WebRTC APM** (production open-speaker AEC: AEC3 + RES + NS + AGC2 + HPF) | `sherpa.aec_backend='apm'` (+ `apm_always_on`) | OFF in base (**ON in the `open_speaker` profile** — the production open-speaker path) | `tests/test_apm.py`, `tests/test_apm_double_talk.py` | SHIPPED (2026-06-21) |
+| **Coherence barge-in** (scale-invariant primary on direct/in-app paths) | `sherpa.coherence_barge_in_enabled` (+ scipy) | ON | `tests/test_echo_coherence.py` | SHIPPED fallback |
+| **WebRTC APM** (in-app open-speaker fallback: AEC3 + RES + NS + AGC2 + HPF) | `sherpa.aec_backend='apm'` (+ `apm_always_on`) | OFF in base (**ON only in the separate `open_speaker` profile**) | `tests/test_apm.py`, `tests/test_apm_double_talk.py` | SHIPPED fallback (2026-06-21); normal Linux path is OS EC |
 | **DTLN-aec** (deep echo cancellation) | `sherpa.aec_backend='dtln'` | OFF (default: 'nlms') | `tests/test_aec_seam.py` | KEEP, gated (no models shipped) |
 | **ReAct Planner** (multi-step planning) | `agent.planner.enabled` | ON (default) | `tests/test_react_planner.py` | KEEP, gated |
 | **Obsidian Vault** (bounded read-only Markdown search) | `obsidian.enabled` | OFF | `tests/test_obsidian.py` | KEEP, gated |
@@ -850,8 +853,8 @@ Every tier below is **kept as a load-bearing gate**. The experimental ones yield
 - **Input Gate** (`core/addressing.py`): Disabled default (base config OFF; desktop ON) gates ambient speech silently. Calls the fast tier once per ASR final; on desktop where fast headroom exists, it saves replies to background noise / read-aloud text. (Gate 1 in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
 - **Smart Turn v3** (`core/endpointing.py` `ProsodyTurnCompletionDetector` + `sherpa.endpoint_detector='prosody'` + `sherpa.endpoint_prosody_model`): Triple-gated — requires `endpoint_detector='prosody'` AND a valid model path AND `endpoint_enabled=true`. Lazy `onnxruntime` import costs nothing on phone; a load error falls back to the lexical detector. Real-voice scored (complete 0.74–0.98 vs incomplete 0.01–0.56) but human-audio only, so the live floor-lowering A/B is still pending. Off by default. (Endpointing detail in [§7](#7--real-time-quality-subsystems).)
 - **SenseVoice two-pass ASR** (`core/engines/_sherpa_models.py::build_final_recognizer` + `sherpa.asr_final_backend`): The endpointed utterance is re-transcribed by the offline SenseVoice model for the LLM-facing final. **Default-on** when the model is present (`asr_final_backend='sense_voice'`); byte-identical streaming-only when absent. ~55 ms/utterance; brings punctuation+casing+ITN. (Detail in [§3](#3--the-desktop-runtime-core--the-audioengine-seam) / [§7](#7--real-time-quality-subsystems).)
-- **Coherence barge-in** (`core/engines/echo_coherence.py` + `sherpa.coherence_barge_in_enabled`): Scale-invariant reference-coherence detector — the **primary** barge-in signal (default on, needs scipy). Volume-independent by algebra; never self-interrupts; self-calibrating EWMA margin (zero per-room tuning). Falls back to the speaker-ID / loudness gates when it can't decide. (Detail in [§7](#7--real-time-quality-subsystems).)
-- **WebRTC APM** (`core/engines/_aec.py`, `aec_backend='apm'`): the WebRTC AudioProcessingModule (AEC3 + residual-echo suppression + NS + AGC2 + HPF) — **the production open-speaker AEC**, default in the committed `open_speaker` profile (`apm_always_on=true` runs it on every block). Adopted because the linear NLMS filter measures ~0 dB ERLE on a nonlinear open laptop speaker — **NLMS was live-ruled-out for open-speaker on 2026-06-17** and remains the dependency-free *base* default for headset/near-field setups only. Full chain detail + calibration in [`docs/audio_pipeline.md`](audio_pipeline.md). (Decisions 31–32 in [§13](#13--decisions-log).)
+- **Coherence barge-in** (`core/engines/echo_coherence.py` + `sherpa.coherence_barge_in_enabled`): Scale-invariant reference-coherence detector — the **primary signal on direct/in-app fallback paths** (default on, needs scipy). Volume-independent by algebra; never self-interrupts; self-calibrating EWMA margin (zero per-room tuning). Falls back to the speaker-ID / loudness gates when it can't decide. The normal Linux `./live.sh` path uses OS-EC word-cut instead. (Detail in [§7](#7--real-time-quality-subsystems).)
+- **WebRTC APM** (`core/engines/_aec.py`, `aec_backend='apm'`): the WebRTC AudioProcessingModule (AEC3 + residual-echo suppression + NS + AGC2 + HPF) — **the in-app open-speaker fallback**, selected by the separate `open_speaker` profile (`apm_always_on=true` runs it on every block). Adopted because the linear NLMS filter measures ~0 dB ERLE on a nonlinear open laptop speaker — **NLMS was live-ruled-out for open-speaker on 2026-06-17** and remains the dependency-free *base* default for headset/near-field setups only. Do not combine it with the normal Linux `./live.sh` OS-EC path. Full chain detail + calibration in [`docs/audio_pipeline.md`](audio_pipeline.md). (Decisions 31–32 in [§13](#13--decisions-log).)
 - **DTLN-aec** (`core/engines/_aec.py`, `build_aec`): `aec_backend='dtln'` would load two ONNX stages (spectral mask + time-domain refine, both carrying LSTM state) but currently fails open to no-AEC when the model paths are invalid or load fails (pending tflite→ONNX conversion; no models shipped). The default `'nlms'` ships the dependency-free NumPy FDAF, byte-identical when `aec_enabled=false`. (Echo defense + calibration in [§7](#7--real-time-quality-subsystems).)
 - **ReAct Planner** (`always_on_agent/react.py`): Enabled by default in `config.json` (`agent.planner.enabled=true`); the existing one-shot path runs when a turn doesn't match the `should_escalate` markers (search / look up / find / compare / latest / options / list of / and then / step by step). Bounded to `max_steps=4` with timeout renewal; escalated turns run under the short ASSISTANT budget + extended deadline. (Gate 4 in [§4](#4--the-decision--routing-layer-the-4-gate-ladder).)
 - **Continuation** (`always_on_agent/continuation.py`): Enabled by default (`config.json` `continuation.enabled=true`); merges add-ons into in-flight turns deterministically (marker + length heuristic, no LLM). Safe by omission — anything unclear becomes a fresh task. (Mechanics in [§2](#2--the-control-plane-brain-always_on_agent).)
@@ -911,9 +914,9 @@ voice, transcripts, and full prompts (ADR-0001/0008/0075):
 - **With playback-reference capture:** `run-<id>.ref.wav` (frame-aligned TTS)
 - **Console verbosity:** `--debug` mirrors DEBUG to the terminal; the file is always full DEBUG regardless
 
-`./live.sh` is the Linux physical-session wrapper: it owns reversible
-Ollama/PipeWire setup, shared readiness, mic + aligned-reference capture, and
-exact-resource cleanup. Portable `python -m core` performs no automatic
+`./live.sh` is the Linux physical-session wrapper: it owns conditional loopback
+Ollama plus reversible PipeWire setup, shared readiness, mic + aligned-reference
+capture, and exact-resource cleanup. Portable `python -m core` performs no automatic
 host-service or default-audio-route provisioning (ADR-0075). `./session.sh`
 remains the lower-level recorder for a prepared route. Capture is **off the hot
 path**: logging is fully async (a background
@@ -1040,7 +1043,12 @@ a profile only states what differs. Config loading and profile merging live in
 
 ### Preflight & setup
 
-- **`python -m tools.doctor`** — checks Python, imports, sherpa model paths, Ollama reachability + models, audio devices; prints exact fix commands
+- **`python -m tools.doctor`** — checks Python, imports, sherpa model paths,
+  selected local-backend readiness, audio devices, and the selected audio frontend.
+  Standalone full `READY` on Linux assumes the OS-EC route is prepared;
+  `./live.sh` prepares it first. Normal Ollama and llama.cpp profiles require
+  full `READY`; explicit echo uses the base/deferred preflight and cannot claim
+  full model readiness.
 - **`python -m tools.setup_models`** — downloads sherpa ASR/VAD/TTS models and wires paths into `config.json`
 - **`./install.sh`** — one-command native install (venv + deps + models + doctor); includes `psutil` (telemetry); GPU telemetry uses `nvidia-smi`
 - **Quick sysinfo without a run:** `python -m core.sysinfo`
@@ -1055,14 +1063,19 @@ a profile only states what differs. Config loading and profile merging live in
 - `core/metrics.py` — per-turn stage timings shared across engines + sim
 - `tools/run_tests.py` + `tools/testing/` — staged pytest runner with per-stage reports
 - `tools/specsim/` — spec simulator + HTML capability report
-- `tools/doctor.py`, `tools/setup_models.py`, `install.sh`, `session.sh`
-- Tests: `tests/test_runlog.py`, `tests/test_watchdog.py`, `tests/test_recorder.py`, `tests/test_sysinfo.py`, `tests/test_setup_doctor.py`
+- `tools/doctor.py`, `tools/setup_models.py`, `tools/live_launcher.py`,
+  `install.sh`, `live.sh`, `session.sh`
+- Tests: `tests/test_runlog.py`, `tests/test_watchdog.py`,
+  `tests/test_recorder.py`, `tests/test_sysinfo.py`,
+  `tests/test_setup_doctor.py`, `tests/test_live_launcher.py`
 
 ---
 
 ## §12 — Known gaps & roadmap
 
-This section reflects findings from five audit reports (production hardening, perf goal alignment, code review, architecture synthesis, and voice quality improvement), all re-verified against the current codebase (2026-06 HEAD).
+This section began with five June audit reports (production hardening, perf goal
+alignment, code review, architecture synthesis, and voice quality improvement)
+and includes operational corrections verified through 2026-07-16.
 
 ### Status of recent user decisions
 
@@ -1107,8 +1120,15 @@ This section reflects findings from five audit reports (production hardening, pe
 **Phase 2 — Best-in-class live voice-to-text (next frontier):**
 - 🔄 **Semantic end-of-turn model** — Smart Turn v3 ONNX (`ProsodyTurnCompletionDetector`) built, gated, and **scored on the user's real voice** (complete 0.74–0.98 vs incomplete 0.01–0.56, margin 0.18, 2026-06-01). Human-audio only (flat on TTS), so the live floor-lowering A/B on real speech is still pending. Measured endpoint cost ~0.6 s (true SPEECH_END stamp); Smart Turn promises ~0.3–0.55 s.
 - ✅ **Two-pass final ASR** — SenseVoice offline second pass shipped default-on (2026-06-01): streaming zipformer → offline final, ~55 ms, robust punctuated text on run-on/casual speech.
-- ✅ **Coherence barge-in** — scale-invariant reference-coherence detector shipped as the primary barge-in signal (2026-06-02): volume-independent, never self-interrupts, self-calibrating margin; legacy speaker-ID / loudness gates are the fallbacks. Field A/B with overlapping real speech still pending.
-- ⏸️ **Acoustic echo cancellation** — the NumPy FDAF AEC (`aec_backend='nlms'`, ~10–20 dB real-world ERLE) is implemented; the DTLN-aec deep tier is gated, pending tflite→ONNX conversion. **Both are OFF by default** (`aec_enabled=false`); when enabled, per-device `aec_ref_delay_ms` calibration is required (`tools/echo_probe.py`). The desktop path defaults to no-AEC — the coherence detector (primary), the 6 dB output-margin guard, and speaker-ID enrollment are the stopgaps (see [§7](#7--real-time-quality-subsystems)). Mobile enables platform AEC (`mobile/lib/assistant.dart`).
+- ✅ **Coherence barge-in** — the scale-invariant reference-coherence detector
+  remains available on the direct/in-app APM fallback. The current Linux
+  physical launcher instead uses OS echo cancellation plus enrollment-optional
+  word-cut; physical exact Stop is still live-red (ADR-0072/0075).
+- ⏸️ **In-app acoustic echo cancellation** — NumPy FDAF and gated DTLN remain
+  fallback/experimental paths. The separate `open_speaker` profile uses WebRTC
+  APM. The normal Linux physical path uses `module-echo-cancel` with its NS/AGC
+  disabled and does not require enrollment for generic word-cut. Mobile enables
+  platform AEC (`mobile/lib/assistant.dart`).
 - ⏸️ **Preemptive/speculative LLM generation** — the architecture supports it (epoch-stamped cancellable tasks, existing cancel machinery); never implemented. Overlaps TTFT with trailing speech.
 - ✅ **Fix the replay twin** — `_postprocess_final` is now applied in both sherpa and file_replay; the bench/replay twin emits the same cased+punctuated text as production.
 
@@ -1117,7 +1137,8 @@ This section reflects findings from five audit reports (production hardening, pe
 - ✅ Watchdog intent-turn false positive — suppressed (metrics turn-banking fixed).
 - ⏸️ De-nest `apply_retention` pool deadlock — not yet done (P2 mitigation, low urgency).
 - ⏸️ Gate the per-connect demo DDL — not yet done; startup still runs an ungated schema bootstrap.
-- ⏸️ Redaction/TTL + default-ignore for run bundles — not yet done; transcripts + WAVs are still committable.
+- 🔄 Redaction/TTL for run bundles — new bundles are ignored and local; automatic
+  redaction and age-based deletion remain deliberately unimplemented.
 - ⏸️ Case-insensitive name+money PII — not yet done (the case-sensitive check remains a narrow edge).
 - ⏸️ Recorder drop surfacing + `_playback_level` lock — not yet done (self-heals within ms, low priority).
 
@@ -1125,13 +1146,14 @@ This section reflects findings from five audit reports (production hardening, pe
 
 Ranked by field impact:
 
-1. **Smart Turn v3 live floor-lowering A/B (on real speech)** — the prosody model is already real-voice scored (0.74–0.98 vs 0.01–0.56); what remains is validating the actual latency win of dropping `endpoint_min_silence_sec` on high-confidence prosody. The biggest real latency win (~0.3–0.55 s) and the only way to test mid-thought cut-off reduction. Human-audio only, so it can't use the inject harness — needs live recordings (`python -m core --engine sherpa`, then read `logs/runs/*.summary.json` endpoint latency). **(M effort, blocked on hardware access)**
+1. **Smart Turn v3 live floor-lowering A/B (on real speech)** — the prosody model is already real-voice scored (0.74–0.98 vs 0.01–0.56); what remains is validating the actual latency win of dropping `endpoint_min_silence_sec` on high-confidence prosody. The biggest real latency win (~0.3–0.55 s) and the only way to test mid-thought cut-off reduction. Human-audio only, so it can't use the inject harness — use `./live.sh --run-label smart-turn-ab`, then inspect the private `logs/live/<run>/run-*.summary.json` endpoint latency locally. **(M effort, blocked on hardware access)**
 2. **Echo probe ERLE calibration** — `aec_ref_delay_ms` (default 80 ms) and `aec_filter_taps` (default 512) need per-device/room tuning via `tools/echo_probe.py` to hit measured ERLE and minimize self-interrupt risk; the 6 dB `barge_in_output_margin_db` level fallback is validated on one Realtek laptop. Re-calibrate on new hardware. **(M effort, requires field data + echo-probe measurements)**
 3. **Tier escalation evidence** — `router.threshold=0.3` + `_GENERATION_MARKERS` exist in the working tree; no recorded session yet shows a real gemma3:12b turn on the 4090. **(S effort, measurement only)**
 4. **Phone-class latency validation** — all audited runs are desktop/4090/Ollama. The phone profile (llama.cpp GGUF, unbounded LLM timeout, blocking input_gate on capture) has never been benchmarked. **(M effort, requires phone hardware)**
 5. **Multi-participant `remote/` test** — barge-in calls a global `supervisor.cancel_all()` with no session scoping; two participants would cancel each other's work. No test exists. **(M effort, coverage gap)**
 6. **LLM egress gate for injected PII** — recall + profile blocks must not carry personal data off-device via cloud LLM chains. A gate exists for web.search; the LLM path is still unvetted. **(M effort, latent behind disabled-by-default cloud; see [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97))**
-7. **Run-bundle PII/retention policy** — transcripts + WAVs commit verbatim with no redaction/TTL. **(S effort, hygiene)**
+7. **Run-bundle PII/retention policy** — private bundles are ignored and stay
+   local, but their verbatim content has no automatic redaction/TTL. **(S effort, hygiene)**
 8. **Mobile Dart → `AgentEvent` convergence** — `mobile/lib/assistant.dart` is still a parallel Dart loop (command map + streaming TTS) that re-derives core behavior; aligning the Dart supervisor with the Python brain on the shared `always_on_agent/events.py` contract would erase the duplication. **(L effort, cross-platform; see [§10](#10--cross-platform-contract--mobile))**
 
 ### Known latent risks (not blockers yet)
@@ -1233,8 +1255,8 @@ Ranked by field impact:
 
 31. **NLMS ruled out for open-speaker (2026-06-17).** The live open-speaker barge-in A/B (`docs/session_2026-06-17_live_bargein_validation.md`) measured the linear NLMS/FDAF filter at ~0 dB ERLE against the nonlinear open laptop speaker — a linear filter cannot model the speaker's distortion. NLMS stays the dependency-free **base default** for headset / near-field setups only; it must not be presented as the open-speaker path. *Rationale:* physics, measured live; recorded so NLMS-for-open-speaker is not re-proposed. See `docs/adr/0006`.
 
-32. **WebRTC APM adopted as the production open-speaker AEC (landed 2026-06-21).** `aec_backend='apm'` runs the WebRTC AudioProcessingModule (AEC3 + residual-echo suppression + NS + AGC2 + HPF); the committed `open_speaker` device profile sets it with `apm_always_on=true` (APM owns NS every block; the GTCRN denoiser is skipped). Follow-up review findings (7-dim adversarial review, 2026-06-21) are tracked in `.agents/backlog.md` — headline open P1: the DTD barge gate reads the APM-NS-suppressed residual under `open_speaker`. *Rationale:* Teams-grade echo handling on nonlinear open speakers; keeps the §9.7 boundary (all processing on-device). Full chain: [`docs/audio_pipeline.md`](audio_pipeline.md); `docs/adr/0006`.
+32. **WebRTC APM adopted as the in-app open-speaker fallback (landed 2026-06-21; current scope clarified 2026-07-16).** `aec_backend='apm'` runs the WebRTC AudioProcessingModule (AEC3 + residual-echo suppression + NS + AGC2 + HPF); the committed `open_speaker` profile selects it. The normal Linux physical path now uses OS EC under ADR-0013/0075 and must not be combined with this profile. *Rationale:* retain an all-local fallback for platforms/sessions without a prepared OS voice route. Full chain: [`docs/audio_pipeline.md`](audio_pipeline.md); `docs/adr/0006`.
 
 ---
 
-*Note: This log supersedes historical rationale scattered across `docs/archive/ultracode_scope.md` (phase scope), `docs/archive/review_ultracode.md` (audit findings), `docs/archive/p2_memory_design.md` (R1–R12), and `docs/archive/p3_design.md` (BR1–BR8). All decisions herein have been verified against live code and config as of 2026-06-02.*
+*Note: This log supersedes historical rationale scattered across `docs/archive/ultracode_scope.md` (phase scope), `docs/archive/review_ultracode.md` (audit findings), `docs/archive/p2_memory_design.md` (R1–R12), and `docs/archive/p3_design.md` (BR1–BR8). Current operational corrections are verified through 2026-07-16; dated historical measurements retain their original scope.*

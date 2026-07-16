@@ -85,9 +85,10 @@ Run the console (no audio/models/Ollama needed — type to talk, exercises the b
 python -m core --engine console --llm echo
 ```
 
-Run a private recorded physical session on Linux. This starts/reuses Ollama and
-PipeWire echo cancellation, requires doctor READY, and restores session-owned
-state when you press Ctrl-C ([ADR-0075](docs/adr/0075-make-recorded-linux-live-session-one-command-and-reversible.md)):
+Run a private recorded physical session on Linux. For an Ollama profile this
+starts/reuses loopback Ollama; every profile gets PipeWire echo cancellation,
+the applicable doctor gate, and restoration of session-owned state when you
+press Ctrl-C ([ADR-0075](docs/adr/0075-make-recorded-linux-live-session-one-command-and-reversible.md)):
 
 ```bash
 ./live.sh
@@ -97,10 +98,10 @@ The portable low-level entry point remains available when platform audio is
 already prepared (needs sherpa-onnx model files + a mic):
 
 ```bash
-python -m core --engine sherpa --llm ollama --model gemma3:latest
+python -m core --engine sherpa --llm ollama
 ```
 
-Flags: `--engine {console,sherpa,replay,livekit}`, `--llm {echo,ollama,llamacpp}`,
+Flags: `--engine {console,sherpa,replay,livekit}`, `--llm {echo,ollama}`,
 `--model NAME`, `--device {desktop,phone}`, `--mode {passive,assistant,research,...}`.
 
 For the host + thin-client path (browser/phone as endpoints), see

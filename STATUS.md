@@ -2,15 +2,15 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-16 on Linux ROG, local main: full 5130 passed/31 skipped/9 warnings; vault 1066; vault/planner/privacy 1108; adjacent cloud 1152; APM 6.
+Last verified: 2026-07-16 on Linux ROG: full 5205 passed/31 skipped/9 warnings; live launcher/capture/doctor 195; vault 1066; vault/planner/privacy 1108; adjacent cloud 1152; APM 6.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
 
 ## Runtime
 
-- Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; launch with
-  `python -m core --engine sherpa`. Raw audio never leaves the device (ADR-0001).
+- Local-first always-on assistant: `core/VoiceRuntime` + sherpa-onnx; low-level
+  core launch assumes prepared audio. Normal Linux physical entry is `./live.sh`; raw audio stays local (ADR-0001/0075).
 - Desktop MiniCPM Q8 is local text; readiness pins its alias, full blob,
   quantization, template, and parameters (ADR-0020/0062). Gemma3 is complex/
   vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
@@ -19,8 +19,8 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
   SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
   clean stable identities passed (ADR-0060/65); default-off `vault.search` returns bounded PRIVATE Markdown excerpts, with explicit personal-vault phrases locally scoped (ADR-0074).
-- `./live.sh` owns locked, reversible Linux Ollama/`echo-cancel-source`/
-  `echo-cancel-sink` setup, doctor, and a private mic+reference bundle (ADR-0075).
+- `./live.sh` owns one host-global lock, conditional loopback Ollama, reversible Linux
+  `echo-cancel-*` setup, doctor, and a private mic+reference bundle (ADR-0075).
   Direct core/session remain low-level. GTCRN is active; generic cuts need four
   novel words; speaker filtering is opt-in; own-TTS-ambiguous STOP needs identity (ADR-0042/72).
 - Host InputAGC is boost-only: only a current block above its calibrated floor

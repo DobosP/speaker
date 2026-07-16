@@ -821,8 +821,8 @@ def main(argv: list[str] | None = None) -> int:
         "--enroll",
         action="store_true",
         help="record your voice and save a speaker-ID reference, then exit. "
-        "Gates barge-in and (when enabled) input on your voice so the assistant "
-        "stops answering ambient audio and its own TTS. Run once before --engine sherpa.",
+        "Used by opt-in multi-voice word-cut filtering and, when enabled, the "
+        "normal input speaker gate; generic sherpa startup does not require it.",
     )
     parser.add_argument(
         "--enroll-seconds",

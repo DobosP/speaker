@@ -211,7 +211,9 @@ never fired in a committed run.
 
 # In-app APM fallback (no OS setup; NS smears the near-end during double-talk):
 pip install livekit
-python -m core --engine sherpa --device open_speaker --enroll   # re-enroll post-cleanup
+python -m core --engine sherpa --device open_speaker            # run; no enrollment required
+python -m core --engine sherpa --device open_speaker --enroll   # optional enrollment/update, then exits
+# Run the preceding non-enrollment command again after an optional update.
 ```
 
 `./live.sh` deliberately does not select `--device open_speaker` or enroll. The

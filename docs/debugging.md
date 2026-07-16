@@ -40,11 +40,12 @@ Three independent axes, one shared bundle:
 | Audio | `--record` | also writes `run-<id>.wav` (16 kHz mono, replayable) |
 
 One-command physical Linux capture: **`./live.sh`**. It locks the session,
-starts/reuses Ollama unless `--llm echo` is selected, prepares the PipeWire EC
-route, and runs the applicable shared preflight before recording both mic and
-aligned playback reference in a private `logs/live/` directory. The normal path
-requires full doctor `READY`; `./live.sh --llm echo` requires the base/deferred
-preflight instead. Cleanup restores only launcher-owned state (ADR-0075).
+starts/reuses loopback Ollama only when the selected profile uses that backend,
+prepares the PipeWire EC route, and runs the applicable shared preflight before
+recording both mic and aligned playback reference in a private `logs/live/`
+directory. Normal Ollama and llama.cpp profiles require full doctor `READY`;
+explicit echo uses the applicable base/deferred preflight. Cleanup restores
+only launcher-owned state (ADR-0075).
 
 **`./session.sh`** remains the lower-level `--debug --record` wrapper for an
 already-prepared route (`ENGINE=console ./session.sh` for text). Direct
@@ -227,7 +228,7 @@ When the assistant has misbehaved in real life and you want to debug it:
 ## Preflight & setup (when a run won't even start)
 
 - **`python -m tools.doctor`** — checks Python, required imports, sherpa model
-  paths, Ollama reachability + models, and audio devices; prints the exact fix
+  paths, selected local-backend readiness, and audio devices; prints the exact fix
   command for each failure and a `READY` / `NOT READY` verdict. On the Linux
   OS-EC path, standalone doctor assumes the transient route is already prepared;
   `./live.sh` prepares it before invoking the same check.

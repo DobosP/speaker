@@ -130,7 +130,17 @@ def main(argv: list[str] | None = None) -> int:
             "contacting Ollama; success is reported as BASE READY, never READY"
         ),
     )
+    parser.add_argument(
+        "--defer-llm",
+        action="store_true",
+        help=(
+            "check only the selected base speech runtime without constructing "
+            "the configured local LLM; success is BASE READY, never READY"
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.defer_ollama and args.defer_llm:
+        parser.error("choose only one LLM deferral option")
     try:
         from core.app import _load_config
 
@@ -138,7 +148,13 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         config = {}
     try:
-        if args.defer_ollama:
+        if args.defer_llm:
+            checks = run_all(
+                config,
+                device=args.device,
+                llm_mode="echo",
+            )
+        elif args.defer_ollama:
             merged, _ = resolve_check_config(config, args.device)
             backend = str(
                 ((merged.get("llm", {}) or {}).get("backend", "ollama") or "ollama")
@@ -165,19 +181,22 @@ def main(argv: list[str] | None = None) -> int:
     ready, text = summarize(checks)
     print(text)
     print()
+    deferred = args.defer_ollama or args.defer_llm
     if ready:
-        if args.defer_ollama:
+        if deferred:
+            label = "Ollama deferred" if args.defer_ollama else "local LLM deferred"
             print(
-                "BASE READY (Ollama deferred) -- install/provision the selected "
+                f"BASE READY ({label}) -- install/provision the selected "
                 "local models, then run `python -m tools.doctor` for full READY"
             )
             return 0
         print("READY -> python -m core --engine sherpa")
         return 0
-    if args.defer_ollama:
+    if deferred:
+        flag = "--defer-ollama" if args.defer_ollama else "--defer-llm"
         print(
             "BASE NOT READY -- fix the FAIL lines above, then re-run "
-            "`python -m tools.doctor --defer-ollama`"
+            f"`python -m tools.doctor {flag}`"
         )
     else:
         print("NOT READY -- fix the FAIL lines above, then re-run `python -m tools.doctor`")

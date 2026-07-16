@@ -11,6 +11,7 @@ import io
 import json
 import logging
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -95,6 +96,38 @@ def test_app_main_record_ignored_on_console_engine(tmp_path, monkeypatch):
     assert data["counts"]["warnings"] >= 1
     assert any("record ignored" in e["message"].lower() for e in data["errors"])
     assert "recording" not in data["meta"]
+
+
+def test_record_playback_reference_implies_record_and_prints_actual_bundle_paths(
+    tmp_path, monkeypatch, capsys
+):
+    class RecordingScriptedEngine(ScriptedEngine):
+        def __init__(self):
+            super().__init__()
+            self.record_path = None
+
+        def set_record_path(self, path):
+            self.record_path = path
+
+    engine = RecordingScriptedEngine()
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(app, "_build_engine", lambda *_args, **_kwargs: engine)
+
+    rc = app.main([
+        "--engine", "console", "--llm", "echo", "--record-playback-reference",
+    ])
+
+    assert rc == 0
+    assert engine.record_path is not None
+    assert Path(engine.record_path).parent == tmp_path
+    data = json.loads(next(tmp_path.glob("run-*.summary.json")).read_text(encoding="utf-8"))
+    assert data["meta"]["recording"] == engine.record_path
+    assert data["meta"]["playback_reference"] == engine.record_path[:-4] + ".ref.wav"
+    output = capsys.readouterr().out
+    assert f"[log] audio:    {engine.record_path}" in output
+    assert f"[log] playback: {engine.record_path[:-4]}.ref.wav" in output
+    assert "logs/runs" not in output
 
 
 def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):

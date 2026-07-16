@@ -901,17 +901,29 @@ Mobile is a parallel Dart loop today; the planned convergence onto the `AgentEve
 
 ### Run logs & debugging
 
-Every session writes a committable bundle to **`logs/runs/run-<id>/`** with three independent axes:
+Every session writes a private local bundle. Direct runs default to
+**`logs/runs/`**; the physical Linux launcher creates a unique mode-700 directory
+under **`logs/live/`**. New bundles are ignored because they can contain raw
+voice, transcripts, and full prompts (ADR-0001/0008/0075):
 
 - **Always written:** `run-<id>.txt` (full async DEBUG log) + `run-<id>.summary.json` (condensed digest)
 - **With `--record`:** `run-<id>.wav` (16 kHz mono audio, replayable)
+- **With playback-reference capture:** `run-<id>.ref.wav` (frame-aligned TTS)
 - **Console verbosity:** `--debug` mirrors DEBUG to the terminal; the file is always full DEBUG regardless
 
-`./session.sh` captures everything (`--debug --record`, sherpa engine; `ENGINE=console ./session.sh` for text-only). Capture is **off the hot path**: logging is fully async (a background `QueueListener` does formatting + disk I/O), recording hands blocks to a writer thread, and telemetry samples on its own thread (10 s interval). So `--debug`/`--record` don't slow the real-time pipeline.
+`./live.sh` is the Linux physical-session wrapper: it owns reversible
+Ollama/PipeWire setup, shared readiness, mic + aligned-reference capture, and
+exact-resource cleanup. Portable `python -m core` performs no automatic
+host-service or default-audio-route provisioning (ADR-0075). `./session.sh`
+remains the lower-level recorder for a prepared route. Capture is **off the hot
+path**: logging is fully async (a background
+`QueueListener` does formatting + disk I/O), recording hands blocks to a writer
+thread, and telemetry samples on its own thread (10 s interval).
 
 **`run-<id>.summary.json`** has these top-level keys:
 
-- **`meta`** — engine, llm, device, mode, model, fast_model, recording path
+- **`meta`** — engine, llm, device, mode, model, fast_model, recording path, and
+  aligned playback-reference path when selected
 - **`stuck_hints`** — plain-English flags from post-hoc checks + live `core/watchdog.py` warnings (LLM/TTS stalls, capture silence, barge-in storms). Start here.
 - **`counts`** — llm_requests, turns, transcript_entries, errors, warnings, log_lines_by_level
 - **`transcript`** — ordered `[{role: user|assistant, text, mode?, at_sec}]`; `at_sec` is seconds since run start

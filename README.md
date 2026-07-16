@@ -32,10 +32,10 @@ Linux/Windows/macOS and (later) Android/iOS.
   (`passive/assistant/command/search/research/dictation/meeting`), a priority
   event bus, a supervisor, and cancellable tasks that run on their own threads.
   Its `AgentEvent`/`Mode` contract is what every platform shell shares.
-- **`core/engines/speaker_gate.py`** — speaker-ID gate (auxiliary). Open-speaker
-  barge-in — no headphones — fires on the self-calibrating `AdaptiveDTD`
-  detector with WebRTC APM echo cancellation (`--device open_speaker`); see
-  `docs/adr/0004`–`0006`.
+- **`core/engines/speaker_gate.py`** — auxiliary speaker identity for normal
+  finals and the opt-in multi-voice word-cut filter. Current Linux open-speaker
+  capture uses the PipeWire route prepared by `./live.sh`; physical exact Stop
+  remains live-red (see `STATUS.md` and ADR-0072/0075).
 - **`utils/memory*`** — Postgres-backed smart memory (see [`MEMORY.md`](MEMORY.md)).
 - **`mobile/`** — on-device **Android app** (Flutter): `sherpa_onnx` +
   `flutter_gemma`, fully local. See [`mobile/README.md`](mobile/README.md).
@@ -65,18 +65,19 @@ flags on every platform are `--dry-run` (show the plan, change nothing) and
 installs dependencies only and exits 2 as deliberately incomplete.
 
 For stage two, activate the environment (`source .venv/bin/activate`, or
-`.venv\Scripts\Activate.ps1` on Windows), provision both local Ollama roles,
-and run the full preflight:
+`.venv\Scripts\Activate.ps1` on Windows) and, with Ollama running, provision both
+local Ollama roles:
 
 ```bash
 ollama pull gemma3:12b                              # vision/complex main tier
 python -m tools.setup_minicpm                       # MiniCPM5-1B answering tier
-python -m tools.doctor
 ```
 
-Only the final `READY -> python -m core --engine sherpa` result attests the full
-runtime. `python -m tools.doctor --defer-ollama` is a base-only diagnostic and
-can never issue that verdict. Each failing doctor line includes its fix command.
+On the Linux OS-EC path, `./live.sh` prepares the transient audio route and then
+requires full doctor `READY` before opening the microphone. A standalone
+`python -m tools.doctor` can issue that verdict only when the required route is
+already prepared. `python -m tools.doctor --defer-ollama` is a base-only
+diagnostic and can never issue full `READY`; each failing line includes its fix.
 
 Run the console (no audio/models/Ollama needed — type to talk, exercises the brain):
 
@@ -84,8 +85,16 @@ Run the console (no audio/models/Ollama needed — type to talk, exercises the b
 python -m core --engine console --llm echo
 ```
 
-Run the on-device pipeline (needs sherpa-onnx model files + a mic; point the
-`sherpa` block in `config.json` at your models):
+Run a private recorded physical session on Linux. This starts/reuses Ollama and
+PipeWire echo cancellation, requires doctor READY, and restores session-owned
+state when you press Ctrl-C ([ADR-0075](docs/adr/0075-make-recorded-linux-live-session-one-command-and-reversible.md)):
+
+```bash
+./live.sh
+```
+
+The portable low-level entry point remains available when platform audio is
+already prepared (needs sherpa-onnx model files + a mic):
 
 ```bash
 python -m core --engine sherpa --llm ollama --model gemma3:latest
@@ -126,9 +135,10 @@ overlap current or recent TTS retain the fail-closed enrolled-speaker ambiguity
 check. `speaker_gate_input` separately controls identity gating for normal
 finals. See [ADR-0072](docs/adr/0072-make-word-cut-enrollment-optional.md)
 and [ADR-0042](docs/adr/0042-attested-canonical-stop-repair.md).
-For barge-in on the bare laptop speaker (no headphones), select the committed
-`open_speaker` profile (`--device open_speaker`): WebRTC APM echo cancellation
-+ the AdaptiveDTD double-talk detector.
+For bare-laptop-speaker testing on the current Linux route, use `./live.sh`; do
+not combine it with `--device open_speaker`, which selects the separate in-app
+APM fallback. Physical exact Stop remains live-red in `STATUS.md`; the launcher
+captures evidence but does not itself validate barge-in.
 
 ## Tests
 

@@ -8,6 +8,7 @@
 ## Commands
 | Scope | Command | Expected success |
 |---|---|---|
+| Live-launcher lifecycle (headless) | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_live_launcher.py tests/test_capture_integration.py -q` | setup/reuse/failure/cleanup/private-path contracts pass without opening audio |
 | APM/DTD regression | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_apm_double_talk.py -q` | `6 passed` on current setup |
 | Conversation trace (device-free) | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --runs 3` | all 14 v4 scenarios pass 3/3; aggregate 42/42, `pass^3=True`, exact declared answer routes, and controller-owned bounded correction (ADR-0051/0067/0068) |
 | MiniCPM Q8 production-hybrid A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.conversation_eval --mode ollama --candidate-model minicpm5-1b:q8 --baseline-model gemma3:12b --runs 3` | clean revision; candidate and baseline each 42/42; verified identities, warm budgets, exact answer routes, and no regression (ADR-0051/0067/0068) |
@@ -30,6 +31,10 @@
 The conversation trace opens no audio device and cannot validate ASR, echo
 cancellation, TTS sound, or bare-speaker barge-in. Keep that result separate
 from the Sherpa duplex regression and manual live evidence.
+
+The `./live.sh` tests replace PipeWire, Ollama, doctor, and the core child with
+fakes. They validate resource ownership and evidence setup only; a real run is
+still required for current-room audio and barge-in.
 
 The injected Sherpa replay also opens no physical audio device. Per ADR-0064,
 its clean echo-impossible profile removes echo/level/word-confirm discrimination

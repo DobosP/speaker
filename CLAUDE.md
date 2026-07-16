@@ -39,6 +39,7 @@ cross over, and only when invoked. This boundary supersedes the earlier blanket
 ```
 python -m tools.session_bootstrap            # session start: rebuild context (<1s, no deps)
 python -m core --engine console --llm echo   # run without audio/models
+./live.sh                                    # Linux physical setup + private recording
 python -m core --engine sherpa               # on-device audio
 python -m pytest tests -q                    # logic suite (the CI gate)
 python tools/run_tests.py fast               # staged runner, Tier 0

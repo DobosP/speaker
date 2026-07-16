@@ -785,8 +785,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--record",
         action="store_true",
-        help="also save the session's 16 kHz mic audio to the run bundle "
-        "(logs/runs/run-<id>.wav). Replays via `--engine replay` to become a test.",
+        help="also save the session's 16 kHz mic audio beside the selected run "
+        "bundle. Replays via `--engine replay` to become a test.",
+    )
+    parser.add_argument(
+        "--record-playback-reference",
+        action="store_true",
+        help="also save a frame-aligned TTS reference beside the mic WAV for "
+        "open-speaker/AEC replay; implies --record",
     )
     parser.add_argument(
         "--list-devices",
@@ -851,6 +857,8 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
+    if args.record_playback_reference:
+        args.record = True
 
     virtual_audio_binder = None
     if args.autotest_virtual_delay_contract:
@@ -919,6 +927,11 @@ def main(argv: list[str] | None = None) -> int:
     for key, val in sherpa_overrides.items():
         if val is not None:
             config.setdefault("sherpa", {})[key] = val
+    if args.record_playback_reference:
+        # Explicit evidence capture must not silently depend on an ignored
+        # machine-local config key. The launcher uses this in-memory override;
+        # normal runtime configuration remains unchanged on disk.
+        config.setdefault("sherpa", {})["record_playback_reference"] = True
 
     if virtual_audio_binder is not None:
         contract = virtual_audio_binder.contract
@@ -1000,12 +1013,17 @@ def main(argv: list[str] | None = None) -> int:
     router = build_router(config)
     monitor.mark("after_build")  # compute reading once clients/engine are built
 
+    record_path = None
+    playback_reference_path = None
     if args.record and hasattr(engine, "set_record_path"):
         record_path = os.path.join(
             os.path.dirname(runlog.log_path), f"run-{runlog.run_id}.wav"
         )
         engine.set_record_path(record_path)
         runlog.summary.note(recording=record_path)
+        if bool((config.get("sherpa", {}) or {}).get("record_playback_reference")):
+            playback_reference_path = record_path[:-4] + ".ref.wav"
+            runlog.summary.note(playback_reference=playback_reference_path)
     elif args.record:
         runlog.logger.warning("--record ignored: %s engine has no recorder", args.engine)
 
@@ -1067,8 +1085,10 @@ def main(argv: list[str] | None = None) -> int:
         runlog.finalize(records)
         print(f"[log] full log: {runlog.log_path}")
         print(f"[log] summary:  {runlog.summary_path}")
-        if args.record:
-            print(f"[log] audio:    {os.path.join('logs/runs', f'run-{runlog.run_id}.wav')}")
+        if record_path is not None:
+            print(f"[log] audio:    {record_path}")
+        if playback_reference_path is not None:
+            print(f"[log] playback: {playback_reference_path}")
     return 0
 
 

@@ -19,10 +19,10 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 - Smart-save reuses fast Ollama; other tiers load no third model (ADR-0057/59).
   SQLite restart recall routes strong subjects to fenced PRIVATE Gemma first;
   clean stable identities passed (ADR-0060/65); default-off `vault.search` returns bounded PRIVATE Markdown excerpts, with explicit personal-vault phrases locally scoped (ADR-0074).
-- Physical open-speaker sessions require PipeWire `echo-cancel-source`/
-  `echo-cancel-sink`; those EC nodes and Ollama are session-only, not persistent
-  services. GTCRN is active. Generic cuts need four novel non-own words; speaker
-  filtering is multi-voice opt-in. Own-TTS-ambiguous STOP requires identity (ADR-0042/72).
+- `./live.sh` owns locked, reversible Linux Ollama/`echo-cancel-source`/
+  `echo-cancel-sink` setup, doctor, and a private mic+reference bundle (ADR-0075).
+  Direct core/session remain low-level. GTCRN is active; generic cuts need four
+  novel words; speaker filtering is opt-in; own-TTS-ambiguous STOP needs identity (ADR-0042/72).
 - Host InputAGC is boost-only: only a current block above its calibrated floor
   is boosted; below-floor PCM stays unity. V5 is live-red (ADR-0047/0072).
 

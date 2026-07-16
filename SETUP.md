@@ -249,25 +249,40 @@ Note: History will be lost when you restart the application.
 
 Once setup is complete:
 
-1. **Start Ollama** and provision the models named in `config.json`'s `llm` block:
+1. **Provision Ollama models** named in `config.json`'s `llm` block. If Ollama is
+   not already running as a service, start it in a separate terminal for this
+   one-time provisioning step:
+
+   Terminal A (only when no Ollama service is running):
+
    ```bash
    ollama serve
+   ```
+
+   Terminal B:
+
+   ```bash
    ollama pull gemma3:12b
    python -m tools.setup_minicpm
    ```
 
+   Terminal A can be stopped with Ctrl-C after provisioning. The Linux live
+   launcher later starts or reuses Ollama for each physical session.
+
 2. **Run the assistant** (the legacy `main.py` was deleted 2026-05-26 —
    see `docs/adr/0002`):
    ```bash
-   python -m core --engine sherpa          # on-device audio
+   ./live.sh                              # Linux: setup + private recorded session
+   python -m core --engine sherpa          # low-level; audio route already prepared
    python -m core --engine console --llm echo   # no audio/models smoke test
    ```
 
-   > **WARNING — run-log pruning:** `python -m core` prunes the run bundles
-   > under `logs/runs/` to the newest **20** (`keep=20`) — **including
-   > COMMITTED bundles**, which then show up as phantom `git status` deletions.
-   > If you see unexpected deleted `logs/runs/*` entries after a run, restore
-   > them (`git checkout -- logs/runs`) instead of committing the deletions.
+   `./live.sh` writes each capture to a new ignored directory under `logs/live/`
+   and never prunes it. Direct core keeps the newest 20 untracked `logs/runs/`
+   bundles; tracked historical fixtures are protected. On the Linux OS-EC path,
+   standalone `python -m tools.doctor` also assumes the transient audio route is
+   already prepared; `./live.sh` creates it and requires full `READY` before
+   opening the microphone.
 
 3. **Test memory:**
    - Say: "My name is John"

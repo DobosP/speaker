@@ -1,13 +1,14 @@
-"""Run logging: every run writes a committable log file plus a summarized JSON
-digest -- created even when the run crashes -- so a failure on someone else's
-machine can be shipped back for debugging.
+"""Run logging: every run writes a private local log file plus a summarized JSON
+digest, including when the run crashes, so a failure can be replayed and
+diagnosed on the same machine.
 
 Concurrency: the ``speaker`` logger gets a non-blocking ``QueueHandler``; a
 ``QueueListener`` on a background thread does the actual formatting + disk
 writes (and summary aggregation). So logging from the real-time audio/LLM
 threads is just an enqueue -- the hot path never blocks on I/O.
 
-Artifacts under ``logs/runs/`` (``.txt``/``.json`` are not gitignored):
+Artifacts live under ``$SPEAKER_RUN_LOG_DIR`` (default ``logs/runs/``). New
+bundles are ignored by git and may contain raw voice, transcripts, and prompts:
 
     run-<id>.txt           full DEBUG log (devices, ASR, decisions, prompts,
                            timings, tracebacks)

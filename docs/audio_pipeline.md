@@ -152,15 +152,20 @@ ADR-0013's context).
 Replaces the in-app APM on the open-speaker path (run with `aec_enabled=false`
 so the word-cut barge is live) — let the OS do the DSP:
 
-- **Linux (PipeWire):** load the WebRTC echo-cancel module once and point capture
-  at the virtual source:
+- **Linux (PipeWire):** `./live.sh` owns the reversible physical-session setup
+  (ADR-0075): it starts/reuses session-local dependencies, selects both EC nodes,
+  requires full doctor `READY` on the normal path (or the base/deferred preflight
+  with `--llm echo`), records mic + aligned playback reference, and restores only
+  its own state. For manual troubleshooting, the equivalent module is:
   ```
   pactl load-module module-echo-cancel aec_method=webrtc \
-      source_name=ec_source sink_name=ec_sink
+      source_name=echo-cancel-source sink_name=echo-cancel-sink \
+      source_master=<original-mic> sink_master=<original-speaker> \
+      aec_args="webrtc.noise_suppression=false webrtc.gain_control=false"
   ```
-  Then set `input_device` to the "Echo Cancellation Source" node.
-  `python -m tools.doctor` checks the active source and sink when word-cut or
-  `capture_voice_comm` selects the route.
+  Save the returned integer id, set both virtual nodes as defaults, and restore
+  the originals before `pactl unload-module <id>`. `python -m tools.doctor`
+  checks the active source and sink when word-cut selects the route.
 - **Windows:** the previously documented sounddevice Communications keyword is
   unsupported. Profiles that select it fail readiness until a verified capture
   implementation exists (ADR-0019).
@@ -201,20 +206,17 @@ never fired in a committed run.
 ## Quick reference — enabling everything on a Linux laptop
 
 ```bash
-pip install soxr                                # optional faster resampler
-# Historical ADR-0013 recipe; current open-speaker live status is red
-pactl load-module module-echo-cancel aec_method=webrtc \
-    source_name=ec_source sink_name=ec_sink \
-    aec_args="webrtc.noise_suppression=false webrtc.gain_control=false"
-# config.local.json: aec_enabled=false, apm_always_on=false,
-#                    barge_word_cut_enabled=true, input_agc=true, input_calibrate=true
-python -m core --engine sherpa --input-device pipewire --output-device pipewire
-python -m tools.doctor                          # checks the EC module is loaded
+./live.sh                     # setup + doctor + private mic/reference recording
+./live.sh --llm echo          # same physical audio path, no Ollama startup
 
 # In-app APM fallback (no OS setup; NS smears the near-end during double-talk):
 pip install livekit
 python -m core --engine sherpa --device open_speaker --enroll   # re-enroll post-cleanup
 ```
+
+`./live.sh` deliberately does not select `--device open_speaker` or enroll. The
+current OS-EC path keeps generic interruption enrollment-optional under
+ADR-0072, and physical exact Stop remains live-red until a recorded run passes.
 
 On Windows, selecting the former Communications/word-cut recipe reports NOT
 READY until a verified OS capture implementation exists; see ADR-0019.

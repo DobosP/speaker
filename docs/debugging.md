@@ -5,29 +5,27 @@ produces, what's in them, and how to use them to diagnose a problem (or build a
 regression test from a real session). When the user reports "it got stuck / it
 failed / it's slow" and attaches files, **read this, then read their files.**
 
-Everything a run produces is grouped under **`logs/runs/`** by a shared run id:
+Everything a run produces is grouped in one selected bundle directory by a
+shared run id. Direct runs default to `logs/runs/`; `./live.sh` creates a unique
+private directory under `logs/live/`:
 
 ```
-logs/runs/run-<id>.txt           full DEBUG log (always written)
-logs/runs/run-<id>.summary.json  condensed digest   (always written)
-logs/runs/run-<id>.wav           session audio       (only with --record)
+<bundle>/run-<id>.txt           full DEBUG log (always written)
+<bundle>/run-<id>.summary.json  condensed digest   (always written)
+<bundle>/run-<id>.wav           processed mic audio (with --record)
+<bundle>/run-<id>.ref.wav       aligned playback reference (when selected)
 ```
 
-`.txt` / `.json` / `.wav`-under-`logs/runs/` are git-committable on purpose (the
-global `*.wav` ignore is overridden there), so the user can push a failing run
-and we can replay it.
+New run/test/live bundles are ignored and stay on-device. They can be replayed
+and diagnosed directly from their local directory.
 
-> **Privacy — committed bundles must be PII-free (architecture §9.7).** A run
+> **Privacy — raw voice never leaves the device (architecture §9.7).** A run
 > bundle can contain *raw voice* (`run-<id>.wav`), *verbatim transcripts*
 > (`summary.json` → `transcript[].text`), and *full prompts* (the `.txt` DEBUG
-> trace). The §9.7 invariant is "raw audio never leaves the device" — so do
-> **not** `git add`/push a bundle that carries real personal speech or
-> identifiable content. Commit a bundle only when it is PII-free: either it
-> contains no real personal info, or you have scrubbed/synthesized the
-> sensitive parts (drop the `.wav`, redact transcript text) before staging.
-> The replay/regression value lives in the *audio shape* and *timings*, not in
-> what was actually said — prefer a non-sensitive re-recording for a committed
-> fixture.
+> trace). Do **not** stage, push, upload, or paste a real live bundle. Give a
+> local agent only its directory name and inspect the summary first. A separately
+> synthesized or non-sensitive fixture may be reviewed for publication under an
+> explicit decision; the private original remains unchanged and local.
 
 ---
 
@@ -41,8 +39,17 @@ Three independent axes, one shared bundle:
 | Console verbosity | `--debug` (or `SPEAKER_DEBUG=1`) | mirrors DEBUG to the terminal; **file is always full DEBUG regardless** |
 | Audio | `--record` | also writes `run-<id>.wav` (16 kHz mono, replayable) |
 
-One-command full capture: **`./session.sh`** (= `--debug --record`, sherpa engine;
-`ENGINE=console ./session.sh` for a text session). Extra args pass through.
+One-command physical Linux capture: **`./live.sh`**. It locks the session,
+starts/reuses Ollama unless `--llm echo` is selected, prepares the PipeWire EC
+route, and runs the applicable shared preflight before recording both mic and
+aligned playback reference in a private `logs/live/` directory. The normal path
+requires full doctor `READY`; `./live.sh --llm echo` requires the base/deferred
+preflight instead. Cleanup restores only launcher-owned state (ADR-0075).
+
+**`./session.sh`** remains the lower-level `--debug --record` wrapper for an
+already-prepared route (`ENGINE=console ./session.sh` for text). Direct
+`python -m core` remains portable and performs no automatic host-service or
+default-audio-route provisioning.
 
 The bundle is written on a clean exit, on `Ctrl-C`, **and on an unhandled
 exception** (`finalize()` is idempotent and also runs at interpreter exit), so a
@@ -89,8 +96,9 @@ threads that communicate via queues/events only.
 
 Top-level keys:
 
-- **`meta`** — `engine`, `llm`, `device`, `mode`, `model`, `fast_model`, and
-  `recording` (path) when `--record` was used.
+- **`meta`** — `engine`, `llm`, `device`, `mode`, `model`, `fast_model`,
+  `recording` (path) when `--record` was used, and `playback_reference` when the
+  aligned reference was selected.
 - **`stuck_hints`** — plain-English flags computed for you. Two sources feed
   this list:
   - *post-hoc* checks on the whole bundle: *"no LLM request was ever issued
@@ -168,7 +176,7 @@ Async DEBUG log from these loggers (grep by prefix):
 3. **Open `.txt`** around the relevant timestamps for the full trace + traceback.
 4. **Reproduce from the recording** (if `.wav` present): replay the exact audio
    through the real pipeline, no mic needed —
-   `python -m core --engine replay --replay-dir logs/runs --debug`.
+   `python -m core --engine replay --replay-dir <bundle-dir> --debug`.
 5. **Freeze it as a test:** the recorded WAV is the same format the replay
    loader (`core/engines/file_replay.py: load_waveform`) consumes, so a captured
    session becomes a deterministic regression fixture (see
@@ -187,7 +195,9 @@ case that needs a few minutes of real talking to trigger.
 
 When the assistant has misbehaved in real life and you want to debug it:
 
-1. **Capture a long-form session.** `./session.sh` (= `--debug --record`).
+1. **Capture a long-form physical session.** `./live.sh` (reversible setup plus
+   mic/reference recording). Use `./session.sh` only when the route is already
+   prepared.
    Run at least 3 minutes; longer is better. Don't stop early to "save the
    bundle" — the bundle is written on Ctrl-C and on crash, so let the
    misbehavior actually happen.
@@ -200,14 +210,11 @@ When the assistant has misbehaved in real life and you want to debug it:
      model (catches LLM stalls);
    - if you can reproduce a "freeze," let it freeze — don't Ctrl-C; the
      watchdog will warn at the deadline.
-3. **Push the bundle to a branch.** `git checkout -b repro/<date>-<symptom>`,
-   `git add logs/runs/run-*.{txt,summary.json,wav}`, commit + push. The WAV
-   becomes a deterministic replay fixture (`python -m core --engine replay
-   --replay-dir logs/runs --debug`), and the `summary.json` makes the
-   failure mode searchable. Before pushing, confirm the bundle is **PII-free
-   per §9.7** (see the privacy callout above): scrub or omit the `.wav` and
-   redact verbatim transcript text if the session contained real personal
-   speech.
+3. **Keep the original bundle local.** Record its directory name, then replay it
+   with `python -m core --engine replay --replay-dir <bundle-dir> --debug`.
+   Preserve the mic/reference pair byte-for-byte. If a regression fixture is
+   needed, create a separate synthetic/non-sensitive derivative; never stage or
+   push the real-voice original.
 4. **Open `summary.json` → `stuck_hints` first.** If the list is non-empty
    the watchdog or post-hoc check has named the failure; if it's still
    empty, the watchdog deadlines may be too generous for what you saw — the
@@ -221,7 +228,9 @@ When the assistant has misbehaved in real life and you want to debug it:
 
 - **`python -m tools.doctor`** — checks Python, required imports, sherpa model
   paths, Ollama reachability + models, and audio devices; prints the exact fix
-  command for each failure and a `READY` / `NOT READY` verdict.
+  command for each failure and a `READY` / `NOT READY` verdict. On the Linux
+  OS-EC path, standalone doctor assumes the transient route is already prepared;
+  `./live.sh` prepares it before invoking the same check.
 - **`python -m tools.setup_models`** — downloads the sherpa ASR/VAD/TTS models
   and wires their paths into `config.json` (the native path needs this).
 - **`./install.sh`** — one-command native install (clean venv + deps + models +
@@ -231,16 +240,15 @@ When the assistant has misbehaved in real life and you want to debug it:
 
 ## Test-run logs
 
-Every local `pytest` run also writes a committable bundle under **`logs/tests/`**:
+Every local `pytest` run also writes an ignored local bundle under **`logs/tests/`**:
 
 ```
 logs/tests/tests-<id>.txt           full DEBUG log of the session
 logs/tests/tests-<id>.summary.json  {counts, failures (with tracebacks), slowest}
 ```
 
-Disable with `SPEAKER_TEST_LOG=0`. Useful when a test fails only on the user's
-machine — they push the bundle and the summary names the failing test + the
-slowest tests.
+Disable with `SPEAKER_TEST_LOG=0`. When a test fails only on one machine, inspect
+the local summary first; share only a deliberately sanitized extract.
 
 ---
 
@@ -254,6 +262,8 @@ slowest tests.
 - `core/sysinfo.py` — `snapshot()` + `SystemMonitor` (CPU/GPU/RAM).
 - `core/engines/sherpa.py` — capture/playback instrumentation + recorder hook
   + heartbeat callback into the watchdog.
-- `tools/doctor.py`, `tools/setup_models.py`, `install.sh`, `session.sh`.
+- `tools/doctor.py`, `tools/setup_models.py`, `tools/live_launcher.py`,
+  `install.sh`, `live.sh`, `session.sh`.
 - Tests: `tests/test_runlog.py`, `tests/test_watchdog.py`, `tests/test_recorder.py`,
-  `tests/test_sysinfo.py`, `tests/test_setup_doctor.py`.
+  `tests/test_sysinfo.py`, `tests/test_setup_doctor.py`,
+  `tests/test_live_launcher.py`.

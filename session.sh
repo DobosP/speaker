@@ -3,12 +3,12 @@
 # + logs + transcript + per-turn timings + CPU/GPU/RAM telemetry, all bundled
 # under one run id in logs/runs/run-<id>.{txt,summary.json,wav}.
 #
-#   ./session.sh                 # records a sherpa (mic) session
+#   ./session.sh                 # low-level sherpa capture (prerequisites ready)
 #   ENGINE=console ./session.sh  # text session (no audio to record)
 #   ./session.sh --llm echo      # extra args pass straight through
 #
-# When it exits (clean, Ctrl-C, or crash) the bundle is written. Commit + push
-# all three files so they can be replayed and debugged.
+# On Linux, prefer ./live.sh for reversible Ollama/PipeWire setup plus a private
+# aligned mic/reference capture. Real-voice bundles stay local and ignored.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -18,7 +18,5 @@ PY=python
 "$PY" -m core --engine "${ENGINE:-sherpa}" --debug --record "$@"
 
 echo
-echo "Session bundle written under logs/runs/ (run-<id>.txt / .summary.json / .wav)."
-echo "Commit + push it for debugging:"
-echo "    git add logs/runs/run-*.txt logs/runs/run-*.summary.json logs/runs/run-*.wav"
-echo "    git commit -m 'session capture' && git push"
+echo "Session finalized. Use the [log] paths above for local replay/debugging."
+echo "Keep real voice, transcripts, and prompts local; do not commit or push them."

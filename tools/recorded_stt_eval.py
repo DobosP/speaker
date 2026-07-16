@@ -39,6 +39,16 @@ from core.wer import normalize, word_error_rate
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_MANIFEST = _REPO_ROOT / "tests" / "fixtures" / "recorded_voice_manifest.json"
 _SAFE_ERROR = {"ok": False, "error": "recorded_stt_prerequisites_unavailable"}
+_VERIFIER_COMPLETED_OUTCOMES = frozenset(
+    {
+        "consensus",
+        "empty",
+        "tie",
+        "no_quorum",
+        "control_guard",
+        "empty_streaming_guard",
+    }
+)
 _ARTIFACT_FIELDS = (
     "asr_tokens",
     "asr_encoder",
@@ -151,6 +161,27 @@ class EvaluationTotals:
             "offline": self.offline.as_dict(),
             "selected": self.selected.as_dict(),
         }
+
+
+def _enabled_verifier_evaluation_ok(config, totals: EvaluationTotals) -> bool:
+    """Require a selected verifier to complete at least one decode without error.
+
+    Empty output and safe consensus abstentions are completed verifier decisions,
+    not failures. ``skipped`` and ``unavailable`` do not prove that the explicitly
+    selected verifier decoded any recording.
+    """
+    backend = str(
+        getattr(config, "asr_final_verifier_backend", "") or ""
+    ).strip()
+    if not backend:
+        return True
+    outcomes = totals.verifier_outcomes
+    if int(outcomes.get("error", 0)) > 0:
+        return False
+    return any(
+        int(outcomes.get(outcome, 0)) > 0
+        for outcome in _VERIFIER_COMPLETED_OUTCOMES
+    )
 
 
 @dataclass(frozen=True)
@@ -583,7 +614,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             baseline_config, corpus, tuple(args.keyword)
         )
         payload: dict[str, object] = {
-            "ok": baseline.complete and baseline.selected.nonempty == baseline.clips,
+            "ok": (
+                baseline.complete
+                and baseline.selected.nonempty == baseline.clips
+                and _enabled_verifier_evaluation_ok(baseline_config, baseline)
+            ),
             "corpus_digest": corpus_digest,
             "baseline_config_digest": _config_digest(baseline_config),
             "baseline_model_digest": _model_digest(baseline_config),
@@ -604,6 +639,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 baseline_selected_errors,
                 candidate_selected_errors,
             )
+            if not (
+                _enabled_verifier_evaluation_ok(baseline_config, baseline)
+                and _enabled_verifier_evaluation_ok(candidate_config, candidate)
+            ):
+                comparison = replace(comparison, promotable=False)
             payload.update(
                 candidate_config_digest=_config_digest(candidate_config),
                 candidate_model_digest=_model_digest(candidate_config),

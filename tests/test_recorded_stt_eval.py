@@ -10,7 +10,7 @@ import pytest
 import tools.recorded_stt_eval as stt_eval
 
 
-def _totals(pairs, *, keywords=()):
+def _totals(pairs, *, keywords=(), verifier_outcomes=None):
     measured = stt_eval._measure(pairs, keywords=keywords)
     return stt_eval.EvaluationTotals(
         streaming=measured,
@@ -19,6 +19,7 @@ def _totals(pairs, *, keywords=()):
         clips=len(pairs),
         decisions=len(pairs),
         offline_outcomes={"decoded": len(pairs)},
+        verifier_outcomes=verifier_outcomes or {},
     )
 
 
@@ -184,6 +185,56 @@ def test_artifact_digest_ignores_stale_disabled_verifier_path(tmp_path):
     assert stt_eval._model_digest(disabled) == stt_eval._model_digest(clean)
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "consensus",
+        "empty",
+        "tie",
+        "no_quorum",
+        "control_guard",
+        "empty_streaming_guard",
+    ],
+)
+def test_enabled_verifier_accepts_completed_safe_fallback_outcomes(outcome):
+    config = type(
+        "Config",
+        (),
+        {"asr_final_verifier_backend": "faster_whisper"},
+    )()
+    totals = _totals([("alpha", "alpha")], verifier_outcomes={outcome: 1})
+
+    assert stt_eval._enabled_verifier_evaluation_ok(config, totals)
+
+
+@pytest.mark.parametrize(
+    "outcomes",
+    [
+        {},
+        {"skipped": 1},
+        {"unavailable": 1},
+        {"error": 1},
+        {"consensus": 1, "error": 1},
+    ],
+)
+def test_enabled_verifier_rejects_errors_or_zero_completed_decodes(outcomes):
+    config = type(
+        "Config",
+        (),
+        {"asr_final_verifier_backend": "faster_whisper"},
+    )()
+    totals = _totals([("alpha", "alpha")], verifier_outcomes=outcomes)
+
+    assert not stt_eval._enabled_verifier_evaluation_ok(config, totals)
+
+
+def test_disabled_verifier_does_not_require_verifier_outcomes():
+    config = type("Config", (), {"asr_final_verifier_backend": ""})()
+    totals = _totals([("alpha", "alpha")])
+
+    assert stt_eval._enabled_verifier_evaluation_ok(config, totals)
+
+
 @pytest.mark.parametrize("speech_sec", [True, float("inf"), 1.1])
 def test_corpus_rejects_impossible_attested_speech_duration(tmp_path, speech_sec):
     clip = tmp_path / "clip.wav"
@@ -252,6 +303,71 @@ def test_cli_never_prints_private_rows_or_config(capsys, monkeypatch):
     assert private_hypothesis not in output
     payload = json.loads(output)
     assert payload["baseline"]["selected"]["word_errors"] > 0
+
+
+def test_cli_fails_closed_when_enabled_baseline_verifier_errors(
+    capsys,
+    monkeypatch,
+):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_final_verifier_backend: str = "faster_whisper"
+
+    item = stt_eval._CorpusItem("reference", object(), 16000, None)
+    totals = _totals(
+        [("reference", "reference")],
+        verifier_outcomes={"error": 1},
+    )
+    monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: ([item], "c" * 64))
+    monkeypatch.setattr(stt_eval, "_load_config", _Config)
+    monkeypatch.setattr(
+        stt_eval,
+        "_evaluate",
+        lambda _config, _corpus, _keywords: (totals, [(0, 0)]),
+    )
+    monkeypatch.setattr(stt_eval, "_config_digest", lambda _config: "d" * 64)
+    monkeypatch.setattr(stt_eval, "_model_digest", lambda _config: "e" * 64)
+
+    assert stt_eval.main([]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["baseline"]["verifier_outcomes"] == {"error": 1}
+
+
+def test_cli_rejects_improved_candidate_when_enabled_verifier_errors(
+    capsys,
+    monkeypatch,
+):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_final_verifier_backend: str = ""
+
+    item = stt_eval._CorpusItem("alpha beta", object(), 16000, None)
+    baseline = _totals([("alpha beta", "alpha wrong")])
+    candidate = _totals(
+        [("alpha beta", "alpha beta")],
+        verifier_outcomes={"error": 1},
+    )
+
+    def evaluate(config, _corpus, _keywords):
+        if config.asr_final_verifier_backend:
+            return candidate, [(0, 0)]
+        return baseline, [(1, 5)]
+
+    monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: ([item], "c" * 64))
+    monkeypatch.setattr(stt_eval, "_load_config", _Config)
+    monkeypatch.setattr(stt_eval, "_evaluate", evaluate)
+    monkeypatch.setattr(stt_eval, "_config_digest", lambda _config: "d" * 64)
+    monkeypatch.setattr(stt_eval, "_model_digest", lambda _config: "e" * 64)
+
+    assert stt_eval.main(
+        ["--set", "asr_final_verifier_backend=faster_whisper"]
+    ) == 3
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["candidate"]["selected"]["word_errors"] == 0
+    assert payload["comparison"]["wins"] == 1
+    assert payload["comparison"]["promotable"] is False
+    assert payload["ok"] is False
 
 
 def test_cli_prerequisite_failure_is_detail_free(capsys, monkeypatch):

@@ -128,6 +128,35 @@ The `--verify-only` check should show:
    pgvector: ✅ Enabled
 ```
 
+## Optional Voice-Agent Tools
+
+Vault search, reminders, and trusted desktop applications are capabilities of
+the normal chatbot. Grant them atomically in the machine-local configuration:
+
+```bash
+.venv/bin/python -m tools.setup_assistant \
+  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
+  --enable-reminders \
+  --trust-app obsidian=obsidian.desktop
+```
+
+The vault check opens only the directory and never enumerates or reads notes.
+Trusted apps use exact `alias=desktop-id` entries; setup records but does not
+launch or probe the app. Remove access with `--disable-obsidian`,
+`--disable-reminders`, or repeatable `--untrust-app ALIAS`. The same options can
+be passed to `./install.sh` on a fresh installation.
+
+After setup, the normal Linux voice entry remains:
+
+```bash
+./live.sh
+```
+
+The reminders backend uses the configured local timezone, a private SQLite
+store, and opaque-id systemd user timers. Creating/cancelling a reminder and
+opening a trusted app require a direct live request followed by spoken
+confirmation. Listing reminders and bounded vault search are read-only.
+
 ## Configuration
 
 ### Using .env File (Recommended)

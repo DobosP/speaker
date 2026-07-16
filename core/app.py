@@ -32,12 +32,14 @@ from .llm_factory import (
     build_router_llm,
 )
 from .obsidian import ObsidianConfig
+from .reminders import ReminderConfig
 from .routing import build_router
 from .capability_router import build_capability_router
 from .runlog import setup_logging
 from .runtime import VoiceRuntime
 from .sysinfo import SystemMonitor
 from .websearch import WebSearchConfig
+from .trusted_apps import TrustedAppsConfig
 
 log = logging.getLogger("speaker.app")
 
@@ -229,6 +231,12 @@ def _apply_autotest_virtual_delay_profile(
     obsidian = dict(config.get("obsidian", {}) or {})
     obsidian["enabled"] = False
     merged["obsidian"] = obsidian
+    reminders = dict(config.get("reminders", {}) or {})
+    reminders["enabled"] = False
+    merged["reminders"] = reminders
+    trusted_apps = dict(config.get("trusted_apps", {}) or {})
+    trusted_apps.update(enabled=False, apps={})
+    merged["trusted_apps"] = trusted_apps
     screen_capture = dict(config.get("screen_capture", {}) or {})
     screen_capture.update(enabled=False, memorize=False)
     merged["screen_capture"] = screen_capture
@@ -624,6 +632,8 @@ def build_runtime(
     # path uses ``~`` and can be replaced machine-locally without baking an
     # absolute host path into the repository.
     obsidian_config = ObsidianConfig.from_dict(config.get("obsidian"))
+    reminder_config = ReminderConfig.from_dict(config.get("reminders"))
+    trusted_apps_config = TrustedAppsConfig.from_dict(config.get("trusted_apps"))
 
     # Unified capability router (the "middle layer", core/capability_router.py).
     # Disabled by default; when enabled it backs the runtime's tier + escalate
@@ -649,6 +659,8 @@ def build_runtime(
         recent_context_config=recent_context_config,
         web_search_config=web_search_config,
         obsidian_config=obsidian_config,
+        reminder_config=reminder_config,
+        trusted_apps_config=trusted_apps_config,
         start_mode=start_mode,
         agent_config=agent_config,
         computer_use_config=computer_use_config,

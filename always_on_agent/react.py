@@ -269,6 +269,7 @@ class ReactPlanner:
                 or spec is None
                 or not spec.planner_tool
                 or spec.side_effecting
+                or spec.authority != "none"
             ):
                 continue
             offered.append(
@@ -398,7 +399,17 @@ class ReactPlanner:
         # Private vault reads require an explicit local lookup. Never advertise
         # vault.search on generic or explicitly-public turns and rely on model
         # obedience to protect the private source.
-        run_tools = tuple(name for name in self._tools if name != "vault.search")
+        safe_tools = tuple(
+            name
+            for name in self._tools
+            if (
+                (spec := self._registry.spec(name)) is not None
+                and spec.planner_tool
+                and not spec.side_effecting
+                and spec.authority == "none"
+            )
+        )
+        run_tools = tuple(name for name in safe_tools if name != "vault.search")
         if vault_scoped:
             # Controller-enforced source scope: a private local-vault request
             # cannot select web/search.local even if a model ignores guidance.
@@ -407,7 +418,7 @@ class ReactPlanner:
             run_tools = (
                 tuple(
                     name
-                    for name in self._tools
+                    for name in safe_tools
                     if name == "vault.search" and name in self._registry.names()
                 )
                 if vault_lookup

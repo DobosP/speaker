@@ -7,6 +7,8 @@ an owner-verified staged action requires an owner-verified "yes". Tier-0, no aud
 """
 from __future__ import annotations
 
+from threading import Event
+
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult, CapabilitySpec
 from always_on_agent.events import AgentEvent, EventKind
 from always_on_agent.models import IntentDecision, IntentKind
@@ -27,6 +29,13 @@ def test_final_event_owner_verified_defaults_fail_closed():
 def test_confirm_event_owner_verified_defaults_fail_closed():
     assert AgentEvent.confirm().payload["owner_verified"] is False
     assert AgentEvent.confirm(owner_verified=True).payload["owner_verified"] is True
+    for truthy in (1, "yes", object()):
+        assert AgentEvent.confirm(owner_verified=truthy).payload["owner_verified"] is False
+
+
+def test_final_event_rejects_truthy_non_boolean_owner_verdicts():
+    for truthy in (1, "yes", object()):
+        assert AgentEvent.final("x", owner_verified=truthy).payload["owner_verified"] is False
 
 
 # --- supervisor stamps the turn trust onto created tasks ----------------------
@@ -86,6 +95,46 @@ def test_invoke_fail_closed_when_unstamped():
     task = rt.create_task(IntentDecision(kind=IntentKind.COMMAND, confidence=1.0, text="do", reason="t"))
     rt._invoke(task, "x.do")
     assert seen["owner_verified"] is False and seen["origin"] == "unknown"
+
+
+def test_direct_live_authority_reaches_provider_only_after_confirmation():
+    seen = {}
+    invoked = Event()
+    reg = CapabilityRegistry()
+
+    def command(query, context):
+        seen.update(context)
+        invoked.set()
+        return CapabilityResult(True, "ok")
+
+    reg.register("command.stage", command)
+    sup = AgentSupervisor(capabilities=reg)
+    sup.handle_event(
+        AgentEvent.final(
+            "open notes",
+            origin="live_audio",
+            metadata={"direct_user_instruction": True},
+        )
+    )
+    assert len(sup.state.pending_confirmations) == 1
+    assert seen == {}
+
+    sup.handle_event(AgentEvent.confirm(owner_verified=False))
+    assert not invoked.wait(0.02)
+    assert len(sup.state.pending_confirmations) == 1
+
+    sup.handle_event(
+        AgentEvent.confirm(
+            owner_verified=False,
+            origin="live_audio",
+            direct_user_instruction=True,
+        )
+    )
+    assert invoked.wait(1.0)
+    sup.drain()
+    assert seen["origin"] == "live_audio"
+    assert seen["direct_user_instruction"] is True
+    assert seen["confirmed"] is True
 
 
 # --- bound + owner-gated confirm ---------------------------------------------

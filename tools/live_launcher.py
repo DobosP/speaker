@@ -1301,9 +1301,6 @@ _VALUE_OPTIONS = (
     ("--input-gain", "input_gain"),
 )
 _FLAG_OPTIONS = (
-    ("--agent", "agent"),
-    ("--gui-actions", "gui_actions"),
-    ("--planner", "planner"),
     ("--stream-tts", "stream_tts"),
 )
 
@@ -1337,9 +1334,6 @@ def _live_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default=None)
     parser.add_argument("--mode", choices=[mode.value for mode in Mode], default=None)
     parser.add_argument("--input-gain", dest="input_gain", type=float, default=None)
-    parser.add_argument("--agent", action="store_true")
-    parser.add_argument("--gui-actions", dest="gui_actions", action="store_true")
-    parser.add_argument("--planner", action="store_true")
     parser.add_argument("--stream-tts", dest="stream_tts", action="store_true")
     return parser
 

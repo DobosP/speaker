@@ -10,6 +10,7 @@ import pytest
 from always_on_agent.capabilities import (
     CapabilityRegistry,
     CapabilityResult,
+    CapabilitySpec,
     create_default_capabilities,
 )
 from always_on_agent.events import Mode
@@ -2063,7 +2064,13 @@ def test_react_controller_denies_web_for_vault_scoped_query(query):
         )
 
     reg.register("web.search", web)
-    reg.register("vault.search", vault)
+    reg.register(
+        "vault.search",
+        vault,
+        spec=CapabilitySpec(
+            "vault.search", "search the vault", planner_tool=True
+        ),
+    )
     llm = _HostileWebPlannerLLM()
     result = ReactPlanner(
         llm,
@@ -2298,6 +2305,9 @@ def test_react_private_tool_result_floats_before_next_model_step():
             wrap_untrusted("private finding", source="vault"),
             data={"sensitivity": "private", "egress": False},
         ),
+        spec=CapabilitySpec(
+            "vault.search", "search the vault", planner_tool=True
+        ),
     )
     context = {"sensitivity": "public"}
     result = ReactPlanner(
@@ -2348,7 +2358,8 @@ def test_runtime_registers_and_advertises_only_an_available_vault(tmp_path):
     )
     assert "vault.search" in runtime.supervisor.capabilities.names()
     assert "search and read bounded excerpts" in runtime._system_prompt
-    assert "cannot open other files or apps" in runtime._system_prompt
+    assert "configured local tools listed above" in runtime._system_prompt
+    assert "unlisted file or app" in runtime._system_prompt
 
     missing = VoiceRuntime(
         ScriptedEngine(),

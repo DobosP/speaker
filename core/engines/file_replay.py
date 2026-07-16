@@ -26,6 +26,7 @@ from ..tts_markup import (
 )
 from ._sherpa_models import (
     build_final_recognizer,
+    build_final_verifier,
     build_punctuation,
     build_recognizer,
     build_tts,
@@ -110,6 +111,7 @@ class FileReplayEngine(AudioEngine):
         self._cb = EngineCallbacks()
         self._recognizer = None
         self._final_recognizer = None
+        self._final_verifier = None
         self._punct = None
         self._tts = None
         self._stream = None
@@ -153,6 +155,7 @@ class FileReplayEngine(AudioEngine):
             )
         tts = None if self._asr_only else build_tts(self.config)
         final_recognizer = build_final_recognizer(self.config)
+        final_verifier = build_final_verifier(self.config)
         punctuation = build_punctuation(self.config)
         stream = create_recognizer_stream(recognizer, self.config)
         with self._receipt_lock:
@@ -163,6 +166,7 @@ class FileReplayEngine(AudioEngine):
             self._cb = callbacks
             self._recognizer = recognizer
             self._final_recognizer = final_recognizer
+            self._final_verifier = final_verifier
             self._punct = punctuation
             self._tts = tts
             self._stream = stream
@@ -713,6 +717,7 @@ class FileReplayEngine(AudioEngine):
                             self._punct,
                             segment,
                             raw_final,
+                            final_verifier=self._final_verifier,
                             speech_sec=speech_sec,
                             segment_sample_rate=sample_rate,
                             attested_repair=_attested_interrupt_repair,
@@ -724,6 +729,7 @@ class FileReplayEngine(AudioEngine):
                         self._punct,
                         segment,
                         raw_final,
+                        final_verifier=self._final_verifier,
                         speech_sec=speech_sec,
                         segment_sample_rate=sample_rate,
                         attested_repair=_attested_interrupt_repair,
@@ -764,6 +770,7 @@ class FileReplayEngine(AudioEngine):
                     self._punct,
                     segment,
                     raw_final,
+                    final_verifier=self._final_verifier,
                     speech_sec=speech_sec,
                     segment_sample_rate=sample_rate,
                     attested_repair=_attested_interrupt_repair,
@@ -780,6 +787,7 @@ class FileReplayEngine(AudioEngine):
                 self._punct,
                 segment,
                 raw_final,
+                final_verifier=self._final_verifier,
                 speech_sec=speech_sec,
                 segment_sample_rate=sample_rate,
                 attested_repair=_attested_interrupt_repair,

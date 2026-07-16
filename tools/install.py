@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
 import subprocess
 import sys
 
@@ -45,6 +46,17 @@ RUNTIME_DEPS = [
     "huggingface-hub",  # model downloads
     "psutil",        # CPU/RAM telemetry in the run summary
 ]
+
+# Explicit opt-in runtime for ADR-0079. Keep these exact versions aligned with
+# the Linux x86_64 markers in requirements.txt; the ordinary lean install does
+# not pull the large NVIDIA wheels or Faster-Whisper.
+FINAL_VERIFIER_RUNTIME_DEPS = (
+    "faster-whisper==1.2.1",
+    "ctranslate2==4.8.1",
+    "nvidia-cublas-cu12==12.9.2.10",
+    "nvidia-cudnn-cu12==9.24.0.43",
+    "nvidia-cuda-nvrtc-cu12==12.9.86",
+)
 
 # The committed desktop profile selects these speech-path components. Keep the
 # installer command explicit so ``tools.setup_models`` remains useful as a
@@ -102,6 +114,34 @@ def portaudio_hint(*, system: str | None = None) -> str:
     )
 
 
+def final_verifier_supported(
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+) -> bool:
+    """Whether the pinned CUDA verifier wheel set supports this host."""
+    plat = system if system is not None else sys.platform
+    arch = (machine if machine is not None else platform.machine()).lower()
+    return plat.startswith("linux") and arch in {"x86_64", "amd64"}
+
+
+def runtime_deps(args: argparse.Namespace) -> list[str]:
+    """Return the lean dependencies plus any explicitly selected STT tier."""
+    result = list(RUNTIME_DEPS)
+    if getattr(args, "final_verifier", None):
+        result.extend(FINAL_VERIFIER_RUNTIME_DEPS)
+    return result
+
+
+def selected_model_args(args: argparse.Namespace) -> tuple[str, ...]:
+    """Translate optional model selections to the atomic setup command."""
+    result = list(SELECTED_MODEL_ARGS)
+    verifier = getattr(args, "final_verifier", None)
+    if verifier:
+        result.extend(("--final-verifier", verifier))
+    return tuple(result)
+
+
 def running_in_conda() -> bool:
     """True if a conda environment is active.
 
@@ -138,10 +178,10 @@ def install_plan(args, *, system: str | None = None) -> list[str]:
     py = venv_python_path(venv, system=system)
     steps = [
         f"create/refresh venv at {venv} (recreate={args.recreate})",
-        f"install runtime deps into {py}: {', '.join(RUNTIME_DEPS)}",
+        f"install runtime deps into {py}: {', '.join(runtime_deps(args))}",
     ]
     if not args.skip_models:
-        flags = " ".join(SELECTED_MODEL_ARGS)
+        flags = " ".join(selected_model_args(args))
         steps.append(
             f"{py} -m tools.setup_models {flags}  "
             "(download the selected speech stack + atomically wire config.local.json)"
@@ -245,6 +285,14 @@ def main(argv: list[str] | None = None) -> int:
         help="don't download speech models (deps + venv only)",
     )
     parser.add_argument(
+        "--final-verifier",
+        choices=["faster-whisper-small"],
+        help=(
+            "opt in to the pinned local NVIDIA/CUDA Faster-Whisper Small "
+            "final verifier and configure it during model setup"
+        ),
+    )
+    parser.add_argument(
         "--dry-run", action="store_true",
         help="print the plan and the exact commands, but change nothing",
     )
@@ -287,6 +335,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_args = capability_setup_args(args)
 
+    if args.final_verifier and not final_verifier_supported():
+        print(
+            "--final-verifier currently requires Linux x86_64 with an NVIDIA "
+            "CUDA-capable GPU",
+            file=sys.stderr,
+        )
+        return 2
+
     print("== Voice assistant installer ==")
     print(f"   OS: {sys.platform}   base python: {args.base_python}")
     if running_in_conda():
@@ -308,14 +364,14 @@ def main(argv: list[str] | None = None) -> int:
                      recreate=args.recreate, dry_run=False)
 
     print(f"==> 2/{step_count} Runtime dependencies (lean, no torch)")
-    if _run([py, "-m", "pip", "install", *RUNTIME_DEPS], dry_run=False) != 0:
+    if _run([py, "-m", "pip", "install", *runtime_deps(args)], dry_run=False) != 0:
         print("    dependency install failed -- see the pip output above.", file=sys.stderr)
         return 1
 
     if not args.skip_models:
         print(f"==> 3/{step_count} Speech models + config wiring")
         setup_rc = _run(
-            [py, "-m", "tools.setup_models", *SELECTED_MODEL_ARGS],
+            [py, "-m", "tools.setup_models", *selected_model_args(args)],
             dry_run=False,
         )
         if setup_rc != 0:

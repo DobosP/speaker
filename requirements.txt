@@ -13,7 +13,14 @@ edge-tts>=6.1.0              # Microsoft neural voices (online fallback)
 gTTS>=2.4.0                  # Google TTS fallback
 
 # Speech-to-Text
-faster-whisper>=1.2.0        # registry includes distil-large-v3.5 CT2, mobiuslabs turbo, etc.
+faster-whisper==1.2.1        # verified local final-verifier frontend
+ctranslate2==4.8.1; sys_platform == "linux" and platform_machine == "x86_64"
+# CTranslate2 dlopens these CUDA 12/cuDNN 9 sonames.  Exact wheel pins plus the
+# process-local bootstrap in core/engines/_cuda_wheels.py avoid relying on a
+# mutable system CUDA toolkit or LD_LIBRARY_PATH.
+nvidia-cublas-cu12==12.9.2.10; sys_platform == "linux" and platform_machine == "x86_64"
+nvidia-cudnn-cu12==9.24.0.43; sys_platform == "linux" and platform_machine == "x86_64"
+nvidia-cuda-nvrtc-cu12==12.9.86; sys_platform == "linux" and platform_machine == "x86_64"
 useful-moonshine-onnx        # Moonshine ONNX — Tier 1 / low profile (English, ~26 MB)
 pywhispercpp>=1.4.0          # whisper.cpp bindings (streaming / low-resource)
 transformers>=4.36.0         # Standard Whisper fallback

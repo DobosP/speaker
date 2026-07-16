@@ -71,6 +71,27 @@ _TRUSTED_APP_RE = re.compile(
 )
 
 
+def exact_control_class(text: str) -> tuple[str, str] | None:
+    """Return the exact controller-owned meaning of a complete phrase.
+
+    This is the shared fence for any upstream transcript selector. It is
+    deliberately conservative: confirm/deny phrases count even when no
+    confirmation is currently pending, and mode switches include their target,
+    so an acoustic rewrite cannot manufacture a future control interpretation.
+    """
+    normalized = normalize_text(text)
+    if normalized in _STOP_PHRASES:
+        return ("stop", "")
+    if normalized in _CONFIRM_PHRASES:
+        return ("confirm", "")
+    if normalized in _DENY_PHRASES:
+        return ("deny", "")
+    target = _MODE_ALIASES.get(normalized)
+    if target is not None:
+        return ("mode_switch", target.value)
+    return None
+
+
 def device_tool_command(text: str) -> tuple[str, bool] | None:
     """Return ``(tool_hint, needs_confirmation)`` for an explicit device tool.
 

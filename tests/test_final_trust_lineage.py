@@ -9,11 +9,15 @@ from __future__ import annotations
 
 import math
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from always_on_agent.events import EventKind
+from always_on_agent.events import EventKind, Mode
+from always_on_agent.models import IntentKind
+from always_on_agent.origin import is_action_allowed
+from always_on_agent.speech_analyzer import LiveSpeechAnalyzer
 from core.engine import EngineCallbacks
 from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
@@ -113,6 +117,121 @@ def test_exact_final_speaker_accept_reaches_runtime_as_verified_live_audio():
     [event] = _final_events(published)
     assert event.payload["owner_verified"] is True
     assert event.payload["origin"] == "live_audio"
+
+
+def test_verifier_changed_consensus_is_never_action_trusted_live_audio():
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(
+                result=SimpleNamespace(text="corrected ordinary request")
+            )
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    class _Verifier:
+        def transcribe(self, _samples, _sample_rate):
+            return SimpleNamespace(text="corrected ordinary request")
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    engine._final_verifier = _Verifier()
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="unrelated streaming phrase",
+    )
+
+    assert legacy == []
+    assert len(typed) == 1
+    assert typed[0].text == "corrected ordinary request"
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is False
+    assert event.payload["origin"] != "live_audio"
+    assert not is_action_allowed(
+        typed[0].origin,
+        owner_verified=typed[0].owner_verified,
+    )
+
+
+def test_verifier_unchanged_consensus_preserves_verified_live_audio_authority():
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class _Verifier:
+        def transcribe(self, _samples, _sample_rate):
+            return SimpleNamespace(text="Owner command")
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_verifier = _Verifier()
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="owner command",
+    )
+
+    assert legacy == []
+    assert len(typed) == 1
+    assert typed[0].text == "Owner command"
+    assert typed[0].owner_verification is OwnerVerification.VERIFIED
+    assert typed[0].origin == "live_audio"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is True
+    assert event.payload["origin"] == "live_audio"
+    assert is_action_allowed(
+        typed[0].origin,
+        owner_verified=typed[0].owner_verified,
+    )
+
+
+@pytest.mark.parametrize("proposed_control", ["never mind", "yes", "command mode"])
+def test_verifier_consensus_cannot_manufacture_supervisor_control(proposed_control):
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(result=SimpleNamespace(text=proposed_control))
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    class _Verifier:
+        def transcribe(self, _samples, _sample_rate):
+            return SimpleNamespace(text=proposed_control)
+
+    engine = SherpaOnnxEngine(SherpaConfig(speaker_gate_input=True))
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, _published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    engine._final_verifier = _Verifier()
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="ordinary request",
+    )
+
+    assert legacy == []
+    assert [result.text for result in typed] == ["Ordinary request"]
+    analyzer = LiveSpeechAnalyzer()
+    observation = analyzer.observe(typed[0].text, is_final=True)
+    decision = analyzer.decide(
+        observation,
+        Mode.ASSISTANT,
+        has_pending_confirmation=True,
+    )
+    assert decision.kind is IntentKind.ASSISTANT
 
 
 @pytest.mark.parametrize(

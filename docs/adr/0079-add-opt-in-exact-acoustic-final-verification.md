@@ -1,0 +1,13 @@
+# ADR-0079: Add opt-in exact acoustic final verification
+
+Date: 2026-07-17
+Status: accepted
+
+## Decision
+Add local CUDA Faster-Whisper Small as an opt-in third endpoint recognizer, while retaining the existing streaming/SenseVoice selection as the fallback. A verifier may change the final only when at least two independent acoustic recognizers have the same non-empty Unicode-preserving normalized words; the established selected final is a renderer and fallback, never an extra vote. Error, empty output, tie, no quorum, and any change to controller-owned STOP, confirm/deny, or mode-switch meaning retain the established final. Any changed consensus loses owner verification and direct live-audio action authority; unchanged consensus retains existing provenance. Keep the verifier disabled in committed configuration, provision its exact tested snapshot explicitly during model setup, and continue to start the product only through `./live.sh`. Keep small-LLM selection and rewriting outside the production path as aggregate-only diagnostics.
+
+## Context / why
+ADR-0078's six private recordings measured selected WER 0.12. A locked local-GPU comparison on the same 25-word corpus found Faster-Whisper Small deterministic across three decodes and exact on 6/6 clips, while direct Turbo regressed the exact STOP clip. Exact Small-backed acoustic consensus reduced selected WER to 0.04 with one per-clip win, no loss, five accepted selections, and one baseline fallback. Strict full-permutation MiniCPM 5 1B Q8 and Gemma 3 4B choice arbiters produced no aggregate gain; a generative rewrite layer would also violate ADR-0051/0039/0076 authority boundaries. The corpus is too small and development-biased to replace the default final recognizer directly, so the measured improvement ships only behind explicit setup and a conservative agreement rule.
+
+## Consequences
+The live and FileReplay engines use the same endpoint-owned PCM and consensus code, and the recording evaluator binds the verifier snapshot and reports only aggregate outcomes. Setup stages an immutable commit before atomic publication; readiness must prove the complete exact snapshot, wheel-owned CUDA runtime, CUDA FP16 support, and a real model load before microphone startup. Runtime downloads and a verifier-specific launch command are forbidden. The model is warmed off the response path; a later decode failure emits one aggregate metric, opens a session circuit breaker, and retains the established final. Promotion to a committed default still requires a larger held-out corpus covering commands, near-controls, vault/domain terms, numbers, negation, silence/noise/echo, bystanders and multiple speakers, followed by manual live A/B; this ADR refines rather than replaces ADR-0078.

@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import core.readiness as readiness
+import tools.setup_models as setup_models
 from core.minicpm_identity import MINICPM_Q8_CONTRACT
 from tools.doctor import (
     PipeWireState,
@@ -173,9 +174,15 @@ def _fake_selected_model_downloads(monkeypatch, *, fail_denoise: bool):
         path.write_bytes(b"hf-model")
         return str(path)
 
-    def snapshot_download(*, local_dir, **_kwargs):
-        data = Path(local_dir) / "espeak-ng-data"
-        data.mkdir(parents=True, exist_ok=True)
+    def snapshot_download(*, local_dir, repo_id=None, **_kwargs):
+        root = Path(local_dir)
+        if repo_id == setup_models.FASTER_WHISPER_VERIFIER_REPO:
+            root.mkdir(parents=True, exist_ok=True)
+            for name in setup_models.FASTER_WHISPER_REQUIRED_FILES:
+                (root / name).write_bytes(b"faster-whisper")
+        else:
+            data = root / "espeak-ng-data"
+            data.mkdir(parents=True, exist_ok=True)
         return str(local_dir)
 
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", hf_download)
@@ -224,8 +231,80 @@ def _selected_setup_args(tmp_path):
         "--speaker-model-url", "speaker.onnx",
         "--denoise-model", "--denoise-model-url", "fail-denoise",
         "--sense-voice", "--sense-voice-url", "sense-voice.tar.bz2",
+        "--final-verifier", "faster-whisper-small",
         "--kokoro", "--require-selected",
     ]
+
+
+def _write_faster_whisper_snapshot(path: Path, payload: bytes) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for name in setup_models.FASTER_WHISPER_REQUIRED_FILES:
+        (path / name).write_bytes(payload)
+
+
+def test_faster_whisper_setup_pins_revision_and_stages_before_publish(tmp_path):
+    calls = []
+
+    def download(**kwargs):
+        calls.append(kwargs)
+        _write_faster_whisper_snapshot(Path(kwargs["local_dir"]), b"new")
+        return kwargs["local_dir"]
+
+    result = setup_models.fetch_faster_whisper_verifier(
+        str(tmp_path),
+        repo_id=setup_models.FASTER_WHISPER_VERIFIER_REPO,
+        revision=setup_models.FASTER_WHISPER_VERIFIER_REVISION,
+        token=None,
+        force=False,
+        snapshot_download_fn=download,
+    )
+
+    expected = tmp_path / (
+        "faster_whisper_small-"
+        + setup_models.FASTER_WHISPER_VERIFIER_REVISION[:12]
+    )
+    assert Path(result) == expected
+    assert calls[0]["revision"] == setup_models.FASTER_WHISPER_VERIFIER_REVISION
+    assert Path(calls[0]["local_dir"]) != expected
+    assert (expected / "model.bin").read_bytes() == b"new"
+
+
+def test_failed_forced_verifier_fetch_preserves_active_snapshot(tmp_path):
+    destination = tmp_path / (
+        "faster_whisper_small-"
+        + setup_models.FASTER_WHISPER_VERIFIER_REVISION[:12]
+    )
+    _write_faster_whisper_snapshot(destination, b"old")
+
+    def fail(**kwargs):
+        staging = Path(kwargs["local_dir"])
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / "model.bin").write_bytes(b"partial")
+        raise RuntimeError("download failed")
+
+    with pytest.raises(RuntimeError, match="download failed"):
+        setup_models.fetch_faster_whisper_verifier(
+            str(tmp_path),
+            repo_id=setup_models.FASTER_WHISPER_VERIFIER_REPO,
+            revision=setup_models.FASTER_WHISPER_VERIFIER_REVISION,
+            token=None,
+            force=True,
+            snapshot_download_fn=fail,
+        )
+
+    assert (destination / "model.bin").read_bytes() == b"old"
+
+
+def test_verifier_setup_rejects_mutable_revision_before_download(tmp_path):
+    with pytest.raises(ValueError, match="full commit hash"):
+        setup_models.fetch_faster_whisper_verifier(
+            str(tmp_path),
+            repo_id=setup_models.FASTER_WHISPER_VERIFIER_REPO,
+            revision="main",
+            token=None,
+            force=False,
+            snapshot_download_fn=lambda **_kwargs: pytest.fail("downloaded"),
+        )
 
 
 def test_required_selected_failure_does_not_publish_partial_config(
@@ -271,6 +350,7 @@ def test_required_selected_success_publishes_one_complete_config(
     sherpa = written["sherpa"]
     assert written["unrelated"] == {"kept": True}
     assert sherpa["asr_final_backend"] == "sense_voice"
+    assert sherpa["asr_final_verifier_backend"] == "faster_whisper"
     assert all(
         sherpa[key]
         for key in (
@@ -279,6 +359,7 @@ def test_required_selected_success_publishes_one_complete_config(
             "denoise_model",
             "asr_final_model",
             "asr_final_tokens",
+            "asr_final_verifier_model",
             "tts_voices",
             "tts_data_dir",
             "tts_lexicon",
@@ -645,6 +726,144 @@ def test_check_sherpa_models_rejects_unknown_final_asr_backend():
     result = check_sherpa_models({"sherpa": paths}, exists=lambda _path: True)
     assert not result.ok
     assert "unsupported" in result.detail
+
+
+def test_check_sherpa_models_validates_selected_faster_whisper_verifier():
+    model = "/m/faster-whisper-small"
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_verifier_backend": "faster_whisper",
+        "asr_final_verifier_model": model,
+    }
+    present = {
+        *set(_complete_sherpa_paths().values()),
+        model,
+        *(f"{model}/{name}" for name in readiness._FASTER_WHISPER_SNAPSHOT_FILES),
+    }
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+    present.remove(f"{model}/model.bin")
+    result = check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    )
+    assert not result.ok
+    assert "verifier model.bin missing" in result.detail
+
+
+def test_check_sherpa_models_ignores_inactive_verifier_artifact():
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_verifier_backend": "",
+        "asr_final_verifier_model": "/stale/missing",
+    }
+    present = set(_complete_sherpa_paths().values())
+
+    assert check_sherpa_models(
+        {"sherpa": paths}, exists=lambda path: path in present
+    ).ok
+
+
+def test_check_sherpa_models_rejects_unknown_verifier_backend():
+    paths = {
+        **_complete_sherpa_paths(),
+        "asr_final_verifier_backend": "generative_rewriter",
+    }
+    result = check_sherpa_models({"sherpa": paths}, exists=lambda _path: True)
+
+    assert not result.ok
+    assert "asr_final_verifier_backend" in result.detail
+    assert "unsupported" in result.detail
+
+
+def test_selected_verifier_runtime_requires_cuda_float16():
+    config = {
+        "sherpa": {
+            "asr_final_verifier_backend": "faster_whisper",
+            "asr_final_verifier_model": "/model",
+        }
+    }
+
+    class _CTranslate2:
+        @staticmethod
+        def get_supported_compute_types(device, index):
+            assert (device, index) == ("cuda", 0)
+            return {"float16", "int8_float16"}
+
+    def available(name):
+        return _CTranslate2 if name == "ctranslate2" else object()
+
+    assert readiness.check_asr_final_verifier_runtime(
+        config,
+        import_fn=available,
+        preload_fn=lambda: None,
+        model_probe_fn=lambda path: path == "/model" or pytest.fail(path),
+    ).ok
+
+    class _CpuOnly:
+        @staticmethod
+        def get_supported_compute_types(_device, _index):
+            return {"int8"}
+
+    failed = readiness.check_asr_final_verifier_runtime(
+        config,
+        import_fn=lambda name: _CpuOnly if name == "ctranslate2" else object(),
+        preload_fn=lambda: None,
+        model_probe_fn=lambda _path: pytest.fail("CPU-only reached model probe"),
+    )
+    assert not failed.ok
+    assert "FP16" in failed.detail
+
+
+def test_selected_verifier_runtime_preloads_before_any_model_import():
+    config = {
+        "sherpa": {
+            "asr_final_verifier_backend": "faster_whisper",
+            "asr_final_verifier_model": "/model",
+        }
+    }
+    events = []
+
+    def fail_preload():
+        events.append("preload")
+        raise RuntimeError("safe bootstrap failure")
+
+    result = readiness.check_asr_final_verifier_runtime(
+        config,
+        preload_fn=fail_preload,
+        import_fn=lambda name: events.append(name),
+        model_probe_fn=lambda _path: events.append("model"),
+    )
+
+    assert not result.ok
+    assert events == ["preload"]
+
+
+def test_selected_verifier_runtime_proves_exact_model_load():
+    config = {
+        "sherpa": {
+            "asr_final_verifier_backend": "faster_whisper",
+            "asr_final_verifier_model": "/model",
+        }
+    }
+
+    class _CTranslate2:
+        @staticmethod
+        def get_supported_compute_types(_device, _index):
+            return {"float16"}
+
+    result = readiness.check_asr_final_verifier_runtime(
+        config,
+        preload_fn=lambda: None,
+        import_fn=lambda name: _CTranslate2 if name == "ctranslate2" else object(),
+        model_probe_fn=lambda _path: (_ for _ in ()).throw(
+            RuntimeError("corrupt model")
+        ),
+    )
+
+    assert not result.ok
+    assert "corrupt model" in result.detail
 
 
 def test_check_sherpa_models_validates_configured_vad():

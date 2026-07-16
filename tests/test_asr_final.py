@@ -3,12 +3,17 @@ Whisper) that re-transcribes the endpointed utterance for the text that reaches
 the LLM. These pin the wiring/fallback logic with fakes -- no models/audio."""
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from core.engines._sherpa_models import build_final_recognizer
+from core.engine import EngineCallbacks
+from core.engines._sherpa_models import (
+    build_final_recognizer,
+    build_final_verifier,
+)
 from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import (
     SherpaConfig,
@@ -39,6 +44,19 @@ class _FakeOffline:
         pass
 
 
+class _FakeVerifier:
+    def __init__(self, text="", *, error=None):
+        self._text = text
+        self._error = error
+        self.calls = []
+
+    def transcribe(self, samples, sample_rate):
+        self.calls.append((samples, sample_rate))
+        if self._error is not None:
+            raise self._error
+        return SimpleNamespace(text=self._text)
+
+
 def _engine(**sherpa):
     return SherpaOnnxEngine(SherpaConfig.from_dict(sherpa))
 
@@ -54,6 +72,50 @@ def test_build_final_recognizer_none_when_model_missing():
     cfg = SherpaConfig.from_dict({"asr_final_backend": "sense_voice",
                                   "asr_final_model": "/does/not/exist.onnx"})
     assert build_final_recognizer(cfg) is None  # graceful, no crash
+
+
+def test_build_final_verifier_is_opt_in_and_requires_supported_local_model(
+    monkeypatch,
+    tmp_path,
+):
+    import core.engines._faster_whisper as faster_whisper_adapter
+
+    built = []
+
+    class _Recognizer:
+        def __init__(self, model_path):
+            built.append(model_path)
+
+    monkeypatch.setattr(
+        faster_whisper_adapter,
+        "FasterWhisperEndpointRecognizer",
+        _Recognizer,
+    )
+
+    assert build_final_verifier(SherpaConfig()) is None
+    verifier = build_final_verifier(
+        SherpaConfig(
+            asr_final_verifier_backend="faster_whisper",
+            asr_final_verifier_model=str(tmp_path),
+        )
+    )
+    assert isinstance(verifier, _Recognizer)
+    assert built == [str(tmp_path)]
+    assert build_final_verifier(
+        SherpaConfig(
+            asr_final_verifier_backend="remote_api",
+            asr_final_verifier_model=str(tmp_path),
+        )
+    ) is None
+
+
+def test_build_final_verifier_fails_open_for_nonlocal_model_identifier():
+    assert build_final_verifier(
+        SherpaConfig(
+            asr_final_verifier_backend="faster_whisper",
+            asr_final_verifier_model="org/model-that-is-not-a-local-directory",
+        )
+    ) is None
 
 
 # --- _final_transcribe (second pass vs fallback) ------------------------------
@@ -104,6 +166,156 @@ def test_final_decision_hypotheses_are_excluded_from_repr():
     assert "private streaming hypothesis" not in rendered
     assert "private offline hypothesis" not in rendered
     assert decision.selected not in rendered
+
+
+def test_exact_offline_verifier_consensus_changes_baseline_on_identical_pcm():
+    accepted = {}
+
+    class _Offline:
+        def create_stream(self):
+            stream = _FakeStream("  private corrected phrase  ")
+
+            def accept(sample_rate, samples):
+                accepted["offline"] = (samples, sample_rate)
+
+            stream.accept_waveform = accept
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    verifier = _FakeVerifier("private corrected phrase")
+    segment = np.ones(2 * 16000, dtype="float32")
+
+    decision = _resolve_final_transcript(
+        SherpaConfig(),
+        _Offline(),
+        None,
+        segment,
+        "unrelated private streaming words",
+        final_verifier=verifier,
+    )
+
+    verifier_pcm, verifier_rate = verifier.calls[0]
+    offline_pcm, offline_rate = accepted["offline"]
+    assert verifier_pcm is offline_pcm
+    assert verifier_pcm is segment
+    assert verifier_rate == offline_rate == 16000
+    assert decision.selected == "private corrected phrase"
+    assert decision.verifier_outcome == "consensus"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed is True
+    rendered = repr(decision)
+    assert "private corrected phrase" not in rendered
+    assert "unrelated private streaming words" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("verifier", "expected_outcome", "expected_support"),
+    [
+        (_FakeVerifier(""), "empty", 0),
+        (_FakeVerifier("independent unique hypothesis"), "tie", 1),
+        (_FakeVerifier(error=RuntimeError("private model failure")), "error", 0),
+    ],
+)
+def test_verifier_empty_error_or_nonconsensus_preserves_baseline(
+    verifier,
+    expected_outcome,
+    expected_support,
+):
+    decision = _resolve_final_transcript(
+        SherpaConfig(),
+        None,
+        None,
+        np.ones(16000, dtype="float32"),
+        "keep baseline",
+        final_verifier=verifier,
+    )
+
+    assert decision.selected == "Keep baseline"
+    assert decision.verifier_outcome == expected_outcome
+    assert decision.verifier_support == expected_support
+    assert decision.verifier_changed is False
+    assert "private model failure" not in repr(decision)
+
+
+def test_live_decode_error_circuit_breaks_verifier_and_emits_one_metric():
+    engine = _engine()
+    verifier = _FakeVerifier(error=RuntimeError("private model failure"))
+    metrics = []
+    finals = []
+    engine._final_verifier = verifier
+    engine._final_above_floor = lambda _samples: True
+    engine._cb = EngineCallbacks(
+        on_metric=lambda name, *_args, **_kwargs: metrics.append(name),
+        on_final=finals.append,
+    )
+
+    engine._finalize_and_dispatch(
+        np.ones(16000, dtype="float32"),
+        "keep baseline",
+        time.perf_counter(),
+    )
+
+    assert engine._final_verifier is None
+    assert finals == ["Keep baseline"]
+    assert metrics.count("asr_final_verifier_disabled_after_decode_error") == 1
+    assert len(verifier.calls) == 1
+
+    engine._finalize_and_dispatch(
+        np.ones(16000, dtype="float32"),
+        "next baseline",
+        time.perf_counter(),
+    )
+    assert finals[-1] == "Next baseline"
+    assert len(verifier.calls) == 1
+    assert metrics.count("asr_final_verifier_disabled_after_decode_error") == 1
+
+
+def test_verifier_cannot_manufacture_turn_from_empty_streaming_without_authority():
+    segment = np.ones(16000, dtype="float32")
+    offline = _FakeOffline("ordinary recovered phrase")
+
+    blocked = _resolve_final_transcript(
+        SherpaConfig(),
+        offline,
+        None,
+        segment,
+        "",
+        final_verifier=_FakeVerifier("ordinary recovered phrase"),
+    )
+    authorized = _resolve_final_transcript(
+        SherpaConfig(),
+        offline,
+        None,
+        segment,
+        "",
+        final_verifier=_FakeVerifier("ordinary recovered phrase"),
+        allow_empty_streaming=True,
+    )
+
+    assert blocked.selected == ""
+    assert blocked.verifier_outcome == "empty_streaming_guard"
+    assert blocked.verifier_support == 2
+    assert blocked.verifier_changed is False
+    assert authorized.selected == "ordinary recovered phrase"
+    assert authorized.verifier_outcome == "consensus"
+
+
+def test_single_verifier_vote_has_no_quorum_and_preserves_empty_baseline():
+    decision = _resolve_final_transcript(
+        SherpaConfig(),
+        None,
+        None,
+        np.ones(16000, dtype="float32"),
+        "",
+        final_verifier=_FakeVerifier("unsupported recovered phrase"),
+    )
+
+    assert decision.selected == ""
+    assert decision.verifier_outcome == "no_quorum"
+    assert decision.verifier_support == 1
+    assert decision.verifier_changed is False
 
 
 def test_final_decision_keeps_empty_streaming_fail_closed():
@@ -413,10 +625,14 @@ def test_config_parses_final_fields():
         "asr_final_backend": "sense_voice", "asr_final_model": "/m.onnx",
         "asr_final_tokens": "/t.txt", "asr_final_use_itn": False, "asr_final_min_sec": 0.5,
         "asr_final_preroll_sec": 0.6,
+        "asr_final_verifier_backend": "faster_whisper",
+        "asr_final_verifier_model": "/cached/model",
     })
     assert c.asr_final_backend == "sense_voice" and c.asr_final_model == "/m.onnx"
     assert c.asr_final_use_itn is False and c.asr_final_min_sec == 0.5
     assert c.asr_final_preroll_sec == 0.6
+    assert c.asr_final_verifier_backend == "faster_whisper"
+    assert c.asr_final_verifier_model == "/cached/model"
 
 
 def _capture_sense_voice(monkeypatch):

@@ -13,6 +13,7 @@ from always_on_agent.events import Mode
 
 from core.addressing import ACT, ScriptedAddressingClassifier
 from core.cleanup import ScriptedTranscriptCleaner
+from core.engine import EngineCallbacks
 from core.engines.scripted import ScriptedEngine
 from core.llm import EchoLLM
 from core.runtime import VoiceRuntime
@@ -44,6 +45,44 @@ def test_sherpa_warm_is_noop_without_a_tts_model():
     from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
     SherpaOnnxEngine(SherpaConfig()).warm()
+
+
+def test_sherpa_warm_loads_selected_final_verifier_once():
+    from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+
+    class _Verifier:
+        def __init__(self):
+            self.calls = 0
+
+        def warm(self):
+            self.calls += 1
+
+    engine = SherpaOnnxEngine(SherpaConfig())
+    verifier = _Verifier()
+    engine._final_verifier = verifier
+
+    engine.warm()
+
+    assert verifier.calls == 1
+
+
+def test_sherpa_warm_failure_circuit_breaks_selected_verifier():
+    from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+
+    class _Verifier:
+        def warm(self):
+            raise RuntimeError("private model failure")
+
+    metrics = []
+    engine = SherpaOnnxEngine(SherpaConfig())
+    engine._cb = EngineCallbacks(on_metric=metrics.append)
+    engine._final_verifier = _Verifier()
+
+    engine.warm()
+    engine.warm()
+
+    assert engine._final_verifier is None
+    assert metrics == ["asr_final_verifier_disabled_after_warm_error"]
 
 
 def test_warm_ready_set_immediately_when_warm_disabled():

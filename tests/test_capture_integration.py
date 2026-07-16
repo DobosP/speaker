@@ -98,7 +98,7 @@ def test_app_main_record_ignored_on_console_engine(tmp_path, monkeypatch):
     assert "recording" not in data["meta"]
 
 
-def test_record_playback_reference_implies_record_and_prints_actual_bundle_paths(
+def test_record_references_imply_record_and_print_actual_bundle_paths(
     tmp_path, monkeypatch, capsys
 ):
     class RecordingScriptedEngine(ScriptedEngine):
@@ -115,7 +115,12 @@ def test_record_playback_reference_implies_record_and_prints_actual_bundle_paths
     monkeypatch.setattr(app, "_build_engine", lambda *_args, **_kwargs: engine)
 
     rc = app.main([
-        "--engine", "console", "--llm", "echo", "--record-playback-reference",
+        "--engine",
+        "console",
+        "--llm",
+        "echo",
+        "--record-pre-dsp-reference",
+        "--record-playback-reference",
     ])
 
     assert rc == 0
@@ -123,11 +128,41 @@ def test_record_playback_reference_implies_record_and_prints_actual_bundle_paths
     assert Path(engine.record_path).parent == tmp_path
     data = json.loads(next(tmp_path.glob("run-*.summary.json")).read_text(encoding="utf-8"))
     assert data["meta"]["recording"] == engine.record_path
+    assert data["meta"]["pre_dsp_reference"] == engine.record_path[:-4] + ".pre-dsp.wav"
     assert data["meta"]["playback_reference"] == engine.record_path[:-4] + ".ref.wav"
     output = capsys.readouterr().out
     assert f"[log] audio:    {engine.record_path}" in output
+    assert f"[log] pre-DSP:  {engine.record_path[:-4]}.pre-dsp.wav" in output
     assert f"[log] playback: {engine.record_path[:-4]}.ref.wav" in output
     assert "logs/runs" not in output
+
+
+def test_pre_dsp_reference_is_independently_opt_in_for_low_level_core(
+    tmp_path, monkeypatch
+):
+    class RecordingScriptedEngine(ScriptedEngine):
+        def __init__(self):
+            super().__init__()
+            self.record_path = None
+
+        def set_record_path(self, path):
+            self.record_path = path
+
+    engine = RecordingScriptedEngine()
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    monkeypatch.setattr(app, "_build_engine", lambda *_args, **_kwargs: engine)
+
+    assert app.main(
+        ["--engine", "console", "--llm", "echo", "--record-pre-dsp-reference"]
+    ) == 0
+
+    data = json.loads(
+        next(tmp_path.glob("run-*.summary.json")).read_text(encoding="utf-8")
+    )
+    assert data["meta"]["recording"] == engine.record_path
+    assert data["meta"]["pre_dsp_reference"].endswith(".pre-dsp.wav")
+    assert "playback_reference" not in data["meta"]
 
 
 def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):

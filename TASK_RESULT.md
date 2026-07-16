@@ -1,6 +1,6 @@
-# Task Result — unified setup-enabled agent tools
+# Task Result — unified setup-enabled tools and live STT evidence
 
-Valid until: ADR-0076 or the setup/tool authority lifecycle changes — then treat as history.
+Valid until: ADR-0076/0077 or the setup/tool/live-evidence lifecycle changes — then treat as history.
 
 ## Outcome
 
@@ -25,14 +25,18 @@ Valid until: ADR-0076 or the setup/tool authority lifecycle changes — then tre
   model; unmatched commands retain the historical `command.stage` path.
 - `./live.sh` remains the only normal Linux physical entry. Old tool-specific
   launcher switches are rejected.
+- The same command now records aligned private pre-application-DSP, processed
+  microphone, and playback-reference tracks. This adds diagnostic evidence; it
+  does not change recognizer, VAD, gain, denoise, or agreement policy.
 
 ## Verification
 
-- Full deterministic suite: `5303 passed, 31 skipped, 9 warnings`.
-- Launcher/capture/setup-doctor gate: `197 passed`; APM double-talk gate:
+- Full deterministic suite: `5309 passed, 31 skipped, 9 warnings`.
+- Aligned-recording/shutdown focus: `140 passed, 1 skipped`.
+- Launcher/capture/setup-doctor gate: `198 passed`; APM double-talk gate:
   `6 passed`.
-- No real systemd timer, desktop notification, trusted app, microphone, speaker,
-  or physical STT validation ran in this implementation session.
+- No real systemd timer, desktop notification, or trusted app was invoked. No
+  post-change microphone, speaker, or physical STT validation ran.
 
 ## Machine-local setup
 
@@ -57,11 +61,14 @@ not enumerate notes, launch Obsidian, create a timer, or display a notification.
 In that one session, try `search in my vault for speaker`, `which reminders are
 set?`, `remind me to stretch in ten minutes` followed by `confirm`, and `open
 obsidian?` followed by `yes`. Press Ctrl-C once after the responses. The launcher
-keeps its private evidence bundle local; do not commit, push, upload, or paste it.
+keeps all three aligned evidence tracks local; do not commit, push, upload, or
+paste them.
 
 ## Limits
 
 The trusted-app connector opens allowlisted applications only; it does not yet
 write calendars/messages, manipulate files, type, click, or run arbitrary code.
-Headless tests do not improve or validate STT accuracy. Physical exact Stop and
-bare-speaker barge-in remain live-red in `STATUS.md`/ADR-0072.
+Headless tests do not improve or validate STT accuracy. The prior processed-only
+recording could not isolate frontend damage from recognizer/accent/domain error.
+Physical exact Stop and bare-speaker barge-in remain live-red in
+`STATUS.md`/ADR-0072.

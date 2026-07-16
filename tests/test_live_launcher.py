@@ -328,6 +328,7 @@ def test_one_command_creates_private_recorded_session_and_cleans_owned_resources
         "--debug",
         "--record",
     )
+    assert "--record-pre-dsp-reference" in command
     assert "--record-playback-reference" in command
     assert command[-2:] == ("--mode", "assistant")
     assert ops.last_voice_env["SPEAKER_RUN_LOG_DIR"] == str(run_dir)

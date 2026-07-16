@@ -3,7 +3,10 @@ FRAME-ALIGNED with the mic WAV so an open-speaker barge run replays faithfully.
 Pure -- exercises the accumulator/frame helpers directly, no audio device."""
 from __future__ import annotations
 
+import wave
+
 import numpy as np
+import pytest
 
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
@@ -70,7 +73,106 @@ def test_alignment_holds_across_frames():
 def test_config_field_parses_and_defaults_off():
     assert SherpaConfig().record_playback_reference is False
     assert SherpaConfig.from_dict({"record_playback_reference": True}).record_playback_reference is True
+    assert SherpaConfig().record_pre_dsp_reference is False
+    assert (
+        SherpaConfig.from_dict({"record_pre_dsp_reference": True})
+        .record_pre_dsp_reference
+        is True
+    )
     assert SherpaOnnxEngine(SherpaConfig())._ref_recorder is None   # off until start()+flag
+
+
+def test_pre_dsp_post_and_playback_frames_share_one_coordinate():
+    eng = SherpaOnnxEngine(SherpaConfig())
+    eng._recorder = _RecRec()
+    eng._pre_dsp_recorder = _RecRec()
+    eng._ref_recorder = _RecRec()
+    eng._ref_accum = np.zeros(0, dtype="float32")
+
+    eng._write_recording_frame(
+        np.array([0.1, 0.2], dtype="float32"),
+        np.array([0.4, 0.5, 0.6], dtype="float32"),
+    )
+
+    pre = eng._pre_dsp_recorder.frames[-1]
+    post = eng._recorder.frames[-1]
+    ref = eng._ref_recorder.frames[-1]
+    assert pre.shape == post.shape == ref.shape == (3,)
+    np.testing.assert_allclose(pre, [0.1, 0.2, 0.0])
+    np.testing.assert_allclose(post, [0.4, 0.5, 0.6])
+    np.testing.assert_allclose(ref, 0.0)
+
+
+def test_actual_aligned_wavs_finalize_to_equal_frame_counts(tmp_path):
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            record_pre_dsp_reference=True,
+            record_playback_reference=True,
+        )
+    )
+    paths = {
+        "post": tmp_path / "run.wav",
+        "pre": tmp_path / "run.pre-dsp.wav",
+        "ref": tmp_path / "run.ref.wav",
+    }
+    eng.set_record_path(str(paths["post"]))
+    eng._open_recorders()
+
+    assert eng._recorder.path == str(paths["post"])
+    assert eng._pre_dsp_recorder.path == str(paths["pre"])
+    assert eng._ref_recorder.path == str(paths["ref"])
+
+    eng._write_recording_frame(
+        np.full(800, 0.1, dtype="float32"),
+        np.full(800, 0.2, dtype="float32"),
+    )
+    eng._write_recording_frame(
+        np.full(1200, -0.1, dtype="float32"),
+        np.full(1200, -0.2, dtype="float32"),
+    )
+    eng._close_recorders(log_completed=False)
+
+    counts = []
+    for path in paths.values():
+        with wave.open(str(path), "rb") as recording:
+            assert recording.getframerate() == 16000
+            counts.append(recording.getnframes())
+    assert counts == [2000, 2000, 2000]
+    assert eng._recorder is None
+    assert eng._pre_dsp_recorder is None
+    assert eng._ref_recorder is None
+
+
+def test_sidecar_open_failure_closes_primary_recorder(monkeypatch, tmp_path):
+    opened = []
+
+    class _OwnedRecorder:
+        seconds = 0.0
+
+        def __init__(self, path):
+            self.path = path
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def _recorder(path, _sample_rate):
+        if opened:
+            raise OSError("sidecar unavailable")
+        owned = _OwnedRecorder(path)
+        opened.append(owned)
+        return owned
+
+    monkeypatch.setattr("core.recorder.WavRecorder", _recorder)
+    eng = SherpaOnnxEngine(SherpaConfig(record_pre_dsp_reference=True))
+    eng.set_record_path(str(tmp_path / "run.wav"))
+
+    with pytest.raises(OSError, match="sidecar unavailable"):
+        eng._open_recorders()
+
+    assert opened[0].closed is True
+    assert eng._recorder is None
+    assert eng._pre_dsp_recorder is None
 
 
 def test_far_ref_path_records_the_aec_reference():

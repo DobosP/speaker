@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-16 on Linux ROG: full suite 5303 passed/31 skipped/9 warnings; launcher/capture/doctor 197; APM 6.
+Last verified: 2026-07-16 on Linux ROG: full suite 5309 passed/31 skipped/9 warnings; launcher/capture/doctor 198; APM 6.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
@@ -21,7 +21,8 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   search, durable reminders, and exact trusted apps to the same chatbot; low-risk
   mutations need unchanged direct speech plus direct confirmation and stay out of model planners (ADR-0074/76).
 - `./live.sh` owns the product entry, host lock, conditional loopback Ollama,
-  reversible Linux EC, doctor, and private mic+reference bundle (ADR-0075).
+  reversible Linux EC, doctor, and aligned private pre-DSP/processed-mic/
+  playback-reference bundle (ADR-0075/77).
   GTCRN is active; four-word generic cuts are identity-optional; own-TTS-ambiguous STOP is not (ADR-0042/72).
 - Host InputAGC is boost-only above its calibrated floor; below-floor PCM stays unity. V5 is live-red (ADR-0047/72).
 
@@ -72,20 +73,21 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 
 ## Live evidence and limits
 
-- Historical v4 remains active and unmodified. Enrollment `174212` captured an
-  isolated three-pass v5 candidate (dim 512; similarity min 0.60/mean 0.67), but
-  the candidate failed its live gate and was never promoted (ADR-0072).
-- Enrollment-on `192151` held `sid=0` and answered one normal question, but
-  dropped soft Yes, split a one-second pause, cut only late with garbled handoff,
-  and did not stop promptly. The owner repeated the override; physical gate red.
-- Enrollment-off `193713` also produced no exact-Stop final, word-cut trace, or
-  cut. Playback-time VAD stayed zero despite a near-end burst and the energy
-  fallback never started, placing the blocker before speaker identity. Route/
-  calibration settling is a hypothesis, not yet a root-cause proof.
+- Historical v4 stays active. Enrollment `174212` captured an isolated v5
+  candidate, but it failed its live gate and was never promoted (ADR-0072).
+- Physical runs `192151`/`193713` failed with enrollment on and off; neither
+  produced prompt exact Stop, and the second placed its blocker before identity.
+  Route/calibration settling remains a hypothesis, not a root-cause proof.
+- The 2026-07-16 vault-phrase run admitted six user windows at -23.4 to -33.6
+  dBFS RMS (peaks -5.0 to -11.1), with no clipping, capture reopen, decode, or
+  finalizer failure. Playback residual separation was ~50 dB, yet both
+  SenseVoice final paths were poor and `vault` was recognized 0/6 times. Its
+  retained mic WAV was post-GTCRN, so frontend versus recognizer/accent/domain
+  failure remains unproven (ADR-0077).
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
-- Next: diagnose physical capture→EC→calibration→VAD/energy→decoder with the
-  optional word-cut identity filter off; require prompt exact Stop before a new
-  candidate or wider acceptance. Do not claim physical barge validated.
+- Next: compare the automatic aligned pre-application-DSP and processed mic
+  tracks before tuning STT/VAD/gain/denoise. Keep the agreement guard and require
+  prompt exact Stop before changing the physical barge verdict.
 
 ## Standard verification
 Full: `...python -m pytest tests -q`; strict recorded: `SPEAKER_REQUIRE_RECORDED=1 ...pytest tests/replay_recorded_voice_test.py -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; conversation: `...python -m tools.conversation_eval --runs 3`; then whitespace, production-hybrid Ollama A/B, sanity/tool/doctor.

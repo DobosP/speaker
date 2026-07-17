@@ -180,6 +180,55 @@ KOKORO_URL = (
     "kokoro-int8-multi-lang-v1_1.tar.bz2"
 )
 
+# Optional streaming KEYWORD SPOTTER for the playback-time "stop-word interrupt
+# floor" (roadmap Phase 2 item 14): a tiny bilingual zh-en streaming zipformer
+# that fires the instant a configured control phrase ("stop", "wait", ...) is
+# heard, the lowest-latency interrupt path (never touches ASR/LLM). Ships as a
+# sherpa-onnx kws-models release .tar.bz2 -- VERIFIED 2026-07-17 (HTTP 200).
+# Unlike the earlier BPE KWS models this one is PHONE-based (CMU ARPABET tokens)
+# and bundles an ``en.phone`` CMU-dict lexicon, so the barge keywords file is
+# generated at fetch time by pure lexicon lookup -- no sentencepiece/pypinyin
+# needed. build_keyword_spotter keys on kws_encoder being set, so a successful
+# fetch is what makes the spotter opt-in per box. Override with --kws-url or the
+# KWS_MODEL_URL env var.
+KWS_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/"
+    "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2"
+)
+
+# Recall-biased barge control phrases for the stop-word interrupt floor. Each is
+# (words, output_label, per-keyword threshold); the shared per-keyword boost is
+# KWS_BARGE_BOOST. The output label is what KeywordSpotter.get_result returns and
+# what reaches VoiceRuntime._on_command -- it MUST normalize (core/contract.py
+# normalize_command: lowercase, keep [a-z ] only) to either a STOP_COMMANDS entry
+# or a config "commands" key, since the file format's ``@`` label cannot contain
+# spaces (the parser splits on whitespace). So every stop-class phrase emits the
+# single-word label "stop" (is_stop_command) and the soft-interrupt pair emits
+# "wait" (the config commands map routes wait/hold on -> stop). STOP-class get a
+# tighter 0.15 trigger threshold (highest recall); wait/hold on 0.20.
+KWS_BARGE_BOOST = 2.0
+# Trigger thresholds start CONSERVATIVE (model default 0.25 for stop-class,
+# stricter 0.30 for the soft interjections): the 2026-07-17 echo-probe runs
+# measured 2-4 phantom playback cuts per 4-sentence session at the original
+# recall-biased 0.15/0.20 -- the spotter hallucinates stop-words on
+# noise-floor audio, and a KWS stop during playback cuts with no further
+# authority check (it IS the interrupt floor). Lowering thresholds is a
+# deliberate live-A/B decision AFTER the OS mic level is fixed, never a
+# default (ADR-0082).
+KWS_BARGE_PHRASES: tuple[tuple[tuple[str, ...], str, float], ...] = (
+    (("STOP",), "stop", 0.25),
+    (("STOP", "TALKING"), "stop", 0.25),
+    (("STOP", "SPEAKING"), "stop", 0.25),
+    (("BE", "QUIET"), "stop", 0.25),
+    (("WAIT",), "wait", 0.30),
+    (("HOLD", "ON"), "wait", 0.30),
+)
+# Model members we keep (chunk-16 variant, int8 preferred for encoder/joiner);
+# the decoder ships fp32 only. tokens.txt + en.phone drive keyword generation.
+KWS_KEEP_TOKENS = "tokens.txt"
+KWS_LEXICON = "en.phone"
+KWS_KEYWORDS_FILE = "keywords_barge.txt"
+
 
 def dest_for(base: str, key: str) -> str:
     """Per-artifact download dir so same-named files (tokens.txt) don't collide."""
@@ -526,6 +575,155 @@ def fetch_kokoro_package(dest_dir: str, url: str, *, force: bool = False) -> dic
     return got
 
 
+def generate_barge_keywords(lexicon_path: str, out_path: str) -> str:
+    """Write the sherpa-onnx keywords file for the stop-word interrupt floor.
+
+    The zh-en KWS model is PHONE-based, so each keyword line is the phrase's CMU
+    ARPABET phonemes followed by ``:BOOST #THRESHOLD @LABEL`` (per the sherpa-onnx
+    keyword-spotting format). Phonemes come from the model's own bundled
+    ``en.phone`` lexicon (CMU-dict format: ``WORD PH ON EM ES`` per line, first
+    pronunciation wins) -- dependency-free, no sentencepiece/pypinyin. Provenance:
+    lexicon shipped inside the kws-models release tarball fetched by --kws.
+
+    Returns the written path. Raises if a phrase word is absent from the lexicon
+    (a silent drop would leave that control phrase un-spottable)."""
+    lex: dict[str, str] = {}
+    with open(lexicon_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] not in lex:
+                lex[parts[0]] = " ".join(parts[1:])
+
+    lines: list[str] = []
+    for words, label, threshold in KWS_BARGE_PHRASES:
+        try:
+            phones = " ".join(lex[word] for word in words)
+        except KeyError as exc:
+            raise KeyError(
+                f"word {exc.args[0]!r} for keyword {' '.join(words)!r} not in "
+                f"{os.path.basename(lexicon_path)}"
+            ) from exc
+        lines.append(f"{phones} :{KWS_BARGE_BOOST} #{threshold} @{label}")
+
+    os.makedirs(os.path.dirname(out_path) or os.curdir, exist_ok=True)
+    tmp = out_path + ".part"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(tmp, out_path)
+    return out_path
+
+
+def _select_kws_members(names: list[str]) -> dict[str, str]:
+    """Pick the chunk-16 model members to keep, int8 preferred where it exists.
+
+    ``names`` are archive member basenames. Returns ``{role: basename}`` for
+    encoder/decoder/joiner + tokens + lexicon; raises if any required role is
+    absent so a truncated archive never wires a partial KWS group."""
+    chunk = "chunk-16"
+
+    def pick(role: str) -> str:
+        cands = [n for n in names if role in n and chunk in n and n.endswith(".onnx")]
+        if not cands:
+            raise FileNotFoundError(f"no {chunk} {role} .onnx in KWS archive")
+        int8 = [n for n in cands if ".int8." in n]
+        return sorted(int8 or cands)[0]
+
+    selected = {
+        "kws_encoder": pick("encoder"),
+        "kws_decoder": pick("decoder"),
+        "kws_joiner": pick("joiner"),
+    }
+    for role, want in (("kws_tokens", KWS_KEEP_TOKENS), ("lexicon", KWS_LEXICON)):
+        if want not in names:
+            raise FileNotFoundError(f"KWS archive missing {want}")
+        selected[role] = want
+    return selected
+
+
+def fetch_kws_package(dest_dir: str, url: str, *, force: bool = False) -> dict:
+    """Download + unpack the streaming KWS model and generate its keywords file.
+
+    Returns ``{kws_tokens, kws_encoder, kws_decoder, kws_joiner,
+    kws_keywords_file}`` -- exactly the config keys build_keyword_spotter reads.
+    Only the chunk-16 members actually needed are extracted (int8 encoder/joiner
+    when present) plus tokens.txt + en.phone, flattened into ``dest_dir`` with the
+    same path-traversal guard as fetch_kokoro_package (each file written via
+    ``extractfile``, never ``tar.extract``). The barge keywords file is generated
+    from en.phone. Idempotent: when every model file + the keywords file already
+    exist the download/unpack are skipped (unless ``force``). The archive and the
+    intermediate lexicon are removed after a successful unpack."""
+    import shutil
+    import tarfile
+
+    os.makedirs(dest_dir, exist_ok=True)
+    keywords_path = os.path.join(dest_dir, KWS_KEYWORDS_FILE)
+
+    def _resolve() -> dict:
+        onnx = [f for f in os.listdir(dest_dir) if f.endswith(".onnx")]
+
+        def find(role: str) -> str:
+            cands = [f for f in onnx if role in f and "chunk-16" in f]
+            if not cands:
+                return ""
+            int8 = [f for f in cands if ".int8." in f]
+            return os.path.join(dest_dir, sorted(int8 or cands)[0])
+
+        tokens = os.path.join(dest_dir, KWS_KEEP_TOKENS)
+        return {
+            "kws_encoder": find("encoder"),
+            "kws_decoder": find("decoder"),
+            "kws_joiner": find("joiner"),
+            "kws_tokens": tokens if os.path.exists(tokens) else "",
+            "kws_keywords_file": keywords_path if os.path.exists(keywords_path) else "",
+        }
+
+    have = _resolve()
+    if all(have.values()) and not force:
+        return have
+
+    archive = fetch_speaker_model(dest_dir, url, force=force)
+    dest_root = os.path.realpath(dest_dir)
+    with tarfile.open(archive, "r:*") as tar:
+        members = [m for m in tar.getmembers() if m.isfile()]
+        names = [os.path.basename(m.name) for m in members]
+        wanted = set(_select_kws_members(names).values())
+        for member in members:
+            base = os.path.basename(member.name)
+            if base not in wanted:
+                continue
+            parts = [
+                p for p in member.name.replace("\\", "/").split("/") if p and p != "."
+            ]
+            if any(p == ".." for p in parts):
+                raise ValueError(f"unsafe member path in {archive}: {member.name}")
+            out_path = os.path.join(dest_dir, base)
+            if not os.path.realpath(out_path).startswith(dest_root + os.sep):
+                raise ValueError(f"unsafe member path in {archive}: {member.name}")
+            src = tar.extractfile(member)
+            if src is None:
+                continue
+            with src, open(out_path, "wb") as out:
+                shutil.copyfileobj(src, out)
+
+    lexicon_path = os.path.join(dest_dir, KWS_LEXICON)
+    if not os.path.exists(lexicon_path):
+        raise FileNotFoundError(f"KWS lexicon {KWS_LEXICON} not extracted from {url}")
+    generate_barge_keywords(lexicon_path, keywords_path)
+    for scratch in (archive, lexicon_path):
+        try:
+            os.remove(scratch)  # archive + lexicon are only needed to unpack/generate
+        except OSError:
+            pass
+
+    got = _resolve()
+    if not all(got.values()):
+        missing = [k for k, v in got.items() if not v]
+        raise FileNotFoundError(
+            f"KWS package from {url} incomplete after unpack (missing {missing})"
+        )
+    return got
+
+
 def apply_accuracy(manifest: dict, accuracy: str) -> dict:
     """For ``high`` accuracy, use the non-quantized (fp32) ASR encoder/joiner
     from the same repo -- more accurate than the int8 default, cheap on a strong
@@ -535,6 +733,35 @@ def apply_accuracy(manifest: dict, accuracy: str) -> dict:
         for key in ("asr_encoder", "asr_joiner"):
             manifest[key]["file"] = manifest[key]["file"].replace(".int8.onnx", ".onnx")
     return manifest
+
+
+def preserve_existing_kokoro_selection(
+    cfg: dict,
+    resolved: dict,
+    *,
+    want_kokoro: bool,
+    exists=os.path.exists,
+) -> bool:
+    """Keep a previously selected on-disk Kokoro voice across non-Kokoro runs.
+
+    The default fetch resolves the Piper tts_model/tts_tokens/tts_data_dir;
+    wiring those over an existing ``tts_voices`` selection produces a broken
+    HYBRID (Kokoro voices.bin against the Piper model.onnx -- ``build_tts``
+    selects the Kokoro backend on ``tts_voices`` alone, then fails to load).
+    Seen live 2026-07-17 when ``--kws`` downgraded the Kokoro selection
+    (ADR-0082). Only an explicit ``--kokoro`` run re-wires the TTS keys.
+    Returns True when the resolved TTS defaults were dropped."""
+    if want_kokoro:
+        return False
+    sherpa = cfg.get("sherpa") if isinstance(cfg.get("sherpa"), dict) else {}
+    voices = str((sherpa or {}).get("tts_voices", "") or "")
+    model = str((sherpa or {}).get("tts_model", "") or "")
+    if not (voices and exists(voices) and model and exists(model)):
+        return False
+    dropped = False
+    for key in ("tts_model", "tts_tokens", "tts_data_dir"):
+        dropped = (resolved.pop(key, None) is not None) or dropped
+    return dropped
 
 
 def wire_sherpa_paths(
@@ -840,6 +1067,25 @@ def main(argv: list[str] | None = None) -> int:
         "successful fetch switches synthesis from the Piper/VITS voice to Kokoro.",
     )
     parser.add_argument(
+        "--kws-url",
+        dest="kws_url",
+        default=os.environ.get("KWS_MODEL_URL", KWS_URL),
+        help="URL of the streaming keyword-spotter model .tar.bz2 (override or set "
+        "KWS_MODEL_URL)",
+    )
+    parser.add_argument(
+        "--kws",
+        dest="kws",
+        action="store_true",
+        help="also download the streaming keyword spotter (bilingual zh-en, ~33 MB) "
+        "for the playback-time stop-word interrupt floor and wire kws_tokens/"
+        "kws_encoder/kws_decoder/kws_joiner/kws_keywords_file in config; off by "
+        "default. build_keyword_spotter keys on kws_encoder, so a successful fetch "
+        "makes the spotter opt-in on this box. The barge keywords file (stop / stop "
+        "talking / stop speaking / be quiet / wait / hold on) is generated at fetch "
+        "time from the model's bundled lexicon.",
+    )
+    parser.add_argument(
         "--aec-model",
         dest="aec_model",
         action="store_true",
@@ -1107,6 +1353,25 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
+    # Streaming keyword spotter (optional, opt-in): the playback-time stop-word
+    # interrupt floor. Same non-fatal contract as the other opt-in models -- a
+    # failed fetch leaves the spotter unconfigured (kws_encoder stays unset ->
+    # build_keyword_spotter returns None), never blocks the core setup.
+    if args.kws:
+        kws_dest = os.path.join(args.dest, "kws")
+        print(f"[models] fetching keyword spotter: {args.kws_url} -> {kws_dest}")
+        try:
+            resolved.update(
+                fetch_kws_package(kws_dest, args.kws_url, force=args.force)
+            )
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            print(
+                f"[models] keyword spotter not fetched ({exc}); continuing without it. "
+                "The stop-word interrupt floor stays off (kws_encoder unset) until "
+                "you re-run with --kws.",
+                file=sys.stderr,
+            )
+
     # DTLN-aec echo canceller (optional, opt-in). Upstream ships TFLite only, so we
     # fetch the two stage tflite files and convert each to ONNX with tf2onnx. Same
     # non-fatal contract: a failed fetch/convert leaves AEC on the NumPy 'nlms'
@@ -1204,6 +1469,13 @@ def main(argv: list[str] | None = None) -> int:
                 cfg = json.load(fh)
             if not isinstance(cfg, dict):
                 raise ValueError("existing local config must contain a JSON object")
+        if preserve_existing_kokoro_selection(
+            cfg, resolved, want_kokoro=bool(args.kokoro)
+        ):
+            print(
+                "[models] existing Kokoro voice selection preserved "
+                "(pass --kokoro to re-wire the TTS keys)"
+            )
         wire_sherpa_paths(cfg, resolved)
         if want_sense_voice:
             # backend is a mode string, not a path -> set it directly
@@ -1235,6 +1507,8 @@ def main(argv: list[str] | None = None) -> int:
         "asr_final_joiner",
         "asr_final_verifier_model",
         "endpoint_prosody_model", "aec_model",
+        "kws_encoder", "kws_decoder", "kws_joiner", "kws_tokens",
+        "kws_keywords_file",
     ]:
         if key in (
             "tts_voices", "tts_data_dir", "tts_lexicon", "punct_model",
@@ -1242,6 +1516,8 @@ def main(argv: list[str] | None = None) -> int:
             "asr_final_decoder", "asr_final_joiner",
             "asr_final_verifier_model",
             "endpoint_prosody_model", "aec_model",
+            "kws_encoder", "kws_decoder", "kws_joiner", "kws_tokens",
+            "kws_keywords_file",
         ) and not sherpa.get(key):
             continue  # optional + opt-in; don't print an empty line by default
         print(f"  {key}: {sherpa.get(key, '')}")
@@ -1259,6 +1535,14 @@ def main(argv: list[str] | None = None) -> int:
             "sherpa.endpoint_detector=prosody (it is OFF by default; needs onnxruntime). "
             "VALIDATE on device first:  "
             "python -m tools.live_session --all --inject --smart-endpoint"
+        )
+    if sherpa.get("kws_encoder"):
+        print(
+            "\nKeyword spotter ready (stop-word interrupt floor). It is now opt-in "
+            "ON for this box: build_keyword_spotter fires on stop / stop talking / "
+            "stop speaking / be quiet / wait / hold on. The engine own-echo guard "
+            "drops a hit that matches the assistant's own currently-playing TTS. "
+            f"Keywords: {sherpa.get('kws_keywords_file')}"
         )
     if sherpa.get("aec_model"):
         print(

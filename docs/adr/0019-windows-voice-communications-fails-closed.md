@@ -1,7 +1,9 @@
 # ADR-0019: Windows voice-communications capture fails closed until verified
 
 Date: 2026-07-10
-Status: accepted
+Status: superseded-by ADR-0082 (2026-07-17) — the demanded hardware-verifiable
+API now exists (native IAudioClient2 + OS-effects AEC proof); the fail-closed
+PRINCIPLE this ADR established is retained and strengthened there.
 
 ## Decision
 

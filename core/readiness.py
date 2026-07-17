@@ -860,14 +860,32 @@ def check_audio_frontend(
                 "active word-cut requires capture_voice_comm=true on Windows"
             )
         else:
+            # ADR-0082: construct-success proves nothing (Windows silently
+            # falls back to the default processing mode when the driver lacks
+            # a Communications APO). The contract is the post-open effects
+            # snapshot reporting Acoustic Echo Cancellation active on the
+            # actual communications-category stream (Win11 22000+ framework)
+            # -- the Windows analogue of the PipeWire echo-cancel node probe.
             try:
-                sd = import_fn("sounddevice")
-                sd.WasapiSettings(communications=True)
-                supported = True
-                detail = "WASAPI Communications stream setting is available"
-            except Exception as exc:  # noqa: BLE001 - selected path must construct
+                wasapi = import_fn("core.engines._wasapi_comm")
+                verdict = wasapi.probe_comm_capture()
+                if verdict.get("aec_active"):
+                    supported = True
+                    detail = (
+                        "WASAPI Communications capture verified: OS AEC active"
+                        f" (ns={'on' if verdict.get('ns_active') else 'off'},"
+                        f" effects={verdict.get('effect_count', 0)},"
+                        f" build={verdict.get('build', '?')})"
+                    )
+                else:
+                    detail = (
+                        "communications-category stream opened but the OS "
+                        "reports NO active AEC effect -- the driver lacks a "
+                        f"Communications APO on this endpoint ({verdict.get('error') or verdict.get('effects_error') or 'empty effects list'})"
+                    )
+            except Exception as exc:  # noqa: BLE001 - selected path must verify
                 detail = (
-                    "sounddevice cannot request WASAPI Communications capture: "
+                    "WASAPI Communications capture could not be verified: "
                     f"{exc}"
                 )
         out.append(Check(

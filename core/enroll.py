@@ -1118,6 +1118,7 @@ def verify_required_os_echo_route(
     *,
     platform: Optional[str] = None,
     pipewire_probe: Optional[Callable[[], object]] = None,
+    wasapi_probe: Optional[Callable[[], dict]] = None,
 ) -> str:
     """Return the verified upstream voice-processing mode, or raise.
 
@@ -1164,8 +1165,29 @@ def verify_required_os_echo_route(
             )
         return "none"
     if platform.startswith("win") and wants_voice_comm:
-        # The concrete WASAPI setting is verified when the stream is opened.
-        return "wasapi-pending"
+        # ADR-0082: a real probe, not the old "wasapi-pending" placeholder.
+        # Opens a short-lived communications-category stream and requires the
+        # OS effects framework to report Acoustic Echo Cancellation ACTIVE on
+        # it -- category tagging alone is silently ignored by drivers without
+        # a Communications APO, so construct-success proves nothing.
+        if wasapi_probe is None:
+            from .engines._wasapi_comm import probe_comm_capture as wasapi_probe
+        verdict = wasapi_probe()
+        if verdict.get("aec_active"):
+            return (
+                "wasapi-communications-aec:"
+                f"ns={'on' if verdict.get('ns_active') else 'off'};"
+                f"effects={verdict.get('effect_count', 0)};"
+                f"build={verdict.get('build', '?')}"
+            )
+        raise EnrollmentCaptureError(
+            "WASAPI Communications AEC could not be verified on this endpoint: "
+            + str(
+                verdict.get("error")
+                or verdict.get("effects_error")
+                or "stream opened but the OS reports no active AEC effect"
+            )
+        )
     if wants_voice_comm or wants_word_cut:
         raise EnrollmentCaptureError(
             "the configured OS echo-cancel capture route cannot be verified "
@@ -1277,14 +1299,45 @@ def _capture_raw_once(
     extra_settings = None
     applied_voice_comm = os_echo_mode
     if capture_voice_comm and platform.startswith("win"):
+        # ADR-0082: enrollment must record through the SAME native
+        # communications-category stream the live engine uses -- a raw sd
+        # stream would fingerprint a DIFFERENT capture domain, and the old
+        # sd.WasapiSettings(communications=True) attempt never existed in the
+        # installed API (ADR-0019). Fail closed: persisting a reference from
+        # an unverified route is exactly what enrollment must refuse to do.
+        from .engines._wasapi_comm import WasapiCommCapture
+
         try:
-            extra_settings = sd.WasapiSettings(communications=True)
+            cap = WasapiCommCapture(device=None if dev in (None, "") else dev)
         except Exception as exc:
             raise EnrollmentCaptureError(
-                "capture_voice_comm is configured but WASAPI Communications "
-                f"could not be applied: {exc}"
+                "capture_voice_comm is configured but the native WASAPI "
+                f"communications stream could not be opened: {exc}"
             ) from exc
-        applied_voice_comm = "wasapi-communications"
+        try:
+            if not cap.verdict.get("aec_active"):
+                raise EnrollmentCaptureError(
+                    "communications stream opened but the OS reports no active "
+                    "AEC effect; refusing to enroll on an unverified route"
+                )
+            cap.start()
+            native_sr = int(cap.samplerate)
+            audio, _overflowed = cap.read(int(float(seconds) * native_sr))
+        finally:
+            cap.close()
+        resolution = make_capture_resolution(
+            sd,
+            dev,
+            capture_sample_rate=native_sr,
+            model_sample_rate=int(sample_rate),
+            resampler_quality=resampler_quality,
+            # Bare mode label (no probe-detail suffix): the LIVE engine's
+            # capture domain uses exactly "wasapi-communications-aec", and the
+            # enrollment-vs-live fingerprint compares these strings.
+            voice_comm=str(os_echo_mode).split(":", 1)[0],
+            input_agc=input_agc,
+        )
+        return np.asarray(audio, dtype="float32").reshape(-1), resolution
     elif capture_voice_comm and os_echo_mode == "none":
         raise EnrollmentCaptureError(
             "capture_voice_comm is configured but no verified OS voice route was applied"

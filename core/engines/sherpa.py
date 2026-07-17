@@ -1659,6 +1659,10 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts = None
         self._kws = None
         self._kws_stream = None
+        # Diagnostic count of KWS hits dropped by the own-echo guard in
+        # _poll_keywords (the assistant's own TTS saying "stop"/"wait" leaking
+        # back through imperfect AEC). Plain attribute, GIL-safe for a counter.
+        self._kws_own_echo_suppressions: int = 0
         self._punct = None
         self._hotwords: list[str] = []
         self._stream_in = None
@@ -1690,6 +1694,9 @@ class SherpaOnnxEngine(AudioEngine):
         # speaker enrollment compatibility must never run before this exists.
         self._capture_resolution = None
         self._capture_voice_comm_applied = False
+        # ADR-0082: the last communications-route probe verdict (effects list,
+        # aec_active, build) -- surfaced into logs/bundles for route evidence.
+        self._comm_capture_verdict: Optional[dict] = None
         # Optional speech denoiser applied to the 16 kHz block after resampling,
         # before the recognizer/embedder/VAD (built in _build when enabled). None
         # -> the capture path is byte-identical to no-denoise.
@@ -2690,19 +2697,32 @@ class SherpaOnnxEngine(AudioEngine):
             if not capture_verified:
                 log.warning("virtual capture route is unverifiable: %s", detail)
         else:
-            route_config = dict(self.config.__dict__)
-            route_config["input_device"] = actual_selector
-            try:
-                voice_comm = verify_required_os_echo_route(route_config)
-                route_verified = voice_comm != "wasapi-pending"
-            except EnrollmentCaptureError as exc:
-                log.warning("capture route is unverifiable: %s", exc)
-                voice_comm = "unverified"
-                route_verified = False
             if self._capture_voice_comm_applied:
-                voice_comm = "wasapi-communications"
+                # The LIVE native stream carried its own proof (per-stream
+                # effects snapshot with AEC active at open, ADR-0082); a
+                # second short-lived probe here would be redundant and racy.
+                voice_comm = "wasapi-communications-aec"
                 route_verified = True
                 capture_verified = True
+            elif sys.platform.startswith("win") and self.config.capture_voice_comm:
+                # The native comm open failed/fell back: this session's LIVE
+                # audio is the RAW stream. An independent probe succeeding
+                # here would only prove a comm stream COULD get AEC, not that
+                # the audio the engine actually reads does -- so it must
+                # never verify the route (ADR-0082 fail-closed; the old
+                # "wasapi-pending" sentinel enforced this by accident).
+                voice_comm = "unverified"
+                route_verified = False
+            else:
+                route_config = dict(self.config.__dict__)
+                route_config["input_device"] = actual_selector
+                try:
+                    voice_comm = verify_required_os_echo_route(route_config)
+                    route_verified = voice_comm != "wasapi-pending"
+                except EnrollmentCaptureError as exc:
+                    log.warning("capture route is unverifiable: %s", exc)
+                    voice_comm = "unverified"
+                    route_verified = False
 
         self._capture_resolution = make_capture_resolution(
             sd,
@@ -3221,35 +3241,85 @@ class SherpaOnnxEngine(AudioEngine):
                     "virtual delay capture PCM has no supported exact-rate attempt"
                 )
 
-        # Windows-only: the WASAPI "Communications" category turns on the OS
-        # AEC/NS/AGC the same way Teams gets it. Best-effort -- absent on
-        # non-WASAPI hosts, so build it once and fail open if unavailable.
+        # Windows: the ADR-0082 NATIVE communications-category capture client
+        # (IAudioClient2 + effects verification) replaces the old sounddevice
+        # WasapiSettings(communications=True) attempt, which never existed in
+        # the installed API (ADR-0019). _capture_voice_comm_applied now means
+        # "a native comm stream is open AND the OS reported AEC active on it"
+        # -- the flag downstream route trust binds to, so it must never be set
+        # from construct-success alone. If the native path is unavailable or
+        # unverified, capture falls back to a raw stream (basic ASR keeps
+        # working) while the word-cut route stays unverified (fails closed).
         extra_settings = None
+        use_native_comm = False
+        self._capture_voice_comm_applied = False
         if self.config.capture_voice_comm:
             if sys.platform.startswith("win"):
-                try:
-                    extra_settings = sd.WasapiSettings(communications=True)
-                    self._capture_voice_comm_applied = True
-                    log.info(
-                        "capture: requesting the WASAPI Communications "
-                        "(voice-comm) path"
-                    )
-                except Exception as exc:  # noqa: BLE001 - old sounddevice
-                    log.info(
-                        "capture_voice_comm set but the WASAPI path is "
-                        "unavailable (%s)",
-                        exc,
-                    )
-                    extra_settings = None
-                    self._capture_voice_comm_applied = False
+                # The LIVE open below is the authoritative verification (each
+                # WasapiCommCapture carries its own per-stream effects proof,
+                # re-checked on every recovery reopen); a separate short-lived
+                # probe here would just double the COM round-trips.
+                use_native_comm = True
             else:
                 log.info(
                     "capture_voice_comm uses the externally routed OS voice path "
                     "on this platform; no WASAPI stream setting applied"
                 )
-                self._capture_voice_comm_applied = False
+
+        native_comm_failed = threading.Event()
+        native_comm_pin_logged = threading.Event()
 
         def _open(device, samplerate):
+            if use_native_comm and device is not None:
+                if not native_comm_pin_logged.is_set():
+                    native_comm_pin_logged.set()
+                    log.warning(
+                        "capture_voice_comm: the native communications client "
+                        "supports only the DEFAULT input device; pinned device "
+                        "%r uses raw capture and the word-cut route stays "
+                        "unverified (clear input_device to use the comm route)",
+                        device,
+                    )
+            elif use_native_comm and not native_comm_failed.is_set():
+                from ._wasapi_comm import WasapiCommCapture
+
+                try:
+                    cap = WasapiCommCapture(device=None, samplerate=samplerate)
+                    self._comm_capture_verdict = dict(cap.verdict)
+                    if not cap.verdict.get("aec_active"):
+                        # Category accepted but the OS attached no AEC effect
+                        # (driver lacks a Communications APO): never run
+                        # voice-comm-trusted capture without proof.
+                        detail = (
+                            cap.effects_error
+                            or f"effects={cap.verdict.get('effect_count', 0)}"
+                        )
+                        cap.close()
+                        raise RuntimeError(
+                            f"OS reports no active AEC effect ({detail})"
+                        )
+                    self._capture_voice_comm_applied = True
+                    log.info(
+                        "capture: WASAPI Communications route VERIFIED on the "
+                        "live stream -- OS AEC active (ns=%s, effects=%d, "
+                        "build %s, mix %s)",
+                        "on" if cap.verdict.get("ns_active") else "off",
+                        int(cap.verdict.get("effect_count", 0)),
+                        cap.verdict.get("build", "?"),
+                        f"{cap.mix_format.channels}ch@{cap.samplerate}"
+                        if cap.mix_format
+                        else "?",
+                    )
+                    return cap
+                except Exception as exc:  # noqa: BLE001 - permanent fallback
+                    native_comm_failed.set()
+                    self._capture_voice_comm_applied = False
+                    log.warning(
+                        "native comm capture open failed (%s) -- falling back "
+                        "to raw capture for this session; word-cut route is "
+                        "unverified (ADR-0082 fail-closed)",
+                        exc,
+                    )
             return sd.InputStream(
                 channels=1,
                 samplerate=samplerate,
@@ -4445,6 +4515,11 @@ class SherpaOnnxEngine(AudioEngine):
                 else "identity"
             ),
             voice_comm=(
+                # Label kept for fingerprint stability. Semantics note
+                # (ADR-0082): "applied" now means the live comm stream carried
+                # a VERIFIED OS-AEC effects snapshot at open -- a far stronger
+                # claim than the pre-0082 construct-success this hedge-y label
+                # was written for; only the full resolution is still pending.
                 "applied-unresolved"
                 if self._capture_voice_comm_applied
                 else (
@@ -6308,6 +6383,31 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                     ):
                         return
+                # Own-echo suppression: if the assistant is speaking and the
+                # spotted control word appears (whole-word) in the currently-
+                # playing sentence OR the recently-enqueued sentence ring,
+                # this is the assistant hearing its own TTS ("stop", "wait")
+                # through imperfect AEC, not the user -- drop it so it cannot
+                # self-interrupt. Whole-word over now-playing + _recent_spoken
+                # mirrors the word-cut echo filter (a bare substring check
+                # false-positives on containing words, and now-playing alone
+                # misses the tail of a sentence that just finished). Same
+                # own-TTS control-ambiguity concern as ADR-0042.
+                if self._speaking.is_set():
+                    spotted_words = set(normalize_command(keyword).split())
+                    recent = [str(getattr(self, "_now_playing", "") or "")]
+                    recent.extend(str(t) for t in getattr(self, "_recent_spoken", ()))
+                    echo_words: set[str] = set()
+                    for sent in recent:
+                        echo_words.update(normalize_command(sent).split())
+                    if spotted_words and spotted_words <= echo_words:
+                        self._kws_own_echo_suppressions += 1
+                        log.info(
+                            "KWS hit %r suppressed: matches own TTS now playing/"
+                            "recently spoken (own-echo guard, ADR-0042)",
+                            keyword,
+                        )
+                        return
                 if self._capture_callback_is_current():
                     self._emit_capture_callback(self._cb.on_command, keyword)
 
@@ -8116,6 +8216,10 @@ class SherpaOnnxEngine(AudioEngine):
             similarity = float(raw_similarity)
             if not math.isfinite(similarity):
                 raise ValueError("speaker similarity is not finite")
+            lst = st.setdefault("speaker_similarities", [])
+            lst.append(round(similarity, 4))
+            if len(lst) > 300:  # a very long reply can't grow unbounded
+                del lst[:100]
             self._word_cut_speaker_last_decision_observed_samples = int(
                 self._word_cut_candidate_observed_samples
             )
@@ -9173,6 +9277,26 @@ class SherpaOnnxEngine(AudioEngine):
             ordered = sorted(wins)
             p50 = ordered[len(ordered) // 2]
             p95 = ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))]
+        # Owner-vs-echo speaker-similarity distribution for this reply. Only
+        # appended when at least one word-cut speaker decision scored a
+        # similarity -- the funnel line must stay byte-identical (for existing
+        # log-parsing tests) on replies where speaker gating never ran.
+        sims = st.get("speaker_similarities") or []
+        sim_fmt = ""
+        sim_args: tuple = ()
+        if sims:
+            ordered_sims = sorted(sims)
+            sim_p50 = ordered_sims[len(ordered_sims) // 2]
+            sim_p95 = ordered_sims[
+                min(len(ordered_sims) - 1, int(len(ordered_sims) * 0.95))
+            ]
+            sim_fmt = (
+                " speaker_sim_p50=%.4f speaker_sim_p95=%.4f "
+                "speaker_sim_min=%.4f speaker_sim_max=%.4f speaker_sim_n=%d"
+            )
+            sim_args = (
+                sim_p50, sim_p95, ordered_sims[0], ordered_sims[-1], len(sims),
+            )
         log.info(
             "word-cut funnel: fed=%d skipped_quiet=%d quiet_flush=%d "
             "quiet_flush_ms=%d quiet_flush_pad_ms=%d energy_above=%d "
@@ -9185,7 +9309,7 @@ class SherpaOnnxEngine(AudioEngine):
             "pcm_trimmed_samples=%d replay_errors=%d "
             "speaker_accepts=%d speaker_rejects=%d speaker_deferred=%d "
             "speaker_unavailable=%d speaker_cold_deferred=%d "
-            "speaker_errors=%d speaker_resets=%d",
+            "speaker_errors=%d speaker_resets=%d" + sim_fmt,
             st.get("fed", 0), st.get("skipped_quiet", 0),
             st.get("quiet_flush_blocks", 0),
             round(
@@ -9214,6 +9338,7 @@ class SherpaOnnxEngine(AudioEngine):
             st.get("speaker_deferred", 0), st.get("speaker_unavailable", 0),
             st.get("speaker_cold_deferred", 0), st.get("speaker_errors", 0),
             st.get("speaker_resets", 0),
+            *sim_args,
         )
         self._wc_stats = {}
         self._wc_win = {}

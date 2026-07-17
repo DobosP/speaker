@@ -1893,36 +1893,66 @@ def test_windows_word_cut_fails_without_voice_communications_request():
     assert "capture_voice_comm=true" in route.detail
 
 
-def test_windows_selected_voice_path_must_be_constructible():
-    class FakeSD:
-        class WasapiSettings:
-            def __init__(self, **kwargs):
-                if "communications" in kwargs:
-                    raise TypeError("unexpected keyword argument 'communications'")
+def _fake_wasapi_module(verdict):
+    class FakeWasapi:
+        @staticmethod
+        def probe_comm_capture():
+            return verdict
 
+    return FakeWasapi
+
+
+def test_windows_voice_path_verified_by_active_aec_probe():
+    # ADR-0082: the check passes ONLY when the OS effects framework reports
+    # AEC active on a real communications-category stream -- construct-success
+    # (the pre-ADR-0019 assumption) is no longer accepted as evidence.
     checks = check_audio_frontend(
         {"sherpa": {"capture_voice_comm": True}},
-        import_fn=lambda name: FakeSD if name == "sounddevice" else object(),
-        platform="win32",
-    )
-    route = _wasapi_route_check(checks)
-    assert route is not None and not route.ok
-    assert "cannot request" in route.detail
-
-
-def test_windows_selected_voice_path_passes_when_constructible():
-    class FakeSD:
-        class WasapiSettings:
-            def __init__(self, *, communications):
-                assert communications is True
-
-    checks = check_audio_frontend(
-        {"sherpa": {"capture_voice_comm": True}},
-        import_fn=lambda name: FakeSD if name == "sounddevice" else object(),
+        import_fn=lambda name: (
+            _fake_wasapi_module(
+                {"aec_active": True, "ns_active": True, "effect_count": 3, "build": 26200}
+            )
+            if name == "core.engines._wasapi_comm"
+            else object()
+        ),
         platform="win32",
     )
     route = _wasapi_route_check(checks)
     assert route is not None and route.ok
+    assert "OS AEC active" in route.detail
+
+
+def test_windows_voice_path_fails_when_driver_reports_no_aec():
+    checks = check_audio_frontend(
+        {"sherpa": {"capture_voice_comm": True}},
+        import_fn=lambda name: (
+            _fake_wasapi_module(
+                {"aec_active": False, "effect_count": 0, "build": 26200}
+            )
+            if name == "core.engines._wasapi_comm"
+            else object()
+        ),
+        platform="win32",
+    )
+    route = _wasapi_route_check(checks)
+    assert route is not None and not route.ok
+    assert "NO active AEC" in route.detail
+
+
+def test_windows_voice_path_fails_closed_when_probe_module_unavailable():
+    def _import(name):
+        if name == "core.engines._wasapi_comm":
+            raise ImportError("comtypes missing")
+        return object()
+
+    checks = check_audio_frontend(
+        {"sherpa": {"capture_voice_comm": True}},
+        import_fn=_import,
+        platform="win32",
+    )
+    route = _wasapi_route_check(checks)
+    assert route is not None and not route.ok
+    assert "could not be verified" in route.detail
 
 
 # --- doctor validates the SELECTED profile's ollama models (gemma3:1b gap) ------

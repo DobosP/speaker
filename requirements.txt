@@ -4,6 +4,10 @@
 # Audio (cross-platform)
 sounddevice>=0.4.6
 pygame>=2.5.0
+# Windows-only: COM bindings for the native WASAPI communications-category
+# capture client + its OS-AEC effects verification (core/engines/_wasapi_comm.py,
+# ADR-0082). Pure-Python, tiny; unused on other platforms.
+comtypes>=1.4 ; sys_platform == "win32"
 
 # Text-to-Speech (multiple backends, in priority order)
 kokoro-onnx>=0.5.0           # Kokoro ONNX TTS (local, ~82M params, Apache-2.0)

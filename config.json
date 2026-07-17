@@ -567,6 +567,8 @@
     "stop": "stop",
     "cancel": "stop",
     "quiet": "stop",
+    "wait": "stop",
+    "hold on": "stop",
     "assistant mode": "mode:assistant",
     "command mode": "mode:command",
     "research mode": "mode:research",

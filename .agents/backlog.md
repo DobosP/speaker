@@ -14,6 +14,43 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > pending a verified implementation (ADR-0019).
 
 ## P0 — correctness / blocker
+- [ ] **★ Playback tail cut "at the end, always the same spot" (owner
+      observation 2026-07-17, Windows box, during the ADR-0082 echo-probe
+      runs; UNDIAGNOSED — do not guess-fix).** Probe attribution on the
+      broken-quiet mic (avg_rms ~6e-5): word-cut+KWS active → 2-4
+      self-interruptions per 4 sentences (KWS phantom stop-hits ≈2 at
+      threshold 0.15, still ≈2-3 at 0.25; word-cut/other ≈1); KWS off → 1;
+      BOTH off → the legacy acoustic path takes over (barge_in_enabled with
+      aec off) and fires 4 with vad_flagged_during_play=82. The owner hears
+      the cut at the SAME position near the reply end every time —
+      deterministic, so also audit the output tail path (drain wait,
+      leveler/flush, terminal receipts) not just barge. NEXT: fix the OS mic
+      level first (everything downstream currently runs on noise floor),
+      then one echo-probe + run-bundle pass attributing the cut via the
+      word-cut funnel + playback receipts before touching thresholds again. (roadmap item 15b, analyzed 2026-07-17, ADR-0082 — P2, parked with design notes).**
+      Goal: when NO barge route exists, buffer playback-time talk-over (reusing
+      the `_splice_word_cut_preroll` machinery) so it becomes the next turn's
+      input instead of vanishing at the route-unverified `continue`. Parked
+      because a compliant build needs the SAME floors as a cut, not relaxed
+      ones: ADR-0072's fail-closed rule ("no local value may let zero-to-three
+      generic words, empty PCM, silence, or generic recognized own echo ...
+      seed normal ASR"), ADR-0042's identity carve-out for STOP-ambiguous
+      content, admission-vs-identity separation (similarity used for buffering
+      must not shortcut the normal-final speaker gate), and the energy
+      fallback being explicitly scoped to verified routes only. ADR-0071 also
+      defers dialogue-policy features until the physical pipeline is proven.
+      With ADR-0082's native comm route verified on the Windows box, the
+      discard branch is no longer operative there — revisit only for
+      route-less platforms/devices.
+- [ ] **P2 cleanups from the ADR-0082 review (2026-07-17).** (a) Three
+      near-identical tar-extraction loops now live in tools/setup_models.py
+      (extract_member, fetch_kokoro_package, fetch_kws_package) — the
+      path-traversal guard is security-relevant; consolidate into one
+      `_extract_tar_members` helper so a future hardening fix cannot miss a
+      copy. (b) preserve_existing_kokoro_selection protects only Kokoro; the
+      generic invariant belongs in wire_sherpa_paths (never downgrade ANY
+      existing valid on-disk backend selection unless that family was
+      explicitly requested) — closes the whole downgrade-to-hybrid bug class.
 - [ ] **Repeat-guard clock race (found 2026-07-17, Windows).** The ADR-0068
       controller repeat handler treats a pre-session `assistant_output` as
       in-session when its `time.time()` stamp ties `session_started_at`

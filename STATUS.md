@@ -74,11 +74,29 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   flush (receipts stay output-domain exact), dry gaps and dead input are
   first-class bundle metrics, run summaries carry p50/p95 stage latency, and
   the desktop profile unstarves recent-context (320→1536). Machine-local:
-  gemma4:12b + pinned MiniCPM Q8 tiers restored, Kokoro 24 kHz + 7 kHz lowpass
-  active, interim AEC3 duck-confirm barge (ADR-0019 native comm capture still
-  pending). 12B live load, mic-level fix, calibration, and re-enrollment remain
-  before any live A/B verdict. Known upstream latent: ADR-0068 repeat-guard
-  clock race on coarse clocks (backlog; Linux unaffected in practice).
+  gemma4:12b + pinned MiniCPM Q8 tiers restored (both verified resident,
+  9.3 GB GPU), Kokoro 24 kHz + 7 kHz lowpass active. Known upstream latent:
+  ADR-0068 repeat-guard clock race on coarse clocks (backlog; Linux
+  unaffected in practice).
+- Windows barge route (ADR-0082): the native IAudioClient2 communications
+  capture landed with the OS-effects verification contract — route verified
+  ONLY when the effects framework reports AEC active on the live stream
+  ("wasapi-pending" is gone; readiness/enroll/engine all probe). Measured on
+  the box: AEC+NS+beamforming ON (build 26200, 2ch f32 48 kHz); doctor fully
+  READY on the ADR-0013 word-cut recipe for the first time; two headless
+  echo-probe runs: 4 sentences spoken, 0 self-interruptions, 0 VAD flags
+  during playback (mic-level caveat applies — probe not conclusive alone).
+  KWS stop-word floor wired machine-local (phone-based zipformer, own-echo
+  guard, stop/wait/hold-on → stop; trigger thresholds conservative 0.25/0.30
+  after phantom playback cuts at 0.15); word-cut funnel now logs the speaker-
+  similarity distribution. Deferred-barge buffering parked in backlog with
+  contract analysis. OPEN P1: owner-observed deterministic tail cut near
+  reply end during probe runs (backlog ★ item; 1-4 self-cuts per probe on
+  the noise-floor mic, attribution table recorded — undiagnosed, mic fix
+  first). STILL REQUIRED before claiming barge works: OS mic-level
+  fix, re-enrollment in the new wasapi-communications-aec capture domain, and
+  the owner-run ADR-0013 physical gate (talk-over batch, bare stop, silent
+  control) with the Kokoro voice.
 - Historical v4 stays active. Enrollment `174212` captured an isolated v5
   candidate, but it failed its live gate and was never promoted (ADR-0072).
 - Physical runs `192151`/`193713` failed with enrollment on and off; neither

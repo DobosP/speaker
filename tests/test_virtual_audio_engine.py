@@ -192,6 +192,77 @@ def test_private_kws_rechecks_route_at_callback_seam():
     assert commands == []
 
 
+class _FixedKws:
+    """Minimal spotter that reports one fixed keyword hit per poll."""
+
+    def __init__(self, keyword):
+        self.keyword = keyword
+        self.resets = 0
+
+    def is_ready(self, _stream):
+        return False
+
+    def get_result(self, _stream):
+        return self.keyword
+
+    def reset_stream(self, _stream):
+        self.resets += 1
+
+
+class _NullKwsStream:
+    def accept_waveform(self, _sample_rate, _samples):
+        pass
+
+
+def _kws_engine(keyword):
+    engine = SherpaOnnxEngine(SherpaConfig())
+    engine._kws = _FixedKws(keyword)
+    engine._kws_stream = _NullKwsStream()
+    commands: list[str] = []
+    engine._cb = EngineCallbacks(on_command=commands.append)
+    return engine, commands
+
+
+def test_kws_own_echo_suppressed_when_now_playing_contains_keyword():
+    # The assistant's own TTS ("I'll stop now") leaks back through imperfect AEC
+    # and the spotter fires on it -- the own-echo guard must drop the hit so it
+    # cannot self-interrupt.
+    engine, commands = _kws_engine("stop")
+    engine._speaking.set()
+    engine._now_playing = "Okay, I will stop now."
+
+    engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert commands == []
+    assert engine._kws_own_echo_suppressions == 1
+    assert engine._kws.resets == 1  # stream is still reset after the hit
+
+
+def test_kws_hit_passes_when_not_speaking_even_if_now_playing_matches():
+    # Not speaking -> the guard is inert; a genuine user "stop" must reach the
+    # command callback even if the last-played line contained the word.
+    engine, commands = _kws_engine("stop")
+    engine._now_playing = "Okay, I will stop now."
+
+    engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert commands == ["stop"]
+    assert engine._kws_own_echo_suppressions == 0
+
+
+def test_kws_hit_passes_when_now_playing_does_not_contain_keyword():
+    # Speaking, but the playing sentence does not contain the spotted word ->
+    # this is the user talking over the assistant, not its own echo. Pass it.
+    engine, commands = _kws_engine("stop")
+    engine._speaking.set()
+    engine._now_playing = "The weather is nice today."
+
+    engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert commands == ["stop"]
+    assert engine._kws_own_echo_suppressions == 0
+
+
 def test_failed_virtual_playback_proof_never_grants_authority():
     binder = _Binder()
     binder.capture_bound = True

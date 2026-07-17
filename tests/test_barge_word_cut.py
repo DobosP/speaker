@@ -3560,6 +3560,25 @@ def test_funnel_counters_and_emission(caplog):
     assert "preroll_samples=3200" in text
     assert "replay_errors=0" in text
     assert eng._wc_stats == {}           # stats are per-reply, cleared on emit
+    # No word-cut speaker decision scored a similarity this reply -- the
+    # funnel line must stay byte-identical, no speaker_sim_* fields at all.
+    assert "speaker_sim_" not in text
+
+
+def test_funnel_emits_speaker_similarity_percentiles(caplog):
+    import logging
+
+    # Known distribution: p50 (median of 5) = 0.3, p95 (index 4 of 0..4) = 0.5.
+    eng = _engine(vad_speech=True)
+    eng._wc_stats["speaker_similarities"] = [0.1, 0.2, 0.3, 0.4, 0.5]
+    eng._wc_reply_active = True
+    with caplog.at_level(logging.INFO, logger="speaker.sherpa"):
+        eng._emit_word_cut_funnel()
+    assert (
+        "speaker_sim_p50=0.3000 speaker_sim_p95=0.5000 "
+        "speaker_sim_min=0.1000 speaker_sim_max=0.5000 speaker_sim_n=5"
+        in caplog.text
+    )
 
 
 def test_funnel_reports_detector_only_quiet_flush_duration(caplog):

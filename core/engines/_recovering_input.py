@@ -190,9 +190,23 @@ class _RecoveringInputStream:
 
     @property
     def actual_samplerate(self) -> int:
-        """Sample rate of the currently open stream. Raises if not open."""
+        """Sample rate of the currently open stream. Raises if not open.
+
+        Prefer the candidate's OWN reported rate over the attempt's requested
+        one: sounddevice honors the request (identical values), but a
+        shared-mode WASAPI communications client treats the request as a hint
+        and negotiates the mix rate (ADR-0082). Returning the request there
+        made the engine skip its resampler and feed mix-rate audio to the
+        model rate -- the 3x-slow garble class the Phase-0 postmortem warns
+        about."""
         if self._current is None:
             raise RuntimeError("input stream is not open")
+        stream_rate = getattr(self._stream, "samplerate", None)
+        try:
+            if stream_rate:
+                return int(stream_rate)
+        except (TypeError, ValueError):
+            pass
         return self._current.samplerate
 
     @property

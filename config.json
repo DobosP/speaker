@@ -222,7 +222,11 @@
       },
       "input_gate": {"enabled": true, "unsure_acts": false, "max_context": 4},
       "cleanup": {"enabled": true, "max_context": 3},
-      "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true}
+      "capability_router": {"enabled": true, "llm_assist": true, "confidence_threshold": 0.65, "act_confirm": true},
+      "memory": {
+        "_comment": "The global recall_recent_reserve_tokens=320 is sized for the 1536-ctx phone_lite profile; inside this profile's 8192-token num_ctx it starves the model to ~2-4 short exchanges of history (2026-07-17 roadmap, verified). 1536 restores real multi-turn state while leaving ample room for system prompt + recall block + num_predict=512.",
+        "recall_recent_reserve_tokens": 1536
+      }
     },
     "macbook_m_series": {
       "_comment": "Apple Silicon (16GB+): MiniCPM5-1B Q8 is the local answering tier and gemma3:4b remains the vision/complex main. Both gates are enabled; sensitivity-routed cloud chains are available but default off.",

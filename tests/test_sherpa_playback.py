@@ -16,9 +16,14 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.audio_frontend import InputAGC, apply_gain_soft_limit
+from core.audio_frontend import AudioResampler, InputAGC, apply_gain_soft_limit
 from core.engines._aec import FarEndRing, PlaybackFIFO
-from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines.sherpa import (
+    SherpaConfig,
+    SherpaOnnxEngine,
+    _resample_linear,
+    _resample_playback,
+)
 from core.engine import EngineCallbacks, PlaybackOutcome, PlaybackReceipt, TrackedSpeech
 from core.metrics import TTS_FIRST_AUDIO
 
@@ -1744,7 +1749,150 @@ def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
     assert eng._last_playback_at == 0.0
 
 
-# --- Streaming normalize_rms + low-pass path --------------------------------
+# --- Dry-gap counter: fully-empty blocks BETWEEN sentences ------------------
+# A partial read (0 < n < frames) is the underrun counter's job; a fully-empty
+# read (n == 0) while a later sentence is still being synthesized is dead air
+# the underrun counter cannot see. The window is: _synth_active (worker armed),
+# _speaking set, and the reply has already played audio (_last_playback_at > 0
+# excludes the initial synth lead-in, which first_audio_latency measures).
+
+
+def test_audio_cb_counts_dry_gap_only_inside_the_synth_active_window():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = eng.config.sample_rate
+    eng._fifo = PlaybackFIFO(8)  # empty -> n == 0
+    eng._speaking.set()
+    eng._synth_active = True
+    eng._last_playback_at = time.monotonic()  # reply audio already played
+
+    eng._audio_cb(_outbuf(4), 4, None, None)
+    assert eng._drygap_blocks == 1
+    assert eng._underrun_blocks == 0  # not misfiled as a partial-read underrun
+
+    # Window closed by the worker (last sentence produced): tail drain is free.
+    eng._synth_active = False
+    eng._audio_cb(_outbuf(4), 4, None, None)
+    assert eng._drygap_blocks == 1
+
+    # Initial synth lead-in (no audio played yet this reply): not a dry gap --
+    # that latency is already measured by TTS_FIRST_AUDIO/first_audio_latency.
+    eng._synth_active = True
+    eng._last_playback_at = 0.0
+    eng._audio_cb(_outbuf(4), 4, None, None)
+    assert eng._drygap_blocks == 1
+
+    # Not speaking at all: never counted.
+    eng._speaking.clear()
+    eng._last_playback_at = time.monotonic()
+    eng._audio_cb(_outbuf(4), 4, None, None)
+    assert eng._drygap_blocks == 1
+
+
+def test_audio_cb_partial_underrun_is_not_double_counted_as_dry_gap():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = eng.config.sample_rate
+    eng._far_ref = FarEndRing()
+    eng._echo_coherence = None
+    eng._fifo = PlaybackFIFO(8)
+    eng._fifo.write(np.array([0.5, 0.25], dtype="float32"), lambda: False)
+    eng._speaking.set()
+    eng._synth_active = True
+    eng._last_playback_at = time.monotonic()
+
+    eng._audio_cb(_outbuf(5), 5, None, None)  # 2 real samples, 3 zero-fill
+
+    assert eng._underrun_blocks == 1
+    assert eng._drygap_blocks == 0
+
+
+# --- dead-input escalation: one-shot ERROR + metric after 5 silent beats ----
+
+
+def test_silent_heartbeat_escalates_once_after_five_consecutive_beats(
+    caplog, monkeypatch
+):
+    eng = _engine(_StreamingTts())
+    metrics: list = []
+    eng._cb.on_metric = lambda name, **kw: metrics.append(name)
+    monkeypatch.setattr(eng, "_capture_callback_is_current", lambda epoch: True)
+    monkeypatch.setattr(eng, "_emit_capture_callback", lambda fn, *a, **kw: fn(*a))
+
+    with caplog.at_level(logging.ERROR):
+        for _ in range(4):
+            eng._note_silent_heartbeat(0)
+        assert metrics == []  # under the 5-beat (~10s) threshold: no escalation
+        eng._note_silent_heartbeat(0)
+        assert metrics == ["capture_silent_input"]
+        for _ in range(3):  # one-shot per EPISODE: no re-fire while still silent
+            eng._note_silent_heartbeat(0)
+        assert metrics == ["capture_silent_input"]
+        # Recovery re-arms (the capture loop's non-silent branch does exactly
+        # this), so a LATER genuine mic death in the same session escalates too.
+        eng._silent_beats = 0
+        eng._silent_input_reported = False
+        for _ in range(5):
+            eng._note_silent_heartbeat(0)
+        assert metrics == ["capture_silent_input", "capture_silent_input"]
+    assert any("~silent for 10s+" in r.getMessage() for r in caplog.records)
+
+
+# --- _resample_playback: stateful anti-imaging path with linear fallback ----
+
+
+class _StubResampler:
+    def __init__(self, src_sr, dst_sr):
+        self.src_sr = src_sr
+        self.dst_sr = dst_sr
+        self.calls = 0
+
+    def process(self, block, *, last=False):
+        self.calls += 1
+        return np.full(7, 0.123, dtype="float32")  # sentinel
+
+
+def test_resample_playback_uses_matching_stateful_resampler():
+    rs = _StubResampler(16000, 48000)
+    out = _resample_playback(np.zeros(160, dtype="float32"), 16000, 48000, rs)
+    assert rs.calls == 1
+    np.testing.assert_array_equal(out, np.full(7, 0.123, dtype="float32"))
+
+
+def test_resample_playback_falls_back_to_linear_on_rate_mismatch_or_none():
+    x = np.linspace(-1.0, 1.0, 160).astype("float32")
+    expect = _resample_linear(x, 16000, 48000)
+    # Resampler bound to different rates (device reopened): never used.
+    stale = _StubResampler(16000, 44100)
+    np.testing.assert_array_equal(
+        _resample_playback(x, 16000, 48000, stale), expect
+    )
+    assert stale.calls == 0
+    # No resampler at all (device accepted the TTS rate at last open).
+    np.testing.assert_array_equal(_resample_playback(x, 16000, 48000, None), expect)
+
+
+def test_resample_playback_upsample_suppresses_imaging_vs_linear():
+    """24 kHz -> 48 kHz (the Kokoro-on-a-48k-device path): a naive np.interp
+    upsample mirrors source content above the source Nyquist as imaging energy;
+    the stateful AudioResampler must attenuate that band. Skipped only if the
+    box has neither soxr nor scipy (pure-linear fallback would tie by design)."""
+    rs = AudioResampler(24000, 48000, quality="HQ")
+    if rs.kind == "linear":
+        pytest.skip("no soxr/scipy on this box -- AudioResampler IS linear here")
+    t = np.arange(24000, dtype="float32") / 24000.0
+    tone = np.sin(2.0 * np.pi * 9000.0 * t).astype("float32")  # near src Nyquist
+    hq = np.concatenate(
+        [rs.process(tone[:12000]), rs.process(tone[12000:], last=True)]
+    )
+    lin = _resample_linear(tone, 24000, 48000)
+
+    def band_energy(x, sr, lo_hz):
+        spec = np.abs(np.fft.rfft(x.astype("float64")))
+        freqs = np.fft.rfftfreq(x.size, 1.0 / sr)
+        band = spec[freqs >= lo_hz]
+        return float(np.sum(band * band))
+
+    # Energy above the source Nyquist (12 kHz) is imaging artifact by definition.
+    assert band_energy(hq, 48000, 13000.0) < 0.1 * band_energy(lin, 48000, 13000.0)
 
 
 class _TrackingTts:

@@ -1540,6 +1540,24 @@ def _resample_linear(samples, src_sr: int, dst_sr: int):
     return np.interp(idx, np.arange(x.shape[0]), x).astype("float32")
 
 
+def _resample_playback(samples, src_sr: int, dst_sr: int, resampler) -> "np.ndarray":
+    """Producer-side (worker thread) playback resample: prefer the stateful
+    anti-imaging ``AudioResampler`` built at stream open; fall back to the naive
+    linear path only when it is absent or was built for different rates (device
+    reopened at a new rate mid-item). The naive ``np.interp`` upsample has no
+    anti-imaging filter -- audibly harsh on 24 kHz Kokoro -> 44.1/48 kHz devices
+    (the capture direction already learned this; see AudioResampler). The AEC
+    far-ref tee inside ``_audio_cb`` deliberately stays ``_resample_linear``:
+    that path is hard real-time and its output is only an echo reference."""
+    if (
+        resampler is not None
+        and getattr(resampler, "src_sr", None) == src_sr
+        and getattr(resampler, "dst_sr", None) == dst_sr
+    ):
+        return resampler.process(samples)
+    return _resample_linear(samples, src_sr, dst_sr)
+
+
 _SHERPA_PLAYBACK_CAPABILITIES = PlaybackCapabilities(
     tracked_terminal=True,
     exact_started=True,
@@ -1803,6 +1821,21 @@ class SherpaOnnxEngine(AudioEngine):
         # off-thread. Plain ints -> GIL-atomic, alloc-free, real-time safe.
         self._underrun_blocks: int = 0
         self._underrun_at_reply_start: int = 0
+        # Dry-gap counter: the partial-read counter above cannot see a block where
+        # the FIFO was ALREADY fully empty (n == 0) -- with whole-clip leveler
+        # synthesis the audible failure mode is dead air BETWEEN sentences, which
+        # the n == 0 carve-out ("normal end-of-utterance") silently absorbs. Count
+        # fully-empty blocks only while a sentence is still being produced
+        # (_synth_active, set by the playback worker) AND this reply has already
+        # played audio (_last_playback_at > 0 excludes the initial synth lead-in,
+        # which TTS_FIRST_AUDIO/first_audio_latency already measures). Same
+        # GIL-atomic plain-attribute pattern as the underrun pair.
+        self._drygap_blocks: int = 0
+        self._drygap_at_reply_start: int = 0
+        self._synth_active: bool = False
+        # Playback-side tts_sr->play_sr resampler (soxr-backed, worker-thread
+        # only); None while closed or when the device accepts the TTS rate.
+        self._play_resampler: Optional[AudioResampler] = None
         # Fix 5b: self-sizing playback FIFO lead. Seeded from playback_fifo_sec and
         # then DERIVED at runtime from the measured per-reply underrun count -- grow
         # the buffer when a reply starved (the leveler forces whole-clip synth, so a
@@ -1814,6 +1847,14 @@ class SherpaOnnxEngine(AudioEngine):
         # ADC rails shreds the waveform -> garbled STT. Detected in the capture
         # heartbeat from the per-block clipped-sample fraction.
         self._clip_warned: bool = False
+        # Dead-input escalation (one-shot ERROR + bundle metric): consecutive
+        # ~silent heartbeats. A healthy open mic always shows SOME room noise;
+        # ~10s of avg_rms < 1e-4 means dead/muted/permission-blocked input and
+        # STT cannot work -- the per-beat WARNING scrolls by, this cannot. (A mic
+        # that is merely too QUIET for speech is a different fault: verify that
+        # one with tools/calibration_suite.py at the OS level.)
+        self._silent_beats: int = 0
+        self._silent_input_reported: bool = False
         # Result of the optional startup ambient calibration (None until run).
         self._last_calibration: Optional[dict] = None
         self._speech_evidence_profile: Optional[SpeechEvidenceProfile] = None
@@ -3710,6 +3751,11 @@ class SherpaOnnxEngine(AudioEngine):
         # doesn't keep gating barge-in against a level that is no longer audible.
         self._playback_level = 0.0
         self._last_playback_at = 0.0
+        # Authoritatively close the dry-gap window too: after a cut, zero-reads
+        # are the flushed FIFO draining, not inter-sentence starvation. (The
+        # worker's finally also clears this once the drained queue is observed;
+        # resetting here removes any dependence on that ordering.)
+        self._synth_active = False
         # A stop/barge ends any open confirm window and restores full volume for
         # the next reply (idempotent; the confirm path also restores on its own).
         self._end_barge_confirm()
@@ -4565,6 +4611,34 @@ class SherpaOnnxEngine(AudioEngine):
                 except Exception:  # noqa: BLE001 - capture can reset again
                     pass
 
+    def _note_silent_heartbeat(self, capture_epoch) -> None:
+        """One ~silent 2s heartbeat: escalate to an ERROR + bundle metric after
+        5 consecutive (~10s of dead input), once per silent EPISODE (the capture
+        loop re-arms both counters when input recovers). Split from the capture
+        loop so the escalation contract is unit-testable."""
+        self._silent_beats += 1
+        if self._silent_beats < 5 or self._silent_input_reported:
+            return
+        self._silent_input_reported = True
+        log.error(
+            "input has been ~silent for 10s+ -- dead, muted, or permission-blocked "
+            "mic; STT CANNOT work like this. Fix the OS input device/level, then "
+            "verify with `python tools/calibration_suite.py` (a merely-quiet mic "
+            "garbles STT the same way; digital input_gain cannot add SNR).",
+        )
+        # Surface it into the run bundle (summary.json), not just the log --
+        # mirrors the input_clipping metric below: a dead mic must be a named
+        # first-class fault in the bundle, not a scrolled-past warning.
+        try:
+            if self._capture_callback_is_current(capture_epoch):
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "capture_silent_input",
+                    capture_epoch=capture_epoch,
+                )
+        except Exception:  # noqa: BLE001 - metric is best-effort
+            pass
+
     def _report_input_clipping(self, fraction: float) -> None:
         """Emit the hot-ADC diagnostic once even when calibration abstains."""
         fraction = float(fraction)
@@ -5054,6 +5128,14 @@ class SherpaOnnxEngine(AudioEngine):
                             "input is ~silent (avg_rms=%.6f) -- wrong mic, muted, or no "
                             "permission? run `python -m sounddevice` to list devices", avg,
                         )
+                        self._note_silent_heartbeat(capture_epoch)
+                    else:
+                        # Input recovered: close the episode. Re-arming the
+                        # one-shot means a LATER genuine mic death in the same
+                        # long always-on session still escalates (one ERROR per
+                        # silent episode, never a per-beat spam).
+                        self._silent_beats = 0
+                        self._silent_input_reported = False
                     # Input-clipping diagnostic: sustained rail-pinning (>2% of
                     # samples on average) shreds the waveform -> garbled STT. Warn
                     # once so a hot OS mic gain is diagnosed up front, not silently
@@ -6341,6 +6423,17 @@ class SherpaOnnxEngine(AudioEngine):
             # full empty read (n == 0) is the normal end-of-utterance, not a glitch.
             if 0 < n < frames and self._speaking.is_set():
                 self._underrun_blocks += 1
+            elif (
+                n == 0
+                and self._synth_active
+                and self._speaking.is_set()
+                and self._last_playback_at > 0.0
+            ):
+                # Fully-empty block while a sentence is still being produced and
+                # this reply has already played audio: an inter-sentence dry gap
+                # (dead air), invisible to the partial-read counter above. Plain
+                # attribute reads + int increment only -- real-time safe.
+                self._drygap_blocks += 1
             if n > 0:
                 played = view[:n]
                 # Mirror the producer's old per-chunk bookkeeping, but now driven
@@ -6442,10 +6535,20 @@ class SherpaOnnxEngine(AudioEngine):
                 # interruption after the assistant goes idle still re-enables.
                 was_speaking = self._speaking.is_set()
                 self._speaking.set()
+                # A sentence is now being produced: arm the dry-gap window for the
+                # audio callback (cleared in the finally once the queue drains,
+                # BEFORE the drain wait, so the natural tail drain never counts).
+                self._synth_active = True
                 if not was_speaking:
                     self._barge_in_fired_this_run = False
                     self._reset_word_cut_energy_epoch()
                     self._underrun_at_reply_start = self._underrun_blocks
+                    self._drygap_at_reply_start = self._drygap_blocks
+                    # Fresh reply: drop the playback resampler's FIR tail from the
+                    # previous (possibly barged) reply so it can't bleed into this
+                    # one's first block. Worker-thread only, same thread as write().
+                    if self._play_resampler is not None:
+                        self._play_resampler.reset()
                     # Arm the playback-onset grace from the moment we COMMIT to
                     # speaking (synthesis start), not first-audio: the live
                     # self-interrupts fire during the synth lead-in (before any
@@ -6473,6 +6576,16 @@ class SherpaOnnxEngine(AudioEngine):
                 fifo_for_item: Optional[PlaybackFIFO] = None
                 play_sr_for_item = 0
                 tts_sr_for_item = 0
+                resampler_for_item: Optional[AudioResampler] = None
+
+                def superseded() -> bool:
+                    # The single source for "this item's audio must not be
+                    # enqueued": barged / a newer generation claimed playback.
+                    return self._stop_speaking.is_set() or self._speak_gen != my_gen
+
+                def abort_write() -> bool:
+                    # FIFO producer release condition: superseded OR shutdown.
+                    return superseded() or not self._running.is_set()
 
                 def write(samples) -> None:
                     # Producer side of the playback FIFO (runs on this worker
@@ -6483,13 +6596,14 @@ class SherpaOnnxEngine(AudioEngine):
                     # whole point of the rewrite. Here we just resample to play_sr
                     # and hand the samples to the FIFO, which BLOCKS when full
                     # (backpressure that paces synthesis to real-time playback).
-                    if self._stop_speaking.is_set() or self._speak_gen != my_gen:
+                    if superseded():
                         return  # barged / superseded chunk: never enqueue it
                     if play_sr_for_item != tts_sr_for_item:
-                        samples = _resample_linear(
+                        samples = _resample_playback(
                             samples,
                             tts_sr_for_item,
                             play_sr_for_item,
+                            resampler_for_item,
                         )
                     if fifo_for_item is not None:
                         # should_abort releases a producer blocked on a full FIFO
@@ -6498,11 +6612,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # deadlock on teardown.
                         fifo_for_item.write(
                             samples,
-                            should_abort=lambda: (
-                                self._stop_speaking.is_set()
-                                or self._speak_gen != my_gen
-                                or not self._running.is_set()
-                            ),
+                            should_abort=abort_write,
                             tag=ticket,
                         )
 
@@ -6553,6 +6663,20 @@ class SherpaOnnxEngine(AudioEngine):
                         out.start()
                         self._authorize_virtual_playback_route()
                         self._play_sr = play_sr
+                        # Anti-imaging playback resampler for the producer write()
+                        # path (worker thread). Built here so it always matches the
+                        # FINAL play_sr (incl. reopens at a new rate); the linear
+                        # far-ref tee in _audio_cb is unaffected. None when the
+                        # device accepts the TTS rate (the common case).
+                        self._play_resampler = (
+                            AudioResampler(
+                                self._tts_sr,
+                                play_sr,
+                                quality=self.config.resampler_quality,
+                            )
+                            if play_sr != self._tts_sr
+                            else None
+                        )
                         if play_sr == self._tts_sr:
                             log.info("playback opened at %d Hz on device %s (callback)",
                                      play_sr, out_dev if out_dev is not None else "default")
@@ -6592,6 +6716,7 @@ class SherpaOnnxEngine(AudioEngine):
                     fifo_for_item = self._fifo
                     play_sr_for_item = int(self._play_sr)
                     tts_sr_for_item = int(self._tts_sr)
+                    resampler_for_item = self._play_resampler
                     bind_rejection: Optional[PlaybackOutcome] = None
                     if ticket is not None:
                         with self._receipt_lock:
@@ -6616,6 +6741,26 @@ class SherpaOnnxEngine(AudioEngine):
 
                     if bind_rejection is None:
                         self._synthesize(text, write, my_gen, directives)
+                        # Sentence end: emit the stateful resampler's FIR tail
+                        # into the FIFO under the SAME ticket, so tracked
+                        # receipts keep counting exactly round(n_in * ratio)
+                        # output-domain samples and one sentence's tail can
+                        # never bleed into the next. Skipped when barged /
+                        # superseded (the reply-start reset drops the tail).
+                        # (resampler_for_item is non-None only when the stream
+                        # opened with play_sr != tts_sr, so no rate re-check.)
+                        if (
+                            resampler_for_item is not None
+                            and fifo_for_item is not None
+                            and not abort_write()
+                        ):
+                            tail = resampler_for_item.flush()
+                            if tail.size:
+                                fifo_for_item.write(
+                                    tail,
+                                    should_abort=abort_write,
+                                    tag=ticket,
+                                )
                         if ticket is not None and fifo_for_item is not None:
                             terminal_status = (
                                 PlaybackOutcome.COMPLETED
@@ -6642,6 +6787,10 @@ class SherpaOnnxEngine(AudioEngine):
                     # Only fall idle once the queue drains, so the capture loop
                     # doesn't flap ASR/barge-in on/off between adjacent sentences.
                     if self._play_q.empty():
+                        # The reply's last sentence is fully produced: close the
+                        # dry-gap window BEFORE the drain wait so the natural
+                        # tail drain's zero-reads are never counted as gaps.
+                        self._synth_active = False
                         # Wait for the FIFO to actually PLAY OUT before tearing
                         # down the echo refs: with the callback path the producer
                         # has handed the last samples to the FIFO but the audio
@@ -6664,6 +6813,20 @@ class SherpaOnnxEngine(AudioEngine):
                                 "ASR/second-pass worker?); raises buzzy/glitchy artifacts", _ur,
                             )
                             self._cb.on_metric("playback_underrun")
+                        # Inter-sentence dry gaps: fully-empty blocks while a later
+                        # sentence was still being synthesized -- audible dead air
+                        # the underrun counter above cannot see (whole-clip leveler
+                        # synth pays full-clip latency per sentence). Same >2-block
+                        # noise floor as the underrun warning.
+                        _dg = self._drygap_blocks - self._drygap_at_reply_start
+                        if _dg > 2:
+                            log.warning(
+                                "playback dry-gapped %d blocks this reply -- the FIFO "
+                                "fully emptied between sentences while synthesis was "
+                                "still producing (whole-clip synth or CPU contention "
+                                "outpaced playback); the listener heard dead air", _dg,
+                            )
+                            self._cb.on_metric("playback_dry_gap")
                         # Fix 5b: self-size the FIFO lead from THIS reply's underrun
                         # count -- grow when it starved, slow-decay toward the seed
                         # when clean. Recreated HERE only: the queue is empty and the
@@ -6727,6 +6890,9 @@ class SherpaOnnxEngine(AudioEngine):
                                 pass
                             out = None
                             self._fifo = None
+                            # The next open may negotiate a different play_sr;
+                            # never reuse a resampler bound to the old rate.
+                            self._play_resampler = None
                         self._cb.on_speech_end()
         except Exception as exc:
             if self._virtual_audio_binder is not None:

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +10,11 @@ import stat
 from pathlib import Path
 
 import pytest
+
+# POSIX-only: promotion locking uses fcntl, which does not exist on Windows.
+# importorskip (vs a bare import) lets the suite COLLECT on a Windows dev box
+# instead of erroring out before a single test runs; Linux coverage unchanged.
+fcntl = pytest.importorskip("fcntl")
 
 import tools.promote_enrollment as promo
 from core.enroll import (

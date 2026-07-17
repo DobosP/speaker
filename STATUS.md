@@ -3,6 +3,7 @@
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
 Last verified: 2026-07-17 on Linux ROG: full suite 5568 passed/16 skipped/9 warnings; Parakeet/Small aggregate WER 0.00/6 exact; strict recorded 9; APM 6; pinned artifact check, NeMo decode probe, and selected installer dry-run green.
+Windows box 2026-07-17 (ADR-0081 Phase-0): 5296 passed/150 failed/70 skipped — the 150 are pre-existing Linux-lane surfaces, byte-identical to the clean-upstream baseline run (zero branch-attributable); doctor READY; playback/persona/runlog changes covered by 282 green targeted tests. Roadmap: docs/2026-07-17-performance-roadmap.md.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
@@ -69,6 +70,15 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 
 ## Live evidence and limits
 
+- Windows box (ADR-0081): playback now resamples via soxr with sentence-end
+  flush (receipts stay output-domain exact), dry gaps and dead input are
+  first-class bundle metrics, run summaries carry p50/p95 stage latency, and
+  the desktop profile unstarves recent-context (320→1536). Machine-local:
+  gemma4:12b + pinned MiniCPM Q8 tiers restored, Kokoro 24 kHz + 7 kHz lowpass
+  active, interim AEC3 duck-confirm barge (ADR-0019 native comm capture still
+  pending). 12B live load, mic-level fix, calibration, and re-enrollment remain
+  before any live A/B verdict. Known upstream latent: ADR-0068 repeat-guard
+  clock race on coarse clocks (backlog; Linux unaffected in practice).
 - Historical v4 stays active. Enrollment `174212` captured an isolated v5
   candidate, but it failed its live gate and was never promoted (ADR-0072).
 - Physical runs `192151`/`193713` failed with enrollment on and off; neither

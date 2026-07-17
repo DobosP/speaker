@@ -57,6 +57,38 @@ def test_resampler_anti_aliases_a_tone_above_nyquist():
     # (linear fallback can't anti-alias; skip the assertion there)
 
 
+def test_resampler_flush_completes_the_exact_output_length():
+    # Playback receipts count samples in the OUTPUT domain, so chunked
+    # upsampling (24 kHz TTS -> 48 kHz device) plus flush() must produce
+    # exactly round(n_in * ratio) samples -- the soxr FIR may withhold a tail
+    # per chunk, and flush() emits it and leaves the stream cleared.
+    r = AudioResampler(24000, 48000)
+    n_in = 2400
+    total = 0
+    for start in range(0, n_in, 160):
+        total += len(r.process(np.zeros(160, dtype="float32")))
+    total += len(r.flush())
+    assert total == n_in * 2
+    # The stream is clean after flush: a second clip gets the same exact length.
+    total2 = len(r.process(np.zeros(n_in, dtype="float32"))) + len(r.flush())
+    assert total2 == n_in * 2
+    if r.kind == "soxr":
+        # Pin GENUINE stream reuse (not a silent per-call scipy/linear fallback,
+        # which would also produce exact totals): a fresh-after-flush soxr
+        # stream withholds FIR warm-up samples on its first small chunk, so the
+        # output must be strictly shorter than the stateless 2x length.
+        assert len(r.process(np.zeros(160, dtype="float32"))) < 320
+        r.flush()
+
+
+def test_resampler_flush_is_empty_for_stateless_kinds():
+    ident = AudioResampler(16000, 16000)
+    assert len(ident.flush()) == 0
+    r = AudioResampler(16000, 48000)
+    if r.kind != "soxr":
+        assert len(r.flush()) == 0
+
+
 # --- soft-knee gain ---------------------------------------------------------
 
 

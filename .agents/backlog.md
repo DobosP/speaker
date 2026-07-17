@@ -14,6 +14,17 @@ P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 > pending a verified implementation (ADR-0019).
 
 ## P0 — correctness / blocker
+- [ ] **Repeat-guard clock race (found 2026-07-17, Windows).** The ADR-0068
+      controller repeat handler treats a pre-session `assistant_output` as
+      in-session when its `time.time()` stamp ties `session_started_at`
+      (`core/capabilities.py:179` `timestamp >= since`; item stamped in
+      `always_on_agent/memory.py:15`). Windows' coarse clock makes the tie
+      reliable → `tests/test_conversation.py::test_repeat_without_a_previous_answer_falls_through_to_model`
+      fails there; Linux's fine clock masks it. Latent since `314f8ed`
+      (2026-07-12), not a recent regression. Fix: monotonic ordinal on
+      MemoryItem (module `itertools.count`) compared strictly, with a
+      timestamp fallback for foreign Memory backends; do NOT just flip `>=`
+      to `>` (identical stamps still tie). Bounded change + suite on both OSes.
 - [ ] **★★★ PERMANENT open-speaker barge + voice fix (2026-07-05) — the live-test
       thread. START HERE.** **Current next (2026-07-14, ADR-0071):** the v5
       enrollment-on run kept one voice but failed soft speech, pause, override,

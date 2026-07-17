@@ -28,6 +28,7 @@ import atexit
 import json
 import logging
 import queue
+import statistics
 import threading
 import time
 from collections import defaultdict
@@ -40,9 +41,65 @@ from typing import Optional
 _FMT = "%(asctime)s.%(msecs)03d %(levelname)-5s %(name)s | %(message)s"
 _DATEFMT = "%H:%M:%S"
 
+# The five per-turn latency keys emitted by core.metrics.TurnRecord.as_dict().
+_LATENCY_KEYS = (
+    "first_audio_latency",
+    "endpoint_latency",
+    "final_to_first_token",
+    "first_token_to_audio",
+    "barge_in_latency",
+)
+
 
 def _hhmmss(epoch: float) -> str:
     return datetime.fromtimestamp(epoch).strftime("%H:%M:%S")
+
+
+# NOTE: same linear-interpolation percentile as core/endpointing.py's
+# SessionPauseModel._quantile. Kept separate on purpose -- runlog is
+# deliberately stdlib-only infrastructure with no core-module imports; if you
+# fix an interpolation edge case here, mirror it there (and vice versa).
+def _percentile(sorted_values: list, pct: float) -> float:
+    """Linear-interpolated percentile over already-sorted values (stdlib only --
+    this module deliberately has no numpy dependency)."""
+    n = len(sorted_values)
+    if n == 1:
+        return sorted_values[0]
+    idx = pct * (n - 1)
+    lo = int(idx)
+    hi = min(lo + 1, n - 1)
+    frac = idx - lo
+    return sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * frac
+
+
+def _latency_aggregates(turns: list) -> dict:
+    """Per-key p50/p95/max/n over ``turns`` (each shaped like
+    ``core.metrics.TurnRecord.as_dict()``). Non-numeric/missing values are
+    skipped; a key is omitted entirely if no turn has a value for it.
+
+    The headline number is ``first_audio_latency`` p50/p95 -- the voice-to-voice
+    latency from end-of-speech to first audible reply sample (industry target
+    <=1.5s, best-in-class ~0.5s).
+    """
+    out: dict = {}
+    for key in _LATENCY_KEYS:
+        values = []
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            v = turn.get(key)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                values.append(float(v))
+        if not values:
+            continue
+        values.sort()
+        out[key] = {
+            "p50": round(statistics.median(values), 3),
+            "p95": round(_percentile(values, 0.95), 3),
+            "max": round(max(values), 3),
+            "n": len(values),
+        }
+    return out
 
 
 @dataclass
@@ -119,6 +176,7 @@ class RunSummary:
                 "avg_time_sec": round(total_llm / len(llm_times), 2) if llm_times else None,
                 "requests": self.llm_requests,
             },
+            "latency": _latency_aggregates(self.turns),
             "turns": self.turns,
             "stuck_hints": stuck,
             "errors": self.errors[-50:],

@@ -869,6 +869,29 @@ class AudioResampler:
             except Exception:  # noqa: BLE001
                 pass
 
+    def flush(self):
+        """Emit the FIR tail the streaming (soxr) kind is still holding and
+        leave the stream cleared for the next independent clip.
+
+        Call at the end of one continuous clip (e.g. one TTS sentence) when the
+        cumulative output length must equal ``round(n_in * dst/src)`` -- playback
+        receipts count samples in the output domain, so a withheld FIR tail
+        would understate what actually played. The stateless kinds
+        (identity/scipy/linear) never withhold samples -> empty array."""
+        import numpy as np
+
+        if self.kind == "soxr" and self._stream is not None:
+            try:
+                out = self._stream.resample_chunk(
+                    np.zeros(0, dtype="float32"), last=True
+                )
+                return np.asarray(out, dtype="float32").reshape(-1)
+            except Exception:  # noqa: BLE001 - degrade to a clean stream, no tail
+                pass
+            finally:
+                self.reset()
+        return np.zeros(0, dtype="float32")
+
 
 def _has_scipy() -> bool:
     import importlib.util

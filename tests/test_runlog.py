@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import statistics
 
 import pytest
 
@@ -194,6 +195,74 @@ def test_summary_does_not_flag_echo_transcript_as_missing_llm(tmp_path):
     )
 
     assert not any("no LLM request" in hint for hint in data["stuck_hints"])
+
+
+def test_latency_aggregates_p50_p95_max_n(tmp_path):
+    from core.runlog import _latency_aggregates
+
+    # 5 turns with a None hole and a non-dict entry that must be skipped.
+    turns = [
+        {"first_audio_latency": 0.5, "endpoint_latency": None},
+        {"first_audio_latency": 1.0, "endpoint_latency": 0.2},
+        {"first_audio_latency": 1.5, "endpoint_latency": 0.3},
+        {"first_audio_latency": 2.0, "endpoint_latency": None},
+        "not a dict",
+    ]
+    agg = _latency_aggregates(turns)
+
+    fal = agg["first_audio_latency"]
+    assert fal["n"] == 4
+    assert fal["p50"] == pytest.approx(statistics.median([0.5, 1.0, 1.5, 2.0]))
+    assert fal["max"] == 2.0
+    # p95 over sorted [0.5, 1.0, 1.5, 2.0]: idx = 0.95 * 3 = 2.85 -> interpolate
+    # between values[2]=1.5 and values[3]=2.0.
+    assert fal["p95"] == pytest.approx(1.5 + (2.0 - 1.5) * 0.85)
+
+    ep = agg["endpoint_latency"]
+    assert ep["n"] == 2
+    assert ep["p50"] == pytest.approx(0.25)
+    assert ep["max"] == 0.3
+
+
+def test_latency_aggregates_empty_turns_is_empty_dict():
+    from core.runlog import _latency_aggregates
+
+    assert _latency_aggregates([]) == {}
+
+
+def test_latency_aggregates_omits_keys_with_no_values():
+    from core.runlog import _latency_aggregates
+
+    agg = _latency_aggregates([{"first_audio_latency": 0.5}])
+    assert "first_audio_latency" in agg
+    assert "endpoint_latency" not in agg
+    assert "final_to_first_token" not in agg
+    assert "first_token_to_audio" not in agg
+    assert "barge_in_latency" not in agg
+
+
+def test_to_dict_latency_block_present_via_finalize(tmp_path):
+    runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="lat", console=False)
+    runlog.summary.note(engine="sherpa")
+    runlog.finalize(
+        metrics_records=[
+            {"first_audio_latency": 0.5, "endpoint_latency": 0.1},
+            {"first_audio_latency": 0.7, "endpoint_latency": None},
+        ]
+    )
+    data = json.loads((tmp_path / "run-lat.summary.json").read_text(encoding="utf-8"))
+    assert data["latency"]["first_audio_latency"]["n"] == 2
+    assert data["latency"]["first_audio_latency"]["max"] == 0.7
+    assert "endpoint_latency" in data["latency"]
+    assert data["latency"]["endpoint_latency"]["n"] == 1
+    assert "final_to_first_token" not in data["latency"]
+
+
+def test_to_dict_no_turns_gives_empty_latency_dict(tmp_path):
+    runlog = setup_logging(debug=False, log_dir=str(tmp_path), run_id="nolat", console=False)
+    runlog.finalize()
+    data = json.loads((tmp_path / "run-nolat.summary.json").read_text(encoding="utf-8"))
+    assert data["latency"] == {}
 
 
 @pytest.mark.parametrize(

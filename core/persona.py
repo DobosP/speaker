@@ -24,8 +24,16 @@ _IDENTITY = "You are a local, on-device voice assistant."
 _STYLE = (
     "Default to one or two short, natural spoken sentences, no markdown or "
     "lists. BUT when the user asks for a story, a poem, a joke, an explanation, "
-    "or to go into detail, give them the full thing directly -- generate it "
+    "or to go into detail, or asks a substantive how or why question, give them "
+    "the full thing directly -- generate it "
     "yourself; never summarize it or offer to find it elsewhere."
+)
+# Multi-turn delivery rule: runtime (build_system_prompt) ONLY. It instructs
+# behavior "between turns", which is meaningless for the one-shot legacy
+# DEFAULT_SYSTEM below, so it is deliberately NOT folded into that constant.
+_VARIETY = (
+    "Vary your wording between turns: don't open consecutive replies with the "
+    "same word or stock phrase, and use natural contractions."
 )
 _ASR = (
     "Your input comes from speech recognition and may be slightly garbled or cut "
@@ -160,6 +168,7 @@ def build_system_prompt(
     if skills:
         parts.append(skills)
     parts.append(_STYLE)
+    parts.append(_VARIETY)
     parts.append(_ASR)
     registered_names: set[str] = set()
     names = getattr(registry, "names", None)

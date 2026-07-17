@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-17 on Linux ROG: full suite 5493 passed/31 skipped/9 warnings; verifier-enabled strict recorded 9; APM 6; real RTX CUDA/model-load probe green without `LD_LIBRARY_PATH`.
+Last verified: 2026-07-17 on Linux ROG: full suite 5568 passed/16 skipped/9 warnings; Parakeet/Small aggregate WER 0.00/6 exact; strict recorded 9; APM 6; pinned artifact check, NeMo decode probe, and selected installer dry-run green.
 Clean production-hybrid v4 A/B: MiniCPM/Gemma 42/42 and Gemma/Gemma 42/42; semantic-memory PASS with PRIVATE main-only recall; MiniCPM Q8 identity verified. ADR-0067/68 repair the history and correction regressions.
 ADR-0054/0060 memory gates and ADR-0055–70 headless/virtual gates are green; silent delay `041032`/`041156`: 2/2 PASS, 0 self-cuts, capture-to-cut 0.509/0.818 s, all route/cleanup proofs.
 Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejected/unpromoted; word-cut enrollment is now optional, but exact Stop remains physically red (ADR-0072).
@@ -42,12 +42,12 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   SciPy/soxr plus SenseVoice/GTCRN/Kokoro/speaker-ID, atomically publishes only a
   complete selected config, and propagates failures. Stage one can say only `BASE
   READY` with Ollama deferred; skipped models are incomplete (ADR-0063). Windows voice-communications/word-cut remains unavailable pending a verified API (ADR-0019).
-- Optional pinned Faster-Whisper Small CUDA may change a final only on exact
-  independent acoustic quorum; Unicode is preserved, controller meaning cannot
-  change, and rewrites lose owner/action authority. The Linux machine-local
-  opt-in is staged/enabled; committed config stays disabled. Setup proves model
-  load, live errors circuit-break, and aggregate replay is red on any enabled-
-  verifier error or when no verifier decode completes (ADR-0078/79).
+- Optional checksum-pinned Parakeet Unified English CPU plus Faster-Whisper
+  Small CUDA uses exact acoustic quorum. Two decoded-empty models may veto only
+  a one-word non-control stream; attested controls need their exact pair/timing
+  and both model votes. Generic changes lose owner/action authority. The Linux
+  machine-local pair is selected; committed SenseVoice stays unchanged. Setup pins
+  archive/four files/sherpa-onnx 1.13.3; readiness and replay require real decodes (ADR-0078/80).
 - Autonomous voice/stress verdicts require labelled WER, remembered sink onset,
   scenario-correct terminals, zero errors/stuck/self-cuts, and causal cuts. Private
   synthetic delay has a 1.4 s capture clock; other paths stay 1.0 s (ADR-0055/58/70).
@@ -80,11 +80,11 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   SenseVoice final paths were poor and `vault` was recognized 0/6 times. Its
   retained mic WAV was post-GTCRN, so frontend versus recognizer/accent/domain
   failure remains unproven (ADR-0077).
-- Private six-clip replay measured baseline selected WER 0.12. GPU Small was
-  deterministic and direct WER 0.00/6 exact; Turbo reached 0.08 but regressed
-  STOP, while strict MiniCPM/Gemma choice arbiters made no gain. Production-path
-  exact Small consensus reached WER 0.04, one win/zero losses, and strict recorded
-  9/9. This is development evidence only; no STT default changed (ADR-0078/79).
+- Private six-clip replay moved from original WER 0.12 to Small consensus 0.04.
+  Endpoint-safe Parakeet Unified plus Small reached WER 0.00/6 exact, one win/no
+  losses, deterministic direct repeats, protected STOP, and strict recorded 9/9.
+  Parakeet v3 was direct-exact but tied 0.04 after endpointing; Small.en/Base
+  regressed STOP. Development-only; defaults and physical evidence are unchanged (ADR-0078/80).
 - Real Q4 MiniCPM passed bounded 4/8, cancellation/reuse, and two phone-lite XML tool round trips; phone thermals remain unvalidated (ADR-0031/32/33).
 - Next: build a disjoint held-out set spanning vault terms, controls/near-controls,
   numerals, negation, silence/noise/echo, bystanders and multiple voices; then run

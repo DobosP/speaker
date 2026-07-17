@@ -70,6 +70,7 @@ def _args(**over):
         venv=".venv",
         recreate=False,
         skip_models=False,
+        final_asr=None,
         final_verifier=None,
         obsidian_vault=None,
         disable_obsidian=False,
@@ -110,6 +111,13 @@ def test_final_verifier_is_explicit_linux_x86_64_opt_in():
     assert final_verifier_supported(system="linux", machine="x86_64")
     assert not final_verifier_supported(system="win32", machine="AMD64")
     assert not final_verifier_supported(system="linux", machine="aarch64")
+
+
+def test_parakeet_final_asr_replaces_fresh_install_sensevoice_selection():
+    selected = selected_model_args(_args(final_asr="parakeet-unified-en"))
+
+    assert "--sense-voice" not in selected
+    assert selected[-2:] == ("--final-asr", "parakeet-unified-en")
 
 
 def test_install_plan_includes_selected_final_verifier_only_when_requested():
@@ -214,6 +222,20 @@ def test_installer_final_verifier_installs_pins_then_forwards_setup(monkeypatch)
     assert rc == 0
     assert all(dep in calls[0] for dep in FINAL_VERIFIER_RUNTIME_DEPS)
     assert calls[1][-2:] == ["--final-verifier", "faster-whisper-small"]
+
+
+def test_installer_forwards_parakeet_final_asr_selection(monkeypatch):
+    rc, calls = _run_installer(
+        monkeypatch,
+        (0, 0, 0),
+        "--final-asr",
+        "parakeet-unified-en",
+    )
+
+    assert rc == 0
+    assert "--sense-voice" not in calls[1]
+    assert calls[1][-2:] == ["--final-asr", "parakeet-unified-en"]
+    assert "sherpa-onnx==1.13.3" in calls[0]
 
 
 def test_installer_propagates_deferred_doctor_failure(monkeypatch):

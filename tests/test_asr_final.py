@@ -1,6 +1,7 @@
-"""Two-pass ASR: the optional offline second-pass FINAL recognizer (SenseVoice/
-Whisper) that re-transcribes the endpointed utterance for the text that reaches
-the LLM. These pin the wiring/fallback logic with fakes -- no models/audio."""
+"""Two-pass ASR: optional SenseVoice/Whisper/NeMo offline FINAL recognition.
+
+These tests pin the wiring/fallback logic with fakes -- no models/audio.
+"""
 from __future__ import annotations
 
 import time
@@ -72,6 +73,48 @@ def test_build_final_recognizer_none_when_model_missing():
     cfg = SherpaConfig.from_dict({"asr_final_backend": "sense_voice",
                                   "asr_final_model": "/does/not/exist.onnx"})
     assert build_final_recognizer(cfg) is None  # graceful, no crash
+
+
+def test_build_final_recognizer_wires_nemo_transducer_contract(monkeypatch):
+    import os
+
+    import sherpa_onnx
+
+    captured: dict = {}
+
+    def _fake(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(sherpa_onnx.OfflineRecognizer, "from_transducer", _fake)
+    monkeypatch.setattr(os.path, "exists", lambda _path: True)
+    cfg = SherpaConfig.from_dict(
+        {
+            "sample_rate": 16000,
+            "provider": "cpu",
+            "asr_num_threads": 3,
+            "asr_final_backend": "nemo_transducer",
+            "asr_final_model": "/model/encoder.int8.onnx",
+            "asr_final_decoder": "/model/decoder.int8.onnx",
+            "asr_final_joiner": "/model/joiner.int8.onnx",
+            "asr_final_tokens": "/model/tokens.txt",
+        }
+    )
+
+    assert build_final_recognizer(cfg) is not None
+    assert captured == {
+        "encoder": "/model/encoder.int8.onnx",
+        "decoder": "/model/decoder.int8.onnx",
+        "joiner": "/model/joiner.int8.onnx",
+        "tokens": "/model/tokens.txt",
+        "num_threads": 3,
+        "sample_rate": 16000,
+        "feature_dim": 80,
+        "decoding_method": "greedy_search",
+        "max_active_paths": 4,
+        "provider": "cpu",
+        "model_type": "nemo_transducer",
+    }
 
 
 def test_build_final_verifier_is_opt_in_and_requires_supported_local_model(
@@ -210,6 +253,53 @@ def test_exact_offline_verifier_consensus_changes_baseline_on_identical_pcm():
     assert "unrelated private streaming words" not in rendered
 
 
+def test_nemo_exact_offline_verifier_quorum_changes_established_streaming_final():
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="nemo_transducer"),
+        _FakeOffline("are you there"),
+        None,
+        np.ones(2 * 16000, dtype="float32"),
+        "Ario der",
+        final_verifier=_FakeVerifier("are you there"),
+    )
+
+    assert decision.selected == "are you there"
+    assert decision.verifier_outcome == "consensus"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed is True
+
+
+@pytest.mark.parametrize(
+    ("verifier", "expected_outcome", "expected_support"),
+    [
+        (None, "unavailable", 0),
+        (_FakeVerifier("different words"), "tie", 1),
+        (_FakeVerifier(""), "empty", 0),
+        (_FakeVerifier(error=RuntimeError("private verifier failure")), "error", 0),
+    ],
+)
+def test_nemo_offline_is_evidence_only_without_exact_quorum(
+    verifier,
+    expected_outcome,
+    expected_support,
+):
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="nemo_transducer"),
+        _FakeOffline("are you there"),
+        None,
+        np.ones(2 * 16000, dtype="float32"),
+        "Ario der",
+        final_verifier=verifier,
+    )
+
+    assert decision.offline_outcome == "decoded"
+    assert decision.selected == "Ario der"
+    assert decision.verifier_outcome == expected_outcome
+    assert decision.verifier_support == expected_support
+    assert decision.verifier_changed is False
+    assert "private verifier failure" not in repr(decision)
+
+
 @pytest.mark.parametrize(
     ("verifier", "expected_outcome", "expected_support"),
     [
@@ -237,6 +327,86 @@ def test_verifier_empty_error_or_nonconsensus_preserves_baseline(
     assert decision.verifier_support == expected_support
     assert decision.verifier_changed is False
     assert "private model failure" not in repr(decision)
+
+
+def test_two_decoded_empty_models_veto_one_word_noncontrol_final():
+    decision = _resolve_final_transcript(
+        SherpaConfig(),
+        _FakeOffline(""),
+        None,
+        np.ones(16000, dtype="float32"),
+        "ARTIFACT",
+        final_verifier=_FakeVerifier(""),
+    )
+
+    assert decision.selected == ""
+    assert decision.offline_outcome == "empty"
+    assert decision.verifier_outcome == "empty_veto"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed is True
+
+
+def test_two_decoded_empty_models_cannot_veto_stop():
+    decision = _resolve_final_transcript(
+        SherpaConfig(),
+        _FakeOffline(""),
+        None,
+        np.ones(16000, dtype="float32"),
+        "STOP",
+        final_verifier=_FakeVerifier(""),
+    )
+
+    assert decision.selected == "Stop"
+    assert decision.verifier_outcome == "control_guard"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed is False
+
+
+def test_nemo_two_model_consensus_recovers_attested_long_stop():
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend="nemo_transducer"),
+        _FakeOffline("Stop speaking."),
+        None,
+        np.ones(2 * 16000, dtype="float32"),
+        "DON'T PLAY SPEAK",
+        final_verifier=_FakeVerifier("stop speaking"),
+        speech_sec=1.5,
+    )
+
+    assert decision.selected == "Stop speaking."
+    assert decision.verifier_outcome == "attested_control"
+    assert decision.verifier_support == 2
+    assert decision.verifier_changed is True
+
+
+@pytest.mark.parametrize(
+    ("backend", "verifier_text", "speech_sec"),
+    [
+        ("nemo_transducer", "different words", 1.5),
+        ("nemo_transducer", "stop speaking", None),
+        ("nemo_transducer", "stop speaking", 1.2),
+        ("nemo_transducer", "stop speaking", 2.1),
+        ("whisper", "stop speaking", 1.5),
+    ],
+)
+def test_attested_nemo_control_requires_two_exact_votes_and_owned_timing(
+    backend,
+    verifier_text,
+    speech_sec,
+):
+    decision = _resolve_final_transcript(
+        SherpaConfig(asr_final_backend=backend),
+        _FakeOffline("Stop speaking."),
+        None,
+        np.ones(2 * 16000, dtype="float32"),
+        "DON'T PLAY SPEAK",
+        final_verifier=_FakeVerifier(verifier_text),
+        speech_sec=speech_sec,
+    )
+
+    assert decision.selected == "Don't play speak"
+    assert decision.verifier_outcome != "attested_control"
+    assert decision.verifier_changed is False
 
 
 def test_live_decode_error_circuit_breaks_verifier_and_emits_one_metric():
@@ -270,6 +440,32 @@ def test_live_decode_error_circuit_breaks_verifier_and_emits_one_metric():
     assert finals[-1] == "Next baseline"
     assert len(verifier.calls) == 1
     assert metrics.count("asr_final_verifier_disabled_after_decode_error") == 1
+
+
+def test_nemo_verifier_circuit_break_never_promotes_offline_fallback():
+    engine = SherpaOnnxEngine(SherpaConfig(asr_final_backend="nemo_transducer"))
+    verifier = _FakeVerifier(error=RuntimeError("private model failure"))
+    finals = []
+    engine._final_recognizer = _FakeOffline("are you there")
+    engine._final_verifier = verifier
+    engine._final_above_floor = lambda _samples: True
+    engine._cb = EngineCallbacks(on_final=finals.append)
+
+    engine._finalize_and_dispatch(
+        np.ones(2 * 16000, dtype="float32"),
+        "Ario der",
+        time.perf_counter(),
+    )
+    assert engine._final_verifier is None
+    assert finals == ["Ario der"]
+
+    engine._finalize_and_dispatch(
+        np.ones(2 * 16000, dtype="float32"),
+        "keep next baseline",
+        time.perf_counter(),
+    )
+    assert finals[-1] == "Keep next baseline"
+    assert len(verifier.calls) == 1
 
 
 def test_verifier_cannot_manufacture_turn_from_empty_streaming_without_authority():
@@ -623,12 +819,15 @@ def test_no_vad_segment_uses_owned_pcm_duration_for_second_pass():
 def test_config_parses_final_fields():
     c = SherpaConfig.from_dict({
         "asr_final_backend": "sense_voice", "asr_final_model": "/m.onnx",
-        "asr_final_tokens": "/t.txt", "asr_final_use_itn": False, "asr_final_min_sec": 0.5,
+        "asr_final_tokens": "/t.txt", "asr_final_decoder": "/d.onnx",
+        "asr_final_joiner": "/j.onnx", "asr_final_use_itn": False,
+        "asr_final_min_sec": 0.5,
         "asr_final_preroll_sec": 0.6,
         "asr_final_verifier_backend": "faster_whisper",
         "asr_final_verifier_model": "/cached/model",
     })
     assert c.asr_final_backend == "sense_voice" and c.asr_final_model == "/m.onnx"
+    assert c.asr_final_decoder == "/d.onnx" and c.asr_final_joiner == "/j.onnx"
     assert c.asr_final_use_itn is False and c.asr_final_min_sec == 0.5
     assert c.asr_final_preroll_sec == 0.6
     assert c.asr_final_verifier_backend == "faster_whisper"

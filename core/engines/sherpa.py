@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Callable, Optional
 
 import numpy as np
+from always_on_agent.speech_analyzer import exact_control_class
 
 log = logging.getLogger("speaker.sherpa")
 
@@ -96,7 +97,7 @@ def _auto_threads() -> int:
     return max(2, min(4, cores // 2))
 
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
-from ..asr_verifier import verify_asr_consensus
+from ..asr_verifier import AsrConsensusOutcome, verify_asr_consensus
 from ..contract import is_stop_command, normalize_command
 from ..audio_frontend import (
     CLEAN_CAPTURE_RATES,
@@ -280,16 +281,36 @@ def _attested_interrupt_repair(
     duration is deliberately insufficient because it includes unverified
     pre-roll and tail.
     """
-    if guarded_final != streaming_final:
+    if guarded_final != streaming_final or backend != "sense_voice":
         return guarded_final
-    if backend != "sense_voice" or speech_sec is None:
-        return guarded_final
+    return (
+        second_pass
+        if _attested_interrupt_pair_allowed(
+            streaming_final,
+            second_pass,
+            speech_sec=speech_sec,
+            short_sec=short_sec,
+        )
+        else guarded_final
+    )
+
+
+def _attested_interrupt_pair_allowed(
+    streaming_final: str,
+    second_pass: str,
+    *,
+    speech_sec: Optional[float],
+    short_sec: float = DEFAULT_SHORT_CLIP_SEC,
+) -> bool:
+    """Whether an exact transcript pair and owned duration match retained proof."""
+    if speech_sec is None:
+        return False
     try:
         duration = float(speech_sec)
     except (TypeError, ValueError):
-        return guarded_final
+        return False
     if not math.isfinite(duration) or duration <= 0.0:
-        return guarded_final
+        return False
 
     # Compare complete word sequences.  Unlike command normalization, retain
     # every Unicode alphanumeric token so unlisted multilingual/digit content
@@ -300,22 +321,46 @@ def _attested_interrupt_repair(
         for text in (streaming_final, second_pass)
     )
     if duration < short_sec:
-        return (
-            second_pass
-            if pair in _ATTESTED_SHORT_INTERRUPT_REPAIRS
-            else guarded_final
-        )
+        return pair in _ATTESTED_SHORT_INTERRUPT_REPAIRS
     if not (
         _ATTESTED_LONG_INTERRUPT_MIN_SEC
         <= duration
         <= _ATTESTED_LONG_INTERRUPT_MAX_SEC
     ):
-        return guarded_final
-    return (
-        second_pass
-        if pair in _ATTESTED_LONG_INTERRUPT_REPAIRS
-        else guarded_final
-    )
+        return False
+    return pair in _ATTESTED_LONG_INTERRUPT_REPAIRS
+
+
+def _independent_attested_control_repair(
+    *,
+    backend: str,
+    streaming_final: str,
+    offline_text: str,
+    verifier_text: str,
+    speech_sec: Optional[float],
+) -> Optional[str]:
+    """Admit one retained control repair only after two exact model votes.
+
+    SenseVoice keeps its historical single-model attested exception above. The
+    NeMo path is newer and therefore stricter: its offline rendering and the
+    independent Faster-Whisper verifier must have identical complete words and
+    the same controller-owned meaning before the retained transcript/duration
+    pair may cross the ordinary control-change fence.
+    """
+    if backend != "nemo_transducer":
+        return None
+    if _attested_repair_words(offline_text) != _attested_repair_words(verifier_text):
+        return None
+    control = exact_control_class(offline_text)
+    if control is None or control != exact_control_class(verifier_text):
+        return None
+    if not _attested_interrupt_pair_allowed(
+        streaming_final,
+        offline_text,
+        speech_sec=speech_sec,
+    ):
+        return None
+    return offline_text
 
 
 def _postprocess_final_text(config, punctuation, text: str) -> str:
@@ -355,16 +400,25 @@ def _resolve_final_transcript(
     """Resolve the established final, then apply exact acoustic consensus.
 
     The current streaming/offline selection is computed first and remains the
-    baseline on verifier unavailability, error, empty output, or lack of an
-    independent quorum.  The verifier sees the exact same endpoint-owned PCM as
-    the offline recognizer.  An empty streaming hypothesis remains fail-closed
-    unless its caller separately authorized offline recovery.
+    baseline on verifier unavailability, error, or lack of an independent
+    quorum. A decoded-empty pair may veto only a one-word, non-control
+    streaming-only hypothesis. The verifier sees the exact same endpoint-owned
+    PCM as the offline recognizer. An empty streaming hypothesis remains
+    fail-closed unless its caller separately authorized offline recovery.
     """
     offline_raw: Optional[str] = None
     offline_outcome = "unavailable"
     offline_text: Optional[str] = None
     streaming_final = _postprocess_final_text(config, punctuation, raw_final)
     baseline_selected = streaming_final
+    # Parakeet is an independent acoustic vote, not a new single-model
+    # fallback. Keep the established streaming rendering until exact verifier
+    # quorum (or the narrow attested-control exception) selects NeMo text.
+    # Legacy SenseVoice/Whisper second-pass behavior remains unchanged.
+    offline_requires_quorum = (
+        str(getattr(config, "asr_final_backend", "") or "").strip().lower()
+        == "nemo_transducer"
+    )
 
     segment_samples = None
     decode_sample_rate = int(segment_sample_rate or config.sample_rate)
@@ -391,7 +445,7 @@ def _resolve_final_transcript(
                 offline_raw = stream.result.text or ""
                 offline_text = offline_raw.strip()
                 offline_outcome = "decoded" if offline_text else "empty"
-                if offline_text:
+                if offline_text and not offline_requires_quorum:
                     if not streaming_final.strip():
                         # An offline recognizer may recover a final only when
                         # the caller has separately authorized that recovery.
@@ -450,7 +504,21 @@ def _resolve_final_transcript(
                     )
                     verifier_outcome = consensus.outcome.value
                     verifier_support = consensus.support
-                    if (
+                    attested_control = None
+                    if consensus.outcome is AsrConsensusOutcome.CONTROL_GUARD:
+                        attested_control = _independent_attested_control_repair(
+                            backend=config.asr_final_backend,
+                            streaming_final=streaming_final,
+                            offline_text=offline_text or "",
+                            verifier_text=verifier_text,
+                            speech_sec=speech_sec,
+                        )
+                    if attested_control is not None:
+                        verifier_outcome = "attested_control"
+                        verifier_support = 2
+                        selected = attested_control
+                        verifier_changed = attested_control != baseline_selected
+                    elif (
                         consensus.changed
                         and not streaming_final.strip()
                         and not allow_empty_streaming
@@ -464,6 +532,21 @@ def _resolve_final_transcript(
                         verifier_changed = consensus.changed
                 else:
                     verifier_outcome = "empty"
+                    if offline_raw is not None and not offline_text:
+                        empty_consensus = verify_asr_consensus(
+                            baseline_selected=baseline_selected,
+                            streaming=streaming_final,
+                            offline=offline_raw,
+                            verifier=verifier_text,
+                        )
+                        if empty_consensus.outcome in {
+                            AsrConsensusOutcome.EMPTY_VETO,
+                            AsrConsensusOutcome.CONTROL_GUARD,
+                        }:
+                            verifier_outcome = empty_consensus.outcome.value
+                            verifier_support = empty_consensus.support
+                            selected = empty_consensus.chosen
+                            verifier_changed = empty_consensus.changed
             except Exception:  # noqa: BLE001 - preserve the established baseline
                 log.debug(
                     "final verifier failed; using established ASR final",
@@ -600,10 +683,11 @@ class SherpaConfig:
     # is RE-transcribed by a stronger offline model (sees the whole utterance ->
     # robust on run-on/casual speech; punctuation+casing+ITN built in). Empty
     # backend (default) = streaming final only (byte-identical). ~150ms/utterance.
-    asr_final_backend: str = ""          # "" | "sense_voice" | "whisper"
-    asr_final_model: str = ""            # SenseVoice model.onnx, or Whisper encoder
+    asr_final_backend: str = ""          # "" | "sense_voice" | "whisper" | "nemo_transducer"
+    asr_final_model: str = ""            # SenseVoice model, or Whisper/NeMo encoder
     asr_final_tokens: str = ""
-    asr_final_decoder: str = ""          # Whisper only
+    asr_final_decoder: str = ""          # Whisper/NeMo decoder
+    asr_final_joiner: str = ""           # NeMo transducer only
     asr_final_use_itn: bool = True       # SenseVoice inverse-text-normalization
     asr_final_language: str = ""         # SenseVoice language hint ("en", "" = auto)
     # Optional independent endpoint verifier. Empty backend (default) preserves

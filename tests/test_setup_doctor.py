@@ -137,6 +137,26 @@ def test_required_selected_artifacts_cover_shipped_profile(tmp_path):
     assert errors == ["default speaker-ID model is missing on disk"]
 
 
+def test_required_selected_artifacts_require_complete_parakeet_group(tmp_path):
+    resolved = {}
+    for key in (*FILE_KEYS, "asr_final_model", "asr_final_decoder", "asr_final_tokens"):
+        path = tmp_path / key
+        path.write_bytes(b"model")
+        resolved[key] = str(path)
+    resolved["asr_final_joiner"] = str(tmp_path / "missing-joiner.onnx")
+
+    errors = required_selected_artifact_errors(
+        resolved,
+        speaker_model=False,
+        denoise_model=False,
+        sense_voice=False,
+        kokoro=False,
+        parakeet_final=True,
+    )
+
+    assert errors == ["selected Parakeet joiner is missing on disk"]
+
+
 def test_atomic_config_publish_preserves_old_bytes_on_replace_failure(
     tmp_path, monkeypatch
 ):
@@ -240,6 +260,66 @@ def _write_faster_whisper_snapshot(path: Path, payload: bytes) -> None:
     path.mkdir(parents=True, exist_ok=True)
     for name in setup_models.FASTER_WHISPER_REQUIRED_FILES:
         (path / name).write_bytes(payload)
+
+
+def test_parakeet_setup_verifies_archive_and_publishes_complete_group(
+    tmp_path,
+    monkeypatch,
+):
+    import hashlib
+    import io
+    import tarfile
+
+    archive = tmp_path / "candidate.tar.bz2"
+    with tarfile.open(archive, "w:bz2") as tar:
+        for index, name in enumerate(setup_models.PARAKEET_FINAL_FILES):
+            payload = f"model-{index}".encode()
+            member = tarfile.TarInfo(f"candidate/{name}")
+            member.size = len(payload)
+            tar.addfile(member, io.BytesIO(payload))
+    expected = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(
+        setup_models,
+        "fetch_speaker_model",
+        lambda _dest, _url, *, force=False: str(archive),
+    )
+
+    paths = setup_models.fetch_parakeet_final(
+        str(tmp_path / "models"),
+        url="https://example.invalid/model.tar.bz2",
+        expected_sha256=expected,
+    )
+
+    assert set(paths) == {
+        "asr_final_model",
+        "asr_final_decoder",
+        "asr_final_joiner",
+        "asr_final_tokens",
+    }
+    assert all(Path(path).is_file() for path in paths.values())
+
+    Path(paths["asr_final_model"]).write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="does not match the verified archive"):
+        setup_models.fetch_parakeet_final(
+            str(tmp_path / "models"),
+            url="https://example.invalid/model.tar.bz2",
+            expected_sha256=expected,
+        )
+    restored = setup_models.fetch_parakeet_final(
+        str(tmp_path / "models"),
+        url="https://example.invalid/model.tar.bz2",
+        expected_sha256=expected,
+        force=True,
+    )
+    assert Path(restored["asr_final_model"]).read_bytes() == b"model-0"
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        setup_models.fetch_parakeet_final(
+            str(tmp_path / "other-models"),
+            url="https://example.invalid/model.tar.bz2",
+            expected_sha256="0" * 64,
+        )
 
 
 def test_faster_whisper_setup_pins_revision_and_stages_before_publish(tmp_path):
@@ -366,6 +446,61 @@ def test_required_selected_success_publishes_one_complete_config(
         )
     )
     assert list(tmp_path.glob(".config.local.json.*.tmp")) == []
+
+
+def test_required_selected_parakeet_publishes_backend_and_four_paths(
+    tmp_path,
+    monkeypatch,
+):
+    _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
+
+    def fake_parakeet(destination, **_kwargs):
+        root = Path(destination) / setup_models.PARAKEET_FINAL_DIR
+        root.mkdir(parents=True, exist_ok=True)
+        paths = {
+            "asr_final_model": root / "encoder.int8.onnx",
+            "asr_final_decoder": root / "decoder.int8.onnx",
+            "asr_final_joiner": root / "joiner.int8.onnx",
+            "asr_final_tokens": root / "tokens.txt",
+        }
+        for path in paths.values():
+            path.write_bytes(b"parakeet")
+        return {key: str(path) for key, path in paths.items()}
+
+    monkeypatch.setattr(setup_models, "fetch_parakeet_final", fake_parakeet)
+    args = _selected_setup_args(tmp_path)
+    sense_index = args.index("--sense-voice")
+    del args[sense_index : sense_index + 3]
+    args.extend(("--final-asr", "parakeet-unified-en"))
+
+    assert setup_models.main(args) == 0
+    written = json.loads(
+        (tmp_path / "config.local.json").read_text(encoding="utf-8")
+    )
+    sherpa = written["sherpa"]
+    assert sherpa["asr_final_backend"] == "nemo_transducer"
+    assert all(
+        sherpa[key]
+        for key in (
+            "asr_final_model",
+            "asr_final_decoder",
+            "asr_final_joiner",
+            "asr_final_tokens",
+        )
+    )
+
+
+def test_setup_rejects_two_offline_final_asr_selections():
+    with pytest.raises(SystemExit) as raised:
+        setup_models.main(
+            [
+                "--sense-voice",
+                "--final-asr",
+                "parakeet-unified-en",
+            ]
+        )
+
+    assert raised.value.code == 2
 
 
 def test_required_selected_rejects_non_object_existing_config(
@@ -590,6 +725,10 @@ def test_check_sherpa_models_validates_each_kokoro_lexicon_path():
         ("whisper", "asr_final_model"),
         ("whisper", "asr_final_tokens"),
         ("whisper", "asr_final_decoder"),
+        ("nemo_transducer", "asr_final_model"),
+        ("nemo_transducer", "asr_final_tokens"),
+        ("nemo_transducer", "asr_final_decoder"),
+        ("nemo_transducer", "asr_final_joiner"),
     ),
 )
 def test_check_sherpa_models_validates_selected_final_asr(backend, missing_key):
@@ -599,6 +738,7 @@ def test_check_sherpa_models_validates_selected_final_asr(backend, missing_key):
         "asr_final_model": "/m/final-model.onnx",
         "asr_final_tokens": "/m/final-tokens.txt",
         "asr_final_decoder": "/m/final-decoder.onnx",
+        "asr_final_joiner": "/m/final-joiner.onnx",
     }
     present = {
         value for key, value in paths.items()
@@ -612,13 +752,14 @@ def test_check_sherpa_models_validates_selected_final_asr(backend, missing_key):
 
 
 def test_check_sherpa_models_accepts_complete_selected_final_asr():
-    for backend in ("sense_voice", "whisper"):
+    for backend in ("sense_voice", "whisper", "nemo_transducer"):
         paths = {
             **_complete_sherpa_paths(),
             "asr_final_backend": backend,
             "asr_final_model": "/m/final-model.onnx",
             "asr_final_tokens": "/m/final-tokens.txt",
             "asr_final_decoder": "/m/final-decoder.onnx",
+            "asr_final_joiner": "/m/final-joiner.onnx",
         }
         assert check_sherpa_models(
             {"sherpa": paths}, exists=lambda _path: True
@@ -864,6 +1005,41 @@ def test_selected_verifier_runtime_proves_exact_model_load():
 
     assert not result.ok
     assert "corrupt model" in result.detail
+
+
+def test_selected_nemo_runtime_requires_pinned_version_and_completed_decode():
+    config = {"sherpa": {"asr_final_backend": "nemo_transducer"}}
+    probed = []
+
+    selected = readiness.check_asr_final_runtime(
+        config,
+        import_fn=lambda name: (
+            type("Sherpa", (), {"__version__": "1.13.3"})
+            if name == "sherpa_onnx"
+            else pytest.fail(name)
+        ),
+        model_probe_fn=lambda sherpa: probed.append(dict(sherpa)),
+    )
+    assert selected.ok
+    assert probed == [config["sherpa"]]
+
+    wrong_version = readiness.check_asr_final_runtime(
+        config,
+        import_fn=lambda _name: type("Sherpa", (), {"__version__": "1.13.2"}),
+        model_probe_fn=lambda _sherpa: pytest.fail("wrong version reached probe"),
+    )
+    assert not wrong_version.ok
+    assert "1.13.3" in wrong_version.detail
+
+    failed_decode = readiness.check_asr_final_runtime(
+        config,
+        import_fn=lambda _name: type("Sherpa", (), {"__version__": "1.13.3"}),
+        model_probe_fn=lambda _sherpa: (_ for _ in ()).throw(
+            RuntimeError("decode unavailable")
+        ),
+    )
+    assert not failed_decode.ok
+    assert "decode unavailable" in failed_decode.detail
 
 
 def test_check_sherpa_models_validates_configured_vad():

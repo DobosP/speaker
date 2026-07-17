@@ -42,6 +42,7 @@ _FASTER_WHISPER_SNAPSHOT_FILES = (
     "tokenizer.json",
     "vocabulary.txt",
 )
+_NEMO_TRANSDUCER_SHERPA_ONNX_VERSION = "1.13.3"
 
 
 @dataclass(frozen=True)
@@ -131,12 +132,14 @@ def check_sherpa_models(
     # is selected.  Missing artifacts currently make the runtime silently fall
     # back to the much weaker streaming transcript, so readiness must fail closed.
     final_backend = str(sherpa.get("asr_final_backend", "") or "").strip().lower()
-    if final_backend in {"sense_voice", "whisper"}:
+    if final_backend in {"sense_voice", "whisper", "nemo_transducer"}:
         require("asr_final_model", label=f"{final_backend} model")
         require("asr_final_tokens", label=f"{final_backend} tokens")
-        if final_backend == "whisper":
-            require("asr_final_decoder", label="whisper decoder")
-        else:
+        if final_backend in {"whisper", "nemo_transducer"}:
+            require("asr_final_decoder", label=f"{final_backend} decoder")
+        if final_backend == "nemo_transducer":
+            require("asr_final_joiner", label="nemo_transducer joiner")
+        if final_backend == "sense_voice":
             # These kwargs are added only to the SenseVoice constructor.  The
             # two FST settings use sherpa-onnx's comma-separated path syntax.
             require_if_configured("asr_final_hr_dict_dir")
@@ -148,7 +151,7 @@ def check_sherpa_models(
     elif final_backend:
         problems.append(
             f"asr_final_backend={final_backend!r} unsupported "
-            "(expected sense_voice or whisper)"
+            "(expected sense_voice, whisper, or nemo_transducer)"
         )
 
     # The independent verifier is inert while its backend is empty, even if a
@@ -269,6 +272,55 @@ def check_asr_final_verifier_runtime(
         "ASR final verifier runtime",
         True,
         "local Faster-Whisper CUDA FP16 available",
+    )
+
+
+def check_asr_final_runtime(
+    config: dict,
+    *,
+    import_fn: Callable[[str], object] = importlib.import_module,
+    model_probe_fn: Callable[[Mapping[str, object]], None] | None = None,
+) -> Check:
+    """Load and decode with an explicitly selected NeMo final recognizer."""
+    sherpa = (config or {}).get("sherpa", {}) or {}
+    backend = str(sherpa.get("asr_final_backend", "") or "").strip().lower()
+    if backend != "nemo_transducer":
+        return Check("ASR final runtime", True, "NeMo transducer disabled")
+    try:
+        module = import_fn("sherpa_onnx")
+        version = str(getattr(module, "__version__", "") or "")
+        if version != _NEMO_TRANSDUCER_SHERPA_ONNX_VERSION:
+            raise RuntimeError(
+                "selected NeMo final requires sherpa-onnx "
+                f"{_NEMO_TRANSDUCER_SHERPA_ONNX_VERSION}"
+            )
+        if model_probe_fn is None:
+            import numpy as np
+
+            from .engines._sherpa_models import build_final_recognizer
+            from .engines.sherpa import SherpaConfig
+
+            recognizer = build_final_recognizer(SherpaConfig.from_dict(dict(sherpa)))
+            if recognizer is None:
+                raise RuntimeError("selected NeMo final recognizer did not load")
+            stream = recognizer.create_stream()
+            stream.accept_waveform(16_000, np.zeros(1600, dtype=np.float32))
+            recognizer.decode_stream(stream)
+            if not isinstance(getattr(stream.result, "text", None), str):
+                raise RuntimeError("selected NeMo final decode returned no result")
+        else:
+            model_probe_fn(sherpa)
+    except Exception as exc:  # noqa: BLE001 - selected runtime fails closed
+        return Check(
+            "ASR final runtime",
+            False,
+            f"{type(exc).__name__}: {exc}",
+            "install the pinned sherpa-onnx runtime and rerun tools.doctor",
+        )
+    return Check(
+        "ASR final runtime",
+        True,
+        f"local NeMo transducer decode ready (sherpa-onnx {version})",
     )
 
 
@@ -968,6 +1020,11 @@ def run_runtime_checks(
         imports.append("llama_cpp" if backend == "llamacpp" else "ollama")
     checks = check_imports(imports, import_fn=import_fn)
     checks.append(check_sherpa_models(merged, exists=exists))
+    final_backend = str(
+        ((merged.get("sherpa", {}) or {}).get("asr_final_backend", "")) or ""
+    ).strip().lower()
+    if final_backend == "nemo_transducer":
+        checks.append(check_asr_final_runtime(merged, import_fn=import_fn))
     if verifier_check is not None:
         checks.append(verifier_check)
     if include_speaker:

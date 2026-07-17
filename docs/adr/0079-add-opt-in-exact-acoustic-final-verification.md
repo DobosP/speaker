@@ -1,7 +1,7 @@
 # ADR-0079: Add opt-in exact acoustic final verification
 
 Date: 2026-07-17
-Status: accepted
+Status: superseded-by ADR-0080
 
 ## Decision
 Add local CUDA Faster-Whisper Small as an opt-in third endpoint recognizer, while retaining the existing streaming/SenseVoice selection as the fallback. A verifier may change the final only when at least two independent acoustic recognizers have the same non-empty Unicode-preserving normalized words; the established selected final is a renderer and fallback, never an extra vote. Error, empty output, tie, no quorum, and any change to controller-owned STOP, confirm/deny, or mode-switch meaning retain the established final. Any changed consensus loses owner verification and direct live-audio action authority; unchanged consensus retains existing provenance. Keep the verifier disabled in committed configuration, provision its exact tested snapshot explicitly during model setup, and continue to start the product only through `./live.sh`. Keep small-LLM selection and rewriting outside the production path as aggregate-only diagnostics.

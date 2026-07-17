@@ -740,12 +740,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--asr-final",
         dest="asr_final",
-        choices=["streaming", "sense_voice", "whisper"],
+        choices=["streaming", "sense_voice", "whisper", "nemo_transducer"],
         default=None,
         help="final-transcript backend override (A/B the second pass): "
         "'streaming' = streaming-only finals, NO offline re-transcribe (best for "
         "short/casual speech where the offline pass over-confidently hallucinates); "
-        "'sense_voice'/'whisper' = offline second pass. Default: config asr_final_backend.",
+        "'sense_voice'/'whisper'/'nemo_transducer' = offline second pass. "
+        "Default: config asr_final_backend.",
     )
     parser.add_argument(
         "--device",
@@ -936,7 +937,7 @@ def main(argv: list[str] | None = None) -> int:
         "output_device": args.output_device,
         "input_gain": args.input_gain,
         # --asr-final A/B: 'streaming' disables the offline second pass (empty
-        # backend -> streaming-only finals). 'sense_voice'/'whisper' force it on.
+        # backend -> streaming-only finals). An explicit offline backend forces it on.
         # None -> no override (use the config's asr_final_backend).
         "asr_final_backend": (
             "" if args.asr_final == "streaming"

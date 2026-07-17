@@ -1328,7 +1328,7 @@ def _live_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--asr-final",
         dest="asr_final",
-        choices=["streaming", "sense_voice", "whisper"],
+        choices=["streaming", "sense_voice", "whisper", "nemo_transducer"],
         default=None,
     )
     parser.add_argument("--device", default=None)

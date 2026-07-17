@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|PowerShell|Edit|Write|MultiEdit|Read|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NoProfile -ExecutionPolicy Bypass -File \"C:\\Users\\Paul Work\\personal_repos\\speaker\\.claude\\hooks\\guard.ps1\""
+          }
+        ]
+      }
+    ]
+  }
+}

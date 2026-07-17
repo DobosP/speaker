@@ -2,9 +2,10 @@
 
 The production baseline is a fallback and rendering candidate, never an
 additional vote.  Only the independent streaming, offline, and verifier
-recognizers contribute support.  A change requires an exact normalized quorum
-of at least two recognizers and may not change controller-owned STOP,
-confirm/deny, or mode-switch semantics.
+recognizers contribute support.  A text change requires an exact normalized
+quorum of at least two recognizers and may not change controller-owned STOP,
+confirm/deny, or mode-switch semantics. Two decoded-empty independent models
+may suppress only a one-word, non-control streaming-only hypothesis.
 
 No transcript is logged or included in routine object representations.
 """
@@ -24,6 +25,7 @@ class AsrConsensusOutcome(str, Enum):
     NO_QUORUM = "no_quorum"
     TIE = "tie"
     CONTROL_GUARD = "control_guard"
+    EMPTY_VETO = "empty_veto"
     ERROR = "error"
 
 
@@ -108,9 +110,13 @@ def verify_asr_consensus(
     Normalization is punctuation/case-insensitive but, unlike the English-only
     aggregate WER helper, preserves Unicode words and symbols. Empty normalized
     hypotheses do not vote. When a winning transcript exists, rendering
-    priority is baseline, offline, verifier, then streaming. Any invalid input
-    or unexpected failure keeps a valid string baseline with safe metadata and
-    no exception detail.
+    priority is baseline, offline, verifier, then streaming. One deliberately
+    narrow exception lets independent decoded-empty offline and verifier
+    results veto a one-word, non-control streaming-only hypothesis. This removes
+    a measured false endpoint without allowing either model to invent text or
+    erase STOP/confirm/deny/mode meaning. Any invalid input or unexpected
+    failure keeps a valid string baseline with safe metadata and no exception
+    detail.
     """
 
     baseline = baseline_selected if isinstance(baseline_selected, str) else ""
@@ -138,6 +144,37 @@ def verify_asr_consensus(
             if tokens:
                 groups.setdefault(tokens, []).append(source)
 
+        # A decoded empty is evidence only when *both* independent endpoint
+        # models returned it. Distinguish offline="" (decoded empty) from
+        # offline=None (unavailable/error), and keep the exception to the exact
+        # measured shape: the baseline is the streaming recognizer's single
+        # normalized word. Multi-word turns and controller-owned controls retain
+        # the established fallback.
+        streaming_tokens = normalized.get(AsrConsensusSource.STREAMING, ())
+        offline_tokens = normalized.get(AsrConsensusSource.OFFLINE)
+        verifier_tokens = normalized.get(AsrConsensusSource.VERIFIER, ())
+        baseline_tokens = _exact_tokens(baseline)
+        if (
+            offline is not None
+            and offline_tokens == ()
+            and verifier_tokens == ()
+            and len(streaming_tokens) == 1
+            and baseline_tokens == streaming_tokens
+        ):
+            if exact_control_class("") != exact_control_class(baseline):
+                return _fallback(
+                    baseline,
+                    AsrConsensusOutcome.CONTROL_GUARD,
+                    support=2,
+                )
+            return AsrConsensusDecision(
+                chosen="",
+                outcome=AsrConsensusOutcome.EMPTY_VETO,
+                source=AsrConsensusSource.OFFLINE,
+                support=2,
+                changed=bool(baseline),
+            )
+
         max_support = max((len(sources) for sources in groups.values()), default=0)
         if max_support == 0:
             return _fallback(baseline, AsrConsensusOutcome.NO_QUORUM)
@@ -158,7 +195,6 @@ def verify_asr_consensus(
             )
         winner = leaders[0]
 
-        baseline_tokens = _exact_tokens(baseline)
         renderers: tuple[tuple[AsrConsensusSource, str | None], ...] = (
             (AsrConsensusSource.BASELINE, baseline),
             (AsrConsensusSource.OFFLINE, offline),

@@ -13,6 +13,7 @@ edge-tts>=6.1.0              # Microsoft neural voices (online fallback)
 gTTS>=2.4.0                  # Google TTS fallback
 
 # Speech-to-Text
+sherpa-onnx==1.13.3         # measured local NeMo/STT + VAD/TTS/speaker runtime
 faster-whisper==1.2.1        # verified local final-verifier frontend
 ctranslate2==4.8.1; sys_platform == "linux" and platform_machine == "x86_64"
 # CTranslate2 dlopens these CUDA 12/cuDNN 9 sonames.  Exact wheel pins plus the

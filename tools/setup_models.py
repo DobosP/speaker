@@ -18,12 +18,15 @@ re-running only fills missing files unless you pass --force.
     python -m tools.setup_models --gguf   # + on-device LLM weights (phone tier)
 
 The cross-platform installer adds ``--sense-voice --denoise-model --kokoro
---require-selected``. In that mode the default speaker model and every selected
-artifact must exist before one atomic config.local.json publication.
+--require-selected``. ``--final-asr parakeet-unified-en`` replaces that
+SenseVoice selection explicitly. In either mode the default speaker model and
+every selected artifact must exist before one atomic config.local.json
+publication.
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -113,6 +116,33 @@ SENSE_VOICE_MODEL_URL = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
     "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2"
 )
+
+# Optional high-accuracy English OFFLINE final recognizer. This is the exact
+# sherpa-onnx NeMo transducer export measured on the private endpoint replay;
+# its package checksum prevents a mutable/truncated archive from being wired.
+PARAKEET_FINAL_MODEL_URL = os.environ.get(
+    "PARAKEET_FINAL_MODEL_URL",
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+    "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming.tar.bz2",
+)
+PARAKEET_FINAL_MODEL_SHA256 = (
+    "99f63605b3a85a54c250c0869670a687b7d6598a47bf2421515e1f839a76e150"
+)
+PARAKEET_FINAL_DIR = (
+    "sherpa-onnx-nemo-parakeet-unified-en-0.6b-int8-non-streaming"
+)
+PARAKEET_FINAL_FILES = (
+    "encoder.int8.onnx",
+    "decoder.int8.onnx",
+    "joiner.int8.onnx",
+    "tokens.txt",
+)
+PARAKEET_FINAL_FILE_SHA256 = {
+    "encoder.int8.onnx": "6716910b7a0833997fec7a410494c995d70124001a0e9b66d6370d6aced577e0",
+    "decoder.int8.onnx": "a5e223392c90e75f8144cdb5eb95af7625db389e39edef2bd1a9c872b3298fe6",
+    "joiner.int8.onnx": "869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a",
+    "tokens.txt": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff",
+}
 
 # Optional independent endpointed-ASR verifier. The empirically selected local
 # development candidate is Faster-Whisper Small; it runs through CTranslate2 on
@@ -259,6 +289,131 @@ def extract_member(archive: str, suffix: str, dest_dir: str) -> str:
     return out_path
 
 
+def fetch_parakeet_final(
+    dest_root: str,
+    *,
+    url: str,
+    expected_sha256: str,
+    force: bool = False,
+) -> dict[str, str]:
+    """Verify, stage, and atomically publish the selected Parakeet package.
+
+    The release archive remains beside the published model for reproducible
+    provenance. Extraction is flattened into a new staging directory, so tar
+    paths cannot escape it and an interrupted setup never mutates the active
+    model. Forced replacement preserves the old directory under a unique
+    sibling name.
+    """
+    if len(expected_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in expected_sha256
+    ):
+        raise ValueError("Parakeet SHA-256 must be 64 lowercase hex characters")
+    os.makedirs(dest_root, exist_ok=True)
+    destination = os.path.join(dest_root, PARAKEET_FINAL_DIR)
+
+    def resolved(path: str) -> dict[str, str]:
+        return {
+            "asr_final_model": os.path.join(path, "encoder.int8.onnx"),
+            "asr_final_decoder": os.path.join(path, "decoder.int8.onnx"),
+            "asr_final_joiner": os.path.join(path, "joiner.int8.onnx"),
+            "asr_final_tokens": os.path.join(path, "tokens.txt"),
+        }
+
+    def complete(path: str) -> bool:
+        return os.path.isdir(path) and all(
+            os.path.isfile(os.path.join(path, name))
+            for name in PARAKEET_FINAL_FILES
+        )
+
+    archive = fetch_speaker_model(dest_root, url, force=force)
+    if _sha256_file(archive) != expected_sha256:
+        raise ValueError("Parakeet archive checksum mismatch")
+    if complete(destination) and not force:
+        if not _parakeet_package_matches_archive(
+            destination,
+            archive,
+            expected_sha256=expected_sha256,
+        ):
+            raise ValueError(
+                "existing Parakeet model does not match the verified archive; "
+                "rerun setup with --force"
+            )
+        return resolved(destination)
+
+    staging = tempfile.mkdtemp(
+        prefix=f".{PARAKEET_FINAL_DIR}-staging-",
+        dir=dest_root,
+    )
+    for name in PARAKEET_FINAL_FILES:
+        extract_member(archive, name, staging)
+    if not complete(staging) or not _parakeet_package_matches_archive(
+        staging,
+        archive,
+        expected_sha256=expected_sha256,
+    ):
+        raise FileNotFoundError("incomplete Parakeet model package")
+
+    backup = None
+    if os.path.lexists(destination):
+        backup = f"{destination}.previous-{os.path.basename(staging)}"
+        os.replace(destination, backup)
+    try:
+        os.replace(staging, destination)
+    except Exception:
+        if backup is not None:
+            os.replace(backup, destination)
+        raise
+    return resolved(destination)
+
+
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _parakeet_package_matches_archive(
+    destination: str,
+    archive: str,
+    *,
+    expected_sha256: str,
+) -> bool:
+    """Bind an installed four-file package to its checksum-verified archive."""
+    import tarfile
+
+    installed = {
+        name: _sha256_file(os.path.join(destination, name))
+        for name in PARAKEET_FINAL_FILES
+    }
+    # The selected package has hard-pinned extracted artifacts, avoiding a slow
+    # bzip2 re-decompression on every idempotent setup. Explicit custom
+    # URL/checksum overrides still compare each installed file to that archive.
+    if expected_sha256 == PARAKEET_FINAL_MODEL_SHA256:
+        return installed == PARAKEET_FINAL_FILE_SHA256
+    archived: dict[str, str] = {}
+    with tarfile.open(archive, "r:*") as tar:
+        members = tar.getmembers()
+        for name in PARAKEET_FINAL_FILES:
+            matches = [
+                member
+                for member in members
+                if member.isfile() and member.name.endswith(name)
+            ]
+            if len(matches) != 1:
+                return False
+            source = tar.extractfile(matches[0])
+            if source is None:
+                return False
+            digest = hashlib.sha256()
+            with source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            archived[name] = digest.hexdigest()
+    return installed == archived
+
+
 def fetch_punct_model(dest_dir: str, url: str, *, force: bool = False) -> str:
     """Download + unpack the punctuation model, returning the model.onnx path.
 
@@ -399,6 +554,7 @@ def required_selected_artifact_errors(
     denoise_model: bool,
     sense_voice: bool,
     kokoro: bool,
+    parakeet_final: bool = False,
     final_verifier: bool = False,
     exists: Callable[[str], bool] = os.path.exists,
 ) -> list[str]:
@@ -417,6 +573,15 @@ def required_selected_artifact_errors(
     if sense_voice:
         required["asr_final_model"] = "selected SenseVoice model"
         required["asr_final_tokens"] = "selected SenseVoice tokens"
+    if parakeet_final:
+        required.update(
+            {
+                "asr_final_model": "selected Parakeet encoder",
+                "asr_final_decoder": "selected Parakeet decoder",
+                "asr_final_joiner": "selected Parakeet joiner",
+                "asr_final_tokens": "selected Parakeet tokens",
+            }
+        )
     if final_verifier:
         required["asr_final_verifier_model"] = (
             "selected Faster-Whisper verifier model"
@@ -612,6 +777,24 @@ def main(argv: list[str] | None = None) -> int:
         "run-on/casual speech (the streaming zipformer garbles it).",
     )
     parser.add_argument(
+        "--final-asr",
+        choices=["parakeet-unified-en"],
+        help=(
+            "download and configure the checksum-pinned English Parakeet "
+            "offline final recognizer; normal startup remains ./live.sh"
+        ),
+    )
+    parser.add_argument(
+        "--parakeet-url",
+        default=PARAKEET_FINAL_MODEL_URL,
+        help="release archive URL for --final-asr parakeet-unified-en",
+    )
+    parser.add_argument(
+        "--parakeet-sha256",
+        default=PARAKEET_FINAL_MODEL_SHA256,
+        help="expected lowercase SHA-256 for the selected Parakeet archive",
+    )
+    parser.add_argument(
         "--final-verifier",
         choices=["faster-whisper-small"],
         help=(
@@ -682,6 +865,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.require_selected and not args.speaker_model:
         parser.error("--require-selected cannot be combined with --no-speaker-model")
+    if args.sense_voice and args.final_asr:
+        parser.error("--sense-voice and --final-asr are mutually exclusive")
 
     try:
         from huggingface_hub import hf_hub_download, snapshot_download
@@ -827,6 +1012,38 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
 
+    # Checksum-pinned NeMo Parakeet final recognizer (optional, opt-in). The
+    # complete four-file package is staged and atomically published before its
+    # paths or backend can enter the machine-local configuration.
+    want_parakeet_final = False
+    if args.final_asr:
+        print(
+            "[models] fetching Parakeet offline final ASR: "
+            f"{args.parakeet_url}"
+        )
+        try:
+            resolved.update(
+                fetch_parakeet_final(
+                    args.dest,
+                    url=args.parakeet_url,
+                    expected_sha256=args.parakeet_sha256,
+                    force=args.force,
+                )
+            )
+            want_parakeet_final = True
+        except Exception as exc:  # noqa: BLE001 - optional enhancement
+            if args.require_selected:
+                selected_failures.append(
+                    "selected Parakeet fetch failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                print(
+                    "[models] Parakeet final ASR not fetched; continuing with "
+                    "the established final recognizer until you re-run.",
+                    file=sys.stderr,
+                )
+
     # Independent Faster-Whisper acoustic verifier (optional, opt-in). The
     # complete CTranslate2 snapshot is staged in a dedicated directory and the
     # config receives only its absolute local path. A partial snapshot is never
@@ -954,6 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
                 denoise_model=args.denoise_model,
                 sense_voice=args.sense_voice,
                 kokoro=args.kokoro,
+                parakeet_final=bool(args.final_asr),
                 final_verifier=bool(args.final_verifier),
             )
         )
@@ -985,6 +1203,10 @@ def main(argv: list[str] | None = None) -> int:
             # backend is a mode string, not a path -> set it directly
             # (wire_sherpa_paths only handles paths).
             cfg.setdefault("sherpa", {})["asr_final_backend"] = "sense_voice"
+        if want_parakeet_final:
+            cfg.setdefault("sherpa", {})[
+                "asr_final_backend"
+            ] = "nemo_transducer"
         if want_final_verifier:
             cfg.setdefault("sherpa", {})[
                 "asr_final_verifier_backend"
@@ -1003,13 +1225,15 @@ def main(argv: list[str] | None = None) -> int:
     for key in FILE_KEYS + [
         "tts_voices", "tts_data_dir", "tts_lexicon",
         "speaker_embedding_model", "punct_model", "denoise_model",
-        "asr_final_model", "asr_final_tokens",
+        "asr_final_model", "asr_final_tokens", "asr_final_decoder",
+        "asr_final_joiner",
         "asr_final_verifier_model",
         "endpoint_prosody_model", "aec_model",
     ]:
         if key in (
             "tts_voices", "tts_data_dir", "tts_lexicon", "punct_model",
             "denoise_model", "asr_final_model", "asr_final_tokens",
+            "asr_final_decoder", "asr_final_joiner",
             "asr_final_verifier_model",
             "endpoint_prosody_model", "aec_model",
         ) and not sherpa.get(key):

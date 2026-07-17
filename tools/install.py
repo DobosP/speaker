@@ -38,7 +38,7 @@ import sys
 # list in sync with install.sh's comment and README.
 RUNTIME_DEPS = [
     "sounddevice",   # mic/speaker I/O (bundles PortAudio on Windows/macOS wheels)
-    "sherpa-onnx",   # STT + VAD + TTS + speaker embeddings (ONNX, CPU)
+    "sherpa-onnx==1.13.3",  # measured NeMo/STT + VAD/TTS/speaker runtime
     "numpy",
     "scipy>=1.13",   # coherence barge-in + polyphase resampling
     "soxr>=0.3",     # stateful anti-aliased capture-path resampling
@@ -136,6 +136,10 @@ def runtime_deps(args: argparse.Namespace) -> list[str]:
 def selected_model_args(args: argparse.Namespace) -> tuple[str, ...]:
     """Translate optional model selections to the atomic setup command."""
     result = list(SELECTED_MODEL_ARGS)
+    final_asr = getattr(args, "final_asr", None)
+    if final_asr:
+        result.remove("--sense-voice")
+        result.extend(("--final-asr", final_asr))
     verifier = getattr(args, "final_verifier", None)
     if verifier:
         result.extend(("--final-verifier", verifier))
@@ -283,6 +287,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-models", action="store_true",
         help="don't download speech models (deps + venv only)",
+    )
+    parser.add_argument(
+        "--final-asr",
+        choices=["parakeet-unified-en"],
+        help=(
+            "select the checksum-pinned English Parakeet offline final ASR "
+            "instead of the fresh-install SenseVoice default"
+        ),
     )
     parser.add_argument(
         "--final-verifier",

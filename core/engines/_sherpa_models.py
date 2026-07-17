@@ -95,9 +95,17 @@ def build_final_recognizer(c: "SherpaConfig"):
     2026-06-01: SenseVoice fixed the streaming garble ("HEY IRIC LISTENING TO ME"
     -> "Hey, are you listening to me.") at ~150ms/utterance.
 
-    None unless ``asr_final_backend`` ('sense_voice' | 'whisper') is set and the
-    model exists. Fail-OPEN: any build error returns None so the engine simply
-    keeps the streaming final -- a bad second-pass config never breaks capture."""
+    None unless ``asr_final_backend`` (``sense_voice``, ``whisper``, or
+    ``nemo_transducer``) is set and the model exists. Fail-OPEN: any build error
+    returns None so the engine simply keeps the streaming final -- a bad
+    second-pass config never breaks capture.
+
+    ``nemo_transducer`` is the exact sherpa-onnx export contract used by the
+    measured Parakeet candidates. Keep sherpa-onnx's documented
+    ``feature_dim=80`` constructor setting and the explicit model type. The
+    export's 128-wide encoder input is model-internal metadata handled by the
+    NeMo path, not a reason to silently rewrite the frontend contract.
+    """
     backend = (getattr(c, "asr_final_backend", "") or "").strip().lower()
     if not backend:
         return None
@@ -115,9 +123,8 @@ def build_final_recognizer(c: "SherpaConfig"):
 
         logging.getLogger("speaker.sherpa").warning(
             "asr_final_backend=%r is set but its model is missing (asr_final_model=%r) "
-            "-- using STREAMING-ONLY finals (lower accuracy). Fetch it with "
-            "`python -m tools.setup_models --sense-voice`, or set sherpa.asr_final_model "
-            "to an existing path.",
+            "-- using STREAMING-ONLY finals (lower accuracy). Run the selected "
+            "offline-ASR setup, or set sherpa.asr_final_model to an existing path.",
             backend, model or "(unset)",
         )
         return None
@@ -151,6 +158,20 @@ def build_final_recognizer(c: "SherpaConfig"):
             )
             return sherpa_onnx.OfflineRecognizer.from_whisper(**_supported(
                 sherpa_onnx.OfflineRecognizer.from_whisper, kwargs))
+        if backend == "nemo_transducer":
+            return sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=model,
+                decoder=getattr(c, "asr_final_decoder", "") or "",
+                joiner=getattr(c, "asr_final_joiner", "") or "",
+                tokens=tokens,
+                num_threads=c.resolved_asr_threads,
+                sample_rate=c.sample_rate,
+                feature_dim=80,
+                decoding_method="greedy_search",
+                max_active_paths=4,
+                provider=c.provider,
+                model_type="nemo_transducer",
+            )
     except Exception:  # noqa: BLE001 - fail open to the streaming final
         import logging
 

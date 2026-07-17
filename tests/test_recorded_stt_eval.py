@@ -154,6 +154,25 @@ def test_artifact_digest_binds_final_verifier_snapshot_contents(tmp_path):
     assert first != second
 
 
+def test_artifact_digest_binds_nemo_joiner_contents(tmp_path):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_encoder: str
+        asr_final_joiner: str
+
+    model = tmp_path / "streaming.onnx"
+    joiner = tmp_path / "joiner.onnx"
+    model.write_bytes(b"streaming")
+    joiner.write_bytes(b"first")
+    config = _Config(str(model), str(joiner))
+
+    first = stt_eval._model_digest(config)
+    joiner.write_bytes(b"second")
+    second = stt_eval._model_digest(config)
+
+    assert first != second
+
+
 def test_artifact_digest_fails_when_configured_resource_is_missing(tmp_path):
     @dataclass(frozen=True)
     class _Config:
@@ -193,6 +212,8 @@ def test_artifact_digest_ignores_stale_disabled_verifier_path(tmp_path):
         "tie",
         "no_quorum",
         "control_guard",
+        "attested_control",
+        "empty_veto",
         "empty_streaming_guard",
     ],
 )
@@ -332,6 +353,71 @@ def test_cli_fails_closed_when_enabled_baseline_verifier_errors(
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is False
     assert payload["baseline"]["verifier_outcomes"] == {"error": 1}
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "expected"),
+    [
+        ({"decoded": 1}, True),
+        ({"empty": 1}, True),
+        ({"error": 1, "decoded": 1}, False),
+        ({"unavailable": 1}, False),
+        ({"skipped": 1}, False),
+    ],
+)
+def test_selected_offline_evaluation_requires_completed_error_free_decode(
+    outcomes,
+    expected,
+):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_final_backend: str = "nemo_transducer"
+
+    totals = _totals([("reference", "reference")])
+    totals = stt_eval.EvaluationTotals(
+        streaming=totals.streaming,
+        offline=totals.offline,
+        selected=totals.selected,
+        clips=totals.clips,
+        decisions=totals.decisions,
+        offline_outcomes=outcomes,
+        verifier_outcomes=totals.verifier_outcomes,
+    )
+    assert stt_eval._enabled_offline_evaluation_ok(_Config(), totals) is expected
+
+
+def test_cli_fails_closed_when_selected_offline_model_never_decodes(
+    capsys,
+    monkeypatch,
+):
+    @dataclass(frozen=True)
+    class _Config:
+        asr_final_backend: str = "nemo_transducer"
+
+    item = stt_eval._CorpusItem("reference", object(), 16000, None)
+    measured = stt_eval._measure([("reference", "reference")])
+    totals = stt_eval.EvaluationTotals(
+        streaming=measured,
+        offline=measured,
+        selected=measured,
+        clips=1,
+        decisions=1,
+        offline_outcomes={"unavailable": 1},
+    )
+    monkeypatch.setattr(stt_eval, "_load_corpus", lambda _path: ([item], "c" * 64))
+    monkeypatch.setattr(stt_eval, "_load_config", _Config)
+    monkeypatch.setattr(
+        stt_eval,
+        "_evaluate",
+        lambda _config, _corpus, _keywords: (totals, [(0, 0)]),
+    )
+    monkeypatch.setattr(stt_eval, "_config_digest", lambda _config: "d" * 64)
+    monkeypatch.setattr(stt_eval, "_model_digest", lambda _config: "e" * 64)
+
+    assert stt_eval.main([]) == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["baseline"]["offline_outcomes"] == {"unavailable": 1}
 
 
 def test_cli_rejects_improved_candidate_when_enabled_verifier_errors(

@@ -115,6 +115,47 @@ def test_optional_offline_source_can_be_absent():
     assert decision.changed is True
 
 
+def test_independent_decoded_empty_vetoes_one_word_noncontrol_streaming_only():
+    decision = _verify("Artifact.", "artifact", "", "")
+
+    assert decision.chosen == ""
+    assert decision.outcome is asr_verifier.AsrConsensusOutcome.EMPTY_VETO
+    assert decision.source is asr_verifier.AsrConsensusSource.OFFLINE
+    assert decision.support == 2
+    assert decision.changed is True
+
+
+@pytest.mark.parametrize("control", ["stop", "yes", "no", "confirm"])
+def test_decoded_empty_veto_cannot_remove_one_word_control(control):
+    decision = _verify(control, control, "", "")
+
+    assert decision.chosen == control
+    assert decision.outcome is asr_verifier.AsrConsensusOutcome.CONTROL_GUARD
+    assert decision.source is asr_verifier.AsrConsensusSource.BASELINE
+    assert decision.support == 2
+    assert decision.changed is False
+
+
+@pytest.mark.parametrize(
+    ("baseline", "streaming", "offline"),
+    [
+        ("keep two words", "keep two words", ""),
+        ("different baseline", "artifact", ""),
+        ("artifact", "artifact", None),
+    ],
+)
+def test_decoded_empty_veto_requires_exact_bounded_evidence(
+    baseline,
+    streaming,
+    offline,
+):
+    decision = _verify(baseline, streaming, "", offline)
+
+    assert decision.chosen == baseline
+    assert decision.outcome is asr_verifier.AsrConsensusOutcome.NO_QUORUM
+    assert decision.changed is False
+
+
 @pytest.mark.parametrize(
     ("streaming", "offline", "verifier", "outcome", "support"),
     [

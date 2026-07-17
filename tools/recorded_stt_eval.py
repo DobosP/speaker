@@ -46,6 +46,8 @@ _VERIFIER_COMPLETED_OUTCOMES = frozenset(
         "tie",
         "no_quorum",
         "control_guard",
+        "attested_control",
+        "empty_veto",
         "empty_streaming_guard",
     }
 )
@@ -57,6 +59,7 @@ _ARTIFACT_FIELDS = (
     "asr_final_model",
     "asr_final_tokens",
     "asr_final_decoder",
+    "asr_final_joiner",
     "asr_final_verifier_model",
     "punct_model",
     "asr_final_hr_dict_dir",
@@ -182,6 +185,17 @@ def _enabled_verifier_evaluation_ok(config, totals: EvaluationTotals) -> bool:
         int(outcomes.get(outcome, 0)) > 0
         for outcome in _VERIFIER_COMPLETED_OUTCOMES
     )
+
+
+def _enabled_offline_evaluation_ok(config, totals: EvaluationTotals) -> bool:
+    """Require an explicitly selected offline final to actually decode."""
+    backend = str(getattr(config, "asr_final_backend", "") or "").strip()
+    if not backend:
+        return True
+    outcomes = totals.offline_outcomes
+    if int(outcomes.get("error", 0)) > 0:
+        return False
+    return any(int(outcomes.get(outcome, 0)) > 0 for outcome in ("decoded", "empty"))
 
 
 @dataclass(frozen=True)
@@ -617,6 +631,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "ok": (
                 baseline.complete
                 and baseline.selected.nonempty == baseline.clips
+                and _enabled_offline_evaluation_ok(baseline_config, baseline)
                 and _enabled_verifier_evaluation_ok(baseline_config, baseline)
             ),
             "corpus_digest": corpus_digest,
@@ -640,7 +655,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate_selected_errors,
             )
             if not (
-                _enabled_verifier_evaluation_ok(baseline_config, baseline)
+                _enabled_offline_evaluation_ok(baseline_config, baseline)
+                and _enabled_offline_evaluation_ok(candidate_config, candidate)
+                and _enabled_verifier_evaluation_ok(baseline_config, baseline)
                 and _enabled_verifier_evaluation_ok(candidate_config, candidate)
             ):
                 comparison = replace(comparison, promotable=False)

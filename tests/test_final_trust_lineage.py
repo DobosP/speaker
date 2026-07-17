@@ -163,6 +163,52 @@ def test_verifier_changed_consensus_is_never_action_trusted_live_audio():
     )
 
 
+def test_nemo_quorum_rewrite_that_legacy_guard_would_accept_loses_action_trust():
+    _FinalTranscript, OwnerVerification = _trust_types()
+
+    class _Offline:
+        def create_stream(self):
+            stream = SimpleNamespace(result=SimpleNamespace(text="are you there"))
+            stream.accept_waveform = lambda _sample_rate, _samples: None
+            return stream
+
+        def decode_stream(self, stream):
+            del stream
+
+    class _Verifier:
+        def transcribe(self, _samples, _sample_rate):
+            return SimpleNamespace(text="are you there")
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            speaker_gate_input=True,
+            asr_final_backend="nemo_transducer",
+        )
+    )
+    engine._speaker_gate = _gate(USER)
+    typed, legacy, published = _wire_typed_runtime(engine)
+    engine._final_recognizer = _Offline()
+    engine._final_verifier = _Verifier()
+
+    _dispatch(
+        engine,
+        np.full(2 * 16000, 0.2, dtype="float32"),
+        text="Ario der",
+    )
+
+    assert legacy == []
+    assert len(typed) == 1
+    assert typed[0].text == "are you there"
+    assert typed[0].owner_verification is OwnerVerification.UNKNOWN
+    assert typed[0].origin == "unknown"
+    [event] = _final_events(published)
+    assert event.payload["owner_verified"] is False
+    assert not is_action_allowed(
+        typed[0].origin,
+        owner_verified=typed[0].owner_verified,
+    )
+
+
 def test_verifier_unchanged_consensus_preserves_verified_live_audio_authority():
     _FinalTranscript, OwnerVerification = _trust_types()
 

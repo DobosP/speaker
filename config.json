@@ -449,6 +449,7 @@
     "asr_final_model": "pretrained_models/sherpa/sense_voice/model.int8.onnx",
     "asr_final_tokens": "pretrained_models/sherpa/sense_voice/tokens.txt",
     "asr_final_decoder": "",
+    "asr_final_joiner": "",
     "asr_final_use_itn": true,
     "_asr_final_language_comment": "PIN the SenseVoice language. 'en' forces English (REQUIRED: SenseVoice is multilingual and its auto-detect mis-fired to Chinese on short English utterances -- 'HEY HEY'->'å˜¿å˜º', 'HOW ARE YOU'->'å‘¦'). Change to 'zh'/'ja'/'ko'/'yue', or '' for auto-detect, to test other languages.",
     "asr_final_language": "en",

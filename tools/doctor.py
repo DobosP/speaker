@@ -20,6 +20,7 @@ from core.readiness import (
     PipeWireState,
     check_audio,
     check_audio_frontend,
+    check_asr_final_runtime,
     check_imports,
     check_llamacpp_abort_runtime,
     check_llamacpp_models,

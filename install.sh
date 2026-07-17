@@ -9,6 +9,8 @@
 #                                configure optional assistant capabilities
 #   ./install.sh --final-verifier faster-whisper-small
 #                                opt in to the local Linux/NVIDIA STT verifier
+#   ./install.sh --final-asr parakeet-unified-en --final-verifier faster-whisper-small
+#                                select the measured high-accuracy final STT pair
 #
 # Thin wrapper: it does the OS-specific PortAudio step, then hands the
 # cross-platform work (venv with pip, deps, models, doctor) to tools/install.py

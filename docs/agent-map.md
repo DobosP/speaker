@@ -24,7 +24,7 @@
 |---|---|---|
 | APM/DTD/barge-in bug | `core/engines/`, `tests/test_apm_double_talk.py` | targeted pytest |
 | Fixture/test update | `tests/barge_fixtures.py`, matching tests | targeted pytest |
-| Recording-driven STT/verifier | `tools/recorded_stt_eval.py`, `tools/local_gpu_stt_eval.py`, `core/asr_verifier.py`, `core/engines/_faster_whisper.py` | aggregate recording A/B, focused verifier/adapter tests, then manual live A/B (ADR-0078/0079) |
+| Recording-driven STT/verifier | `tools/recorded_stt_eval.py`, `tools/local_gpu_stt_eval.py`, `tools/stt_consensus_v2_eval.py`, `core/asr_verifier.py`, `core/engines/_faster_whisper.py` | aggregate endpoint-path A/B, focused verifier/adapter tests, then manual live A/B (ADR-0078/0080) |
 | Answering-model adoption | `tools/conversation_eval/`, ADR-0051/0067/0068 | deterministic trace, then production-hybrid real-model A/B; label all-role stress explicitly |
 | Autonomous voice verdict | `tools/autotest/verdicts.py`, `tools/autotest/README.md` | pure verdict tests, then selected cable/delay/speaker runner; cable is incomplete |
 | Silent delay route | `tools/autotest/acoustics.py`, `tools/autotest/audio.py`, `tools/autotest/voice_loop.py`, `core/readiness.py`, ADR-0069/0070 | deterministic contract/topology/stream-binding/command-timing tests, then two fresh exact delay runs; never substitute host EC or physical evidence |

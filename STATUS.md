@@ -9,7 +9,7 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
 
 ## Runtime
 
-- Local-first `core/VoiceRuntime` + sherpa-onnx; normal Linux physical entry is `./live.sh`, while low-level core assumes prepared audio (ADR-0001/0075).
+- Local-first `core/VoiceRuntime` + sherpa-onnx; normal Linux physical entry and setup success hint are `./live.sh`, while low-level core assumes prepared audio (ADR-0001/0075).
 - Desktop MiniCPM Q8 is local text; readiness pins alias/blob/quantization/template/parameters (ADR-0020/0062). Gemma3 is complex/vision; phone Q4 uses native XML tools and no inferred desktop digest (ADR-0033).
 - Anchored high-confidence requests take deterministic ACT/search/research paths; ambiguous room speech stays learned; explicit recent-thread referents use main only with desktop history, while phone stays fast (ADR-0024/0051/0067).
 - Smart-save uses fast Ollama; SQLite recall routes strong subjects to fenced PRIVATE Gemma first (ADR-0057/60/65). Setup can add bounded PRIVATE vault search, durable reminders, and exact trusted apps; mutations need unchanged direct speech plus confirmation and stay out of planners (ADR-0074/76).

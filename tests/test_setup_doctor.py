@@ -451,7 +451,9 @@ def test_required_selected_success_publishes_one_complete_config(
 def test_required_selected_parakeet_publishes_backend_and_four_paths(
     tmp_path,
     monkeypatch,
+    capsys,
 ):
+    monkeypatch.setattr(setup_models.sys, "platform", "linux")
     _fake_selected_model_downloads(monkeypatch, fail_denoise=False)
 
     def fake_parakeet(destination, **_kwargs):
@@ -488,6 +490,9 @@ def test_required_selected_parakeet_publishes_backend_and_four_paths(
             "asr_final_tokens",
         )
     )
+    output = capsys.readouterr().out
+    assert "Now run:  ./live.sh" in output
+    assert setup_models.normal_voice_entry("win32") == "python -m core --engine sherpa"
 
 
 def test_setup_rejects_two_offline_final_asr_selections():

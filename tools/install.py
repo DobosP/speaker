@@ -47,6 +47,12 @@ RUNTIME_DEPS = [
     "psutil",        # CPU/RAM telemetry in the run summary
 ]
 
+
+def normal_voice_entry(platform_name: str | None = None) -> str:
+    """Return the supported normal app entry for the current platform."""
+    selected = sys.platform if platform_name is None else platform_name
+    return "./live.sh" if selected.startswith("linux") else "python -m core --engine sherpa"
+
 # Explicit opt-in runtime for ADR-0079. Keep these exact versions aligned with
 # the Linux x86_64 markers in requirements.txt; the ordinary lean install does
 # not pull the large NVIDIA wheels or Faster-Whisper.
@@ -436,7 +442,7 @@ def main(argv: list[str] | None = None) -> int:
     print("    python -m tools.setup_minicpm")
     print("    python -m tools.doctor")
     print("\nOnly the final doctor READY result authorizes the Sherpa runtime:")
-    print("    python -m core --engine sherpa")
+    print(f"    {normal_voice_entry()}")
     return 0
 
 

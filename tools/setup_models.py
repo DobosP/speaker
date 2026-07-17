@@ -5,7 +5,7 @@ path and wire their paths into config.local.json.
 Run once, then start the assistant:
 
     python -m tools.setup_models
-    python -m core --engine sherpa
+    ./live.sh  # normal Linux physical-session entry
 
 Reuses the shared model manifest (tools/bench/models.py) so the coordinates live
 in one place (override with the SPEAKER_BENCH_*_REPO / _FILE env vars). Models
@@ -143,6 +143,12 @@ PARAKEET_FINAL_FILE_SHA256 = {
     "joiner.int8.onnx": "869f43f7d24595c55581ad3bf249a935fb8a71389fbdaa7504b9f46f93140f8a",
     "tokens.txt": "dc0b4584ab2e4ddbf888425c076c61b736e7356a015250db7d307e6f1a8188ff",
 }
+
+
+def normal_voice_entry(platform_name: str | None = None) -> str:
+    """Return the supported normal app entry for the current platform."""
+    selected = sys.platform if platform_name is None else platform_name
+    return "./live.sh" if selected.startswith("linux") else "python -m core --engine sherpa"
 
 # Optional independent endpointed-ASR verifier. The empirically selected local
 # development candidate is Faster-Whisper Small; it runs through CTranslate2 on
@@ -1261,7 +1267,7 @@ def main(argv: list[str] | None = None) -> int:
             "CALIBRATE sherpa.aec_ref_delay_ms with tools/echo_probe.py. The "
             "dependency-free aec_backend='nlms' filter needs no model."
         )
-    print("\nNow run:  python -m core --engine sherpa")
+    print(f"\nNow run:  {normal_voice_entry()}")
     return 0
 
 

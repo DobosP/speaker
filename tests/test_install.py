@@ -18,6 +18,7 @@ from tools.install import (
     is_windows,
     main,
     needs_fresh_venv,
+    normal_voice_entry,
     portaudio_hint,
     runtime_deps,
     selected_model_args,
@@ -28,6 +29,11 @@ from tools.install import (
 def test_is_windows_by_platform_string():
     assert is_windows("win32")
     assert not is_windows("linux")
+
+
+def test_normal_voice_entry_uses_linux_session_wrapper():
+    assert normal_voice_entry("linux") == "./live.sh"
+    assert normal_voice_entry("win32") == "python -m core --engine sherpa"
     assert not is_windows("darwin")
 
 
@@ -256,6 +262,9 @@ def test_installer_skip_models_is_explicitly_incomplete(monkeypatch):
 
 
 def test_installer_success_stops_at_base_ready(monkeypatch, capsys):
+    import tools.install as installer
+
+    monkeypatch.setattr(installer.sys, "platform", "linux")
     rc, _calls = _run_installer(monkeypatch, (0, 0, 0))
 
     assert rc == 0
@@ -263,6 +272,7 @@ def test_installer_success_stops_at_base_ready(monkeypatch, capsys):
     assert "Base speech runtime installed" in output
     assert "python -m tools.doctor" in output
     assert "Only the final doctor READY result" in output
+    assert "    ./live.sh" in output
 
 
 def test_installer_runs_capability_setup_only_after_model_publication(monkeypatch):

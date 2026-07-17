@@ -111,11 +111,16 @@ def test_generate_barge_keywords_uses_lexicon_phonemes(tmp_path):
 
     lines = out.read_text(encoding="utf-8").splitlines()
     assert len(lines) == len(KWS_BARGE_PHRASES)
-    # STOP: first pronunciation (AA1) wins, boost 2.0, tight 0.15 threshold, and
-    # the single-word label the runtime command seam recognizes.
-    assert lines[0] == "S T AA1 P :2.0 #0.15 @stop"
-    # HOLD ON: two-word phrase, phonemes concatenated, soft-stop label + 0.2.
-    assert lines[-1] == "HH OW1 L D AA1 N :2.0 #0.2 @wait"
+    # Thresholds come from the KWS_BARGE_PHRASES source table, not pinned
+    # literals: tuning them is a live-A/B decision (ADR-0082 measured phantom
+    # cuts at the original recall-biased values) and must not break this test.
+    stop_thr = KWS_BARGE_PHRASES[0][2]
+    wait_thr = KWS_BARGE_PHRASES[-1][2]
+    # STOP: first pronunciation (AA1) wins, boost 2.0, and the single-word
+    # label the runtime command seam recognizes.
+    assert lines[0] == f"S T AA1 P :2.0 #{stop_thr:g} @stop"
+    # HOLD ON: two-word phrase, phonemes concatenated, soft-stop label.
+    assert lines[-1] == f"HH OW1 L D AA1 N :2.0 #{wait_thr:g} @wait"
     # Every emitted label normalizes to a control the runtime resolves to stop.
     from core.contract import STOP_COMMANDS, normalize_command
 

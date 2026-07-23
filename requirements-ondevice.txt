@@ -9,5 +9,5 @@
 #
 # A Hugging Face token can still be supplied for rate-limited model fetches.
 
-llama-cpp-python==0.3.33     # verified CPU abort ABI for MiniCPM5-1B Q4_K_M
-huggingface_hub>=0.23.0      # weight download (setup_models --gguf)
+llama-cpp-python==0.3.34     # verified CPU abort ABI for MiniCPM5-1B Q4_K_M
+huggingface_hub>=1.24.0      # weight download (setup_models --gguf)

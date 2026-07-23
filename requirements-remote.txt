@@ -16,5 +16,5 @@
 
 livekit                    # rtc primitives (Room/AudioSource/AudioStream/AudioFrame)
 livekit-api                # AccessToken / VideoGrants (token server)
-fastapi>=0.110             # token server + /chat + static web hosting
-uvicorn>=0.29              # ASGI server for the token/web server
+fastapi>=0.139.2             # token server + /chat + static web hosting
+uvicorn>=0.51.0              # ASGI server for the token/web server

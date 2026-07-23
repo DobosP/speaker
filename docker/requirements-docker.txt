@@ -6,16 +6,16 @@
 # cold-start fast.
 livekit                # rtc primitives (Room/AudioSource/AudioStream/AudioFrame)
 livekit-api            # AccessToken / VideoGrants (token server)
-fastapi>=0.110         # token server + /chat + static web hosting
-uvicorn>=0.29          # ASGI server for the token/web server
+fastapi>=0.139.2         # token server + /chat + static web hosting
+uvicorn>=0.51.0          # ASGI server for the token/web server
 sherpa-onnx            # on-device streaming ASR + VITS TTS (CPU, int8)
-numpy>=1.24.0          # audio resample / PCM conversion
+numpy>=2.5.1          # audio resample / PCM conversion
 ollama>=0.6.2          # AsyncClient task cancellation -> GPU Ollama service
-openai>=1.0            # OpenAI-compat HTTP client for the cloud middle layer
+openai>=2.47.0            # OpenAI-compat HTTP client for the cloud middle layer
                        # (Cerebras / Groq / DeepSeek / Moonshot all share this shape;
                        # see core.llm.OpenAICompatLLM + tools/llm_sanity.py).
-huggingface-hub>=0.20.0  # one-shot sherpa model download
-psutil>=5.9.0          # CPU/RAM telemetry for the run summary
+huggingface-hub>=1.24.0  # one-shot sherpa model download
+psutil>=7.2.2          # CPU/RAM telemetry for the run summary
 
 # Optional: real Postgres-backed layered memory (utils.memory, imported lazily by
 # always_on_agent.memory ONLY when DATABASE_URL is set). The in-RAM default tier

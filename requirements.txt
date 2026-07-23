@@ -2,41 +2,41 @@
 # Install with: pip install -r requirements.txt
 
 # Audio (cross-platform)
-sounddevice>=0.4.6
-pygame>=2.5.0
+sounddevice>=0.5.5
+pygame>=2.6.1
 # Windows-only: COM bindings for the native WASAPI communications-category
 # capture client + its OS-AEC effects verification (core/engines/_wasapi_comm.py,
 # ADR-0082). Pure-Python, tiny; unused on other platforms.
-comtypes>=1.4 ; sys_platform == "win32"
+comtypes>=1.4.16 ; sys_platform == "win32"
 
 # Text-to-Speech (multiple backends, in priority order)
 kokoro-onnx>=0.5.0           # Kokoro ONNX TTS (local, ~82M params, Apache-2.0)
-piper-tts>=1.4.0             # Piper ONNX — Tier 1 / low profile (30+ languages, CPU)
+piper-tts>=1.5.0             # Piper ONNX — Tier 1 / low profile (30+ languages, CPU)
 supertonic                    # Lightning fast on-device TTS (~10x realtime)
-edge-tts>=6.1.0              # Microsoft neural voices (online fallback)
-gTTS>=2.4.0                  # Google TTS fallback
+edge-tts>=7.2.8              # Microsoft neural voices (online fallback)
+gTTS>=2.5.4                  # Google TTS fallback
 
 # Speech-to-Text
-sherpa-onnx==1.13.3         # measured local NeMo/STT + VAD/TTS/speaker runtime
+sherpa-onnx==1.13.4         # measured local NeMo/STT + VAD/TTS/speaker runtime
 faster-whisper==1.2.1        # verified local final-verifier frontend
 ctranslate2==4.8.1; sys_platform == "linux" and platform_machine == "x86_64"
 # CTranslate2 dlopens these CUDA 12/cuDNN 9 sonames.  Exact wheel pins plus the
 # process-local bootstrap in core/engines/_cuda_wheels.py avoid relying on a
 # mutable system CUDA toolkit or LD_LIBRARY_PATH.
 nvidia-cublas-cu12==12.9.2.10; sys_platform == "linux" and platform_machine == "x86_64"
-nvidia-cudnn-cu12==9.24.0.43; sys_platform == "linux" and platform_machine == "x86_64"
+nvidia-cudnn-cu12==9.25.0.15; sys_platform == "linux" and platform_machine == "x86_64"
 nvidia-cuda-nvrtc-cu12==12.9.86; sys_platform == "linux" and platform_machine == "x86_64"
 useful-moonshine-onnx        # Moonshine ONNX — Tier 1 / low profile (English, ~26 MB)
-pywhispercpp>=1.4.0          # whisper.cpp bindings (streaming / low-resource)
-transformers>=4.36.0         # Standard Whisper fallback
-torch>=2.0.0
-accelerate>=0.26.0
+pywhispercpp>=1.5.0          # whisper.cpp bindings (streaming / low-resource)
+transformers>=5.14.1         # Standard Whisper fallback
+torch>=2.13.0
+accelerate>=1.14.0
 
 # Voice Activity Detection
-silero-vad>=5.0              # Neural network VAD (ONNX, ~2MB, high accuracy)
+silero-vad>=6.2.1              # Neural network VAD (ONNX, ~2MB, high accuracy)
 webrtcvad                    # Legacy GMM VAD (optional fallback)
 openwakeword>=0.6.0          # Wakeword detector for noisy environments
-speechbrain>=1.0.0           # Optional speaker verification gate
+speechbrain>=1.1.0           # Optional speaker verification gate
 
 # Echo Cancellation: implemented in core/engines/_aec.py as a NumPy frequency-
 # domain adaptive filter (FDAF) — no native deps (numpy only). OFF by default
@@ -44,36 +44,36 @@ speechbrain>=1.0.0           # Optional speaker verification gate
 # the Smart Turn endpoint use onnxruntime (>=1.20,<1.24 for the cp310 wheel);
 # install it only for those optional tiers.
 # speexdsp-ns is optional for post-AEC noise suppression
-speexdsp-ns>=0.1.0
+speexdsp-ns>=0.1.2
 
 # Audio processing
-numpy>=1.24.0
-librosa>=0.10.0
-soundfile>=0.12.0
+numpy>=2.5.1
+librosa>=0.11.0
+soundfile>=0.14.0
 
 # LLM
 ollama>=0.6.2
 
 # Model download
-huggingface-hub>=0.20.0
+huggingface-hub>=1.24.0
 
 # Memory & Database (optional but recommended)
 # PostgreSQL driver + thread-safe connection pool (psycopg3 in-tree).
 # psycopg2 was in maintenance mode; the audited bug (single shared
 # psycopg2.connection across threads) is fixed by ConnectionPool from
 # psycopg_pool, which only ships under psycopg3.
-psycopg[binary,pool]>=3.2
-yoyo-migrations>=8           # Schema migrations for migrations/*.sql
-sentence-transformers>=2.2.0 # For embeddings/vector search
+psycopg[binary,pool]>=3.3.4
+yoyo-migrations>=9.0.0           # Schema migrations for migrations/*.sql
+sentence-transformers>=5.6.0 # For embeddings/vector search
 
 # Environment
-python-dotenv>=1.0.0
+python-dotenv>=1.2.2
 
 # Anti-aliased capture-path resampling (44.1/48k mic -> 16k ASR). Falls back to
 # scipy.signal.resample_poly, then naive linear, if absent. See core/audio_frontend.py.
-soxr>=0.3
+soxr>=1.1.0
 # REQUIRED for the coherence barge-in detector (core/engines/echo_coherence.py):
 # scipy.signal coherence/correlate/welch. Also the polyphase resample fallback.
 # Needs >=1.13 to support numpy 2.x; without scipy barge-in silently degrades to
 # the legacy level gate (caught by `python -m tools.doctor`).
-scipy>=1.13  # signal utils for coherence barge-in + resample fallback
+scipy>=1.18.0  # signal utils for coherence barge-in + resample fallback

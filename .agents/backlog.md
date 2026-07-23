@@ -3,6 +3,11 @@
 Priority queue. `[ ]` = open, `[x]` = shipped (see `changelog.md`).
 P0 = correctness/blocker, P1 = high value, P2 = nice-to-have.
 
+> Sequencing truth-up 2026-07-17: `docs/2026-07-17-stabilization-plan.md` is
+> the CURRENT unified plan (barge Track A/C, STT Track B, maintenance Track
+> D) — it orders the open items below; the ★ tail-cut item and the mic-level
+> fix are its Track A. Read it first.
+
 > Refreshed 2026-06-02 during the architecture/doc unification pass. Durable
 > design rationale now lives in [`docs/unified_architecture.md`](../docs/unified_architecture.md);
 > this file tracks only OPEN work. The session-bootstrap helper

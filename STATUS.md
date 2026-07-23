@@ -78,6 +78,12 @@ Physical runs `192151`/`193713` failed with enrollment on and off. V5 is rejecte
   9.3 GB GPU), Kokoro 24 kHz + 7 kHz lowpass active. Known upstream latent:
   ADR-0068 repeat-guard clock race on coarse clocks (backlog; Linux
   unaffected in practice).
+- Current plan: `docs/2026-07-17-stabilization-plan.md` — the unified
+  barge/STT/maintenance sequencing (everything funnels through the Windows
+  mic-level fix). Branches unified 2026-07-17: `main` is the only branch;
+  `fix/live-stt-quality` (371e58b) and `feat/stt-consensus-v2` (08834e8)
+  deleted after verifying their content was already landed (741e12b /
+  4b9af8e).
 - Windows barge route (ADR-0082): the native IAudioClient2 communications
   capture landed with the OS-effects verification contract — route verified
   ONLY when the effects framework reports AEC active on the live stream

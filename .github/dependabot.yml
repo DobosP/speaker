@@ -1,0 +1,14 @@
+# Advisory signal only (stabilization plan Track D2, 2026-07-17): grouped
+# monthly pip update PRs so new releases/advisories surface without noise.
+# The hard pins in requirements*.txt stay authoritative -- the owner reviews
+# and lands bumps deliberately (STT/AEC stack pins are correctness-sensitive).
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      python-deps:
+        patterns: ["*"]

@@ -52,6 +52,16 @@ Each run writes structured reports under `test-reports/<run_id>/` (per-stage
 `summary.json` / `failures.json` / `llm-summary.md` + a run rollup). Plain
 `pytest` also logs to `logs/tests/`.
 
+Crash visibility (2026-07 incident hardening): a PASS verdict needs positive
+evidence. A pytest subprocess that exits non-zero with zero recorded outcomes
+(a native abort, e.g. sherpa-onnx's C++ `exit(-1)`), or that exits 0 having
+run nothing, is reported as **FAIL** with `crash_evidence` in `summary.json`
+and a "NATIVE CRASH SUSPECTED" section in the markdown. Independently,
+`tests/conftest.py` writes `logs/tests/tests-<run_id>.started.json` eagerly at
+session start and removes it only after the `.summary.json` lands — an
+orphaned started marker means a session died mid-run, and the staged runner
+flags it in the stage report (`tools.testing.summary.find_interrupted_runs`).
+
 The `imports` stage is a whole-tree import smoke that catches syntax errors and
 missing optional libs across `core/`/`always_on_agent/`/`remote/`/`tools/`
 before any logic test runs — use it as a "does the code compile and are the

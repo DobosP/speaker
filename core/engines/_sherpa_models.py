@@ -298,6 +298,138 @@ def build_keyword_spotter(c: "SherpaConfig"):
     )
 
 
+def _read_onnx_custom_metadata(path: str) -> dict[str, str] | None:
+    """Read an ONNX file's ``metadata_props`` (custom key/value metadata) in
+    O(metadata) time, or ``None`` if the file can't be parsed as a ModelProto.
+
+    Deliberately NOT ``onnx.load`` / ``onnxruntime.InferenceSession``: both
+    deserialize (or fully initialize) the whole 80-115 MB model, and the caller
+    is about to hand the file to sherpa-onnx anyway -- the model must never be
+    loaded twice just for a preflight. A ModelProto is a flat protobuf whose
+    huge ``graph`` lives in field 7 and whose ``metadata_props``
+    (StringStringEntryProto: key=1, value=2) live in field 14, so a top-level
+    scan can ``seek`` past the graph and read only the metadata bytes."""
+
+    def _varint(fh) -> int | None:
+        result, shift = 0, 0
+        while True:
+            byte = fh.read(1)
+            if not byte:
+                return None
+            result |= (byte[0] & 0x7F) << shift
+            if not byte[0] & 0x80:
+                return result
+            shift += 7
+            if shift > 63:  # malformed / not a protobuf
+                return None
+
+    def _entry(data: bytes) -> tuple[str, str]:
+        import io
+
+        key = value = ""
+        fh = io.BytesIO(data)
+        while True:
+            tag = _varint(fh)
+            if tag is None:
+                break
+            length = _varint(fh)
+            if length is None:
+                break
+            field = fh.read(length).decode("utf-8", errors="replace")
+            if tag >> 3 == 1:
+                key = field
+            elif tag >> 3 == 2:
+                value = field
+        return key, value
+
+    meta: dict[str, str] = {}
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                tag = _varint(fh)
+                if tag is None:
+                    break  # clean EOF
+                field, wire = tag >> 3, tag & 0x07
+                if wire == 0:  # varint scalar
+                    if _varint(fh) is None:
+                        return None
+                elif wire == 1:  # fixed64
+                    fh.seek(8, 1)
+                elif wire == 5:  # fixed32
+                    fh.seek(4, 1)
+                elif wire == 2:  # length-delimited
+                    length = _varint(fh)
+                    if length is None:
+                        return None
+                    if field == 14:  # metadata_props -- the only bytes we read
+                        key, value = _entry(fh.read(length))
+                        if key:
+                            meta[key] = value
+                    else:  # graph / opset / producer... -- skip without reading
+                        fh.seek(length, 1)
+                else:  # unknown wire type -> not a protobuf we understand
+                    return None
+    except OSError:
+        return None
+    return meta
+
+
+def _tts_family_preflight(c: "SherpaConfig", kokoro: bool) -> None:
+    """Refuse a config whose TTS family selection (``tts_voices``) contradicts
+    what ``tts_model`` actually is, BEFORE sherpa-onnx sees it.
+
+    Root cause this exists for (2026-07 incident): a half-finished Kokoro
+    switch left ``tts_voices`` pointing at Kokoro's voices.bin while
+    ``tts_model`` still named the VITS/Piper file. sherpa-onnx's Kokoro loader
+    calls ``exit(-1)`` from C++ on the metadata mismatch -- the interpreter
+    dies with rc 255 and ZERO Python-visible output, which blinded the test
+    harness for 10 days. A RuntimeError here is a readable test failure and a
+    fixable startup error instead.
+
+    Classification uses the export's own custom metadata (``model_type``:
+    'kokoro'/'vits' on the k2-fsa + piper exports; ``style_dim`` is a
+    Kokoro-only fingerprint as backup). Fail-open by design: a missing file,
+    unreadable protobuf, or inconclusive metadata only warns/skips -- this
+    preflight must never become its own blocker."""
+    import logging
+    import os
+
+    if not os.path.isfile(c.tts_model):
+        return  # missing files are handled (loudly) by the existing paths
+    meta = _read_onnx_custom_metadata(c.tts_model)
+    if meta is None:
+        logging.getLogger("speaker.sherpa").warning(
+            "Could not read ONNX metadata from tts_model (%s) -- skipping the "
+            "TTS family preflight and trusting the config.", c.tts_model,
+        )
+        return
+    model_type = meta.get("model_type", "").strip().lower()
+    if model_type:
+        model_is_kokoro = model_type == "kokoro"
+    elif "style_dim" in meta:  # older Kokoro exports without model_type
+        model_is_kokoro = True
+    else:
+        return  # no recognizable family fingerprint -> inconclusive, proceed
+    if kokoro and not model_is_kokoro:
+        raise RuntimeError(
+            f"TTS config mismatch: tts_voices is set ({c.tts_voices}), selecting "
+            f"the Kokoro family, but tts_model ({c.tts_model}) is a "
+            f"'{model_type or 'non-Kokoro'}' export. sherpa-onnx would abort the "
+            "whole process (C++ exit(-1), no traceback) on this. Fix: point "
+            "tts_model at the Kokoro package's model file (the sibling of "
+            "voices.bin), or clear tts_voices to use the VITS/Piper voice."
+        )
+    if model_is_kokoro and not kokoro:
+        raise RuntimeError(
+            f"TTS config mismatch: tts_model ({c.tts_model}) is a Kokoro export "
+            "but tts_voices is empty, selecting the VITS/Piper family. "
+            "sherpa-onnx would abort the whole process (C++ exit(-1), no "
+            "traceback) on this. Fix: set tts_voices to the Kokoro package's "
+            "voices.bin (and tts_tokens/tts_data_dir to its siblings), or point "
+            "tts_model at a VITS/Piper voice."
+        )
+
+
 def build_tts(c: "SherpaConfig", *, deterministic_vits: bool = False):
     """Offline TTS (VITS/Piper by default, Kokoro when ``tts_voices`` is set), or
     ``None`` if no model configured.
@@ -321,12 +453,20 @@ def build_tts(c: "SherpaConfig", *, deterministic_vits: bool = False):
     caught BEFORE the native constructor -- which otherwise aborts cryptically --
     and returns ``None`` with a clear, actionable warning. The engine already
     treats ``_tts is None`` as "no speech" (a mute assistant + a loud log beats a
-    hard crash on the capture thread), and the doctor preflight names the fix."""
+    hard crash on the capture thread), and the doctor preflight names the fix.
+
+    One deliberate exception to fail-open: a family/model MISMATCH (Kokoro
+    selected via ``tts_voices`` but ``tts_model`` is a VITS export, or vice
+    versa) raises ``RuntimeError`` via ``_tts_family_preflight`` -- sherpa's
+    native loader would ``exit(-1)`` the whole interpreter on that config, so a
+    readable Python error naming the fix is strictly better than either dying
+    silently or muting speech on a config the owner believes is Kokoro."""
     if not c.tts_model:
         return None
     import os
 
     kokoro = bool(getattr(c, "tts_voices", ""))
+    _tts_family_preflight(c, kokoro)
     if kokoro:
         # Kokoro's native loader hard-aborts (not a catchable Python error) on a
         # missing model/voices/tokens file, so guard the required paths up front.

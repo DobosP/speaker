@@ -9,6 +9,15 @@ during the session, plus a ``.summary.json`` digest (counts, failures, and the
 slowest tests). Push those files and they show exactly what happened.
 Disable with ``SPEAKER_TEST_LOG=0``.
 
+Crash robustness (2026-07 incident): a native abort -- sherpa-onnx calling
+``exit(-1)`` from C++ -- kills the interpreter before ``pytest_sessionfinish``,
+leaving a zero-byte ``.txt`` and NO summary, i.e. no committed evidence the run
+ever happened. So a ``tests-<run_id>.started.json`` marker is written (flushed
++ fsynced) the moment the session configures, and removed only after the
+summary lands. An orphaned started marker = a session that died mid-run;
+``tools.testing.summary.find_interrupted_runs`` flags exactly that pattern in
+the staged runner's reports.
+
 Custom flags:
 
 - ``--postgres``: enable the ``postgres`` marker so
@@ -83,6 +92,8 @@ def pytest_configure(config):
     )
     if not _ENABLED:
         return
+    if hasattr(config, "workerinput"):
+        return  # xdist worker: the controller owns the run log + markers
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
     txt_path = _LOG_DIR / f"tests-{run_id}.txt"
@@ -98,9 +109,30 @@ def pytest_configure(config):
         run_id=run_id,
         txt_path=str(txt_path),
         summary_path=str(_LOG_DIR / f"tests-{run_id}.summary.json"),
+        started_path=str(_LOG_DIR / f"tests-{run_id}.started.json"),
         handler=handler,
         started=time.time(),
     )
+    # Eager, durable "this session STARTED" marker -- written before any test
+    # runs and removed only after the summary lands in pytest_sessionfinish.
+    # If the interpreter dies mid-run (native exit/abort/kill), this file is
+    # what remains: a started marker with no matching .summary.json is
+    # detectable evidence of a hard death instead of a silently-missing log.
+    marker = {
+        "run_id": run_id,
+        "pid": os.getpid(),
+        "started_utc": datetime.now().astimezone().isoformat(),
+        "log_path": _STATE["txt_path"],
+        "summary_path": _STATE["summary_path"],
+        "note": (
+            "removed at pytest_sessionfinish; if you are reading this file, "
+            "the pytest session it belongs to never finished"
+        ),
+    }
+    with open(_STATE["started_path"], "w", encoding="utf-8") as fh:
+        json.dump(marker, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def pytest_runtest_logreport(report):
@@ -143,6 +175,10 @@ def pytest_sessionfinish(session, exitstatus):
         "slowest": [{"test": r["test"], "duration_sec": r["duration_sec"]} for r in slowest],
     }
     Path(_STATE["summary_path"]).write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    # Clean finish: the summary exists, so retire the started marker. Ordering
+    # matters -- summary first, THEN unlink -- so there is no instant where a
+    # crash could leave neither file.
+    Path(_STATE["started_path"]).unlink(missing_ok=True)
     logging.getLogger("speaker").removeHandler(_STATE["handler"])
     _STATE["handler"].close()
     print(f"\n[test-log] {_STATE['txt_path']}")

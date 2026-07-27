@@ -64,6 +64,44 @@ class ReportParser:
             + int(summary["errors"])
             + int(summary["skipped"])
         )
+
+        # Crash visibility (2026-07 incident): a native abort -- e.g. sherpa's
+        # C++ exit(-1) on a TTS family/model mismatch -- kills the interpreter
+        # before pytest writes its junit/summary, so counts come back all-zero
+        # and the old verdict logic printed PASS for 10 days. The exit code and
+        # the absence of outcomes ARE the evidence; turn them into an explicit
+        # failure record instead of silence.
+        crash_message = ""
+        counted_red = int(summary["failed"]) + int(summary["errors"])
+        if returncode != 0 and counted_red == 0 and not failures:
+            crash_message = (
+                f"pytest exited with returncode {returncode} but recorded ZERO "
+                "failed/errored outcomes -- the test process died before "
+                "reporting (native crash, collection abort, or interrupt). "
+                "Treating the stage as FAILED; see stdout.txt for the last "
+                "output before death."
+            )
+        elif returncode == 0 and int(summary["total"]) == 0:
+            crash_message = (
+                "pytest exited 0 but recorded ZERO outcomes (nothing collected "
+                "or nothing ran) -- an empty run proves nothing. Treating the "
+                "stage as FAILED."
+            )
+        if crash_message:
+            summary["crash_evidence"] = crash_message
+            tail = "\n".join(stdout.splitlines()[-15:])
+            failures.append(
+                {
+                    "nodeid": f"[{stage}] pytest process",
+                    "file": "",
+                    "test_name": "(no test outcome recorded)",
+                    "type": "crash",
+                    "message": crash_message,
+                    "duration_sec": round(duration_sec, 3),
+                    "traceback_excerpt": tail[-4000:],
+                    "area": "harness",
+                }
+            )
         summary["failure_count"] = len(failures)
         summary["failure_areas"] = dict(
             sorted(Counter(str(f.get("area", "general")) for f in failures).items())

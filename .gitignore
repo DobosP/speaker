@@ -41,20 +41,13 @@ transcripts/
 *.mp3
 *.mp4
 
-# ...but DO commit session recordings captured alongside a run's logs, so they
-# can be replayed (`--engine replay`) and frozen into regression tests.
-# PRIVACY: this whitelist is a convenience for replay fixtures, NOT a license to
-# commit raw personal voice. Per architecture §9.7 ("raw audio never leaves the
-# device"), only PII-free recordings may be committed -- scrub/omit real speech
-# first. See docs/debugging.md.
-!logs/runs/*.wav
-!logs/runs/*.mp3
-
-# FREEZE (2026-07-02, doc-audit §3 + owner decision D-B): NEW files under
-# logs/runs/ are ignored by default -- this deliberately overrides the replay
-# whitelist above. Already-tracked bundles STAY tracked (gitignore never
-# untracks; the WAV/PII purge is deferred to the pre-release gate, owner-only).
-# To commit a scrubbed, PII-free replay fixture on purpose, use `git add -f`.
+# PURGED (2026-07-28, ADR-0083, owner-authorized): the replay whitelist that used
+# to live here (!logs/runs/*.wav) is gone WITH its history -- git-filter-repo
+# removed every audio file from all refs and the rewrite was force-pushed to
+# origin and nas. Raw personal voice never enters git again: no negations, no
+# exceptions. Replay fixtures must be PII-free, converted to .npy under
+# tests/fixture_audio/, and reviewed before `git add -f`. Local session WAVs
+# stay on disk (ignored below) and in the owner's offline archive.
 logs/runs/**
 
 # Per-run pytest log bundles are transient (timestamped trace + summary for the

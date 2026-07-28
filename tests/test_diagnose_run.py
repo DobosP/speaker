@@ -499,7 +499,12 @@ def test_ref_wav_marks_first_audio_and_pre_audio_barge(tmp_path):
     assert out["sentences"][0]["barge_events"][0]["phase"] == "pre-first-ref-audio"
 
 
-def test_ref_wav_flags_no_reference_audio(tmp_path):
+def test_ref_wav_all_zero_is_flagged_silent_not_no_ref(tmp_path):
+    # A fully (effectively) all-zero .ref.wav is a BROKEN CAPTURE (the
+    # run-20260712 SUITE bundles), not a quiet-but-real recording -- it must
+    # read as an explicit UNAVAILABLE, not the softer per-sentence "no-ref"
+    # label (which would otherwise get repeated once per sentence and could
+    # be misread as "checked, nothing there" rather than "couldn't check").
     import numpy as np
 
     lines = [
@@ -513,10 +518,48 @@ def test_ref_wav_flags_no_reference_audio(tmp_path):
     run = parse_log(log_path)
     wav_metrics = analyze_ref_wav(wav_path, run)
     report = format_report(run, wav_metrics)
+    out = to_json(run, wav_metrics)
 
-    assert wav_metrics[0]["first_audio_offset_s"] is None
+    assert wav_metrics["_silent"] is True
+    assert 0 not in wav_metrics  # per-sentence windowing skipped entirely
+    assert "playback reference is silent" in report
+    assert "echo attribution impossible" in report
+    assert "UNAVAILABLE" in report
+    assert out["ref_wav_silent"] is True
+    assert out["pass_fail"]["ref_wav_status"] == "silent"
+    # A broken .ref.wav does not itself FAIL the log-derived criteria (they
+    # remain independently computable from the .txt log).
+    assert out["pass_fail"]["overall"] != "FAIL"
+
+
+def test_ref_wav_per_sentence_no_ref_when_file_has_some_signal(tmp_path):
+    # Distinct from whole-file silence: a ref.wav with real energy SOMEWHERE
+    # but a no-signal window for one sentence still uses the older
+    # per-sentence "no-ref" label -- the whole-file _silent short-circuit
+    # must not swallow this narrower, still-useful signal.
+    import numpy as np
+
+    lines = [
+        "12:00:00.000 INFO  speaker | run 20260628-120009 started -> x.txt",
+        "12:00:00.000 INFO  speaker.sherpa | recording playback reference (replay) -> run-test.ref.wav",
+        "12:00:01.000 DEBUG speaker.sherpa | speaking: 'Has audio.' (queue depth=0)",
+        "12:00:05.000 DEBUG speaker.sherpa | speaking: 'No audio here.' (queue depth=0)",
+    ]
+    log_path = _write_log(tmp_path, lines)
+    sr = 16000
+    samples = np.zeros(sr * 10, dtype=np.float32)
+    t = np.arange(sr) / sr
+    samples[1 * sr:2 * sr] = 0.2 * np.sin(2 * np.pi * 440 * t)  # sentence[0]'s window
+    wav_path = _write_wav(tmp_path / "run-test.ref.wav", samples, sr)
+
+    run = parse_log(log_path)
+    wav_metrics = analyze_ref_wav(wav_path, run)
+    report = format_report(run, wav_metrics)
+
+    assert wav_metrics.get("_silent") is False
     assert "playback reference has no detected audio" in report
     assert "NO-REF" in report
+    assert "playback reference is silent" not in report
 
 
 def test_ref_wav_warns_when_not_bit_exact_output_rate(tmp_path):
@@ -663,6 +706,131 @@ def test_heartbeat_underruns_in_report(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "playback underruns" in out
     assert "5" in out   # cumulative from last heartbeat
+
+
+# ---------------------------------------------------------------------------
+# Old (pre-2026-06-18) heartbeat format -- no clip=/underruns= fields.
+# Proof case: logs/runs/run-20260608-181250.txt (.agents/backlog.md:168-183, a
+# documented 12-fire self-interrupt cascade) used to parse to verdict=CLEAN
+# because _HEARTBEAT_PAT required clip=/underruns= that log doesn't have, so
+# every heartbeat silently failed to parse and every barge event's
+# speaking_at_event stayed None ("uncertain", never counted as a suspect).
+# ---------------------------------------------------------------------------
+
+OLD_FORMAT_HEARTBEAT_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260608-999000 started -> x.txt",
+    "12:00:05.000 DEBUG speaker.sherpa | capture heartbeat: blocks=20 avg_rms=0.0008 partials=0 finals=0 speaking=False",
+    "12:00:07.000 DEBUG speaker.sherpa | capture heartbeat: blocks=40 avg_rms=0.0009 partials=1 finals=0 speaking=True",
+]
+
+
+def test_old_heartbeat_format_parses_with_zero_defaults(tmp_path):
+    run = parse_log(_write_log(tmp_path, OLD_FORMAT_HEARTBEAT_LINES))
+    assert len(run.heartbeats) == 2
+    assert run.heartbeats[0].clip == 0.0
+    assert run.heartbeats[0].underruns == 0
+    assert run.heartbeats[1].speaking is True
+    assert run.unparsed_heartbeat_lines == 0  # these WERE understood
+
+
+OLD_FORMAT_SELF_INTERRUPT_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260608-999001 started -> x.txt",
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Old format cascade.' (queue depth=0)",
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    # Old format: no clip=/underruns=.
+    "12:00:11.000 DEBUG speaker.sherpa | capture heartbeat: blocks=200 avg_rms=0.0200 partials=0 finals=0 speaking=True",
+    "12:00:11.500 DEBUG speaker.sherpa | dtd: D=9.24 K=5.0 fired=True gated=True (z_raw=6.51 z_resid=7.94 z_coh=722303.29) raw=0.0581 resid=0.0649 incoh=0.85 resid_floor=0.0091 consec=1",
+    "12:00:11.700 INFO  speaker.sherpa | barge-in detected",
+    "12:00:12.000 DEBUG speaker.sherpa | capture heartbeat: blocks=300 avg_rms=0.0100 partials=0 finals=0 speaking=False",
+]
+
+
+def test_old_heartbeat_format_no_longer_blind_to_self_interrupt(tmp_path):
+    # This is the exact class of bug the fix addresses: with the heartbeat
+    # parsed, speaking_at_event resolves to True at the barge instant and the
+    # existing DTD-based classifier does its job -- verdict must NOT be clean.
+    run = parse_log(_write_log(tmp_path, OLD_FORMAT_SELF_INTERRUPT_LINES))
+    assert len(run.heartbeats) == 2  # would have been 0 before the fix
+
+    si = self_interrupt_summary(run)
+    assert si["verdict"] != "clean"
+    assert si["suspect_count"] >= 1
+
+    from tools.diagnose_run import pass_fail_verdict
+    pf = pass_fail_verdict(run)
+    assert pf["self_interrupt"] == "FAIL"
+    assert pf["overall"] != "PASS"
+
+
+# ---------------------------------------------------------------------------
+# UNAVAILABLE guard -- future heartbeat format drift (or a run that emits no
+# heartbeats at all) must never let a blind classifier report "clean". This is
+# the (b) guard kept alongside the (a) old-format parser above.
+# ---------------------------------------------------------------------------
+
+DRIFTED_FORMAT_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260608-999002 started -> x.txt",
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'Drifted format.' (queue depth=0)",
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    # A hypothetical future heartbeat shape neither the old nor new pattern
+    # recognizes -- still contains the "capture heartbeat:" substring.
+    "12:00:11.000 DEBUG speaker.sherpa | capture heartbeat: schema=v3 payload={\"blocks\":200}",
+    "12:00:11.700 INFO  speaker.sherpa | barge-in detected",
+]
+
+
+def test_drifted_heartbeat_format_forces_unavailable(tmp_path):
+    run = parse_log(_write_log(tmp_path, DRIFTED_FORMAT_LINES))
+    assert run.heartbeats == []
+    assert run.unparsed_heartbeat_lines == 1
+
+    si = self_interrupt_summary(run)
+    assert si["verdict"] == "unavailable"
+    assert "heartbeat format unrecognized" in si["reason"]
+
+    from tools.diagnose_run import pass_fail_verdict
+    pf = pass_fail_verdict(run)
+    assert pf["self_interrupt"] == "UNAVAILABLE"
+    assert pf["overall"] == "UNAVAILABLE"
+    assert pf["overall"] != "PASS"
+
+
+def test_drifted_heartbeat_format_exit_code_nonzero(tmp_path):
+    from tools.diagnose_run import main
+    path = _write_log(tmp_path, DRIFTED_FORMAT_LINES)
+    rc = main([str(path), "--exit-code"])
+    assert rc == 3  # UNAVAILABLE -- never 0 (PASS)
+
+
+NO_HEARTBEATS_WITH_ACTIVITY_LINES = [
+    "12:00:00.000 INFO  speaker | run 20260608-999003 started -> x.txt",
+    "12:00:10.000 DEBUG speaker.sherpa | speaking: 'No heartbeats at all.' (queue depth=0)",
+    "12:00:10.020 INFO  speaker.sherpa | playback opened at 24000 Hz on device default (callback)",
+    "12:00:11.700 INFO  speaker.sherpa | barge-in detected",
+]
+
+
+def test_no_heartbeats_with_activity_forces_unavailable(tmp_path):
+    # No heartbeat telemetry whatsoever (not even an unparsed line), but the
+    # log clearly has speaking + barge-in activity -- the "no capture
+    # heartbeats parsed despite ... activity" last-resort branch.
+    run = parse_log(_write_log(tmp_path, NO_HEARTBEATS_WITH_ACTIVITY_LINES))
+    assert run.heartbeats == []
+    assert run.unparsed_heartbeat_lines == 0
+
+    si = self_interrupt_summary(run)
+    assert si["verdict"] == "unavailable"
+    assert "no capture heartbeats parsed" in si["reason"]
+
+
+def test_no_heartbeats_no_activity_stays_clean(tmp_path):
+    # Regression guard: a run with NEITHER heartbeats NOR sentences/barge
+    # events (e.g. a very short bootstrap-only log) must not be forced
+    # UNAVAILABLE -- there is nothing to classify, so "clean" is honest.
+    lines = ["12:00:00.000 INFO  speaker | run 20260608-999004 started -> x.txt"]
+    run = parse_log(_write_log(tmp_path, lines))
+    si = self_interrupt_summary(run)
+    assert si["verdict"] == "clean"
 
 
 # ---------------------------------------------------------------------------

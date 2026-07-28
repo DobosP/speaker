@@ -108,10 +108,19 @@ _DTD_PAT = re.compile(
     rf"\s+resid_floor=({_NUM})\s+consec=(\d+)"
     rf"(?:\s+coh=(\S+)\s+coh_veto=(True|False)\s+ref_delay=({_NUM})ms)?"
 )
+# clip=/underruns= were added after the earliest bundles (pre-2026-06-18); make
+# them OPTIONAL so old-format heartbeats still parse -- a heartbeat line that
+# doesn't match at all (future format drift) is the case the UNAVAILABLE guard
+# in self_interrupt_summary() exists for (see _HEARTBEAT_LOOSE_PAT below).
 _HEARTBEAT_PAT = re.compile(
-    r"capture heartbeat:\s+blocks=(\d+)\s+avg_rms=([\d.]+)\s+clip=([\d.]+)%"
-    r"\s+underruns=(\d+)\s+partials=(\d+)\s+finals=(\d+)\s+speaking=(True|False)"
+    r"capture heartbeat:\s+blocks=(\d+)\s+avg_rms=([\d.]+)"
+    r"(?:\s+clip=([\d.]+)%\s+underruns=(\d+))?"
+    r"\s+partials=(\d+)\s+finals=(\d+)\s+speaking=(True|False)"
 )
+# Loose "does this line claim to be a heartbeat at all" check used only to
+# detect format drift: if this matches on a line but _HEARTBEAT_PAT above does
+# not, the structured parser is blind to a heartbeat the log clearly has.
+_HEARTBEAT_LOOSE_PAT = re.compile(r"capture heartbeat:")
 _REF_WAV_PAT = re.compile(r"recording playback reference.*->\s+(\S+\.ref\.wav)")
 _RUN_START_PAT = re.compile(r"run (\S+) started")
 _AEC_ACTIVE_PAT = re.compile(
@@ -253,6 +262,10 @@ class ParsedRun:
     # A word-cut followed by normal ASR recognizing/dropping the promoted PCM as
     # own TTS is direct proof that the confirmation was a false self-echo cut.
     self_echo_drop_times: list = field(default_factory=list)  # (time, text)
+    # Count of "capture heartbeat:" lines seen that did NOT match _HEARTBEAT_PAT
+    # -- future format drift the structured parser can't read. See
+    # self_interrupt_summary()'s UNAVAILABLE guard.
+    unparsed_heartbeat_lines: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +292,7 @@ def parse_log(txt_path: str) -> ParsedRun:
     word_cut_confirmed = 0
     word_cut_confirm_times: list[float] = []
     self_echo_drop_times: list[tuple[float, str]] = []
+    unparsed_heartbeat_lines = 0
     pending_tts_sanitize: Optional[dict] = None
     last_playback_sample_rate: Optional[int] = None
 
@@ -347,12 +361,20 @@ def parse_log(txt_path: str) -> ParsedRun:
                     t=t,
                     blocks=int(mhb.group(1)),
                     avg_rms=float(mhb.group(2)),
-                    clip=float(mhb.group(3)),
+                    # Old-format lines (pre-2026-06-18) carry no clip=/underruns=;
+                    # groups 3/4 are None on those, not "0% clipping observed".
+                    clip=float(mhb.group(3)) if mhb.group(3) is not None else 0.0,
                     speaking=mhb.group(7) == "True",
-                    underruns=int(mhb.group(4)),
+                    underruns=int(mhb.group(4)) if mhb.group(4) is not None else 0,
                     partials=int(mhb.group(5)),
                     finals=int(mhb.group(6)),
                 ))
+                continue
+            if _HEARTBEAT_LOOSE_PAT.search(msg):
+                # Claims to be a heartbeat but the structured parser above could
+                # not read it (a future format drift) -- record it so the
+                # self-interrupt classifier can refuse to call itself CLEAN.
+                unparsed_heartbeat_lines += 1
                 continue
 
             # DTD frame
@@ -531,6 +553,7 @@ def parse_log(txt_path: str) -> ParsedRun:
         word_cut_confirmed=word_cut_confirmed,
         word_cut_confirm_times=word_cut_confirm_times,
         self_echo_drop_times=self_echo_drop_times,
+        unparsed_heartbeat_lines=unparsed_heartbeat_lines,
     )
 
 
@@ -723,6 +746,23 @@ def _estimate_ref_delay(
     }
 
 
+#: A playback reference below this peak amplitude is treated as an
+#: (effectively) all-zero / broken capture rather than a genuine but quiet
+#: recording -- distinct from _ref_quality_label's looser 0.005 "no-ref"
+#: threshold, which flags per-sentence WINDOWS that may just precede first
+#: audio. This one is a whole-file check run BEFORE any sentence windowing,
+#: so it fires even on a bundle with zero sentences.
+_REF_WAV_SILENT_PEAK = 1e-4
+
+
+def _ref_wav_is_silent(pcm: "np.ndarray") -> bool:
+    import numpy as np
+
+    if pcm.size == 0:
+        return True
+    return bool(np.max(np.abs(pcm)) < _REF_WAV_SILENT_PEAK)
+
+
 def analyze_ref_wav(
     wav_path: str,
     run: ParsedRun,
@@ -732,12 +772,28 @@ def analyze_ref_wav(
     """Load the .ref.wav and compute per-sentence audio metrics.
 
     Returns a dict keyed by sentence index. Each value is the output of
-    _analyze_wav_segment plus a 'window_s' tuple.
+    _analyze_wav_segment plus a 'window_s' tuple. Keys prefixed with ``_`` are
+    run-wide, not per-sentence -- including ``_silent``, which is computed on
+    the WHOLE file before any sentence windowing so a silent/broken reference
+    capture is caught even when sentence-alignment data is missing or wrong.
     """
     try:
         pcm, sr = _read_wav_mono(wav_path)
     except Exception as exc:
         return {"_error": str(exc)}
+
+    silent = _ref_wav_is_silent(pcm)
+    if silent:
+        # Echo/self-interrupt attribution from this WAV is impossible -- say so
+        # immediately and skip the (meaningless on all-zero audio) per-sentence
+        # windowing below, rather than silently returning a report full of
+        # rms=0.0 lines that read as "a very quiet but normal reply".
+        return {
+            "_error": None,
+            "_silent": True,
+            "_sample_rate": sr,
+            "_duration_s": round(len(pcm) / sr, 3) if sr else 0.0,
+        }
 
     # The ref.wav records PLAYBACK output starting from the moment the engine
     # opened the reference recorder (logged as "recording playback reference").
@@ -755,6 +811,7 @@ def analyze_ref_wav(
     results: dict = {}
     results["_sample_rate"] = sr
     results["_duration_s"] = round(len(pcm) / sr, 3)
+    results["_silent"] = False
     for s in run.sentences:
         pb_start = s.t_playback_open if s.t_playback_open is not None else s.t_speak
         t_start = pb_start - wav_base
@@ -793,6 +850,12 @@ def analyze_mic_ref_wav(
         ref, ref_sr = _read_wav_mono(ref_wav_path)
     except Exception as exc:
         return {"_error": str(exc)}
+
+    if _ref_wav_is_silent(ref):
+        # A silent reference can't anchor a delay estimate against anything --
+        # don't let _estimate_ref_delay's own low-rms bail-out (None per
+        # sentence) read as "checked, nothing to report".
+        return {"_error": None, "_silent": True}
 
     if mic_sr != ref_sr:
         # Keep the dependency surface small: linear resampling is good enough for
@@ -925,6 +988,39 @@ def word_cut_funnel(run: ParsedRun) -> dict:
 def self_interrupt_summary(run: ParsedRun) -> dict:
     """High-level self-interrupt verdict for the run."""
 
+    # Guard against a blind classifier claiming a clean bill of health. The
+    # speaking-state heartbeat is what classify_barge_event() needs to tell a
+    # self-interrupt (speaking=True at the barge instant) from a real user
+    # barge-in (speaking=False) -- with zero heartbeats every barge_event's
+    # speaking_at_event is None, so a run with real playback/barge activity but
+    # NO parsed heartbeats has not been "classified clean", it has not been
+    # classified at all. This fires either when the log's heartbeat format has
+    # drifted again (unparsed_heartbeat_lines > 0) or, as a last-resort net for
+    # a format drift this tool has never seen, when the log clearly has
+    # speaking/barge activity yet produced no heartbeats whatsoever.
+    if not run.heartbeats and run.sentences and run.barge_events:
+        reason = (
+            "heartbeat format unrecognized -- self-interrupt classification "
+            "not possible"
+            if run.unparsed_heartbeat_lines > 0
+            else (
+                "no capture heartbeats parsed despite speaking/barge-in "
+                "activity in the log -- self-interrupt classification not "
+                "possible"
+            )
+        )
+        return {
+            "verdict": "unavailable",
+            "reason": reason,
+            "detected_total": sum(1 for be in run.barge_events if be.kind == "detected"),
+            "suspect_count": 0,
+            "suspects": [],
+            "rejected_while_speaking": sum(
+                1 for be in run.barge_events
+                if be.kind == "rejected" and be.speaking_at_event is True
+            ),
+        }
+
     def _word_cut_confirmed_at(be: BargeEvent) -> bool:
         # ADR-0013: a word-cut confirm proves the barge with SPEECH (novel non-own
         # words), deliberately bypassing DTD — so a detected event at a confirm
@@ -968,6 +1064,7 @@ def self_interrupt_summary(run: ParsedRun) -> dict:
 
     return {
         "verdict": verdict,
+        "reason": None,
         "detected_total": total_detected,
         "suspect_count": len(suspects),
         "suspects": suspects,
@@ -1039,6 +1136,15 @@ def diagnostic_findings(
     """Human-focused anomalies that should be obvious in a run review."""
     findings: list[str] = []
 
+    ref_silent = bool(wav_metrics and wav_metrics.get("_silent"))
+    if ref_silent:
+        findings.append(
+            "playback reference is silent -- echo attribution impossible for "
+            "this bundle (ref.wav peak below "
+            f"{_REF_WAV_SILENT_PEAK:g}); UNAVAILABLE: ref-wav-derived "
+            "findings, per-sentence ref_wav metrics, and mic/ref delay estimate"
+        )
+
     for s in run.sentences:
         tq = s.tts_quality
         if not tq:
@@ -1081,7 +1187,7 @@ def diagnostic_findings(
                         f"sentence[{sent.idx}] {be.kind} barge at +{rel:.3f}s before playback opened"
                     )
 
-    if wav_metrics:
+    if wav_metrics and not ref_silent:
         ref_sr = wav_metrics.get("_sample_rate")
         for s in run.sentences:
             if (
@@ -1105,7 +1211,7 @@ def diagnostic_findings(
                     f"(rms={wm.get('rms')} active_rms={wm.get('active_rms')} peak={wm.get('peak')})"
                 )
 
-    if delay_metrics and run.aec_config_ref_delay_ms is not None:
+    if delay_metrics and not delay_metrics.get("_silent") and run.aec_config_ref_delay_ms is not None:
         for s in run.sentences:
             dm = delay_metrics.get(s.idx)
             if not dm:
@@ -1141,7 +1247,7 @@ _UNDERRUN_WARN = 3             # warn if total underruns > this
 _UNDERRUN_FAIL = 10            # fail if total underruns > this
 
 
-def pass_fail_verdict(run: ParsedRun) -> dict:
+def pass_fail_verdict(run: ParsedRun, wav_metrics: Optional[dict] = None) -> dict:
     """Structured PASS/WARN/FAIL verdict for open-speaker A/B validation.
 
     Criteria (all headless-measurable from a run log):
@@ -1161,13 +1267,20 @@ def pass_fail_verdict(run: ParsedRun) -> dict:
     Overall:
     * PASS  — all criteria PASS.
     * WARN  — no FAIL criterion but at least one WARN.
+    * UNAVAILABLE — no FAIL criterion but a criterion could not be classified
+      from the available data (e.g. the heartbeat telemetry needed for
+      self-interrupt classification is missing/unrecognized) — never PASS.
     * FAIL  — any FAIL criterion (self-interrupt suspect or hard thresholds).
     """
     si = self_interrupt_summary(run)
 
-    # Self-interrupt
-    si_fail = si["suspect_count"] > 0
-    si_status = "FAIL" if si_fail else "PASS"
+    # Self-interrupt. A blind classifier (see self_interrupt_summary's
+    # UNAVAILABLE guard) must never report PASS -- it hasn't looked.
+    if si["verdict"] == "unavailable":
+        si_status = "UNAVAILABLE"
+    else:
+        si_fail = si["suspect_count"] > 0
+        si_status = "FAIL" if si_fail else "PASS"
 
     # Underruns (cumulative from last heartbeat)
     total_underruns = run.heartbeats[-1].underruns if run.heartbeats else 0
@@ -1204,18 +1317,34 @@ def pass_fail_verdict(run: ParsedRun) -> dict:
                 pre_first_audio_noise += 1
 
     # Overall verdict
-    fail_criteria = [c for c in (si_status, underrun_status, first_audio_status) if c == "FAIL"]
-    warn_criteria = [c for c in (si_status, underrun_status, first_audio_status) if c == "WARN"]
+    criteria = (si_status, underrun_status, first_audio_status)
+    fail_criteria = [c for c in criteria if c == "FAIL"]
+    unavailable_criteria = [c for c in criteria if c == "UNAVAILABLE"]
+    warn_criteria = [c for c in criteria if c == "WARN"]
     if fail_criteria:
         overall = "FAIL"
+    elif unavailable_criteria:
+        overall = "UNAVAILABLE"
     elif warn_criteria:
         overall = "WARN"
     else:
         overall = "PASS"
 
+    # Ref-wav availability (informational -- doesn't affect `overall`, since
+    # self_interrupt/underrun/first_audio are all derived from the .txt log
+    # and stay valid even when the SUPPLEMENTARY .ref.wav probe is broken; see
+    # diagnostic_findings() for the section-level UNAVAILABLE marking).
+    if wav_metrics is None:
+        ref_wav_status = "absent"
+    elif wav_metrics.get("_silent"):
+        ref_wav_status = "silent"
+    else:
+        ref_wav_status = "ok"
+
     return {
         "overall": overall,
         "self_interrupt": si_status,
+        "self_interrupt_reason": si.get("reason"),
         "self_interrupt_suspects": si["suspect_count"],
         "rejected_while_speaking": si["rejected_while_speaking"],
         "underruns_total": total_underruns,
@@ -1224,6 +1353,7 @@ def pass_fail_verdict(run: ParsedRun) -> dict:
         "first_audio_count": len(latencies),
         "first_audio_verdict": first_audio_status,
         "pre_first_audio_noise": pre_first_audio_noise,
+        "ref_wav_status": ref_wav_status,
     }
 
 
@@ -1463,6 +1593,8 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
     si = self_interrupt_summary(run)
     lines.append("\n--- Self-Interrupt Summary ---")
     lines.append(f"verdict: {si['verdict'].upper()}")
+    if si.get("reason"):
+        lines.append(f"  reason: {si['reason']}")
     lines.append(f"  barge-in detected: {si['detected_total']}  suspects: {si['suspect_count']}")
     lines.append(f"  real-barge rejected while speaking: {si['rejected_while_speaking']}")
     if si["suspects"]:
@@ -1490,14 +1622,16 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
             )
 
     # --- Pass/Fail Verdict (for live A/B) ---
-    pf = pass_fail_verdict(run)
+    pf = pass_fail_verdict(run, wav_metrics=wav_metrics)
     lines.append("\n--- Pass/Fail Verdict ---")
     lines.append(f"OVERALL: {pf['overall']}")
-    _pf_icons = {"PASS": "✓", "WARN": "~", "FAIL": "✗", "UNKNOWN": "?"}
+    _pf_icons = {"PASS": "✓", "WARN": "~", "FAIL": "✗", "UNAVAILABLE": "!", "UNKNOWN": "?"}
     lines.append(
         f"  [{_pf_icons.get(pf['self_interrupt'], '?')}] self-interrupt: "
         f"{pf['self_interrupt']}  (suspects={pf['self_interrupt_suspects']})"
     )
+    if pf.get("self_interrupt_reason"):
+        lines.append(f"      reason: {pf['self_interrupt_reason']}")
     lines.append(
         f"  [{_pf_icons.get(pf['underrun_verdict'], '?')}] underruns: "
         f"{pf['underrun_verdict']}  (total={pf['underruns_total']})"
@@ -1512,6 +1646,11 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
             f"  [~] real-barge rejected while speaking: {pf['rejected_while_speaking']}"
             f"  (potential missed cut-offs — validate live)"
         )
+    if pf["ref_wav_status"] == "silent":
+        lines.append(
+            "  [!] ref_wav: UNAVAILABLE  (playback reference is silent -- "
+            "echo attribution impossible for this bundle)"
+        )
     if pf["pre_first_audio_noise"] > 0:
         lines.append(
             f"  [~] pre-first-audio barge noise: {pf['pre_first_audio_noise']} events"
@@ -1524,7 +1663,7 @@ def format_report(run: ParsedRun, wav_metrics: Optional[dict] = None, delay_metr
 def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dict] = None, delay_metrics: Optional[dict] = None) -> dict:
     """Structured JSON-serializable representation."""
     si = si or self_interrupt_summary(run)
-    pf = pass_fail_verdict(run)
+    pf = pass_fail_verdict(run, wav_metrics=wav_metrics)
     return {
         "run_id": run.run_id,
         "aec": {
@@ -1540,6 +1679,7 @@ def to_json(run: ParsedRun, wav_metrics: Optional[dict] = None, si: Optional[dic
         },
         "word_cut_funnel": word_cut_funnel(run),
         "pass_fail": pf,
+        "ref_wav_silent": bool(wav_metrics and wav_metrics.get("_silent")),
         "findings": diagnostic_findings(run, wav_metrics, delay_metrics),
         "sentences": [
             {
@@ -1613,7 +1753,10 @@ def main(argv: Optional[list] = None) -> int:
     parser.add_argument("--json", action="store_true", help="Output JSON instead of text")
     parser.add_argument(
         "--exit-code", action="store_true",
-        help="Exit 1 if overall verdict is FAIL, 2 if WARN (useful for CI / scripting)",
+        help=(
+            "Exit 1 if overall verdict is FAIL, 2 if WARN, 3 if UNAVAILABLE "
+            "(useful for CI / scripting)"
+        ),
     )
     parser.add_argument(
         "--verdict-only", action="store_true",
@@ -1647,6 +1790,13 @@ def main(argv: Optional[list] = None) -> int:
         try:
             import numpy  # noqa: F401 — check available before calling
             wav_metrics = analyze_ref_wav(wav_path, run, hf_cutoff_hz=args.hf_cutoff)
+            if wav_metrics.get("_silent"):
+                print(
+                    "WARNING: playback reference is silent -- echo "
+                    "attribution impossible for this bundle "
+                    f"({wav_path})",
+                    file=sys.stderr,
+                )
             if mic_wav_path:
                 delay_metrics = analyze_mic_ref_wav(mic_wav_path, wav_path, run)
         except ImportError:
@@ -1655,12 +1805,16 @@ def main(argv: Optional[list] = None) -> int:
                 file=sys.stderr,
             )
 
-    pf = pass_fail_verdict(run)
+    pf = pass_fail_verdict(run, wav_metrics=wav_metrics)
 
     if getattr(args, "verdict_only", False):
         print(f"OVERALL: {pf['overall']}")
         for key in ("self_interrupt", "underrun_verdict", "first_audio_verdict"):
             print(f"  {key}: {pf[key]}")
+        if pf.get("self_interrupt_reason"):
+            print(f"  self_interrupt_reason: {pf['self_interrupt_reason']}")
+        if pf.get("ref_wav_status") == "silent":
+            print("  ref_wav_status: silent  (echo attribution impossible)")
         print(f"  underruns_total: {pf['underruns_total']}")
         print(f"  first_audio_avg_ms: {pf['first_audio_avg_ms']}")
         print(f"  pre_first_audio_noise: {pf['pre_first_audio_noise']}")
@@ -1674,6 +1828,8 @@ def main(argv: Optional[list] = None) -> int:
             return 1
         if pf["overall"] == "WARN":
             return 2
+        if pf["overall"] == "UNAVAILABLE":
+            return 3
     return 0
 
 

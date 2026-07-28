@@ -84,11 +84,34 @@ def main(argv=None) -> int:
 
     mic, msr = _load(args.mic_wav)
     ref, rsr = _load(ref_wav)
+
+    # A (effectively) all-zero .ref.wav is a broken capture, not a quiet-but-
+    # real recording -- 10/13 of the logs/live SUITE bundles are exactly this.
+    # Feeding it through note_playback()/decide() below produces a technically
+    # valid but MEANINGLESS run: ref_active never trips, replies=0, and the
+    # final line ("REMAINING after grace=0") reads exactly like a clean pass.
+    # Reuse diagnose_run's silence check so both tools agree on what "silent"
+    # means.
+    from tools.diagnose_run import _REF_WAV_SILENT_PEAK, _ref_wav_is_silent
+
+    print(f"[replay_barge] {args.mic_wav}")
+    if _ref_wav_is_silent(ref):
+        print(
+            f"  mic {len(mic)/msr:.1f}s  ref {len(ref)/rsr:.1f}s  | grace={grace:.2f}s "
+            f"margin={det.margin_delta:.3f} confirm={det._confirm_frames}"
+        )
+        print(
+            f"  WARNING: playback reference is silent (peak < {_REF_WAV_SILENT_PEAK:g}) "
+            f"-- echo attribution impossible for this bundle ({ref_wav})",
+            file=sys.stderr,
+        )
+        print("  status: REF-SILENT -- not evaluated (echo attribution impossible)")
+        return 3
+
     sr = sc.sample_rate
     block = max(1, int(sr * 0.1))
     n = min(len(mic), len(ref)) // block
 
-    print(f"[replay_barge] {args.mic_wav}")
     print(f"  mic {len(mic)/msr:.1f}s  ref {len(ref)/rsr:.1f}s  | grace={grace:.2f}s "
           f"margin={det.margin_delta:.3f} confirm={det._confirm_frames}")
 

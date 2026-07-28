@@ -72,10 +72,12 @@ def _run_stages(args: argparse.Namespace, registry: StageRegistry) -> int:
             extra_pytest_args=args.pytest_arg,
         )
         summaries.append(summary)
-        failed = int(summary.get("returncode", 0)) != 0
+        # crash_evidence covers the returncode==0 blind spots (zero outcomes
+        # collected/ran) -- an empty run must redden the exit code too.
+        failed = int(summary.get("returncode", 0)) != 0 or bool(summary.get("crash_evidence"))
         allowed = bool(summary.get("allowed_to_fail")) or args.allow_failures
         if failed and not allowed:
-            exit_code = int(summary.get("returncode", 1))
+            exit_code = int(summary.get("returncode", 0)) or 1
             if not args.keep_going:
                 break
 

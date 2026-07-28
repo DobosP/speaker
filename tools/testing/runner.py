@@ -6,11 +6,12 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 from .artifacts import ArtifactStore
 from .reports import ReportParser
 from .stages import TestStage
-from .summary import LLMSummary
+from .summary import LLMSummary, find_interrupted_runs
 
 
 def _pytest_invocation() -> list[str]:
@@ -119,6 +120,14 @@ class PytestRunner:
         parsed.summary["command"] = args
         parsed.summary["purpose"] = stage.purpose
         parsed.summary["allowed_to_fail"] = bool(stage.allow_failures or allow_failures)
+        # Cross-check the conftest run-log contract: a `tests-*.started.json`
+        # marker from this stage's time window with no matching summary means
+        # the pytest session died before pytest_sessionfinish -- independent
+        # evidence of a hard interpreter death (native exit/abort), even when
+        # nothing else survived. Recorded here so the stage report shows it.
+        interrupted = find_interrupted_runs(Path("logs/tests"), since=start - 1.0)
+        if interrupted:
+            parsed.summary["interrupted_test_logs"] = interrupted
         self.parser.write(parsed, artifacts.summary_path, artifacts.failures_path)
         self.summary_writer.write_stage(
             path=artifacts.llm_summary_path,

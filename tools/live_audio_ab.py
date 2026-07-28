@@ -313,6 +313,12 @@ def main(argv: list | None = None) -> int:
     verdicts = [pass_fail_verdict(r)["overall"] for r in runs]
     if any(v == "FAIL" for v in verdicts):
         return 1
+    # UNAVAILABLE means a criterion could not be evaluated (e.g. unparseable
+    # heartbeats, silent playback reference). Exit 0 here would be the same
+    # blind-pass class diagnose_run just had fixed — a tool that cannot see
+    # must not report success.
+    if any(v == "UNAVAILABLE" for v in verdicts):
+        return 3
     if any(v == "WARN" for v in verdicts):
         return 2
     return 0

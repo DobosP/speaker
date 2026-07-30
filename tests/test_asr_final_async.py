@@ -17,7 +17,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.engine import EngineCallbacks
+from always_on_agent.acoustic import AcousticLineage, AcousticSpan
+from core.engine import EngineCallbacks, TranscriptAbortReason
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.engines.speaker_gate import SpeakerGate
 from core.metrics import SPEECH_END
@@ -51,9 +52,14 @@ class _Rec:
         self.finals: list[str] = []
         self.metrics: list[tuple] = []
         self.final_threads: list[int] = []
+        self.aborts = []
 
     def callbacks(self) -> EngineCallbacks:
-        return EngineCallbacks(on_final=self._on_final, on_metric=self._on_metric)
+        return EngineCallbacks(
+            on_final=self._on_final,
+            on_metric=self._on_metric,
+            on_transcript_abort=self.aborts.append,
+        )
 
     def _on_final(self, text):
         self.finals.append(text)
@@ -68,6 +74,16 @@ def _engine(rec: _Rec | None = None, **sherpa) -> SherpaOnnxEngine:
     if rec is not None:
         eng._cb = rec.callbacks()
     return eng
+
+
+def _acoustic(turn: int = 1) -> AcousticLineage:
+    return AcousticLineage.single(
+        AcousticSpan(
+            stream_id="test-stream",
+            utterance_id=f"u{turn}",
+            turn_index=turn,
+        )
+    )
 
 
 # --- the config knob ----------------------------------------------------------
@@ -192,6 +208,26 @@ def test_finalize_drops_below_echo_floor():
     assert all(name != SPEECH_END for name, _ in rec.metrics)
 
 
+def test_finalize_drop_terminalizes_typed_partial_lineage():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._final_above_floor = lambda _seg: False
+
+    eng._finalize_and_dispatch(
+        np.ones(16000, dtype="float32"),
+        "echo text",
+        2.0,
+        acoustic=_acoustic(),
+        revision=1,
+    )
+
+    assert rec.finals == []
+    assert len(rec.aborts) == 1
+    assert rec.aborts[0].reason is TranscriptAbortReason.ECHO_REJECTED
+    assert rec.aborts[0].revision == 1
+    assert rec.aborts[0].acoustic.spans[0].key == _acoustic().spans[0].key
+
+
 def test_attested_short_interrupt_repair_still_obeys_echo_floor_gate():
     rec = _Rec()
     eng = _engine(rec, asr_final_backend="sense_voice")
@@ -273,6 +309,36 @@ def test_worker_survives_a_finalize_exception():
     assert rec.finals == ["Second turn"]  # the bad turn dropped; the worker kept going
 
 
+def test_worker_does_not_abort_after_final_callback_was_attempted():
+    attempts = []
+    aborts = []
+    eng = _engine()
+
+    def _raising_final(result):
+        attempts.append(result)
+        raise RuntimeError("consumer failed after accepting final")
+
+    eng._cb = EngineCallbacks(
+        on_final_result=_raising_final,
+        on_transcript_abort=aborts.append,
+    )
+    eng._final_q = queue.Queue(maxsize=8)
+    t = _run_worker(eng)
+    eng._enqueue_final(
+        np.ones(16000, dtype="float32"),
+        "one terminal",
+        0.0,
+        acoustic=_acoustic(),
+        revision=1,
+    )
+    eng._final_q.put(None)
+    t.join(timeout=3.0)
+
+    assert not t.is_alive()
+    assert len(attempts) == 1
+    assert aborts == []
+
+
 def test_enqueue_drops_oldest_on_overflow_preserving_capture_order():
     # Overflow must keep the NEWEST utterances in capture order (not reorder),
     # because the runtime supersede is newest-arrival-wins: a stale final arriving
@@ -287,13 +353,27 @@ def test_enqueue_drops_oldest_on_overflow_preserving_capture_order():
     drained = []
     while True:
         try:
-            drained.append(eng._final_q.get_nowait()[1])
+            drained.append(eng._final_q.get_nowait().raw_final)
         except queue.Empty:
             break
     assert drained == ["c", "d"]  # two oldest dropped; order preserved, FIFO
     # each drop is observable in the run bundle (two oldest were dropped)
     overflow = [m for m, _ in rec.metrics if m == "second_pass_queue_overflow_dropped_final"]
     assert len(overflow) == 2
+
+
+def test_enqueue_overflow_terminalizes_each_dropped_typed_turn():
+    rec = _Rec()
+    eng = _engine(rec)
+    eng._final_q = queue.Queue(maxsize=1)
+    seg = np.ones(16000, dtype="float32")
+
+    eng._enqueue_final(seg, "old", 0.0, acoustic=_acoustic(1), revision=1)
+    eng._enqueue_final(seg, "new", 0.0, acoustic=_acoustic(2), revision=1)
+
+    assert len(rec.aborts) == 1
+    assert rec.aborts[0].reason is TranscriptAbortReason.BACKPRESSURE
+    assert rec.aborts[0].acoustic.spans[0].key == _acoustic(1).spans[0].key
 
 
 def test_enqueue_no_drop_when_room():
@@ -305,7 +385,7 @@ def test_enqueue_no_drop_when_room():
     drained = []
     while True:
         try:
-            drained.append(eng._final_q.get_nowait()[1])
+            drained.append(eng._final_q.get_nowait().raw_final)
         except queue.Empty:
             break
     assert drained == ["a", "b", "c"]

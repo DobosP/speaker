@@ -8,7 +8,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from core.engine import EngineCallbacks
+from core.engine import EngineCallbacks, TranscriptAbortReason
 from core.engines._asr_segment import ASRSegment
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 from core.metrics import SPEECH_END
@@ -95,6 +95,38 @@ def test_same_recognizer_final_is_admitted_after_vad_speech():
     assert finals == ["And"]
     assert "vad_rejected_final" not in metrics
     assert engine._vad.accepted == 1
+
+
+def test_inline_final_processing_error_aborts_published_partial_once():
+    engine = SherpaOnnxEngine(SherpaConfig(endpoint_enabled=False))
+    engine._recognizer = _HallucinatingRecognizer()
+    engine._vad = _Vad(True)
+    engine._stream_in = _Input(engine)
+    partials = []
+    aborts = []
+
+    def _fail_final(*_args, **_kwargs):
+        raise RuntimeError("inline final failed")
+
+    engine._finalize_and_dispatch = _fail_final
+    engine._cb = EngineCallbacks(
+        on_partial_result=partials.append,
+        on_transcript_abort=aborts.append,
+    )
+    engine._running.set()
+    thread = threading.Thread(target=engine._capture_loop)
+    thread.start()
+    thread.join(timeout=5.0)
+
+    assert not thread.is_alive()
+    assert len(partials) == 1
+    assert len(aborts) == 1
+    assert aborts[0].reason is TranscriptAbortReason.DECODE_ERROR
+    assert aborts[0].revision > partials[0].revision
+    assert (
+        aborts[0].acoustic.spans[0].key
+        == partials[0].acoustic.spans[0].key
+    )
 
 
 def test_evidence_enabled_without_vad_explicitly_bypasses():
@@ -1248,9 +1280,12 @@ def test_capture_reopen_preserves_recovered_block_after_rebinding_domain():
     )
     finals = []
     engine._finalize_and_dispatch = (
-        lambda seg, raw, speech_end, asr_seg=None, speech_sec=None: finals.append(
-            np.asarray(seg).copy()
-        )
+        lambda seg,
+        raw,
+        speech_end,
+        asr_seg=None,
+        speech_sec=None,
+        **_kwargs: finals.append(np.asarray(seg).copy())
     )
     engine._cb = EngineCallbacks()
 

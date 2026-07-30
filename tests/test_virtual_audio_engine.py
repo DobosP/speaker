@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from core.engine import EngineCallbacks
+from core.engines._acoustic_turn import AcousticTurnTracker
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
 
@@ -182,7 +183,7 @@ def test_private_kws_rechecks_route_at_callback_seam():
     engine._cb = EngineCallbacks(on_command=commands.append)
     engine._os_echo_route_verified = True
 
-    engine._poll_keywords(
+    consumed = engine._poll_keywords(
         np.zeros(1600, dtype="float32"),
         guard_private_route=True,
         require_os_echo_route=True,
@@ -190,6 +191,7 @@ def test_private_kws_rechecks_route_at_callback_seam():
 
     assert engine._kws.resets == 1
     assert commands == []
+    assert consumed is False
 
 
 class _FixedKws:
@@ -231,9 +233,10 @@ def test_kws_own_echo_suppressed_when_now_playing_contains_keyword():
     engine._speaking.set()
     engine._now_playing = "Okay, I will stop now."
 
-    engine._poll_keywords(np.zeros(1600, dtype="float32"))
+    consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
 
     assert commands == []
+    assert consumed is False
     assert engine._kws_own_echo_suppressions == 1
     assert engine._kws.resets == 1  # stream is still reset after the hit
 
@@ -244,9 +247,10 @@ def test_kws_hit_passes_when_not_speaking_even_if_now_playing_matches():
     engine, commands = _kws_engine("stop")
     engine._now_playing = "Okay, I will stop now."
 
-    engine._poll_keywords(np.zeros(1600, dtype="float32"))
+    consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
 
     assert commands == ["stop"]
+    assert consumed is True
     assert engine._kws_own_echo_suppressions == 0
 
 
@@ -257,10 +261,112 @@ def test_kws_hit_passes_when_now_playing_does_not_contain_keyword():
     engine._speaking.set()
     engine._now_playing = "The weather is nice today."
 
-    engine._poll_keywords(np.zeros(1600, dtype="float32"))
+    consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
 
     assert commands == ["stop"]
+    assert consumed is True
     assert engine._kws_own_echo_suppressions == 0
+
+
+def test_typed_kws_hit_closes_source_acoustic_turn() -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    engine._kws = _FixedKws("stop")
+    engine._kws_stream = _NullKwsStream()
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=3)
+    engine._acoustic_turn_tracker = tracker
+    commands = []
+    engine._cb = EngineCallbacks(on_command_result=commands.append)
+
+    consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
+
+    assert consumed is True
+    assert len(commands) == 1
+    assert commands[0].revision == 0
+    assert commands[0].acoustic is not None
+    assert not tracker.active
+
+
+def test_legacy_kws_callback_still_closes_a_typed_partial_turn() -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    engine._kws = _FixedKws("stop")
+    engine._kws_stream = _NullKwsStream()
+    tracker = AcousticTurnTracker("stream-a")
+    tracker.rotate_capture(capture_epoch=2, capture_generation=3)
+    engine._acoustic_turn_tracker = tracker
+    first_lineage, first_revision = tracker.partial(emitted_at=10.0)
+    commands = []
+    engine._cb = EngineCallbacks(
+        on_command=commands.append,
+        on_partial_result=lambda _result: None,
+    )
+
+    consumed = engine._poll_keywords(np.zeros(1600, dtype="float32"))
+    next_lineage, next_revision = tracker.partial(emitted_at=11.0)
+
+    assert consumed is True
+    assert commands == ["stop"]
+    assert first_revision == 0
+    assert next_revision == 0
+    assert first_lineage.spans[0].key != next_lineage.spans[0].key
+    assert next_lineage.spans[0].turn_index == 2
+
+
+def test_capture_kws_consumed_frame_never_reaches_normal_asr() -> None:
+    class _Stream:
+        def __init__(self) -> None:
+            self.blocks = []
+
+        def accept_waveform(self, _sample_rate, samples) -> None:
+            self.blocks.append(np.asarray(samples).copy())
+
+    class _Recognizer:
+        def __init__(self) -> None:
+            self.stream = _Stream()
+            self.reset_calls = 0
+
+        def create_stream(self, **_kwargs):
+            return self.stream
+
+        def is_ready(self, _stream) -> bool:
+            return False
+
+        def get_result(self, _stream) -> str:
+            return ""
+
+        def reset(self, _stream) -> None:
+            self.reset_calls += 1
+
+        def is_endpoint(self, _stream) -> bool:
+            return False
+
+    class _OneBlockInput:
+        generation = 0
+
+        def __init__(self, engine) -> None:
+            self.engine = engine
+
+        def read(self, frames):
+            self.engine._running.clear()
+            return np.ones(frames, dtype="float32"), False
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            barge_in_enabled=False,
+            aec_enabled=False,
+        )
+    )
+    recognizer = _Recognizer()
+    engine._recognizer = recognizer
+    engine._capture_sr = engine.config.sample_rate
+    engine._stream_in = _OneBlockInput(engine)
+    engine._poll_keywords = lambda _samples, **_kwargs: True
+
+    engine._running.set()
+    engine._capture_loop()
+
+    assert recognizer.reset_calls == 1
+    assert recognizer.stream.blocks == []
 
 
 def test_failed_virtual_playback_proof_never_grants_authority():

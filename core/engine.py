@@ -3,7 +3,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+import math
 from typing import Callable, Optional
+
+from always_on_agent.acoustic import AcousticLineage
 
 
 def _noop(*_args, **_kwargs) -> None:
@@ -36,6 +39,21 @@ class OwnerVerification(str, Enum):
     REJECTED = "rejected"
 
 
+class TranscriptAbortReason(str, Enum):
+    """Why a typed acoustic turn ended without a final transcript."""
+
+    ABANDONED = "abandoned"
+    BACKPRESSURE = "backpressure"
+    CAPTURE_RECOVERY = "capture_recovery"
+    DECODE_ERROR = "decode_error"
+    ECHO_REJECTED = "echo_rejected"
+    EMPTY_FINAL = "empty_final"
+    INPUT_REJECTED = "input_rejected"
+    INTERNAL_ERROR = "internal_error"
+    SHUTDOWN = "shutdown"
+    SPEAKER_REJECTED = "speaker_rejected"
+
+
 @dataclass(frozen=True)
 class FinalTranscript:
     """A final ASR transcript plus explicit input provenance.
@@ -47,10 +65,113 @@ class FinalTranscript:
     text: str
     owner_verification: OwnerVerification = OwnerVerification.UNKNOWN
     origin: str = "unknown"
+    acoustic: Optional[AcousticLineage] = None
+    revision: int = 0
+
+    def __post_init__(self) -> None:
+        if self.acoustic is not None and not isinstance(
+            self.acoustic, AcousticLineage
+        ):
+            raise TypeError("acoustic must be an AcousticLineage or None")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision < 0:
+            raise ValueError("revision must be non-negative")
+        if self.acoustic is None and self.revision != 0:
+            raise ValueError("revision requires acoustic lineage")
 
     @property
     def owner_verified(self) -> bool:
         return self.owner_verification is OwnerVerification.VERIFIED
+
+
+@dataclass(frozen=True)
+class PartialTranscript:
+    """A provisional ASR transcript with acoustic correlation."""
+
+    text: str
+    acoustic: Optional[AcousticLineage] = None
+    revision: int = 0
+
+    def __post_init__(self) -> None:
+        if self.acoustic is not None and not isinstance(
+            self.acoustic, AcousticLineage
+        ):
+            raise TypeError("acoustic must be an AcousticLineage or None")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision < 0:
+            raise ValueError("revision must be non-negative")
+        if self.acoustic is None and self.revision != 0:
+            raise ValueError("revision requires acoustic lineage")
+
+
+@dataclass(frozen=True)
+class AcousticSignal:
+    """A non-text acoustic event such as a confirmed barge-in."""
+
+    acoustic: Optional[AcousticLineage] = None
+    revision: int = 0
+    detected_at: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.acoustic is not None and not isinstance(
+            self.acoustic, AcousticLineage
+        ):
+            raise TypeError("acoustic must be an AcousticLineage or None")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision < 0:
+            raise ValueError("revision must be non-negative")
+        if self.acoustic is None and self.revision != 0:
+            raise ValueError("revision requires acoustic lineage")
+        if self.detected_at is not None and (
+            isinstance(self.detected_at, bool)
+            or not isinstance(self.detected_at, (int, float))
+            or not math.isfinite(float(self.detected_at))
+            or float(self.detected_at) < 0.0
+        ):
+            raise ValueError("detected_at must be a finite non-negative clock")
+
+
+@dataclass(frozen=True)
+class CommandDetection:
+    """An engine-detected control phrase and its optional acoustic lineage."""
+
+    text: str
+    acoustic: Optional[AcousticLineage] = None
+    revision: int = 0
+
+    def __post_init__(self) -> None:
+        if self.acoustic is not None and not isinstance(
+            self.acoustic, AcousticLineage
+        ):
+            raise TypeError("acoustic must be an AcousticLineage or None")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision < 0:
+            raise ValueError("revision must be non-negative")
+        if self.acoustic is None and self.revision != 0:
+            raise ValueError("revision requires acoustic lineage")
+
+
+@dataclass(frozen=True)
+class TranscriptAbort:
+    """Terminal acoustic event for a turn that intentionally produced no text."""
+
+    acoustic: AcousticLineage
+    revision: int
+    reason: TranscriptAbortReason
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.acoustic, AcousticLineage):
+            raise TypeError("acoustic must be an AcousticLineage")
+        if isinstance(self.revision, bool) or not isinstance(self.revision, int):
+            raise TypeError("revision must be an integer")
+        if self.revision < 0:
+            raise ValueError("revision must be non-negative")
+        if not isinstance(self.reason, TranscriptAbortReason):
+            raise TypeError("reason must be a TranscriptAbortReason")
 
 
 @dataclass(frozen=True)
@@ -194,6 +315,13 @@ class EngineCallbacks:
     # gap is a device error, not a user pause; the watchdog uses it to
     # suppress its "audio thread stalled" warning during legitimate reopens.
     on_capture_state: Callable[[str, str], None] = lambda state, message: None
+    # Typed additive paths. Engines prefer these when bound and otherwise emit
+    # the legacy callbacks above exactly once. They are appended so positional
+    # construction of the established callback surface remains compatible.
+    on_partial_result: Optional[Callable[[PartialTranscript], None]] = None
+    on_barge_in_result: Optional[Callable[[AcousticSignal], None]] = None
+    on_command_result: Optional[Callable[[CommandDetection], None]] = None
+    on_transcript_abort: Optional[Callable[[TranscriptAbort], None]] = None
 
 
 class AudioEngine(ABC):

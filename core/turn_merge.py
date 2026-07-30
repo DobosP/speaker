@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Mapping, Optional
 
+from always_on_agent.acoustic import AcousticLineage
 from always_on_agent.text import normalize_text
 
 from .endpointing import DEFAULT_INCOMPLETE_ENDINGS
@@ -48,6 +49,21 @@ log = logging.getLogger("speaker.turn_merge")
 
 DEFAULT_MAX_ACTIVE_DISPATCHES = 6
 _DISPATCH_CANCEL_POLL_SEC = 0.01
+
+
+def _merge_acoustic_lineage(
+    first: Optional[AcousticLineage],
+    first_revision: int,
+    second: Optional[AcousticLineage],
+    second_revision: int,
+) -> tuple[Optional[AcousticLineage], int]:
+    """Merge complete typed provenance or fail closed to the legacy shape."""
+    if first is None or second is None:
+        return None, 0
+    return (
+        AcousticLineage.combine((first, second)),
+        max(first_revision, second_revision) + 1,
+    )
 
 # Words that, when they END a committed final, mean the thought very likely
 # continues. SUPERSET of the endpoint detector's conservative list: a false
@@ -168,6 +184,8 @@ class FinalDispatchLease:
         input_epoch: Optional[int] = None,
         owner_verified: bool = False,
         origin: str = "unknown",
+        acoustic: Optional[AcousticLineage] = None,
+        revision: int = 0,
     ) -> None:
         self._owner = owner
         self.generation = generation
@@ -178,6 +196,10 @@ class FinalDispatchLease:
         self.input_epoch = input_epoch
         self.owner_verified = owner_verified is True
         self.origin = str(origin or "unknown")
+        self.acoustic = acoustic
+        self.revision = (
+            max(0, int(revision)) if acoustic is not None else 0
+        )
         self.cancel_event = threading.Event()
         self._committed = False
 
@@ -223,6 +245,8 @@ class FinalDispatcher:
         self._pending_input_epoch: Optional[int] = None
         self._pending_owner_verified = False
         self._pending_origin = "unknown"
+        self._pending_acoustic: Optional[AcousticLineage] = None
+        self._pending_revision = 0
         self._deadline = 0.0
         self._hold_started = 0.0
         self._dispatching = False
@@ -237,6 +261,7 @@ class FinalDispatcher:
         self._active_text: Optional[str] = None
         self._pending_merge_next = False
         self._pending_coalesced = False
+        self._partial_pending = False
         # Diagnostics (read by tests/run-bundle debugging).
         self.merged_count = 0
         self.held_count = 0
@@ -278,15 +303,19 @@ class FinalDispatcher:
         input_epoch: Optional[int] = None,
         owner_verified: bool = False,
         origin: str = "unknown",
+        acoustic: Optional[AcousticLineage] = None,
+        revision: int = 0,
     ) -> None:
         """Engine-thread entry: queue a final, merging into an open hold."""
         now = time.monotonic()
         owner_verified = owner_verified is True
         origin = str(origin or "unknown")
+        revision = max(0, int(revision))
         with self._cv:
             if not self._running:
                 log.debug("dropping final submitted to stopped dispatcher: %r", text)
                 return
+            self._partial_pending = False
             active_hold_started: Optional[float] = None
             coalesced_with_active = False
             if (
@@ -319,6 +348,12 @@ class FinalDispatcher:
                         if self._active_lease.origin == origin
                         else "unknown"
                     )
+                    acoustic, revision = _merge_acoustic_lineage(
+                        self._active_lease.acoustic,
+                        self._active_lease.revision,
+                        acoustic,
+                        revision,
+                    )
                     text = self._coalescer.merge(active_text, text)
                     active_hold_started = self._hold_started
                     coalesced_with_active = True
@@ -333,6 +368,8 @@ class FinalDispatcher:
                 self._pending_input_epoch = input_epoch
                 self._pending_owner_verified = owner_verified
                 self._pending_origin = origin
+                self._pending_acoustic = acoustic
+                self._pending_revision = revision
                 self._pending_merge_next = False
                 self._pending_coalesced = coalesced_with_active
                 self._hold_started = (
@@ -373,6 +410,15 @@ class FinalDispatcher:
                 self._pending_origin = (
                     origin if self._pending_origin == origin else "unknown"
                 )
+                (
+                    self._pending_acoustic,
+                    self._pending_revision,
+                ) = _merge_acoustic_lineage(
+                    self._pending_acoustic,
+                    self._pending_revision,
+                    acoustic,
+                    revision,
+                )
                 self._pending_merge_next = False
                 self._pending_coalesced = True
                 extend = (
@@ -394,6 +440,8 @@ class FinalDispatcher:
                 self._pending_input_epoch = input_epoch
                 self._pending_owner_verified = owner_verified
                 self._pending_origin = origin
+                self._pending_acoustic = acoustic
+                self._pending_revision = revision
                 self._pending_merge_next = False
                 self._pending_coalesced = False
                 self._hold_started = now
@@ -414,26 +462,7 @@ class FinalDispatcher:
         with self._cv:
             if not self._running:
                 return
-            if not self._c.enabled:
-                # A dispatcher may exist solely to move LLM preprocessing off
-                # the audio thread. Without turn merging, resumed speech simply
-                # retires the premature final and waits for the next one.
-                if (
-                    self._cancellable
-                    and self._active_lease is not None
-                    and not self._active_lease._committed
-                ):
-                    self._active_lease.cancel_event.set()
-                self._pending = None
-                self._pending_submitted_at = None
-                self._pending_input_generation = None
-                self._pending_input_epoch = None
-                self._pending_owner_verified = False
-                self._pending_origin = "unknown"
-                self._pending_merge_next = False
-                self._pending_coalesced = False
-                self._cv.notify_all()
-                return
+            self._partial_pending = True
             if (
                 self._cancellable
                 and self._pending is None
@@ -452,23 +481,50 @@ class FinalDispatcher:
                 self._pending_input_epoch = self._active_lease.input_epoch
                 self._pending_owner_verified = self._active_lease.owner_verified
                 self._pending_origin = self._active_lease.origin
-                self._pending_merge_next = True
+                self._pending_acoustic = self._active_lease.acoustic
+                self._pending_revision = self._active_lease.revision
+                self._pending_merge_next = self._c.enabled
                 self._pending_coalesced = self._active_lease.coalesced
-                now = time.monotonic()
+            if self._pending is None:
+                return
+            self._pending_merge_next = self._c.enabled
+            now = time.monotonic()
+            if self._c.enabled:
                 self._deadline = min(
                     now + self._c.hold_sec,
                     self._hold_started + self._c.max_hold_sec,
                 )
                 self.held_count += 1
                 self._note_hold()
-            if self._pending is None:
-                return
-            self._pending_merge_next = True
-            self._deadline = min(
-                time.monotonic() + self._c.hold_sec,
-                self._hold_started + self._c.max_hold_sec,
-            )
+            else:
+                # Even with text merging disabled, retain an uncommitted older
+                # final until the resumed acoustic turn either produces its own
+                # final or explicitly aborts. This makes a rejected noise/bystander
+                # episode reversible without letting it cancel valid work.
+                self._deadline = now + self._c.max_hold_sec
             self._cv.notify()
+
+    def abandon_partial(
+        self,
+        *,
+        input_generation: Optional[int] = None,
+        input_epoch: Optional[int] = None,
+    ) -> bool:
+        """Resume a preserved final when the partial acoustic turn aborts."""
+        with self._cv:
+            if not self._running or not self._partial_pending:
+                return False
+            self._partial_pending = False
+            if self._pending is None:
+                return False
+            if input_generation is not None:
+                self._pending_input_generation = int(input_generation)
+            if input_epoch is not None:
+                self._pending_input_epoch = int(input_epoch)
+            self._pending_merge_next = False
+            self._deadline = time.monotonic()
+            self._cv.notify_all()
+            return True
 
     def cancel_pending(self) -> None:
         """Retire all pre-task work without blocking the caller.
@@ -488,8 +544,11 @@ class FinalDispatcher:
             self._pending_input_epoch = None
             self._pending_owner_verified = False
             self._pending_origin = "unknown"
+            self._pending_acoustic = None
+            self._pending_revision = 0
             self._pending_merge_next = False
             self._pending_coalesced = False
+            self._partial_pending = False
             self._cv.notify_all()
 
     def _note_hold(self) -> None:
@@ -536,8 +595,11 @@ class FinalDispatcher:
                 self._pending_input_epoch = None
                 self._pending_owner_verified = False
                 self._pending_origin = "unknown"
+                self._pending_acoustic = None
+                self._pending_revision = 0
                 self._pending_merge_next = False
                 self._pending_coalesced = False
+                self._partial_pending = False
                 self._cv.notify_all()
             thread = self._thread
             if thread is not None:
@@ -563,8 +625,11 @@ class FinalDispatcher:
             self._pending_input_epoch = None
             self._pending_owner_verified = False
             self._pending_origin = "unknown"
+            self._pending_acoustic = None
+            self._pending_revision = 0
             self._pending_merge_next = False
             self._pending_coalesced = False
+            self._partial_pending = False
         if text is not None:
             try:
                 self._dispatch(text)
@@ -593,8 +658,11 @@ class FinalDispatcher:
                 self._pending_input_epoch = None
                 self._pending_owner_verified = False
                 self._pending_origin = "unknown"
+                self._pending_acoustic = None
+                self._pending_revision = 0
                 self._pending_merge_next = False
                 self._pending_coalesced = False
+                self._partial_pending = False
                 self._dispatching = True
             try:
                 self._dispatch(text)
@@ -659,6 +727,14 @@ class FinalDispatcher:
                     self._pending_origin,
                     "unknown",
                 )
+                acoustic, self._pending_acoustic = (
+                    self._pending_acoustic,
+                    None,
+                )
+                revision, self._pending_revision = (
+                    self._pending_revision,
+                    0,
+                )
                 merge_next, self._pending_merge_next = (
                     self._pending_merge_next,
                     False,
@@ -667,6 +743,7 @@ class FinalDispatcher:
                     self._pending_coalesced,
                     False,
                 )
+                self._partial_pending = False
                 self._next_generation += 1
                 lease = FinalDispatchLease(
                     self,
@@ -678,6 +755,8 @@ class FinalDispatcher:
                     input_epoch=input_epoch,
                     owner_verified=owner_verified,
                     origin=origin,
+                    acoustic=acoustic,
+                    revision=revision,
                 )
                 self._active_lease = lease
                 self._active_text = text

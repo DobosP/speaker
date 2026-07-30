@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from threading import Event, Thread
 from typing import Callable, Mapping, Optional
 
 from always_on_agent.capabilities import create_default_capabilities
+from always_on_agent.acoustic import AcousticLineage
 from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.event_bus import EventBus
 from always_on_agent.events import AgentEvent, EventKind, Mode
@@ -32,15 +33,20 @@ from .conversation import RecentContextConfig
 from .cleanup import TranscriptCleaner, rewrite_is_overreach
 from .contract import is_stop_command, normalize_command
 from .engine import (
+    AcousticSignal,
     AudioEngine,
+    CommandDetection,
     EngineCallbacks,
     FinalTranscript,
     OwnerVerification,
+    PartialTranscript,
     PlaybackOutcome,
     PlaybackReceipt,
     TrackedSpeech,
+    TranscriptAbort,
 )
 from .intents import LocalIntentHandler
+from .input_lineage import AcousticRevisionGate
 from .llm import EchoLLM, LLMCallCancelled, LLMClient
 from .metrics import (
     ASR_FINAL,
@@ -87,6 +93,16 @@ _LLM_BACKED_TASK_CAPABILITIES = frozenset({"assistant.answer", "research.local"}
 # Internal marker for the legacy callback that carries text but no typed origin.
 # It is normalized back to ``unknown`` before any event leaves the runtime.
 _LEGACY_TEXT_ORIGIN = "__legacy_text__"
+
+
+@dataclass(frozen=True)
+class _PublishedUnheardFinal:
+    """One committed final that remains eligible for unheard rollback."""
+
+    generation: int
+    reservation: ArrivalContinuation
+    event: AgentEvent
+    claimed: Event = field(default_factory=Event, repr=False, compare=False)
 
 
 class VoiceRuntime:
@@ -208,6 +224,7 @@ class VoiceRuntime:
         # barge-in/stop. It is never held across an LLM/provider call; local
         # intents and bus publication are the only potentially visible effects.
         self._terminal_effect_lock = threading.RLock()
+        self._acoustic_revisions = AcousticRevisionGate()
         # A confirmed acoustic barge is conversational provenance, not speaker
         # identity.  Keep exactly one bounded response-only grant across the
         # final merger; it can never authorize controls, tools, or actions.
@@ -224,8 +241,15 @@ class VoiceRuntime:
         # AgentTask.  A new partial can reserve this otherwise invisible lineage
         # while its generation fence prevents the old bus event from starting.
         self._published_unheard: dict[int, ArrivalContinuation] = {}
+        self._published_unheard_finals: dict[
+            int, _PublishedUnheardFinal
+        ] = {}
         self._partial_fence_active = False
         self._partial_fence_generation: int | None = None
+        self._partial_fence_acoustic_keys: frozenset[
+            tuple[str, int, int, str]
+        ] | None = None
+        self._partial_fence_unheard: _PublishedUnheardFinal | None = None
         # Per-turn latency recorder, fed by this runtime (asr_final, barge_in),
         # the engine (speech_end, tts_first_audio, barge_in_stop via on_metric),
         # and the LLM capability (llm_first_token). Read via ``runtime.metrics``.
@@ -432,6 +456,7 @@ class VoiceRuntime:
             load_fraction=admission_load,
             on_turn_merged=self.metrics.mark_merged_turn,
             on_continuation_admitted=self._clear_arrival_continuation,
+            on_input_claimed=self._mark_published_unheard_claimed,
             on_input_resolved=self._clear_published_unheard,
             record_user_memory=self._record_user_memory_ordered,
             runtime_owns_stop=True,
@@ -627,10 +652,14 @@ class VoiceRuntime:
         self.engine.start(
             EngineCallbacks(
                 on_partial=self._on_partial,
+                on_partial_result=self._on_partial_result,
                 on_final=self._on_final,
                 on_final_result=self._on_final_result,
                 on_barge_in=self._on_barge_in,
+                on_barge_in_result=self._on_barge_in_result,
                 on_command=self._on_command,
+                on_command_result=self._on_command_result,
+                on_transcript_abort=self._on_transcript_abort,
                 on_metric=self.metrics.mark,
                 on_heartbeat=self._watchdog.note_heartbeat,
                 on_capture_state=self._on_capture_state,
@@ -711,6 +740,7 @@ class VoiceRuntime:
             self._clear_arrival_continuation()
             self._clear_published_unheard()
             self._clear_partial_fence()
+            self._acoustic_revisions.clear()
             if self._intents is not None:
                 self._intents.cancel_all()
         # Guard each step so a teardown error never prevents the engine from
@@ -953,28 +983,49 @@ class VoiceRuntime:
 
     def _new_input_generation(self) -> int:
         with self._input_generation_lock:
-            self._next_input_generation += 1
-            # Only substantive finals allocate a generation. They retire any
-            # not-yet-consumed supersede marker from an older canceled lease.
-            self._arrival_superseded_generations.clear()
-            generation = self._next_input_generation
+            generation = self._allocate_input_generation_locked()
         self.supervisor.note_input_arrival(generation)
         return generation
+
+    def _allocate_input_generation_locked(self) -> int:
+        """Allocate while ``_input_generation_lock`` is already held."""
+
+        self._next_input_generation += 1
+        # Only substantive finals/partial fences allocate a generation. They
+        # retire any not-yet-consumed marker from an older cancelled lease.
+        self._arrival_superseded_generations.clear()
+        return self._next_input_generation
 
     def _latest_input_arrival_generation(self) -> int:
         with self._input_generation_lock:
             return self._next_input_generation
 
-    def _begin_partial_fence(self) -> Optional[int]:
+    @staticmethod
+    def _acoustic_keys(
+        acoustic: AcousticLineage | None,
+    ) -> frozenset[tuple[str, int, int, str]] | None:
+        if acoustic is None:
+            return None
+        return frozenset(span.key for span in acoustic.spans)
+
+    def _begin_partial_fence(
+        self,
+        acoustic: AcousticLineage | None = None,
+    ) -> Optional[int]:
+        acoustic_keys = self._acoustic_keys(acoustic)
         with self._input_generation_lock:
             if self._partial_fence_active:
+                if acoustic_keys is not None:
+                    self._partial_fence_acoustic_keys = acoustic_keys
                 return None
             self._partial_fence_active = True
-        generation = self._new_input_generation()
-        # _on_partial holds _terminal_effect_lock, so no command/final can clear
-        # the fence between allocating its identity and recording it here.
-        with self._input_generation_lock:
+            self._partial_fence_acoustic_keys = acoustic_keys
+            generation = self._allocate_input_generation_locked()
             self._partial_fence_generation = generation
+            self._partial_fence_unheard = self._published_unheard_finals.get(
+                generation - 1
+            )
+        self.supervisor.note_input_arrival(generation)
         return generation
 
     def _clear_partial_fence(self) -> int | None:
@@ -982,7 +1033,31 @@ class VoiceRuntime:
             self._partial_fence_active = False
             generation = self._partial_fence_generation
             self._partial_fence_generation = None
+            self._partial_fence_acoustic_keys = None
+            self._partial_fence_unheard = None
             return generation
+
+    def _clear_matching_partial_fence(
+        self,
+        acoustic: AcousticLineage,
+    ) -> tuple[int, _PublishedUnheardFinal | None] | None:
+        acoustic_keys = self._acoustic_keys(acoustic)
+        with self._input_generation_lock:
+            if (
+                not self._partial_fence_active
+                or acoustic_keys is None
+                or self._partial_fence_acoustic_keys != acoustic_keys
+            ):
+                return None
+            self._partial_fence_active = False
+            generation = self._partial_fence_generation
+            self._partial_fence_generation = None
+            self._partial_fence_acoustic_keys = None
+            published_unheard = self._partial_fence_unheard
+            self._partial_fence_unheard = None
+            if generation is None:
+                return None
+            return generation, published_unheard
 
     def _note_arrival_supersede(self, generation: int) -> None:
         with self._input_generation_lock:
@@ -1037,6 +1112,7 @@ class VoiceRuntime:
         generation: int,
         text: str,
         metrics_turn_token: int | None,
+        event: AgentEvent,
     ) -> None:
         reservation = ArrivalContinuation(
             victim_task_id=f"input-{generation}",
@@ -1054,7 +1130,94 @@ class VoiceRuntime:
             # Only the latest committed-but-unresolved final can be continued;
             # a newer publication has already generation-fenced every older one.
             self._published_unheard.clear()
+            self._published_unheard_finals.clear()
             self._published_unheard[generation] = reservation
+            self._published_unheard_finals[generation] = (
+                _PublishedUnheardFinal(
+                    generation=generation,
+                    reservation=reservation,
+                    event=event,
+                )
+            )
+
+    def _mark_published_unheard_claimed(self, generation: int) -> None:
+        """Transfer queue ownership to the supervisor before final analysis."""
+
+        with self._input_generation_lock:
+            published = self._published_unheard_finals.get(int(generation))
+            if published is None:
+                return
+            published.claimed.set()
+
+    def _restore_published_unheard(
+        self,
+        published: _PublishedUnheardFinal,
+        *,
+        generation: int,
+        input_epoch: int,
+    ) -> bool:
+        """Transfer an unheard final across an aborted partial fence.
+
+        STT/route/metric preparation has already committed. An event which is
+        still queue-owned is retargeted in place. Once the supervisor has
+        claimed it, publish one replacement and let the stale original fail its
+        post-analysis generation check. Neither path reruns preprocessing.
+        """
+
+        reissue: AgentEvent | None = None
+        with self._input_generation_lock:
+            mapped = self._published_unheard_finals.get(
+                published.generation
+            )
+            if mapped is not None and mapped.event is not published.event:
+                return False
+            if mapped is None and any(
+                candidate.event is not published.event
+                for candidate in self._published_unheard_finals.values()
+            ):
+                return False
+            # The stale original may resolve between its partial and abort,
+            # clearing the live map. The matching partial fence still owns this
+            # immutable snapshot, and its shared claim token records whether
+            # the supervisor had already dequeued it.
+            current = mapped or published
+            metadata = current.event.payload.get("metadata")
+            if not isinstance(metadata, dict):
+                return False
+            reservation = replace(
+                current.reservation,
+                victim_task_id=f"input-{generation}",
+            )
+            self._published_unheard.clear()
+            self._published_unheard[generation] = reservation
+            if current.claimed.is_set():
+                payload = dict(current.event.payload)
+                replacement_metadata = dict(metadata)
+                replacement_metadata["input_generation"] = int(generation)
+                replacement_metadata["input_epoch"] = int(input_epoch)
+                payload["metadata"] = replacement_metadata
+                reissue = replace(current.event, payload=payload)
+                self._published_unheard_finals[generation] = (
+                    _PublishedUnheardFinal(
+                        generation=generation,
+                        reservation=reservation,
+                        event=reissue,
+                    )
+                )
+            else:
+                metadata["input_generation"] = int(generation)
+                metadata["input_epoch"] = int(input_epoch)
+                # Keep the old-generation alias until the event resolves. The
+                # bus may capture that generation concurrently with this
+                # transfer; clearing either alias must retire the whole event.
+                self._published_unheard_finals[generation] = replace(
+                    current,
+                    generation=generation,
+                    reservation=reservation,
+                )
+        if reissue is not None:
+            self.bus.publish(reissue)
+        return True
 
     def _take_published_unheard(
         self,
@@ -1073,8 +1236,23 @@ class VoiceRuntime:
         with self._input_generation_lock:
             if generation is None:
                 self._published_unheard.clear()
+                self._published_unheard_finals.clear()
             else:
-                self._published_unheard.pop(int(generation), None)
+                generation = int(generation)
+                published = self._published_unheard_finals.get(generation)
+                if published is None:
+                    self._published_unheard.pop(generation, None)
+                    return
+                for candidate_generation, candidate in tuple(
+                    self._published_unheard_finals.items()
+                ):
+                    if candidate.event is published.event:
+                        self._published_unheard.pop(
+                            candidate_generation, None
+                        )
+                        self._published_unheard_finals.pop(
+                            candidate_generation, None
+                        )
 
     def _publish_auxiliary_event(self, event: AgentEvent) -> None:
         """Route taskless/watch/local speech through cancellable TTS admission."""
@@ -1118,19 +1296,94 @@ class VoiceRuntime:
             )
         )
 
-    def _on_partial(self, text: str) -> None:
+    def _on_partial_result(self, result: PartialTranscript) -> None:
+        self._on_partial(
+            result.text,
+            acoustic=result.acoustic,
+            revision=result.revision,
+        )
+
+    def _on_transcript_abort(self, result: TranscriptAbort) -> None:
+        """Retire a typed partial turn without creating an answer."""
         with self._terminal_effect_lock:
             if self._stopping:
+                return
+            if not self._acoustic_revisions.accept(
+                result.acoustic,
+                result.revision,
+                final=True,
+            ):
+                log.debug(
+                    "dropping stale/duplicate acoustic abort: revision=%d",
+                    result.revision,
+                )
+                return
+            post_barge_observation = self._post_barge_response.inspect(
+                self.supervisor.input_epoch,
+                "unknown",
+                acoustic=result.acoustic,
+            )
+            if post_barge_observation is not None:
+                self._post_barge_response.consume(post_barge_observation)
+            cleared_fence = self._clear_matching_partial_fence(
+                result.acoustic
+            )
+            if cleared_fence is not None:
+                partial_generation, published_unheard = cleared_fence
+                self.supervisor.commit_input_generation(partial_generation)
+                self._clear_arrival_continuation(partial_generation)
+                dispatcher_restored = False
+                if self._dispatcher is not None:
+                    dispatcher_restored = self._dispatcher.abandon_partial(
+                        input_generation=partial_generation,
+                        input_epoch=self.supervisor.input_epoch,
+                    )
+                if not dispatcher_restored and published_unheard is not None:
+                    self._restore_published_unheard(
+                        published_unheard,
+                        generation=partial_generation,
+                        input_epoch=self.supervisor.input_epoch,
+                    )
+            self.bus.publish(
+                AgentEvent.transcript_aborted(
+                    reason=result.reason.value,
+                    acoustic=result.acoustic,
+                    revision=result.revision,
+                )
+            )
+
+    def _on_partial(
+        self,
+        text: str,
+        *,
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
+    ) -> None:
+        with self._terminal_effect_lock:
+            if self._stopping:
+                return
+            if not self._acoustic_revisions.accept(
+                acoustic, revision, final=False
+            ):
+                log.debug(
+                    "dropping stale acoustic partial: revision=%d", revision
+                )
                 return
             # A recognizer interim that already reads as our just-played TTS is
             # not new user speech.  Preview only: the final guard owns the echo
             # diagnostic and consumes it.  Most importantly, do not let an echo
             # partial cancel a valid answer still in preprocessing.
             if self._resume.preview_self_echo(text):
-                self.bus.publish(AgentEvent.partial(text))
+                self.bus.publish(
+                    AgentEvent.partial(
+                        text, acoustic=acoustic, revision=revision
+                    )
+                )
                 return
             partial_generation = (
-                self._begin_partial_fence() if normalize_text(text) else None
+                self._begin_partial_fence(acoustic)
+                if normalize_text(text)
+                else None
             )
             if partial_generation is not None:
                 self.supervisor.cancel_pending_aux_tts()
@@ -1156,28 +1409,23 @@ class VoiceRuntime:
                             partial_generation,
                             reservation,
                         )
-            self.bus.publish(AgentEvent.partial(text))
+            self.bus.publish(
+                AgentEvent.partial(
+                    text, acoustic=acoustic, revision=revision
+                )
+            )
 
     def _on_final_result(self, result: FinalTranscript) -> None:
         """Typed engine-final seam; text-only engines remain fail-closed."""
-        if result.owner_verification is OwnerVerification.REJECTED:
-            # Sherpa's loudness-rescue path intentionally admits REJECTED
-            # identity for ordinary unverified usability. Preserve that
-            # contract, but invalidate the response exception first: rejected
-            # identity can never claim post-barge conversational provenance as
-            # if it were merely UNKNOWN.
-            with self._terminal_effect_lock:
-                if self._stopping:
-                    return
-                self._post_barge_response.invalidate()
-            log.info(
-                "speaker-rejected final is ineligible for post-barge response: %r",
-                result.text,
-            )
         self._on_final(
             result.text,
             owner_verified=result.owner_verified,
+            owner_rejected=(
+                result.owner_verification is OwnerVerification.REJECTED
+            ),
             origin=result.origin,
+            acoustic=result.acoustic,
+            revision=result.revision,
         )
 
     def _on_final(
@@ -1185,12 +1433,35 @@ class VoiceRuntime:
         text: str,
         *,
         owner_verified: bool = False,
+        owner_rejected: bool = False,
         origin: str = _LEGACY_TEXT_ORIGIN,
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
     ) -> None:
         final_at = time.perf_counter()
         with self._terminal_effect_lock:
             if self._stopping:
                 return
+            if not self._acoustic_revisions.accept(
+                acoustic, revision, final=True
+            ):
+                log.debug(
+                    "dropping stale/duplicate acoustic final: revision=%d",
+                    revision,
+                )
+                return
+            if owner_rejected:
+                # Sherpa's loudness-rescue path intentionally admits REJECTED
+                # identity for ordinary unverified usability. Preserve that
+                # contract, but only after this acoustic revision wins the
+                # terminal gate: a stale callback must have no effect on a newer
+                # post-barge turn.
+                self._post_barge_response.invalidate()
+                log.info(
+                    "speaker-rejected final is ineligible for post-barge "
+                    "response: %r",
+                    text,
+                )
             post_barge_armed = self._post_barge_response.is_armed(
                 self.supervisor.input_epoch
             )
@@ -1275,6 +1546,8 @@ class VoiceRuntime:
                     input_epoch=self.supervisor.input_epoch,
                     owner_verified=owner_verified,
                     origin=origin,
+                    acoustic=acoustic,
+                    revision=revision,
                 )
                 return
             self._process_final(
@@ -1283,6 +1556,8 @@ class VoiceRuntime:
                 input_generation=input_generation,
                 owner_verified=owner_verified,
                 origin=origin,
+                acoustic=acoustic,
+                revision=revision,
             )
 
     def _process_final(
@@ -1294,6 +1569,8 @@ class VoiceRuntime:
         input_generation: Optional[int] = None,
         owner_verified: bool = False,
         origin: str = "unknown",
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
     ) -> None:
         cancel_event = lease.cancel_event if lease is not None else None
         terminal_input_epoch = (
@@ -1306,6 +1583,8 @@ class VoiceRuntime:
             input_generation = lease.input_generation
             owner_verified = lease.owner_verified
             origin = lease.origin
+            acoustic = lease.acoustic
+            revision = lease.revision
         if final_at is None:
             final_at = time.perf_counter()
         if input_generation is None:
@@ -1340,6 +1619,7 @@ class VoiceRuntime:
         post_barge_observation = self._post_barge_response.inspect(
             terminal_input_epoch,
             "unknown" if origin == _LEGACY_TEXT_ORIGIN else origin,
+            acoustic=acoustic,
         )
         legacy_text_final = origin == _LEGACY_TEXT_ORIGIN
         direct_user_instruction = bool(
@@ -1494,6 +1774,8 @@ class VoiceRuntime:
                             "post_barge_response_only": True,
                             "skip_user_memory": True,
                         },
+                        acoustic=acoustic,
+                        revision=revision,
                     )
                 )
                 self._clear_arrival_continuation(input_generation)
@@ -1852,6 +2134,31 @@ class VoiceRuntime:
                     final_text,
                 )
             )
+            final_event = AgentEvent.final(
+                final_text,
+                owner_verified=owner_verified,
+                origin=origin,
+                metadata={
+                    "latency_policy": latency_policy,
+                    "metrics_turn_token": metrics_turn_token,
+                    "input_epoch": terminal_input_epoch,
+                    "input_generation": input_generation,
+                    **continuation_metadata,
+                    "post_barge_response_only": post_barge_response_only,
+                    "direct_user_instruction": bool(
+                        direct_user_instruction
+                        and not post_barge_response_only
+                        and continuation is None
+                        and resume_prompt is None
+                    ),
+                    "skip_user_memory": bool(
+                        post_barge_response_only
+                        or continuation_metadata.get("skip_user_memory", False)
+                    ),
+                },
+                acoustic=acoustic,
+                revision=revision,
+            )
             # Snapshot only conversational assistant turns.  Do not call the
             # supervisor analyzer here: custom analyzers may block, and this is
             # still inside the runtime's terminal seam.  When unified routing is
@@ -1882,34 +2189,22 @@ class VoiceRuntime:
                     input_generation,
                     published_origin,
                     metrics_turn_token,
+                    final_event,
                 )
-            self.bus.publish(
-                AgentEvent.final(
-                    final_text,
-                    owner_verified=owner_verified,
-                    origin=origin,
-                    metadata={
-                        "latency_policy": latency_policy,
-                        "metrics_turn_token": metrics_turn_token,
-                        "input_epoch": terminal_input_epoch,
-                        "input_generation": input_generation,
-                        **continuation_metadata,
-                        "post_barge_response_only": post_barge_response_only,
-                        "direct_user_instruction": bool(
-                            direct_user_instruction
-                            and not post_barge_response_only
-                            and continuation is None
-                            and resume_prompt is None
-                        ),
-                        "skip_user_memory": bool(
-                            post_barge_response_only
-                            or continuation_metadata.get("skip_user_memory", False)
-                        ),
-                    },
-                )
-            )
+            self.bus.publish(final_event)
 
-    def _on_barge_in(self) -> None:
+    def _on_barge_in_result(self, result: AcousticSignal) -> None:
+        self._on_barge_in(
+            acoustic=result.acoustic,
+            revision=result.revision,
+        )
+
+    def _on_barge_in(
+        self,
+        *,
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
+    ) -> None:
         # User spoke over the assistant: cancel in-flight work, then cut playback.
         # Cancellation MUST be set before stop_speaking() returns so the
         # streaming emitter stops producing sentences and any TTS_REQUEST still
@@ -1921,6 +2216,14 @@ class VoiceRuntime:
         with self._terminal_effect_lock:
             if self._stopping:
                 return
+            if not self._acoustic_revisions.accept(
+                acoustic, revision, final=False
+            ):
+                log.debug(
+                    "dropping stale/duplicate acoustic barge: revision=%d",
+                    revision,
+                )
+                return
             if self._dispatcher is not None:
                 self._dispatcher.cancel_pending()
             self._clear_arrival_continuation()
@@ -1929,7 +2232,10 @@ class VoiceRuntime:
             self.metrics.mark(BARGE_IN)
             self._watchdog.note_barge_in()
             self.supervisor.cancel_all()
-            self._post_barge_response.arm(self.supervisor.input_epoch)
+            self._post_barge_response.arm(
+                self.supervisor.input_epoch,
+                acoustic=acoustic,
+            )
             self._interrupt_playback_history()
             self.engine.stop_speaking()
             if self._intents is not None:
@@ -1940,10 +2246,28 @@ class VoiceRuntime:
             self._resume.note_cut()
             self._resume.note_playback_end()
             self.bus.publish(
-                AgentEvent.stop("barge_in", already_cancelled=True)
+                AgentEvent.stop(
+                    "barge_in",
+                    already_cancelled=True,
+                    acoustic=acoustic,
+                    revision=revision,
+                )
             )
 
-    def _on_command(self, keyword: str) -> None:
+    def _on_command_result(self, result: CommandDetection) -> None:
+        self._on_command(
+            result.text,
+            acoustic=result.acoustic,
+            revision=result.revision,
+        )
+
+    def _on_command(
+        self,
+        keyword: str,
+        *,
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
+    ) -> None:
         # Spotted control phrase: act immediately, bypassing analyzer + LLM.
         # Normalization and the stop-class fall back to the shared contract so
         # the desktop and mobile shells recognize the same control phrases.
@@ -1956,8 +2280,42 @@ class VoiceRuntime:
             # A KWS hit without a control mapping is ordinary user speech. Put
             # it through the exact same reservation/preemption/gate lifecycle as
             # an ASR final; bypassing that path left old active answers alive.
-            self._on_final(keyword)
+            self._on_final(
+                keyword,
+                acoustic=acoustic,
+                revision=revision,
+            )
             return
+        with self._terminal_effect_lock:
+            if self._stopping:
+                return
+            if not self._acoustic_revisions.accept(
+                acoustic, revision, final=True
+            ):
+                log.debug(
+                    "dropping stale/duplicate acoustic command: revision=%d",
+                    revision,
+                )
+                return
+            self._apply_mapped_command(
+                action,
+                acoustic=acoustic,
+                revision=revision,
+            )
+
+    def _apply_mapped_command(
+        self,
+        action: str,
+        *,
+        acoustic: AcousticLineage | None,
+        revision: int,
+    ) -> None:
+        """Apply one accepted command inside ``_terminal_effect_lock``.
+
+        Keeping revision acceptance and the command effect in the same critical
+        section makes their ordering linear: a newer partial cannot land in the
+        gap and then be cancelled by an older accepted command.
+        """
         # A deterministic command consumed the interruption itself; no later
         # ambient final may inherit the post-barge conversational grant.
         self._post_barge_response.invalidate()
@@ -1981,7 +2339,12 @@ class VoiceRuntime:
                 self._resume.note_cut()  # "stop" then "continue" resumes the reply
                 self._resume.note_playback_end()
                 self.bus.publish(
-                    AgentEvent.stop("command", already_cancelled=True)
+                    AgentEvent.stop(
+                        "command",
+                        already_cancelled=True,
+                        acoustic=acoustic,
+                        revision=revision,
+                    )
                 )
         elif action == "confirm":
             with self._terminal_effect_lock:
@@ -2012,6 +2375,8 @@ class VoiceRuntime:
                         direct_user_instruction=True,
                         input_generation=input_generation,
                         input_epoch=input_epoch,
+                        acoustic=acoustic,
+                        revision=revision,
                     )
                 )
         elif action == "deny":
@@ -2038,6 +2403,8 @@ class VoiceRuntime:
                         "command",
                         input_generation=input_generation,
                         input_epoch=input_epoch,
+                        acoustic=acoustic,
+                        revision=revision,
                     )
                 )
         elif action.startswith("mode:"):
@@ -2071,6 +2438,8 @@ class VoiceRuntime:
                         source="command",
                         input_generation=input_generation,
                         input_epoch=input_epoch,
+                        acoustic=acoustic,
+                        revision=revision,
                     )
                 )
 

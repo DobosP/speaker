@@ -8,12 +8,14 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import core.engines.file_replay as fr
+from always_on_agent.acoustic import AcousticSource
 from core.engine import (
     EngineCallbacks,
     PlaybackOutcome,
     PlaybackReceipt,
     SpeechStyle,
     TrackedSpeech,
+    TranscriptAbortReason,
 )
 from core.engines.file_replay import FileReplayEngine, load_waveform
 from core.engines.sherpa import SherpaConfig
@@ -198,6 +200,175 @@ def test_replay_fires_final_and_records_metrics(monkeypatch):
     assert tts.calls == ["hello world"]
     assert record.stamps.get("tts_first_audio") is not None
     assert record.first_audio_latency is not None
+
+
+def test_replay_typed_callbacks_share_file_lineage_without_minting_trust(
+    monkeypatch,
+):
+    rec = _FakeRecognizer()
+    _patch_models(monkeypatch, rec, _FakeTts())
+    partials = []
+    finals = []
+    legacy = []
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(
+        EngineCallbacks(
+            on_partial=legacy.append,
+            on_final=legacy.append,
+            on_partial_result=partials.append,
+            on_final_result=finals.append,
+        )
+    )
+
+    samples = np.concatenate(
+        [np.ones(16000, dtype="float32") * 0.5, np.zeros(1600)]
+    )
+    engine.replay_samples(samples, 16000)
+
+    assert legacy == []
+    assert partials
+    assert len(finals) == 1
+    assert partials[-1].acoustic is not None
+    assert finals[0].acoustic is not None
+    assert (
+        partials[-1].acoustic.spans[0].key
+        == finals[0].acoustic.spans[0].key
+    )
+    assert finals[0].revision > partials[-1].revision
+    assert finals[0].acoustic.spans[0].source is AcousticSource.FILE_REPLAY
+    assert finals[0].owner_verified is False
+    assert finals[0].origin == "unknown"
+
+
+def test_replay_decoder_error_aborts_published_partial_once(monkeypatch):
+    class _FailingEndpointRecognizer(_FakeRecognizer):
+        def is_endpoint(self, stream: _FakeStream) -> bool:
+            del stream
+            raise RuntimeError("decode failed")
+
+    recognizer = _FailingEndpointRecognizer()
+    _patch_models(monkeypatch, recognizer, _FakeTts())
+    partials = []
+    aborts = []
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(
+        EngineCallbacks(
+            on_partial_result=partials.append,
+            on_transcript_abort=aborts.append,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="decode failed"):
+        engine.replay_samples(
+            np.ones(1600, dtype="float32") * 0.5,
+            16000,
+        )
+
+    assert len(partials) == 1
+    assert len(aborts) == 1
+    assert aborts[0].reason is TranscriptAbortReason.DECODE_ERROR
+    assert aborts[0].revision > partials[0].revision
+    assert (
+        aborts[0].acoustic.spans[0].key
+        == partials[0].acoustic.spans[0].key
+    )
+
+
+@pytest.mark.parametrize("flush_only", [False, True], ids=["endpoint", "flush"])
+def test_replay_metric_error_aborts_published_partial_once(
+    monkeypatch,
+    flush_only,
+):
+    recognizer = _FakeRecognizer()
+    if flush_only:
+        recognizer.is_endpoint = lambda _stream: False
+    _patch_models(monkeypatch, recognizer, _FakeTts())
+    partials = []
+    finals = []
+    aborts = []
+
+    def fail_metric(name):
+        assert name == "speech_end"
+        raise RuntimeError("metric failed before final handoff")
+
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(
+        EngineCallbacks(
+            on_partial_result=partials.append,
+            on_final_result=finals.append,
+            on_transcript_abort=aborts.append,
+            on_metric=fail_metric,
+        )
+    )
+    try:
+        with pytest.raises(RuntimeError, match="metric failed"):
+            engine.replay_samples(
+                np.ones(1600, dtype="float32") * 0.5,
+                16000,
+            )
+    finally:
+        engine.stop()
+
+    assert len(partials) == 1
+    assert finals == []
+    assert engine.finals == []
+    assert engine.last_final == ""
+    assert len(aborts) == 1
+    assert aborts[0].reason is TranscriptAbortReason.DECODE_ERROR
+    assert aborts[0].revision > partials[0].revision
+    assert (
+        aborts[0].acoustic.spans[0].key
+        == partials[0].acoustic.spans[0].key
+    )
+
+
+@pytest.mark.parametrize("flush_only", [False, True], ids=["endpoint", "flush"])
+def test_replay_final_callback_error_does_not_double_terminalize(
+    monkeypatch,
+    flush_only,
+):
+    recognizer = _FakeRecognizer()
+    if flush_only:
+        recognizer.is_endpoint = lambda _stream: False
+    _patch_models(monkeypatch, recognizer, _FakeTts())
+    partials = []
+    finals = []
+    aborts = []
+    metrics = []
+
+    def fail_final(result):
+        finals.append(result)
+        raise RuntimeError("final callback failed after handoff")
+
+    engine = FileReplayEngine(SherpaConfig(asr_encoder="x", tts_model="y"))
+    engine.start(
+        EngineCallbacks(
+            on_partial_result=partials.append,
+            on_final_result=fail_final,
+            on_transcript_abort=aborts.append,
+            on_metric=metrics.append,
+        )
+    )
+    try:
+        with pytest.raises(RuntimeError, match="final callback failed"):
+            engine.replay_samples(
+                np.ones(1600, dtype="float32") * 0.5,
+                16000,
+            )
+    finally:
+        engine.stop()
+
+    assert len(partials) == 1
+    assert len(finals) == 1
+    assert metrics == ["speech_end"]
+    assert aborts == []
+    assert engine.finals == ["Hello world"]
+    assert engine.last_final == "Hello world"
+    assert finals[0].revision > partials[0].revision
+    assert (
+        finals[0].acoustic.spans[0].key
+        == partials[0].acoustic.spans[0].key
+    )
 
 
 def test_file_replay_uses_production_stream_hotwords(monkeypatch):

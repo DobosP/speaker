@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from always_on_agent.acoustic import AcousticLineage, AcousticSpan
 from core.turn_merge import (
     DEFAULT_EXEMPT_PHRASES,
     DEFAULT_HOLD_ENDINGS,
@@ -249,6 +250,55 @@ def test_cancellable_merge_combines_owner_trust_fail_closed(
                 "live_audio",
             )
         ]
+    finally:
+        d.stop()
+
+
+def _lineage(turn: int) -> AcousticLineage:
+    return AcousticLineage.single(
+        AcousticSpan(
+            stream_id="test-stream",
+            utterance_id=f"u{turn}",
+            turn_index=turn,
+        )
+    )
+
+
+def test_cancellable_merge_combines_complete_acoustic_lineage() -> None:
+    received = []
+
+    def dispatch(text, lease):
+        received.append((text, lease.acoustic, lease.revision))
+
+    cfg = TurnMergeConfig(enabled=True, hold_sec=0.15, max_hold_sec=1.0)
+    d = FinalDispatcher(dispatch, cfg, cancellable=True)
+    d.start()
+    try:
+        d.submit("A long story about", acoustic=_lineage(1), revision=0)
+        d.submit("the lighthouse", acoustic=_lineage(2), revision=0)
+        assert _wait_for(lambda: len(received) == 1)
+        _, acoustic, revision = received[0]
+        assert acoustic is not None
+        assert [span.turn_index for span in acoustic.spans] == [1, 2]
+        assert revision == 1
+    finally:
+        d.stop()
+
+
+def test_cancellable_merge_drops_incomplete_mixed_lineage() -> None:
+    received = []
+
+    def dispatch(text, lease):
+        received.append((text, lease.acoustic, lease.revision))
+
+    cfg = TurnMergeConfig(enabled=True, hold_sec=0.15, max_hold_sec=1.0)
+    d = FinalDispatcher(dispatch, cfg, cancellable=True)
+    d.start()
+    try:
+        d.submit("A long story about", acoustic=_lineage(1), revision=0)
+        d.submit("the lighthouse")
+        assert _wait_for(lambda: len(received) == 1)
+        assert received[0][1:] == (None, 0)
     finally:
         d.stop()
 

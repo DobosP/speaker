@@ -4,12 +4,17 @@ import threading
 from typing import Callable, Optional
 
 from ..engine import (
+    AcousticSignal,
     AudioEngine,
+    CommandDetection,
     EngineCallbacks,
+    FinalTranscript,
     NO_PLAYBACK_CAPABILITIES,
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
+    PartialTranscript,
+    TranscriptAbort,
     TrackedSpeech,
 )
 from ..metrics import TTS_FIRST_AUDIO
@@ -179,15 +184,43 @@ class ScriptedEngine(AudioEngine):
     def partial(self, text: str) -> None:
         self._cb.on_partial(text)
 
+    def partial_result(self, result: PartialTranscript) -> None:
+        if self._cb.on_partial_result is not None:
+            self._cb.on_partial_result(result)
+        else:
+            self._cb.on_partial(result.text)
+
     def final(self, text: str) -> None:
         self._cb.on_final(text)
+
+    def final_result(self, result: FinalTranscript) -> None:
+        if self._cb.on_final_result is not None:
+            self._cb.on_final_result(result)
+        else:
+            self._cb.on_final(result.text)
 
     def barge_in(self) -> None:
         self._cb.on_barge_in()
 
+    def barge_in_result(self, result: AcousticSignal) -> None:
+        if self._cb.on_barge_in_result is not None:
+            self._cb.on_barge_in_result(result)
+        else:
+            self._cb.on_barge_in()
+
     def command(self, keyword: str) -> None:
         """Simulate the keyword spotter firing a control phrase."""
         self._cb.on_command(keyword)
+
+    def command_result(self, result: CommandDetection) -> None:
+        if self._cb.on_command_result is not None:
+            self._cb.on_command_result(result)
+        else:
+            self._cb.on_command(result.text)
+
+    def transcript_abort(self, result: TranscriptAbort) -> None:
+        if self._cb.on_transcript_abort is not None:
+            self._cb.on_transcript_abort(result)
 
     def finish_speaking(self) -> None:
         with self._lock:

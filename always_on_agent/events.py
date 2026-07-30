@@ -5,10 +5,13 @@ from enum import Enum
 import time
 from typing import Any, Mapping
 
+from .acoustic import AcousticLineage
+
 
 class EventKind(str, Enum):
     STT_PARTIAL = "stt.partial"
     STT_FINAL = "stt.final"
+    STT_ABORTED = "stt.aborted"
     SPEECH_OBSERVATION = "speech.observation"
     INTENT_DECISION = "intent.decision"
     CONTROL_STOP = "control.stop"
@@ -49,8 +52,20 @@ class AgentEvent:
     timestamp: float = field(default_factory=time.time)
 
     @classmethod
-    def partial(cls, text: str) -> "AgentEvent":
-        return cls(EventKind.STT_PARTIAL, {"text": text, "is_final": False}, priority=90)
+    def partial(
+        cls,
+        text: str,
+        *,
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
+    ) -> "AgentEvent":
+        if acoustic is None and revision != 0:
+            raise ValueError("revision requires acoustic lineage")
+        payload: dict[str, Any] = {"text": text, "is_final": False}
+        if acoustic is not None:
+            payload["acoustic"] = acoustic.to_payload()
+            payload["revision"] = int(revision)
+        return cls(EventKind.STT_PARTIAL, payload, priority=90)
 
     @classmethod
     def final(
@@ -60,7 +75,11 @@ class AgentEvent:
         owner_verified: bool = False,
         origin: str = "unknown",
         metadata: Mapping[str, Any] | None = None,
+        acoustic: AcousticLineage | None = None,
+        revision: int = 0,
     ) -> "AgentEvent":
+        if acoustic is None and revision != 0:
+            raise ValueError("revision requires acoustic lineage")
         # owner_verified/origin carry the speaker-ID trust of this utterance for the
         # action chokepoint (always_on_agent.origin). Default FAIL-CLOSED (not the
         # owner, unknown origin) so a final published without a verdict can never
@@ -74,9 +93,30 @@ class AgentEvent:
         }
         if metadata:
             payload["metadata"] = dict(metadata)
+        if acoustic is not None:
+            payload["acoustic"] = acoustic.to_payload()
+            payload["revision"] = int(revision)
         return cls(
             EventKind.STT_FINAL,
             payload,
+            priority=50,
+        )
+
+    @classmethod
+    def transcript_aborted(
+        cls,
+        *,
+        reason: str,
+        acoustic: AcousticLineage,
+        revision: int,
+    ) -> "AgentEvent":
+        return cls(
+            EventKind.STT_ABORTED,
+            {
+                "reason": str(reason),
+                "acoustic": acoustic.to_payload(),
+                "revision": int(revision),
+            },
             priority=50,
         )
 
@@ -88,6 +128,8 @@ class AgentEvent:
         already_cancelled: bool = False,
         input_generation: int | None = None,
         input_epoch: int | None = None,
+        acoustic: AcousticLineage | None = None,
+        revision: int | None = None,
     ) -> "AgentEvent":
         payload: dict[str, Any] = {
             "reason": reason,
@@ -97,6 +139,10 @@ class AgentEvent:
             payload["input_generation"] = int(input_generation)
         if input_epoch is not None:
             payload["input_epoch"] = int(input_epoch)
+        if acoustic is not None:
+            payload["acoustic"] = acoustic.to_payload()
+            if revision is not None:
+                payload["revision"] = int(revision)
         return cls(
             EventKind.CONTROL_STOP,
             payload,
@@ -111,12 +157,18 @@ class AgentEvent:
         *,
         input_generation: int | None = None,
         input_epoch: int | None = None,
+        acoustic: AcousticLineage | None = None,
+        revision: int | None = None,
     ) -> "AgentEvent":
         payload: dict[str, Any] = {"mode": mode.value, "source": source}
         if input_generation is not None:
             payload["input_generation"] = int(input_generation)
         if input_epoch is not None:
             payload["input_epoch"] = int(input_epoch)
+        if acoustic is not None:
+            payload["acoustic"] = acoustic.to_payload()
+            if revision is not None:
+                payload["revision"] = int(revision)
         return cls(
             EventKind.CONTROL_MODE,
             payload,
@@ -133,6 +185,8 @@ class AgentEvent:
         direct_user_instruction: bool = False,
         input_generation: int | None = None,
         input_epoch: int | None = None,
+        acoustic: AcousticLineage | None = None,
+        revision: int | None = None,
     ) -> "AgentEvent":
         # A confirmation is itself a consequential action -- approving a staged
         # command. owner_verified defaults FAIL-CLOSED so an ambient/leaked "yes"
@@ -147,6 +201,10 @@ class AgentEvent:
             payload["input_generation"] = int(input_generation)
         if input_epoch is not None:
             payload["input_epoch"] = int(input_epoch)
+        if acoustic is not None:
+            payload["acoustic"] = acoustic.to_payload()
+            if revision is not None:
+                payload["revision"] = int(revision)
         return cls(EventKind.CONTROL_CONFIRM, payload, priority=5)
 
     @classmethod
@@ -156,10 +214,16 @@ class AgentEvent:
         *,
         input_generation: int | None = None,
         input_epoch: int | None = None,
+        acoustic: AcousticLineage | None = None,
+        revision: int | None = None,
     ) -> "AgentEvent":
         payload: dict[str, Any] = {"source": source}
         if input_generation is not None:
             payload["input_generation"] = int(input_generation)
         if input_epoch is not None:
             payload["input_epoch"] = int(input_epoch)
+        if acoustic is not None:
+            payload["acoustic"] = acoustic.to_payload()
+            if revision is not None:
+                payload["revision"] = int(revision)
         return cls(EventKind.CONTROL_DENY, payload, priority=5)

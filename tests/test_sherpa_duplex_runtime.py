@@ -291,15 +291,19 @@ def test_real_capture_and_playback_workers_cancel_stale_stream_on_word_cut(monke
             and engine._play_thread.is_alive()  # noqa: SLF001
         )
 
-        original_barge = engine._cb.on_barge_in  # noqa: SLF001 - engine callback seam
+        # The runtime binds the typed acoustic callback; Sherpa deliberately
+        # emits only that path when available so one barge cannot be processed
+        # twice through the legacy callback.
+        original_barge = engine._cb.on_barge_in_result  # noqa: SLF001
+        assert original_barge is not None
 
-        def counted_barge() -> None:
+        def counted_barge(result) -> None:
             nonlocal barge_count
             with barge_lock:
                 barge_count += 1
-            original_barge()
+            original_barge(result)
 
-        engine._cb.on_barge_in = counted_barge  # noqa: SLF001
+        engine._cb.on_barge_in_result = counted_barge  # noqa: SLF001
 
         # Seed an ordinary turn directly; only the overlapping interrupt below
         # is under test for capture-path behavior.

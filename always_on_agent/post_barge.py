@@ -7,6 +7,7 @@ This small state machine lets the runtime remember that conversational context
 across held/merged ASR finals while keeping admission one-shot, epoch-bound,
 and time-bounded.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ import math
 from threading import Lock
 import time
 
+from .acoustic import AcousticLineage
 from .origin import Origin
 
 
@@ -46,16 +48,36 @@ class PostBargeResponseGate:
         )
         self._lock = Lock()
         self._next_token = 0
-        self._armed: tuple[int, int, float] | None = None
+        self._armed: (
+            tuple[
+                int,
+                int,
+                float,
+                frozenset[tuple[str, int, int, str]] | None,
+            ]
+            | None
+        ) = None
 
-    def arm(self, input_epoch: int, *, now: float | None = None) -> None:
+    def arm(
+        self,
+        input_epoch: int,
+        *,
+        acoustic: AcousticLineage | None = None,
+        now: float | None = None,
+    ) -> None:
         at = time.monotonic() if now is None else float(now)
+        acoustic_keys = (
+            frozenset(span.key for span in acoustic.spans)
+            if acoustic is not None
+            else None
+        )
         with self._lock:
             self._next_token += 1
             self._armed = (
                 self._next_token,
                 int(input_epoch),
                 at + self.window_sec,
+                acoustic_keys,
             )
 
     def inspect(
@@ -63,13 +85,15 @@ class PostBargeResponseGate:
         input_epoch: int,
         origin: str,
         *,
+        acoustic: AcousticLineage | None = None,
         now: float | None = None,
     ) -> PostBargeFinalObservation | None:
         """Return the current grant snapshot, expiring stale/foreign epochs.
 
-        A non-live origin is still returned as an ineligible observation so the
-        winning final can consume the one-shot grant.  It can never be followed
-        by a second, more convenient final that inherits the old interruption.
+        A non-live origin or missing/disjoint lineage for an acoustic-bound
+        grant is still returned as an ineligible observation so the winning
+        final can consume the one-shot grant. It can never be followed by a
+        second, more convenient final that inherits the old interruption.
         """
 
         at = time.monotonic() if now is None else float(now)
@@ -77,7 +101,7 @@ class PostBargeResponseGate:
             armed = self._armed
             if armed is None:
                 return None
-            token, armed_epoch, expires_at = armed
+            token, armed_epoch, expires_at, armed_acoustic_keys = armed
             if (
                 self.window_sec <= 0.0
                 or at >= expires_at
@@ -85,11 +109,25 @@ class PostBargeResponseGate:
             ):
                 self._armed = None
                 return None
+            observed_keys = (
+                frozenset(span.key for span in acoustic.spans)
+                if acoustic is not None
+                else None
+            )
+            acoustic_match = bool(
+                armed_acoustic_keys is None
+                or (
+                    observed_keys is not None
+                    and not armed_acoustic_keys.isdisjoint(observed_keys)
+                )
+            )
             return PostBargeFinalObservation(
                 token=token,
                 input_epoch=armed_epoch,
                 expires_at=expires_at,
-                response_eligible=(str(origin) == Origin.LIVE_AUDIO.value),
+                response_eligible=bool(
+                    acoustic_match and str(origin) == Origin.LIVE_AUDIO.value
+                ),
             )
 
     def consume(self, observation: PostBargeFinalObservation) -> bool:
@@ -104,11 +142,8 @@ class PostBargeResponseGate:
             armed = self._armed
             if armed is None:
                 return False
-            token, input_epoch, _expires_at = armed
-            if (
-                token != observation.token
-                or input_epoch != observation.input_epoch
-            ):
+            token, input_epoch, _expires_at, _acoustic_keys = armed
+            if token != observation.token or input_epoch != observation.input_epoch:
                 return False
             self._armed = None
             return True

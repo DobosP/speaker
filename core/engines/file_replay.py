@@ -7,16 +7,23 @@ from dataclasses import dataclass, field
 from numbers import Real
 from typing import Callable, Optional
 
+from always_on_agent.acoustic import AcousticSource, EndpointReason
+
 from ..audio_frontend import AudioResampler
 from ..engine import (
     NO_PLAYBACK_CAPABILITIES,
+    AcousticSignal,
     AudioEngine,
     EngineCallbacks,
+    FinalTranscript,
+    PartialTranscript,
     PlaybackCapabilities,
     PlaybackOutcome,
     PlaybackReceipt,
     SpeechStyle,
     TrackedSpeech,
+    TranscriptAbort,
+    TranscriptAbortReason,
 )
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ..tts_markup import (
@@ -32,6 +39,7 @@ from ._sherpa_models import (
     build_tts,
     create_recognizer_stream,
 )
+from ._acoustic_turn import AcousticTurnTracker
 from .sherpa import (
     FinalTranscriptDecision,
     SherpaConfig,
@@ -124,6 +132,7 @@ class FileReplayEngine(AudioEngine):
         self._play_generation = 0
         self._tracked_busy = False
         self._active_tracked: Optional[_TrackedReplayCall] = None
+        self._replay_sequence = 0
         # Observability for the bench harness: what the assistant tried to say
         # this run, and the most recent recognized utterance.
         self.spoken: list[str] = []
@@ -647,6 +656,62 @@ class FileReplayEngine(AudioEngine):
         speech_sec: Optional[float],
         publish: bool,
     ) -> tuple[FinalTranscriptDecision, ...]:
+        acoustic_turn = None
+        if publish:
+            self._replay_sequence += 1
+            acoustic_turn = AcousticTurnTracker(
+                f"file-replay-{self._replay_sequence}",
+                source=AcousticSource.FILE_REPLAY,
+            )
+            acoustic_turn.rotate_capture(
+                capture_epoch=0,
+                capture_generation=self._replay_sequence,
+            )
+        try:
+            return self._decode_samples_impl(
+                samples,
+                sample_rate,
+                speech_sec=speech_sec,
+                publish=publish,
+                acoustic_turn=acoustic_turn,
+            )
+        except Exception:
+            if (
+                publish
+                and acoustic_turn is not None
+                and acoustic_turn.active
+            ):
+                aborted = acoustic_turn.abort(
+                    emitted_at=acoustic_turn.last_emitted_at or 0.0
+                )
+                if (
+                    aborted is not None
+                    and self._cb.on_transcript_abort is not None
+                ):
+                    aborted_acoustic, aborted_revision = aborted
+                    try:
+                        self._cb.on_transcript_abort(
+                            TranscriptAbort(
+                                acoustic=aborted_acoustic,
+                                revision=aborted_revision,
+                                reason=TranscriptAbortReason.DECODE_ERROR,
+                            )
+                        )
+                    except Exception:  # noqa: BLE001 - terminal already attempted
+                        log.exception(
+                            "replay abort callback failed after terminal handoff"
+                        )
+            raise
+
+    def _decode_samples_impl(
+        self,
+        samples,
+        sample_rate: int,
+        *,
+        speech_sec: Optional[float],
+        publish: bool,
+        acoustic_turn: AcousticTurnTracker | None,
+    ) -> tuple[FinalTranscriptDecision, ...]:
         """Shared recorded transport for ordinary and diagnostic replay."""
         import numpy as np
 
@@ -677,9 +742,9 @@ class FileReplayEngine(AudioEngine):
         decisions: list[FinalTranscriptDecision] = []
         tail = np.zeros(int(sample_rate * self.trailing_silence_sec), dtype="float32")
         full = np.concatenate([samples, tail])
-
         for i in range(0, len(full), block):
             chunk = full[i : i + block]
+            chunk_end_at = (i + len(chunk)) / sample_rate
             # Retain only caller-owned PCM for the offline final. The synthetic
             # endpoint-flush tail is transport scaffolding, not utterance audio.
             # Reset after each endpoint so a multi-utterance replay cannot feed
@@ -694,7 +759,19 @@ class FileReplayEngine(AudioEngine):
             if text and text != last_partial:
                 last_partial = text
                 if publish:
-                    self._cb.on_partial(text)
+                    partial_acoustic, partial_revision = acoustic_turn.partial(
+                        emitted_at=chunk_end_at
+                    )
+                    if self._cb.on_partial_result is not None:
+                        self._cb.on_partial_result(
+                            PartialTranscript(
+                                text,
+                                acoustic=partial_acoustic,
+                                revision=partial_revision,
+                            )
+                        )
+                    else:
+                        self._cb.on_partial(text)
             if recognizer.is_endpoint(stream):
                 raw_final = recognizer.get_result(stream)
                 segment = (
@@ -740,10 +817,47 @@ class FileReplayEngine(AudioEngine):
                 segment_parts.clear()
                 last_partial = ""
                 if publish and final_text.strip():
+                    # Metrics are external callbacks, not terminal transcript
+                    # handoff. Keep the acoustic turn active until this returns
+                    # so a failure can still publish one DECODE_ERROR abort.
+                    self._cb.on_metric(SPEECH_END)
+                    final_acoustic, final_revision = acoustic_turn.close(
+                        speech_end_at=source_end / sample_rate,
+                        endpoint_committed_at=chunk_end_at,
+                        emitted_at=chunk_end_at,
+                        sample_rate_hz=sample_rate,
+                        owned_sample_count=int(segment.size),
+                        endpoint_reason=EndpointReason.ASR,
+                    )
                     self.last_final = final_text
                     self.finals.append(final_text)
-                    self._cb.on_metric(SPEECH_END)
-                    self._cb.on_final(final_text)
+                    if self._cb.on_final_result is not None:
+                        self._cb.on_final_result(
+                            FinalTranscript(
+                                final_text,
+                                acoustic=final_acoustic,
+                                revision=final_revision,
+                            )
+                        )
+                    else:
+                        self._cb.on_final(final_text)
+                elif publish:
+                    final_acoustic, final_revision = acoustic_turn.close(
+                        speech_end_at=source_end / sample_rate,
+                        endpoint_committed_at=chunk_end_at,
+                        emitted_at=chunk_end_at,
+                        sample_rate_hz=sample_rate,
+                        owned_sample_count=int(segment.size),
+                        endpoint_reason=EndpointReason.ASR,
+                    )
+                    if self._cb.on_transcript_abort is not None:
+                        self._cb.on_transcript_abort(
+                            TranscriptAbort(
+                                acoustic=final_acoustic,
+                                revision=final_revision,
+                                reason=TranscriptAbortReason.EMPTY_FINAL,
+                            )
+                        )
 
         # Always inspect the current post-endpoint stream. A very short clip may
         # never endpoint, and a second caller-owned segment can remain after an
@@ -796,15 +910,49 @@ class FileReplayEngine(AudioEngine):
             text = decision.selected
         recognizer.reset(stream)
         if publish and text.strip():
+            # As above, a metric failure precedes terminal handoff and must
+            # remain abortable. Once close() returns, final callback failures
+            # are post-handoff and must not produce a second terminal event.
+            self._cb.on_metric(SPEECH_END)
+            final_acoustic, final_revision = acoustic_turn.close(
+                speech_end_at=len(samples) / sample_rate,
+                endpoint_committed_at=len(full) / sample_rate,
+                emitted_at=len(full) / sample_rate,
+                sample_rate_hz=sample_rate,
+                owned_sample_count=int(segment.size),
+                endpoint_reason=EndpointReason.MAX_WAIT,
+            )
             self.last_final = text
             self.finals.append(text)
-            self._cb.on_metric(SPEECH_END)
-            self._cb.on_final(text)
+            if self._cb.on_final_result is not None:
+                self._cb.on_final_result(
+                    FinalTranscript(
+                        text,
+                        acoustic=final_acoustic,
+                        revision=final_revision,
+                    )
+                )
+            else:
+                self._cb.on_final(text)
+        elif publish and acoustic_turn.active:
+            aborted = acoustic_turn.abort(emitted_at=len(full) / sample_rate)
+            if aborted is not None and self._cb.on_transcript_abort is not None:
+                aborted_acoustic, aborted_revision = aborted
+                self._cb.on_transcript_abort(
+                    TranscriptAbort(
+                        acoustic=aborted_acoustic,
+                        revision=aborted_revision,
+                        reason=TranscriptAbortReason.ABANDONED,
+                    )
+                )
         return tuple(decisions)
 
     def barge_in(self) -> None:
         """Simulate the user talking over playback (for barge-in benchmarks)."""
-        self._cb.on_barge_in()
+        if self._cb.on_barge_in_result is not None:
+            self._cb.on_barge_in_result(AcousticSignal())
+        else:
+            self._cb.on_barge_in()
 
 
 def load_waveform(path: str) -> tuple["object", int]:

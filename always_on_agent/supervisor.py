@@ -152,6 +152,7 @@ class AgentSupervisor:
         defer_output_until_tts_admission: bool = False,
         defer_output_until_playback_receipt: bool = False,
         record_user_memory: Optional[Callable[[str], None]] = None,
+        on_input_claimed: Optional[Callable[[int], None]] = None,
     ):
         self.bus = bus or EventBus()
         self.state = SupervisorState()
@@ -183,6 +184,7 @@ class AgentSupervisor:
         self._admission_load_ceiling = float(admission_load_ceiling)
         self._on_turn_merged = on_turn_merged
         self._on_continuation_admitted = on_continuation_admitted
+        self._on_input_claimed = on_input_claimed
         self._on_input_resolved = on_input_resolved
         self._record_user_memory = record_user_memory
         self._runtime_owns_stop = bool(runtime_owns_stop)
@@ -687,6 +689,8 @@ class AgentSupervisor:
                 else None
             )
             try:
+                if self._on_input_claimed is not None and generation is not None:
+                    self._on_input_claimed(int(generation))
                 self._handle_speech(
                     str(event.payload.get("text", "")),
                     is_final=True,
@@ -1381,10 +1385,42 @@ class AgentSupervisor:
                 # never carry caller-supplied speaker/action trust.
                 owner_verified = False
                 origin = "unknown"
+        observation = self.analyzer.observe(text, is_final=is_final)
+        if is_final:
+            # An analyzer may block while a newer acoustic partial establishes
+            # its arrival fence. Recheck after that unbounded call and before
+            # mutating observations, transcript history, trust, decisions, or
+            # tasks. A matching abort can then reissue the claimed event on the
+            # fence generation without duplicating any of those effects.
+            # Direct supervisor callers historically commit an input generation
+            # without a separate note_input_arrival(), so reject only an
+            # observation that became older rather than requiring exact equality.
+            with self._cancel_lock:
+                post_analysis_generation = turn_metadata.get(
+                    "input_generation"
+                )
+                post_analysis_epoch = turn_metadata.get("input_epoch")
+                if (
+                    self._stopped
+                    or (
+                        post_analysis_epoch is not None
+                        and int(post_analysis_epoch) != self.input_epoch
+                    )
+                    or (
+                        post_analysis_generation is not None
+                        and int(post_analysis_generation)
+                        < self.latest_arrival_generation
+                    )
+                ):
+                    log.info(
+                        "dropping superseded post-analysis final %r "
+                        "(input generation)",
+                        text,
+                    )
+                    return
             self.state.turn_owner_verified = owner_verified is True
             self.state.turn_origin = str(origin)
             self.state.turn_metadata = turn_metadata
-        observation = self.analyzer.observe(text, is_final=is_final)
         self.state.observations.append(observation)
         if not observation.normalized:
             return

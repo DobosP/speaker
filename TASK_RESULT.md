@@ -1,74 +1,50 @@
-# Task Result — unified setup-enabled tools and live STT evidence
+# Task Result — typed acoustic ingress prerequisite
 
-Valid until: ADR-0076/0077 or the setup/tool/live-evidence lifecycle changes — then treat as history.
+Valid until: ADR-0084 is superseded or the session-boundary redesign lands —
+then treat as history.
 
 ## Outcome
 
-- Obsidian remains the bounded read-only capability from ADR-0074. It is an
-  optional tool of the existing chatbot/persona/model stack, not a separate
-  assistant or entry point.
-- `tools.setup_assistant` atomically publishes mode-600 machine-local grants for
-  an Obsidian vault, reminders, and exact trusted desktop aliases. The same
-  options are accepted by `install.sh`.
-- Durable reminders keep text in private SQLite and pass only an opaque id to a
-  fixed systemd helper. Delivery and voice claims use leases plus claim tokens;
-  pending timer publication retries with bounded backoff. Desktop notification
-  works while the agent is down, and a running agent announces a due reminder
-  through its cancellable TTS path.
-- Trusted-app v1 opens one setup-approved `.desktop` id with fixed `gtk-launch`
-  argv. It accepts no shell, URI, path, option, filename, or trailing model text.
-- Exact reminder/app mutations require an unchanged direct live request and a
-  later direct spoken confirmation. They do not require enrollment. Sensitive
-  or arbitrary actions retain the prior verified-owner path or stay unsupported.
-- Side-effecting and authority-bearing capabilities are excluded from textual
-  and native ReAct catalogs. Mutation tools are not advertised to the answering
-  model; unmatched commands retain the historical `command.stage` path.
-- `./live.sh` remains the only normal Linux physical entry. Old tool-specific
-  launcher switches are rejected.
-- The same command now records aligned private pre-application-DSP, processed
-  microphone, and playback-reference tracks. This adds diagnostic evidence; it
-  does not change recognizer, VAD, gain, denoise, or agreement policy.
+- Recognizer observations now carry immutable, PII-free acoustic lineage and
+  monotonic revisions through partial, final, barge, command, abort, replay,
+  turn-merge, and runtime-ingress paths.
+- Typed stale or duplicate events are rejected before runtime effects.
+- A mapped keyword command is terminal at the source. Its PCM and normal
+  recognizer state are retired in the same capture iteration, so it cannot
+  later become a second ASR final.
+- Barge-in is revision-gated before cancellation or playback interruption.
+- Bounded async-final overflow, recovery, rejection, empty final, and decode
+  failures have explicit typed abort paths. Shutdown retires source ownership
+  locally after external callbacks are fenced.
+- Typed post-barge response permission is acoustic-turn-bound; an unrelated
+  final cannot inherit it. A matching aborted partial can restore the valid
+  unheard final it displaced.
+- This is not the new session actor. Task, tool, TTS, and playback lifecycles
+  still use legacy generations, and capture/recognition is still synchronous.
 
 ## Verification
 
-- Full deterministic suite: `5309 passed, 31 skipped, 9 warnings`.
-- Aligned-recording/shutdown focus: `140 passed, 1 skipped`.
-- Launcher/capture/setup-doctor gate: `198 passed`; APM double-talk gate:
-  `6 passed`.
-- No real systemd timer, desktop notification, or trusted app was invoked. No
-  post-change microphone, speaker, or physical STT validation ran.
+- Deterministic repository gate: `5722 passed, 13 skipped, 20 deselected`,
+  with 9 pre-existing warnings.
+- Focused typed-ingress, Sherpa, replay, and APM gate:
+  `354 passed, 2 skipped`.
+- Added a direct capture regression proving a KWS-consumed frame never reaches
+  normal ASR.
+- Ruff found no new diagnostics after excluding the repository's pre-existing
+  import-order and unused-import findings.
+- `git diff --check` passed.
 
-## Machine-local setup
+## Not validated
 
-From the repository root:
+- No microphone, speaker, echo-route, owner-voice, or natural-conversation live
+  test ran.
+- No CUDA model benchmark ran; the managed sandbox did not expose
+  `/dev/nvidia*`.
+- No production STT/TTS/model selection changed.
 
-```bash
-.venv/bin/python -m tools.setup_assistant \
-  --obsidian-vault /home/dobo/work/dobo-brain/paul-brain \
-  --enable-reminders \
-  --trust-app obsidian=obsidian.desktop
-```
+## Next
 
-Setup validates only the vault directory and exact desktop id syntax; it does
-not enumerate notes, launch Obsidian, create a timer, or display a notification.
-
-## Live invocation
-
-```bash
-./live.sh
-```
-
-In that one session, try `search in my vault for speaker`, `which reminders are
-set?`, `remind me to stretch in ten minutes` followed by `confirm`, and `open
-obsidian?` followed by `yes`. Press Ctrl-C once after the responses. The launcher
-keeps all three aligned evidence tracks local; do not commit, push, upload, or
-paste them.
-
-## Limits
-
-The trusted-app connector opens allowlisted applications only; it does not yet
-write calendars/messages, manipulate files, type, click, or run arbitrary code.
-Headless tests do not improve or validate STT accuracy. The prior processed-only
-recording could not isolate frontend damage from recognizer/accent/domain error.
-Physical exact Stop and bare-speaker barge-in remain live-red in
-`STATUS.md`/ADR-0072.
+Build one bounded `SessionActor` that carries session/turn/revision and separate
+speech/tool cancellation through tasks, TTS, and playback. Keep device capture
+as a thin producer. Public voice-corpus work belongs on a separate branch with
+the existing FSDD license mismatch resolved before any redistribution.

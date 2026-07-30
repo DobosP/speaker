@@ -3248,13 +3248,23 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
     second = np.full(1600, 0.22, dtype="float32")
     endpoint_silence = np.zeros(1600, dtype="float32")
     finalized: list[tuple[np.ndarray, str, object, object, object]] = []
+    final_lineage: list[dict[str, object]] = []
+    barge_signals = []
 
-    def on_barge_in():
+    def on_barge_in(signal):
         # Real coordination stops playback after the cut; make that boundary
         # deterministic without involving a playback device/thread.
+        barge_signals.append(signal)
         eng._speaking.clear()
 
-    def finalize(primary, raw, speech_end, alternate, speech_sec):
+    def finalize(
+        primary,
+        raw,
+        speech_end,
+        alternate,
+        speech_sec,
+        **lineage,
+    ):
         finalized.append(
             (
                 np.asarray(primary).copy(),
@@ -3264,9 +3274,10 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
                 speech_sec,
             )
         )
+        final_lineage.append(lineage)
 
     eng._recognizer = recognizer
-    eng._cb = EngineCallbacks(on_barge_in=on_barge_in)
+    eng._cb = EngineCallbacks(on_barge_in_result=on_barge_in)
     eng._capture_sr = eng.config.sample_rate
     eng._stream_in = _ThreeBlockInput(
         eng, [first, second, endpoint_silence]
@@ -3291,6 +3302,16 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
     assert alternate is None  # OS echo-cancel word-cut has one capture domain
     assert np.isclose(speech_sec, 2 * eng.config.block_sec)
     assert eng._word_cut_pending_samples == 0
+    assert len(barge_signals) == 1
+    assert barge_signals[0].acoustic is not None
+    assert barge_signals[0].revision == 0
+    assert len(final_lineage) == 1
+    assert final_lineage[0]["acoustic"] is not None
+    assert final_lineage[0]["revision"] > barge_signals[0].revision
+    assert (
+        barge_signals[0].acoustic.spans[0].key
+        == final_lineage[0]["acoustic"].spans[0].key
+    )
 
     # The normal streaming recognizer sees the same two candidate blocks once,
     # followed by the one endpoint-silence block -- no lost head or duplicate.

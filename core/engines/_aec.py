@@ -33,6 +33,7 @@ open-speaker ERLE lands ~10-20 dB (not the 20-30 dB lab figure) -- good for
 headset / near-field / moderate rooms (lets ``barge_in_output_margin_db`` relax
 6 -> ~3 dB), insufficient for loud cheap speakers (that's the DTLN tier's job).
 """
+
 from __future__ import annotations
 
 import logging
@@ -91,24 +92,42 @@ class FarEndRing:
                 self._buf[: end - self._cap] = x[k:]
             self._written += n
 
-    def read(self, n: int, delay: int) -> np.ndarray:
+    def read_windows(
+        self,
+        n: int,
+        delays,
+    ) -> tuple[np.ndarray, ...]:
+        """Read several delayed windows from one atomic playback head.
+
+        A capture block needs both the zero-delay calibration reference and the
+        operating-delay cancellation reference.  Taking those through separate
+        :meth:`read` calls lets the playback callback advance ``_written``
+        between locks, producing windows from different acoustic coordinates.
+        This method snapshots the head once and derives every requested window
+        while retaining the same short copy lock.
+        """
+
         n = int(n)
-        delay = max(0, int(delay))
+        normalized_delays = tuple(max(0, int(delay)) for delay in delays)
         if n <= 0:
-            return np.zeros(0, dtype=np.float32)
-        out = np.zeros(n, dtype=np.float32)
+            return tuple(np.zeros(0, dtype=np.float32) for _delay in normalized_delays)
+        outputs = tuple(np.zeros(n, dtype=np.float32) for _delay in normalized_delays)
         with self._lock:
             written = self._written
-            hi = written - delay      # newest reference sample for "now"
-            lo = hi - n
-            if hi <= 0:
-                return out            # nothing played within the delay yet
             avail_lo = max(0, written - self._cap)
-            idx = np.arange(lo, hi)
-            valid = (idx >= avail_lo) & (idx < written)
-            if valid.any():
-                out[valid] = self._buf[idx[valid] % self._cap]
-        return out
+            for delay, out in zip(normalized_delays, outputs):
+                hi = written - delay  # newest reference sample for "now"
+                lo = hi - n
+                if hi <= 0:
+                    continue
+                idx = np.arange(lo, hi)
+                valid = (idx >= avail_lo) & (idx < written)
+                if valid.any():
+                    out[valid] = self._buf[idx[valid] % self._cap]
+        return outputs
+
+    def read(self, n: int, delay: int) -> np.ndarray:
+        return self.read_windows(n, (delay,))[0]
 
     def clear(self) -> None:
         with self._lock:
@@ -168,13 +187,13 @@ class AecDelayCalibrator:
         self._window = max(1, int(window_ms * self.sample_rate / 1000.0))
         self._recalc = max(1, int(recalc_interval_ms * self.sample_rate / 1000.0))
         self._seed = self._clamp(int(seed_delay_samples))
-        self._operating = self._seed          # measured after the first accept
-        self._acquired = False                # snapped to the first accepted estimate?
+        self._operating = self._seed  # measured after the first accept
+        self._acquired = False  # snapped to the first accepted estimate?
         self._median: deque = deque(maxlen=max(1, int(median_history)))
         # Rolling window_ms of the two 16 kHz streams (single writer: capture thread).
         self._mic = np.zeros(0, dtype=np.float32)
         self._far = np.zeros(0, dtype=np.float32)
-        self._since = 0                       # energetic samples since the last recalc
+        self._since = 0  # energetic samples since the last recalc
 
     def _clamp(self, d: int) -> int:
         """Bound the delay to [0, max_delay]; a negative or out-of-range estimate is
@@ -192,11 +211,11 @@ class AecDelayCalibrator:
             return
         mic = mic[:n]
         far = far[:n]
-        self._mic = np.concatenate([self._mic, mic])[-self._window:]
-        self._far = np.concatenate([self._far, far])[-self._window:]
+        self._mic = np.concatenate([self._mic, mic])[-self._window :]
+        self._far = np.concatenate([self._far, far])[-self._window :]
         # Only advance the recalc timer on real playback -- silence carries no echo
         # to align to, so we neither run nor reset the operating value on it.
-        if float(np.sqrt(np.mean(far ** 2))) >= self._ENERGY_FLOOR_RMS:
+        if float(np.sqrt(np.mean(far**2))) >= self._ENERGY_FLOOR_RMS:
             self._since += n
         if self._since >= self._recalc:
             self._since = 0
@@ -225,13 +244,30 @@ class AecDelayCalibrator:
         self._acquired = False
         self._operating = self._seed
 
+    def reset_continuity(self) -> None:
+        """Drop windows that bridge missing PCM while preserving measured delay.
+
+        A capture overrun is not an echo-path change.  Its rolling correlation
+        window cannot span the missing samples, but reverting a converged
+        operating delay to the coarse seed would make the first post-gap blocks
+        use a known-worse alignment.
+        """
+
+        self._mic = np.zeros(0, dtype=np.float32)
+        self._far = np.zeros(0, dtype=np.float32)
+        self._since = 0
+        # Accepted lag history describes the unchanged physical echo path. Keep
+        # it with the operating estimate so the first later measurement remains
+        # robust to one outlier; only the rolling cross-gap correlation windows
+        # are invalid.
+
     def _recalc_now(self) -> None:
         est = self._estimate_delay(self._far, self._mic)
         if est is None:
-            return                            # gate not cleared -> operating unchanged
+            return  # gate not cleared -> operating unchanged
         best_lag, peak_corr = est
         if peak_corr < self._min_corr:
-            return                            # too weak to be the echo -> ignore
+            return  # too weak to be the echo -> ignore
         if not self._acquired:
             # Fast acquire: the first trustworthy estimate snaps in immediately.
             self._acquired = True
@@ -257,10 +293,10 @@ class AecDelayCalibrator:
         mic = np.asarray(mic[:n], dtype=np.float32)
         ref = ref - float(np.mean(ref))
         mic = mic - float(np.mean(mic))
-        ref_rms = float(np.sqrt(np.mean(ref ** 2)))
-        mic_rms = float(np.sqrt(np.mean(mic ** 2)))
+        ref_rms = float(np.sqrt(np.mean(ref**2)))
+        mic_rms = float(np.sqrt(np.mean(mic**2)))
         if ref_rms < self._ENERGY_FLOOR_RMS or mic_rms <= 1e-6:
-            return None                       # no far energy -> nothing to align to
+            return None  # no far energy -> nothing to align to
         step = max(1, int(self.sample_rate / 4000))
         ref_d = ref[::step]
         mic_d = mic[::step]
@@ -272,7 +308,7 @@ class AecDelayCalibrator:
         best_corr = -1.0
         for lag in range(max_lag + 1):
             r = ref_d[: len(ref_d) - lag]
-            m = mic_d[lag: lag + len(r)]
+            m = mic_d[lag : lag + len(r)]
             if len(r) < 32:
                 break
             denom = float(np.linalg.norm(r) * np.linalg.norm(m))
@@ -345,9 +381,9 @@ class PlaybackFIFO:
     def __init__(self, capacity: int, *, event_queue=None):
         self._cap = max(1, int(capacity))
         self._buf = np.zeros(self._cap, dtype=np.float32)
-        self._r = 0           # read head (mod cap)
-        self._w = 0           # write head (mod cap)
-        self._count = 0       # queued samples
+        self._r = 0  # read head (mod cap)
+        self._w = 0  # write head (mod cap)
+        self._count = 0  # queued samples
         self._lock = threading.Lock()
         self._cond = threading.Condition(self._lock)
         # Sample ownership follows the same order as the ring.  Lists are used
@@ -518,9 +554,8 @@ class PlaybackFIFO:
                 ):
                     self._cond.wait(timeout=0.1)
                     state = self._tag_states.get(tag) if tag is not None else None
-                if (
-                    should_abort()
-                    or (tag is not None and (state is None or state.closed))
+                if should_abort() or (
+                    tag is not None and (state is None or state.closed)
                 ):
                     return i
                 free = self._cap - self._count
@@ -589,8 +624,8 @@ class PlaybackFIFO:
                     if state is not None:
                         self._finish_tag_if_ready_locked(state)
             if m < n:
-                out_view[m:] = 0.0          # underrun -> silent zero-fill, never a stall
-            self._cond.notify_all()         # a drain freed space: wake a blocked producer
+                out_view[m:] = 0.0  # underrun -> silent zero-fill, never a stall
+            self._cond.notify_all()  # a drain freed space: wake a blocked producer
         return m
 
     def flush(self, fade_samples: int = 0) -> None:
@@ -630,10 +665,9 @@ class PlaybackFIFO:
         if keep > 0:
             idx = (self._r + np.arange(keep)) % self._cap
             # full -> 0 raised-cosine ramp; the last kept sample lands at 0.
-            ramp = (
-                0.5
-                * (1.0 + np.cos(np.pi * (np.arange(keep) + 1) / keep))
-            ).astype(np.float32)
+            ramp = (0.5 * (1.0 + np.cos(np.pi * (np.arange(keep) + 1) / keep))).astype(
+                np.float32
+            )
             self._buf[idx] = self._buf[idx] * ramp
 
         remaining = keep
@@ -756,12 +790,12 @@ class _FDAFAdaptiveFilter:
 
     def _process_frame(self, d: np.ndarray, x: np.ndarray) -> np.ndarray:
         F = self.F
-        xcat = np.concatenate([self.x_prev, x])      # length N = 2F
+        xcat = np.concatenate([self.x_prev, x])  # length N = 2F
         X = np.fft.fft(xcat)
         self.P = self.lam * self.P + (1.0 - self.lam) * (np.abs(X) ** 2)
         y = np.fft.ifft(X * self.W).real
-        yhat = y[F:]                                  # overlap-save valid output
-        e = d - yhat                                  # cancelled near-end
+        yhat = y[F:]  # overlap-save valid output
+        e = d - yhat  # cancelled near-end
 
         d_rms = float(np.sqrt(np.mean(d * d) + self.eps))
         yhat_rms = float(np.sqrt(np.mean(yhat * yhat) + self.eps))
@@ -786,14 +820,18 @@ class _FDAFAdaptiveFilter:
 
         adapt = True
         if float(np.dot(x, x)) < self.eps:
-            adapt = False                             # nothing playing -> no echo
-        elif self.dt_freeze and self.count >= self.warmup and d_rms > self.dt_factor * yhat_rms:
-            adapt = False                             # near-end speech (double-talk) -> freeze
+            adapt = False  # nothing playing -> no echo
+        elif (
+            self.dt_freeze
+            and self.count >= self.warmup
+            and d_rms > self.dt_factor * yhat_rms
+        ):
+            adapt = False  # near-end speech (double-talk) -> freeze
         if adapt:
             E = np.fft.fft(np.concatenate([np.zeros(F), e]))
             dW = (self.mu / (self.P + self.eps)) * np.conj(X) * E
             phi = np.fft.ifft(dW).real
-            phi[F:] = 0.0                             # gradient (causality) constraint
+            phi[F:] = 0.0  # gradient (causality) constraint
             self.W = self.leak * self.W + np.fft.fft(phi)
 
         self.x_prev = x.copy()
@@ -825,8 +863,15 @@ class _DTLNEchoCanceller:
     BLOCK = 512
     SHIFT = 128
 
-    def __init__(self, stage1_path: str = "", stage2_path: str = "", *, providers=None,
-                 sessions=None, num_threads: int = 1):
+    def __init__(
+        self,
+        stage1_path: str = "",
+        stage2_path: str = "",
+        *,
+        providers=None,
+        sessions=None,
+        num_threads: int = 1,
+    ):
         # ``sessions`` (a (stage1, stage2) pair of objects with get_inputs/
         # get_outputs/run) is injected in tests so the streaming + state-carry
         # logic runs with no ONNX model and no onnxruntime. Production loads from
@@ -853,8 +898,12 @@ class _DTLNEchoCanceller:
                 so.add_session_config_entry("session.intra_op.allow_spinning", "0")
             except Exception:  # noqa: BLE001
                 pass
-            self._s1 = ort.InferenceSession(stage1_path, sess_options=so, providers=prov)
-            self._s2 = ort.InferenceSession(stage2_path, sess_options=so, providers=prov)
+            self._s1 = ort.InferenceSession(
+                stage1_path, sess_options=so, providers=prov
+            )
+            self._s2 = ort.InferenceSession(
+                stage2_path, sess_options=so, providers=prov
+            )
         self._m1 = self._io_map(self._s1)
         self._m2 = self._io_map(self._s2)
         self._reset_state()
@@ -894,7 +943,9 @@ class _DTLNEchoCanceller:
         near = np.asarray(near, dtype=np.float32).reshape(-1)
         far = np.asarray(far, dtype=np.float32).reshape(-1)
         if far.shape[0] < near.shape[0]:
-            far = np.concatenate([far, np.zeros(near.shape[0] - far.shape[0], dtype=np.float32)])
+            far = np.concatenate(
+                [far, np.zeros(near.shape[0] - far.shape[0], dtype=np.float32)]
+            )
         elif far.shape[0] > near.shape[0]:
             far = far[: near.shape[0]]
         self._nq = np.concatenate([self._nq, near])
@@ -937,7 +988,9 @@ class _DTLNEchoCanceller:
         )
         # Overlap-add (hop = 128) and emit the oldest 128 samples.
         self.out_buf = np.concatenate([self.out_buf[S:], np.zeros(S, dtype=np.float32)])
-        self.out_buf = self.out_buf + np.asarray(out_block, dtype=np.float32).reshape(-1)
+        self.out_buf = self.out_buf + np.asarray(out_block, dtype=np.float32).reshape(
+            -1
+        )
         return self.out_buf[:S].copy()
 
 
@@ -1009,14 +1062,20 @@ class EchoCanceller:
             try:
                 out = self._impl.process(near, far)
             except Exception:  # noqa: BLE001 - never let AEC kill the capture loop
-                log.debug("AEC block failed; passing the raw near-end through", exc_info=True)
+                log.debug(
+                    "AEC block failed; passing the raw near-end through", exc_info=True
+                )
                 return near
             try:
                 if out is None or len(out) == 0:
                     return out
                 near_arr = np.asarray(near, dtype=np.float64).reshape(-1)
-                near_rms = float(np.sqrt(np.mean(near_arr ** 2))) if near_arr.size else 0.0
-                out_rms = float(np.sqrt(np.mean(np.asarray(out, dtype=np.float64) ** 2)))
+                near_rms = (
+                    float(np.sqrt(np.mean(near_arr**2))) if near_arr.size else 0.0
+                )
+                out_rms = float(
+                    np.sqrt(np.mean(np.asarray(out, dtype=np.float64) ** 2))
+                )
                 amplified = (
                     not self._amplifies
                     and out_rms > max(near_rms, 1e-6) * self._DIVERGENCE_RATIO
@@ -1024,7 +1083,8 @@ class EchoCanceller:
                 if not np.isfinite(out_rms) or amplified:
                     log.debug(
                         "AEC diverged (out_rms=%.3f >> near_rms=%.3f); reset + passthrough",
-                        out_rms, near_rms,
+                        out_rms,
+                        near_rms,
                     )
                     self._do_reset()  # already holding the lock -- never self.reset()
                     return near_arr.astype(np.float32)
@@ -1051,7 +1111,9 @@ class EchoCanceller:
                 pass
 
 
-def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optional[EchoCanceller]:
+def build_aec(
+    c: "SherpaConfig", *, ns_override: Optional[bool] = None
+) -> Optional[EchoCanceller]:
     """Echo canceller, or ``None`` when disabled/unbuildable (path then byte-
     identical to no-AEC). Mirrors :func:`build_denoiser`: returns ``None`` unless
     ``aec_enabled``; fails OPEN (logs a warning, returns ``None``) rather than
@@ -1093,7 +1155,8 @@ def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optio
         ec.always_on = bool(getattr(c, "apm_always_on", False))
         _ns = (
             bool(getattr(c, "apm_noise_suppression", True))
-            if ns_override is None else bool(ns_override)
+            if ns_override is None
+            else bool(ns_override)
         )
         ec.suppresses_noise = _ns
         # The APM's ML NS masks the near-end USER during double-talk too, so the
@@ -1108,10 +1171,14 @@ def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optio
         leak = float(getattr(c, "aec_leak", 0.9999) or 0.9999)
         log.info(
             "AEC active: NumPy FDAF adaptive filter (frame=%d, mu=%.3f, leak=%.4f, doubletalk_freeze=%s)",
-            frame, mu, leak, freeze,
+            frame,
+            mu,
+            leak,
+            freeze,
         )
         return EchoCanceller(
-            _FDAFAdaptiveFilter(frame, mu=mu, leak=leak, doubletalk_freeze=freeze), sample_rate=sr
+            _FDAFAdaptiveFilter(frame, mu=mu, leak=leak, doubletalk_freeze=freeze),
+            sample_rate=sr,
         )
     if backend == "dtln":
         paths = _resolve_dtln_paths(str(getattr(c, "aec_model", "") or ""))
@@ -1125,13 +1192,21 @@ def build_aec(c: "SherpaConfig", *, ns_override: Optional[bool] = None) -> Optio
             )
             return None
         try:
-            ep = "CUDAExecutionProvider" if str(getattr(c, "provider", "cpu")).lower() == "cuda" else "CPUExecutionProvider"
+            ep = (
+                "CUDAExecutionProvider"
+                if str(getattr(c, "provider", "cpu")).lower() == "cuda"
+                else "CPUExecutionProvider"
+            )
             impl = _DTLNEchoCanceller(
-                paths[0], paths[1], providers=[ep],
+                paths[0],
+                paths[1],
+                providers=[ep],
                 num_threads=int(getattr(c, "aec_num_threads", 1) or 1),
             )
         except Exception as exc:  # noqa: BLE001 - bad model / missing onnxruntime -> fail open
-            log.warning("could not load DTLN-aec ONNX (%s); continuing WITHOUT AEC", exc)
+            log.warning(
+                "could not load DTLN-aec ONNX (%s); continuing WITHOUT AEC", exc
+            )
             return None
         log.info("AEC active: DTLN-aec deep ONNX tier (%s)", paths[0])
         ec = EchoCanceller(impl, sample_rate=sr)

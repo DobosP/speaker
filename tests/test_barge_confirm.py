@@ -8,6 +8,7 @@ playback, require real transcribed words within a confirm window, hard-fire only
 then -- else restore. These pin the state machine with fakes: no audio device,
 no models, no threads.
 """
+
 from __future__ import annotations
 
 import threading
@@ -57,9 +58,7 @@ class _Rec:
         self.metrics: list[str] = []
 
     def callbacks(self) -> EngineCallbacks:
-        return EngineCallbacks(
-            on_barge_in=self._on_barge, on_metric=self._on_metric
-        )
+        return EngineCallbacks(on_barge_in=self._on_barge, on_metric=self._on_metric)
 
     def _on_barge(self):
         self.barges += 1
@@ -89,8 +88,11 @@ def test_confirm_disabled_by_default():
 
 def test_config_from_dict_roundtrip():
     c = SherpaConfig.from_dict(
-        {"barge_confirm_enabled": True, "barge_confirm_min_words": 3,
-         "barge_confirm_window_sec": 2.0}
+        {
+            "barge_confirm_enabled": True,
+            "barge_confirm_min_words": 3,
+            "barge_confirm_window_sec": 2.0,
+        }
     )
     assert c.barge_confirm_enabled is True
     assert c.barge_confirm_min_words == 3
@@ -127,10 +129,10 @@ def test_new_words_confirm_and_fire():
     assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.1) is False  # 1 word: not yet
     assert rec.barges == 0
     assert eng._duck_gain < 1.0  # still ducked mid-window
-    assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.2) is True   # 2 words: fire
+    assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.2) is True  # 2 words: fire
     assert rec.barges == 1
     assert "barge_in_confirmed" in rec.metrics
-    assert eng._duck_gain == 1.0                 # volume restored on the way out
+    assert eng._duck_gain == 1.0  # volume restored on the way out
     assert not eng._barge_confirm_active()
     assert eng._barge_in_fired_this_run is True  # latch burned only on a REAL fire
 
@@ -141,8 +143,149 @@ def test_stop_command_confirms_alone():
     r, s = _FakeRecognizer(["", "stop"]), _FakeStream()
     now = time.monotonic()
     eng._begin_barge_confirm(r, s, now)
-    assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.1) is True  # 1 word, but a stop command
+    assert (
+        eng._barge_confirm_step(r, s, _BLOCK, now + 0.1) is True
+    )  # 1 word, but a stop command
     assert rec.barges == 1
+
+
+def test_confirm_window_from_old_playback_generation_cannot_cut_new_run():
+    rec = _Rec()
+    eng = _engine(rec, barge_confirm_min_words=2)
+    r, s = _FakeRecognizer(["", "stop"]), _FakeStream()
+    now = time.monotonic()
+    eng._speak_gen = 4
+    eng._playback_generation = 1
+    eng._begin_barge_confirm(
+        r,
+        s,
+        now,
+        speak_generation=4,
+        playback_generation=1,
+    )
+    # A new reply can make the current block's own context guard pass. The
+    # confirmation window still belongs to generation 1 and must fail closed.
+    eng._playback_generation = 2
+
+    assert not eng._barge_confirm_step(
+        r,
+        s,
+        _BLOCK,
+        now + 0.1,
+        control_effect_guard=lambda: True,
+    )
+    assert rec.barges == 0
+    assert r.resets == 1
+    assert not eng._barge_confirm_active()
+    assert eng._duck_gain == 1.0
+    assert not eng._confirm_handoff_stream_live
+
+
+def test_generation_change_at_old_confirm_seam_cannot_callback_or_cut():
+    eng = _engine(barge_confirm_min_words=2)
+    callbacks: list[str] = []
+    metrics: list[str] = []
+    stop_calls: list[str] = []
+
+    def _stale_barge_callback():
+        callbacks.append("barge")
+        stop_calls.append("stop")
+        eng.stop_speaking()
+
+    eng._cb = EngineCallbacks(
+        on_barge_in=_stale_barge_callback,
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+    )
+    eng._speak_gen = 4
+    eng._playback_generation = 1
+    eng._speaking.set()
+    r, s = _FakeRecognizer(["", "stop"]), _FakeStream()
+    now = time.monotonic()
+    eng._begin_barge_confirm(
+        r,
+        s,
+        now,
+        speak_generation=4,
+        playback_generation=1,
+    )
+    guard_calls = 0
+
+    def _generation_changes_after_old_true_check() -> bool:
+        nonlocal guard_calls
+        guard_calls += 1
+        if guard_calls == 2:
+            # The old confirmed path checked the window generation immediately
+            # before this guard. Changing generation here reproduced the exact
+            # compare-then-callback seam: both booleans returned true, but the
+            # callback then targeted a newer playback run.
+            with eng._gen_lock:
+                eng._playback_generation += 1
+        return True
+
+    assert not eng._barge_confirm_step(
+        r,
+        s,
+        _BLOCK,
+        now + 0.1,
+        control_effect_guard=_generation_changes_after_old_true_check,
+    )
+
+    assert guard_calls == 2
+    assert eng._playback_generation == 2
+    assert eng._speak_gen == 4
+    assert callbacks == []
+    assert stop_calls == []
+    assert "barge_in_confirmed" not in metrics
+    assert eng._confirmed_barge_claim is None
+    assert r.resets == 1
+
+
+def test_current_generation_claim_allows_reentrant_callback_stop():
+    eng = _engine(barge_confirm_min_words=2)
+    effects: list[tuple[int, int, int]] = []
+    metrics: list[str] = []
+
+    def _current_barge_callback():
+        claim = eng._confirmed_barge_claim
+        assert claim is not None
+        effects.append(
+            (
+                claim.origin_speak_generation,
+                claim.origin_playback_generation,
+                claim.claimed_speak_generation,
+            )
+        )
+        # Production's runtime callback synchronously re-enters the engine here.
+        # This must not deadlock on _gen_lock or advance the claim generation a
+        # second time.
+        eng.stop_speaking()
+
+    eng._cb = EngineCallbacks(
+        on_barge_in=_current_barge_callback,
+        on_metric=lambda name, **_kwargs: metrics.append(name),
+    )
+    eng._speak_gen = 4
+    eng._playback_generation = 7
+    eng._speaking.set()
+    r, s = _FakeRecognizer(["", "stop"]), _FakeStream()
+    now = time.monotonic()
+    eng._begin_barge_confirm(
+        r,
+        s,
+        now,
+        speak_generation=4,
+        playback_generation=7,
+    )
+
+    assert eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)
+
+    assert effects == [(4, 7, 5)]
+    assert eng._speak_gen == 5
+    assert eng._playback_generation == 7
+    assert eng._confirmed_barge_claim is None
+    assert "barge_in_confirmed" in metrics
+    assert eng._confirm_handoff_stream_live
+    assert not eng._speaking.is_set()
 
 
 def test_stop_during_barge_callback_cannot_publish_handoff_into_next_epoch():
@@ -191,9 +334,7 @@ def test_stop_winning_after_barge_callback_entry_atomically_blocks_handoff():
         eng._capture_callback_context.epoch = capture_epoch
         try:
             eng._begin_barge_confirm(r, s, now)
-            result.append(
-                eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)
-            )
+            result.append(eng._barge_confirm_step(r, s, _BLOCK, now + 0.1))
         finally:
             del eng._capture_callback_context.epoch
 
@@ -241,8 +382,8 @@ def test_own_echo_does_not_confirm_and_window_expires():
     assert "barge_in_unconfirmed" in rec.metrics
     assert eng._duck_gain == 1.0
     assert not eng._barge_confirm_active()
-    assert r.resets == 1                          # echo purged from the stream
-    assert eng._barge_in_suppressed_until > now   # can't immediately re-duck
+    assert r.resets == 1  # echo purged from the stream
+    assert eng._barge_in_suppressed_until > now  # can't immediately re-duck
     assert eng._barge_in_fired_this_run is False  # latch NOT burned by a false trigger
 
 
@@ -357,8 +498,8 @@ def test_unconfirmed_window_teaches_dtd_charts():
     r, s = _FakeRecognizer([""]), _FakeStream()
     now = time.monotonic()
     eng._begin_barge_confirm(r, s, now)
-    eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)      # banks one echo obs
-    eng._barge_confirm_step(r, s, _BLOCK, now + 0.2)      # banks another
+    eng._barge_confirm_step(r, s, _BLOCK, now + 0.1)  # banks one echo obs
+    eng._barge_confirm_step(r, s, _BLOCK, now + 0.2)  # banks another
     assert eng._barge_confirm_step(r, s, _BLOCK, now + 99.0) is False  # expiry
     # All banked blocks (incl. the expiry block) were fed to the charts, so the
     # echo level is LEARNED and the trigger flood decays.

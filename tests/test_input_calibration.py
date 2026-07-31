@@ -4,6 +4,7 @@ The device-generic operating-point step: measure THIS mic's quiet floor at start
 and set the AGC noise gate just above it -- no per-machine hand tuning. Pure logic,
 no audio device.
 """
+
 import json
 import threading
 from pathlib import Path
@@ -14,13 +15,14 @@ import pytest
 from core.audio_frontend import compute_input_calibration, InputAGC
 from core.enroll import CaptureResolution
 from core.engine import EngineCallbacks
+from core.engines._aec import AecDelayCalibrator
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
 
 def _block(rms, n=1600, seed=0):
     rng = np.random.default_rng(seed)
     x = rng.standard_normal(n).astype("float32")
-    x *= rms / float(np.sqrt(np.mean(x ** 2)))
+    x *= rms / float(np.sqrt(np.mean(x**2)))
     return x
 
 
@@ -67,27 +69,34 @@ def test_floor_tracks_quiet_level_with_headroom():
     cal = compute_input_calibration(blocks, headroom=3.0)
     assert cal["n_blocks"] == 15
     assert abs(cal["ambient_rms"] - 0.01) < 0.003
-    assert 0.02 < cal["noise_floor_rms"] < 0.04          # ~3x ambient
+    assert 0.02 < cal["noise_floor_rms"] < 0.04  # ~3x ambient
     assert cal["clipping_fraction"] == 0.0
 
 
 def test_low_percentile_is_robust_to_a_word_during_calibration():
     # Mostly quiet, but a few loud (speech) blocks slipped in -> the floor must
     # follow the QUIET level, not be dragged up by the loud blocks.
-    blocks = [_block(0.008, seed=i) for i in range(12)] + [_block(0.3, seed=99 + i) for i in range(3)]
+    blocks = [_block(0.008, seed=i) for i in range(12)] + [
+        _block(0.3, seed=99 + i) for i in range(3)
+    ]
     cal = compute_input_calibration(blocks, headroom=3.0)
-    assert cal["noise_floor_rms"] < 0.05                 # not pulled toward 0.3
+    assert cal["noise_floor_rms"] < 0.05  # not pulled toward 0.3
 
 
 def test_floor_is_clamped():
     # Near-silent -> clamped to min_floor; very loud floor -> clamped to max_floor.
-    assert compute_input_calibration([_block(1e-5)], min_floor=0.004)["noise_floor_rms"] == 0.004
-    loud = compute_input_calibration([_block(0.5, seed=i) for i in range(5)], max_floor=0.08)
+    assert (
+        compute_input_calibration([_block(1e-5)], min_floor=0.004)["noise_floor_rms"]
+        == 0.004
+    )
+    loud = compute_input_calibration(
+        [_block(0.5, seed=i) for i in range(5)], max_floor=0.08
+    )
     assert loud["noise_floor_rms"] == 0.08
 
 
 def test_clipping_fraction_detected():
-    railed = np.ones(1600, dtype="float32")              # fully railed
+    railed = np.ones(1600, dtype="float32")  # fully railed
     cal = compute_input_calibration([railed])
     assert cal["clipping_fraction"] > 0.9
     assert cal["peak"] >= 1.0
@@ -107,7 +116,7 @@ def test_calibration_feeds_the_agc_floor():
     agc = InputAGC(noise_floor_rms=0.004)
     agc.noise_floor_rms = cal["noise_floor_rms"]
     assert agc.noise_floor_rms == cal["noise_floor_rms"]
-    assert agc.noise_floor_rms > 0.004                   # adapted up from the default
+    assert agc.noise_floor_rms > 0.004  # adapted up from the default
 
     agc.gain = 12.0
     below_calibrated = _block(0.03, seed=100)
@@ -264,9 +273,7 @@ def test_clipped_complete_calibration_retries_then_abstains():
     )
     engine._stream_in = stream
     engine._capture_sr = 16000
-    engine._cb = EngineCallbacks(
-        on_metric=lambda name, **_kwargs: metrics.append(name)
-    )
+    engine._cb = EngineCallbacks(on_metric=lambda name, **_kwargs: metrics.append(name))
 
     engine._calibrate_input()
 
@@ -310,9 +317,7 @@ def test_speech_contaminated_calibration_retries_with_quiet_replacement():
     engine._stream_in = stream
     engine._capture_sr = 16000
     engine._vad = _CalibrationVad()
-    engine._cb = EngineCallbacks(
-        on_metric=lambda name, **_kwargs: metrics.append(name)
-    )
+    engine._cb = EngineCallbacks(on_metric=lambda name, **_kwargs: metrics.append(name))
 
     engine._calibrate_input()
 
@@ -448,6 +453,16 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
         actual_samplerate = 16000
         actual_device = "same-mic"
 
+    class _Dtd:
+        new_runs = 0
+        resets = 0
+
+        def new_run(self):
+            self.new_runs += 1
+
+        def reset(self):
+            self.resets += 1
+
     engine = SherpaOnnxEngine(
         SherpaConfig(
             input_agc=True,
@@ -484,6 +499,20 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     engine._input_agc.gain = 9.0
     engine._input_agc.process(_block(0.001, seed=44))
     assert engine._input_agc.last_input_rms > 0.0
+    engine._ambient_rms = 0.021
+    engine._playback_floor_rms = 0.032
+    engine._raw_playback_floor_rms = 0.043
+    delay = AecDelayCalibrator(16000, seed_delay_samples=80)
+    delay._operating = 321
+    delay._acquired = True
+    delay._median.extend((300, 321))
+    delay._mic = np.ones(160, dtype="float32")
+    delay._far = np.ones(160, dtype="float32")
+    delay._since = 160
+    engine._aec_delay_cal = delay
+    engine._aec_ref_delay = 321
+    dtd = _Dtd()
+    engine._dtd = dtd
     restores = []
 
     def resolve(_sd, _selector, **kwargs):
@@ -496,7 +525,7 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     engine._resolve_capture_domain = resolve
     engine._reset_capture_frontends_after_reopen()
 
-    assert restores == [False, True]
+    assert restores == [False]
     assert engine._last_calibration is calibration
     assert engine._speech_evidence_profile is old_evidence_profile
     assert engine._input_agc.noise_floor_rms == 0.012
@@ -505,6 +534,17 @@ def test_same_capture_domain_reopen_preserves_calibrated_agc_floor():
     assert engine._input_agc.last_applied_gain == 1.0
     assert engine._input_agc.last_above_floor is False
     assert engine._recovery_calibration_target == 0
+    assert engine._ambient_rms == 0.021
+    assert engine._playback_floor_rms == 0.032
+    assert engine._raw_playback_floor_rms == 0.043
+    assert engine._aec_ref_delay == 321
+    assert delay.current_delay_samples() == 321
+    assert list(delay._median) == [300, 321]
+    assert delay._mic.size == 0
+    assert delay._far.size == 0
+    assert delay._since == 0
+    assert dtd.new_runs == 1
+    assert dtd.resets == 0
 
 
 def test_changed_capture_domain_recalibrates_before_restoring_authority():
@@ -547,10 +587,17 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
         engine._last_calibration,
         [_block(0.004, seed=80), _block(0.004, seed=81)],
     )
-    old_evidence_generation = (
-        engine._speech_evidence_profile.calibration_generation
-    )
+    old_evidence_generation = engine._speech_evidence_profile.calibration_generation
     engine._input_agc.noise_floor_rms = 0.012
+    engine._ambient_rms = 0.021
+    engine._playback_floor_rms = 0.032
+    engine._raw_playback_floor_rms = 0.043
+    delay = AecDelayCalibrator(16000, seed_delay_samples=80)
+    delay._operating = 321
+    delay._acquired = True
+    delay._median.extend((300, 321))
+    engine._aec_delay_cal = delay
+    engine._aec_ref_delay = 321
     restores = []
 
     def resolve(_sd, _selector, **kwargs):
@@ -569,6 +616,12 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
     assert engine._input_agc.noise_floor_rms == 0.004
     assert engine._recovery_calibration_target == 3
     assert not engine._word_cut_route_verified
+    assert engine._ambient_rms == 0.0
+    assert engine._playback_floor_rms == 0.0
+    assert engine._raw_playback_floor_rms == 0.0
+    assert engine._aec_ref_delay == 80
+    assert delay.current_delay_samples() == 80
+    assert list(delay._median) == []
 
     engine._input_agc.gain = 8.0
     engine._input_agc.process(_block(0.001, seed=88))
@@ -583,8 +636,7 @@ def test_changed_capture_domain_recalibrates_before_restoring_authority():
     assert engine._last_calibration["n_blocks"] == 3
     assert engine._speech_evidence_profile is not None
     assert (
-        engine._speech_evidence_profile.calibration_generation
-        > old_evidence_generation
+        engine._speech_evidence_profile.calibration_generation > old_evidence_generation
     )
     assert engine._speech_evidence_profile.domain.route == "fallback-route"
     assert engine._input_agc.noise_floor_rms > 0.004
@@ -646,9 +698,7 @@ def test_changed_domain_recalibrates_speech_evidence_without_input_agc():
     assert engine._input_agc is None
     assert engine._speech_evidence_profile is None
     assert engine._recovery_calibration_target == 2
-    engine._observe_recovery_calibration(
-        _block(0.2, seed=299), speech_epoch_open=True
-    )
+    engine._observe_recovery_calibration(_block(0.2, seed=299), speech_epoch_open=True)
     assert engine._recovery_calibration_target == 2
     assert engine._speech_evidence_profile is None
     engine._observe_recovery_calibration(
@@ -688,9 +738,7 @@ def test_unstable_recovery_calibration_keeps_speech_evidence_fail_open():
     engine._recovery_calibration_target = 1
     engine._resolve_capture_domain = lambda *_args, **_kwargs: True
     metrics: list[str] = []
-    engine._cb = EngineCallbacks(
-        on_metric=lambda name, **_kwargs: metrics.append(name)
-    )
+    engine._cb = EngineCallbacks(on_metric=lambda name, **_kwargs: metrics.append(name))
 
     engine._observe_recovery_calibration(
         _impulsive_block(seed=400),
@@ -736,9 +784,7 @@ def test_open_speech_epoch_discards_partial_recovery_window():
         _block(0.001, seed=500), speech_epoch_open=False
     )
     assert len(engine._recovery_calibration_blocks) == 1
-    engine._observe_recovery_calibration(
-        _block(0.02, seed=501), speech_epoch_open=True
-    )
+    engine._observe_recovery_calibration(_block(0.02, seed=501), speech_epoch_open=True)
     assert engine._recovery_calibration_blocks == []
 
     engine._observe_recovery_calibration(
@@ -763,22 +809,22 @@ def test_recovery_replays_candidate_window_through_vad_before_arming():
             self.speech = False
 
         def accept_waveform(self, samples):
-            self.speech = self.speech or float(
-                np.sqrt(np.mean(np.asarray(samples, dtype="float64") ** 2))
-            ) > 0.01
+            self.speech = (
+                self.speech
+                or float(np.sqrt(np.mean(np.asarray(samples, dtype="float64") ** 2)))
+                > 0.01
+            )
 
         def is_speech_detected(self):
             return self.speech
 
-    engine = SherpaOnnxEngine(
-        SherpaConfig(input_agc=False, input_calibrate=True)
-    )
+    engine = SherpaOnnxEngine(SherpaConfig(input_agc=False, input_calibrate=True))
     engine._vad = _SpeechVad()
     engine._recovery_calibration_target = 2
     engine._word_cut_route_verified = False
     resolves: list[bool] = []
-    engine._resolve_capture_domain = (
-        lambda *_args, **_kwargs: resolves.append(True) or True
+    engine._resolve_capture_domain = lambda *_args, **_kwargs: (
+        resolves.append(True) or True
     )
 
     for seed in (510, 511):
@@ -803,21 +849,17 @@ def test_recovery_replays_candidate_window_through_vad_before_arming():
 
 
 def test_degenerate_recovery_profile_retries_without_restoring_authority():
-    engine = SherpaOnnxEngine(
-        SherpaConfig(input_agc=False, input_calibrate=True)
-    )
+    engine = SherpaOnnxEngine(SherpaConfig(input_agc=False, input_calibrate=True))
     engine._recovery_calibration_target = 2
     engine._word_cut_route_verified = False
     resolves: list[bool] = []
-    engine._resolve_capture_domain = (
-        lambda *_args, **_kwargs: resolves.append(True) or True
+    engine._resolve_capture_domain = lambda *_args, **_kwargs: (
+        resolves.append(True) or True
     )
     dc = np.full(1600, 0.003, dtype="float32")
 
     for _ in range(2):
-        engine._observe_recovery_calibration(
-            dc, speech_epoch_open=False
-        )
+        engine._observe_recovery_calibration(dc, speech_epoch_open=False)
 
     assert engine._recovery_calibration_target == 2
     assert engine._recovery_calibration_retried is True
@@ -826,9 +868,7 @@ def test_degenerate_recovery_profile_retries_without_restoring_authority():
     assert resolves == []
 
     for _ in range(2):
-        engine._observe_recovery_calibration(
-            dc, speech_epoch_open=False
-        )
+        engine._observe_recovery_calibration(dc, speech_epoch_open=False)
 
     assert engine._recovery_calibration_target == 0
     assert engine._last_calibration is None

@@ -1,11 +1,9 @@
-"""audio-bargein-8: moving the coherence reference ingest off the real-time
-audio callback (lock-free deque -> capture thread) must not change WHAT the
-detector decides -- only which thread feeds it.
+"""Reader-owned coherence reference snapshots preserve detector behaviour.
 
 This pins the behaviour-preserving property: feeding the same played blocks
-"inline" (old: note_playback on the playback/callback thread) vs "drained from a
-queue right before decide" (new: capture thread) yields identical verdicts and
-incoherent fractions. The detector logic itself is untouched.
+"inline" vs through an immutable per-capture context right before ``decide``
+yields identical verdicts and incoherent fractions. The detector logic itself
+is untouched.
 
 NOTE: the real-time benefit (no audio-callback stall on the coherence lock when
 coherence_ring_ms is raised, no underrun on small low-spec buffers) is a live
@@ -14,14 +12,14 @@ equivalence; the open-speaker A/B guards the acoustics.
 
 Tier 0: pure numpy/scipy, no audio device, no models.
 """
-from __future__ import annotations
 
-from collections import deque
+from __future__ import annotations
 
 import numpy as np
 import pytest
 
 from core.engines.echo_coherence import EchoCoherenceDetector
+from core.media_session import CaptureBlockContext
 
 
 def _played_and_mic(seed: int, n: int = 12, size: int = 1600):
@@ -36,37 +34,37 @@ def _played_and_mic(seed: int, n: int = 12, size: int = 1600):
     return played, mics
 
 
-def test_coherence_ingest_order_is_behaviour_preserving():
+def test_captured_coherence_ingest_order_is_behaviour_preserving():
     inline = EchoCoherenceDetector(16000)
     drained = EchoCoherenceDetector(16000)
     if not inline.available:  # scipy missing on this install
         pytest.skip("scipy unavailable")
 
     played, mics = _played_and_mic(seed=1)
-    q: deque = deque()
     out_inline, out_drained = [], []
     for pb, mic in zip(played, mics):
         # OLD model: note_playback inline, then decide.
         inline.note_playback(pb, 16000)
         out_inline.append(inline.decide(mic))
-        # NEW model (audio-bargein-8): the callback would copy+queue the block;
-        # the capture thread drains it into note_playback right before decide.
-        q.append(np.array(pb, dtype=np.float32, copy=True))
-        while q:
-            drained.note_playback(q.popleft(), 16000)
+        # New model: the reader snapshots the far timeline into the captured
+        # block; the processor ingests exactly that owned coordinate.
+        context = CaptureBlockContext(
+            coherence_reference=np.array(pb, dtype=np.float32, copy=True)
+        )
+        drained.note_playback(context.coherence_reference, 16000)
         out_drained.append(drained.decide(mic))
 
     assert out_inline == out_drained, "thread-placement move changed the verdicts"
-    assert abs(
-        inline.last_incoherent_fraction - drained.last_incoherent_fraction
-    ) < 1e-9
+    assert (
+        abs(inline.last_incoherent_fraction - drained.last_incoherent_fraction) < 1e-9
+    )
 
 
-def test_queued_block_copy_survives_source_buffer_mutation():
-    """`_audio_cb` appends np.array(played, copy=True); `played` is a view into
-    the device buffer PortAudio reuses, so the queued copy must be independent."""
+def test_captured_reference_copy_survives_source_buffer_mutation():
+    """A captured context must not alias PortAudio's reused output buffer."""
     src = np.ones(16, dtype=np.float32)  # stand-in for the reused output view
-    q: deque = deque()
-    q.append(np.array(src, dtype=np.float32, copy=True))  # exactly what _audio_cb does
+    context = CaptureBlockContext(
+        coherence_reference=np.array(src, dtype=np.float32, copy=True)
+    )
     src[:] = 0.0  # PortAudio overwrites the buffer for the next block
-    assert np.all(q[0] == 1.0), "queued reference block was aliased to the device buffer"
+    assert np.all(context.coherence_reference == 1.0)

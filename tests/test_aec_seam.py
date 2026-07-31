@@ -2,6 +2,7 @@
 and no model: the build gate, the passthrough-on-error seam, the far-end ring
 alignment math, and the adaptive filter's single-talk cancellation + double-talk
 freeze + reset."""
+
 from __future__ import annotations
 
 import os
@@ -34,14 +35,22 @@ def test_build_returns_none_when_disabled():
 
 
 def test_build_nlms_when_enabled():
-    aec = build_aec(SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "nlms"}))
+    aec = build_aec(
+        SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "nlms"})
+    )
     assert isinstance(aec, EchoCanceller)
 
 
 def test_build_dtln_and_unknown_fail_open_to_none():
     # The deep ONNX tier is deferred -> no-op (NOT a crash); unknown backend too.
-    assert build_aec(SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "dtln"})) is None
-    assert build_aec(SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "bogus"})) is None
+    assert (
+        build_aec(SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "dtln"}))
+        is None
+    )
+    assert (
+        build_aec(SherpaConfig.from_dict({"aec_enabled": True, "aec_backend": "bogus"}))
+        is None
+    )
 
 
 # --- passthrough-on-error seam ----------------------------------------------
@@ -80,15 +89,15 @@ class _FramedImpl:
 
     def process(self, near, far):
         n = list(np.asarray(near, dtype=np.float32).reshape(-1))
-        self.near.extend(n)        # step 1
-        time.sleep(0.0005)         # window an interleaved reset() could land in
-        self.far.extend(n)         # step 2 -- same count as step 1 by construction
+        self.near.extend(n)  # step 1
+        time.sleep(0.0005)  # window an interleaved reset() could land in
+        self.far.extend(n)  # step 2 -- same count as step 1 by construction
         frame = 4
         k = min(len(self.near), len(self.far)) // frame
-        self.near = self.near[k * frame:]
-        self.far = self.far[k * frame:]
+        self.near = self.near[k * frame :]
+        self.far = self.far[k * frame :]
         if len(self.near) != len(self.far):
-            self.desynced = True   # near/far carry lengths diverged -> AEC ruined
+            self.desynced = True  # near/far carry lengths diverged -> AEC ruined
         return np.zeros(k * frame, dtype=np.float32)
 
     def reset(self):
@@ -132,7 +141,9 @@ def test_divergence_guard_internal_reset_does_not_deadlock():
             self.reset_calls = 0
 
         def process(self, near, far):
-            return np.array([np.inf, np.inf], dtype=np.float32)  # non-finite -> guard fires
+            return np.array(
+                [np.inf, np.inf], dtype=np.float32
+            )  # non-finite -> guard fires
 
         def reset(self):
             self.reset_calls += 1
@@ -141,8 +152,8 @@ def test_divergence_guard_internal_reset_does_not_deadlock():
     ec = EchoCanceller(impl)
     near = np.array([0.1, 0.2], dtype=np.float32)
     out = ec.process_16k(near, np.zeros(2, dtype=np.float32))  # must return, not hang
-    assert np.array_equal(out, near)         # passthrough on divergence
-    assert impl.reset_calls == 1             # guard reset fired exactly once
+    assert np.array_equal(out, near)  # passthrough on divergence
+    assert impl.reset_calls == 1  # guard reset fired exactly once
 
 
 # --- divergence guard (a canceller must never AMPLIFY) ----------------------
@@ -201,6 +212,16 @@ def test_ring_delay_offsets_the_window():
     np.testing.assert_array_equal(ring.read(10, 5), np.arange(35, 45))
 
 
+def test_ring_multi_window_read_uses_one_playback_head():
+    ring = FarEndRing(capacity=100)
+    ring.push(np.arange(50, dtype=np.float32))
+
+    zero_delay, delayed = ring.read_windows(10, (0, 5))
+
+    np.testing.assert_array_equal(zero_delay, np.arange(40, 50))
+    np.testing.assert_array_equal(delayed, np.arange(35, 45))
+
+
 def test_ring_zeros_before_anything_played():
     assert np.all(FarEndRing(100).read(10, 0) == 0.0)
 
@@ -217,6 +238,29 @@ def test_ring_clear():
     ring.push(np.arange(50, dtype=np.float32))
     ring.clear()
     assert np.all(ring.read(10, 0) == 0.0)
+
+
+def test_delay_continuity_reset_preserves_converged_operating_delay():
+    calibrator = AecDelayCalibrator(
+        16000,
+        seed_delay_samples=80,
+        max_delay_ms=400.0,
+    )
+    calibrator._operating = 321
+    calibrator._acquired = True
+    calibrator._median.append(321)
+    calibrator._mic = np.ones(160, dtype="float32")
+    calibrator._far = np.ones(160, dtype="float32")
+    calibrator._since = 160
+
+    calibrator.reset_continuity()
+
+    assert calibrator.current_delay_samples() == 321
+    assert calibrator._acquired
+    assert calibrator._mic.size == 0
+    assert calibrator._far.size == 0
+    assert calibrator._since == 0
+    assert list(calibrator._median) == [321]
 
 
 # --- playback FIFO (producer/audio-callback seam) ----------------------------
@@ -261,7 +305,9 @@ def test_fifo_wraps_around_correctly():
     out2 = np.empty(2, dtype="float32")
     fifo.read_into(out2)  # consumes 1,2 -> read head at 2
     np.testing.assert_array_equal(out2, [1, 2])
-    fifo.write(np.array([4, 5, 6], dtype="float32"), _never_abort)  # writes 4,5 wrap to 6
+    fifo.write(
+        np.array([4, 5, 6], dtype="float32"), _never_abort
+    )  # writes 4,5 wrap to 6
     out4 = np.empty(4, dtype="float32")
     n = fifo.read_into(out4)
     assert n == 4
@@ -288,7 +334,9 @@ def test_fifo_write_backpressure_blocks_until_drained():
     done = threading.Event()
 
     def producer():
-        fifo.write(np.array([5, 6], dtype="float32"), _never_abort)  # must block: no space
+        fifo.write(
+            np.array([5, 6], dtype="float32"), _never_abort
+        )  # must block: no space
         done.set()
 
     t = threading.Thread(target=producer, daemon=True)
@@ -341,9 +389,13 @@ def test_fifo_write_returns_promptly_when_should_abort_flips_while_full():
 
     t = threading.Thread(target=producer, daemon=True)
     t.start()
-    assert not done.wait(timeout=0.2), "should still be blocked (FIFO full, not aborted)"
+    assert not done.wait(timeout=0.2), (
+        "should still be blocked (FIFO full, not aborted)"
+    )
     abort.set()  # barge-in/shutdown
-    assert done.wait(timeout=1.0), "write() must return promptly once should_abort is True"
+    assert done.wait(timeout=1.0), (
+        "write() must return promptly once should_abort is True"
+    )
     t.join(timeout=1.0)
     assert fifo.count() == 4  # nothing from the aborted write was enqueued
 
@@ -373,7 +425,9 @@ def test_fifo_mid_chunk_abort_halts_enqueue_and_flush_clears_the_partial():
         calls["n"] += 1
         return calls["n"] > 1
 
-    fifo.write(np.array([1, 2, 3, 4, 5, 6, 7, 8], dtype="float32"), abort_after_first_pass)
+    fifo.write(
+        np.array([1, 2, 3, 4, 5, 6, 7, 8], dtype="float32"), abort_after_first_pass
+    )
     # Pass 1 queued 1..4 (ring full); pass 2 aborted. should_abort ALONE leaves
     # that partial queued -- it only halts further synthesis.
     assert fifo.count() == 4
@@ -397,9 +451,9 @@ def test_tagged_fifo_preserves_two_owner_lifecycle_order_in_one_sink_read():
     assert fifo.open_tag(second)
     assert fifo.write(np.array([1, 2], dtype="float32"), _never_abort, tag=first) == 2
     assert fifo.close_tag(first, "completed")
-    assert fifo.write(
-        np.array([3, 4, 5], dtype="float32"), _never_abort, tag=second
-    ) == 3
+    assert (
+        fifo.write(np.array([3, 4, 5], dtype="float32"), _never_abort, tag=second) == 3
+    )
     assert fifo.close_tag(second, "completed")
     assert list(events) == []  # synthesis/seal is not sink evidence
 
@@ -531,13 +585,15 @@ def test_tagged_fifo_fade_keeps_only_started_head_owner_and_waits_for_sink():
     queued = object()
     assert fifo.open_tag(head)
     assert fifo.open_tag(queued)
-    assert fifo.write(
-        np.array([1, 2, 3, 4, 5], dtype="float32"), _never_abort, tag=head
-    ) == 5
+    assert (
+        fifo.write(np.array([1, 2, 3, 4, 5], dtype="float32"), _never_abort, tag=head)
+        == 5
+    )
     assert fifo.close_tag(head, "completed")
-    assert fifo.write(
-        np.array([6, 7, 8, 9], dtype="float32"), _never_abort, tag=queued
-    ) == 4
+    assert (
+        fifo.write(np.array([6, 7, 8, 9], dtype="float32"), _never_abort, tag=queued)
+        == 4
+    )
     assert fifo.close_tag(queued, "completed")
 
     played_head = np.empty(2, dtype="float32")
@@ -563,7 +619,7 @@ def test_tagged_fifo_fade_keeps_only_started_head_owner_and_waits_for_sink():
 
     np.testing.assert_array_equal(played_head, [1, 2])
     assert faded[0] == pytest.approx(2.25)  # 3 * raised-cosine(1/3)
-    assert faded[1] == pytest.approx(1.0)   # 4 * raised-cosine(2/3)
+    assert faded[1] == pytest.approx(1.0)  # 4 * raised-cosine(2/3)
     assert faded[2] == pytest.approx(0.0)
     np.testing.assert_array_equal(faded[3:], [0, 0])
     assert list(events)[-1] == PlaybackFIFOEvent(
@@ -626,9 +682,10 @@ def test_tagged_fifo_sink_read_vs_interrupt_terminalizes_exactly_once():
         fifo = PlaybackFIFO(4, event_queue=events)
         tag = object()
         assert fifo.open_tag(tag)
-        assert fifo.write(
-            np.array([1, 2, 3, 4], dtype="float32"), _never_abort, tag=tag
-        ) == 4
+        assert (
+            fifo.write(np.array([1, 2, 3, 4], dtype="float32"), _never_abort, tag=tag)
+            == 4
+        )
         assert fifo.close_tag(tag, "completed")
 
         gate = threading.Barrier(3)
@@ -702,14 +759,16 @@ def test_fdaf_does_not_amplify_on_nonlinear_mismatched_echo():
     # recovery (leak + tap-shrink + raw passthrough) holds it bounded.
     rng = np.random.default_rng(7)
     far = (rng.standard_normal(16000) * 0.3).astype(np.float32)
-    echo = np.tanh(8.0 * np.convolve(far, [0.0, 0.0, 0.9])[: len(far)]).astype(np.float32)  # clipped + delayed
+    echo = np.tanh(8.0 * np.convolve(far, [0.0, 0.0, 0.9])[: len(far)]).astype(
+        np.float32
+    )  # clipped + delayed
     near = echo
     filt = _FDAFAdaptiveFilter(frame=512)
     e = _run(filt, near, far, 512)
     near_rms = float(np.sqrt(np.mean(near[: len(e)].astype(np.float64) ** 2)))
     out_rms = float(np.sqrt(np.mean(e.astype(np.float64) ** 2)))
     assert np.all(np.isfinite(e))
-    assert out_rms <= near_rms * 2.0 + 1e-6   # never amplifies -> can't self-interrupt
+    assert out_rms <= near_rms * 2.0 + 1e-6  # never amplifies -> can't self-interrupt
 
 
 def test_fdaf_no_far_is_passthrough():
@@ -778,7 +837,10 @@ class _FakeStage:
             _FakeIn("state", [1, 2, 512, 2]),
             _FakeIn("reference", [1, 1, feat_dim]),
         ]
-        self._outs = [_FakeIn("main", [1, 1, feat_dim]), _FakeIn("state_out", [1, 2, 512, 2])]
+        self._outs = [
+            _FakeIn("main", [1, 1, feat_dim]),
+            _FakeIn("state_out", [1, 2, 512, 2]),
+        ]
         self.calls = 0
 
     def get_inputs(self):
@@ -800,7 +862,10 @@ class _FakeStage:
 
 def _fake_dtln():
     return _DTLNEchoCanceller(
-        sessions=(_FakeStage(257, passthrough_primary=False), _FakeStage(512, passthrough_primary=True))
+        sessions=(
+            _FakeStage(257, passthrough_primary=False),
+            _FakeStage(512, passthrough_primary=True),
+        )
     )
 
 
@@ -814,7 +879,9 @@ def test_dtln_io_mapping_by_shape():
 
 def test_dtln_streams_in_128_hops_and_carries_state():
     aec = _fake_dtln()
-    out = aec.process(np.zeros(1600, dtype=np.float32), np.zeros(1600, dtype=np.float32))
+    out = aec.process(
+        np.zeros(1600, dtype=np.float32), np.zeros(1600, dtype=np.float32)
+    )
     # 1600 / 128 = 12 full hops -> 12 block-steps -> 12*128 output samples.
     assert aec._s1.calls == 12 and aec._s2.calls == 12
     assert out.shape[0] == 12 * 128
@@ -873,10 +940,17 @@ def test_dtln_real_inference_reduces_echo():
     fir = np.zeros(150, dtype=np.float64)
     fir[10], fir[60] = 0.5, 0.25
     mic = np.convolve(far, fir)[: len(far)].astype(np.float32)
-    out = np.concatenate([aec.process(mic[i : i + 1600], far[i : i + 1600]) for i in range(0, len(mic) - 1600, 1600)])
+    out = np.concatenate(
+        [
+            aec.process(mic[i : i + 1600], far[i : i + 1600])
+            for i in range(0, len(mic) - 1600, 1600)
+        ]
+    )
     assert np.all(np.isfinite(out))
     tail = len(out) // 2
-    erle = 10 * np.log10(np.sum(mic[tail:len(out)] ** 2) / (np.sum(out[tail:] ** 2) + 1e-12))
+    erle = 10 * np.log10(
+        np.sum(mic[tail : len(out)] ** 2) / (np.sum(out[tail:] ** 2) + 1e-12)
+    )
     assert erle > 15.0  # deep canceller -> strong reduction on single-talk echo
 
 
@@ -890,7 +964,9 @@ _WIN_MS = 1500.0
 _WIN = int(_WIN_MS * _SR / 1000.0)  # samples in one full rolling window
 
 
-def _delayed_echo_window(rng, delay, *, n=_WIN, scale=0.5, nonlinear=False, far_scale=0.3):
+def _delayed_echo_window(
+    rng, delay, *, n=_WIN, scale=0.5, nonlinear=False, far_scale=0.3
+):
     """A (far, mic) window pair where the mic is the far-end white noise delayed by
     ``delay`` samples (scaled, optionally tanh-nonlinear) + a little sensor noise --
     i.e. what an open speaker->mic echo path produces on a single-talk window."""
@@ -913,7 +989,7 @@ def test_calibrator_recovers_known_lag_and_leaves_the_seed():
     cal.observe(mic, far)  # one full window -> triggers a recalc, fast-acquires
     got = cal.current_delay_samples()
     assert abs(got - 120) <= int(0.002 * _SR)  # within ~2 ms of the true lag
-    assert got != seed                         # the measured value replaced the seed
+    assert got != seed  # the measured value replaced the seed
 
 
 def test_calibrator_rejects_low_correlation_and_holds_the_seed():
@@ -961,6 +1037,6 @@ def test_calibrator_low_far_energy_never_accepts():
     cal = AecDelayCalibrator(_SR, seed_delay_samples=seed)
     for _ in range(8):
         far = (rng.standard_normal(_WIN) * 1e-4).astype(np.float32)  # ~ -80 dBFS
-        mic = (rng.standard_normal(_WIN) * 0.3).astype(np.float32)   # mic has energy
+        mic = (rng.standard_normal(_WIN) * 0.3).astype(np.float32)  # mic has energy
         cal.observe(mic, far)
     assert cal.current_delay_samples() == seed

@@ -5,6 +5,7 @@ pure synthesis/queue logic is exercised directly. The threaded OutputStream
 path (``_playback_loop``) needs a real device and is out of scope here, so the
 testable pieces (`_synthesize`, queue/flush) are factored out of the thread.
 """
+
 from __future__ import annotations
 
 import logging
@@ -44,7 +45,10 @@ class _StreamingTts:
 
     def generate(self, text, sid=0, speed=1.0, callback=None):
         self.calls += 1
-        chunks = [np.array([0.1, 0.2], dtype="float32"), np.array([0.3], dtype="float32")]
+        chunks = [
+            np.array([0.1, 0.2], dtype="float32"),
+            np.array([0.3], dtype="float32"),
+        ]
         if callback is not None:
             for c in chunks:
                 if callback(c, 1.0) == 0:
@@ -337,8 +341,7 @@ def test_sherpa_queue_eviction_and_stop_drop_every_unclaimed_request():
         )
 
     assert _wait_until(
-        lambda: [entry[0].fragment_id for entry in probe.snapshot()[1]]
-        == ["oldest"]
+        lambda: [entry[0].fragment_id for entry in probe.snapshot()[1]] == ["oldest"]
     )
     engine.stop()
 
@@ -462,9 +465,7 @@ def test_sherpa_receipt_callback_failure_does_not_kill_later_callbacks(monkeypat
     try:
         assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 6)
         holder["stream"].pull(6)
-        assert _wait_until(
-            lambda: events.count(("terminal", "second")) == 1
-        )
+        assert _wait_until(lambda: events.count(("terminal", "second")) == 1)
         assert events == [
             ("started", "first"),
             ("terminal", "first"),
@@ -547,9 +548,11 @@ def test_sherpa_tracked_receipts_survive_idle_fifo_reopen(monkeypatch):
                 on_terminal=probe.on_terminal,
             )
             assert _wait_until(
-                lambda: len(holder["streams"]) == index
-                and engine._fifo is not None
-                and engine._fifo.count() == 3
+                lambda: (
+                    len(holder["streams"]) == index
+                    and engine._fifo is not None
+                    and engine._fifo.count() == 3
+                )
             )
             holder["streams"][index - 1].pull(3)
             assert _wait_until(lambda: len(probe.snapshot()[1]) == index)
@@ -718,8 +721,10 @@ def test_synthesize_normalizes_then_declicks_when_target_rms_set():
     with the spike repaired -- proving both stages ran in _synthesize."""
     sr = 16000
     t = np.arange(4000) / sr
-    loud = (0.4 * np.sqrt(2) * np.sin(2 * np.pi * 220 * t)).astype("float32")  # RMS ~0.4
-    loud[2000] = 0.95                                   # an impulse spike on top
+    loud = (0.4 * np.sqrt(2) * np.sin(2 * np.pi * 220 * t)).astype(
+        "float32"
+    )  # RMS ~0.4
+    loud[2000] = 0.95  # an impulse spike on top
 
     class _LoudTts:
         sample_rate = sr
@@ -735,8 +740,8 @@ def test_synthesize_normalizes_then_declicks_when_target_rms_set():
     eng._synthesize("x", written.append)
     out = np.concatenate(written)
     out_rms = float(np.sqrt(np.mean(out.astype("float64") ** 2)))
-    assert abs(out_rms - 0.12) < 0.02                  # normalize_rms ran (level steady)
-    assert abs(float(out[2000])) < 0.22                # declick repaired the post-gain spike
+    assert abs(out_rms - 0.12) < 0.02  # normalize_rms ran (level steady)
+    assert abs(float(out[2000])) < 0.22  # declick repaired the post-gain spike
 
 
 def test_speak_enqueues_and_stop_speaking_flushes():
@@ -758,7 +763,9 @@ def test_speak_without_tts_calls_on_done_immediately():
 
 
 def test_speak_logs_tts_sanitize_marker(caplog):
-    eng = SherpaOnnxEngine(SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7}))
+    eng = SherpaOnnxEngine(
+        SherpaConfig(tts_markup=True, tts_speaker_voices={"warm": 7})
+    )
     eng._tts = _StreamingTts()
     caplog.set_level(logging.INFO, logger="speaker.sherpa")
 
@@ -799,7 +806,9 @@ def test_synthesize_logs_audio_quality_whole_clip(caplog):
     trustworthy alternative to the lossy 16 kHz .ref.wav AEC tap (see
     audio_quality_metrics' docstring)."""
     eng = SherpaOnnxEngine(
-        SherpaConfig(tts_target_rms=0.12, tts_output_lowpass_hz=7000.0, tts_declick=False)
+        SherpaConfig(
+            tts_target_rms=0.12, tts_output_lowpass_hz=7000.0, tts_declick=False
+        )
     )
     eng._tts = _StreamingTts()  # generate() called w/o callback here -> whole-clip
     caplog.set_level(logging.INFO, logger="speaker.sherpa")
@@ -809,8 +818,8 @@ def test_synthesize_logs_audio_quality_whole_clip(caplog):
 
     assert "tts audio quality:" in caplog.text
     assert '"mode": "whole_clip"' in caplog.text
-    assert '"n_samples": 3' in caplog.text          # [0.1, 0.2, 0.3] concatenated
-    assert '"hf_ratio"' in caplog.text              # spectral fields computed (not null)
+    assert '"n_samples": 3' in caplog.text  # [0.1, 0.2, 0.3] concatenated
+    assert '"hf_ratio"' in caplog.text  # spectral fields computed (not null)
     assert '"spectral_flatness"' in caplog.text
 
 
@@ -830,7 +839,7 @@ def test_synthesize_logs_audio_quality_streaming(caplog):
     assert '"mode": "streaming"' in caplog.text
     assert '"hf_ratio": null' in caplog.text
     assert '"spectral_flatness": null' in caplog.text
-    assert '"n_samples": 3' in caplog.text          # two chunks, 2 + 1 samples
+    assert '"n_samples": 3' in caplog.text  # two chunks, 2 + 1 samples
 
 
 def test_enqueue_drops_oldest_under_backpressure():
@@ -875,9 +884,9 @@ def test_new_reply_after_barge_is_current_generation():
     """Mute-bug guard: a sentence enqueued AFTER a barge carries the new
     generation, so the worker plays it (it is NOT treated as stale)."""
     eng = _engine(_StreamingTts())
-    eng.speak("old reply")        # generation G
-    eng.stop_speaking()           # barge: bump to G+1, drain the queue
-    assert eng._play_q.empty()    # the old reply was drained
+    eng.speak("old reply")  # generation G
+    eng.stop_speaking()  # barge: bump to G+1, drain the queue
+    assert eng._play_q.empty()  # the old reply was drained
     eng.speak("brand new reply")  # enqueued at G+1
     item = eng._play_q.get_nowait()
     assert item[0] == "brand new reply"
@@ -888,19 +897,19 @@ def test_claim_utterance_skips_stale_without_clearing_stop():
     """The load-bearing rc-3 guard: a stale dequeued sentence is rejected (None)
     and _stop_speaking is NOT wiped, so a pending barge survives."""
     eng = _engine(_StreamingTts())
-    eng.speak("x")        # enqueued at generation G
-    eng.stop_speaking()   # barge: bumps to G+1, sets _stop_speaking
+    eng.speak("x")  # enqueued at generation G
+    eng.stop_speaking()  # barge: bumps to G+1, sets _stop_speaking
     assert eng._stop_speaking.is_set()
-    assert eng._claim_utterance(0) is None     # the old-generation sentence is stale
-    assert eng._stop_speaking.is_set()         # and the barge flag was NOT wiped
+    assert eng._claim_utterance(0) is None  # the old-generation sentence is stale
+    assert eng._stop_speaking.is_set()  # and the barge flag was NOT wiped
 
 
 def test_claim_utterance_accepts_current_and_clears_stop():
     eng = _engine(_StreamingTts())
     eng._stop_speaking.set()  # a prior barge left the flag set
     g = eng._speak_gen
-    assert eng._claim_utterance(g) == g        # current generation -> claimed
-    assert not eng._stop_speaking.is_set()     # cleared for this fresh utterance
+    assert eng._claim_utterance(g) == g  # current generation -> claimed
+    assert not eng._stop_speaking.is_set()  # cleared for this fresh utterance
 
 
 def test_synthesize_streaming_aborts_on_generation_mismatch():
@@ -1056,12 +1065,14 @@ def test_stop_speaking_clears_speaking_and_relatches_on_the_cut():
     eng = _engine(_StreamingTts())
     eng._out_stream = _FakeOutStream()
     eng._fifo = _FakeFIFO()
-    eng._speaking.set()                   # worker set it; worker will NOT clear it (wedged)
-    eng._barge_in_fired_this_run = True   # a barge already fired this run
+    eng._speaking.set()  # worker set it; worker will NOT clear it (wedged)
+    eng._barge_in_fired_this_run = True  # a barge already fired this run
     eng.stop_speaking()
     assert eng._fifo.flushed == 1
-    assert eng.is_speaking is False              # ASR re-enables without the worker returning
-    assert eng._barge_in_fired_this_run is False  # barge-in re-armed for the next interrupt
+    assert eng.is_speaking is False  # ASR re-enables without the worker returning
+    assert (
+        eng._barge_in_fired_this_run is False
+    )  # barge-in re-armed for the next interrupt
 
 
 def test_barge_watch_is_not_armed_before_first_audio_plays():
@@ -1272,6 +1283,7 @@ def test_stop_aborts_stuck_capture_then_closes_without_read_overlap():
 
 def test_stop_retains_truly_stuck_input_without_unbounded_close():
     """If abort cannot quiesce, bounded stop retains rather than close-racing."""
+
     class _Input:
         def __init__(self):
             self.close_calls = 0
@@ -1329,6 +1341,7 @@ def test_retained_capture_ownership_fails_restart_before_clearing_fences(
     old_thread_alive, message
 ):
     """A later start cannot resurrect the retained native capture owner."""
+
     class _RetainedInput:
         pass
 
@@ -1441,6 +1454,7 @@ def test_live_shared_worker_fails_restart_before_shared_events_are_reset(
 
 def test_timed_out_receipt_dispatcher_reference_is_retained_for_restart_guard():
     """A wedged receipt callback remains discoverable after bounded stop."""
+
     class _StuckReceiptThread:
         def __init__(self):
             self.join_timeouts = []
@@ -1646,7 +1660,9 @@ def test_stop_returns_promptly_when_producer_is_blocked():
         # predicate (set by stop()) releases it and it returns cleanly.
         fifo.write(
             np.ones(100, dtype="float32"),  # >> capacity -> blocks until aborted
-            should_abort=lambda: eng._stop_speaking.is_set() or not eng._running.is_set(),
+            should_abort=lambda: (
+                eng._stop_speaking.is_set() or not eng._running.is_set()
+            ),
         )
 
     t = threading.Thread(target=fake_play, daemon=True)
@@ -1684,13 +1700,15 @@ def _outbuf(frames):
     return np.full((frames, 1), -1.0, dtype="float32")
 
 
-def test_audio_cb_drains_fifo_zero_fills_underrun_and_tees_only_real_samples():
+def test_audio_cb_drains_fifo_and_tees_zero_fill_on_playback_timeline():
     eng = _engine(_StreamingTts())
     eng._play_sr = eng.config.sample_rate  # no resample -> far ring gets exact samples
     eng._far_ref = FarEndRing()
     eng._echo_coherence = None
     eng._fifo = PlaybackFIFO(8)
-    eng._fifo.write(np.array([0.5, 0.25], dtype="float32"), lambda: False)  # float32-exact
+    eng._fifo.write(
+        np.array([0.5, 0.25], dtype="float32"), lambda: False
+    )  # float32-exact
     metrics: list = []
     eng._cb.on_metric = metrics.append
     eng._first_audio_pending = True
@@ -1700,11 +1718,13 @@ def test_audio_cb_drains_fifo_zero_fills_underrun_and_tees_only_real_samples():
 
     # The 2 queued samples play; the 3-sample underrun tail is silent zero-fill.
     np.testing.assert_array_equal(out[:, 0], [0.5, 0.25, 0.0, 0.0, 0.0])
-    # ONLY the 2 real samples are teed into the far ring -- NOT the zero tail.
-    # (A regression to teeing `view`/`view[:frames]` would push silence into the
-    # AEC far-end and stay green without this assertion.)
-    assert eng._far_ref._written == 2
-    np.testing.assert_array_equal(eng._far_ref.read(2, 0), [0.5, 0.25])
+    # Silence is part of the output sample clock. The full callback frame must
+    # advance the far timeline or a later capture snapshot reads pre-gap audio.
+    assert eng._far_ref._written == 5
+    np.testing.assert_array_equal(
+        eng._far_ref.read(5, 0),
+        [0.5, 0.25, 0.0, 0.0, 0.0],
+    )
     # TTS_FIRST_AUDIO stamped exactly once, at the first real-audio block.
     assert metrics == [TTS_FIRST_AUDIO]
     assert eng._first_audio_pending is False
@@ -1724,10 +1744,36 @@ def test_audio_cb_does_not_stamp_first_audio_on_an_underrun_only_block():
     eng._audio_cb(out, 4, None, None)
 
     np.testing.assert_array_equal(out[:, 0], [0.0, 0.0, 0.0, 0.0])  # all silence
-    assert eng._far_ref._written == 0  # nothing teed
+    assert eng._far_ref._written == 4
+    np.testing.assert_array_equal(eng._far_ref.read(4, 0), np.zeros(4))
     assert metrics == []  # ...no real audio played -> no stamp
     assert eng._first_audio_pending is True  # stays armed for the first real block
     assert eng._last_playback_at == 0.0
+
+
+def test_audio_cb_reference_resampler_keeps_cumulative_rational_time():
+    eng = _engine(_StreamingTts())
+    eng._play_sr = 48000
+    eng._far_ref = FarEndRing()
+    eng._fifo = PlaybackFIFO(1024)
+    eng._fifo.write(
+        np.arange(768, dtype="float32"),
+        lambda: False,
+    )
+
+    identities = []
+    for _index in range(3):
+        eng._audio_cb(_outbuf(256), 256, None, None)
+        identities.append(id(eng._playback_reference_resampler))
+
+    assert len(set(identities)) == 1
+    assert eng._far_ref._written == 256
+    assert eng._playback_reference_resampler._total_input == 768
+    assert eng._playback_reference_resampler._total_output == 256
+    np.testing.assert_array_equal(
+        eng._far_ref.read(256, 0),
+        np.arange(0, 768, 3, dtype="float32"),
+    )
 
 
 def test_audio_cb_with_no_fifo_emits_silence_and_does_not_tee_or_stamp():
@@ -1862,9 +1908,7 @@ def test_resample_playback_falls_back_to_linear_on_rate_mismatch_or_none():
     expect = _resample_linear(x, 16000, 48000)
     # Resampler bound to different rates (device reopened): never used.
     stale = _StubResampler(16000, 44100)
-    np.testing.assert_array_equal(
-        _resample_playback(x, 16000, 48000, stale), expect
-    )
+    np.testing.assert_array_equal(_resample_playback(x, 16000, 48000, stale), expect)
     assert stale.calls == 0
     # No resampler at all (device accepted the TTS rate at last open).
     np.testing.assert_array_equal(_resample_playback(x, 16000, 48000, None), expect)
@@ -1880,9 +1924,7 @@ def test_resample_playback_upsample_suppresses_imaging_vs_linear():
         pytest.skip("no soxr/scipy on this box -- AudioResampler IS linear here")
     t = np.arange(24000, dtype="float32") / 24000.0
     tone = np.sin(2.0 * np.pi * 9000.0 * t).astype("float32")  # near src Nyquist
-    hq = np.concatenate(
-        [rs.process(tone[:12000]), rs.process(tone[12000:], last=True)]
-    )
+    hq = np.concatenate([rs.process(tone[:12000]), rs.process(tone[12000:], last=True)])
     lin = _resample_linear(tone, 24000, 48000)
 
     def band_energy(x, sr, lo_hz):
@@ -1937,7 +1979,7 @@ def test_target_rms_wholeclip_on_first_sentence_sets_carry():
     assert eng._tts_normalize_gain is None  # not yet set
     written: list = []
     eng._synthesize("hello", written.append)
-    assert tts.callback_used == [False]         # whole-clip path (no callback)
+    assert tts.callback_used == [False]  # whole-clip path (no callback)
     assert eng._tts_normalize_gain is not None  # carry established
     assert eng._tts_normalize_gain > 0.0
 
@@ -1976,7 +2018,7 @@ def test_target_rms_zero_always_takes_streaming_regardless_of_carry():
     eng._tts = tts
     assert eng._tts_normalize_gain is None  # irrelevant on this path
     eng._synthesize("hi", [].append)
-    assert tts.callback_used == [True]      # streaming path regardless
+    assert tts.callback_used == [True]  # streaming path regardless
     assert eng._tts_normalize_gain is None  # still None (not updated by this path)
 
 
@@ -1984,8 +2026,7 @@ def test_lowpass_enabled_streams_from_first_sentence_when_target_rms_off():
     sr = 16000
     t = np.arange(sr // 2, dtype="float64") / sr
     raw = (
-        0.15 * np.sin(2.0 * np.pi * 300.0 * t)
-        + 0.30 * np.sin(2.0 * np.pi * 6000.0 * t)
+        0.15 * np.sin(2.0 * np.pi * 300.0 * t) + 0.30 * np.sin(2.0 * np.pi * 6000.0 * t)
     ).astype("float32")
     tts = _TrackingTts(raw)
     eng = SherpaOnnxEngine(
@@ -2010,8 +2051,7 @@ def test_streaming_lowpass_output_is_peak_bounded_after_filter_overshoot():
     sr = 24000
     t = np.arange(sr, dtype="float64") / sr
     raw = (
-        0.40 * np.sin(2.0 * np.pi * 300.0 * t)
-        + 0.35 * np.sin(2.0 * np.pi * 7000.0 * t)
+        0.40 * np.sin(2.0 * np.pi * 300.0 * t) + 0.35 * np.sin(2.0 * np.pi * 7000.0 * t)
     ).astype("float32")
     hot = np.asarray(apply_gain_soft_limit(raw, 4.0), dtype="float32")
     tts = _TrackingTts(hot)
@@ -2091,11 +2131,11 @@ def test_next_fifo_sec_self_sizes_from_underruns():
     assert f(1.0, 18, seed) == pytest.approx(1.5)
     assert f(1.5, 5, seed) == pytest.approx(2.25)
     # benign 0-2 underruns do NOT grow (end-of-utterance straddle)
-    assert f(1.5, 2, seed) == pytest.approx(1.5 * 0.9)   # clean-ish -> decays
-    assert f(1.0, 2, seed) == pytest.approx(1.0)          # at seed, stays
+    assert f(1.5, 2, seed) == pytest.approx(1.5 * 0.9)  # clean-ish -> decays
+    assert f(1.0, 2, seed) == pytest.approx(1.0)  # at seed, stays
     # clean reply slow-decays toward the seed but never below it
     assert f(2.25, 0, seed) == pytest.approx(2.25 * 0.9)
-    assert f(1.05, 0, seed) == pytest.approx(1.0)          # clamps to the seed floor
+    assert f(1.05, 0, seed) == pytest.approx(1.0)  # clamps to the seed floor
     assert f(1.0, 0, seed) == pytest.approx(1.0)
     # bounded by the ceiling
     assert f(_FIFO_SEC_MAX, 50, seed) == pytest.approx(_FIFO_SEC_MAX)

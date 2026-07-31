@@ -26,12 +26,6 @@ from always_on_agent.speech_analyzer import exact_control_class
 
 log = logging.getLogger("speaker.sherpa")
 
-# audio-bargein-8: max played-reference blocks the audio callback may queue for
-# the capture thread to ingest into the coherence detector. Generous (the
-# capture thread drains it every ~0.1 s block); a bound only matters if the
-# capture thread stalls, where dropping the oldest played blocks is the safe
-# degradation (the coherence ring is a rolling window anyway).
-_COH_REF_Q_MAX = 256
 # How long a just-played block may keep the barge watch armed while the next
 # queued sentence is still waiting for its own first audio. Past this, a stale
 # playback-level EWMA is not evidence of an audible tail.
@@ -68,6 +62,15 @@ class _ConfirmedBargeHandoff:
     speech_end_at: float
     expires_at: float
     capture_generation: int
+
+
+@dataclass(frozen=True)
+class _ConfirmedBargeClaim:
+    """Generation-bound ownership of one irreversible confirmed barge."""
+
+    origin_speak_generation: int
+    origin_playback_generation: int
+    claimed_speak_generation: int
 
 
 @dataclass(frozen=True)
@@ -118,6 +121,7 @@ def _auto_threads() -> int:
     cores = os.cpu_count() or 4
     return max(2, min(4, cores // 2))
 
+
 from ..asr_text import DEFAULT_SHORT_CLIP_SEC, agreement_guard, restore_casing
 from ..asr_verifier import AsrConsensusOutcome, verify_asr_consensus
 from ..contract import is_stop_command, normalize_command
@@ -152,6 +156,15 @@ from ..engine import (
     TrackedSpeech,
     TranscriptAbort,
     TranscriptAbortReason,
+)
+from ..media_session import (
+    CaptureBlockContext,
+    CaptureControlLane,
+    CaptureGap,
+    CaptureGapReason,
+    CaptureMediaSession,
+    CaptureStamp,
+    CapturedBlock,
 )
 from ..metrics import BARGE_IN_STOP, SPEECH_END, TTS_FIRST_AUDIO
 from ..tts_markup import (
@@ -202,17 +215,21 @@ from .echo_coherence import EchoCoherenceDetector
 # Owner-corpus evidence for a real short interrupt whose streaming transcript
 # and SenseVoice final disagree.  Keep this exact and data-backed: the generic
 # agreement guard must remain fail-closed for every unlisted rewrite.
-_ATTESTED_SHORT_INTERRUPT_REPAIRS = frozenset({
-    (("castle", "death"), ("cancel", "that")),
-})
+_ATTESTED_SHORT_INTERRUPT_REPAIRS = frozenset(
+    {
+        (("castle", "death"), ("cancel", "that")),
+    }
+)
 
 # Owner-corpus evidence for a normal-duration stop phrase. Unlike the short
 # repair above, this is admitted only when independently owned speech timing is
 # inside the evidence window below. That preserves the short-echo guard while
 # recovering the exact streaming regression confirmed by SenseVoice.
-_ATTESTED_LONG_INTERRUPT_REPAIRS = frozenset({
-    (("don", "t", "play", "speak"), ("stop", "speaking")),
-})
+_ATTESTED_LONG_INTERRUPT_REPAIRS = frozenset(
+    {
+        (("don", "t", "play", "speak"), ("stop", "speaking")),
+    }
+)
 
 # The owner corpus labels 1.9 s of command speech; live VAD measured 1.5 s.
 # Admit one capture block (0.1 s) of timing tolerance around those observations,
@@ -345,15 +362,12 @@ def _attested_interrupt_pair_allowed(
     # cannot disappear into an otherwise allowlisted pair; only casing and
     # punctuation are ignored.
     pair = tuple(
-        _attested_repair_words(text)
-        for text in (streaming_final, second_pass)
+        _attested_repair_words(text) for text in (streaming_final, second_pass)
     )
     if duration < short_sec:
         return pair in _ATTESTED_SHORT_INTERRUPT_REPAIRS
     if not (
-        _ATTESTED_LONG_INTERRUPT_MIN_SEC
-        <= duration
-        <= _ATTESTED_LONG_INTERRUPT_MAX_SEC
+        _ATTESTED_LONG_INTERRUPT_MIN_SEC <= duration <= _ATTESTED_LONG_INTERRUPT_MAX_SEC
     ):
         return False
     return pair in _ATTESTED_LONG_INTERRUPT_REPAIRS
@@ -481,9 +495,7 @@ def _resolve_final_transcript(
                         # never manufacture a turn (especially a STOP) from an
                         # empty streaming result.
                         baseline_selected = (
-                            offline_text
-                            if allow_empty_streaming
-                            else streaming_final
+                            offline_text if allow_empty_streaming else streaming_final
                         )
                     else:
                         guarded_final = agreement_guard(
@@ -620,6 +632,7 @@ def _transcribe_final_text(
         attested_repair=attested_repair,
     ).selected
 
+
 # Production audio engine built on sherpa-onnx (k2-fsa) + sounddevice.
 #
 # sherpa-onnx is the cross-platform, on-device replacement for the hand-rolled
@@ -700,6 +713,13 @@ class SherpaConfig:
     # weak phone tier can shrink per-block work inside this budget; the 0.1s
     # default keeps current behaviour byte-identical until a profile overrides it.
     block_sec: float = 0.1
+    # Bound native capture independently from VAD/ASR/callback work. The reader
+    # never waits for the processor; on saturation it keeps the newest block and
+    # publishes an explicit discontinuity before that PCM. Set queue_ms to 0 for
+    # inline scheduling compatibility (native overflow is still a discontinuity,
+    # because silently splicing missing PCM would corrupt a recognizer turn).
+    media_pcm_queue_ms: float = 300.0
+    media_pcm_queue_max_frames: int = 8
     # Streaming transducer model dir (zipformer). Required for ASR.
     asr_tokens: str = ""
     asr_encoder: str = ""
@@ -711,13 +731,13 @@ class SherpaConfig:
     # is RE-transcribed by a stronger offline model (sees the whole utterance ->
     # robust on run-on/casual speech; punctuation+casing+ITN built in). Empty
     # backend (default) = streaming final only (byte-identical). ~150ms/utterance.
-    asr_final_backend: str = ""          # "" | "sense_voice" | "whisper" | "nemo_transducer"
-    asr_final_model: str = ""            # SenseVoice model, or Whisper/NeMo encoder
+    asr_final_backend: str = ""  # "" | "sense_voice" | "whisper" | "nemo_transducer"
+    asr_final_model: str = ""  # SenseVoice model, or Whisper/NeMo encoder
     asr_final_tokens: str = ""
-    asr_final_decoder: str = ""          # Whisper/NeMo decoder
-    asr_final_joiner: str = ""           # NeMo transducer only
-    asr_final_use_itn: bool = True       # SenseVoice inverse-text-normalization
-    asr_final_language: str = ""         # SenseVoice language hint ("en", "" = auto)
+    asr_final_decoder: str = ""  # Whisper/NeMo decoder
+    asr_final_joiner: str = ""  # NeMo transducer only
+    asr_final_use_itn: bool = True  # SenseVoice inverse-text-normalization
+    asr_final_language: str = ""  # SenseVoice language hint ("en", "" = auto)
     # Optional independent endpoint verifier. Empty backend (default) preserves
     # the established streaming + SenseVoice final byte-for-byte. The model must
     # be an existing local Faster-Whisper directory; remote model IDs and
@@ -810,12 +830,12 @@ class SherpaConfig:
     # rising/sustained intonation of a mid-thought trailing-off that lexical can't,
     # so the floor can drop further). Prosody needs endpoint_prosody_model set.
     endpoint_detector: str = "lexical"
-    endpoint_prosody_model: str = ""        # path to the Smart Turn ONNX
+    endpoint_prosody_model: str = ""  # path to the Smart Turn ONNX
     # The prosody model (~10-25ms/call) is consulted ONLY once trailing silence has
     # reached this floor (the decision window) -- during active speech the acoustic
     # endpoint is False anyway, so this bounds the cost to a few calls per turn.
     endpoint_prosody_min_silence: float = 0.15
-    endpoint_prosody_threads: int = 1       # onnxruntime intra-op threads (capture thread)
+    endpoint_prosody_threads: int = 1  # onnxruntime intra-op threads (capture thread)
     # Adaptive endpoint floor (SessionPauseModel, core/endpointing.py). When on,
     # the trailing-silence COMMIT floor is LEARNED per session from this speaker's
     # own mid-utterance pause distribution (kills mid-sentence over-fragmentation
@@ -1568,6 +1588,81 @@ def _resample_linear(samples, src_sr: int, dst_sr: int):
     return np.interp(idx, np.arange(x.shape[0]), x).astype("float32")
 
 
+class _PlaybackReferenceResampler:
+    """Cumulative-phase linear resampler for the played-reference timeline.
+
+    PortAudio callback sizes generally do not divide the playback/model rate
+    ratio. Rounding each callback independently drops or invents timeline
+    samples (for example, three 256-frame callbacks at 48 kHz produced
+    ``3 * round(256 / 3) == 255`` samples instead of 256 at 16 kHz). This tiny
+    callback-owned resampler derives each output count from cumulative rational
+    sample time and retains the few source samples needed to interpolate across
+    callback boundaries.
+    """
+
+    def __init__(self, src_sr: int, dst_sr: int) -> None:
+        self.src_sr = int(src_sr)
+        self.dst_sr = int(dst_sr)
+        if self.src_sr <= 0 or self.dst_sr <= 0:
+            raise ValueError("reference sample rates must be positive")
+        self._total_input = 0
+        self._total_output = 0
+        self._tail = np.zeros(0, dtype="float32")
+        self._tail_limit = max(
+            2,
+            int(math.ceil(float(self.src_sr) / float(self.dst_sr))) + 1,
+        )
+
+    def process(self, samples) -> np.ndarray:
+        x = np.asarray(samples, dtype="float32").reshape(-1)
+        if not x.size:
+            return np.zeros(0, dtype="float32")
+        if self.src_sr == self.dst_sr:
+            self._total_input += int(x.size)
+            self._total_output += int(x.size)
+            return x
+
+        start = self._total_input
+        end = start + int(x.size)
+        target_output = (end * self.dst_sr) // self.src_sr
+        count = max(0, target_output - self._total_output)
+        history = np.concatenate((self._tail, x)) if self._tail.size else x
+        history_start = start - int(self._tail.size)
+        if count:
+            output_indexes = np.arange(
+                self._total_output,
+                target_output,
+                dtype="float64",
+            )
+            source_positions = output_indexes * float(self.src_sr) / float(self.dst_sr)
+            source_indexes = np.arange(
+                history_start,
+                end,
+                dtype="float64",
+            )
+            output = np.interp(
+                source_positions,
+                source_indexes,
+                history,
+            ).astype("float32")
+        else:
+            output = np.zeros(0, dtype="float32")
+
+        self._total_input = end
+        self._total_output = target_output
+        self._tail = np.array(
+            history[-self._tail_limit :],
+            dtype="float32",
+            copy=True,
+        )
+        return output
+
+    def reset(self) -> None:
+        self._total_input = 0
+        self._total_output = 0
+        self._tail = np.zeros(0, dtype="float32")
+
+
 def _resample_playback(samples, src_sr: int, dst_sr: int, resampler) -> "np.ndarray":
     """Producer-side (worker thread) playback resample: prefer the stateful
     anti-imaging ``AudioResampler`` built at stream open; fall back to the naive
@@ -1575,8 +1670,9 @@ def _resample_playback(samples, src_sr: int, dst_sr: int, resampler) -> "np.ndar
     reopened at a new rate mid-item). The naive ``np.interp`` upsample has no
     anti-imaging filter -- audibly harsh on 24 kHz Kokoro -> 44.1/48 kHz devices
     (the capture direction already learned this; see AudioResampler). The AEC
-    far-ref tee inside ``_audio_cb`` deliberately stays ``_resample_linear``:
-    that path is hard real-time and its output is only an echo reference."""
+    far-ref tee inside ``_audio_cb`` uses a separate cumulative-phase linear
+    resampler: that path is hard real-time and its output is only an echo
+    reference."""
     if (
         resampler is not None
         and getattr(resampler, "src_sr", None) == src_sr
@@ -1657,7 +1753,9 @@ class SherpaOnnxEngine(AudioEngine):
                 LexicalTurnCompletionDetector,
             )
 
-            self._endpoint_policy = AdaptiveEndpointPolicy(EndpointConfig.from_sherpa(config))
+            self._endpoint_policy = AdaptiveEndpointPolicy(
+                EndpointConfig.from_sherpa(config)
+            )
             if self._turn_detector is None:
                 self._turn_detector = self._build_turn_detector(config)
         # Only consult an audio (prosody) detector once trailing silence reaches
@@ -1677,7 +1775,8 @@ class SherpaOnnxEngine(AudioEngine):
         # detector actually consumes it (a prosodic model); the lexical default
         # is text-only, so the capture loop pays nothing.
         self._endpoint_wants_audio = bool(
-            self._turn_detector is not None and getattr(self._turn_detector, "needs_audio", False)
+            self._turn_detector is not None
+            and getattr(self._turn_detector, "needs_audio", False)
         )
         self._recognizer = None
         self._final_recognizer = None
@@ -1721,6 +1820,11 @@ class SherpaOnnxEngine(AudioEngine):
         # is set only after the mic opens and optional AGC calibration completes;
         # speaker enrollment compatibility must never run before this exists.
         self._capture_resolution = None
+        # Reader-time capture authority is bound to the exact successful native
+        # source generation/device.  A reopened source starts fail-closed until
+        # _resolve_capture_domain re-attests that generation.
+        self._capture_authority_source_generation: int = -1
+        self._capture_authority_source_device = None
         self._capture_voice_comm_applied = False
         # ADR-0082: the last communications-route probe verdict (effects list,
         # aec_active, build) -- surfaced into logs/bundles for route evidence.
@@ -1731,11 +1835,10 @@ class SherpaOnnxEngine(AudioEngine):
         self._denoiser = None
         self._aec = None
         self._far_ref = None
-        # audio-bargein-8: lock-free SPSC hand-off of played reference blocks from
-        # the real-time audio callback to the capture thread, which feeds them to
-        # the coherence detector's note_playback (keeping that lock off the audio
-        # thread). None until the coherence detector is built.
-        self._coh_ref_q: "Optional[deque]" = None
+        # Always-present-at-runtime playback timeline.  Unlike _far_ref, this
+        # exists even when in-app AEC is disabled so reader-time coherence and
+        # recording context can be captured without consulting processing time.
+        self._playback_ref = None
         self._aec_ref_delay = 0
         # WebRTC-APM flags (set in _build from the canceller the backend returns):
         # always_on => run the APM on every capture block (idle path too) for its
@@ -1761,6 +1864,10 @@ class SherpaOnnxEngine(AudioEngine):
         # TTS native rate vs. the rate the speaker actually opened at.
         self._tts_sr = 0
         self._play_sr = 0
+        # Callback-owned cumulative sample clock for play_sr -> model-rate
+        # reference audio. Replaced only when the native playback domain opens
+        # or changes; never recreated per callback/reply.
+        self._playback_reference_resampler: Optional[_PlaybackReferenceResampler] = None
         # A SINGLE long-lived DC blocker for the TTS output: its one-pole state
         # carries across chunks AND sentences (a per-sentence reset would re-settle
         # the pole from zero -> an audible low-frequency thump). Lazily built at the
@@ -1769,6 +1876,11 @@ class SherpaOnnxEngine(AudioEngine):
         self._tts_dc_blocker: "Optional[DCBlocker]" = None
         self._tts_dc_sr = 0
         self._capture_thread: Optional[threading.Thread] = None
+        # Capture-only MediaSession. When enabled, its reader owns the blocking
+        # native read and the established capture thread consumes a bounded PCM
+        # mailbox. It has no speech/enrollment/barge policy.
+        self._capture_media_session: Optional[CaptureMediaSession] = None
+        self._capture_control_lane: Optional[CaptureControlLane] = None
         # Metadata-only acoustic turn identity. Recreated on every engine start
         # so route/session-local monotonic clocks are never compared across runs.
         self._acoustic_turn_tracker: Optional[AcousticTurnTracker] = None
@@ -1805,6 +1917,10 @@ class SherpaOnnxEngine(AudioEngine):
         # lands while a current sentence is mid-flight aborts it even if the
         # clear-vs-set ordering momentarily wiped _stop_speaking.
         self._speak_gen = 0
+        # Silent->speaking run identity. _speak_gen is a cancellation generation
+        # and can remain unchanged across naturally separated replies, so both
+        # are captured to fence queued PCM from a later playback run.
+        self._playback_generation = 0
         self._gen_lock = threading.Lock()
         self._speaker_gate: Optional[SpeakerGate] = None
         # Set only after the background engine warm pass completes a real
@@ -1914,7 +2030,8 @@ class SherpaOnnxEngine(AudioEngine):
                 rise=c.input_agc_rise,
                 fall=c.input_agc_fall,
             )
-            if c.input_agc else None
+            if c.input_agc
+            else None
         )
         # Serializes access to the single TTS model so the startup warm pass and a
         # live synthesis can never call ``tts.generate`` concurrently (sherpa's
@@ -1963,6 +2080,13 @@ class SherpaOnnxEngine(AudioEngine):
         self._duck_gain: float = 1.0
         self._confirm_until: float = 0.0
         self._confirm_base_text: str = ""
+        self._confirm_speak_generation: Optional[int] = None
+        self._confirm_playback_generation: Optional[int] = None
+        # Set under _gen_lock by the exact compare-and-claim linearization.
+        # While present, no silent->speaking playback run may be admitted. This
+        # lets callbacks (including a reentrant stop_speaking()) run without
+        # holding _gen_lock while still preventing them from cutting a later run.
+        self._confirmed_barge_claim: Optional[_ConfirmedBargeClaim] = None
         # A confirmed duck-window command is deliberately left in the normal
         # recognizer stream as its next-final head. The first post-playback VAD
         # block adopts its exact bounded PCM into the ASR segment instead of
@@ -2115,9 +2239,7 @@ class SherpaOnnxEngine(AudioEngine):
         from ..recorder import WavRecorder, sidecar_wav_path
 
         try:
-            self._recorder = WavRecorder(
-                self._record_path, self.config.sample_rate
-            )
+            self._recorder = WavRecorder(self._record_path, self.config.sample_rate)
             log.info("recording session audio -> %s", self._record_path)
             if self.config.record_pre_dsp_reference:
                 pre_dsp_path = sidecar_wav_path(self._record_path, "pre-dsp")
@@ -2127,9 +2249,7 @@ class SherpaOnnxEngine(AudioEngine):
                 log.info("recording pre-DSP input reference -> %s", pre_dsp_path)
             if self.config.record_playback_reference:
                 ref_path = sidecar_wav_path(self._record_path, "ref")
-                self._ref_recorder = WavRecorder(
-                    ref_path, self.config.sample_rate
-                )
+                self._ref_recorder = WavRecorder(ref_path, self.config.sample_rate)
                 self._ref_accum = np.zeros(0, dtype="float32")
                 log.info("recording playback reference (replay) -> %s", ref_path)
         except BaseException:
@@ -2154,7 +2274,13 @@ class SherpaOnnxEngine(AudioEngine):
             return frame[:length]
         return np.pad(frame, (0, length - frame.shape[0]))
 
-    def _write_recording_frame(self, pre_dsp_samples, processed_samples) -> None:
+    def _write_recording_frame(
+        self,
+        pre_dsp_samples,
+        processed_samples,
+        *,
+        captured_reference=None,
+    ) -> None:
         """Write one aligned post/pre-DSP/reference recording coordinate."""
         if self._recorder is None:
             return
@@ -2167,7 +2293,10 @@ class SherpaOnnxEngine(AudioEngine):
             )
         self._recorder.write(processed)
         if self._ref_recorder is not None:
-            self._write_reference_frame(processed.shape[0])
+            self._write_reference_frame(
+                processed.shape[0],
+                captured_reference=captured_reference,
+            )
 
     def _close_recorders(self, *, log_completed: bool) -> None:
         """Close every recording owned by this engine exactly once."""
@@ -2223,7 +2352,7 @@ class SherpaOnnxEngine(AudioEngine):
         if self._ref_accum.shape[0] > cap:
             self._ref_accum = self._ref_accum[-cap:]
 
-    def _write_reference_frame(self, n: int) -> None:
+    def _write_reference_frame(self, n: int, *, captured_reference=None) -> None:
         """Write exactly ``n`` reference samples (silence when the assistant isn't
         playing) to the reference recorder, FRAME-ALIGNED with the mic recording.
 
@@ -2235,6 +2364,9 @@ class SherpaOnnxEngine(AudioEngine):
         import numpy as np
 
         if self._ref_recorder is None:
+            return
+        if captured_reference is not None:
+            self._ref_recorder.write(self._align_recording_frame(captured_reference, n))
             return
         if self._far_ref is not None:
             out = np.asarray(self._far_ref.read(n, 0), dtype="float32").reshape(-1)
@@ -2248,8 +2380,21 @@ class SherpaOnnxEngine(AudioEngine):
             out, self._ref_accum = self._ref_accum[:n], self._ref_accum[n:]
         else:
             pad = np.zeros(n - self._ref_accum.shape[0], dtype="float32")
-            out, self._ref_accum = np.concatenate([self._ref_accum, pad]), np.zeros(0, dtype="float32")
+            out, self._ref_accum = (
+                np.concatenate([self._ref_accum, pad]),
+                np.zeros(0, dtype="float32"),
+            )
         self._ref_recorder.write(out)
+
+    def _clear_playback_reference(self) -> None:
+        """Clear each live timeline ring once (AEC may alias the generic ring)."""
+
+        seen: set[int] = set()
+        for reference in (self._far_ref, self._playback_ref):
+            if reference is None or id(reference) in seen:
+                continue
+            seen.add(id(reference))
+            reference.clear()
 
     # --- lazy model construction ---
     def _build(self) -> None:
@@ -2258,7 +2403,9 @@ class SherpaOnnxEngine(AudioEngine):
         # Optional offline second-pass recognizer for the final transcript.
         self._final_recognizer = build_final_recognizer(c)
         if self._final_recognizer is not None:
-            log.info("second-pass final ASR: %s (%s)", c.asr_final_backend, c.asr_final_model)
+            log.info(
+                "second-pass final ASR: %s (%s)", c.asr_final_backend, c.asr_final_model
+            )
         self._final_verifier = build_final_verifier(c)
         if self._final_verifier is not None:
             log.info(
@@ -2287,13 +2434,11 @@ class SherpaOnnxEngine(AudioEngine):
             )
             if det.available:
                 self._echo_coherence = det
-                # audio-bargein-8: the played-reference hand-off queue lives as
-                # long as the detector.
-                self._coh_ref_q = deque(maxlen=_COH_REF_Q_MAX)
                 log.info(
                     "coherence barge-in ACTIVE (scale-invariant, no enrollment; "
                     "band %s Hz, margin delta %.2f, confirm %d frames)",
-                    c.coherence_voiced_band_hz, c.coherence_margin_delta,
+                    c.coherence_voiced_band_hz,
+                    c.coherence_margin_delta,
                     c.coherence_confirm_frames,
                 )
             else:
@@ -2312,7 +2457,9 @@ class SherpaOnnxEngine(AudioEngine):
         # far-end ring is fed by the playback thread and read at the configured
         # speaker->mic delay; only allocated when AEC is on.
         self._aec = build_aec(c)
-        self._far_ref = FarEndRing() if self._aec is not None else None
+        self._playback_ref = FarEndRing()
+        self._far_ref = self._playback_ref if self._aec is not None else None
+        self._playback_reference_resampler = None
         if self._aec is not None:
             self._aec_ref_delay = int(c.sample_rate * c.aec_ref_delay_ms / 1000)
             # Runtime delay auto-calibration: measure the true speaker->mic delay
@@ -2351,7 +2498,8 @@ class SherpaOnnxEngine(AudioEngine):
             log.info(
                 "AEC ACTIVE on the capture path (16 kHz, backend=%s, ref_delay=%dms"
                 "%s, apm_always_on=%s)",
-                c.aec_backend, c.aec_ref_delay_ms,
+                c.aec_backend,
+                c.aec_ref_delay_ms,
                 " [seed; auto-calibrated at runtime]" if c.aec_auto_delay else "",
                 self._apm_always_on,
             )
@@ -2374,7 +2522,10 @@ class SherpaOnnxEngine(AudioEngine):
             log.info(
                 "adaptive barge-in (fused z-score DTD) ACTIVE: K=%.1f weights=(%.1f,%.1f,%.1f) "
                 "confirm=%d -- no fixed margin, self-calibrating per device",
-                c.dtd_k, c.dtd_weight_raw, c.dtd_weight_resid, c.dtd_weight_coh,
+                c.dtd_k,
+                c.dtd_weight_raw,
+                c.dtd_weight_resid,
+                c.dtd_weight_coh,
                 c.dtd_confirm_frames,
             )
         # L1 echo-floor gate needs a LEARNED floor to compare against, and the only
@@ -2410,14 +2561,8 @@ class SherpaOnnxEngine(AudioEngine):
                     round(1000 * c.final_speech_evidence_min_contiguous_sec),
                     max(
                         120,
-                        round(
-                            1000
-                            * c.final_speech_evidence_min_qualified_sec
-                        ),
-                        round(
-                            1000
-                            * c.final_speech_evidence_min_contiguous_sec
-                        ),
+                        round(1000 * c.final_speech_evidence_min_qualified_sec),
+                        round(1000 * c.final_speech_evidence_min_contiguous_sec),
                     ),
                 )
         self._kws = build_keyword_spotter(c)
@@ -2432,7 +2577,9 @@ class SherpaOnnxEngine(AudioEngine):
         if self._punct is not None:
             log.info("punctuation model loaded for ASR finals")
         if self._hotwords:
-            log.info("ASR contextual biasing: %d hotword phrase(s)", len(self._hotwords))
+            log.info(
+                "ASR contextual biasing: %d hotword phrase(s)", len(self._hotwords)
+            )
         if c.speaker_embedding_model:
             self._speaker_gate_warmed = False
             self._speaker_gate = sherpa_speaker_gate(
@@ -2484,7 +2631,9 @@ class SherpaOnnxEngine(AudioEngine):
             try:
                 enrollment = load_enrollment(c.speaker_enroll_embedding)
             except Exception as exc:  # noqa: BLE001 - corrupt/old file shouldn't crash boot
-                log.warning("could not load enrollment %s: %s", c.speaker_enroll_embedding, exc)
+                log.warning(
+                    "could not load enrollment %s: %s", c.speaker_enroll_embedding, exc
+                )
             else:
                 model_matches = enrollment_matches_model(
                     enrollment, c.speaker_embedding_model
@@ -2499,7 +2648,8 @@ class SherpaOnnxEngine(AudioEngine):
                     log.warning(
                         "enrollment %s was made with a different model (%s); ignoring it -- "
                         "re-run `python -m core --enroll`.",
-                        c.speaker_enroll_embedding, enrollment.model or "?",
+                        c.speaker_enroll_embedding,
+                        enrollment.model or "?",
                     )
                 else:
                     saved = enrollment.frontend
@@ -2568,8 +2718,7 @@ class SherpaOnnxEngine(AudioEngine):
         ok, detail = binder.verify(require_playback=True)
         with self._virtual_route_failure_lock:
             revoked = bool(
-                self._virtual_route_failure
-                or self._virtual_route_failure_in_progress
+                self._virtual_route_failure or self._virtual_route_failure_in_progress
             )
             if not ok or revoked:
                 self._word_cut_route_verified = False
@@ -2639,9 +2788,7 @@ class SherpaOnnxEngine(AudioEngine):
                     fifo.flush(0)
                 self._fifo = None
                 self._out_stream = None
-            self._terminalize_unbound_receipts(
-                claimed_outcome=PlaybackOutcome.FAILED
-            )
+            self._terminalize_unbound_receipts(claimed_outcome=PlaybackOutcome.FAILED)
         try:
             if out is not None:
                 abort = getattr(out, "abort", None)
@@ -2769,6 +2916,49 @@ class SherpaOnnxEngine(AudioEngine):
             and self.config.barge_word_cut_enabled
             and not self.config.aec_enabled
         )
+        startup_route_ok = capture_verified if binder is not None else route_verified
+        if wants_word_cut and not startup_route_ok and startup:
+            raise RuntimeError(
+                "word-cut barge-in requires the actually opened input to be a "
+                "verified OS echo-cancel route; no safe fallback was opened"
+            )
+        self._apply_capture_domain_authority(
+            route_verified=route_verified,
+            restore_authority=restore_authority,
+        )
+        return route_verified
+
+    def _apply_capture_domain_authority(
+        self,
+        *,
+        route_verified: bool,
+        restore_authority: bool,
+    ) -> None:
+        """Apply authority for an already resolved capture domain.
+
+        Reopen recovery must compare the old and new physical domains while
+        authority remains fail-closed. A same-domain reopen can then restore
+        authority from that exact resolution instead of probing the route a
+        second time.
+        """
+
+        try:
+            authority_generation = int(getattr(self._stream_in, "generation", -1))
+            authority_device = self._stream_in.actual_device
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            authority_generation = -1
+            authority_device = None
+        self._capture_authority_source_generation = (
+            authority_generation if restore_authority else -1
+        )
+        self._capture_authority_source_device = (
+            authority_device if restore_authority else None
+        )
+        wants_word_cut = (
+            self.config.barge_in_enabled
+            and self.config.barge_word_cut_enabled
+            and not self.config.aec_enabled
+        )
         wants_os_echo = wants_word_cut or self.config.capture_voice_comm
         self._os_echo_route_verified = bool(
             restore_authority and route_verified and wants_os_echo
@@ -2779,12 +2969,6 @@ class SherpaOnnxEngine(AudioEngine):
         if not self._word_cut_route_verified:
             self._word_cut_energy_run = 0
             self._virtual_near_end_above = False
-        startup_route_ok = capture_verified if binder is not None else route_verified
-        if wants_word_cut and not startup_route_ok and startup:
-            raise RuntimeError(
-                "word-cut barge-in requires the actually opened input to be a "
-                "verified OS echo-cancel route; no safe fallback was opened"
-            )
 
         gate = self._speaker_gate
         if gate is not None:
@@ -2793,9 +2977,7 @@ class SherpaOnnxEngine(AudioEngine):
             else:
                 gate.clear_enrollment()
             if not restore_authority:
-                log.info(
-                    "speaker-ID authority deferred pending capture recalibration"
-                )
+                log.info("speaker-ID authority deferred pending capture recalibration")
             elif gate.is_enrolled:
                 log.info(
                     "speaker-ID gate enrolled (threshold=%.2f, input gating=%s)",
@@ -2808,7 +2990,6 @@ class SherpaOnnxEngine(AudioEngine):
                     "gate is fail-open (everything passes). Run `python -m core "
                     "--enroll` to enroll your voice."
                 )
-        return route_verified
 
     # --- sink-attested playback receipts ---
     @property
@@ -2880,13 +3061,12 @@ class SherpaOnnxEngine(AudioEngine):
         # A normal seal is completion only when at least one output-domain
         # sample was admitted and every admitted sample reached the sink.
         if outcome is PlaybackOutcome.COMPLETED and (
-            played is None
-            or total is None
-            or total <= 0
-            or played != total
+            played is None or total is None or total <= 0 or played != total
         ):
             outcome = PlaybackOutcome.FAILED
-        safe_text = ticket.sink_text.strip() if outcome is PlaybackOutcome.COMPLETED else ""
+        safe_text = (
+            ticket.sink_text.strip() if outcome is PlaybackOutcome.COMPLETED else ""
+        )
         sample_rate = (
             ticket.output_sample_rate
             if played is not None and total is not None
@@ -3016,8 +3196,7 @@ class SherpaOnnxEngine(AudioEngine):
     def _capture_epoch_is_current(self, epoch: int) -> bool:
         with self._capture_effect_condition:
             return bool(
-                epoch == self._capture_epoch
-                and not self._capture_stopping.is_set()
+                epoch == self._capture_epoch and not self._capture_stopping.is_set()
             )
 
     def _capture_callback_is_current(self, epoch: Optional[int] = None) -> bool:
@@ -3067,7 +3246,12 @@ class SherpaOnnxEngine(AudioEngine):
             expires_at=time.perf_counter()
             + max(1.0, 2.0 * float(self.config.block_sec)),
             capture_generation=int(
-                getattr(self._stream_in, "generation", 0) or 0
+                getattr(
+                    self._capture_callback_context,
+                    "capture_generation",
+                    getattr(self._stream_in, "generation", 0),
+                )
+                or 0
             ),
         )
         epoch = getattr(self._capture_callback_context, "epoch", None)
@@ -3076,10 +3260,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._confirm_handoff_stream_live = True
             return True
         with self._capture_effect_condition:
-            if (
-                epoch != self._capture_epoch
-                or self._capture_stopping.is_set()
-            ):
+            if epoch != self._capture_epoch or self._capture_stopping.is_set():
                 return False
             self._confirm_handoff_pending = handoff
             self._confirm_handoff_stream_live = True
@@ -3120,9 +3301,7 @@ class SherpaOnnxEngine(AudioEngine):
             acoustic, revision = tracker.advance(
                 emitted_at=detected_at,
                 speech_start_at=(
-                    speech_start_at
-                    if speech_start_at is not None
-                    else detected_at
+                    speech_start_at if speech_start_at is not None else detected_at
                 ),
             )
         if self._cb.on_barge_in_result is not None:
@@ -3147,9 +3326,7 @@ class SherpaOnnxEngine(AudioEngine):
         detected_at: Optional[float] = None,
         capture_epoch: Optional[int] = None,
     ) -> bool:
-        detected_at = (
-            time.perf_counter() if detected_at is None else float(detected_at)
-        )
+        detected_at = time.perf_counter() if detected_at is None else float(detected_at)
         tracker = self._acoustic_turn_tracker
         acoustic = None
         revision = 0
@@ -3182,9 +3359,7 @@ class SherpaOnnxEngine(AudioEngine):
         callback = self._cb.on_transcript_abort
         if acoustic is None or callback is None:
             return True
-        emitted = AcousticTurnTracker.with_emitted_at(
-            acoustic, time.perf_counter()
-        )
+        emitted = AcousticTurnTracker.with_emitted_at(acoustic, time.perf_counter())
         try:
             return self._emit_capture_callback(
                 callback,
@@ -3196,9 +3371,7 @@ class SherpaOnnxEngine(AudioEngine):
                 capture_epoch=capture_epoch,
             )
         except Exception:  # noqa: BLE001 - terminal callback was already attempted
-            log.exception(
-                "transcript-abort callback failed after terminal handoff"
-            )
+            log.exception("transcript-abort callback failed after terminal handoff")
             return False
 
     def _abort_active_acoustic_turn(
@@ -3210,9 +3383,7 @@ class SherpaOnnxEngine(AudioEngine):
         emitted_at: Optional[float] = None,
     ) -> bool:
         aborted = tracker.abort(
-            emitted_at=(
-                time.perf_counter() if emitted_at is None else emitted_at
-            )
+            emitted_at=(time.perf_counter() if emitted_at is None else emitted_at)
         )
         if aborted is None:
             return True
@@ -3232,10 +3403,7 @@ class SherpaOnnxEngine(AudioEngine):
         or the block is fenced before recorder/KWS/barge/ASR callbacks.
         """
         with self._capture_effect_condition:
-            if (
-                epoch != self._capture_epoch
-                or self._capture_stopping.is_set()
-            ):
+            if epoch != self._capture_epoch or self._capture_stopping.is_set():
                 return False
             self._capture_effects += 1
             return True
@@ -3252,8 +3420,10 @@ class SherpaOnnxEngine(AudioEngine):
 
     def _capture_owner_and_effects_are_idle(self) -> bool:
         capture_thread = self._capture_thread
+        media_session = self._capture_media_session
         return bool(
             (capture_thread is None or not capture_thread.is_alive())
+            and (media_session is None or not media_session.is_alive)
             and self._capture_effects_are_idle()
         )
 
@@ -3277,12 +3447,24 @@ class SherpaOnnxEngine(AudioEngine):
             return False
         if self._stream_in is capture_stream:
             self._stream_in = None
+        media_session = self._capture_media_session
+        if media_session is not None and not media_session.is_alive:
+            self._capture_media_session = None
         return True
 
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
+        prior_media_session = self._capture_media_session
         prior_workers = (
             ("capture thread", self._capture_thread),
+            (
+                "capture reader",
+                (
+                    prior_media_session.reader_thread
+                    if prior_media_session is not None
+                    else None
+                ),
+            ),
             ("playback worker", self._play_thread),
             ("final worker", self._final_thread),
             ("receipt worker", self._receipt_thread),
@@ -3303,12 +3485,28 @@ class SherpaOnnxEngine(AudioEngine):
                 "cannot start audio: previous capture resources remain retained; "
                 "run bounded cleanup again or restart the process"
             )
+        try:
+            media_queue_ms = float(self.config.media_pcm_queue_ms)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "media_pcm_queue_ms must be finite and non-negative"
+            ) from exc
+        if not math.isfinite(media_queue_ms) or media_queue_ms < 0.0:
+            raise ValueError("media_pcm_queue_ms must be finite and non-negative")
+        media_max_frames = self.config.media_pcm_queue_max_frames
+        if media_queue_ms > 0.0 and (
+            isinstance(media_max_frames, bool)
+            or not isinstance(media_max_frames, int)
+            or media_max_frames <= 0
+        ):
+            raise ValueError("media_pcm_queue_max_frames must be a positive integer")
         with self._capture_effect_condition:
             if self._capture_effects:
                 raise RuntimeError(
                     "cannot start audio: previous capture side effect is still active"
                 )
             self._capture_epoch += 1
+            capture_epoch = self._capture_epoch
             self._capture_stopping.clear()
             self._capture_resource_hold.clear()
             self._confirm_handoff_stream_live = False
@@ -3317,6 +3515,9 @@ class SherpaOnnxEngine(AudioEngine):
                 f"sherpa-{uuid.uuid4().hex}",
                 source=AcousticSource.LIVE_CAPTURE,
             )
+        self._capture_control_lane = CaptureControlLane()
+        self._capture_authority_source_generation = -1
+        self._capture_authority_source_device = None
         if self._input_agc is not None:
             # Adaptation belongs to one capture epoch. The ownership guards
             # above prove the previous reader is gone before this shared state
@@ -3341,8 +3542,14 @@ class SherpaOnnxEngine(AudioEngine):
         in_dev = _norm_device(self.config.input_device)
         out_dev = _norm_device(self.config.output_device)
         try:
-            log.info("input device: %s", sd.query_devices(in_dev, kind="input").get("name", "?"))
-            log.info("output device: %s", sd.query_devices(out_dev, kind="output").get("name", "?"))
+            log.info(
+                "input device: %s",
+                sd.query_devices(in_dev, kind="input").get("name", "?"),
+            )
+            log.info(
+                "output device: %s",
+                sd.query_devices(out_dev, kind="output").get("name", "?"),
+            )
         except Exception as exc:  # noqa: BLE001 - diagnostics only
             log.warning("could not query audio devices: %s", exc)
         log.info(
@@ -3388,7 +3595,9 @@ class SherpaOnnxEngine(AudioEngine):
             # The delay contract selects a private ALSA PCM whose capture_node
             # is the run-owned EC source. Never fall back to the system default:
             # even a brief fallback open would violate the silent/no-mic gate.
-            attempts = tuple(attempt for attempt in attempts if attempt.device == in_dev)
+            attempts = tuple(
+                attempt for attempt in attempts if attempt.device == in_dev
+            )
             if not attempts:
                 raise RuntimeError(
                     "virtual delay capture PCM has no supported exact-rate attempt"
@@ -3499,9 +3708,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._stream_in.open()
         except Exception:
             self._running.clear()
-            if self._stream_in.close(
-                teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
-            ):
+            if self._stream_in.close(teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC):
                 self._stream_in = None
             else:
                 log.error("startup input cleanup retained a native stream")
@@ -3512,9 +3719,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self._bind_virtual_capture_route()
             except Exception:
                 self._running.clear()
-                if self._stream_in.close(
-                    teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
-                ):
+                if self._stream_in.close(teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC):
                     self._stream_in = None
                 else:
                     log.error("virtual-route input cleanup retained a native stream")
@@ -3523,7 +3728,9 @@ class SherpaOnnxEngine(AudioEngine):
         # scipy polyphase -> linear). Replaces the old per-block np.interp, which
         # aliased content >8 kHz into the speech band and corrupted ASR features.
         self._resampler = (
-            AudioResampler(self._capture_sr, preferred_sr, quality=self.config.resampler_quality)
+            AudioResampler(
+                self._capture_sr, preferred_sr, quality=self.config.resampler_quality
+            )
             if self._capture_sr != preferred_sr
             else None
         )
@@ -3549,9 +3756,7 @@ class SherpaOnnxEngine(AudioEngine):
                 # A sidecar open failure must not strand the primary recorder or
                 # the already-open microphone before runtime ownership begins.
                 self._running.clear()
-                if self._stream_in.close(
-                    teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
-                ):
+                if self._stream_in.close(teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC):
                     self._stream_in = None
                 else:
                     log.error("failed-recorder input cleanup retained a native stream")
@@ -3579,14 +3784,33 @@ class SherpaOnnxEngine(AudioEngine):
                     )
         except Exception:
             self._running.clear()
-            if self._stream_in.close(
-                teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC
-            ):
+            if self._stream_in.close(teardown_timeout=_INPUT_TEARDOWN_TIMEOUT_SEC):
                 self._stream_in = None
             else:
                 log.error("failed-start input cleanup retained a native stream")
             self._close_recorders(log_completed=False)
             raise
+        if media_queue_ms > 0.0:
+            try:
+                self._capture_media_session = CaptureMediaSession(
+                    self._stream_in,
+                    block_seconds=self.config.block_sec,
+                    buffer_ms=media_queue_ms,
+                    max_frames=media_max_frames,
+                    capture_epoch=capture_epoch,
+                    context_provider=self._snapshot_capture_context,
+                )
+                self._capture_media_session.start()
+            except Exception:
+                self._running.clear()
+                if self._capture_media_session is not None:
+                    self._capture_media_session.request_stop()
+                    self._capture_media_session.join(timeout=0.1)
+                self._close_capture_input()
+                self._close_recorders(log_completed=False)
+                raise
+        else:
+            self._capture_media_session = None
         self._start_virtual_route_monitor()
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
@@ -3596,7 +3820,9 @@ class SherpaOnnxEngine(AudioEngine):
         # asr-tts-2: endpoint-final worker (only when async + an endpoint model
         # was wired in _build). Keeps slow decode off the capture loop.
         if self._final_q is not None:
-            self._final_thread = threading.Thread(target=self._final_worker, daemon=True)
+            self._final_thread = threading.Thread(
+                target=self._final_worker, daemon=True
+            )
             self._final_thread.start()
 
     def stop(self) -> None:
@@ -3615,6 +3841,8 @@ class SherpaOnnxEngine(AudioEngine):
             self._confirm_handoff_stream_live = False
             self._confirm_handoff_pending = None
             self._capture_effect_condition.notify_all()
+        if self._capture_control_lane is not None:
+            self._capture_control_lane.close()
         self._running.clear()
         virtual_route_thread = self._virtual_route_thread
         if (
@@ -3636,6 +3864,11 @@ class SherpaOnnxEngine(AudioEngine):
         # genuinely stuck read reaches bounded abort; native close still waits.
         capture_stream = self._stream_in
         capture_thread = self._capture_thread
+        media_session = self._capture_media_session
+        if media_session is not None:
+            # Wake the processor immediately and fence further offers. The
+            # native reader itself is released by request_close()/abort below.
+            media_session.request_stop()
         if capture_stream is not None:
             request_close = getattr(capture_stream, "request_close", None)
             if callable(request_close):
@@ -3643,10 +3876,22 @@ class SherpaOnnxEngine(AudioEngine):
         capture_grace = max(0.01, float(self.config.block_sec) + 0.05)
         if capture_thread is not None:
             capture_thread.join(timeout=capture_grace)
-        capture_alive = bool(capture_thread is not None and capture_thread.is_alive())
-        if capture_alive and capture_stream is not None:
+        if media_session is not None:
+            media_session.join(timeout=capture_grace)
+        capture_processor_alive = bool(
+            capture_thread is not None and capture_thread.is_alive()
+        )
+        capture_reader_alive = bool(
+            media_session is not None and media_session.is_alive
+        )
+        native_reader_alive = (
+            capture_reader_alive
+            if media_session is not None
+            else capture_processor_alive
+        )
+        if native_reader_alive and capture_stream is not None:
             log.warning(
-                "capture thread did not quiesce within %.3fs; requesting "
+                "capture reader did not quiesce within %.3fs; requesting "
                 "bounded input abort",
                 capture_grace,
             )
@@ -3656,8 +3901,20 @@ class SherpaOnnxEngine(AudioEngine):
                     abort_read(timeout=capture_grace)
                 except Exception:  # noqa: BLE001 - device may already be gone
                     pass
+            if media_session is not None:
+                media_session.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
+            elif capture_thread is not None:
+                capture_thread.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
+        if (
+            media_session is not None
+            and capture_thread is not None
+            and capture_thread.is_alive()
+        ):
             capture_thread.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
-            capture_alive = capture_thread.is_alive()
+        capture_alive = bool(
+            (capture_thread is not None and capture_thread.is_alive())
+            or (media_session is not None and media_session.is_alive)
+        )
         capture_effects_idle = self._capture_effects_are_idle()
         capture_quiesced = not capture_alive and capture_effects_idle
         input_close_attempted = False
@@ -3742,15 +3999,10 @@ class SherpaOnnxEngine(AudioEngine):
         # Re-evaluate once after both shared audio workers have had their bounded
         # joins. If ownership really quiesced, collect everything skipped under
         # the capture hold; otherwise retain it for a later bounded stop.
-        if (
-            self._capture_resource_hold.is_set()
-            or retained_capture_resources_on_entry
-        ):
+        if self._capture_resource_hold.is_set() or retained_capture_resources_on_entry:
             capture_now_idle = self._capture_owner_and_effects_are_idle()
             play_thread = self._play_thread
-            playback_now_idle = bool(
-                play_thread is None or not play_thread.is_alive()
-            )
+            playback_now_idle = bool(play_thread is None or not play_thread.is_alive())
             if capture_now_idle and playback_now_idle:
                 if self._stream_in is not None and not input_close_attempted:
                     input_close_attempted = True
@@ -3910,14 +4162,17 @@ class SherpaOnnxEngine(AudioEngine):
     def stop_speaking(self) -> None:
         # Cut the current utterance and discard whatever is queued behind it, so
         # a barge-in flushes pending speech instead of letting it play out.
-        self._stop_speaking.set()
-        # Bump the generation atomically with the stop (rc-3): every sentence
-        # enqueued before now is invalidated, so one that slips past the drain
-        # below (already dequeued at this instant) is skipped by the worker, and
-        # an in-flight current sentence aborts on the generation mismatch even if
-        # the worker's clear momentarily wipes _stop_speaking.
+        # A confirmed barge already set the stop flag and bumped _speak_gen in
+        # its generation compare-and-claim. Do not bump twice when its callback
+        # re-enters here; the outstanding claim also prevents a later playback
+        # run from starting until this cut effect returns.
         with self._gen_lock:
-            self._speak_gen += 1
+            self._stop_speaking.set()
+            if getattr(self, "_confirmed_barge_claim", None) is None:
+                # Bump the generation atomically with every ordinary stop
+                # (rc-3): every sentence enqueued before now is invalidated, so
+                # one that slipped past the queue drain is skipped by the worker.
+                self._speak_gen += 1
         # Cut the live audio by FLUSHING the playback FIFO rather than aborting
         # the stream. flush() drops every queued sample in one short lock, so the
         # very next PortAudio callback emits a silent zero-fill -- equivalent to
@@ -3942,7 +4197,8 @@ class SherpaOnnxEngine(AudioEngine):
                     # merely because the user cut the prior fragment.
                     fade = (
                         int(self._play_sr * self.config.barge_fade_ms / 1000.0)
-                        if self._play_sr else 0
+                        if self._play_sr
+                        else 0
                     )
                     fade_fifo = self._fifo
                     fade_tags = fade_fifo.interrupt_tags(
@@ -3998,15 +4254,14 @@ class SherpaOnnxEngine(AudioEngine):
         self._barge_in_fired_this_run = False
         self._word_cut_energy_run = 0
         self._virtual_near_end_above = False
-        self._last_speaking_end = time.monotonic()  # arm the L2 post-speaking refractory
+        self._last_speaking_end = (
+            time.monotonic()
+        )  # arm the L2 post-speaking refractory
         if self._echo_coherence is not None:
             self._echo_coherence.reset()
-            if self._coh_ref_q is not None:
-                self._coh_ref_q.clear()  # audio-bargein-8: drop un-ingested played blocks
         if self._dtd is not None:
             self._dtd.new_run()  # charts persist (2026-06-10); only the candidate run clears
-        if self._far_ref is not None:
-            self._far_ref.clear()
+        self._clear_playback_reference()
         if self._aec is not None:
             self._aec.reset()
         if self._aec_asr is not None:
@@ -4044,7 +4299,11 @@ class SherpaOnnxEngine(AudioEngine):
         if tts is not None and not self._speaking.is_set():
             try:
                 with self._tts_lock:
-                    tts.generate("ok", sid=self.config.tts_speaker_id, speed=self.config.tts_speed)
+                    tts.generate(
+                        "ok",
+                        sid=self.config.tts_speaker_id,
+                        speed=self.config.tts_speed,
+                    )
                 log.info("sherpa TTS warm-up complete")
             except Exception:  # noqa: BLE001 - warm-up is best-effort, never fatal
                 log.debug("sherpa TTS warm-up failed", exc_info=True)
@@ -4079,9 +4338,7 @@ class SherpaOnnxEngine(AudioEngine):
         if gate is None:
             return False
         try:
-            silence = np.zeros(
-                int(self.config.sample_rate * 0.3), dtype="float32"
-            )
+            silence = np.zeros(int(self.config.sample_rate * 0.3), dtype="float32")
             embedding = gate.embed(silence, self.config.sample_rate)
             self._speaker_gate_warmed = embedding is not None
             if self._speaker_gate_warmed:
@@ -4275,7 +4532,8 @@ class SherpaOnnxEngine(AudioEngine):
             # cascade).
             log.info(
                 "dropping final %r -- at/near the learned echo/quiet floor "
-                "(echo/ambient, not speech)", final_text,
+                "(echo/ambient, not speech)",
+                final_text,
             )
             if not self._capture_callback_is_current(capture_epoch):
                 return
@@ -4295,10 +4553,7 @@ class SherpaOnnxEngine(AudioEngine):
             if not self._capture_callback_is_current(capture_epoch):
                 return
             verification = speaker_decision.verification
-            if (
-                verification is OwnerVerification.VERIFIED
-                and not owner_lineage_intact
-            ):
+            if verification is OwnerVerification.VERIFIED and not owner_lineage_intact:
                 verification = OwnerVerification.UNKNOWN
                 if not self._capture_callback_is_current(capture_epoch):
                     return
@@ -4351,9 +4606,7 @@ class SherpaOnnxEngine(AudioEngine):
             ):
                 return
             emitted_acoustic = (
-                AcousticTurnTracker.with_emitted_at(
-                    acoustic, time.perf_counter()
-                )
+                AcousticTurnTracker.with_emitted_at(acoustic, time.perf_counter())
                 if acoustic is not None
                 else None
             )
@@ -4380,9 +4633,7 @@ class SherpaOnnxEngine(AudioEngine):
                         capture_epoch=capture_epoch,
                     )
             except Exception:  # noqa: BLE001 - do not attempt a second terminal
-                log.exception(
-                    "final transcript callback failed after terminal handoff"
-                )
+                log.exception("final transcript callback failed after terminal handoff")
 
     def _maybe_setup_async_final(self) -> None:
         """Create the final worker queue iff an endpoint model was built and
@@ -4391,8 +4642,7 @@ class SherpaOnnxEngine(AudioEngine):
         testable without standing up every model. ``_final_q`` left None otherwise
         (the capture loop then finalizes inline). asr-tts-2."""
         if (
-            self._final_recognizer is not None
-            or self._final_verifier is not None
+            self._final_recognizer is not None or self._final_verifier is not None
         ) and self.config.asr_final_async:
             self._final_q = queue.Queue(maxsize=8)
             log.info("final ASR models run ASYNC (off the capture thread)")
@@ -4418,6 +4668,7 @@ class SherpaOnnxEngine(AudioEngine):
         runtime's supersede is newest-ARRIVAL-wins, so a stale final arriving
         after a newer one would wrongly cancel the newer turn. Single producer
         (this capture thread), so after one ``get_nowait`` a slot is free."""
+
         def _item() -> _FinalWorkItem:
             return _FinalWorkItem(
                 seg=seg,
@@ -4425,14 +4676,10 @@ class SherpaOnnxEngine(AudioEngine):
                 speech_end_ts=speech_end_ts,
                 asr_seg=asr_seg,
                 speech_sec=speech_sec,
-                offline_recovery_authorized=bool(
-                    offline_recovery_authorized
-                ),
+                offline_recovery_authorized=bool(offline_recovery_authorized),
                 owner_lineage_intact=bool(owner_lineage_intact),
                 capture_epoch=(
-                    int(capture_epoch)
-                    if capture_epoch is not None
-                    else None
+                    int(capture_epoch) if capture_epoch is not None else None
                 ),
                 acoustic=acoustic,
                 revision=max(0, int(revision)),
@@ -4483,7 +4730,11 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             else:
                 self._finalize_and_dispatch(
-                    seg, raw_final, speech_end_ts, asr_seg, speech_sec,
+                    seg,
+                    raw_final,
+                    speech_end_ts,
+                    asr_seg,
+                    speech_sec,
                     capture_epoch=capture_epoch,
                     acoustic=acoustic,
                     revision=revision,
@@ -4514,9 +4765,7 @@ class SherpaOnnxEngine(AudioEngine):
                 speech_end_ts = item.speech_end_ts
                 asr_seg = item.asr_seg
                 speech_sec = item.speech_sec
-                offline_recovery_authorized = (
-                    item.offline_recovery_authorized
-                )
+                offline_recovery_authorized = item.offline_recovery_authorized
                 owner_lineage_intact = item.owner_lineage_intact
                 capture_epoch = item.capture_epoch
                 acoustic = item.acoustic
@@ -4591,9 +4840,7 @@ class SherpaOnnxEngine(AudioEngine):
                         speech_end_ts,
                         asr_seg,
                         speech_sec,
-                        offline_recovery_authorized=(
-                            offline_recovery_authorized
-                        ),
+                        offline_recovery_authorized=(offline_recovery_authorized),
                         owner_lineage_intact=owner_lineage_intact,
                         capture_epoch=capture_epoch,
                         acoustic=acoustic,
@@ -4601,7 +4848,11 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                 else:
                     self._finalize_and_dispatch(
-                        seg, raw_final, speech_end_ts, asr_seg, speech_sec,
+                        seg,
+                        raw_final,
+                        speech_end_ts,
+                        asr_seg,
+                        speech_sec,
                         capture_epoch=capture_epoch,
                         acoustic=acoustic,
                         revision=revision,
@@ -4633,7 +4884,9 @@ class SherpaOnnxEngine(AudioEngine):
 
         from ..endpointing import LexicalTurnCompletionDetector
 
-        which = str(getattr(config, "endpoint_detector", "lexical") or "lexical").lower()
+        which = str(
+            getattr(config, "endpoint_detector", "lexical") or "lexical"
+        ).lower()
         if which == "prosody":
             model = getattr(config, "endpoint_prosody_model", "") or ""
             if model and os.path.exists(model):
@@ -4642,14 +4895,23 @@ class SherpaOnnxEngine(AudioEngine):
 
                     log.info("endpoint detector: prosody (Smart Turn) %s", model)
                     return ProsodyTurnCompletionDetector(
-                        model, num_threads=int(getattr(config, "endpoint_prosody_threads", 1) or 1)
+                        model,
+                        num_threads=int(
+                            getattr(config, "endpoint_prosody_threads", 1) or 1
+                        ),
                     )
                 except Exception:  # noqa: BLE001
-                    log.warning("prosody turn-detector failed to load (%s); using lexical",
-                                model, exc_info=True)
+                    log.warning(
+                        "prosody turn-detector failed to load (%s); using lexical",
+                        model,
+                        exc_info=True,
+                    )
             else:
-                log.warning("endpoint_detector=prosody but endpoint_prosody_model missing/"
-                            "not found (%r); using lexical", model)
+                log.warning(
+                    "endpoint_detector=prosody but endpoint_prosody_model missing/"
+                    "not found (%r); using lexical",
+                    model,
+                )
         return LexicalTurnCompletionDetector()
 
     def _decide_endpoint(
@@ -4693,17 +4955,25 @@ class SherpaOnnxEngine(AudioEngine):
         # An audio (prosody) detector is expensive (~10-25ms); consult it only once
         # trailing silence has reached the decision window. During active speech the
         # acoustic endpoint is False, so skipping it is behaviour-identical but free.
-        if self._endpoint_wants_audio and silence_sec < self._endpoint_prosody_min_silence:
+        if (
+            self._endpoint_wants_audio
+            and silence_sec < self._endpoint_prosody_min_silence
+        ):
             return acoustic_endpoint
         try:
             score = self._turn_detector.completion_score(
                 text, samples=samples, sample_rate=self.config.sample_rate
             )
         except Exception:  # noqa: BLE001 - a detector error must never break capture
-            log.debug("turn-completion detector failed; using acoustic endpoint", exc_info=True)
+            log.debug(
+                "turn-completion detector failed; using acoustic endpoint",
+                exc_info=True,
+            )
             return acoustic_endpoint
         return self._endpoint_policy.decide(
-            acoustic_endpoint=acoustic_endpoint, completion_score=score, silence_sec=silence_sec
+            acoustic_endpoint=acoustic_endpoint,
+            completion_score=score,
+            silence_sec=silence_sec,
         )
 
     def _endpoint_audio_needed(
@@ -4760,9 +5030,7 @@ class SherpaOnnxEngine(AudioEngine):
                 "applied-unresolved"
                 if self._capture_voice_comm_applied
                 else (
-                    "requested-unverified"
-                    if self.config.capture_voice_comm
-                    else "none"
+                    "requested-unverified" if self.config.capture_voice_comm else "none"
                 )
             ),
         )
@@ -4783,12 +5051,8 @@ class SherpaOnnxEngine(AudioEngine):
             calibration_generation=generation,
             sample_rate=self.config.sample_rate,
             margin_db=self.config.final_speech_evidence_margin_db,
-            min_qualified_sec=(
-                self.config.final_speech_evidence_min_qualified_sec
-            ),
-            min_contiguous_sec=(
-                self.config.final_speech_evidence_min_contiguous_sec
-            ),
+            min_qualified_sec=(self.config.final_speech_evidence_min_qualified_sec),
+            min_contiguous_sec=(self.config.final_speech_evidence_min_contiguous_sec),
         )
 
     def _activate_speech_evidence_profile(
@@ -4804,9 +5068,7 @@ class SherpaOnnxEngine(AudioEngine):
                 "admission fails open"
             )
             return
-        self._speech_evidence_calibration_generation = (
-            profile.calibration_generation
-        )
+        self._speech_evidence_calibration_generation = profile.calibration_generation
         log.info(
             "normal-final speech evidence armed: ambient=%.4f threshold=%.4f "
             "margin=%.1fdB dynamic=%d/%d steady=%d spectral=%.3f domain=%s",
@@ -5153,8 +5415,11 @@ class SherpaOnnxEngine(AudioEngine):
         self._last_calibration = cal
         log.info(
             "input calibration: ambient_rms=%.4f -> noise_floor=%.4f peak=%.3f clip=%.1f%% (%d blocks)",
-            cal["ambient_rms"], cal["noise_floor_rms"], cal["peak"],
-            cal["clipping_fraction"] * 100.0, cal["n_blocks"],
+            cal["ambient_rms"],
+            cal["noise_floor_rms"],
+            cal["peak"],
+            cal["clipping_fraction"] * 100.0,
+            cal["n_blocks"],
         )
         if self._input_agc is not None:
             self._input_agc.noise_floor_rms = cal["noise_floor_rms"]
@@ -5167,9 +5432,7 @@ class SherpaOnnxEngine(AudioEngine):
             )
         self._report_input_clipping(cal["clipping_fraction"])
 
-    def _rebase_normal_asr_stream(
-        self, recognizer, stream, segment: ASRSegment
-    ) -> int:
+    def _rebase_normal_asr_stream(self, recognizer, stream, segment: ASRSegment) -> int:
         """Reset normal ASR and replay only its bounded pre-VAD lookback.
 
         The relaxed/NS-off alternate is the streaming recognizer's domain when
@@ -5179,14 +5442,211 @@ class SherpaOnnxEngine(AudioEngine):
         """
         pre_primary, pre_alternate = segment.arrays()
         recognizer.reset(stream)
-        replay = (
-            pre_alternate if pre_alternate is not None else pre_primary
-        )
+        replay = pre_alternate if pre_alternate is not None else pre_primary
         if replay.size:
             stream.accept_waveform(self.config.sample_rate, replay)
             while recognizer.is_ready(stream):
                 recognizer.decode_stream(stream)
         return int(replay.size)
+
+    @staticmethod
+    def _readonly_capture_reference(samples) -> np.ndarray:
+        reference = np.array(
+            samples if samples is not None else (),
+            dtype="float32",
+            copy=True,
+        ).reshape(-1)
+        reference.setflags(write=False)
+        return reference
+
+    def _snapshot_capture_context(self, stamp: CaptureStamp) -> CaptureBlockContext:
+        """Bind one native block to reader-time playout and route facts."""
+
+        with self._gen_lock:
+            speak_generation = self._speak_gen
+            playback_generation = self._playback_generation
+        speaking = self._speaking.is_set()
+        first_audio_pending = bool(self._first_audio_pending)
+        playback_level = float(self._playback_level)
+        playback_onset_at = float(self._playback_onset_at)
+        last_playback_at = float(self._last_playback_at)
+        authority_matches = bool(
+            stamp.source_generation == self._capture_authority_source_generation
+            and stamp.source_device == self._capture_authority_source_device
+        )
+        if (
+            not authority_matches
+            and self._capture_authority_source_generation < 0
+            and self._capture_media_session is None
+        ):
+            # Inline compatibility/test fixtures have no cross-thread backlog.
+            # A production start binds authority before entering this path.
+            authority_matches = True
+        context_authority_generation = (
+            stamp.source_generation
+            if authority_matches
+            else self._capture_authority_source_generation
+        )
+        context_authority_device = (
+            stamp.source_device
+            if authority_matches
+            else self._capture_authority_source_device
+        )
+        model_samples = max(
+            0,
+            int(
+                round(
+                    stamp.sample_count
+                    * float(self.config.sample_rate)
+                    / float(stamp.sample_rate_hz)
+                )
+            ),
+        )
+        reference_ring = (
+            self._far_ref if self._far_ref is not None else self._playback_ref
+        )
+        aec_delay = max(0, int(self._aec_ref_delay))
+        if reference_ring is None:
+            far0 = np.zeros(model_samples, dtype="float32")
+            far_delayed = np.zeros(model_samples, dtype="float32")
+        else:
+            far0, far_delayed = reference_ring.read_windows(
+                model_samples,
+                (0, aec_delay),
+            )
+        gate = self._speaker_gate
+        try:
+            speaker_authority = bool(
+                authority_matches
+                and gate is not None
+                and gate.is_enrolled
+                and self._speaker_gate_warmed
+            )
+        except Exception:  # noqa: BLE001 - reader context must fail closed
+            speaker_authority = False
+        return CaptureBlockContext(
+            source_domain=self._capture_resolution,
+            authority_source_generation=context_authority_generation,
+            authority_source_device=context_authority_device,
+            os_echo_route_verified=bool(
+                authority_matches and self._os_echo_route_verified
+            ),
+            word_cut_route_verified=bool(
+                authority_matches and self._word_cut_route_verified
+            ),
+            speaker_authority_available=speaker_authority,
+            speaking=speaking,
+            barge_watch_active=self._barge_watch_active_at(
+                stamp.captured_at,
+                speaking=speaking,
+                first_audio_pending=first_audio_pending,
+                playback_level=playback_level,
+                last_playback_at=last_playback_at,
+            ),
+            speak_generation=speak_generation,
+            playback_generation=playback_generation,
+            playback_level=playback_level,
+            playback_onset_at=playback_onset_at,
+            last_playback_at=last_playback_at,
+            aec_delay_samples=aec_delay,
+            far_reference_zero=self._readonly_capture_reference(far0),
+            far_reference_delayed=self._readonly_capture_reference(far_delayed),
+            coherence_reference=self._readonly_capture_reference(far0),
+        )
+
+    def _capture_source_identity(self) -> tuple[int, object]:
+        source = self._stream_in
+        try:
+            generation = int(getattr(source, "generation", 0) or 0)
+        except (TypeError, ValueError):
+            generation = 0
+        try:
+            device = source.actual_device
+        except (AttributeError, RuntimeError):
+            device = None
+        return generation, device
+
+    def _captured_source_is_current(self, captured: CapturedBlock) -> bool:
+        generation, device = self._capture_source_identity()
+        return bool(
+            captured.source_generation == generation
+            and captured.source_device == device
+        )
+
+    def _captured_playback_is_current(self, context: CaptureBlockContext) -> bool:
+        with self._gen_lock:
+            current_speak_generation = self._speak_gen
+            current_playback_generation = self._playback_generation
+        return bool(
+            context.speaking
+            and self._speaking.is_set()
+            and context.speak_generation == current_speak_generation
+            and context.playback_generation == current_playback_generation
+        )
+
+    def _captured_control_effect_is_current(self, context: CaptureBlockContext) -> bool:
+        """Fence a queued command/barge from a later playback run."""
+
+        with self._gen_lock:
+            current_speak_generation = self._speak_gen
+            current_playback_generation = self._playback_generation
+        if context.speak_generation != current_speak_generation:
+            return False
+        if not self._speaking.is_set():
+            return not context.speaking
+        return bool(
+            context.speaking
+            and context.playback_generation == current_playback_generation
+        )
+
+    def _reset_keyword_stream_after_discontinuity(self) -> None:
+        kws = self._kws
+        old_stream = self._kws_stream
+        if kws is None:
+            self._kws_stream = None
+            return
+        if old_stream is not None:
+            try:
+                kws.reset_stream(old_stream)
+            except Exception:  # noqa: BLE001 - replacement is authoritative
+                pass
+        try:
+            self._kws_stream = kws.create_stream()
+        except Exception:  # noqa: BLE001 - fail closed until next restart
+            self._kws_stream = None
+            log.exception("could not recreate KWS stream after capture gap")
+
+    def _drain_capture_control_events(self, capture_epoch: int) -> None:
+        lane = self._capture_control_lane
+        if lane is None:
+            return
+        for event in lane.drain():
+            if (
+                event.capture_epoch != capture_epoch
+                or not self._capture_callback_is_current(capture_epoch)
+            ):
+                continue
+            try:
+                self._emit_capture_callback(
+                    self._cb.on_capture_state,
+                    event.state,
+                    event.message,
+                    capture_epoch=capture_epoch,
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("on_capture_state callback raised")
+            if event.state == "recovering":
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "capture_recovery_start",
+                    capture_epoch=capture_epoch,
+                )
+            elif event.state == "open":
+                self._emit_capture_callback(
+                    self._cb.on_metric,
+                    "capture_recovery_end",
+                    capture_epoch=capture_epoch,
+                )
 
     def _capture_loop(self) -> None:
         try:
@@ -5199,6 +5659,17 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             self._running.clear()
         finally:
+            media_session = self._capture_media_session
+            if media_session is not None:
+                media_session.request_stop()
+                if not self._capture_stopping.is_set():
+                    request_close = getattr(
+                        self._stream_in,
+                        "request_close",
+                        None,
+                    )
+                    if callable(request_close):
+                        request_close()
             self._fail_virtual_capture_if_unexpected(
                 "virtual capture loop stopped unexpectedly"
             )
@@ -5210,8 +5681,10 @@ class SherpaOnnxEngine(AudioEngine):
         last_published_partial = ""
         recognizer = self._recognizer
         if recognizer is None:
-            log.error("no recognizer built (ASR model paths missing in config?); "
-                      "capture loop idle -- the assistant will never hear you")
+            log.error(
+                "no recognizer built (ASR model paths missing in config?); "
+                "capture loop idle -- the assistant will never hear you"
+            )
             return
         stream = self._new_asr_stream()
         # ADR-0013 uses a dedicated playback-time stream. It may ingest residual
@@ -5250,11 +5723,16 @@ class SherpaOnnxEngine(AudioEngine):
             max_utterance_sec=owned_sec,
             vad_available=self._vad is not None,
             block_sec=block_sec,
-            speech_evidence_required=(
-                self.config.final_speech_evidence_enabled
-            ),
+            speech_evidence_required=(self.config.final_speech_evidence_enabled),
         )
-        capture_generation = int(getattr(self._stream_in, "generation", 0) or 0)
+        media_session = self._capture_media_session
+        source_generation = int(getattr(self._stream_in, "generation", 0) or 0)
+        capture_generation = (
+            media_session.generation if media_session is not None else source_generation
+        )
+        inline_sequence = 0
+        inline_source_sample_cursor = 0
+        post_gap_guard_blocks = 0
         # Diagnostics: cumulative + per-interval counters for the 2 s heartbeat.
         total_blocks = partials = finals = 0
         beat_blocks = 0
@@ -5276,51 +5754,229 @@ class SherpaOnnxEngine(AudioEngine):
             capture_generation=capture_generation,
         )
         self._capture_callback_context.epoch = capture_epoch
+        self._capture_callback_context.capture_generation = capture_generation
         effects_admitted = False
-        log.info("capture loop started (capture_sr=%d -> asr_sr=%d)",
-                 self._capture_sr, self.config.sample_rate)
+        log.info(
+            "capture loop started (capture_sr=%d -> asr_sr=%d)",
+            self._capture_sr,
+            self.config.sample_rate,
+        )
         try:
             while self._running.is_set():
                 if effects_admitted:
                     self._leave_capture_effects()
                     effects_admitted = False
-                audio, _ = self._stream_in.read(int(self._capture_sr * block_sec))
+                self._drain_capture_control_events(capture_epoch)
+                if not self._running.is_set():
+                    break
+                if media_session is not None:
+                    captured = media_session.take(
+                        timeout=min(0.05, max(0.01, block_sec))
+                    )
+                    if captured is None:
+                        self._drain_capture_control_events(capture_epoch)
+                        if (
+                            self._capture_stopping.is_set()
+                            or not self._running.is_set()
+                        ):
+                            break
+                        if not media_session.mailbox.closed:
+                            continue
+                        if media_session.error is not None:
+                            raise RuntimeError(
+                                "native capture reader failed"
+                            ) from media_session.error
+                        raise RuntimeError("capture media session closed unexpectedly")
+                else:
+                    audio, overflowed = self._stream_in.read(
+                        int(self._capture_sr * block_sec)
+                    )
+                    inline_sequence += 1
+                    current_source_generation = int(
+                        getattr(
+                            self._stream_in,
+                            "generation",
+                            source_generation,
+                        )
+                        or 0
+                    )
+                    current_capture_rate = int(
+                        getattr(
+                            self._stream_in,
+                            "actual_samplerate",
+                            self._capture_sr,
+                        )
+                        or self._capture_sr
+                    )
+                    try:
+                        current_source_device = self._stream_in.actual_device
+                    except (AttributeError, RuntimeError):
+                        current_source_device = None
+                    gap_reason = None
+                    if (
+                        current_source_generation != source_generation
+                        or current_capture_rate != self._capture_sr
+                    ):
+                        gap_reason = CaptureGapReason.CAPTURE_RECOVERY
+                    elif overflowed:
+                        gap_reason = CaptureGapReason.DEVICE_OVERFLOW
+                    gap = None
+                    if gap_reason is not None:
+                        gap = CaptureGap(
+                            reason=gap_reason,
+                            prior_generation=capture_generation,
+                            generation=capture_generation + 1,
+                            first_dropped_sequence=None,
+                            last_dropped_sequence=None,
+                            dropped_frames=0,
+                            dropped_samples=0,
+                        )
+                    if gap_reason is CaptureGapReason.CAPTURE_RECOVERY:
+                        inline_source_sample_cursor = 0
+                    capture_end_at = time.perf_counter()
+                    inline_samples = np.asarray(audio, dtype="float32").reshape(-1)
+                    source_sample_start = inline_source_sample_cursor
+                    source_sample_end = source_sample_start + int(inline_samples.size)
+                    inline_source_sample_cursor = source_sample_end
+                    capture_started_at = max(
+                        0.0,
+                        capture_end_at
+                        - float(inline_samples.size) / float(current_capture_rate),
+                    )
+                    stamp = CaptureStamp(
+                        sample_rate_hz=current_capture_rate,
+                        sample_count=int(inline_samples.size),
+                        captured_started_at=capture_started_at,
+                        captured_at=capture_end_at,
+                        capture_epoch=capture_epoch,
+                        source_generation=current_source_generation,
+                        source_device=current_source_device,
+                        source_sample_start=source_sample_start,
+                        source_sample_end=source_sample_end,
+                    )
+                    captured = CapturedBlock(
+                        pcm=inline_samples,
+                        sample_rate_hz=current_capture_rate,
+                        sequence=inline_sequence,
+                        captured_at=capture_end_at,
+                        capture_epoch=capture_epoch,
+                        source_generation=current_source_generation,
+                        capture_generation=(
+                            gap.generation if gap is not None else capture_generation
+                        ),
+                        captured_started_at=capture_started_at,
+                        source_device=current_source_device,
+                        source_sample_start=source_sample_start,
+                        source_sample_end=source_sample_end,
+                        context=self._snapshot_capture_context(stamp),
+                        gap_before=gap,
+                    )
                 # stop() deliberately leaves the native input open for one block
                 # so read() can return without a concurrent PortAudio close.  Do
                 # not process that final block; quiesce immediately for the join.
                 if self._capture_stopping.is_set():
                     break
-                current_generation = int(
-                    getattr(self._stream_in, "generation", capture_generation) or 0
-                )
-                if current_generation != capture_generation:
+                if captured.capture_epoch != capture_epoch:
+                    log.warning(
+                        "discarding captured block from stale epoch %d (current %d)",
+                        captured.capture_epoch,
+                        capture_epoch,
+                    )
+                    continue
+                if not self._captured_source_is_current(captured):
+                    log.warning(
+                        "discarding stale captured block: block source=%d/%r "
+                        "current source=%d/%r",
+                        captured.source_generation,
+                        captured.source_device,
+                        *self._capture_source_identity(),
+                    )
+                    continue
+                block_context = captured.context
+                if block_context is None:
+                    block_context = self._snapshot_capture_context(
+                        CaptureStamp(
+                            sample_rate_hz=captured.sample_rate_hz,
+                            sample_count=int(captured.pcm.size),
+                            captured_started_at=captured.captured_started_at,
+                            captured_at=captured.captured_at,
+                            capture_epoch=captured.capture_epoch,
+                            source_generation=captured.source_generation,
+                            source_device=captured.source_device,
+                            source_sample_start=captured.source_sample_start,
+                            source_sample_end=captured.source_sample_end,
+                        )
+                    )
+                gap = captured.gap_before
+                if gap is None and captured.capture_generation != capture_generation:
+                    # Fail safe if a future producer violates the mailbox
+                    # contract: a lineage change may never be silently spliced.
+                    gap = CaptureGap(
+                        reason=CaptureGapReason.CAPTURE_RECOVERY,
+                        prior_generation=capture_generation,
+                        generation=captured.capture_generation,
+                        first_dropped_sequence=None,
+                        last_dropped_sequence=None,
+                        dropped_frames=0,
+                        dropped_samples=0,
+                    )
+                if gap is not None:
                     self._abort_active_acoustic_turn(
                         acoustic_turn,
-                        TranscriptAbortReason.CAPTURE_RECOVERY,
+                        (
+                            TranscriptAbortReason.CAPTURE_RECOVERY
+                            if gap.reason is CaptureGapReason.CAPTURE_RECOVERY
+                            else TranscriptAbortReason.BACKPRESSURE
+                        ),
                         capture_epoch=capture_epoch,
                     )
-                    capture_generation = current_generation
-                    self._reset_capture_frontends_after_reopen()
+                    if (
+                        gap.reason is CaptureGapReason.CAPTURE_RECOVERY
+                        or captured.sample_rate_hz != self._capture_sr
+                    ):
+                        self._reset_capture_frontends_after_reopen(
+                            capture_sample_rate=captured.sample_rate_hz
+                        )
+                    else:
+                        self._reset_capture_frontends_after_gap(
+                            capture_sample_rate=captured.sample_rate_hz
+                        )
                     last_partial = ""
                     last_published_partial = ""
                     segment.reset()
+                    capture_generation = captured.capture_generation
+                    source_generation = captured.source_generation
                     acoustic_turn.rotate_capture(
                         capture_epoch=capture_epoch,
                         capture_generation=capture_generation,
                     )
+                    self._capture_callback_context.capture_generation = (
+                        capture_generation
+                    )
                     word_cut_stream = None
                     barge_sustain.reset()
+                    self._reset_keyword_stream_after_discontinuity()
+                    post_gap_guard_blocks = 1
                     rejected_run = 0.0
                     rejected_flagged = False
                     try:
                         recognizer.reset(stream)
                     except Exception:  # noqa: BLE001 - next block can recover
                         stream = self._new_asr_stream()
-                    # _RecoveringInputStream retried this block using the new
-                    # stream's actual rate. The turn/front ends above are now in
-                    # that same domain, so preserve and process the recovered
-                    # onset instead of dropping the first 100 ms of live audio.
-                samples = np.asarray(audio, dtype="float32").reshape(-1)
+                    log.warning(
+                        "capture discontinuity: reason=%s generation=%d "
+                        "dropped_frames=%d dropped_samples=%d",
+                        gap.reason.value,
+                        gap.generation,
+                        gap.dropped_frames,
+                        gap.dropped_samples,
+                    )
+                    # Preserve the newest block: recovery already retried it in
+                    # the new domain, while mailbox overflow retired every
+                    # queued pre-gap block before this handoff.
+                else:
+                    source_generation = captured.source_generation
+                samples = captured.pcm
                 # Parallel PRE-GAIN model-band tap. Its independent FIR state
                 # makes this exact calibration/evidence PCM without advancing
                 # the post-gain recognizer resampler twice.
@@ -5330,9 +5986,7 @@ class SherpaOnnxEngine(AudioEngine):
                     else samples
                 )
                 recovery_calibration_block = (
-                    pre_gain_samples
-                    if self._recovery_calibration_target > 0
-                    else None
+                    pre_gain_samples if self._recovery_calibration_target > 0 else None
                 )
                 # Gain BEFORE resample (soft-knee limiter, not a hard clip) so the
                 # anti-alias FIR filters any saturation harmonics above 8 kHz out
@@ -5372,12 +6026,31 @@ class SherpaOnnxEngine(AudioEngine):
                     # self-gates on far energy + correlation, so idle/uncorrelated
                     # blocks leave the operating delay unchanged. Drives the read
                     # below, so a mis-set seed self-corrects within ~1 window.
+                    far0 = self._align_recording_frame(
+                        (
+                            block_context.far_reference_zero
+                            if block_context.far_reference_zero is not None
+                            else np.zeros(0, dtype="float32")
+                        ),
+                        samples.shape[0],
+                    )
                     if self._aec_delay_cal is not None:
-                        far0 = self._far_ref.read(samples.shape[0], 0)
                         if far0 is not None and far0.size:
                             self._aec_delay_cal.observe(mic_raw, far0)
-                            self._aec_ref_delay = self._aec_delay_cal.current_delay_samples()
-                    far = self._far_ref.read(samples.shape[0], self._aec_ref_delay)
+                            self._aec_ref_delay = (
+                                self._aec_delay_cal.current_delay_samples()
+                            )
+                    # This block must retain the delay/reference that existed at
+                    # native read return. A newly measured delay applies to the
+                    # next reader snapshot, never to a later shared-ring head.
+                    far = self._align_recording_frame(
+                        (
+                            block_context.far_reference_delayed
+                            if block_context.far_reference_delayed is not None
+                            else np.zeros(0, dtype="float32")
+                        ),
+                        samples.shape[0],
+                    )
                     # ONLY cancel when the assistant is actually playing (the
                     # far-end reference has energy). With no recent playback the
                     # far ring is ~zeros and the deep DTLN canceller would just
@@ -5386,10 +6059,12 @@ class SherpaOnnxEngine(AudioEngine):
                     # skip it then: nothing to cancel, and the input reaches ASR
                     # untouched. (Also saves the DTLN cost on every idle block.)
                     far_energetic = (
-                        far is not None and far.size > 0
-                        and float(np.sqrt(np.mean(
-                            np.asarray(far, dtype="float64") ** 2
-                        ))) > 1e-4
+                        far is not None
+                        and far.size > 0
+                        and float(
+                            np.sqrt(np.mean(np.asarray(far, dtype="float64") ** 2))
+                        )
+                        > 1e-4
                     )
                     if self._apm_always_on:
                         # WebRTC APM runs on EVERY block so its NS/AGC/HPF also
@@ -5422,6 +6097,17 @@ class SherpaOnnxEngine(AudioEngine):
                 if self._denoiser is not None and not self._apm_owns_ns:
                     samples = self._denoiser.process_16k(samples)
 
+                # A second recovery may complete while a popped block is inside
+                # resampling/AEC. Retire it before KWS, VAD, ASR, recordings, or
+                # callbacks can evaluate it under the newer source authority.
+                if not self._captured_source_is_current(captured):
+                    log.warning(
+                        "discarding captured block superseded during processing "
+                        "(source generation %d)",
+                        captured.source_generation,
+                    )
+                    continue
+
                 # Linearize every externally visible effect from this processed
                 # block against stop(). The lease spans the remainder of the
                 # iteration (including every continue) and is released at the
@@ -5437,7 +6123,11 @@ class SherpaOnnxEngine(AudioEngine):
                     # input, optional pre-application-DSP input, and optional
                     # playback reference. Each sibling receives exactly this
                     # processed frame length, preserving sample-index alignment.
-                    self._write_recording_frame(pre_gain_samples, samples)
+                    self._write_recording_frame(
+                        pre_gain_samples,
+                        samples,
+                        captured_reference=block_context.far_reference_zero,
+                    )
 
                 total_blocks += 1
                 beat_blocks += 1
@@ -5445,20 +6135,26 @@ class SherpaOnnxEngine(AudioEngine):
                     beat_level += float(np.sqrt(np.mean(samples * samples)))
                     # Clipped-sample fraction this block (rail-pinned input).
                     beat_clip += float(np.mean(np.abs(samples) >= 0.98))
-                now = time.monotonic()
-                if now - last_beat >= 2.0:
+                processing_now = time.monotonic()
+                if processing_now - last_beat >= 2.0:
                     avg = beat_level / max(beat_blocks, 1)
                     avg_clip = beat_clip / max(beat_blocks, 1)
                     log.debug(
                         "capture heartbeat: blocks=%d avg_rms=%.4f clip=%.1f%% underruns=%d "
                         "partials=%d finals=%d speaking=%s",
-                        total_blocks, avg, avg_clip * 100.0, self._underrun_blocks,
-                        partials, finals, self._speaking.is_set(),
+                        total_blocks,
+                        avg,
+                        avg_clip * 100.0,
+                        self._underrun_blocks,
+                        partials,
+                        finals,
+                        self._speaking.is_set(),
                     )
                     if avg < 1e-4:
                         log.warning(
                             "input is ~silent (avg_rms=%.6f) -- wrong mic, muted, or no "
-                            "permission? run `python -m sounddevice` to list devices", avg,
+                            "permission? run `python -m sounddevice` to list devices",
+                            avg,
                         )
                         self._note_silent_heartbeat(capture_epoch)
                     else:
@@ -5478,7 +6174,8 @@ class SherpaOnnxEngine(AudioEngine):
                             "input is CLIPPING (%.1f%% of samples railed, avg_rms=%.3f) -- mic "
                             "gain too HOT; the recognizer is fed a shredded waveform. Lower the "
                             "OS mic input level / disable 'mic boost' (target rms ~0.1-0.2).",
-                            avg_clip * 100.0, avg,
+                            avg_clip * 100.0,
+                            avg,
                         )
                         # Surface it into the run bundle (summary.json), not just the
                         # log -- a hot ADC is the #1 silent STT-garbler.
@@ -5497,7 +6194,22 @@ class SherpaOnnxEngine(AudioEngine):
                         self._cb.on_heartbeat,
                         capture_epoch=capture_epoch,
                     )
-                    last_beat, beat_blocks, beat_level, beat_clip = now, 0, 0.0, 0.0
+                    last_beat, beat_blocks, beat_level, beat_clip = (
+                        processing_now,
+                        0,
+                        0.0,
+                        0.0,
+                    )
+
+                now = captured.captured_at
+                if block_context.speaking and not self._captured_playback_is_current(
+                    block_context
+                ):
+                    # This PCM was captured from an older playback run. It is
+                    # neither normal user input nor authority to cut a newer run.
+                    continue
+                if not self._captured_source_is_current(captured):
+                    continue
 
                 # Command fast-path: normal listening is always eligible. During
                 # playback, raw mic echo must not become command authority: KWS
@@ -5505,12 +6217,27 @@ class SherpaOnnxEngine(AudioEngine):
                 # route. A failed AEC build/recovery therefore fails closed.
                 if not self._capture_epoch_is_current(capture_epoch):
                     continue
-                speaking_for_kws = self._speaking.is_set()
+                # Consume the one-shot discontinuity guard only after this block
+                # has survived every source/playback/epoch fence. A queued block
+                # discarded as stale must not disarm the first eligible block
+                # from the current context.
+                block_after_gap = post_gap_guard_blocks > 0
+                if block_after_gap and samples.size:
+                    post_gap_guard_blocks -= 1
+                speaking_for_kws = block_context.speaking
+                context_authority_current = bool(
+                    block_context.authority_source_generation
+                    == captured.source_generation
+                    and block_context.authority_source_device == captured.source_device
+                )
                 command_consumed = False
                 if (
                     not speaking_for_kws
                     or self._aec is not None
-                    or self._os_echo_route_verified
+                    or (
+                        context_authority_current
+                        and block_context.os_echo_route_verified
+                    )
                 ):
                     command_consumed = self._poll_keywords(
                         samples,
@@ -5521,6 +6248,16 @@ class SherpaOnnxEngine(AudioEngine):
                             self._virtual_audio_binder is not None
                             and speaking_for_kws
                             and self._aec is None
+                        ),
+                        speaking=speaking_for_kws,
+                        allow_publish=bool(
+                            not block_after_gap
+                            and self._captured_control_effect_is_current(block_context)
+                        ),
+                        detected_at=now,
+                        os_echo_route_verified=bool(
+                            context_authority_current
+                            and block_context.os_echo_route_verified
                         ),
                     )
                 if command_consumed:
@@ -5552,15 +6289,19 @@ class SherpaOnnxEngine(AudioEngine):
                 # Track the ambient noise floor for the optional loudness gate
                 # (asymmetric EWMA: fall fast to the floor, rise slowly so speech
                 # barely lifts it). Cheap; only when the loudness gate is enabled.
-                if self._input_loudness_margin_db > 0.0:
+                if self._input_loudness_margin_db > 0.0 and not block_after_gap:
                     _r = rms(samples)
                     _a = self._ambient_rms
                     if _a <= 0.0:
                         self._ambient_rms = _r
                     elif _r < _a:
-                        self._ambient_rms = 0.9 * _a + 0.1 * _r       # fall fast to a new floor
+                        self._ambient_rms = (
+                            0.9 * _a + 0.1 * _r
+                        )  # fall fast to a new floor
                     elif _r < _a * 2.0:
-                        self._ambient_rms = 0.995 * _a + 0.005 * _r   # genuine drift (<+6 dB): track slowly
+                        self._ambient_rms = (
+                            0.995 * _a + 0.005 * _r
+                        )  # genuine drift (<+6 dB): track slowly
                     # else: _r >> floor -- a barge / echo burst, NOT the ambient
                     # floor. FREEZE the rise (don't update) so a SUSTAINED talk-over
                     # can't drag the floor up to itself and thereby raise the barge
@@ -5576,26 +6317,16 @@ class SherpaOnnxEngine(AudioEngine):
                 # into an open-speaker mic can't self-interrupt.
                 if not self._capture_epoch_is_current(capture_epoch):
                     continue
-                if self._speaking.is_set():
-                    # audio-bargein-8: ingest the played reference blocks the audio
-                    # callback queued (off its real-time thread) into the coherence
-                    # detector HERE, on the capture thread -- so note_playback's lock
-                    # (held by decide() while it concatenates the whole ring) never
-                    # contends with the real-time callback. Drains FIFO-ordered;
-                    # note_playback resamples play_sr->16k exactly as the old inline
-                    # call did, so the reference content is unchanged.
-                    if self._coh_ref_q is not None and self._echo_coherence is not None:
-                        _q = self._coh_ref_q
-                        _play_sr = self._play_sr
-                        while _play_sr:
-                            try:
-                                _blk = _q.popleft()
-                            except IndexError:
-                                break
-                            self._echo_coherence.note_playback(_blk, _play_sr)
-                            # Tee the same played reference into the replay recorder.
-                            if self._ref_recorder is not None:
-                                self._accumulate_reference(_blk, _play_sr)
+                if block_context.speaking:
+                    # Reader-time reference: a processing backlog must never
+                    # drain whatever happens to be at the live playback head.
+                    if self._echo_coherence is not None:
+                        reference = block_context.coherence_reference
+                        if reference is not None and reference.size:
+                            self._echo_coherence.note_playback(
+                                reference,
+                                self.config.sample_rate,
+                            )
                     # Consume the silent->speaking re-arm signalled by the playback
                     # loop: clear the BargeSustain window so the prior reply's fires
                     # can't carry into this reply's onset (2026-06-10 self-interrupt
@@ -5607,7 +6338,12 @@ class SherpaOnnxEngine(AudioEngine):
                         # Word-cut gets a fresh DEDICATED playback stream per reply.
                         # The normal stream remains echo-free until a confirmed cut
                         # or a safe natural-tail handoff replays candidate user PCM.
-                        if self._barge_word_cut_active():
+                        if self._barge_word_cut_active(
+                            route_verified=bool(
+                                context_authority_current
+                                and block_context.word_cut_route_verified
+                            )
+                        ):
                             try:
                                 word_cut_stream = self._new_asr_stream()
                             except Exception:  # noqa: BLE001 - fail closed this reply
@@ -5639,7 +6375,10 @@ class SherpaOnnxEngine(AudioEngine):
                         self.config.barge_in_enabled
                         and self.config.barge_word_cut_enabled
                         and not self.config.aec_enabled
-                        and not self._word_cut_route_verified
+                        and not (
+                            context_authority_current
+                            and block_context.word_cut_route_verified
+                        )
                     ):
                         # Route loss/recovery must not fall through to the raw-mic
                         # acoustic path: TTS echo has no discriminant there.
@@ -5648,17 +6387,31 @@ class SherpaOnnxEngine(AudioEngine):
                         rejected_flagged = False
                         self._word_cut_energy_run = 0
                         continue
-                    if (
-                        self.config.barge_in_enabled
-                        and self._barge_word_cut_active()
+                    if self.config.barge_in_enabled and self._barge_word_cut_active(
+                        route_verified=bool(
+                            context_authority_current
+                            and block_context.word_cut_route_verified
+                        )
                     ):
                         if word_cut_stream is not None:
                             self._barge_word_cut_step(
-                                recognizer, word_cut_stream,
+                                recognizer,
+                                word_cut_stream,
                                 asr_samples if asr_samples is not None else samples,
                                 now,
                                 normal_stream=stream,
                                 energy_samples=pre_gain_samples,
+                                playback_onset_at=(block_context.playback_onset_at),
+                                speaker_authority_available=bool(
+                                    context_authority_current
+                                    and block_context.speaker_authority_available
+                                ),
+                                allow_control_effect=not block_after_gap,
+                                control_effect_guard=(
+                                    lambda: self._captured_control_effect_is_current(
+                                        block_context
+                                    )
+                                ),
                             )
                         barge_sustain.reset()
                         rejected_run = 0.0
@@ -5671,7 +6424,16 @@ class SherpaOnnxEngine(AudioEngine):
                     # for this committed reply, but do not arm playback-time barge-in
                     # until audio is actually audible. If a previous queued sentence's
                     # tail is still audible, a fresh playback stamp keeps the watch armed.
-                    if not self._barge_watch_active():
+                    if not block_context.barge_watch_active:
+                        barge_sustain.reset()
+                        rejected_run = 0.0
+                        rejected_flagged = False
+                        continue
+                    if block_after_gap:
+                        # The first contiguous block re-primes VAD/coherence but
+                        # cannot complete a control action by itself.
+                        if self._vad is not None:
+                            self._vad.accept_waveform(samples)
                         barge_sustain.reset()
                         rejected_run = 0.0
                         rejected_flagged = False
@@ -5687,9 +6449,16 @@ class SherpaOnnxEngine(AudioEngine):
                         # Decode the confirm window from the NS-off tap (words
                         # survive); the step's internal DTD echo obs still uses mic_raw.
                         self._barge_confirm_step(
-                            recognizer, stream,
+                            recognizer,
+                            stream,
                             asr_samples if asr_samples is not None else samples,
-                            now, mic_raw=mic_raw,
+                            now,
+                            mic_raw=mic_raw,
+                            control_effect_guard=(
+                                lambda: self._captured_control_effect_is_current(
+                                    block_context
+                                )
+                            ),
                         )
                         barge_sustain.reset()
                         rejected_run = 0.0
@@ -5737,7 +6506,10 @@ class SherpaOnnxEngine(AudioEngine):
                             # echo-only samples there are. Skipped during the
                             # suppress/refractory window above (echo tail mixed
                             # with the user's own barge speech).
-                            if self._dtd is not None and not self._vad.is_speech_detected():
+                            if (
+                                self._dtd is not None
+                                and not self._vad.is_speech_detected()
+                            ):
                                 det = self._echo_coherence
                                 incoh = 0.0
                                 if det is not None:
@@ -5764,10 +6536,20 @@ class SherpaOnnxEngine(AudioEngine):
                             # 3 of 5 turn-2 blocks but voiced_run *= 0.5 never reached
                             # the threshold). The bounded window keeps a sporadic echo
                             # leak from ever summing to a self-interrupt.
-                            eligible = self._barge_in_fire_eligible(samples, mic_raw)
+                            eligible = self._barge_in_fire_eligible(
+                                samples,
+                                mic_raw,
+                                now=now,
+                                playback_onset_at=(block_context.playback_onset_at),
+                                playback_level=block_context.playback_level,
+                            )
                             if barge_sustain.update(eligible):
                                 barge_sustain.reset()
                                 rejected_run = 0.0
+                                if not self._captured_control_effect_is_current(
+                                    block_context
+                                ):
+                                    continue
                                 if (
                                     self.config.barge_confirm_enabled
                                     and recognizer is not None
@@ -5778,7 +6560,17 @@ class SherpaOnnxEngine(AudioEngine):
                                     # within the confirm window. No latch burned:
                                     # an unconfirmed (echo) trigger must not
                                     # disarm a later REAL talk-over this run.
-                                    self._begin_barge_confirm(recognizer, stream, now)
+                                    self._begin_barge_confirm(
+                                        recognizer,
+                                        stream,
+                                        now,
+                                        speak_generation=(
+                                            block_context.speak_generation
+                                        ),
+                                        playback_generation=(
+                                            block_context.playback_generation
+                                        ),
+                                    )
                                 else:
                                     # Legacy immediate hard-fire (byte-identical
                                     # when barge_confirm_enabled is False).
@@ -5787,8 +6579,8 @@ class SherpaOnnxEngine(AudioEngine):
                                     # latch caps the whole run so self-echo can't
                                     # re-fire.
                                     self._barge_in_fired_this_run = True
-                                    self._barge_in_suppressed_until = (
-                                        now + max(0.0, self.config.barge_in_suppress_sec)
+                                    self._barge_in_suppressed_until = now + max(
+                                        0.0, self.config.barge_in_suppress_sec
                                     )
                                     log.info("barge-in detected")
                                     if self._capture_callback_is_current(capture_epoch):
@@ -5836,20 +6628,36 @@ class SherpaOnnxEngine(AudioEngine):
                                     # echo can't latch out a later real talk-over. Legacy
                                     # path (word gate off) is byte-identical.
                                     if (
-                                        rejected_run >= self.config.barge_in_min_speech_sec
+                                        rejected_run
+                                        >= self.config.barge_in_min_speech_sec
                                         and self.config.barge_confirm_enabled
                                         and recognizer is not None
                                         and stream is not None
                                         and not self._barge_confirm_active()
                                         and passes_output_margin(
-                                            rms(samples), self._playback_level,
+                                            rms(samples),
+                                            block_context.playback_level,
                                             margin_db=self.config.barge_confirm_duck_margin_db,
                                         )
+                                        and self._captured_control_effect_is_current(
+                                            block_context
+                                        )
                                     ):
-                                        self._begin_barge_confirm(recognizer, stream, now)
+                                        self._begin_barge_confirm(
+                                            recognizer,
+                                            stream,
+                                            now,
+                                            speak_generation=(
+                                                block_context.speak_generation
+                                            ),
+                                            playback_generation=(
+                                                block_context.playback_generation
+                                            ),
+                                        )
                                         rejected_run = 0.0
                                     elif (
-                                        rejected_run >= self.config.barge_in_min_speech_sec
+                                        rejected_run
+                                        >= self.config.barge_in_min_speech_sec
                                         and not rejected_flagged
                                     ):
                                         rejected_flagged = True
@@ -5858,7 +6666,9 @@ class SherpaOnnxEngine(AudioEngine):
                                             "playback did not trip the gate (talk-over ignored?)",
                                             rejected_run,
                                         )
-                                        if self._capture_callback_is_current(capture_epoch):
+                                        if self._capture_callback_is_current(
+                                            capture_epoch
+                                        ):
                                             self._emit_capture_callback(
                                                 self._cb.on_metric,
                                                 "barge_in_rejected",
@@ -5868,6 +6678,8 @@ class SherpaOnnxEngine(AudioEngine):
                                     rejected_run = 0.0
                     continue
                 # Not speaking -> reset the rejected-talk-over episode tracking.
+                if not self._captured_source_is_current(captured):
+                    continue
                 rejected_run = 0.0
                 rejected_flagged = False
                 word_cut_pcm_includes_current = False
@@ -5912,11 +6724,12 @@ class SherpaOnnxEngine(AudioEngine):
                         self._word_cut_pending_offline_recovery
                     )
                     pending_samples = self._splice_word_cut_preroll(
-                        pending_primary, pending_alternate,
+                        pending_primary,
+                        pending_alternate,
                     )
                     segment.reset()
                     if pending_samples:
-                        handoff_at = time.perf_counter()
+                        handoff_at = now
                         pending_sec = pending_samples / self.config.sample_rate
                         # ASRSegment timestamps denote block observations, and its
                         # duration adds one block to last-first. Backdate the last
@@ -5932,13 +6745,10 @@ class SherpaOnnxEngine(AudioEngine):
                             pending_alternate,
                             speech_at=max(
                                 0.0,
-                                handoff_end_at
-                                - max(0.0, pending_sec - block_sec),
+                                handoff_end_at - max(0.0, pending_sec - block_sec),
                             ),
                             speech_end_at=handoff_end_at,
-                            offline_recovery_authorized=(
-                                pending_offline_recovery
-                            ),
+                            offline_recovery_authorized=(pending_offline_recovery),
                         )
                         acoustic_turn.ensure_started(segment.first_speech_at)
                     self._wc_reply_active = False
@@ -5951,7 +6761,7 @@ class SherpaOnnxEngine(AudioEngine):
                     # ASR. Feed the already-built VAD on EVERY non-playback block
                     # and turn its speech/quiet transitions into the endpoint
                     # clock + genuine mid-utterance pause samples.
-                    clock_now = time.perf_counter()
+                    clock_now = now
                     confirm_handoff = self._confirm_handoff_pending
                     if confirm_handoff is not None:
                         # Consume exactly once on the first post-playback block,
@@ -5961,8 +6771,7 @@ class SherpaOnnxEngine(AudioEngine):
                         self._confirm_handoff_pending = None
                         self._confirm_handoff_stream_live = False
                         if (
-                            confirm_handoff.capture_generation
-                            != capture_generation
+                            confirm_handoff.capture_generation != capture_generation
                             or clock_now > confirm_handoff.expires_at
                         ):
                             recognizer.reset(stream)
@@ -5991,29 +6800,21 @@ class SherpaOnnxEngine(AudioEngine):
                                 speech_at=confirm_handoff.speech_at,
                                 speech_end_at=confirm_handoff.speech_end_at,
                             )
-                            acoustic_turn.ensure_started(
-                                segment.first_speech_at
-                            )
+                            acoustic_turn.ensure_started(segment.first_speech_at)
                             log.debug(
                                 "normal ASR adopted confirmed barge PCM: %d ms",
-                                round(
-                                    1000 * adopted / self.config.sample_rate
-                                ),
+                                round(1000 * adopted / self.config.sample_rate),
                             )
                     if self._vad is not None and not word_cut_pcm_includes_current:
                         if not word_cut_vad_includes_current:
                             self._vad.accept_waveform(samples)
                         vad_active = bool(self._vad.is_speech_detected())
                         first_vad_onset = vad_active and not segment.speech_seen
-                        pause = segment.observe_vad(
-                            vad_active, clock_now
-                        )
+                        pause = segment.observe_vad(vad_active, clock_now)
                         if pause is not None and self._endpoint_policy is not None:
                             self._endpoint_policy.observe_pause(pause)
                         if first_vad_onset:
-                            acoustic_turn.ensure_started(
-                                segment.first_speech_at
-                            )
+                            acoustic_turn.ensure_started(segment.first_speech_at)
                             # The normal recognizer listens continuously so it
                             # can retain model lookback, but any hypothesis it
                             # formed before independent VAD onset belongs to no
@@ -6043,9 +6844,9 @@ class SherpaOnnxEngine(AudioEngine):
                     )
                     segment.append(
                         samples,
-                        (
-                            asr_samples if asr_samples is not None else samples
-                        ) if self._aec_asr is not None else None,
+                        (asr_samples if asr_samples is not None else samples)
+                        if self._aec_asr is not None
+                        else None,
                     ) if not word_cut_pcm_includes_current else None
                     # fix 2: the streaming recognizer reads the NS-off tap so
                     # near-end words survive; the owned primary segment + the
@@ -6060,12 +6861,11 @@ class SherpaOnnxEngine(AudioEngine):
                     text = recognizer.get_result(stream)
                     if text and text != last_partial:
                         last_partial = text
-                        _now = time.perf_counter()
                         # Decoder advancement remains useful observability and is
                         # the fail-open speech clock when no VAD model exists. With
                         # VAD present it is NOT acoustic evidence: stable tokens
                         # during a long spoken word must not look like silence.
-                        segment.observe_text(_now)
+                        segment.observe_text(clock_now)
                         partials += 1
                     if text and self._vad is not None and not segment.speech_seen:
                         # Do not leak idle decoder noise into the runtime's
@@ -6099,11 +6899,10 @@ class SherpaOnnxEngine(AudioEngine):
                             log.debug("asr partial: %r", shown)
                             if not self._capture_epoch_is_current(capture_epoch):
                                 continue
-                            partial_acoustic, partial_revision = (
-                                acoustic_turn.partial(
-                                    emitted_at=_now,
-                                    speech_start_at=segment.first_speech_at,
-                                )
+                            emitted_now = time.perf_counter()
+                            partial_acoustic, partial_revision = acoustic_turn.partial(
+                                emitted_at=emitted_now,
+                                speech_start_at=segment.first_speech_at,
                             )
                             if self._cb.on_partial_result is not None:
                                 self._emit_capture_callback(
@@ -6123,14 +6922,12 @@ class SherpaOnnxEngine(AudioEngine):
                                 )
                             last_published_partial = text
                     acoustic_endpoint = recognizer.is_endpoint(stream)
-                    decision_now = time.perf_counter()
+                    decision_now = clock_now
                     endpoint_silence = segment.trailing_silence(decision_now)
                     if segment.abandoned_without_text(
                         decision_now,
                         quiet_limit_sec=float(
-                            getattr(
-                                self.config, "endpoint_max_silence_sec", 1.6
-                            )
+                            getattr(self.config, "endpoint_max_silence_sec", 1.6)
                         ),
                     ):
                         recognizer.reset(stream)
@@ -6147,9 +6944,7 @@ class SherpaOnnxEngine(AudioEngine):
                         vad_reset = getattr(self._vad, "reset", None)
                         if callable(vad_reset):
                             vad_reset()
-                        log.info(
-                            "reset abandoned VAD episode with no current ASR text"
-                        )
+                        log.info("reset abandoned VAD episode with no current ASR text")
                         self._emit_capture_callback(
                             self._cb.on_metric,
                             "vad_abandoned_epoch_reset",
@@ -6193,9 +6988,7 @@ class SherpaOnnxEngine(AudioEngine):
                         offline_recovery_authorized = bool(
                             segment.offline_recovery_authorized
                         )
-                        owner_lineage_intact = bool(
-                            segment.owner_lineage_intact
-                        )
+                        owner_lineage_intact = bool(segment.owner_lineage_intact)
                         speech_evidence = segment.speech_evidence_snapshot()
                         seg = owned_primary if owned_primary.size else samples
                         asr_seg = owned_asr if self._aec_asr is not None else None
@@ -6269,9 +7062,7 @@ class SherpaOnnxEngine(AudioEngine):
                                         offline_recovery_authorized=(
                                             recover_empty_streaming
                                         ),
-                                        owner_lineage_intact=(
-                                            owner_lineage_intact
-                                        ),
+                                        owner_lineage_intact=(owner_lineage_intact),
                                         capture_epoch=capture_epoch,
                                         acoustic=final_acoustic,
                                         revision=final_revision,
@@ -6298,9 +7089,7 @@ class SherpaOnnxEngine(AudioEngine):
                                         offline_recovery_authorized=(
                                             recover_empty_streaming
                                         ),
-                                        owner_lineage_intact=(
-                                            owner_lineage_intact
-                                        ),
+                                        owner_lineage_intact=(owner_lineage_intact),
                                         acoustic=final_acoustic,
                                         revision=final_revision,
                                     )
@@ -6346,8 +7135,11 @@ class SherpaOnnxEngine(AudioEngine):
                     # `python -m tools.setup_models`).
                     asr_errors += 1
                     self._confirm_handoff_stream_live = False
-                    log.warning("ASR decode error #%d (resetting stream)", asr_errors,
-                                exc_info=(asr_errors == 1))
+                    log.warning(
+                        "ASR decode error #%d (resetting stream)",
+                        asr_errors,
+                        exc_info=(asr_errors == 1),
+                    )
                     last_partial = ""
                     last_published_partial = ""
                     segment.reset()
@@ -6381,7 +7173,7 @@ class SherpaOnnxEngine(AudioEngine):
                     # tail subtracted from the first recovered block).
                     if self._aec is not None:
                         self._aec.reset()
-                        self._far_ref.clear()
+                        self._clear_playback_reference()
                     if self._aec_asr is not None:
                         self._aec_asr.reset()
                     try:
@@ -6413,9 +7205,7 @@ class SherpaOnnxEngine(AudioEngine):
             # external callbacks. On an unexpected loop exit the still-current
             # callback can publish SHUTDOWN; on intentional teardown the local
             # tracker nevertheless closes instead of retaining a phantom turn.
-            shutdown_terminal = acoustic_turn.abort(
-                emitted_at=time.perf_counter()
-            )
+            shutdown_terminal = acoustic_turn.abort(emitted_at=time.perf_counter())
             if shutdown_terminal is not None:
                 shutdown_acoustic, shutdown_revision = shutdown_terminal
                 self._emit_transcript_abort(
@@ -6428,8 +7218,106 @@ class SherpaOnnxEngine(AudioEngine):
                 del self._capture_callback_context.epoch
             except AttributeError:
                 pass
+            try:
+                del self._capture_callback_context.capture_generation
+            except AttributeError:
+                pass
 
-    def _reset_capture_frontends_after_reopen(self) -> None:
+    def _reset_capture_frontends_after_gap(
+        self,
+        *,
+        capture_sample_rate: int,
+    ) -> None:
+        """Reset streaming state after lost PCM without changing authority.
+
+        A mailbox/device overrun is a temporal discontinuity in the same
+        physical capture domain. Reset every stateful processor that could
+        bridge missing samples, but preserve calibration, route attestation,
+        enrollment, and the open-speaker barge policy.
+        """
+
+        self._capture_sr = int(capture_sample_rate)
+        self._resampler = (
+            AudioResampler(
+                self._capture_sr,
+                self.config.sample_rate,
+                quality=self.config.resampler_quality,
+            )
+            if self._capture_sr != self.config.sample_rate
+            else None
+        )
+        self._pre_gain_resampler = (
+            AudioResampler(
+                self._capture_sr,
+                self.config.sample_rate,
+                quality=self.config.resampler_quality,
+            )
+            if self._capture_sr != self.config.sample_rate
+            else None
+        )
+        if self._input_agc is not None:
+            # InputAGC.reset() retires adaptive gain while preserving its
+            # calibrated noise_floor_rms, so same-domain authority is unchanged.
+            self._input_agc.reset()
+        self._recovery_calibration_blocks.clear()
+
+        for processor in (self._denoiser, self._aec, self._aec_asr):
+            reset = getattr(processor, "reset", None)
+            if callable(reset):
+                try:
+                    reset()
+                except Exception:  # noqa: BLE001 - discontinuity stays terminal
+                    pass
+        vad_reset = getattr(self._vad, "reset", None)
+        if callable(vad_reset):
+            try:
+                vad_reset()
+            except Exception:  # noqa: BLE001 - recognizer reset still isolates
+                pass
+
+        self._word_cut_fed_stream = False
+        self._word_cut_base = ""
+        self._word_cut_quiet_run = 0
+        self._word_cut_energy_run = 0
+        self._virtual_near_end_above = False
+        self._clear_word_cut_candidate()
+        self._clear_word_cut_vad_preroll()
+        self._word_cut_pending_pcm.clear()
+        self._word_cut_pending_samples = 0
+        self._word_cut_pending_offline_recovery = False
+        self._clear_word_cut_tail_stage()
+        self._wc_reply_active = False
+        self._barge_sustain_reset_pending = True
+        self._end_barge_confirm()
+        self._confirm_handoff_pending = None
+        self._confirm_handoff_stream_live = False
+
+        dtd_boundary = getattr(self._dtd, "new_run", None)
+        if not callable(dtd_boundary):
+            dtd_boundary = getattr(self._dtd, "reset", None)
+        if callable(dtd_boundary):
+            try:
+                dtd_boundary()
+            except Exception:  # noqa: BLE001 - best-effort DSP reset
+                pass
+        coherence_reset = getattr(self._echo_coherence, "reset", None)
+        if callable(coherence_reset):
+            try:
+                coherence_reset()
+            except Exception:  # noqa: BLE001 - best-effort DSP reset
+                pass
+        delay_continuity_reset = getattr(self._aec_delay_cal, "reset_continuity", None)
+        if callable(delay_continuity_reset):
+            try:
+                delay_continuity_reset()
+            except Exception:  # noqa: BLE001 - retain the operating delay
+                pass
+
+    def _reset_capture_frontends_after_reopen(
+        self,
+        *,
+        capture_sample_rate: Optional[int] = None,
+    ) -> None:
         """Rebind state; preserve or relearn calibration before authority."""
         import sounddevice as sd
 
@@ -6437,12 +7325,19 @@ class SherpaOnnxEngine(AudioEngine):
         old_resolution = self._capture_resolution
         old_calibration = self._last_calibration
         old_speech_evidence_profile = self._speech_evidence_profile
+        old_ambient_rms = self._ambient_rms
+        old_playback_floor_rms = self._playback_floor_rms
+        old_raw_playback_floor_rms = self._raw_playback_floor_rms
         old_agc_floor = (
             float(self._input_agc.noise_floor_rms)
             if self._input_agc is not None
             else None
         )
-        self._capture_sr = int(self._stream_in.actual_samplerate)
+        self._capture_sr = int(
+            self._stream_in.actual_samplerate
+            if capture_sample_rate is None
+            else capture_sample_rate
+        )
         self._resampler = (
             AudioResampler(
                 self._capture_sr,
@@ -6466,9 +7361,6 @@ class SherpaOnnxEngine(AudioEngine):
         self._recovery_calibration_blocks.clear()
         self._recovery_calibration_target = 0
         self._recovery_calibration_retried = False
-        self._ambient_rms = 0.0
-        self._playback_floor_rms = 0.0
-        self._raw_playback_floor_rms = 0.0
 
         for processor in (self._denoiser, self._aec, self._aec_asr):
             reset = getattr(processor, "reset", None)
@@ -6477,8 +7369,7 @@ class SherpaOnnxEngine(AudioEngine):
                     reset()
                 except Exception:  # noqa: BLE001 - recovery remains fail-safe
                     pass
-        if self._far_ref is not None:
-            self._far_ref.clear()
+        self._clear_playback_reference()
         vad_reset = getattr(self._vad, "reset", None)
         if callable(vad_reset):
             try:
@@ -6504,61 +7395,97 @@ class SherpaOnnxEngine(AudioEngine):
         self._end_barge_confirm()
         self._confirm_handoff_pending = None
 
-        for detector in (self._dtd, self._echo_coherence, self._aec_delay_cal):
-            reset = getattr(detector, "reset", None)
-            if callable(reset):
-                try:
-                    reset()
-                except Exception:  # noqa: BLE001
-                    pass
-        if self._coh_ref_q is not None:
-            self._coh_ref_q.clear()
-
         if self._speaker_gate is not None:
             self._speaker_gate.clear_enrollment()
         actual_selector = self._stream_in.actual_device
+        # Resolve identity first with all playback-time authority fail-closed.
+        # This comparison must happen before choosing whether learned floors and
+        # the delay estimator describe the newly opened source.
+        route_ok = self._resolve_capture_domain(
+            sd,
+            actual_selector,
+            restore_authority=False,
+        )
+        new_resolution = self._capture_resolution
+        same_domain = bool(
+            old_resolution is not None
+            and new_resolution is not None
+            and old_resolution.route == new_resolution.route
+            and old_resolution.capture_sample_rate == new_resolution.capture_sample_rate
+            and old_resolution.model_sample_rate == new_resolution.model_sample_rate
+            and old_resolution.resampler == new_resolution.resampler
+            and old_resolution.voice_comm == new_resolution.voice_comm
+        )
+
+        if self._dtd is not None:
+            dtd_boundary = (
+                getattr(self._dtd, "new_run", None)
+                if same_domain
+                else getattr(self._dtd, "reset", None)
+            )
+            if not callable(dtd_boundary):
+                dtd_boundary = getattr(self._dtd, "reset", None)
+            if callable(dtd_boundary):
+                try:
+                    dtd_boundary()
+                except Exception:  # noqa: BLE001 - capture stays fail-safe
+                    pass
+        coherence_reset = getattr(self._echo_coherence, "reset", None)
+        if callable(coherence_reset):
+            try:
+                coherence_reset()
+            except Exception:  # noqa: BLE001
+                pass
+        delay_boundary = getattr(
+            self._aec_delay_cal,
+            "reset_continuity" if same_domain else "reset",
+            None,
+        )
+        if callable(delay_boundary):
+            try:
+                delay_boundary()
+                current_delay = getattr(
+                    self._aec_delay_cal,
+                    "current_delay_samples",
+                    None,
+                )
+                if callable(current_delay):
+                    self._aec_ref_delay = int(current_delay())
+            except Exception:  # noqa: BLE001 - retain the last safe delay
+                pass
+
         needs_calibration = bool(
             self.config.input_calibrate
             and float(self.config.input_calibrate_sec) > 0.0
             and (
-                self._input_agc is not None
-                or self.config.final_speech_evidence_enabled
+                self._input_agc is not None or self.config.final_speech_evidence_enabled
             )
         )
         calibration_state = "not configured"
-        if needs_calibration:
-            # Resolve the new physical domain without restoring any playback-time
-            # or speaker authority. This builds a comparable route/rate identity
-            # while the previous calibrated floor is still available.
-            route_ok = self._resolve_capture_domain(
-                sd, actual_selector, restore_authority=False
+        if same_domain:
+            self._ambient_rms = old_ambient_rms
+            self._playback_floor_rms = old_playback_floor_rms
+            self._raw_playback_floor_rms = old_raw_playback_floor_rms
+            self._last_calibration = old_calibration
+            self._speech_evidence_profile = old_speech_evidence_profile
+            if self._input_agc is not None and old_agc_floor is not None:
+                self._input_agc.noise_floor_rms = old_agc_floor
+            self._apply_capture_domain_authority(
+                route_verified=route_ok,
+                restore_authority=True,
             )
-            new_resolution = self._capture_resolution
-            same_domain = bool(
-                old_resolution is not None
-                and new_resolution is not None
-                and old_resolution.route == new_resolution.route
-                and old_resolution.capture_sample_rate
-                == new_resolution.capture_sample_rate
-                and old_resolution.model_sample_rate
-                == new_resolution.model_sample_rate
-                and old_resolution.resampler == new_resolution.resampler
-                and old_resolution.voice_comm == new_resolution.voice_comm
-            )
-            if same_domain and old_calibration is not None:
-                self._last_calibration = old_calibration
-                self._speech_evidence_profile = old_speech_evidence_profile
-                if self._input_agc is not None and old_agc_floor is not None:
-                    self._input_agc.noise_floor_rms = old_agc_floor
-                route_ok = self._resolve_capture_domain(sd, actual_selector)
-                calibration_state = "preserved"
-            else:
-                self._last_calibration = None
-                self._speech_evidence_profile = None
-                if self._input_agc is not None:
-                    self._input_agc.noise_floor_rms = float(
-                        self.config.input_agc_noise_floor_rms
-                    )
+            calibration_state = "preserved"
+        else:
+            self._ambient_rms = 0.0
+            self._playback_floor_rms = 0.0
+            self._raw_playback_floor_rms = 0.0
+            self._last_calibration = None
+            self._speech_evidence_profile = None
+            if self._input_agc is not None:
+                self._input_agc.noise_floor_rms = float(
+                    self.config.input_agc_noise_floor_rms
+                )
+            if needs_calibration:
                 self._recovery_calibration_target = max(
                     1,
                     int(
@@ -6568,19 +7495,15 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                     ),
                 )
-                self._recovery_calibration_retried = False
                 route_ok = False
                 calibration_state = (
                     f"pending {self._recovery_calibration_target} quiet blocks"
                 )
-        else:
-            self._last_calibration = None
-            self._speech_evidence_profile = None
-            if self._input_agc is not None:
-                self._input_agc.noise_floor_rms = float(
-                    self.config.input_agc_noise_floor_rms
+            else:
+                self._apply_capture_domain_authority(
+                    route_verified=route_ok,
+                    restore_authority=True,
                 )
-            route_ok = self._resolve_capture_domain(sd, actual_selector)
         log.warning(
             "capture reopened: %d -> %d Hz, device=%r; front ends reset, "
             "calibration=%s, speaker gate %s, word-cut route %s",
@@ -6588,10 +7511,12 @@ class SherpaOnnxEngine(AudioEngine):
             self._capture_sr,
             actual_selector,
             calibration_state,
-            "revalidated" if self._speaker_gate and self._speaker_gate.is_enrolled else "fail-open",
-            "verified" if route_ok else (
-                "pending" if self._recovery_calibration_target else "disabled"
-            ),
+            "revalidated"
+            if self._speaker_gate and self._speaker_gate.is_enrolled
+            else "fail-open",
+            "verified"
+            if route_ok
+            else ("pending" if self._recovery_calibration_target else "disabled"),
         )
 
     def _observe_recovery_calibration(
@@ -6615,10 +7540,7 @@ class SherpaOnnxEngine(AudioEngine):
         if not block.size:
             return
         self._recovery_calibration_blocks.append(block.copy())
-        if (
-            len(self._recovery_calibration_blocks)
-            < self._recovery_calibration_target
-        ):
+        if len(self._recovery_calibration_blocks) < self._recovery_calibration_target:
             return
 
         from ..audio_frontend import compute_input_calibration
@@ -6628,9 +7550,7 @@ class SherpaOnnxEngine(AudioEngine):
         self._report_input_clipping(
             float(calibration.get("clipping_fraction", 0.0) or 0.0)
         )
-        speech_contaminated = self._calibration_contains_vad_speech(
-            calibration_pcm
-        )
+        speech_contaminated = self._calibration_contains_vad_speech(calibration_pcm)
         evidence_stable = bool(
             not _calibration_has_suspicious_transient(calibration)
             and float(calibration.get("clipping_fraction", 0.0) or 0.0) <= 0.02
@@ -6713,37 +7633,24 @@ class SherpaOnnxEngine(AudioEngine):
             "verified" if route_ok else "disabled",
         )
         try:
-            self._emit_capture_callback(
-                self._cb.on_metric, "capture_recalibrated"
-            )
+            self._emit_capture_callback(self._cb.on_metric, "capture_recalibrated")
         except Exception:  # noqa: BLE001 - telemetry is best-effort
             pass
 
     def _on_capture_state(self, state, message: str) -> None:
-        """Forward the recovering wrapper's state changes up to the runtime.
+        """Queue lifecycle state in O(1); the processor emits callbacks."""
 
-        ``state`` is a :class:`core.engines._recovering_input.StreamState`
-        but we marshal it to its string value so the engine callback
-        contract stays plain-Python -- no cross-module enum imports
-        required of shells. The runtime publishes it as an AgentEvent;
-        the watchdog uses it to suppress its 'audio thread stalled'
-        warning during legitimate reopens."""
-        state_str = getattr(state, "value", str(state))
-        try:
-            self._emit_capture_callback(
-                self._cb.on_capture_state, state_str, message
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("on_capture_state callback raised")
-        # Metric for the run summary: every reopen leaves a trace.
-        if state_str == "recovering":
-            self._emit_capture_callback(
-                self._cb.on_metric, "capture_recovery_start"
-            )
-        elif state_str == "open":
-            self._emit_capture_callback(
-                self._cb.on_metric, "capture_recovery_end"
-            )
+        lane = self._capture_control_lane
+        if lane is None:
+            return
+        generation, device = self._capture_source_identity()
+        lane.offer(
+            state,
+            message,
+            capture_epoch=self._capture_epoch,
+            source_generation=generation,
+            source_device=device,
+        )
 
     def _poll_keywords(
         self,
@@ -6751,6 +7658,10 @@ class SherpaOnnxEngine(AudioEngine):
         *,
         guard_private_route: bool = False,
         require_os_echo_route: bool = False,
+        speaking: Optional[bool] = None,
+        allow_publish: bool = True,
+        detected_at: Optional[float] = None,
+        os_echo_route_verified: Optional[bool] = None,
     ) -> bool:
         """Publish one mapped keyword and report that its acoustic turn ended."""
         kws = self._kws
@@ -6763,6 +7674,8 @@ class SherpaOnnxEngine(AudioEngine):
         keyword = kws.get_result(ks)
         if keyword:
             kws.reset_stream(ks)
+            if not allow_publish:
+                return False
             route_guard = (
                 self._virtual_route_failure_lock
                 if guard_private_route
@@ -6775,7 +7688,11 @@ class SherpaOnnxEngine(AudioEngine):
                         or self._virtual_route_failure_in_progress
                         or (
                             require_os_echo_route
-                            and not self._os_echo_route_verified
+                            and not (
+                                self._os_echo_route_verified
+                                if os_echo_route_verified is None
+                                else os_echo_route_verified
+                            )
                         )
                     ):
                         return False
@@ -6789,7 +7706,7 @@ class SherpaOnnxEngine(AudioEngine):
                 # false-positives on containing words, and now-playing alone
                 # misses the tail of a sentence that just finished). Same
                 # own-TTS control-ambiguity concern as ADR-0042.
-                if self._speaking.is_set():
+                if self._speaking.is_set() if speaking is None else speaking:
                     spotted_words = set(normalize_command(keyword).split())
                     recent = [str(getattr(self, "_now_playing", "") or "")]
                     recent.extend(str(t) for t in getattr(self, "_recent_spoken", ()))
@@ -6805,7 +7722,10 @@ class SherpaOnnxEngine(AudioEngine):
                         )
                         return False
                 if self._capture_callback_is_current():
-                    return self._emit_command_callback(keyword)
+                    return self._emit_command_callback(
+                        keyword,
+                        detected_at=detected_at,
+                    )
         return False
 
     def _enqueue_play(
@@ -6819,7 +7739,17 @@ class SherpaOnnxEngine(AudioEngine):
         # the generation before this sentence is dequeued, the worker drops it.
         # ``directives`` (opt-in expressive markup) rides alongside to _synthesize.
         with self._gen_lock:
+            claim_pending = getattr(self, "_confirmed_barge_claim", None) is not None
             gen = self._speak_gen
+        if claim_pending:
+            # Runtime cancellation runs inside the confirmed-barge callback.
+            # Reject reentrant/new speech until that callback and its stop effect
+            # complete; otherwise an item stamped with the claimed generation
+            # could become a new playback run immediately after the claim lifts.
+            if on_done:
+                on_done()
+            self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
+            return
         item = (text, on_done, gen, directives, ticket)
         try:
             self._play_q.put_nowait(item)
@@ -6859,7 +7789,10 @@ class SherpaOnnxEngine(AudioEngine):
         wipe-race guard is unit-testable.
         """
         with self._gen_lock:
-            if item_gen != self._speak_gen:
+            if (
+                getattr(self, "_confirmed_barge_claim", None) is not None
+                or item_gen != self._speak_gen
+            ):
                 return None
             self._stop_speaking.clear()
             return item_gen
@@ -6885,16 +7818,12 @@ class SherpaOnnxEngine(AudioEngine):
 
         Locks taken here are all short copy locks: the FIFO's own (+ a
         non-blocking notify) and ``FarEndRing``'s (a microsecond slice copy,
-        shared with the capture thread's cheap ring read). The coherence
-        reference is NO LONGER ingested here (audio-bargein-8): instead of calling
-        ``EchoCoherenceDetector.note_playback`` -- whose lock the capture thread
-        holds while ``decide`` concatenates the whole reference ring -- the played
-        block is handed to the capture thread via a lock-free SPSC deque
-        (``_coh_ref_q``) and ingested there. That removes the only contended lock
-        from this real-time thread, so ``coherence_ring_ms`` can be raised (e.g.
-        per-profile audio tuning) without risking an audio-callback stall.
-        Allocation-light but not alloc-free: one small play_sr->16k resample for
-        the far ring + one block copy for the coherence hand-off, sub-100us."""
+        shared with the reader's bounded context snapshot). Coherence is not
+        ingested here: the reader snapshots the same reference timeline into
+        each captured block, and the processor feeds that immutable window.
+        This keeps the detector's longer lock completely off the real-time
+        callback. Allocation-light but not alloc-free: one small stateful
+        play_sr->model-rate resample for the reference timeline."""
         view = outdata[:, 0]
         try:
             fifo = self._fifo
@@ -6902,8 +7831,10 @@ class SherpaOnnxEngine(AudioEngine):
                 view[:] = 0.0
                 return
             # Drain the FIFO into the device buffer (zero-fills any underrun tail)
-            # and learn how many of those samples are REAL audio (vs zero-fill) so
-            # we tee only the played audio into the echo refs.
+            # and learn how many of those samples are REAL audio (vs zero-fill).
+            # The reference timeline below tees the FULL callback frame: silence
+            # advances the playback clock too, which is required to snapshot the
+            # exact far coordinate for a later-processed capture block.
             n = fifo.read_into(view)
             # Duck-then-confirm barge gate: while a confirm window is open the
             # capture thread sets _duck_gain < 1.0 and playback is attenuated
@@ -6938,33 +7869,59 @@ class SherpaOnnxEngine(AudioEngine):
                 # coherence echo reference, and the AEC far-end ring.
                 self._note_playback_level(played)
                 self._last_playback_at = time.monotonic()
-                # audio-bargein-8: hand the played block to the capture thread via
-                # a lock-free deque instead of calling note_playback HERE -- that
-                # takes the coherence lock (and the capture thread holds it while
-                # concatenating the whole reference ring in decide()), the one
-                # contended lock on this real-time audio thread. COPY: `played` is
-                # a view into the device buffer PortAudio reuses, so it must be
-                # snapshotted before it leaves this callback.
-                if self._coh_ref_q is not None and self._play_sr:
-                    self._coh_ref_q.append(np.array(played, dtype=np.float32, copy=True))
-                if self._far_ref is not None:
-                    # Tee the just-played block into the AEC far ring at 16 kHz.
-                    # The ring write head now == the true playback position, which
-                    # is what makes the far-end reference align for DTLN.
-                    ref16 = (
-                        _resample_linear(played, self._play_sr, self.config.sample_rate)
-                        if self._play_sr != self.config.sample_rate
-                        else played
-                    )
-                    self._far_ref.push(ref16)
                 # Stamp TTS_FIRST_AUDIO at the TRUE first-played instant (moved
                 # here from the producer so the metric means "first audible", and
                 # a flushed/stopped utterance that never plays never stamps it).
                 if self._first_audio_pending:
                     self._first_audio_pending = False
                     self._cb.on_metric(TTS_FIRST_AUDIO)
+            reference_ring = (
+                self._far_ref if self._far_ref is not None else self._playback_ref
+            )
+            if reference_ring is not None and self._play_sr:
+                played_timeline = view[:frames]
+                if self._play_sr != self.config.sample_rate:
+                    reference_resampler = self._playback_reference_resampler
+                    if (
+                        reference_resampler is None
+                        or reference_resampler.src_sr != self._play_sr
+                        or reference_resampler.dst_sr != self.config.sample_rate
+                    ):
+                        # One-time/domain-change allocation. The callback is the
+                        # sole mutator after publication, so phase cannot reset
+                        # between ordinary callback blocks or replies.
+                        reference_resampler = _PlaybackReferenceResampler(
+                            self._play_sr,
+                            self.config.sample_rate,
+                        )
+                        self._playback_reference_resampler = reference_resampler
+                    ref16 = reference_resampler.process(played_timeline)
+                else:
+                    ref16 = played_timeline
+                reference_ring.push(ref16)
         except Exception:  # noqa: BLE001 - a transient must never kill the audio thread
             pass
+
+    @staticmethod
+    def _barge_watch_active_at(
+        now: float,
+        *,
+        speaking: bool,
+        first_audio_pending: bool,
+        playback_level: float,
+        last_playback_at: float,
+    ) -> bool:
+        if not speaking:
+            return False
+        if not first_audio_pending:
+            return True
+        if not (
+            math.isfinite(playback_level)
+            and playback_level > 1e-5
+            and last_playback_at > 0.0
+        ):
+            return False
+        return now - last_playback_at <= _BARGE_TAIL_FRESH_SEC
 
     def _barge_watch_active(self) -> bool:
         """Whether playback-time barge-in has a real acoustic reference.
@@ -6978,15 +7935,13 @@ class SherpaOnnxEngine(AudioEngine):
         for the next utterance while the prior tail is still audible; a recent
         playback block plus playback level keeps the watch enabled for that gap.
         """
-        if not self._speaking.is_set():
-            return False
-        if not self._first_audio_pending:
-            return True
-        level = self._playback_level
-        last_playback_at = getattr(self, "_last_playback_at", 0.0)
-        if not (math.isfinite(level) and level > 1e-5 and last_playback_at > 0.0):
-            return False
-        return time.monotonic() - last_playback_at <= _BARGE_TAIL_FRESH_SEC
+        return self._barge_watch_active_at(
+            time.monotonic(),
+            speaking=self._speaking.is_set(),
+            first_audio_pending=self._first_audio_pending,
+            playback_level=self._playback_level,
+            last_playback_at=getattr(self, "_last_playback_at", 0.0),
+        )
 
     def _playback_loop(self) -> None:
         import sounddevice as sd
@@ -7017,13 +7972,6 @@ class SherpaOnnxEngine(AudioEngine):
                         on_done()
                     self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
                     continue
-                # What is audibly playing RIGHT NOW -- the primary reference for
-                # the barge-confirm echo filter. The _recent_spoken ring holds
-                # ENQUEUED sentences, and a long reply queues more than the ring
-                # holds, evicting the currently-playing (older) one -- live bug
-                # run-20260702-223217: the current sentence's garbled echo passed
-                # the filter and false-confirmed a barge. Bare str write.
-                self._now_playing = text
                 # Reset the one-barge-in-per-run latch only on the silent->
                 # speaking transition (a genuinely NEW reply), NOT per dequeued
                 # sentence: _speaking is set per sentence but clears only when the
@@ -7031,6 +7979,26 @@ class SherpaOnnxEngine(AudioEngine):
                 # firing mid-reply and reintroduce the self-storm. A fresh
                 # interruption after the assistant goes idle still re-enables.
                 was_speaking = self._speaking.is_set()
+                if not was_speaking:
+                    with self._gen_lock:
+                        playback_start_allowed = bool(
+                            getattr(self, "_confirmed_barge_claim", None) is None
+                            and my_gen == self._speak_gen
+                        )
+                        if playback_start_allowed:
+                            self._playback_generation += 1
+                    if not playback_start_allowed:
+                        if on_done:
+                            on_done()
+                        self._queue_direct_receipt(ticket, PlaybackOutcome.DROPPED)
+                        continue
+                # What is audibly playing RIGHT NOW -- the primary reference for
+                # the barge-confirm echo filter. The _recent_spoken ring holds
+                # ENQUEUED sentences, and a long reply queues more than the ring
+                # holds, evicting the currently-playing (older) one -- live bug
+                # run-20260702-223217: the current sentence's garbled echo passed
+                # the filter and false-confirmed a barge. Bare str write.
+                self._now_playing = text
                 self._speaking.set()
                 # A sentence is now being produced: arm the dry-gap window for the
                 # audio callback (cleared in the finally once the queue drains,
@@ -7116,7 +8084,9 @@ class SherpaOnnxEngine(AudioEngine):
                 try:
                     if out is None:
                         out_dev = _norm_device(self.config.output_device)
-                        self._tts_sr = int(getattr(self._tts, "sample_rate", 0)) or 22050
+                        self._tts_sr = (
+                            int(getattr(self._tts, "sample_rate", 0)) or 22050
+                        )
                         # Callback-driven stream: PortAudio pulls audio from
                         # _audio_cb (which drains the FIFO + tees the far ring from
                         # the true playback position), instead of us pushing via a
@@ -7133,7 +8103,9 @@ class SherpaOnnxEngine(AudioEngine):
                         # common rate -- portable across devices, deterministic.
                         try:
                             default_sr = int(
-                                sd.query_devices(out_dev, kind="output")["default_samplerate"]
+                                sd.query_devices(out_dev, kind="output")[
+                                    "default_samplerate"
+                                ]
                             )
                         except Exception:  # noqa: BLE001 - fall back to a safe common rate
                             default_sr = 44100
@@ -7141,15 +8113,22 @@ class SherpaOnnxEngine(AudioEngine):
                         for cand in (self._tts_sr, default_sr, 48000, 44100):
                             try:
                                 sd.check_output_settings(
-                                    device=out_dev, samplerate=cand, channels=1, dtype="float32"
+                                    device=out_dev,
+                                    samplerate=cand,
+                                    channels=1,
+                                    dtype="float32",
                                 )
                                 play_sr = cand
                                 break
                             except Exception:  # noqa: BLE001 - try the next candidate
                                 continue
                         out = sd.OutputStream(
-                            channels=1, samplerate=play_sr, dtype="float32",
-                            device=out_dev, latency="low", callback=self._audio_cb,
+                            channels=1,
+                            samplerate=play_sr,
+                            dtype="float32",
+                            device=out_dev,
+                            latency="low",
+                            callback=self._audio_cb,
                         )
                         # PortAudio/ALSA creates the PipeWire stream in the
                         # constructor. Prove its *initial* target while it is
@@ -7160,6 +8139,14 @@ class SherpaOnnxEngine(AudioEngine):
                         out.start()
                         self._authorize_virtual_playback_route()
                         self._play_sr = play_sr
+                        self._playback_reference_resampler = (
+                            _PlaybackReferenceResampler(
+                                play_sr,
+                                self.config.sample_rate,
+                            )
+                            if play_sr != self.config.sample_rate
+                            else None
+                        )
                         # Anti-imaging playback resampler for the producer write()
                         # path (worker thread). Built here so it always matches the
                         # FINAL play_sr (incl. reopens at a new rate); the linear
@@ -7175,14 +8162,19 @@ class SherpaOnnxEngine(AudioEngine):
                             else None
                         )
                         if play_sr == self._tts_sr:
-                            log.info("playback opened at %d Hz on device %s (callback)",
-                                     play_sr, out_dev if out_dev is not None else "default")
+                            log.info(
+                                "playback opened at %d Hz on device %s (callback)",
+                                play_sr,
+                                out_dev if out_dev is not None else "default",
+                            )
                         else:
                             log.info(
                                 "playback opened at %d Hz on device %s (callback; "
                                 "resampling from %d Hz TTS -- device rejects %d Hz)",
-                                play_sr, out_dev if out_dev is not None else "default",
-                                self._tts_sr, self._tts_sr,
+                                play_sr,
+                                out_dev if out_dev is not None else "default",
+                                self._tts_sr,
+                                self._tts_sr,
                             )
                         # Allocate the FIFO once the FINAL play_sr is known (so it
                         # survives the 22050->44100 reopen). The producer write()
@@ -7209,6 +8201,19 @@ class SherpaOnnxEngine(AudioEngine):
                             )
                             self._fail_virtual_route(detail)
                             raise RuntimeError(detail)
+                        # A stopped native stream breaks the callback sample
+                        # coordinate. Drop the retired reference and restart its
+                        # rational phase exactly here, not on ordinary callbacks
+                        # or silent/reply boundaries.
+                        self._clear_playback_reference()
+                        self._playback_reference_resampler = (
+                            _PlaybackReferenceResampler(
+                                self._play_sr,
+                                self.config.sample_rate,
+                            )
+                            if self._play_sr != self.config.sample_rate
+                            else None
+                        )
                         out.start()
                     fifo_for_item = self._fifo
                     play_sr_for_item = int(self._play_sr)
@@ -7307,7 +8312,8 @@ class SherpaOnnxEngine(AudioEngine):
                             log.warning(
                                 "playback underran %d blocks this reply -- TTS synth not "
                                 "keeping the output buffer full (CPU contention from the "
-                                "ASR/second-pass worker?); raises buzzy/glitchy artifacts", _ur,
+                                "ASR/second-pass worker?); raises buzzy/glitchy artifacts",
+                                _ur,
                             )
                             self._cb.on_metric("playback_underrun")
                         # Inter-sentence dry gaps: fully-empty blocks while a later
@@ -7321,7 +8327,8 @@ class SherpaOnnxEngine(AudioEngine):
                                 "playback dry-gapped %d blocks this reply -- the FIFO "
                                 "fully emptied between sentences while synthesis was "
                                 "still producing (whole-clip synth or CPU contention "
-                                "outpaced playback); the listener heard dead air", _dg,
+                                "outpaced playback); the listener heard dead air",
+                                _dg,
                             )
                             self._cb.on_metric("playback_dry_gap")
                         # Fix 5b: self-size the FIFO lead from THIS reply's underrun
@@ -7332,7 +8339,9 @@ class SherpaOnnxEngine(AudioEngine):
                         # empty one) is safe across the swap. Takes effect next reply.
                         seed = float(self.config.playback_fifo_sec)
                         prev = self._playback_fifo_sec_cur
-                        self._playback_fifo_sec_cur = self._next_fifo_sec(prev, _ur, seed)
+                        self._playback_fifo_sec_cur = self._next_fifo_sec(
+                            prev, _ur, seed
+                        )
                         if (
                             playback_drained
                             and abs(self._playback_fifo_sec_cur - prev) > 1e-3
@@ -7344,15 +8353,17 @@ class SherpaOnnxEngine(AudioEngine):
                             )
                             log.info(
                                 "playback FIFO lead -> %.2fs (seed %.2fs, underran %d)",
-                                self._playback_fifo_sec_cur, seed, _ur,
+                                self._playback_fifo_sec_cur,
+                                seed,
+                                _ur,
                             )
                         self._playback_level = 0.0  # nothing playing -> no echo ref
                         self._last_playback_at = 0.0
-                        self._last_speaking_end = time.monotonic()  # arm the L2 refractory
+                        self._last_speaking_end = (
+                            time.monotonic()
+                        )  # arm the L2 refractory
                         if self._echo_coherence is not None:
                             self._echo_coherence.reset()  # drop the stale reference
-                            if self._coh_ref_q is not None:
-                                self._coh_ref_q.clear()  # audio-bargein-8: + un-ingested blocks
                         if self._dtd is not None:
                             # Run boundary, NOT a full reset: the learned echo charts
                             # persist across replies (2026-06-10 contamination fix --
@@ -7362,8 +8373,7 @@ class SherpaOnnxEngine(AudioEngine):
                         # Drop the far-end reference + reset the canceller so a
                         # cut-off sentence's stale tail isn't subtracted from the
                         # next near-end block once playback resumes.
-                        if self._far_ref is not None:
-                            self._far_ref.clear()
+                        self._clear_playback_reference()
                         if self._aec is not None:
                             self._aec.reset()
                         if self._aec_asr is not None:
@@ -7388,14 +8398,14 @@ class SherpaOnnxEngine(AudioEngine):
                             out = None
                             self._fifo = None
                             # The next open may negotiate a different play_sr;
-                            # never reuse a resampler bound to the old rate.
+                            # never reuse either resampler/sample clock bound to
+                            # the old native output domain.
                             self._play_resampler = None
+                            self._playback_reference_resampler = None
                         self._cb.on_speech_end()
         except Exception as exc:
             if self._virtual_audio_binder is not None:
-                self._fail_virtual_route(
-                    f"virtual playback route failed closed: {exc}"
-                )
+                self._fail_virtual_route(f"virtual playback route failed closed: {exc}")
             log.exception("playback loop crashed -- the assistant has gone mute")
             self._playback_stopping.set()
             self._running.clear()
@@ -7423,9 +8433,7 @@ class SherpaOnnxEngine(AudioEngine):
                 fifo = self._fifo
                 if fifo is not None:
                     fifo.interrupt_tags(exit_outcome)
-                self._terminalize_unbound_receipts(
-                    claimed_outcome=exit_outcome
-                )
+                self._terminalize_unbound_receipts(claimed_outcome=exit_outcome)
             # Drop the shared handle before teardown so a concurrent
             # stop_speaking() can't flush a stream we're closing. Clear the FIFO
             # too so a never-restarted loop holds no playback buffer. stop()/
@@ -7603,10 +8611,7 @@ class SherpaOnnxEngine(AudioEngine):
         streaming_candidate = bool(
             self._tts_can_stream
             and not leveler_on
-            and (
-                target_rms <= 0.0
-                or (target_rms > 0.0 and carried_gain is not None)
-            )
+            and (target_rms <= 0.0 or (target_rms > 0.0 and carried_gain is not None))
         )
         log.info(
             "tts resolved: %s",
@@ -7644,8 +8649,10 @@ class SherpaOnnxEngine(AudioEngine):
                 else None
             )
             _stream_with_rms = _norm_gain is not None
-            if self._tts_can_stream and not leveler_on and (
-                target_rms <= 0.0 or _stream_with_rms
+            if (
+                self._tts_can_stream
+                and not leveler_on
+                and (target_rms <= 0.0 or _stream_with_rms)
             ):
                 _lowpass = StreamingLowpass(stream_sr, lowpass_hz)
                 _raw_sumsq = 0.0
@@ -7664,7 +8671,14 @@ class SherpaOnnxEngine(AudioEngine):
                 _q_n = 0
 
                 def on_chunk(samples, *_progress) -> int:
-                    nonlocal _raw_sumsq, _raw_count, _q_sum, _q_sumsq, _q_peak, _q_clip, _q_n
+                    nonlocal \
+                        _raw_sumsq, \
+                        _raw_count, \
+                        _q_sum, \
+                        _q_sumsq, \
+                        _q_peak, \
+                        _q_clip, \
+                        _q_n
                     raw = np.asarray(samples, dtype="float32").reshape(-1)
                     # DC-block FIRST so the raw-RMS/peak/dc metrics + normalize all
                     # see a centred signal (state carries across chunks + sentences).
@@ -7679,13 +8693,15 @@ class SherpaOnnxEngine(AudioEngine):
                             apply_gain_soft_limit(raw, _norm_gain),
                             dtype="float32",
                         ).reshape(-1)
-                    if self.config.tts_declick:        # repair VITS impulse spikes
+                    if self.config.tts_declick:  # repair VITS impulse spikes
                         blk = np.asarray(
                             declick(blk, threshold=self.config.tts_declick_threshold),
                             dtype="float32",
                         ).reshape(-1)
                     if _lowpass.enabled:
-                        blk = np.asarray(_lowpass.process(blk), dtype="float32").reshape(-1)
+                        blk = np.asarray(
+                            _lowpass.process(blk), dtype="float32"
+                        ).reshape(-1)
                         # A causal filter can overshoot after upstream limiting; keep
                         # the actual PortAudio feed finite and inside float full-scale.
                         blk = np.nan_to_num(blk, nan=0.0, posinf=0.0, neginf=0.0)
@@ -7698,10 +8714,14 @@ class SherpaOnnxEngine(AudioEngine):
                         _q_clip += int(np.count_nonzero(np.abs(blk64) >= 0.99))
                         _q_n += int(blk64.size)
                     write(blk)
-                    return 0 if (
-                        self._stop_speaking.is_set()
-                        or (gen is not None and self._speak_gen != gen)
-                    ) else 1
+                    return (
+                        0
+                        if (
+                            self._stop_speaking.is_set()
+                            or (gen is not None and self._speak_gen != gen)
+                        )
+                        else 1
+                    )
 
                 try:
                     tts.generate(text, sid=sid, speed=speed, callback=on_chunk)
@@ -7745,7 +8765,7 @@ class SherpaOnnxEngine(AudioEngine):
             # target would fight the perceptual target). The applied gain is
             # carried across sentences (self._tts_level_gain_db) so loudness slews
             # smoothly across a multi-sentence reply.
-            if self.config.tts_declick:                # repair VITS impulse spikes first
+            if self.config.tts_declick:  # repair VITS impulse spikes first
                 samples = np.asarray(
                     declick(samples, threshold=self.config.tts_declick_threshold),
                     dtype="float32",
@@ -7772,7 +8792,7 @@ class SherpaOnnxEngine(AudioEngine):
                 # Store the actual linear gain applied; subsequent sentences can
                 # use the streaming path with this as their feed-forward seed.
                 self._tts_normalize_gain = min(float(target_rms) / raw_rms, 20.0)
-            if self.config.tts_declick:                # repair VITS impulse spikes
+            if self.config.tts_declick:  # repair VITS impulse spikes
                 samples = np.asarray(
                     declick(samples, threshold=self.config.tts_declick_threshold),
                     dtype="float32",
@@ -7783,8 +8803,12 @@ class SherpaOnnxEngine(AudioEngine):
         # above uses StreamingLowpass chunk-by-chunk.
         if lowpass_hz > 0.0:
             samples = np.asarray(
-                lowpass_soft(samples, sr, lowpass_hz,
-                             width_hz=self.config.tts_output_lowpass_width_hz),
+                lowpass_soft(
+                    samples,
+                    sr,
+                    lowpass_hz,
+                    width_hz=self.config.tts_output_lowpass_width_hz,
+                ),
                 dtype="float32",
             ).reshape(-1)
             # The FFT low-pass is linear and can overshoot the leveler's ceiling.
@@ -7805,7 +8829,9 @@ class SherpaOnnxEngine(AudioEngine):
         )
         chunk = max(1, int(sr * 0.1))
         for i in range(0, len(samples), chunk):
-            if self._stop_speaking.is_set() or (gen is not None and self._speak_gen != gen):
+            if self._stop_speaking.is_set() or (
+                gen is not None and self._speak_gen != gen
+            ):
                 break
             write(samples[i : i + chunk])
 
@@ -7841,7 +8867,13 @@ class SherpaOnnxEngine(AudioEngine):
         leaves the user in the residual and reads ``samples``."""
         return rms(mic_raw) if getattr(self, "_resid_blind", False) else rms(samples)
 
-    def _looks_like_user(self, samples, mic_raw=None) -> bool:
+    def _looks_like_user(
+        self,
+        samples,
+        mic_raw=None,
+        *,
+        playback_level: Optional[float] = None,
+    ) -> bool:
         # Is playback-time mic voice a genuine barge-in (vs the assistant's own TTS
         # echo)? IDENTITY-FREE: speaker/user detection is a SEPARATE feature used
         # only to gate FINALS (``_should_act_on_final``); the interrupt must never
@@ -7900,11 +8932,14 @@ class SherpaOnnxEngine(AudioEngine):
             # byte-identical: ``_apm_owns_ns`` is False.)
             resid_rms = self._dtd_residual_level(samples, mic_raw)
             resid_floor = (
-                self._raw_playback_floor_rms if getattr(self, "_resid_blind", False)
+                self._raw_playback_floor_rms
+                if getattr(self, "_resid_blind", False)
                 else self._playback_floor_rms
             )
             fired = self._dtd.decide(
-                raw_rms=rms(mic_raw), resid_rms=resid_rms, incoherent_fraction=incoh,
+                raw_rms=rms(mic_raw),
+                resid_rms=resid_rms,
+                incoherent_fraction=incoh,
             )
             # Coherence echo veto (2026-06-27 self-interrupt fix). DTD's shipped
             # weights currently ignore coherence (w_coh=0.0), so a DTLN residual
@@ -7943,7 +8978,8 @@ class SherpaOnnxEngine(AudioEngine):
                 and self.config.dtd_residual_floor_margin_db > 0.0
                 and resid_floor > 0.0
                 and not loudness_admits(
-                    resid_rms, resid_floor,
+                    resid_rms,
+                    resid_floor,
                     margin_db=self.config.dtd_residual_floor_margin_db,
                 )
             ):
@@ -7952,17 +8988,29 @@ class SherpaOnnxEngine(AudioEngine):
             # distribution -- echo-only D vs talk-over D -- to calibrate K per device.
             # ``gated`` reflects the post-floor verdict the caller acts on.
             ref_delay_ms = (
-                1000.0 * float(getattr(self, "_aec_ref_delay", 0))
+                1000.0
+                * float(getattr(self, "_aec_ref_delay", 0))
                 / max(1, int(self.config.sample_rate))
             )
             log.debug(
                 "dtd: D=%.2f K=%.1f fired=%s gated=%s (z_raw=%.2f z_resid=%.2f z_coh=%.2f) "
                 "raw=%.4f resid=%.4f incoh=%.2f resid_floor=%.4f consec=%d "
                 "coh=%s coh_veto=%s ref_delay=%.0fms",
-                self._dtd.last_D, self._dtd.k, fired, floored, self._dtd.last_z_raw,
-                self._dtd.last_z_resid, self._dtd.last_z_coh,
-                rms(mic_raw), resid_rms, incoh, resid_floor, self._dtd.last_consec,
-                coh_verdict, coh_veto, ref_delay_ms,
+                self._dtd.last_D,
+                self._dtd.k,
+                fired,
+                floored,
+                self._dtd.last_z_raw,
+                self._dtd.last_z_resid,
+                self._dtd.last_z_coh,
+                rms(mic_raw),
+                resid_rms,
+                incoh,
+                resid_floor,
+                self._dtd.last_consec,
+                coh_verdict,
+                coh_veto,
+                ref_delay_ms,
             )
             return floored
         det = self._echo_coherence
@@ -7990,7 +9038,8 @@ class SherpaOnnxEngine(AudioEngine):
                     and self.config.barge_in_residual_margin_db > 0.0
                     and self._raw_playback_floor_rms > 0.0
                     and not loudness_admits(
-                        rms(mic_raw), self._raw_playback_floor_rms,
+                        rms(mic_raw),
+                        self._raw_playback_floor_rms,
                         margin_db=self.config.barge_in_residual_margin_db,
                     )
                 ):
@@ -7998,9 +9047,14 @@ class SherpaOnnxEngine(AudioEngine):
                 log.debug(
                     "coherence barge: incoherent=%.2f baseline=%.2f eff_margin=%.2f "
                     "delay=%.0fms consec=%d raw=%.4f raw_floor=%.4f residual=%.4f",
-                    det.last_incoherent_fraction, det.last_baseline,
-                    det.last_effective_margin, det.last_delay_ms, det.last_consec,
-                    rms(mic_raw), self._raw_playback_floor_rms, rms(samples),
+                    det.last_incoherent_fraction,
+                    det.last_baseline,
+                    det.last_effective_margin,
+                    det.last_delay_ms,
+                    det.last_consec,
+                    rms(mic_raw),
+                    self._raw_playback_floor_rms,
+                    rms(samples),
                 )
                 return True
             # verdict is None -> coherence abstains (no reference yet / TTS silence);
@@ -8015,14 +9069,17 @@ class SherpaOnnxEngine(AudioEngine):
             if self._playback_floor_rms <= 0.0:
                 return False
             return loudness_admits(
-                rms(samples), self._playback_floor_rms,
+                rms(samples),
+                self._playback_floor_rms,
                 margin_db=self.config.barge_in_residual_margin_db,
             )
         # FALLBACK 2 -- AEC on, ambient-floor loudness gate (residual vs the quiet
         # floor the capture loop maintains when input_loudness_margin_db > 0).
         if self._aec is not None and self._input_loudness_margin_db > 0.0:
             return loudness_admits(
-                rms(samples), self._ambient_rms, margin_db=self._input_loudness_margin_db
+                rms(samples),
+                self._ambient_rms,
+                margin_db=self._input_loudness_margin_db,
             )
         # FALLBACK 3 -- no AEC (the echo is still in `samples`): the playback-
         # relative output-margin gate. With AEC the smaller aec_relaxed_margin_db.
@@ -8033,7 +9090,9 @@ class SherpaOnnxEngine(AudioEngine):
         )
         if margin_db > 0.0:
             return passes_output_margin(
-                rms(samples), self._playback_level, margin_db=margin_db
+                rms(samples),
+                (self._playback_level if playback_level is None else playback_level),
+                margin_db=margin_db,
             )
         # No discriminator configured -> fail open (any playback-time voice is a
         # barge). Identity is intentionally NOT consulted here: it gates FINALS.
@@ -8056,7 +9115,7 @@ class SherpaOnnxEngine(AudioEngine):
     # level within +6 dB (BURST_RATIO) and FREEZES above it -- a real barge is a
     # large outlier that must NOT raise its own bar (mirrors the coherence chart and
     # _ambient_rms "ignore upward excursions" rule).
-    _PLAYBACK_FLOOR_BURST_RATIO = 2.0   # +6 dB
+    _PLAYBACK_FLOOR_BURST_RATIO = 2.0  # +6 dB
     _PLAYBACK_FLOOR_ALPHA = 0.05
 
     def _update_playback_floor(self, level: float) -> None:
@@ -8070,7 +9129,7 @@ class SherpaOnnxEngine(AudioEngine):
             return
         f = self._playback_floor_rms
         if f <= 0.0:
-            self._playback_floor_rms = level          # bootstrap to the first echo level
+            self._playback_floor_rms = level  # bootstrap to the first echo level
             return
         if level <= f * self._PLAYBACK_FLOOR_BURST_RATIO:
             a = self._PLAYBACK_FLOOR_ALPHA
@@ -8107,7 +9166,71 @@ class SherpaOnnxEngine(AudioEngine):
         # __init__; a missing stamp reads as "no window open".
         return getattr(self, "_confirm_until", 0.0) > 0.0
 
-    def _begin_barge_confirm(self, recognizer, stream, now: float) -> None:
+    def _barge_confirm_origin_is_current(self) -> bool:
+        """Whether the open window still belongs to the same playback run."""
+
+        with self._gen_lock:
+            return bool(
+                self._confirm_speak_generation == self._speak_gen
+                and self._confirm_playback_generation == self._playback_generation
+            )
+
+    def _claim_barge_confirm_if_current(
+        self,
+        *,
+        now: float,
+    ) -> Optional[_ConfirmedBargeClaim]:
+        """Atomically validate and irreversibly claim the confirmed playback.
+
+        The callback is external and may re-enter :meth:`stop_speaking`, so it
+        cannot run while ``_gen_lock`` is held. Instead this linearization sets
+        the stop fence, advances the cancellation generation, and installs a
+        short-lived playback-admission barrier under that lock. A playback-run
+        transition ordered before this claim makes validation fail; one ordered
+        after it is rejected until the callback/stop effect has returned.
+        """
+
+        with self._gen_lock:
+            origin_speak = self._confirm_speak_generation
+            origin_playback = self._confirm_playback_generation
+            if (
+                self._confirmed_barge_claim is not None
+                or origin_speak != self._speak_gen
+                or origin_playback != self._playback_generation
+            ):
+                return None
+            claimed_speak = self._speak_gen + 1
+            claim = _ConfirmedBargeClaim(
+                origin_speak_generation=int(origin_speak),
+                origin_playback_generation=int(origin_playback),
+                claimed_speak_generation=claimed_speak,
+            )
+            self._confirmed_barge_claim = claim
+            self._stop_speaking.set()
+            self._speak_gen = claimed_speak
+            self._barge_in_fired_this_run = True
+            self._barge_in_suppressed_until = float(now) + max(
+                0.0,
+                self.config.barge_in_suppress_sec,
+            )
+            return claim
+
+    def _release_barge_confirm_claim(self, claim: _ConfirmedBargeClaim) -> None:
+        """Release only the exact callback-complete admission barrier."""
+
+        with self._gen_lock:
+            if self._confirmed_barge_claim is claim:
+                self._confirmed_barge_claim = None
+
+    def _begin_barge_confirm(
+        self,
+        recognizer,
+        stream,
+        now: float,
+        *,
+        speak_generation: Optional[int] = None,
+        playback_generation: Optional[int] = None,
+    ) -> None:
         """Open the confirm window: duck playback + snapshot the partial base.
 
         The base snapshot means only words transcribed AFTER the trigger count
@@ -8119,6 +9242,15 @@ class SherpaOnnxEngine(AudioEngine):
         self._confirm_alternate_pcm.clear()
         self._confirm_audio_started_at = None
         self._confirm_audio_ended_at = None
+        with self._gen_lock:
+            self._confirm_speak_generation = (
+                self._speak_gen if speak_generation is None else int(speak_generation)
+            )
+            self._confirm_playback_generation = (
+                self._playback_generation
+                if playback_generation is None
+                else int(playback_generation)
+            )
         self._confirm_until = now + max(0.1, self.config.barge_confirm_window_sec)
         base = ""
         try:
@@ -8129,13 +9261,21 @@ class SherpaOnnxEngine(AudioEngine):
         self._duck_gain = min(1.0, max(0.0, self.config.barge_confirm_duck_gain))
         log.info(
             "barge-in: acoustic trigger -- ducking playback, awaiting speech "
-            "confirmation (%.1fs window)", self.config.barge_confirm_window_sec,
+            "confirmation (%.1fs window)",
+            self.config.barge_confirm_window_sec,
         )
         if self._capture_callback_is_current():
             self._emit_capture_callback(self._cb.on_metric, "barge_in_duck")
 
     def _barge_confirm_step(
-        self, recognizer, stream, samples, now: float, mic_raw=None
+        self,
+        recognizer,
+        stream,
+        samples,
+        now: float,
+        mic_raw=None,
+        *,
+        control_effect_guard: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """One capture block inside an active confirm window.
 
@@ -8145,6 +9285,15 @@ class SherpaOnnxEngine(AudioEngine):
         confirms alone. Window expired with no evidence -> restore volume, reset
         the stream (drop any echo it was fed), arm the retry suppress, teach the
         DTD charts the window's (verified-echo) levels, and keep speaking (False)."""
+        if not self._barge_confirm_origin_is_current() or (
+            control_effect_guard is not None and not control_effect_guard()
+        ):
+            self._end_barge_confirm()
+            try:
+                recognizer.reset(stream)
+            except Exception:  # noqa: BLE001 - stale playback fails closed
+                pass
+            return False
         if mic_raw is None:
             mic_raw = samples
         # Bank this block's levels as a POTENTIAL echo observation -- committed
@@ -8178,7 +9327,7 @@ class SherpaOnnxEngine(AudioEngine):
         except Exception:  # noqa: BLE001 - decode errors must not break capture
             pass
         base = self._confirm_base_text
-        new_text = text[len(base):].strip() if base and text.startswith(base) else text
+        new_text = text[len(base) :].strip() if base and text.startswith(base) else text
         words = [w for w in new_text.split() if any(ch.isalpha() for ch in w)]
         confirmed = bool(new_text) and (
             is_stop_command(new_text)
@@ -8188,6 +9337,16 @@ class SherpaOnnxEngine(AudioEngine):
             )
         )
         if confirmed:
+            # The context guard may itself race a playback transition. Run it
+            # before the lock-owned compare-and-claim below; the claim repeats
+            # generation validation atomically with the irreversible stop fence.
+            if control_effect_guard is not None and not control_effect_guard():
+                self._end_barge_confirm()
+                try:
+                    recognizer.reset(stream)
+                except Exception:  # noqa: BLE001 - stale playback fails closed
+                    pass
+                return False
             handoff_primary = tuple(self._confirm_primary_pcm)
             handoff_alternate = tuple(self._confirm_alternate_pcm)
             handoff_start = (
@@ -8200,37 +9359,44 @@ class SherpaOnnxEngine(AudioEngine):
                 if self._confirm_audio_ended_at is not None
                 else float(now)
             )
+            claim = self._claim_barge_confirm_if_current(now=now)
+            if claim is None:
+                self._end_barge_confirm()
+                try:
+                    recognizer.reset(stream)
+                except Exception:  # noqa: BLE001 - stale playback fails closed
+                    pass
+                return False
             self._end_barge_confirm()
-            self._barge_in_fired_this_run = True
-            self._barge_in_suppressed_until = (
-                now + max(0.0, self.config.barge_in_suppress_sec)
-            )
             log.info("barge-in confirmed by speech: %r", new_text[:80])
-            if not self._capture_callback_is_current():
-                return False
-            if not self._emit_capture_callback(
-                self._cb.on_metric, "barge_in_confirmed"
-            ):
-                return False
-            # Keep the exact legacy log line so run-bundle tooling
-            # (grep "barge-in detected") sees confirmed barges too.
-            log.info("barge-in detected")
-            if not self._emit_barge_in_callback(
-                detected_at=now,
-                speech_start_at=handoff_start,
-            ):
-                return False
-            # The confirm-window audio is already IN the stream: the user's
-            # first words become the head of the next final (free pre-roll)
-            # once _speaking clears and the normal ASR path resumes.
-            if not self._publish_confirm_handoff_if_current(
-                handoff_primary,
-                handoff_alternate,
-                speech_at=handoff_start,
-                speech_end_at=handoff_end,
-            ):
-                return False
-            return True
+            try:
+                if not self._capture_callback_is_current():
+                    return False
+                if not self._emit_capture_callback(
+                    self._cb.on_metric, "barge_in_confirmed"
+                ):
+                    return False
+                # Keep the exact legacy log line so run-bundle tooling
+                # (grep "barge-in detected") sees confirmed barges too.
+                log.info("barge-in detected")
+                if not self._emit_barge_in_callback(
+                    detected_at=now,
+                    speech_start_at=handoff_start,
+                ):
+                    return False
+                # The confirm-window audio is already IN the stream: the user's
+                # first words become the head of the next final (free pre-roll)
+                # once _speaking clears and the normal ASR path resumes.
+                if not self._publish_confirm_handoff_if_current(
+                    handoff_primary,
+                    handoff_alternate,
+                    speech_at=handoff_start,
+                    speech_end_at=handoff_end,
+                ):
+                    return False
+                return True
+            finally:
+                self._release_barge_confirm_claim(claim)
         if now >= self._confirm_until:
             # Echo (or a transient) tripped the acoustics but nobody is talking:
             # TEACH the DTD charts this window's levels before restoring. An
@@ -8251,23 +9417,24 @@ class SherpaOnnxEngine(AudioEngine):
             except Exception:  # noqa: BLE001 - reset is best-effort
                 pass
             self._confirm_handoff_stream_live = False
-            self._barge_in_suppressed_until = (
-                now + max(0.0, self.config.barge_confirm_retry_suppress_sec)
+            self._barge_in_suppressed_until = now + max(
+                0.0, self.config.barge_confirm_retry_suppress_sec
             )
             log.info(
                 "barge-in NOT confirmed (no talk-over speech in %.1fs) -- "
-                "restoring volume", self.config.barge_confirm_window_sec,
+                "restoring volume",
+                self.config.barge_confirm_window_sec,
             )
             if self._capture_callback_is_current():
-                self._emit_capture_callback(
-                    self._cb.on_metric, "barge_in_unconfirmed"
-                )
+                self._emit_capture_callback(self._cb.on_metric, "barge_in_unconfirmed")
         return False
 
     def _end_barge_confirm(self) -> None:
         """Close the window + restore full volume (idempotent, any thread)."""
         self._confirm_until = 0.0
         self._confirm_base_text = ""
+        self._confirm_speak_generation = None
+        self._confirm_playback_generation = None
         self._confirm_handoff_stream_live = False
         self._confirm_handoff_pending = None
         self._confirm_primary_pcm.clear()
@@ -8279,7 +9446,7 @@ class SherpaOnnxEngine(AudioEngine):
         if obs:
             obs.clear()
 
-    def _barge_word_cut_active(self) -> bool:
+    def _barge_word_cut_active(self, *, route_verified: Optional[bool] = None) -> bool:
         """Whether the continuous no-duck word-cut path is safely live.
 
         This is an explicitly configured OS-capture path, not a fallback for an
@@ -8294,7 +9461,11 @@ class SherpaOnnxEngine(AudioEngine):
             and not bool(getattr(self.config, "aec_enabled", False))
             and self._aec is None
             and self._vad is not None
-            and bool(getattr(self, "_word_cut_route_verified", False))
+            and bool(
+                getattr(self, "_word_cut_route_verified", False)
+                if route_verified is None
+                else route_verified
+            )
         )
 
     def _clear_word_cut_candidate(
@@ -8323,11 +9494,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self.config.sample_rate
                 * max(
                     0.0,
-                    float(
-                        getattr(
-                            self.config, "barge_word_cut_vad_preroll_sec", 0.3
-                        )
-                    ),
+                    float(getattr(self.config, "barge_word_cut_vad_preroll_sec", 0.3)),
                 )
             ),
         )
@@ -8427,11 +9594,7 @@ class SherpaOnnxEngine(AudioEngine):
                 self.config.sample_rate
                 * max(
                     0.0,
-                    float(
-                        getattr(
-                            self.config, "barge_word_cut_vad_preroll_sec", 0.3
-                        )
-                    ),
+                    float(getattr(self.config, "barge_word_cut_vad_preroll_sec", 0.3)),
                 )
             ),
         )
@@ -8470,9 +9633,7 @@ class SherpaOnnxEngine(AudioEngine):
             )
         return _WordCutStopDecision(
             kind=kind,
-            reads_like_own_speech=bool(
-                reads_like_own_speech or tts_contains_stop
-            ),
+            reads_like_own_speech=bool(reads_like_own_speech or tts_contains_stop),
         )
 
     def _word_cut_speaker_decision(
@@ -8509,18 +9670,11 @@ class SherpaOnnxEngine(AudioEngine):
         required_sec = (
             float(min_sec)
             if min_sec is not None
-            else float(
-                getattr(
-                    self.config, "barge_word_cut_speaker_min_sec", 0.35
-                )
-            )
+            else float(getattr(self.config, "barge_word_cut_speaker_min_sec", 0.35))
         )
         min_samples = max(
             0,
-            int(
-                self.config.sample_rate
-                * max(0.0, required_sec)
-            ),
+            int(self.config.sample_rate * max(0.0, required_sec)),
         )
         if self._word_cut_candidate_samples <= 0 or (
             min_samples > 0 and self._word_cut_candidate_samples < min_samples
@@ -8544,9 +9698,7 @@ class SherpaOnnxEngine(AudioEngine):
                 * max(
                     0.0,
                     float(
-                        getattr(
-                            self.config, "barge_word_cut_speaker_retry_sec", 0.25
-                        )
+                        getattr(self.config, "barge_word_cut_speaker_retry_sec", 0.25)
                     ),
                 )
             ),
@@ -8595,9 +9747,10 @@ class SherpaOnnxEngine(AudioEngine):
                 energies = np.sqrt(np.mean(frames * frames, axis=1))
                 peak = float(np.max(energies)) if energies.size else 0.0
                 if peak > 1e-8:
-                    voiced_samples = int(
-                        np.count_nonzero(energies >= max(1e-5, peak * 0.15))
-                    ) * frame
+                    voiced_samples = (
+                        int(np.count_nonzero(energies >= max(1e-5, peak * 0.15)))
+                        * frame
+                    )
             if min_samples > 0 and voiced_samples < min_samples:
                 st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
                 return "defer"
@@ -8609,9 +9762,7 @@ class SherpaOnnxEngine(AudioEngine):
             )
             if raw_similarity is None:
                 st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
-                st["speaker_busy_deferred"] = (
-                    st.get("speaker_busy_deferred", 0) + 1
-                )
+                st["speaker_busy_deferred"] = st.get("speaker_busy_deferred", 0) + 1
                 return "defer"
             similarity = float(raw_similarity)
             if not math.isfinite(similarity):
@@ -8678,9 +9829,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._word_cut_candidate_samples = int(authorized.size)
             self._word_cut_candidate_speaker_authorized = True
             if trimmed:
-                st["pcm_trimmed_samples"] = (
-                    st.get("pcm_trimmed_samples", 0) + trimmed
-                )
+                st["pcm_trimmed_samples"] = st.get("pcm_trimmed_samples", 0) + trimmed
         ambiguous = not accepted and similarity > reject_threshold
         if ambiguous:
             st["speaker_deferred"] = st.get("speaker_deferred", 0) + 1
@@ -8720,20 +9869,10 @@ class SherpaOnnxEngine(AudioEngine):
         STOP-class controls are handled by their typed decision and do not use
         this floor.
         """
-        configured_generic = int(
-            getattr(self.config, "barge_word_cut_min_words", 4)
-        )
+        configured_generic = int(getattr(self.config, "barge_word_cut_min_words", 4))
         optional_speaker_floor = (
-            int(
-                getattr(
-                    self.config, "barge_word_cut_speaker_min_words", 0
-                )
-            )
-            if bool(
-                getattr(
-                    self.config, "barge_word_cut_require_speaker", False
-                )
-            )
+            int(getattr(self.config, "barge_word_cut_speaker_min_words", 0))
+            if bool(getattr(self.config, "barge_word_cut_require_speaker", False))
             else 0
         )
         return max(4, configured_generic, optional_speaker_floor)
@@ -8741,7 +9880,7 @@ class SherpaOnnxEngine(AudioEngine):
     def _word_cut_new_text(self, text: str) -> str:
         """Text added after the most recent own-speech fold/burst boundary."""
         base = self._word_cut_base
-        return text[len(base):].strip() if base and text.startswith(base) else text
+        return text[len(base) :].strip() if base and text.startswith(base) else text
 
     def _clear_word_cut_tail_stage(self) -> None:
         self._word_cut_tail_staged = False
@@ -8773,7 +9912,9 @@ class SherpaOnnxEngine(AudioEngine):
         st[key] = st.get(key, 0) + 1
         log.info(
             "word-cut tail drop: reason=%s words=%d %r",
-            reason, len(words), text[:80],
+            reason,
+            len(words),
+            text[:80],
         )
 
     def _promote_word_cut_candidate(
@@ -8796,9 +9937,7 @@ class SherpaOnnxEngine(AudioEngine):
             return False
         blocks = list(self._word_cut_candidate_pcm)
         samples_n = self._word_cut_candidate_samples
-        offline_recovery_authorized = bool(
-            self._word_cut_candidate_speaker_authorized
-        )
+        offline_recovery_authorized = bool(self._word_cut_candidate_speaker_authorized)
         self._clear_word_cut_candidate()
         self._clear_word_cut_vad_preroll()
 
@@ -8842,9 +9981,7 @@ class SherpaOnnxEngine(AudioEngine):
             )
         self._word_cut_pending_pcm = deque(blocks)
         self._word_cut_pending_samples = samples_n
-        self._word_cut_pending_offline_recovery = (
-            offline_recovery_authorized
-        )
+        self._word_cut_pending_offline_recovery = offline_recovery_authorized
         self._clear_word_cut_tail_stage()
         self._word_cut_fed_stream = False
         self._word_cut_base = ""
@@ -8859,8 +9996,11 @@ class SherpaOnnxEngine(AudioEngine):
             st["tail_handoffs"] = st.get("tail_handoffs", 0) + 1
         log.info(
             "word-cut %s handoff: words=%d pcm_ms=%d replay=%s %r",
-            reason, len(words), round(1000 * samples_n / self.config.sample_rate),
-            replay_ok, text[:80],
+            reason,
+            len(words),
+            round(1000 * samples_n / self.config.sample_rate),
+            replay_ok,
+            text[:80],
         )
         return True
 
@@ -8918,9 +10058,7 @@ class SherpaOnnxEngine(AudioEngine):
             # that distinct from a recognizer that emitted nothing at all.
             drop_reason = "own" if text and self._word_cut_base else "empty"
         elif (
-            not bool(
-                getattr(self.config, "barge_word_cut_require_speaker", False)
-            )
+            not bool(getattr(self.config, "barge_word_cut_require_speaker", False))
             and reads_like_own
             and not stop.requested
         ):
@@ -8955,12 +10093,16 @@ class SherpaOnnxEngine(AudioEngine):
                 not stop_needs_speaker or speaker_decision == "accept"
             )
             generic_authorized = generic_ready and speaker_decision in (
-                "legacy", "accept"
+                "legacy",
+                "accept",
             )
             if stop_authorized or generic_authorized:
                 return self._promote_word_cut_candidate(
-                    recognizer, detect_stream, normal_stream,
-                    reason="tail", text=new_text,
+                    recognizer,
+                    detect_stream,
+                    normal_stream,
+                    reason="tail",
+                    text=new_text,
                 )
             if speaker_decision == "reject":
                 drop_reason = "speaker"
@@ -8968,12 +10110,7 @@ class SherpaOnnxEngine(AudioEngine):
                 now = time.monotonic() if now is None else float(now)
                 probation_sec = max(
                     float(self.config.block_sec),
-                    float(
-                        getattr(
-                            self.config, "endpoint_max_silence_sec", 0.0
-                        )
-                        or 0.0
-                    ),
+                    float(getattr(self.config, "endpoint_max_silence_sec", 0.0) or 0.0),
                 )
                 self._word_cut_tail_staged = True
                 self._word_cut_energy_run = 0
@@ -8993,12 +10130,11 @@ class SherpaOnnxEngine(AudioEngine):
                 except Exception:  # noqa: BLE001 - no fresh epoch => fail closed
                     self._word_cut_tail_vad_reset_ok = False
                 self._clear_word_cut_vad_preroll()
-                self._wc_stats["tail_stages"] = (
-                    self._wc_stats.get("tail_stages", 0) + 1
-                )
+                self._wc_stats["tail_stages"] = self._wc_stats.get("tail_stages", 0) + 1
                 log.info(
                     "word-cut tail staged: words=%d await_postplay_continuation %r",
-                    len(words), new_text[:80],
+                    len(words),
+                    new_text[:80],
                 )
                 return False
 
@@ -9103,8 +10239,11 @@ class SherpaOnnxEngine(AudioEngine):
                     self._wc_stats.get("tail_continuations", 0) + 1
                 )
                 self._promote_word_cut_candidate(
-                    recognizer, detect_stream, normal_stream,
-                    reason="tail", text=new_text,
+                    recognizer,
+                    detect_stream,
+                    normal_stream,
+                    reason="tail",
+                    text=new_text,
                 )
                 return "promoted"
 
@@ -9115,8 +10254,10 @@ class SherpaOnnxEngine(AudioEngine):
             pass
         if endpoint or now >= self._word_cut_tail_deadline:
             self._drop_word_cut_tail(
-                recognizer, detect_stream,
-                reason="no_continuation", text=self._word_cut_tail_text,
+                recognizer,
+                detect_stream,
+                reason="no_continuation",
+                text=self._word_cut_tail_text,
             )
             return "dropped"
         return "waiting"
@@ -9140,7 +10281,8 @@ class SherpaOnnxEngine(AudioEngine):
         )
         log.info(
             "word-cut pre-roll splice: pcm_ms=%d blocks=%d",
-            round(1000 * samples_n / self.config.sample_rate), len(blocks),
+            round(1000 * samples_n / self.config.sample_rate),
+            len(blocks),
         )
         return samples_n
 
@@ -9177,9 +10319,7 @@ class SherpaOnnxEngine(AudioEngine):
             floor = float((cal or {}).get("noise_floor_rms", 0.0) or 0.0)
             calibrated_blocks = int((cal or {}).get("n_blocks", 0) or 0)
             clipping = float((cal or {}).get("clipping_fraction", 1.0))
-            minimum = int(
-                getattr(self.config, "barge_word_cut_energy_min_blocks", 3)
-            )
+            minimum = int(getattr(self.config, "barge_word_cut_energy_min_blocks", 3))
         except (TypeError, ValueError, OverflowError):
             self._word_cut_energy_run = 0
             self._virtual_near_end_above = False
@@ -9263,6 +10403,10 @@ class SherpaOnnxEngine(AudioEngine):
         *,
         normal_stream=None,
         energy_samples=None,
+        playback_onset_at: Optional[float] = None,
+        speaker_authority_available: Optional[bool] = None,
+        allow_control_effect: bool = True,
+        control_effect_guard: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """One playback block on the continuous no-duck word-cut path. Feeds the
         recognizer THIS block (OS-cancelled mic, clean of the assistant's echo) and
@@ -9290,9 +10434,7 @@ class SherpaOnnxEngine(AudioEngine):
         # Mirrors the acoustic path's per-block accept.
         if self._vad is not None:
             self._vad.accept_waveform(samples)
-        vad_voiced = bool(
-            self._vad is not None and self._vad.is_speech_detected()
-        )
+        vad_voiced = bool(self._vad is not None and self._vad.is_speech_detected())
         # Evaluate the calibrated pre-gain threshold on every block so the
         # private harness sees the true capture-arrival edge. A real
         # Silero-positive block still needs no substitute and is explicitly
@@ -9330,7 +10472,7 @@ class SherpaOnnxEngine(AudioEngine):
                     txt = (recognizer.get_result(stream) or "").strip()
                     base = self._word_cut_base
                     lost = (
-                        txt[len(base):].strip()
+                        txt[len(base) :].strip()
                         if base and txt.startswith(base)
                         else txt
                     )
@@ -9346,18 +10488,15 @@ class SherpaOnnxEngine(AudioEngine):
                 self._clear_word_cut_candidate()
                 self._clear_word_cut_vad_preroll()
                 st["resets"] = st.get("resets", 0) + 1
-                lost_words = [
-                    w for w in lost.split() if any(ch.isalpha() for ch in w)
-                ]
+                lost_words = [w for w in lost.split() if any(ch.isalpha() for ch in w)]
                 if lost_words:
                     # A burst boundary wiped words a cut could have used -- the
                     # smoking gun for "user words swallowed by the reset".
-                    st["dropped_words"] = (
-                        st.get("dropped_words", 0) + len(lost_words)
-                    )
+                    st["dropped_words"] = st.get("dropped_words", 0) + len(lost_words)
                     log.info(
                         "word-cut burst reset: dropped %d word(s) %r",
-                        len(lost_words), lost[:60],
+                        len(lost_words),
+                        lost[:60],
                     )
                 return False
             # Do not let the first N-1 above-threshold blocks bypass the energy
@@ -9452,7 +10591,11 @@ class SherpaOnnxEngine(AudioEngine):
         # per-run latch, debounce suppress window, post-speaking refractory (just-
         # cancelled tail), 0.4s playback-onset grace (reply-onset echo transient).
         grace = self.config.barge_in_playback_onset_grace_sec
-        onset = getattr(self, "_playback_onset_at", 0.0)
+        onset = (
+            getattr(self, "_playback_onset_at", 0.0)
+            if playback_onset_at is None
+            else playback_onset_at
+        )
         if (
             self._barge_in_fired_this_run
             or now < self._barge_in_suppressed_until
@@ -9474,9 +10617,7 @@ class SherpaOnnxEngine(AudioEngine):
             self._word_cut_quiet_run = 0
             self._word_cut_energy_run = 0
             if self._word_cut_candidate_pcm:
-                st["guard_candidate_clears"] = (
-                    st.get("guard_candidate_clears", 0) + 1
-                )
+                st["guard_candidate_clears"] = st.get("guard_candidate_clears", 0) + 1
             self._clear_word_cut_candidate()
             self._clear_word_cut_vad_preroll()
             return False
@@ -9500,20 +10641,23 @@ class SherpaOnnxEngine(AudioEngine):
         speaker_decision = "legacy"
         generic_ready = not stop_requested and len(words) >= floor
         if stop_needs_speaker or (speaker_required and generic_ready):
-            speaker_decision = self._word_cut_speaker_decision(
-                min_sec=(
-                    float(
-                        getattr(
-                            self.config,
-                            "barge_word_cut_stop_speaker_min_sec",
-                            0.10,
+            if speaker_authority_available is False:
+                speaker_decision = "unavailable"
+            else:
+                speaker_decision = self._word_cut_speaker_decision(
+                    min_sec=(
+                        float(
+                            getattr(
+                                self.config,
+                                "barge_word_cut_stop_speaker_min_sec",
+                                0.10,
+                            )
                         )
-                    )
-                    if stop_needs_speaker
-                    else None
-                ),
-                identity_required=stop_needs_speaker,
-            )
+                        if stop_needs_speaker
+                        else None
+                    ),
+                    identity_required=stop_needs_speaker,
+                )
         confirmed = (
             (stop_requested and not stop_needs_speaker)
             or (stop_needs_speaker and speaker_decision == "accept")
@@ -9564,6 +10708,10 @@ class SherpaOnnxEngine(AudioEngine):
             elif not new_text and self._word_cut_base:
                 self._trim_word_cut_candidate_to_lookback()
             return False
+        if not allow_control_effect or (
+            control_effect_guard is not None and not control_effect_guard()
+        ):
+            return False
         # Virtual route proof can be revoked by its monitor concurrently with
         # capture. Its lock makes the final proof check and user-visible cut one
         # linearized authority action: a loss that started first wins and blocks
@@ -9602,8 +10750,8 @@ class SherpaOnnxEngine(AudioEngine):
                 recognizer, stream, normal_stream, reason="cut", text=new_text
             )
             self._barge_in_fired_this_run = True
-            self._barge_in_suppressed_until = (
-                now + max(0.0, self.config.barge_in_suppress_sec)
+            self._barge_in_suppressed_until = now + max(
+                0.0, self.config.barge_in_suppress_sec
             )
             log.info("barge-in confirmed by speech (word-cut): %r", new_text[:80])
             if not self._capture_callback_is_current():
@@ -9615,9 +10763,8 @@ class SherpaOnnxEngine(AudioEngine):
             # Keep the exact legacy log line so run-bundle tooling (grep
             # "barge-in detected") sees word-cut barges too.
             log.info("barge-in detected")
-            pending_sec = (
-                float(self._word_cut_pending_samples)
-                / float(self.config.sample_rate)
+            pending_sec = float(self._word_cut_pending_samples) / float(
+                self.config.sample_rate
             )
             if not self._emit_barge_in_callback(
                 detected_at=now,
@@ -9661,7 +10808,11 @@ class SherpaOnnxEngine(AudioEngine):
         log.info(
             "word-cut near-end: rms_avg=%.4f rms_peak=%.4f vad_frac=%.2f "
             "floor=%.4f blocks=%d",
-            avg, w["rms_peak"], vad_frac, floor, blocks,
+            avg,
+            w["rms_peak"],
+            vad_frac,
+            floor,
+            blocks,
         )
         st = self._wc_stats
         st.setdefault("win_rms", []).append(round(avg, 5))
@@ -9702,7 +10853,11 @@ class SherpaOnnxEngine(AudioEngine):
                 "speaker_sim_min=%.4f speaker_sim_max=%.4f speaker_sim_n=%d"
             )
             sim_args = (
-                sim_p50, sim_p95, ordered_sims[0], ordered_sims[-1], len(sims),
+                sim_p50,
+                sim_p95,
+                ordered_sims[0],
+                ordered_sims[-1],
+                len(sims),
             )
         log.info(
             "word-cut funnel: fed=%d skipped_quiet=%d quiet_flush=%d "
@@ -9717,13 +10872,10 @@ class SherpaOnnxEngine(AudioEngine):
             "speaker_accepts=%d speaker_rejects=%d speaker_deferred=%d "
             "speaker_unavailable=%d speaker_cold_deferred=%d "
             "speaker_errors=%d speaker_resets=%d" + sim_fmt,
-            st.get("fed", 0), st.get("skipped_quiet", 0),
+            st.get("fed", 0),
+            st.get("skipped_quiet", 0),
             st.get("quiet_flush_blocks", 0),
-            round(
-                1000
-                * st.get("quiet_flush_samples", 0)
-                / self.config.sample_rate
-            ),
+            round(1000 * st.get("quiet_flush_samples", 0) / self.config.sample_rate),
             round(
                 1000
                 * st.get("quiet_flush_padding_samples", 0)
@@ -9732,18 +10884,31 @@ class SherpaOnnxEngine(AudioEngine):
             st.get("energy_above_floor", 0),
             st.get("energy_fallback_blocks", 0),
             st.get("energy_fallback_starts", 0),
-            st.get("energy_run_max", 0), st.get("resets", 0),
-            st.get("dropped_words", 0), st.get("max_words", 0),
-            st.get("own_folds", 0), st.get("guard_suppressed", 0),
-            st.get("decode_errors", 0), st.get("cuts", 0), p50, p95,
-            st.get("handoffs", 0), st.get("tail_handoffs", 0),
-            st.get("tail_drops", 0), st.get("tail_stages", 0),
-            st.get("tail_continuations", 0), st.get("preroll_samples", 0),
-            st.get("spliced_samples", 0), st.get("pcm_trimmed_samples", 0),
+            st.get("energy_run_max", 0),
+            st.get("resets", 0),
+            st.get("dropped_words", 0),
+            st.get("max_words", 0),
+            st.get("own_folds", 0),
+            st.get("guard_suppressed", 0),
+            st.get("decode_errors", 0),
+            st.get("cuts", 0),
+            p50,
+            p95,
+            st.get("handoffs", 0),
+            st.get("tail_handoffs", 0),
+            st.get("tail_drops", 0),
+            st.get("tail_stages", 0),
+            st.get("tail_continuations", 0),
+            st.get("preroll_samples", 0),
+            st.get("spliced_samples", 0),
+            st.get("pcm_trimmed_samples", 0),
             st.get("handoff_replay_errors", 0),
-            st.get("speaker_accepts", 0), st.get("speaker_rejects", 0),
-            st.get("speaker_deferred", 0), st.get("speaker_unavailable", 0),
-            st.get("speaker_cold_deferred", 0), st.get("speaker_errors", 0),
+            st.get("speaker_accepts", 0),
+            st.get("speaker_rejects", 0),
+            st.get("speaker_deferred", 0),
+            st.get("speaker_unavailable", 0),
+            st.get("speaker_cold_deferred", 0),
+            st.get("speaker_errors", 0),
             st.get("speaker_resets", 0),
             *sim_args,
         )
@@ -9769,7 +10934,15 @@ class SherpaOnnxEngine(AudioEngine):
                 return True
         return False
 
-    def _barge_in_fire_eligible(self, samples, mic_raw=None) -> bool:
+    def _barge_in_fire_eligible(
+        self,
+        samples,
+        mic_raw=None,
+        *,
+        now: Optional[float] = None,
+        playback_onset_at: Optional[float] = None,
+        playback_level: Optional[float] = None,
+    ) -> bool:
         """Whether this block may *start/continue* arming a barge-in.
 
         Combines the one-per-run latch with the VAD + coherence/level gate.
@@ -9794,20 +10967,29 @@ class SherpaOnnxEngine(AudioEngine):
         grace = self.config.barge_in_playback_onset_grace_sec
         # getattr default: barge fixtures build the engine bypassing __init__, so a
         # missing stamp reads as 0.0 -> grace inert (the correct partial-build state).
-        onset = getattr(self, "_playback_onset_at", 0.0)
-        if grace > 0.0 and onset > 0.0 and time.monotonic() < onset + grace:
+        onset = (
+            getattr(self, "_playback_onset_at", 0.0)
+            if playback_onset_at is None
+            else playback_onset_at
+        )
+        decision_at = time.monotonic() if now is None else now
+        if grace > 0.0 and onset > 0.0 and decision_at < onset + grace:
             return False
         if self._vad is None or not self._vad.is_speech_detected():
             return False
-        return self._looks_like_user(samples, mic_raw)
+        return self._looks_like_user(
+            samples,
+            mic_raw,
+            playback_level=playback_level,
+        )
 
     def note_barge_in_storm(self) -> None:
         """Hook for the watchdog: a barge-in storm was detected (gate flapping,
         likely TTS leaking into the mic). Arm the debounce window so the rapid
         repeats collapse into one interrupt instead of a rattling string of
         them. Safe to call from the watchdog thread (single float write)."""
-        self._barge_in_suppressed_until = (
-            time.monotonic() + max(0.0, self.config.barge_in_suppress_sec)
+        self._barge_in_suppressed_until = time.monotonic() + max(
+            0.0, self.config.barge_in_suppress_sec
         )
 
     def _final_above_floor(self, samples) -> bool:
@@ -9864,25 +11046,19 @@ class SherpaOnnxEngine(AudioEngine):
             identity_samples = trim_to_voiced_region(samples, self.config.sample_rate)
             exact_similarity = getattr(gate, "verification_similarity", None)
             if callable(exact_similarity):
-                similarity = exact_similarity(
-                    identity_samples, self.config.sample_rate
-                )
+                similarity = exact_similarity(identity_samples, self.config.sample_rate)
                 if similarity is None or not math.isfinite(float(similarity)):
                     self._emit_capture_callback(
                         self._cb.on_metric, "speaker_gate_unusable_fail_open"
                     )
-                    return _FinalSpeakerDecision(
-                        True, OwnerVerification.UNKNOWN
-                    )
+                    return _FinalSpeakerDecision(True, OwnerVerification.UNKNOWN)
                 accepted = float(similarity) >= float(gate.threshold)
                 exact_verdict = True
             else:
                 # A legacy/custom gate exposes admission only. Preserve its
                 # usability behavior, but a fail-open boolean cannot mint owner
                 # authority because it cannot distinguish a match from abstain.
-                accepted = gate.accept(
-                    identity_samples, self.config.sample_rate
-                )
+                accepted = gate.accept(identity_samples, self.config.sample_rate)
                 exact_verdict = False
         except Exception:  # noqa: BLE001 - identity failure must never eat owner speech
             log.warning(

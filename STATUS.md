@@ -5,20 +5,20 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 Last verified: 2026-07-31 on Linux ROG.
 
 - Repository logic gate: 6453 passed, 14 skipped, 22 deselected, 9 pre-existing warnings; structured lifecycle 270; typed-ingress/Sherpa/APM 354 passed, 2 skipped; public-v3 81 file/145 combined.
-- Post-ASR mailbox/adjacent 221; scoped LiveKit 22; playback/actor/runtime 150; bounded capture review 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
+- Post-ASR mailbox/adjacent 221; scoped LiveKit 22; LiveKit Agents seam 28; playback/actor/runtime 150; bounded capture review 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
 - Streaming 334; receipt 98; capture-replay 71 (ADR-0092). Moonshine/Nemotron remain rejected (ADR-0090/0091).
 - Stable evidence remains: both conversation pairs 42/42, semantic-memory PASS,
   recorded owner replay 9/9, and two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
-- Linux Python is the reference. Its 512-event post-ASR mailbox reserves 64 critical slots and bounds output. LiveKit output has sink-terminal ownership;
-  participant-scoped ingress and mobile still lack parity (ADR-0086/0093/0095).
+- Linux Python is the reference; its 512-event mailbox bounds post-ASR work.
+  An optional publisher-bound LiveKit Agents contract preserves the trusted
+  controller but has no concrete SDK wrapper and remains unselectable; legacy remote stays active (ADR-0096).
 - `./live.sh` is the single Linux physical entry. It owns the host lock,
   reversible echo-control route, conditional Ollama, doctor, and aligned
   private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).
-- Desktop MiniCPM Q8 is the local text tier; Gemma3 is complex/vision. Phone Q4 uses
-  native XML tools; phone thermal behavior is unvalidated (ADR-0020/0033/0062).
+- Desktop MiniCPM Q8 is the local text tier; Gemma3 is complex/vision. Phone Q4 uses native XML tools; phone thermal behavior is unvalidated (ADR-0020/0033/0062).
 - Setup may enable bounded PRIVATE vault search, durable reminders, and exact
   trusted apps. Mutations require unchanged direct speech plus confirmation and
   remain outside planners (ADR-0073/0074/0076).
@@ -86,7 +86,7 @@ Last verified: 2026-07-31 on Linux ROG.
 
 ## Next
 
-- Unify participant-scoped remote ingress and mobile task/tool/output/drain ownership; add a remote-client audible-playout acknowledgement.
+- Wire and live-A/B the publisher-scoped session, then converge mobile task/tool/output/drain ownership and add remote audible-playout acknowledgement.
 - Add native-reader/gap and synchronized AEC replay plus disjoint owner
   controls/vault/noise/multi-voice data; then run fresh `./live.sh` A/B (ADR-0092).
 

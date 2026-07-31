@@ -1,56 +1,51 @@
 Valid until: this branch lands or is superseded — then treat as history.
 
-# Task result — LiveKit playback ownership
+# Task result — publisher-bound LiveKit Agents contract
 
 ## Summary
 
-LiveKit output now opts into the runtime's tracked playback contract. Each
-legacy or tracked admission receives an object-identity ticket and synchronous
-generation assignment. STOP fences active, queued, synthesizing, and prepared
-work; clears the source before started non-completion receipts; and prevents a
-delayed old clear from erasing fresh output.
+Added a dependency-safe `AudioEngine` adapter contract for a future
+publisher-scoped LiveKit Agents session. The trusted Speaker controller remains
+the only LLM/tool/authority plane. Raw SDK session/output objects are excluded;
+the future wrapper must atomically issue output-route leases and fail closed on
+configuration, route mutation, interruption failure, lifecycle races, or close.
 
-Completion requires a connected and published transport, an open source, first
-frame acceptance, and `wait_for_playout()` followed by a final generation and
-source check. Transport loss fences playback. A failed clear disposes the
-source before terminal callbacks. Native synthesis remains owned until its real
-in-process call returns. A two-slot pipeline pre-generates only one successor,
-preserving sentence latency without unbounded audio memory.
+This slice is intentionally not selectable: it does not yet implement or install
+the concrete LiveKit wrapper and makes no STT, latency, or live-audio claim.
 
 ## Files changed
 
-- `core/engines/livekit.py`: tracked tickets, bounded ordered playback,
-  generation/clear barriers, transport readiness, exact source-drain receipts,
-  failure disposal, and owned session/track teardown.
-- `tests/test_livekit_engine.py`: event-driven fake-loop/TTS/source coverage for
-  drain, STOP, native synthesis, bounded pre-generation, reconnect readiness,
-  disposal, clear/capture failure, callback re-entry, and initialization.
-- `tests/test_playback_receipts.py`: exact `binding_id` and `TurnHandle`
-  playback-drain assertions.
-- `requirements-remote.txt`: minimum LiveKit AudioSource contract version.
-- `STATUS.md` and ADR-0095: current facts, decision, limits, and follow-up.
+- `core/engines/livekit_agents.py`: typed wrapper policy, participant binding,
+  whole-turn commit bridge, action-untrusted remote lineage, generation-safe
+  barge evidence, route-lease playback receipts, fatal close fencing, and SDK
+  state/close mapping.
+- `tests/test_livekit_agents_engine.py`: deterministic fake-loop coverage for
+  trust, turn assembly, restart races, interruption episodes, output mutations,
+  receipt terminality, failure close, and callback lifecycle.
+- `docs/adr/0096-introduce-publisher-bound-livekit-agents-adapter.md`: decision,
+  safety boundary, evidence limits, and promotion requirements.
+- `STATUS.md`: current unselectable seam and focused evidence.
 
 ## Verification
 
-- Focused LiveKit/receipt/actor/runtime matrix: 150 passed.
-- Full repository non-model gate: 6,453 passed, 14 skipped, 22 deselected,
-  9 pre-existing warnings.
-- APM/double-talk: 6 passed.
-- Targeted Ruff and `git diff --check`: passed.
-- All tests were headless, single-core, and low-priority. Full-gate run bundles
-  were redirected to `/tmp`; no model, network, server, or audio device ran.
+- Focused adapter: 28 passed.
+- Adapter plus LiveKit/playback/session/device-tool adjacency: 111 passed.
+- Required APM/double-talk regression: 6 passed.
+- `git diff --check`: passed.
+- All tests were headless, low-priority, and used no model, network, server,
+  microphone, speaker, or GPU.
 
 ## Risks and manual review
 
-`wait_for_playout()` proves only the local LiveKit AudioSource queue drained;
-it does not prove a browser or phone rendered the sound. A native TTS call
-cannot be killed safely in-process: if it wedges forever, bounded `stop()`
-returns degraded while the loop and actor ownership remain retained. A
-process-isolated TTS worker and remote-client audible acknowledgement remain
-follow-up work. No live WebRTC, microphone, speaker, STT, AEC, or barge-in
-quality claim is made.
+The concrete non-escaping SDK wrapper remains mandatory before wiring. It must
+pin LiveKit Agents, own publisher selection and every output mutation, pass
+`record=False`, keep framework LLM/tools/MCP empty, use audited local speech
+components, and request non-draining close after playout failure. A handle/sink
+terminal is not proof that the remote user heard audio; client acknowledgement
+and bare-speaker live A/B remain promotion gates.
 
 ## Merge recommendation
 
-Green for fast-forward landing on `main`; final read-only review found no
-remaining blockers. Do not claim live hardware or remote audible validation.
+Green for fast-forward landing. The final independent review found no remaining
+P0/P1 issue, and the focused, adjacent, APM, and whitespace gates are green.
+Keep the legacy remote path active.

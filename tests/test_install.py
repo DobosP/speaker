@@ -33,7 +33,7 @@ def test_is_windows_by_platform_string():
 
 def test_normal_voice_entry_uses_linux_session_wrapper():
     assert normal_voice_entry("linux") == "./live.sh"
-    assert normal_voice_entry("win32") == "python -m core --engine sherpa"
+    assert normal_voice_entry("win32") == "python -m core --session local"
     assert not is_windows("darwin")
 
 

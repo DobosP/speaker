@@ -281,7 +281,7 @@ def main() -> int:
                 "self_calibrated_margin is what it chose; coherence_margin_delta is only "
                 "the floor -- raise the floor only if it ever self-interrupts, lower it "
                 "only if a real barge is missed in a clean room. Confirm a real barge with "
-                "`python -m core --engine sherpa` (talk over a long answer)."
+                "`python -m core --session local` (talk over a long answer)."
             ),
         }
     elif det is not None:
@@ -314,7 +314,7 @@ def main() -> int:
                 "echo never approaches the bar. K is dimensionless/device-independent: "
                 "raise dtd_k if it self-interrupts, lower it if a real talk-over (whose "
                 "live D prints as 'adaptive barge: D=..' in the run .txt) is missed. "
-                "Confirm a real barge with `python -m core --engine sherpa`."
+                "Confirm a real barge with `python -m core --session local`."
             ),
         }
     elif dtd is not None:

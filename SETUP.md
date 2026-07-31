@@ -302,8 +302,8 @@ Once setup is complete:
    see `docs/adr/0002`):
    ```bash
    ./live.sh                              # Linux: setup + private recorded session
-   python -m core --engine sherpa          # low-level; audio route already prepared
-   python -m core --engine console --llm echo   # no audio/models smoke test
+   python -m core --session local          # low-level; audio route already prepared
+   python -m core --session console --llm echo   # no audio/models smoke test
    ```
 
    `./live.sh` writes each capture to a new ignored directory under `logs/live/`

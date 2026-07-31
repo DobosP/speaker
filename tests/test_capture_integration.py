@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -70,18 +71,115 @@ def test_app_main_console_writes_bundle(tmp_path, monkeypatch):
     monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
     monkeypatch.setattr(sys, "stdin", io.StringIO("hello assistant\nstop\n"))
 
-    rc = app.main(["--engine", "console", "--llm", "echo"])
+    rc = app.main(["--session", "console", "--llm", "echo"])
     assert rc == 0
 
     summaries = list(tmp_path.glob("run-*.summary.json"))
     assert len(summaries) == 1
     data = json.loads(summaries[0].read_text(encoding="utf-8"))
+    assert data["meta"]["session"] == "console"
+    assert data["meta"]["topology"] == "device_local"
+    assert data["meta"]["audio_egress"] == "device_only"
     assert data["meta"]["engine"] == "console"
     assert data["meta"]["llm"] == "echo"
     assert any(t["role"] == "user" and t["text"] == "hello assistant" for t in data["transcript"])
     assert "system" in data
     # The matching .txt log is in the same bundle.
     assert list(tmp_path.glob("run-*.txt"))
+
+
+def test_trusted_lan_requires_explicit_setup_and_finalizes_bundle(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(app, "_load_config", lambda: {"voice_session": {"audio_egress": "device_only"}})
+
+    assert app.main(["--session", "trusted-lan", "--llm", "echo"]) == 2
+
+    assert "setup_assistant" in capsys.readouterr().err
+    assert len(list(tmp_path.glob("run-*.summary.json"))) == 1
+
+
+def test_trusted_lan_stays_unselectable_after_setup_until_wrapper_lands(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        app,
+        "_load_config",
+        lambda: {"voice_session": {"audio_egress": "trusted_lan"}},
+    )
+
+    assert app.main(["--session", "trusted-lan", "--llm", "echo"]) == 2
+
+    error = capsys.readouterr().err
+    assert "publisher-bound LiveKit Agents wrapper" in error
+    assert "live A/B" in error
+
+
+def test_device_profile_cannot_silently_enable_trusted_lan_audio(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        app,
+        "_load_config",
+        lambda: {
+            "device": "unsafe",
+            "voice_session": {"audio_egress": "device_only"},
+            "device_profiles": {
+                "unsafe": {"voice_session": {"audio_egress": "trusted_lan"}}
+            },
+        },
+    )
+
+    assert app.main(["--session", "trusted-lan", "--llm", "echo"]) == 2
+    assert "not authorized" in capsys.readouterr().err
+
+
+def test_app_preserves_body_error_while_all_session_cleanup_and_logging_run(
+    tmp_path, monkeypatch
+):
+    import core.screen_capture as screen_capture
+    import core.visual_memory as visual_memory
+
+    events: list[str] = []
+
+    class BrokenFeed:
+        def start(self):
+            events.append("feed-start")
+
+        def stop(self):
+            events.append("feed-stop")
+            raise RuntimeError("feed cleanup failed")
+
+    class BrokenSession:
+        def __init__(self, _plan, runtime):
+            self.runtime = runtime
+
+        def stop(self):
+            events.append("session-stop")
+            self.runtime.stop()
+            raise RuntimeError("session cleanup failed")
+
+    monkeypatch.setenv("SPEAKER_RUN_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(screen_capture, "build_screen_feed", lambda *_args, **_kwargs: BrokenFeed())
+    monkeypatch.setattr(visual_memory, "build_visual_memorizer", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "VoiceSession", BrokenSession)
+    monkeypatch.setattr(
+        app,
+        "_run_console",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("body failed")),
+    )
+
+    with pytest.raises(ValueError, match="body failed"):
+        app.main(["--session", "console", "--llm", "echo"])
+
+    assert events == ["feed-start", "feed-stop", "session-stop"]
+    assert len(list(tmp_path.glob("run-*.summary.json"))) == 1
+    log_text = next(tmp_path.glob("run-*.txt")).read_text(encoding="utf-8")
+    assert "feed cleanup failed" in log_text
+    assert "session cleanup failed" in log_text
 
 
 def test_app_main_record_ignored_on_console_engine(tmp_path, monkeypatch):
@@ -178,6 +276,19 @@ def test_sherpa_without_models_fails_fast_with_fix(tmp_path, monkeypatch):
     # Preflight runs before the main runtime try/finally, but must still close
     # telemetry and finalize the diagnostic bundle.
     assert len(list(tmp_path.glob("run-*.summary.json"))) == 1
+
+
+def test_legacy_livekit_model_fix_prints_a_runnable_compatibility_command():
+    with pytest.raises(SystemExit) as exc:
+        app._require_asr_models(
+            SimpleNamespace(asr_encoder="", asr_tokens=""),
+            "livekit",
+        )
+
+    message = str(exc.value)
+    assert "legacy --engine livekit" in message
+    assert "python -m core --engine livekit" in message
+    assert "python -m core legacy" not in message
 
 
 def test_sherpa_readiness_failure_is_actionable_and_echo_mode_is_forwarded():

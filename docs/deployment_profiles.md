@@ -55,41 +55,34 @@ dependency-light (phone-safe); `learned` lazy-imports torch (desktop).
 
 ## Engines (the transport choice)
 
-`--engine` selects the `AudioEngine` (`core/engine.py`):
+`--session` selects the user-facing session (`core/voice_session.py`):
 
 - `console` — typed I/O, no audio/models (tests + demo).
-- `sherpa` — on-device mic/speaker via sherpa-onnx (the local product path).
+- `local` — on-device mic/speaker via the selected local media adapter.
 - `replay` — the real pipeline over recorded `.npy`/`.wav` fixtures, headless (no
   sound card); used for latency benchmarks and CI.
-- `livekit` — audio over a LiveKit/WebRTC room (the remote host+thin-client path).
+- `trusted-lan` — see ADR-0096 and ADR-0097.
 
 ## Deployment topologies
 
-- **On-device (desktop):** `python -m core --engine sherpa --device desktop`.
+- **On-device (desktop):** `python -m core --session local --device desktop`.
 - **On-device (Android):** the `mobile/` Flutter APK (built by
   `.github/workflows/android-apk.yml`).
-- **Host + thin clients:** `python -m remote.worker` runs the brain in a LiveKit
-  room; `uvicorn remote.token_server:app --port 8080` mints tokens and serves the
-  `web/` client. Browser/phone become mic+speaker endpoints. Needs
-  `requirements-remote.txt` + `LIVEKIT_URL/API_KEY/API_SECRET`.
+- **Host + thin clients:** see ADR-0096 and ADR-0097.
 
 ## Example commands
 
 ```bash
-python -m core --engine console --llm echo                 # logic only, no deps
-python -m core --engine sherpa --device desktop            # local desktop
-python -m core --engine sherpa --device phone              # python core, phone limits
-python -m remote.worker --llm echo                          # remote brain, offline smoke
+python -m core --session console --llm echo                 # logic only, no deps
+python -m core --session local --device desktop             # local desktop
+python -m core --session local --device phone               # python core, phone limits
 ```
 
 ## Guardrails
 
-The always-on loop is fully local and raw audio never leaves the device; the
-optional cloud *thinking tier* is a deliberate opt-in (`cloud.enabled=true`) and
-never activates silently on API-key presence — the boundary is
-`docs/target_architecture.md` §9.7 (it supersedes the older "no cloud
-STT/LLM/TTS by default" stance). An invariant test keeps every committed
+Audio topology policy is recorded in ADR-0097; the text/file/screen boundary is
+in `docs/target_architecture.md` §9.7. An invariant test keeps every committed
 profile cloud-off (`tests/test_device_profile_invariants.py`). Lazy imports
 mean a profile only pulls the heavy deps it
 actually uses (Ollama, llama.cpp, torch, sherpa-onnx, livekit) — the base test
-suite and the `console` engine need none of them.
+suite and the `console` session need none of them.

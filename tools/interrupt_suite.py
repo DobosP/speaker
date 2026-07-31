@@ -15,7 +15,7 @@ works* on *which mic* without self-firing on the assistant's own echo.
 IMPORTANT: stay QUIET while it runs -- any voice during a cell looks like a real
 barge and inflates that cell's self-interrupt count. The fires-on-a-REAL-barge
 direction is covered by the offline unit tests (tests/test_echo_coherence.py)
-and a live `python -m core --engine sherpa` talk-over; this suite measures the
+and a live `python -m core --session local` talk-over; this suite measures the
 no-self-interrupt half, which is the failure mode being debugged.
 
 Each cell is a fresh echo_probe subprocess (clean device open/close). A mic is

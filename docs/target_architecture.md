@@ -38,8 +38,9 @@ Full rationale and the resolved sub-decisions are in §9.
 
 - Always-listening assistant; **local-first with a hybrid cloud thinking tier**
   (resolved 2026-05-28 — see §9.7). The always-on capture loop (STT / TTS / VAD
-  / speaker-ID / fast-answering LLM) runs on-device; raw audio never leaves the
-  device. The *thinking tier* (main planner, research, multimodal summarize) and
+  / speaker-ID / fast-answering LLM) runs on-device for a local session.
+  Raw-audio topology and egress requirements are recorded in ADR-0097. The
+  *thinking tier* (main planner, research, multimodal summarize) and
   web search may use cloud — only post-ASR text + screen captures + files cross
   over, and only when the thinking tier is invoked.
 - Runs on **Linux, Windows, macOS, Android, iOS** *eventually*. **v1 is
@@ -241,7 +242,7 @@ what lets desktop (Python) and mobile (native) share the same brain and tests.
    engine for tests, wired to the existing `AgentSupervisor`, plus real
    LLM-backed `assistant.answer`/`research.local` capabilities (Ollama). Runs
    alongside the old `main.py`. The full path is tested without audio/models
-   (`tests/test_core_runtime.py`) and runnable via `python -m core --engine
+   (`tests/test_core_runtime.py`) and runnable via `python -m core --session
    console`. **Remaining:** validate the `sherpa-onnx` engine on real hardware
    (mic + model files + Ollama) and tune barge-in (headset or speaker-ID gating,
    since sherpa has no AEC). *Exit criteria:* lower end-to-end latency, reliable

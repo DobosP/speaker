@@ -1,7 +1,7 @@
 """Autonomous (no-human) test harness for the voice assistant.
 
 The live ``tools.live_session`` path needs a person at the mic; the headless
-``--engine replay`` path only re-runs *recorded* audio. This package fills the
+``--session replay`` path only re-runs *recorded* audio. This package fills the
 gap between them: it drives the **real** runtime end-to-end with **no human and
 no real microphone**, so a session can self-verify STT / TTS / barge-in /
 memory and produce a committable verdict.

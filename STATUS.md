@@ -4,17 +4,17 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate: 6453 passed, 14 skipped, 22 deselected, 9 pre-existing warnings; structured lifecycle 270; typed-ingress/Sherpa/APM 354 passed, 2 skipped; public-v3 81 file/145 combined.
-- Post-ASR mailbox/adjacent 221; scoped LiveKit 22; LiveKit Agents seam 28; playback/actor/runtime 150; bounded capture review 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
+- Repository logic gate: 6532 passed, 13 skipped, 22 deselected, 9 pre-existing warnings; structured lifecycle 270; typed-ingress/Sherpa/APM 354 passed, 2 skipped; public-v3 81 file/145 combined.
+- Post-ASR mailbox/adjacent 221; scoped LiveKit 22; LiveKit Agents seam 28; unified-session focused 55; playback/actor/runtime 150; APM/DTD 6.
 - Streaming 334; receipt 98; capture-replay 71 (ADR-0092). Moonshine/Nemotron remain rejected (ADR-0090/0091).
-- Stable evidence remains: both conversation pairs 42/42, semantic-memory PASS,
-  recorded owner replay 9/9, and two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
+- Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
-- Linux Python is the reference; its 512-event mailbox bounds post-ASR work.
-  An optional publisher-bound LiveKit Agents contract preserves the trusted
-  controller but has no concrete SDK wrapper and remains unselectable; legacy remote stays active (ADR-0096).
+- `python -m core --session` is the one public core entry; `VoiceSession` owns one injected `VoiceRuntime`, and `build_runtime` remains the sole tool/authority plane.
+- Audio defaults to device-only. Setup may grant encrypted self-hosted
+  trusted-LAN egress, but that session remains unselectable until its concrete
+  publisher-bound wrapper passes live A/B; legacy remote is rollback only (ADR-0096/0097).
 - `./live.sh` is the single Linux physical entry. It owns the host lock,
   reversible echo-control route, conditional Ollama, doctor, and aligned
   private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).

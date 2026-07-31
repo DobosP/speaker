@@ -23,6 +23,17 @@ def _run(config: Path, *args: str) -> int:
     return main(["--config", str(config), *args])
 
 
+def test_committed_audio_egress_default_is_device_only():
+    config = json.loads(
+        (Path(__file__).resolve().parents[1] / "config.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert config["voice_session"]["audio_egress"] == "device_only"
+    assert config["remote"]["publisher_identity"] == "user"
+
+
 def test_no_capability_options_do_not_create_or_read_config(tmp_path, monkeypatch):
     config = tmp_path / "config.local.json"
 
@@ -45,6 +56,7 @@ def test_setup_merges_all_capabilities_and_publishes_mode_0600(tmp_path):
                 "obsidian": {"max_results": 7},
                 "reminders": {"timezone": "Europe/Bucharest"},
                 "trusted_apps": {"policy": "exact-id", "apps": {}},
+                "voice_session": {"keep": "session-setting"},
                 "unrelated": [1, 2, 3],
             }
         ),
@@ -59,6 +71,7 @@ def test_setup_merges_all_capabilities_and_publishes_mode_0600(tmp_path):
         "--enable-reminders",
         "--trust-app",
         "obsidian=md.obsidian.Obsidian.desktop",
+        "--allow-trusted-lan-audio",
     )
 
     assert rc == 0
@@ -88,7 +101,78 @@ def test_setup_merges_all_capabilities_and_publishes_mode_0600(tmp_path):
             }
         },
     }
+    assert published["voice_session"] == {
+        "audio_egress": "trusted_lan",
+        "keep": "session-setting",
+    }
     assert stat.S_IMODE(config.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize(
+    ("option", "policy"),
+    [
+        ("--allow-trusted-lan-audio", "trusted_lan"),
+        ("--device-only-audio", "device_only"),
+    ],
+)
+def test_audio_egress_policy_preserves_siblings_and_reports_only_policy(
+    tmp_path, capsys, option, policy
+):
+    config = tmp_path / "config.local.json"
+    private_marker = "private-publisher-marker"
+    config.write_text(
+        json.dumps(
+            {
+                "voice_session": {
+                    "audio_egress": "device_only",
+                    "keep": {"nested": True},
+                },
+                "remote": {"publisher_identity": private_marker},
+                "unrelated": [1, 2, 3],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _run(config, option) == 0
+
+    published = json.loads(config.read_text(encoding="utf-8"))
+    assert published["voice_session"] == {
+        "audio_egress": policy,
+        "keep": {"nested": True},
+    }
+    assert published["remote"] == {"publisher_identity": private_marker}
+    assert published["unrelated"] == [1, 2, 3]
+    output = capsys.readouterr().out
+    assert f"Audio egress policy: {policy}" in output
+    assert private_marker not in output
+
+
+def test_audio_egress_cli_choices_are_mutually_exclusive(tmp_path):
+    config = tmp_path / "config.local.json"
+
+    with pytest.raises(SystemExit) as exc:
+        _run(
+            config,
+            "--allow-trusted-lan-audio",
+            "--device-only-audio",
+        )
+
+    assert exc.value.code == 2
+    assert not config.exists()
+
+
+def test_apply_setup_rejects_unknown_audio_egress_without_mutation():
+    original = {
+        "voice_session": {"audio_egress": "device_only", "keep": True}
+    }
+
+    with pytest.raises(SetupError, match="audio egress policy"):
+        apply_setup(original, SetupRequest(audio_egress="internet"))
+
+    assert original == {
+        "voice_session": {"audio_egress": "device_only", "keep": True}
+    }
 
 
 def test_vault_validation_never_enumerates_or_reads_notes(tmp_path, monkeypatch):
@@ -260,6 +344,15 @@ def test_non_object_touched_section_is_preserved_on_failure(tmp_path):
     config.write_bytes(original)
 
     assert _run(config, "--enable-reminders") == 1
+    assert config.read_bytes() == original
+
+
+def test_non_object_voice_session_is_preserved_on_audio_policy_failure(tmp_path):
+    config = tmp_path / "config.local.json"
+    original = b'{"voice_session": ["unexpected"]}\n'
+    config.write_bytes(original)
+
+    assert _run(config, "--allow-trusted-lan-audio") == 1
     assert config.read_bytes() == original
 
 

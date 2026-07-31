@@ -12,6 +12,8 @@ Examples::
     python -m tools.setup_assistant --enable-reminders
     python -m tools.setup_assistant --trust-app obsidian=md.obsidian.Obsidian.desktop
     python -m tools.setup_assistant --disable-obsidian --untrust-app obsidian
+    python -m tools.setup_assistant --allow-trusted-lan-audio
+    python -m tools.setup_assistant --device-only-audio
 """
 from __future__ import annotations
 
@@ -29,6 +31,12 @@ from typing import Any, Mapping
 
 
 DEFAULT_CONFIG = "config.local.json"
+
+AUDIO_EGRESS_DEVICE_ONLY = "device_only"
+AUDIO_EGRESS_TRUSTED_LAN = "trusted_lan"
+_AUDIO_EGRESS_POLICIES = frozenset(
+    {AUDIO_EGRESS_DEVICE_ONLY, AUDIO_EGRESS_TRUSTED_LAN}
+)
 
 _ALIAS_RE = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 _DESKTOP_ID_RE = re.compile(
@@ -57,6 +65,7 @@ class SetupRequest:
     reminders_enabled: bool | None = None
     trust_apps: tuple[TrustedApp, ...] = ()
     untrust_apps: tuple[str, ...] = ()
+    audio_egress: str | None = None
 
     @property
     def has_changes(self) -> bool:
@@ -66,6 +75,7 @@ class SetupRequest:
             or self.reminders_enabled is not None
             or self.trust_apps
             or self.untrust_apps
+            or self.audio_egress is not None
         )
 
 
@@ -190,6 +200,17 @@ def apply_setup(
         elif not apps:
             trusted["enabled"] = False
         result["trusted_apps"] = trusted
+
+    if request.audio_egress is not None:
+        if request.audio_egress not in _AUDIO_EGRESS_POLICIES:
+            raise SetupError(
+                "audio egress policy must be 'device_only' or 'trusted_lan'"
+            )
+        voice_session = _copy_object(
+            result.get("voice_session", {}), section="voice_session"
+        )
+        voice_session["audio_egress"] = request.audio_egress
+        result["voice_session"] = voice_session
 
     return result
 
@@ -407,6 +428,7 @@ def _request_from_args(args: argparse.Namespace) -> SetupRequest:
         reminders_enabled=reminders_enabled,
         trust_apps=trusted,
         untrust_apps=untrusted,
+        audio_egress=args.audio_egress,
     )
 
 
@@ -440,6 +462,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-reminders",
         action="store_true",
         help="disable the reminders capability",
+    )
+    audio_egress = parser.add_mutually_exclusive_group()
+    audio_egress.add_argument(
+        "--allow-trusted-lan-audio",
+        action="store_const",
+        const=AUDIO_EGRESS_TRUSTED_LAN,
+        dest="audio_egress",
+        help=(
+            "allow microphone audio to leave this device only for the "
+            "configured trusted-LAN voice session"
+        ),
+    )
+    audio_egress.add_argument(
+        "--device-only-audio",
+        action="store_const",
+        const=AUDIO_EGRESS_DEVICE_ONLY,
+        dest="audio_egress",
+        help="keep microphone audio on this device and disable trusted-LAN egress",
     )
     parser.add_argument(
         "--trust-app",
@@ -486,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Assistant capability config published safely: {published}")
     if enabled:
         print(f"Enabled/updated: {', '.join(enabled)}")
+    if request.audio_egress is not None:
+        print(f"Audio egress policy: {request.audio_egress}")
     return 0
 
 

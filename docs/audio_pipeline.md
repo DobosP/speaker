@@ -141,7 +141,7 @@ byte-identical to no-AEC.
 recipe in **ADR-0013** (`aec_enabled=false`,
 `apm_always_on=false`, `barge_word_cut_enabled=true`, plus PipeWire
 `module-echo-cancel` on Linux). The
-committed `open_speaker` device profile — `python -m core --engine sherpa
+committed `open_speaker` device profile — `python -m core --session local
 --device open_speaker` — remains the **in-app fallback**: it turns on
 `aec_backend="apm"` + `apm_always_on` (no OS setup needed, but the APM's
 always-on NS is what smeared the near-end user during double-talk; see
@@ -211,8 +211,8 @@ never fired in a committed run.
 
 # In-app APM fallback (no OS setup; NS smears the near-end during double-talk):
 pip install livekit
-python -m core --engine sherpa --device open_speaker            # run; no enrollment required
-python -m core --engine sherpa --device open_speaker --enroll   # optional enrollment/update, then exits
+python -m core --session local --device open_speaker            # run; no enrollment required
+python -m core --session local --device open_speaker --enroll   # optional enrollment/update, then exits
 # Run the preceding non-enrollment command again after an optional update.
 ```
 

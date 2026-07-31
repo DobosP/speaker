@@ -9,7 +9,7 @@ Typical workflow
 ----------------
 1. Run the assistant:
        ./session.sh --debug --record
-   (or: python -m core --engine sherpa)
+   (or: python -m core --session local)
 2. Reproduce the test scenario (let the assistant speak, then interrupt it).
 3. Exit and run this tool:
        python -m tools.live_audio_ab                        # latest run
@@ -302,7 +302,7 @@ def main(argv: list | None = None) -> int:
     print("\n--- How to run a live A/B ---")
     print("  # Launch the assistant:")
     print("  ./session.sh --debug --record")
-    print("  # (or: python -m core --engine sherpa)")
+    print("  # (or: python -m core --session local)")
     print("  # Let it speak a long reply, then interrupt it.")
     print("  # Exit (Ctrl-C), then re-run this tool:")
     print("  python -m tools.live_audio_ab")

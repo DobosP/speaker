@@ -51,7 +51,7 @@ RUNTIME_DEPS = [
 def normal_voice_entry(platform_name: str | None = None) -> str:
     """Return the supported normal app entry for the current platform."""
     selected = sys.platform if platform_name is None else platform_name
-    return "./live.sh" if selected.startswith("linux") else "python -m core --engine sherpa"
+    return "./live.sh" if selected.startswith("linux") else "python -m core --session local"
 
 # Explicit opt-in runtime for ADR-0079. Keep these exact versions aligned with
 # the Linux x86_64 markers in requirements.txt; the ordinary lean install does
@@ -436,7 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     print("\nBase speech runtime installed. Activate the environment:\n")
     print(f"    {activation_hint(args.venv)}")
     print("\nTry the control plane without audio or models:")
-    print("    python -m core --engine console --llm echo\n")
+    print("    python -m core --session console --llm echo\n")
     print("Complete stage 2 in local Ollama (https://ollama.com):")
     print("    ollama pull gemma3:12b")
     print("    python -m tools.setup_minicpm")

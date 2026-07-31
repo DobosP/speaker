@@ -62,7 +62,7 @@ the exact fields it parses.
 - `remote/` — **host + thin-client path** (optional; `requirements-remote.txt` +
   `LIVEKIT_*`). `token_server.py` (FastAPI: mints LiveKit tokens, a text
   `/chat`, serves `web/`), `worker.py` (joins a LiveKit room running the full
-  Python brain via `--engine livekit`). `web/index.html` is the browser client.
+  Python brain through the legacy LiveKit rollback). `web/index.html` is the browser client.
 - `utils/memory.py` (+ `memory_writer.py`, `memory_config.py`) — Postgres-backed
   smart memory (the only surviving `utils/` modules). See `MEMORY.md`. Keep;
   will move to SQLite on mobile.
@@ -89,13 +89,12 @@ the exact fields it parses.
 
 ## Running the app
 
-- `python -m core --engine console --llm echo` — no audio/models (try-it path).
-- `python -m core --engine sherpa` — on-device audio.
-- `python -m core --engine replay --replay-dir <dir>` — the real engine headless
+- `python -m core --session console --llm echo` — no audio/models (try-it path).
+- `python -m core --session local` — on-device audio.
+- `python -m core --session replay --replay-dir <dir>` — the real engine headless
   over recorded `.npy`/`.wav` fixtures (no sound card).
-- `python -m remote.worker` — host+thin-client path (joins a LiveKit room; needs
-  `LIVEKIT_*`).
-- Engines: `--engine {console,sherpa,replay,livekit}`; LLM:
+- `--session trusted-lan` — see ADR-0096 and ADR-0097.
+- Sessions: `--session {console,local,replay,trusted-lan}`; LLM:
   `--llm {echo,ollama,llamacpp}`; profile: `--device <name>` (default from
   `config.device`; profiles + the `llm` block: `deployment_profiles.md`).
 - Latency instrumentation (`core/metrics.py`) and run-log capture are described

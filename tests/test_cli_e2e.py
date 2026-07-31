@@ -3,7 +3,7 @@
 Every other test exercises the runtime *in-process* (scripted engine, fake LLM,
 direct ``VoiceRuntime`` construction) and so never runs the actual command the
 docs tell users to run. This test subprocesses the real entrypoint --
-``python -m core --engine console --llm echo`` -- and drives it over stdin, to
+``python -m core --session console --llm echo`` -- and drives it over stdin, to
 pin the whole boot path as a process:
 
     app.main -> _load_config -> _apply_device_profile -> _build_llms (EchoLLM)
@@ -56,7 +56,7 @@ def test_console_cli_end_to_end():
     env["PYTHONIOENCODING"] = "utf-8"
 
     proc = subprocess.Popen(
-        [sys.executable, "-m", "core", "--engine", "console", "--llm", "echo"],
+        [sys.executable, "-m", "core", "--session", "console", "--llm", "echo"],
         cwd=str(REPO_ROOT),
         env=env,
         stdin=subprocess.PIPE,

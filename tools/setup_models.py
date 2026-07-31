@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download the sherpa-onnx ASR/VAD/TTS models for the native (`--engine sherpa`)
+"""Download the sherpa-onnx ASR/VAD/TTS models for the native (`--session local`)
 path and wire their paths into config.local.json.
 
 Run once, then start the assistant:
@@ -148,7 +148,7 @@ PARAKEET_FINAL_FILE_SHA256 = {
 def normal_voice_entry(platform_name: str | None = None) -> str:
     """Return the supported normal app entry for the current platform."""
     selected = sys.platform if platform_name is None else platform_name
-    return "./live.sh" if selected.startswith("linux") else "python -m core --engine sherpa"
+    return "./live.sh" if selected.startswith("linux") else "python -m core --session local"
 
 # Optional independent endpointed-ASR verifier. The empirically selected local
 # development candidate is Faster-Whisper Small; it runs through CTranslate2 on
@@ -1424,7 +1424,7 @@ def main(argv: list[str] | None = None) -> int:
                 "The phone / phone_lite device profiles already point "
                 "llm.main_model_path / fast_model_path at these. Install the runtime "
                 "with `pip install -r requirements-ondevice.txt`, then run:  "
-                "python -m core --engine sherpa --device phone"
+                "python -m core --session local --device phone"
             )
         except Exception as exc:  # noqa: BLE001 - optional, non-fatal
             print(

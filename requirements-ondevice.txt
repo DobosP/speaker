@@ -5,7 +5,7 @@
 #
 #   pip install -r requirements-ondevice.txt
 #   python -m tools.setup_models --gguf        # fetch the MiniCPM GGUF weights
-#   python -m core --engine sherpa --device phone
+#   python -m core --session local --device phone
 #
 # A Hugging Face token can still be supplied for rate-limited model fetches.
 

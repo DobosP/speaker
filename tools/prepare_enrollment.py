@@ -519,7 +519,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  v5 candidate:    {result.candidate} (reserved, mode 600)")
     command = (
         f"cd {shlex.quote(str(result.config_local.parent))} && "
-        f"{shlex.quote(sys.executable)} -m core --engine sherpa "
+        f"{shlex.quote(sys.executable)} -m core --session local "
         "--enroll --require-prepared-enrollment "
         "--enroll-seconds 12 --enroll-passes 3"
     )

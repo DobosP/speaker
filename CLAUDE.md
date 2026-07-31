@@ -13,17 +13,19 @@ Linux/Windows/macOS/Android/iOS. The desktop Python runtime `core/`
 (`VoiceRuntime` on sherpa-onnx) is the reference; `mobile/` is the on-device
 Flutter app; `remote/` + `web/` is the host + thin-client path (LiveKit/WebRTC).
 Shape (decided): **one portable core + thin per-platform shells** sharing the
-`always_on_agent` `AgentEvent`/`Mode` contract (`docs/adr/0001`); the legacy
+`always_on_agent` `AgentEvent`/`Mode` contract (`docs/adr/0001`, superseded by
+`docs/adr/0097` for session topology); the legacy
 `main.py` monolith is deleted (`docs/adr/0002`). Read
 `docs/target_architecture.md` §9 before structural changes.
 
 **Local/cloud boundary (`docs/target_architecture.md` §9.7 — hard invariant):**
-STT, TTS, VAD, speaker-ID, the always-on capture loop, and the fast/answering
-LLM tier stay **on-device — raw audio never leaves the device**. The thinking
+Local sessions keep STT, TTS, VAD, speaker-ID, the always-on capture loop, and
+the fast/answering LLM tier on-device. ADR-0097 permits raw audio only through
+an explicit machine-local grant to an encrypted self-hosted trusted LAN; it
+does not permit public/cloud audio, and device profiles cannot grant it. The thinking
 tier (main planner / research / multimodal summarize / web search) may use
 cloud; only post-ASR text + screen captures + files given to the assistant may
-cross over, and only when invoked. This boundary supersedes the earlier blanket
-"no cloud STT/LLM/TTS by default" stance; the always-on loop is still fully local.
+cross over, and only when invoked.
 
 > **HARD REQUIREMENT — open-speaker barge-in, NO headphones (owner decision
 > 2026-06-05; D-A, `docs/adr/0008`).** Barge-in MUST work on the bare laptop
@@ -38,9 +40,9 @@ cross over, and only when invoked. This boundary supersedes the earlier blanket
 
 ```
 python -m tools.session_bootstrap            # session start: rebuild context (<1s, no deps)
-python -m core --engine console --llm echo   # run without audio/models
+python -m core --session console --llm echo  # run without audio/models
 ./live.sh                                    # Linux physical setup + private recording
-python -m core --engine sherpa               # low-level; Linux route already prepared
+python -m core --session local               # low-level; Linux route already prepared
 python -m pytest tests -q                    # logic suite (the CI gate)
 python tools/run_tests.py fast               # staged runner, Tier 0
 python -m tools.doctor                       # standalone; Linux route already prepared

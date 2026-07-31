@@ -85,7 +85,7 @@ def load_config(path: str = "config.json", *, local: str = "config.local.json") 
             config = json.load(fh)
     # Hermetic-test guard: when SPEAKER_NO_LOCAL_CONFIG is truthy, skip the
     # machine-local overlay entirely. Without this, a machine that has real
-    # model paths in config.local.json makes `--engine sherpa` start the live
+    # model paths in config.local.json makes `--session local` start the live
     # capture loop instead of failing fast, hanging the test suite. Production
     # and default behaviour are unchanged (the var is unset by default).
     _skip_local = os.environ.get("SPEAKER_NO_LOCAL_CONFIG", "").strip().lower() not in ("", "0", "false", "no")

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preflight report for the native (``--engine sherpa``) voice runtime.
+"""Preflight report for the native (``--session local``) voice runtime.
 
 The production readiness contract lives in :mod:`core.readiness`; this module
 adds doctor-only Python/platform presentation and the CLI. Readiness functions
@@ -191,7 +191,7 @@ def main(argv: list[str] | None = None) -> int:
                 "local models, then run `python -m tools.doctor` for full READY"
             )
             return 0
-        print("READY -> python -m core --engine sherpa")
+        print("READY -> python -m core --session local")
         return 0
     if deferred:
         flag = "--defer-ollama" if args.defer_ollama else "--defer-llm"

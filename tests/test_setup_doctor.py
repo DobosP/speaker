@@ -492,7 +492,7 @@ def test_required_selected_parakeet_publishes_backend_and_four_paths(
     )
     output = capsys.readouterr().out
     assert "Now run:  ./live.sh" in output
-    assert setup_models.normal_voice_entry("win32") == "python -m core --engine sherpa"
+    assert setup_models.normal_voice_entry("win32") == "python -m core --session local"
 
 
 def test_setup_rejects_two_offline_final_asr_selections():

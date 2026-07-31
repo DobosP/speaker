@@ -13,7 +13,7 @@ Always writes ``.agents/last_report.json`` (the loop's "is this version green?"
 signal) and appends a one-line entry to ``.agents/history.jsonl``.
 
 Hermetic by design: exports ``SPEAKER_NO_LOCAL_CONFIG=1`` so a dev box with real
-model paths in ``config.local.json`` behaves like CI (``--engine sherpa`` fails
+model paths in ``config.local.json`` behaves like CI (``--session local`` fails
 fast instead of starting the live loop and hanging the suite).
 """
 from __future__ import annotations

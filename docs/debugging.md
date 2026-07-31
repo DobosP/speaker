@@ -177,7 +177,7 @@ Async DEBUG log from these loggers (grep by prefix):
 3. **Open `.txt`** around the relevant timestamps for the full trace + traceback.
 4. **Reproduce from the recording** (if `.wav` present): replay the exact audio
    through the real pipeline, no mic needed —
-   `python -m core --engine replay --replay-dir <bundle-dir> --debug`.
+   `python -m core --session replay --replay-dir <bundle-dir> --debug`.
 5. **Freeze it as a test:** the recorded WAV is the same format the replay
    loader (`core/engines/file_replay.py: load_waveform`) consumes, so a captured
    session becomes a deterministic regression fixture (see
@@ -212,7 +212,7 @@ When the assistant has misbehaved in real life and you want to debug it:
    - if you can reproduce a "freeze," let it freeze — don't Ctrl-C; the
      watchdog will warn at the deadline.
 3. **Keep the original bundle local.** Record its directory name, then replay it
-   with `python -m core --engine replay --replay-dir <bundle-dir> --debug`.
+   with `python -m core --session replay --replay-dir <bundle-dir> --debug`.
    Preserve the mic/reference pair byte-for-byte. If a regression fixture is
    needed, create a separate synthetic/non-sensitive derivative; never stage or
    push the real-voice original.

@@ -703,7 +703,7 @@ def test_run_enrollment_prints_exact_nondefault_device_selectors(tmp_path):
 
     assert code == 0
     assert (
-        "Now run:  python -m core --engine sherpa "
+        "Now run:  python -m core --session local "
         "--input-device pipewire --output-device pipewire"
     ) in "\n".join(messages)
 

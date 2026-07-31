@@ -1,51 +1,57 @@
 Valid until: this branch lands or is superseded — then treat as history.
 
-# Task result — publisher-bound LiveKit Agents contract
+# Task result — modular voice-session spine
 
 ## Summary
 
-Added a dependency-safe `AudioEngine` adapter contract for a future
-publisher-scoped LiveKit Agents session. The trusted Speaker controller remains
-the only LLM/tool/authority plane. Raw SDK session/output objects are excluded;
-the future wrapper must atomically issue output-route leases and fail closed on
-configuration, route mutation, interruption failure, lifecycle races, or close.
+Added the typed session/topology layer behind one public
+`python -m core --session` entrypoint. Console, local audio, and replay still
+reuse the existing `build_runtime` authority/tool plane; a `VoiceSession` now
+owns exactly one injected `VoiceRuntime` and releases it once across normal,
+startup-failure, and repeated-cleanup paths.
 
-This slice is intentionally not selectable: it does not yet implement or install
-the concrete LiveKit wrapper and makes no STT, latency, or live-audio claim.
+Audio remains device-only by default. Setup can atomically grant or revoke
+encrypted self-hosted trusted-LAN audio, but the canonical trusted-LAN session
+stays fail-closed until ADR-0096's concrete publisher-bound LiveKit Agents
+wrapper exists and passes live A/B. Participant identity remains transport-only
+and remote speech remains action-untrusted. Hidden `--engine` compatibility and
+the legacy worker remain rollback paths.
 
-## Files changed
+## Main files changed
 
-- `core/engines/livekit_agents.py`: typed wrapper policy, participant binding,
-  whole-turn commit bridge, action-untrusted remote lineage, generation-safe
-  barge evidence, route-lease playback receipts, fatal close fencing, and SDK
-  state/close mapping.
-- `tests/test_livekit_agents_engine.py`: deterministic fake-loop coverage for
-  trust, turn assembly, restart races, interruption episodes, output mutations,
-  receipt terminality, failure close, and callback lifecycle.
-- `docs/adr/0096-introduce-publisher-bound-livekit-agents-adapter.md`: decision,
-  safety boundary, evidence limits, and promotion requirements.
-- `STATUS.md`: current unselectable seam and focused evidence.
+- `core/voice_session.py`: typed modes, topology and egress policy, bounded
+  identifiers, trusted-LAN URL validation, promotion gate, and lifecycle owner.
+- `core/app.py`: canonical `--session` selector, pre-profile policy resolution,
+  safe run metadata, legacy URL enforcement, and unified teardown.
+- `tools/setup_assistant.py` / `config.json`: explicit reversible audio-egress
+  grant with the shipped `device_only` default.
+- `tools/live_launcher.py` and setup/install helpers: launch `--session local`.
+- `tests/test_voice_session.py` and adjacent tests: policy, lifecycle, profile,
+  CLI, setup, launcher, and real-process coverage.
+- ADR-0097, superseded ADR-0001 status, `STATUS.md`, and current run guides.
 
 ## Verification
 
-- Focused adapter: 28 passed.
-- Adapter plus LiveKit/playback/session/device-tool adjacency: 111 passed.
-- Required APM/double-talk regression: 6 passed.
+- Full non-model logic gate: 6,532 passed, 13 skipped, 22 deselected; nine
+  pre-existing warnings.
+- Final focused session/CLI/lifecycle gate after URL and cleanup hardening:
+  55 passed.
+- Enrollment/doctor/installer/launcher adjacency: 293 passed.
+- Device-profile/origin/tool/LiveKit seam adjacency: 88 passed.
+- Required APM/double-talk gate: 6 passed.
 - `git diff --check`: passed.
-- All tests were headless, low-priority, and used no model, network, server,
-  microphone, speaker, or GPU.
+- All checks were headless and low-priority. No microphone, speaker, model,
+  network service, or GPU validation is claimed.
 
 ## Risks and manual review
 
-The concrete non-escaping SDK wrapper remains mandatory before wiring. It must
-pin LiveKit Agents, own publisher selection and every output mutation, pass
-`record=False`, keep framework LLM/tools/MCP empty, use audited local speech
-components, and request non-draining close after playout failure. A handle/sink
-terminal is not proof that the remote user heard audio; client acknowledgement
-and bare-speaker live A/B remain promotion gates.
+This slice does not improve STT or make the remote composition usable. The
+concrete LiveKit Agents wrapper, parallel `/chat` removal, stage-separated media
+providers, public-corpus harness, bounded Parakeet/Zipformer A/B, and physical
+open-speaker validation remain follow-up work. The legacy LiveKit path now
+requires the explicit setup grant and is retained only for rollback.
 
 ## Merge recommendation
 
-Green for fast-forward landing. The final independent review found no remaining
-P0/P1 issue, and the focused, adjacent, APM, and whitespace gates are green.
-Keep the legacy remote path active.
+Green for landing after independent review. The full logic, focused, adjacent,
+APM, and whitespace gates are green; no live-audio claim is made.

@@ -1,7 +1,7 @@
 # ADR-0001: One portable core + thin per-platform shells; raw audio never leaves the device
 
 Date: 2026-05-28
-Status: accepted
+Status: superseded-by ADR-0097
 
 ## Decision
 Build ONE portable Python core (`core/`) with thin per-platform shells — not a

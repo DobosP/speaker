@@ -155,10 +155,10 @@ These claims in the old docs are **stale**; the codebase has these truths:
 
 1. **On-device desktop** (default for this repo):
    - Normal Linux physical session: `./live.sh`; portable low-level runtime for
-     an already prepared platform route: `python -m core --engine sherpa`.
+     an already prepared platform route: `python -m core --session local`.
    - STT/TTS/VAD/barge-in all local (sherpa-onnx).
    - LLM: Ollama on GPU (`desktop` profile) or llama.cpp (`phone` profile).
-   - Raw audio never leaves the device.
+   - Audio topology: ADR-0097.
 
 2. **On-device Android** (Flutter app, `mobile/`; detailed in [§10](#10--cross-platform-contract--mobile)):
    - `sherpa_onnx` (ASR/TTS) + `flutter_gemma` (Gemma 3 1B, MediaPipe/LiteRT).
@@ -166,10 +166,7 @@ These claims in the old docs are **stale**; the codebase has these truths:
    - `lib/assistant.dart` is a **parallel Dart loop** (command map + streaming TTS) not yet sharing the Python brain.
 
 3. **Host+thin-client** (host runs the Python brain, thin clients over WebRTC; detailed in [§10](#10--cross-platform-contract--mobile)):
-   - Host: `python -m remote.worker --engine livekit` joins a room, runs the full Python brain.
-   - Web: `remote/token_server.py` (FastAPI) mints LiveKit tokens, serves `web/index.html`, and offers a text `/chat` endpoint for the browser.
-   - Audio over WebRTC (LiveKit); the always-on capture loop still runs on the device (phone/browser); STT/TTS route through the same sherpa-onnx engine running on the host.
-   - Raw audio traverses the network as compressed WebRTC frames; ASR text + task results flow back.
+   - Entry and promotion policy: ADR-0096 and ADR-0097.
 
 ### The contract
 
@@ -429,7 +426,7 @@ The **tier router** (`core/routing.py::HeuristicRouter`) and the **unified capab
 
 ## §5 — LLM tiers, cloud routing & the local/cloud boundary (§9.7)
 
-The LLM stack is two-tiered: a small fast model for snappy spoken replies (local-only, always) and a main model (research, multimodal, reasoning) that **optionally** hedges or falls back to cloud. The local/cloud boundary enforces a hard security gate: only post-ASR text, screen captures, and given files may cross; raw audio never leaves the device. Egress is classified by sensitivity (personal/code/public) and routed through failure-tolerant cloud chains.
+The LLM stack is two-tiered: a small fast model for snappy spoken replies (local-only, always) and a main model (research, multimodal, reasoning) that **optionally** hedges or falls back to cloud. Text/file/screen egress is classified by sensitivity (personal/code/public) and routed through failure-tolerant cloud chains. Raw-audio topology is recorded in ADR-0097.
 
 ### LLMClient protocol and implementations
 
@@ -898,7 +895,7 @@ Any change to the contract or fixtures triggers both test suites — the two run
 - `GET /token?identity=&room=` — mints a LiveKit JWT (requires `LIVEKIT_API_KEY`/`LIVEKIT_API_SECRET` in env). Auth: `Authorization: Bearer <token>` matching `SPEAKER_REMOTE_TOKEN`, or dev opt-in via `SPEAKER_REMOTE_ALLOW_NOAUTH=1`.
 - `POST /chat {"message": "..."}` — a lightweight text turn through the local LLM (same `core.llm.LLMClient` as the voice path; see [§5](#5--llm-tiers-cloud-routing--the-localcloud-boundary-97)), rate-limited to 30 req/60 s per client.
 
-The live-voice path: `remote/worker.py` is a thin CLI harness that mints a token and forwards to `core.app` with `--engine livekit`. It joins a LiveKit room and uses `core/engines/livekit.py::LiveKitEngine`, which wires sherpa-onnx (ASR/TTS) over WebRTC instead of the local mic/speaker (see [§3](#3--the-desktop-runtime-core--the-audioengine-seam)). The same `VoiceRuntime` orchestrator handles both: the brain is reused, only the audio transport swaps.
+`remote/worker.py` currently mints a token and forwards to `core.app` with hidden `--engine livekit`. The canonical entry and promotion policy are recorded in ADR-0096 and ADR-0097.
 
 **Design decision (from code review §6):** "share the contract + tests, not a binary core." The Python core and Dart mobile shell each re-derive the brain in their own language (`core/capabilities.py` vs `mobile/lib/assistant.dart`'s hot loops for sentence boundaries and the command fast-path). The golden suite (~95% of "one source of truth") is cheaper than FFI/IPC and keeps both shells independent. Drift surfaces immediately in CI.
 
@@ -1185,7 +1182,7 @@ Ranked by field impact:
 
 1. **Core + thin shells, not a monolith or N independent apps.** One portable Python core (`core/`); per-platform shells (Flutter on Android, web+host path for remote). The `always_on_agent` `AgentEvent`/`Mode` contract (+ tests) is shared by all platforms; the brain is reimplemented faithfully per runtime, not binary-shared. *Rationale:* iOS forbids Python background voice; N apps duplicate logic. `docs/target_architecture.md` §0 (2026-05).
 
-2. **Local-first hybrid boundary (§9.7).** The always-on capture loop (STT/TTS/VAD/speaker-ID + fast LLM) runs fully on-device; raw audio never leaves. The thinking tier (main planner, research, multimodal, web search) may use cloud; only post-ASR text, files, and screenshots cross, and only when invoked. Device profiles tune the local/cloud split per machine class. *Rationale:* preserves privacy, unblocks iOS, allows graceful fallback. `docs/target_architecture.md` §9.7 (2026-05-28).
+2. **Local-first hybrid boundary (§9.7).** Raw-audio topology: ADR-0097. Text/file/screen egress: `docs/target_architecture.md` §9.7.
 
 ### Phase P0 — Security & OSS-readiness (2026-05-29)
 

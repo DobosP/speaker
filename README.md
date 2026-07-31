@@ -104,7 +104,7 @@ diagnostic and can never issue full `READY`; each failing line includes its fix.
 Run the console (no audio/models/Ollama needed — type to talk, exercises the brain):
 
 ```bash
-python -m core --engine console --llm echo
+python -m core --session console --llm echo
 ```
 
 Run a private recorded physical session on Linux. For an Ollama profile this
@@ -128,15 +128,18 @@ The portable low-level entry point remains available when platform audio is
 already prepared (needs sherpa-onnx model files + a mic):
 
 ```bash
-python -m core --engine sherpa --llm ollama
+python -m core --session local --llm ollama
 ```
 
-Flags: `--engine {console,sherpa,replay,livekit}`, `--llm {echo,ollama}`,
+Sessions: `--session {console,local,replay,trusted-lan}`. See
+[ADR-0097](docs/adr/0097-unify-voice-sessions-and-gate-audio-egress.md) for
+topology policy and promotion state.
+Other flags include `--llm {echo,ollama}`,
 `--model NAME`, `--device {desktop,phone}`, `--mode {passive,assistant,research,...}`.
 
-For the host + thin-client path (browser/phone as endpoints), see
-[`docs/deployment_profiles.md`](docs/deployment_profiles.md):
-`python -m remote.worker` + `uvicorn remote.token_server:app --port 8080`.
+For the host + thin-client migration and its current promotion gate, see
+[ADR-0096](docs/adr/0096-introduce-publisher-bound-livekit-agents-adapter.md)
+and [ADR-0097](docs/adr/0097-unify-voice-sessions-and-gate-audio-egress.md).
 
 ## Models (on-device, ONNX)
 

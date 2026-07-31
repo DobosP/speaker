@@ -10,7 +10,7 @@ if addressed to it -- see
 enrolled. This module is that enrollment step:
 
     python -m core --enroll              # record + save the embedding
-    python -m core --engine sherpa       # identity gates use the enrollment
+    python -m core --session local       # identity gates use the enrollment
 
 Normal-final identity uses ``speaker_gate_input``. Generic playback overrides
 use enrollment only when ``barge_word_cut_require_speaker=true``; novel exact
@@ -1827,7 +1827,7 @@ def run_enrollment(
             out("  WARNING: passes disagree -- re-run --enroll in a quieter room for a cleaner voice print.")
     out(f"  saved: {os.path.abspath(enroll_path)}")
     out(f"  wired: {config_path} (sherpa.speaker_enroll_embedding)")
-    launch = ["python", "-m", "core", "--engine", "sherpa"]
+    launch = ["python", "-m", "core", "--session", "local"]
     for flag, key in (
         ("--input-device", "input_device"),
         ("--output-device", "output_device"),

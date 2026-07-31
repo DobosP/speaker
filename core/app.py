@@ -40,6 +40,14 @@ from .runtime import VoiceRuntime
 from .sysinfo import SystemMonitor
 from .websearch import WebSearchConfig
 from .trusted_apps import TrustedAppsConfig
+from .voice_session import (
+    SessionMode,
+    VoiceSession,
+    VoiceSessionError,
+    VoiceSessionPlan,
+    engine_for_session,
+    validate_livekit_url,
+)
 
 log = logging.getLogger("speaker.app")
 
@@ -68,13 +76,19 @@ def _require_asr_models(sherpa_cfg, engine_name: str) -> None:
     """Fail fast with an actionable message when the sherpa ASR models aren't
     configured, instead of starting an engine that can never hear anything."""
     if not getattr(sherpa_cfg, "asr_encoder", "") or not getattr(sherpa_cfg, "asr_tokens", ""):
+        selection = {
+            "sherpa": "--session local",
+            "replay": "--session replay",
+            "livekit": "--engine livekit",
+        }.get(engine_name, f"--engine {engine_name}")
+        label = f"legacy {selection}" if engine_name == "livekit" else selection
         raise SystemExit(
-            f"\n--engine {engine_name} needs the on-device speech models, but "
+            f"\n{label} needs the sherpa on-device speech models, but "
             "config.json/config.local.json have no sherpa model paths set.\n\n"
             "  Run once:   python -m tools.setup_models\n"
             "  (or full:   ./install.sh)\n\n"
             "That downloads the ASR/VAD/TTS models and writes their paths into "
-            f"config.local.json. Then re-run:\n  python -m core --engine {engine_name}\n"
+            f"config.local.json. Then re-run:\n  python -m core {selection}\n"
         )
 
 
@@ -118,7 +132,7 @@ def _require_sherpa_runtime_ready(
             line += f"\n      fix: {check.hint}"
         lines.append(line)
     raise SystemExit(
-        "\n--engine sherpa runtime preflight failed:\n"
+        "\n--session local runtime preflight failed:\n"
         + "\n".join(lines)
         + "\n\nRun `python -m tools.doctor` after fixing these prerequisites."
     )
@@ -159,10 +173,19 @@ def _build_engine(args, config: dict, *, virtual_audio_binder=None) -> AudioEngi
                 "Run `python -m remote.worker` to mint a token automatically "
                 "(after installing requirements-remote.txt and starting a LiveKit server)."
             )
+        try:
+            url = validate_livekit_url(url)
+        except VoiceSessionError as exc:
+            raise SystemExit(str(exc)) from exc
         sherpa_cfg = SherpaConfig.from_dict(config.get("sherpa", {}))
         _require_asr_models(sherpa_cfg, "livekit")
-        room = (config.get("remote", {}) or {}).get("room", "assistant")
+        room = getattr(args, "room", None) or "assistant"
         return LiveKitEngine(sherpa_cfg, url=url, token=token, room=room)
+    if args.engine == "livekit_agents":
+        raise SystemExit(
+            "the publisher-bound LiveKit Agents adapter is not selectable until "
+            "its concrete trusted wrapper passes live A/B"
+        )
     from .engines.scripted import ScriptedEngine
 
     return ScriptedEngine()
@@ -455,8 +478,6 @@ def _run_console(runtime: VoiceRuntime, engine) -> None:
             print(f"[mode={runtime.mode.value}]")
     except (EOFError, KeyboardInterrupt):
         pass
-    finally:
-        runtime.stop()
 
 
 def _run_replay(runtime: VoiceRuntime, engine, replay_dir: str) -> None:
@@ -470,26 +491,21 @@ def _run_replay(runtime: VoiceRuntime, engine, replay_dir: str) -> None:
         raise SystemExit(f"No .npy/.wav fixtures found in {replay_dir!r}")
     runtime.start(run_bus=True)
     print(f"[replay] {len(paths)} fixture(s) from {replay_dir}")
-    try:
-        for path in paths:
-            samples, sample_rate = load_waveform(path)
-            runtime.metrics.close_turn()
-            engine.replay_samples(samples, sample_rate)
-            runtime.wait_idle(timeout=30.0)
+    for path in paths:
+        samples, sample_rate = load_waveform(path)
         runtime.metrics.close_turn()
-        for i, record in enumerate(runtime.metrics.records()):
-            fa = record.first_audio_latency
-            print(f"  turn {i}: first_audio={fa:.3f}s" if fa is not None
-                  else f"  turn {i}: (incomplete) {record.as_dict()}")
-    finally:
-        runtime.stop()
+        engine.replay_samples(samples, sample_rate)
+        runtime.wait_idle(timeout=30.0)
+    runtime.metrics.close_turn()
+    for i, record in enumerate(runtime.metrics.records()):
+        fa = record.first_audio_latency
+        print(f"  turn {i}: first_audio={fa:.3f}s" if fa is not None
+              else f"  turn {i}: (incomplete) {record.as_dict()}")
 
 
 def _run_live(runtime: VoiceRuntime) -> None:
     import time
 
-    # start() is inside the try so a failure mid-startup still flushes the
-    # recorder + logs via runtime.stop() in finally (artifacts on crash too).
     try:
         runtime.start(run_bus=True)
         print(f"[live] engine running, mode={runtime.mode.value}. Ctrl-C to quit.")
@@ -502,8 +518,6 @@ def _run_live(runtime: VoiceRuntime) -> None:
             time.sleep(0.1)
     except KeyboardInterrupt:
         pass
-    finally:
-        runtime.stop()
 
 
 def build_runtime(
@@ -718,16 +732,47 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGTERM, _sigterm_to_keyboard_interrupt)
     except (ValueError, OSError):  # noqa: PERF203 - non-main thread / platform quirk
         pass
-    parser = argparse.ArgumentParser(description="Lean local voice assistant runtime")
-    parser.add_argument(
-        "--engine", choices=["console", "sherpa", "livekit", "replay"], default="console"
+    parser = argparse.ArgumentParser(description="Modular voice assistant runtime")
+    session_selector = parser.add_mutually_exclusive_group()
+    session_selector.add_argument(
+        "--session",
+        choices=[mode.value for mode in SessionMode],
+        default=None,
+        help=(
+            "voice-session topology: console, local device audio, headless "
+            "replay, or explicitly authorized trusted LAN (reserved until "
+            "the publisher-bound adapter is installed)"
+        ),
+    )
+    session_selector.add_argument(
+        "--engine",
+        choices=["console", "sherpa", "livekit", "replay"],
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--replay-dir",
         dest="replay_dir",
         default=None,
-        help="with --engine replay: a dir of .npy/.wav fixtures to run headless "
+        help="with --session replay: a dir of .npy/.wav fixtures to run headless "
         "through the real recognizer + TTS and print per-turn latencies",
+    )
+    parser.add_argument(
+        "--room",
+        default=None,
+        help="trusted-LAN room override (otherwise config remote.room)",
+    )
+    parser.add_argument(
+        "--agent-identity",
+        dest="agent_identity",
+        default=None,
+        help="trusted-LAN agent transport identity",
+    )
+    parser.add_argument(
+        "--publisher-identity",
+        dest="publisher_identity",
+        default=None,
+        help="exact trusted-LAN audio publisher; never grants action authority",
     )
     parser.add_argument("--llm", choices=["echo", "ollama"], default="ollama")
     parser.add_argument("--model", default=None, help="main Ollama model (research/vision)")
@@ -799,7 +844,7 @@ def main(argv: list[str] | None = None) -> int:
         "--record",
         action="store_true",
         help="also save the session's 16 kHz mic audio beside the selected run "
-        "bundle. Replays via `--engine replay` to become a test.",
+        "bundle. Replays via `--session replay` to become a test.",
     )
     parser.add_argument(
         "--record-playback-reference",
@@ -877,15 +922,16 @@ def main(argv: list[str] | None = None) -> int:
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args(argv)
+    requested_engine = args.engine or engine_for_session(args.session)
     if args.record_playback_reference or args.record_pre_dsp_reference:
         args.record = True
 
     virtual_audio_binder = None
     if args.autotest_virtual_delay_contract:
-        if args.engine != "sherpa" or args.enroll:
+        if requested_engine != "sherpa" or args.enroll:
             parser.error(
                 "--autotest-virtual-delay-contract is private to non-enrollment "
-                "--engine sherpa harness children"
+                "--session local harness children"
             )
         from .virtual_audio import (
             PreparedVirtualAudioBinder,
@@ -911,6 +957,32 @@ def main(argv: list[str] | None = None) -> int:
     monitor.start()  # baseline compute reading before anything heavy loads
 
     config = _load_config()
+    # Resolve the media boundary before applying a device profile. Profiles may
+    # tune models and DSP, but cannot silently expand raw-audio egress.
+    try:
+        session_plan = VoiceSessionPlan.resolve(
+            config=config,
+            requested_session=args.session,
+            legacy_engine=args.engine,
+            room=args.room,
+            agent_identity=args.agent_identity,
+            publisher_identity=args.publisher_identity,
+        )
+        session_plan.require_selectable()
+    except VoiceSessionError as exc:
+        try:
+            monitor.stop()
+        except Exception:  # noqa: BLE001 - preserve the session-policy error
+            pass
+        try:
+            runlog.finalize(None)
+        except Exception:  # noqa: BLE001 - preserve the session-policy error
+            pass
+        print(f"[session] {exc}", file=sys.stderr)
+        return 2
+    args.session = session_plan.mode.value
+    args.engine = session_plan.engine
+    args.room = session_plan.room
     # device-adapt-1: 'auto' (the shipped default) probes the host and picks the
     # matching profile, so an unconfigured low-spec box stops silently running the
     # heavy desktop tier. An explicit --device / config.device still wins.
@@ -921,6 +993,9 @@ def main(argv: list[str] | None = None) -> int:
         runlog.logger.info(msg)
         print(f"[device] {msg}", file=sys.stderr)
     runlog.summary.note(
+        session=session_plan.mode.value,
+        topology=session_plan.topology.value,
+        audio_egress=session_plan.audio_egress.value,
         engine=args.engine, llm=args.llm, device=device, mode=args.mode,
         model=args.model, fast_model=args.fast_model,
     )
@@ -1070,29 +1145,32 @@ def main(argv: list[str] | None = None) -> int:
         force_stream_tts=bool(args.stream_tts),
         load_fraction=monitor.load_fraction,
     )
-    # Optional screen-capture feed (OFF by default; config.screen_capture.enabled).
-    # When on, a background loop grabs the screen on a cadence and feeds the latest
-    # frame to the model as ambient visual context (runtime.set_current_frame).
-    # Optionally (screen_capture.memorize) a visual memorizer also turns each frame
-    # into a caption+OCR 'vision' memory off the hot path (core/visual_memory.py).
-    from .screen_capture import build_screen_feed
-    from .visual_memory import build_visual_memorizer
-
-    # Caption on the BARE LOCAL model only (§9.7: raw screen frames never leave the
-    # device) -- never the cloud-wrapped main client. local_main is itself when
-    # cloud is off; the getattr fallback keeps --llm echo working.
-    memorizer = build_visual_memorizer(config, runtime, getattr(llm, "local_main", llm))
-    screen_feed = build_screen_feed(
-        config, runtime, observer=(memorizer.observe if memorizer is not None else None)
-    )
-    if memorizer is not None:
-        memorizer.start()
-    if screen_feed is not None:
-        screen_feed.start()
+    voice_session = VoiceSession(session_plan, runtime)
+    memorizer = None
+    screen_feed = None
     try:
+        # Optional screen-capture feed (OFF by default; config.screen_capture.enabled).
+        # It belongs to this same session and cannot create another agent/tool plane.
+        from .screen_capture import build_screen_feed
+        from .visual_memory import build_visual_memorizer
+
+        # Caption on the BARE LOCAL model only (§9.7: raw screen frames never leave
+        # the device). The echo fallback preserves dependency-free console smoke.
+        memorizer = build_visual_memorizer(
+            config, runtime, getattr(llm, "local_main", llm)
+        )
+        screen_feed = build_screen_feed(
+            config,
+            runtime,
+            observer=(memorizer.observe if memorizer is not None else None),
+        )
+        if memorizer is not None:
+            memorizer.start()
+        if screen_feed is not None:
+            screen_feed.start()
         if args.engine == "replay":
             if not args.replay_dir:
-                raise SystemExit("--engine replay needs --replay-dir <fixtures>")
+                raise SystemExit("--session replay needs --replay-dir <fixtures>")
             _run_replay(runtime, engine, args.replay_dir)
         elif args.engine in ("sherpa", "livekit"):
             _run_live(runtime)
@@ -1100,10 +1178,30 @@ def main(argv: list[str] | None = None) -> int:
             runtime.start(run_bus=False)
             _run_console(runtime, engine)
     finally:
-        if screen_feed is not None:
-            screen_feed.stop()
-        if memorizer is not None:
-            memorizer.stop()
+        active_error = sys.exc_info()[1]
+        cleanup_error = None
+        # Stop producers before the runtime they observe. A broken optional
+        # feed must not strand the microphone, engine, telemetry, or run log.
+        for label, component in (
+            ("screen feed", screen_feed),
+            ("visual memorizer", memorizer),
+        ):
+            if component is None:
+                continue
+            try:
+                component.stop()
+            except Exception as exc:  # noqa: BLE001 - continue critical cleanup
+                runlog.logger.error("[cleanup] %s stop failed: %s", label, exc)
+                if cleanup_error is None:
+                    cleanup_error = exc
+        try:
+            # One owner releases VoiceRuntime/engine on normal exit, startup
+            # failure, or repeated outer cleanup.
+            voice_session.stop()
+        except Exception as exc:  # noqa: BLE001 - still finalize evidence
+            runlog.logger.error("[cleanup] voice session stop failed: %s", exc)
+            if cleanup_error is None:
+                cleanup_error = exc
         try:
             monitor.stop()  # folds baseline/peak/final/deltas into the summary
         except Exception:  # noqa: BLE001
@@ -1121,6 +1219,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[log] pre-DSP:  {pre_dsp_reference_path}")
         if playback_reference_path is not None:
             print(f"[log] playback: {playback_reference_path}")
+        if cleanup_error is not None and active_error is None:
+            raise cleanup_error
     return 0
 
 

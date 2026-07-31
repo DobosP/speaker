@@ -3,7 +3,7 @@
 Drives the **real** runtime end-to-end with **no person at the mic**, so a
 session can self-verify STT / TTS / barge-in / memory and emit a committable
 verdict when the selected acoustic mode covers every required axis. Sits between
-`tools.live_session` (needs a human) and `--engine replay`
+`tools.live_session` (needs a human) and `--session replay`
 (only re-plays recordings).
 
 ```

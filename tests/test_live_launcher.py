@@ -323,8 +323,8 @@ def test_one_command_creates_private_recorded_session_and_cleans_owned_resources
         sys.executable,
         "-m",
         "core",
-        "--engine",
-        "sherpa",
+        "--session",
+        "local",
         "--debug",
         "--record",
     )

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Mapping
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 MAX_LINE_BYTES = 64 * 1024
 MAX_HYPOTHESIS_CHARS = 4096
 MAX_PARTIALS_PER_CASE = 256
@@ -19,6 +19,8 @@ MAX_CORPUS_BYTES = 32 * 1024 * 1024
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
 MAX_TAIL_PADDING_SAMPLES = 16_000
+MAX_MODEL_PADDING_SAMPLES = 32_000
+MAX_STREAM_CHUNK_SAMPLES = 32_000
 MAX_STREAM_SAMPLES = MAX_PCM_BYTES // 4 + MAX_TAIL_PADDING_SAMPLES
 MAX_AUDIO_SECONDS = (MAX_PCM_BYTES // 4) / 16_000
 MAX_MODEL_LOAD_MS = 10 * 60 * 1000.0
@@ -160,6 +162,7 @@ class FinalEvent:
     deadline_misses: int
     max_backlog_ms: float
     resources: ResourceUsage
+    model_padding_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -334,7 +337,7 @@ def _stream(value: object) -> StreamConfig:
         chunk_samples=_integer(
             value.get("chunk_samples"),
             minimum=1,
-            maximum=16_000,
+            maximum=MAX_STREAM_CHUNK_SAMPLES,
         ),
         pace=str(pace),
         partial_interval_ms=_integer(
@@ -454,6 +457,7 @@ def parse_response(raw: bytes) -> Response:
             "chunks",
             "deadline_misses",
             "max_backlog_ms",
+            "model_padding_samples",
             "resources",
         }:
             raise ProtocolError()
@@ -495,6 +499,10 @@ def parse_response(raw: bytes) -> Response:
                 maximum=MAX_CASE_EVENT_MS,
             ),
             resources=_resources(value.get("resources")),
+            model_padding_samples=_integer(
+                value.get("model_padding_samples"),
+                maximum=MAX_MODEL_PADDING_SAMPLES,
+            ),
         )
     if event_type == "error":
         if set(value) != {"v", "id", "type", "code", "fatal"}:

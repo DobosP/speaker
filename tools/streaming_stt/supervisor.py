@@ -6,12 +6,13 @@ import hashlib
 import os
 from pathlib import Path
 import queue
+import re
 import signal
 import stat
 import subprocess
 import threading
 import time
-from typing import Mapping
+from typing import Mapping, Sequence
 
 from .bounded_io import (
     BoundedReadError,
@@ -22,6 +23,8 @@ from .manifest import (
     MAX_PYTHON_BYTES,
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
+    NEMOTRON_ADAPTER,
+    NemotronConfig,
     WorkerManifest,
     artifact_maximum_bytes,
 )
@@ -52,6 +55,8 @@ from .source_bundle import (
     verify_source_bundle,
 )
 from .runtime_receipt import (
+    NEMOTRON_RUNTIME_TREE_LIMITS,
+    RuntimeTreeReceipt,
     load_runtime_tree_receipt,
     verify_moonshine_wheel_install,
     verify_runtime_tree_receipt,
@@ -62,6 +67,30 @@ from .runtime_receipt import (
 _TERM_GRACE_SEC = 5.0
 _KILL_GRACE_SEC = 2.0
 _QUEUE_CAPACITY = MAX_PARTIALS_PER_CASE + 16
+_BWRAP_PATH = Path("/usr/bin/bwrap")
+_NVIDIA_REQUIRED_DEVICE_NAMES = ("nvidia0", "nvidiactl", "nvidia-uvm")
+_NVIDIA_OPTIONAL_DEVICE_NAMES = ("nvidia-modeset", "nvidia-uvm-tools")
+_NVIDIA_CAP_RE = re.compile(r"nvidia-cap[0-9]{1,3}\Z")
+_NVIDIA_PCI_RE = re.compile(r"[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\Z")
+_NEMOTRON_CORE_RO_PATHS = (
+    Path("/usr"),
+    Path("/lib"),
+    Path("/lib64"),
+    Path("/etc/ld.so.cache"),
+    # Numba asks libc for the current account while constructing its cache
+    # locator. Keep the namespace closed, but provide the two read-only local
+    # account databases needed to resolve the already-running uid/gid.
+    Path("/etc/passwd"),
+    Path("/etc/group"),
+)
+_NVIDIA_DRIVER_ROOT = Path("/sys/bus/pci/drivers/nvidia")
+_NVIDIA_MODULE_PATHS = (
+    Path("/sys/module/nvidia"),
+    Path("/sys/module/nvidia_uvm"),
+    Path("/sys/module/nvidia_modeset"),
+    Path("/sys/module/nvidia_drm"),
+)
+_NVIDIA_PROC_DRIVER = Path("/proc/driver/nvidia")
 
 
 class WorkerError(RuntimeError):
@@ -78,6 +107,15 @@ def sanitized_worker_environment(scratch_root: Path) -> dict[str, str]:
     environment = {
         "HOME": str(scratch_root),
         "TMPDIR": str(scratch_root),
+        "XDG_CACHE_HOME": str(scratch_root / "xdg-cache"),
+        "HF_HOME": str(scratch_root / "hf-home"),
+        "HF_HUB_CACHE": str(scratch_root / "hf-hub-cache"),
+        "HF_ASSETS_CACHE": str(scratch_root / "hf-assets-cache"),
+        "HF_MODULES_CACHE": str(scratch_root / "hf-modules-cache"),
+        "TRANSFORMERS_CACHE": str(scratch_root / "transformers-cache"),
+        "TORCH_HOME": str(scratch_root / "torch-home"),
+        "TRITON_CACHE_DIR": str(scratch_root / "triton-cache"),
+        "NUMBA_CACHE_DIR": str(scratch_root / "numba-cache"),
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "PYTHONIOENCODING": "utf-8",
@@ -87,12 +125,16 @@ def sanitized_worker_environment(scratch_root: Path) -> dict[str, str]:
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
         "HF_DATASETS_OFFLINE": "1",
+        "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
+        "HF_HUB_DISABLE_TELEMETRY": "1",
         "TOKENIZERS_PARALLELISM": "false",
         "OMP_NUM_THREADS": "1",
         "OPENBLAS_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1",
         "NUMEXPR_NUM_THREADS": "1",
         "MOONSHINE_ORT_SINGLE_THREAD": "1",
+        "CUDA_DEVICE_ORDER": "PCI_BUS_ID",
+        "CUDA_VISIBLE_DEVICES": "0",
     }
     if os.name == "nt":
         for name in ("SYSTEMROOT", "WINDIR"):
@@ -100,6 +142,383 @@ def sanitized_worker_environment(scratch_root: Path) -> dict[str, str]:
             if value:
                 environment[name] = value
     return environment
+
+
+def _expected_final_evidence(
+    manifest: WorkerManifest,
+    request: TranscribeRequest,
+) -> tuple[int, int | None]:
+    """Derive independently checkable final chunk and padding evidence."""
+
+    total_samples = request.pcm.samples + request.stream.tail_padding_samples
+    if manifest.adapter != NEMOTRON_ADAPTER:
+        chunks = (
+            total_samples + request.stream.chunk_samples - 1
+        ) // request.stream.chunk_samples
+        return chunks, None
+
+    config = manifest.adapter_config
+    if not isinstance(config, NemotronConfig):
+        raise WorkerError("worker_protocol")
+    geometry = (
+        config.native_first_chunk_frames,
+        config.native_hop_length_samples,
+        config.native_n_fft_samples,
+        config.native_first_window_samples,
+        config.native_window_samples,
+        config.native_stride_samples,
+    )
+    if any(type(value) is not int or value <= 0 for value in geometry):
+        raise WorkerError("worker_protocol")
+    (
+        first_frames,
+        hop_length,
+        n_fft,
+        first_window,
+        window,
+        stride,
+    ) = geometry
+    if total_samples <= first_window:
+        final_window_end = first_window
+        chunks = 1
+    else:
+        final_window_end = first_frames * hop_length - n_fft // 2 + window
+        if final_window_end <= first_window:
+            raise WorkerError("worker_protocol")
+        additional = max(
+            0,
+            (total_samples - final_window_end + stride - 1) // stride,
+        )
+        final_window_end += additional * stride
+        chunks = 2 + additional
+    model_padding_samples = final_window_end - total_samples
+    if model_padding_samples < 0:
+        raise WorkerError("worker_protocol")
+    return chunks, model_padding_samples
+
+
+def _stable_path_metadata(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        stat.S_IFMT(metadata.st_mode),
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _open_bwrap_descriptor() -> int:
+    """Open the exact Bubblewrap executable without following a replacement."""
+
+    descriptor = -1
+    try:
+        before = _BWRAP_PATH.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink < 1
+            or stat.S_IMODE(before.st_mode) & 0o111 == 0
+        ):
+            raise WorkerError("worker_prerequisite")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(_BWRAP_PATH, flags)
+        opened = os.fstat(descriptor)
+        current = _BWRAP_PATH.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink < 1
+            or stat.S_IMODE(opened.st_mode) & 0o111 == 0
+            or _stable_path_metadata(opened) != _stable_path_metadata(before)
+            or _stable_path_metadata(current) != _stable_path_metadata(before)
+        ):
+            raise WorkerError("worker_prerequisite")
+        result = descriptor
+        descriptor = -1
+        return result
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _require_mount_source(path: Path, *, directory: bool) -> None:
+    """Require one stable system mount source of the expected broad type."""
+
+    try:
+        before = path.lstat()
+        resolved = path.resolve(strict=True)
+        current = path.lstat()
+        target = resolved.stat()
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    if _stable_path_metadata(before) != _stable_path_metadata(current):
+        raise WorkerError("worker_prerequisite")
+    if directory:
+        if not stat.S_ISDIR(target.st_mode):
+            raise WorkerError("worker_prerequisite")
+    elif not stat.S_ISREG(target.st_mode):
+        raise WorkerError("worker_prerequisite")
+
+
+def _nemotron_device_nodes() -> tuple[Path, ...]:
+    """Return the closed set of NVIDIA character devices exposed to the worker."""
+
+    paths = tuple(
+        Path("/dev") / name
+        for name in (
+            *_NVIDIA_REQUIRED_DEVICE_NAMES,
+            *_NVIDIA_OPTIONAL_DEVICE_NAMES,
+        )
+    )
+    selected: list[Path] = []
+    for index, path in enumerate(paths):
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            if index < len(_NVIDIA_REQUIRED_DEVICE_NAMES):
+                raise WorkerError("worker_prerequisite") from None
+            continue
+        except OSError:
+            raise WorkerError("worker_prerequisite") from None
+        if not stat.S_ISCHR(metadata.st_mode):
+            raise WorkerError("worker_prerequisite")
+        selected.append(path)
+
+    caps_root = Path("/dev/nvidia-caps")
+    try:
+        entries = tuple(sorted(caps_root.iterdir(), key=lambda item: item.name))
+    except FileNotFoundError:
+        entries = ()
+    except OSError:
+        raise WorkerError("worker_prerequisite") from None
+    if len(entries) > 64:
+        raise WorkerError("worker_prerequisite")
+    for path in entries:
+        if _NVIDIA_CAP_RE.fullmatch(path.name) is None:
+            continue
+        try:
+            metadata = path.lstat()
+        except OSError:
+            raise WorkerError("worker_prerequisite") from None
+        if not stat.S_ISCHR(metadata.st_mode):
+            raise WorkerError("worker_prerequisite")
+        selected.append(path)
+    return tuple(selected)
+
+
+def _nemotron_system_ro_paths() -> tuple[Path, ...]:
+    """Return the narrow host runtime and NVIDIA sysfs closure."""
+
+    for path in _NEMOTRON_CORE_RO_PATHS[:3]:
+        _require_mount_source(path, directory=True)
+    for path in _NEMOTRON_CORE_RO_PATHS[3:]:
+        _require_mount_source(path, directory=False)
+    _require_mount_source(_NVIDIA_DRIVER_ROOT, directory=True)
+    _require_mount_source(_NVIDIA_MODULE_PATHS[0], directory=True)
+    _require_mount_source(_NVIDIA_MODULE_PATHS[1], directory=True)
+
+    pci_targets: list[Path] = []
+    try:
+        entries = tuple(
+            sorted(_NVIDIA_DRIVER_ROOT.iterdir(), key=lambda item: item.name)
+        )
+    except OSError:
+        raise WorkerError("worker_prerequisite") from None
+    for entry in entries:
+        if _NVIDIA_PCI_RE.fullmatch(entry.name) is None:
+            continue
+        try:
+            target = entry.resolve(strict=True)
+        except (OSError, RuntimeError):
+            raise WorkerError("worker_prerequisite") from None
+        _require_mount_source(target, directory=True)
+        pci_targets.append(target)
+    if not pci_targets:
+        raise WorkerError("worker_prerequisite")
+
+    modules: list[Path] = []
+    for path in _NVIDIA_MODULE_PATHS:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise WorkerError("worker_prerequisite") from None
+        _require_mount_source(path, directory=True)
+        modules.append(path)
+
+    return (
+        *_NEMOTRON_CORE_RO_PATHS,
+        _NVIDIA_DRIVER_ROOT,
+        *tuple(dict.fromkeys(pci_targets)),
+        *modules,
+    )
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _verify_nemotron_runtime_layout(
+    manifest: WorkerManifest,
+    receipt: RuntimeTreeReceipt,
+) -> None:
+    config = manifest.adapter_config
+    wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
+    venv_root = manifest.python.path.parent.parent
+    python_root = receipt.root.parent
+    maximum_file = max((item.size_bytes for item in receipt.files), default=0)
+    try:
+        if (
+            not isinstance(config, NemotronConfig)
+            or wheel_lock is None
+            or wheel_lock.sha256 != config.wheel_lock_sha256
+            or receipt.content_digest != config.runtime_content_sha256
+            or receipt.file_count != config.runtime_file_count
+            or receipt.total_size_bytes != config.runtime_total_size_bytes
+            or maximum_file != config.runtime_maximum_file_bytes
+            or set(os.listdir(venv_root)) != {"bin", "lib", "pyvenv.cfg"}
+            or set(os.listdir(venv_root / "bin")) != {"python"}
+            or set(os.listdir(venv_root / "lib")) != {"python3.12"}
+            or set(os.listdir(python_root)) != {"site-packages"}
+            or not manifest.python.path.is_symlink()
+            or manifest.python.path.resolve(strict=True).name != "python3.12"
+        ):
+            raise WorkerError("worker_artifact_changed")
+    except (OSError, RuntimeError, ValueError):
+        raise WorkerError("worker_artifact_changed") from None
+
+
+def _append_mount(
+    command: list[str],
+    option: str,
+    source: Path,
+    destination: Path | None = None,
+) -> None:
+    command.extend((option, str(source), str(destination or source)))
+
+
+def _nemotron_bwrap_command(
+    manifest: WorkerManifest,
+    scratch: Path,
+    source_bundle: SourceBundle,
+    *,
+    bundle_descriptor: int,
+    worker_descriptor: int,
+    python_descriptor: int,
+    device_nodes: Sequence[Path],
+    system_ro_paths: Sequence[Path],
+    proc_driver_available: bool,
+) -> list[str]:
+    """Build the closed Nemotron-only Bubblewrap command."""
+
+    artifacts = manifest.artifact_by_name
+    try:
+        model_artifacts = tuple(
+            artifact
+            for artifact in manifest.artifacts
+            if artifact.name.startswith("model-")
+        )
+        model_roots = {artifact.path.parent for artifact in model_artifacts}
+        if len(model_roots) != 1:
+            raise WorkerError("worker_prerequisite")
+        model_root = model_roots.pop()
+        runtime_receipt = artifacts["runtime-receipt"].path
+        runtime_wheel_lock = artifacts["runtime-wheel-lock"].path
+        if set(os.listdir(model_root)) != {
+            artifact.path.name for artifact in model_artifacts
+        }:
+            raise WorkerError("worker_prerequisite")
+    except (KeyError, OSError, RuntimeError, ValueError):
+        raise WorkerError("worker_prerequisite") from None
+    venv_root = manifest.python.path.parent.parent
+    required_paths = (
+        scratch,
+        source_bundle.root,
+        source_bundle.worker_path,
+        manifest.path,
+        manifest.worker.path,
+        venv_root,
+        model_root,
+        runtime_receipt,
+        runtime_wheel_lock,
+    )
+    if any(not path.is_absolute() or "\x00" in str(path) for path in required_paths):
+        raise WorkerError("worker_prerequisite")
+
+    command = [
+        str(_BWRAP_PATH),
+        "--unshare-user-try",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--die-with-parent",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for path in system_ro_paths:
+        _append_mount(command, "--ro-bind", path)
+    if proc_driver_available:
+        _append_mount(command, "--ro-bind", _NVIDIA_PROC_DRIVER)
+    for path in device_nodes:
+        _append_mount(command, "--dev-bind", path)
+
+    # Scratch is the only host-backed writable mount. More-specific candidate
+    # and source mounts are overlaid read-only after it.
+    _append_mount(command, "--bind", scratch)
+    _append_mount(command, "--ro-bind", source_bundle.root)
+    _append_mount(
+        command,
+        "--ro-bind",
+        source_bundle.worker_path,
+        manifest.worker.path,
+    )
+    _append_mount(command, "--ro-bind", manifest.path)
+    _append_mount(command, "--ro-bind", venv_root)
+    _append_mount(command, "--ro-bind", model_root)
+    read_only_roots = (source_bundle.root, venv_root, model_root)
+    if not any(_path_is_within(runtime_receipt, root) for root in read_only_roots):
+        _append_mount(command, "--ro-bind", runtime_receipt)
+    if not any(_path_is_within(runtime_wheel_lock, root) for root in read_only_roots):
+        _append_mount(command, "--ro-bind", runtime_wheel_lock)
+
+    bundle_root = Path(f"/proc/self/fd/{bundle_descriptor}")
+    command.extend(
+        (
+            "--chdir",
+            str(scratch),
+            "--argv0",
+            str(manifest.python.path),
+            "--",
+            f"/proc/self/fd/{python_descriptor}",
+            "-I",
+            "-S",
+            "-B",
+            f"/proc/self/fd/{worker_descriptor}",
+            "--manifest",
+            str(manifest.path),
+            "--scratch-root",
+            str(scratch),
+            "--source-bundle-manifest",
+            str(bundle_root / source_bundle.manifest_path.name),
+            "--source-bundle-sha256",
+            source_bundle.tree_sha256,
+            "--source-bundle-fd",
+            str(bundle_descriptor),
+        )
+    )
+    return command
 
 
 class StreamingWorker:
@@ -123,6 +542,7 @@ class StreamingWorker:
         self._bundle_descriptor = -1
         self._worker_descriptor = -1
         self._python_descriptor = -1
+        self._bwrap_descriptor = -1
         self._stdout_queue: queue.Queue[bytes | None] = queue.Queue(
             maxsize=_QUEUE_CAPACITY
         )
@@ -172,6 +592,23 @@ class StreamingWorker:
                 pass
         except (OSError, RuntimeError, BoundedReadError):
             raise WorkerError("worker_prerequisite") from None
+        device_nodes: tuple[Path, ...] = ()
+        system_ro_paths: tuple[Path, ...] = ()
+        proc_driver_available = False
+        if self.manifest.adapter == NEMOTRON_ADAPTER:
+            if os.name != "posix" or not Path("/proc/self/fd").is_dir():
+                raise WorkerError("worker_prerequisite")
+            device_nodes = _nemotron_device_nodes()
+            system_ro_paths = _nemotron_system_ro_paths()
+            try:
+                _NVIDIA_PROC_DRIVER.lstat()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise WorkerError("worker_prerequisite") from None
+            else:
+                _require_mount_source(_NVIDIA_PROC_DRIVER, directory=True)
+                proc_driver_available = True
         self._verify_bound_files()
         if os.name != "posix" or not Path("/proc/self/fd").is_dir():
             raise WorkerError("worker_prerequisite")
@@ -183,11 +620,13 @@ class StreamingWorker:
                 self._bundle_descriptor = os.dup(descriptor)
             self._worker_descriptor = self._open_staged_worker_descriptor()
             self._python_descriptor = self._open_bound_python_descriptor()
+            if self.manifest.adapter == NEMOTRON_ADAPTER:
+                self._bwrap_descriptor = _open_bwrap_descriptor()
         except (OSError, BoundedReadError, WorkerError):
             self._close_bundle_descriptors()
             raise WorkerError("worker_prerequisite") from None
         bundle_root = Path(f"/proc/self/fd/{self._bundle_descriptor}")
-        command = [
+        worker_command = [
             str(self.manifest.python.path),
             "-I",
             "-S",
@@ -204,6 +643,36 @@ class StreamingWorker:
             "--source-bundle-fd",
             str(self._bundle_descriptor),
         ]
+        command = worker_command
+        executable = f"/proc/self/fd/{self._python_descriptor}"
+        pass_fds = (
+            self._bundle_descriptor,
+            self._worker_descriptor,
+            self._python_descriptor,
+        )
+        start_new_session = True
+        if self.manifest.adapter == NEMOTRON_ADAPTER:
+            try:
+                command = _nemotron_bwrap_command(
+                    self.manifest,
+                    scratch,
+                    self.source_bundle,
+                    bundle_descriptor=self._bundle_descriptor,
+                    worker_descriptor=self._worker_descriptor,
+                    python_descriptor=self._python_descriptor,
+                    device_nodes=device_nodes,
+                    system_ro_paths=system_ro_paths,
+                    proc_driver_available=proc_driver_available,
+                )
+            except WorkerError:
+                self._close_bundle_descriptors()
+                raise
+            executable = f"/proc/self/fd/{self._bwrap_descriptor}"
+            pass_fds = (*pass_fds, self._bwrap_descriptor)
+            # Popen's session owns the outer Bubblewrap monitor as a bounded
+            # process group. Bubblewrap forks its namespace child before the
+            # required --new-session setsid(), so the inner session remains
+            # independent and die-with-parent links both lifecycle layers.
         try:
             process = self._popen_factory(
                 command,
@@ -212,14 +681,10 @@ class StreamingWorker:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                start_new_session=True,
+                start_new_session=start_new_session,
                 close_fds=True,
-                executable=f"/proc/self/fd/{self._python_descriptor}",
-                pass_fds=(
-                    self._bundle_descriptor,
-                    self._worker_descriptor,
-                    self._python_descriptor,
-                ),
+                executable=executable,
+                pass_fds=pass_fds,
             )
         except Exception:
             self._close_bundle_descriptors()
@@ -306,12 +771,10 @@ class StreamingWorker:
                     raise WorkerError("worker_case")
                 if not isinstance(event, FinalEvent):
                     raise WorkerError("worker_protocol")
-                expected_chunks = (
-                    checked.pcm.samples
-                    + checked.stream.tail_padding_samples
-                    + checked.stream.chunk_samples
-                    - 1
-                ) // checked.stream.chunk_samples
+                expected_chunks, expected_model_padding = _expected_final_evidence(
+                    self.manifest,
+                    checked,
+                )
                 if (
                     event.request_id != checked.request_id
                     or event.seq != len(partials)
@@ -320,6 +783,10 @@ class StreamingWorker:
                     or event.samples_seen < last_samples
                     or event.elapsed_ms < last_elapsed
                     or event.chunks != expected_chunks
+                    or (
+                        expected_model_padding is not None
+                        and event.model_padding_samples != expected_model_padding
+                    )
                     or abs(
                         event.audio_seconds
                         - checked.pcm.samples / checked.pcm.sample_rate
@@ -429,26 +896,40 @@ class StreamingWorker:
                 )
             ):
                 raise WorkerError("worker_artifact_changed")
-            if self.manifest.adapter == MOONSHINE_ADAPTER:
+            if self.manifest.adapter in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
                 receipt_artifact = self.manifest.artifact_by_name.get("runtime-receipt")
-                wheel_artifact = self.manifest.artifact_by_name.get("release-wheel")
-                if receipt_artifact is None or wheel_artifact is None:
+                if receipt_artifact is None:
                     raise WorkerError("worker_artifact_changed")
+                limits = (
+                    NEMOTRON_RUNTIME_TREE_LIMITS
+                    if self.manifest.adapter == NEMOTRON_ADAPTER
+                    else None
+                )
                 receipt = load_runtime_tree_receipt(
                     receipt_artifact.path,
                     expected_digest=receipt_artifact.sha256,
+                    **({} if limits is None else {"limits": limits}),
                 )
                 verify_venv_runtime_location(
                     receipt,
                     self.manifest.python.path,
                 )
-                verify_runtime_tree_receipt(receipt)
-                verify_moonshine_wheel_install(
+                verify_runtime_tree_receipt(
                     receipt,
-                    wheel_artifact.path,
-                    expected_sha256=wheel_artifact.sha256,
-                    expected_size_bytes=wheel_artifact.size_bytes,
+                    **({} if limits is None else {"limits": limits}),
                 )
+                if self.manifest.adapter == NEMOTRON_ADAPTER:
+                    _verify_nemotron_runtime_layout(self.manifest, receipt)
+                if self.manifest.adapter == MOONSHINE_ADAPTER:
+                    wheel_artifact = self.manifest.artifact_by_name.get("release-wheel")
+                    if wheel_artifact is None:
+                        raise WorkerError("worker_artifact_changed")
+                    verify_moonshine_wheel_install(
+                        receipt,
+                        wheel_artifact.path,
+                        expected_sha256=wheel_artifact.sha256,
+                        expected_size_bytes=wheel_artifact.size_bytes,
+                    )
             verify_source_bundle(self.source_bundle)
             staged_worker = self.source_bundle.file_by_path.get(
                 self.source_bundle.worker_relative_path
@@ -614,6 +1095,13 @@ class StreamingWorker:
                 os.close(descriptor)
 
     def _close_bundle_descriptors(self) -> None:
+        bwrap_descriptor = self._bwrap_descriptor
+        self._bwrap_descriptor = -1
+        if bwrap_descriptor >= 0:
+            try:
+                os.close(bwrap_descriptor)
+            except OSError:
+                pass
         python_descriptor = self._python_descriptor
         self._python_descriptor = -1
         if python_descriptor >= 0:
@@ -790,7 +1278,15 @@ class StreamingWorker:
             else:
                 process.terminate()
         except ProcessLookupError:
-            pass
+            # Before Bubblewrap has completed its required --new-session
+            # setsid(), its PID is not yet a process-group ID. Signal that
+            # short pre-boundary process directly instead of waiting for a
+            # group which cannot exist yet.
+            if process.poll() is None:
+                try:
+                    process.send_signal(signum)
+                except ProcessLookupError:
+                    pass
 
     def _group_exists(self) -> bool:
         process = self._process

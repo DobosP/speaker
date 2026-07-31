@@ -125,6 +125,7 @@ def aggregate_metrics(
     max_backlog_ms: list[float] = []
     audio_seconds = 0.0
     deadline_misses = 0
+    model_padding_samples: list[int] = []
     churn_edits = 0
     retracted_words = 0
     partial_events = 0
@@ -184,6 +185,7 @@ def aggregate_metrics(
         max_backlog_ms.append(trace.final.max_backlog_ms)
         audio_seconds += trace.final.audio_seconds
         deadline_misses += trace.final.deadline_misses
+        model_padding_samples.append(trace.final.model_padding_samples)
         final_by_case.setdefault(record.case_index, set()).add(
             tuple(normalize(hypothesis))
         )
@@ -234,6 +236,8 @@ def aggregate_metrics(
             "deadline_misses": deadline_misses,
             "max_backlog_p95_ms": _percentile(max_backlog_ms, 0.95),
             "max_backlog_ms": _percentile(max_backlog_ms, 1.0),
+            "model_padding_total_samples": sum(model_padding_samples),
+            "model_padding_max_samples": max(model_padding_samples, default=0),
         },
         "throughput": {
             "audio_total_sec": round(audio_seconds, 3),

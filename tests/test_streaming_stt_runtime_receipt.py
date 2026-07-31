@@ -100,6 +100,27 @@ def test_generator_never_overwrites_and_rejects_destination_inside_tree(tmp_path
     assert not (root / "receipt.json").exists()
 
 
+def test_content_digest_is_root_independent_but_receipt_digest_binds_root(tmp_path):
+    first_parent = tmp_path / "first"
+    second_parent = tmp_path / "second"
+    first_parent.mkdir()
+    second_parent.mkdir()
+    first_root = _runtime_tree(first_parent)
+    second_root = _runtime_tree(second_parent)
+    first = generate_runtime_tree_receipt(
+        first_root,
+        tmp_path / "first-receipt.json",
+    )
+    second = generate_runtime_tree_receipt(
+        second_root,
+        tmp_path / "second-receipt.json",
+    )
+
+    assert first.content_digest == second.content_digest
+    assert first.digest != second.digest
+    assert len(first.content_digest) == 64
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("content", "extra-file", "missing-file", "empty-directory"),

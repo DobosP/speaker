@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 import subprocess
@@ -15,14 +16,27 @@ from tests.streaming_stt_helpers import (
     write_fixture,
 )
 from tools.streaming_stt.corpus import load_corpus
-from tools.streaming_stt.manifest import load_worker_manifest
+from tools.streaming_stt.manifest import (
+    BoundArtifact,
+    BoundFile,
+    NEMOTRON_ADAPTER,
+    NemotronConfig,
+    load_worker_manifest,
+)
 from tools.streaming_stt.protocol import (
+    FinalEvent,
     MAX_STDERR_BYTES,
+    PROTOCOL_VERSION,
     PcmInput,
+    ResourceUsage,
     StreamConfig,
     TranscribeRequest,
 )
-from tools.streaming_stt.supervisor import StreamingWorker, WorkerError
+from tools.streaming_stt.supervisor import (
+    StreamingWorker,
+    WorkerError,
+    _nemotron_bwrap_command,
+)
 
 
 def _worker(
@@ -94,6 +108,66 @@ def _fixture(
     return manifest, corpus, digests[0]
 
 
+def _nemotron_manifest_for_launch(
+    manifest_path: Path,
+    tmp_path: Path,
+):
+    manifest = load_worker_manifest(manifest_path)
+    venv_python = tmp_path / "candidate-venv" / "bin" / "python"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_bytes(b"python")
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    receipt = tmp_path / "runtime-receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    wheel_lock = tmp_path / "runtime-wheel-lock.json"
+    wheel_lock.write_text("{}", encoding="utf-8")
+    model_files = (
+        ("model-config", "config.json"),
+        ("model-generation-config", "generation_config.json"),
+        ("model-weights", "model.safetensors"),
+        ("model-processor-config", "processor_config.json"),
+        ("model-tokenizer", "tokenizer.json"),
+        ("model-tokenizer-config", "tokenizer_config.json"),
+    )
+    model_artifacts = []
+    for index, (name, filename) in enumerate(model_files, start=1):
+        path = model_root / filename
+        path.write_bytes(bytes((index,)) * (index + 1))
+        model_artifacts.append(
+            BoundArtifact(
+                path,
+                f"{index:x}".rjust(64, "0"),
+                path.stat().st_size,
+                name,
+            )
+        )
+    artifacts = (
+        BoundArtifact(receipt, "a" * 64, receipt.stat().st_size, "runtime-receipt"),
+        BoundArtifact(
+            wheel_lock,
+            "d" * 64,
+            wheel_lock.stat().st_size,
+            "runtime-wheel-lock",
+        ),
+        BoundArtifact(
+            venv_python.parent.parent / "pyvenv.cfg",
+            "b" * 64,
+            1,
+            "venv-marker",
+        ),
+        *model_artifacts,
+    )
+    return replace(
+        manifest,
+        schema_version=3,
+        adapter=NEMOTRON_ADAPTER,
+        python=BoundFile(venv_python, "c" * 64, venv_python.stat().st_size),
+        artifacts=artifacts,
+        adapter_config=NemotronConfig(),
+    )
+
+
 def test_real_worker_is_a_new_process_session_and_closes_cleanly(tmp_path):
     manifest_path, corpus_path, digest = _fixture(tmp_path)
     scratch = tmp_path / "scratch"
@@ -115,6 +189,60 @@ def test_real_worker_is_a_new_process_session_and_closes_cleanly(tmp_path):
     assert trace.final.chunks == 3
     assert worker._process is not None  # noqa: SLF001 - lifecycle proof
     assert worker._process.poll() == 0  # noqa: SLF001 - lifecycle proof
+
+
+@pytest.mark.parametrize(
+    ("chunks", "model_padding_samples", "accepted"),
+    [
+        (1, 4_035, True),
+        (3, 4_035, False),
+        (1, 0, False),
+    ],
+)
+def test_nemotron_supervisor_validates_native_final_evidence(
+    tmp_path,
+    monkeypatch,
+    chunks,
+    model_padding_samples,
+    accepted,
+):
+    manifest_path, corpus_path, digest = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    manifest = replace(
+        load_worker_manifest(manifest_path),
+        adapter=NEMOTRON_ADAPTER,
+        adapter_config=NemotronConfig(),
+    )
+    bundle = stage_test_source_bundle(scratch, manifest.worker.path)
+    worker = StreamingWorker(manifest, scratch, bundle)
+    worker.ready = object()
+    request = _request(scratch, corpus_path, digest)
+    event = FinalEvent(
+        request_id=request.request_id,
+        seq=0,
+        text="stop now",
+        samples_seen=5,
+        elapsed_ms=10.0,
+        finalization_ms=2.0,
+        compute_ms=8.0,
+        audio_seconds=4 / 16_000,
+        chunks=chunks,
+        deadline_misses=0,
+        max_backlog_ms=0.0,
+        resources=ResourceUsage(rss_mb=1.0, threads=1, vram_mb=1.0),
+        model_padding_samples=model_padding_samples,
+    )
+    monkeypatch.setattr(worker, "_verify_pcm", lambda _request: None)
+    monkeypatch.setattr(worker, "_send", lambda _message: None)
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: event)
+
+    if accepted:
+        trace = worker.transcribe(request)
+        assert trace.final == event
+    else:
+        with pytest.raises(WorkerError, match="worker_protocol"):
+            worker.transcribe(request)
 
 
 def test_worker_launch_argv_is_exact_isolated_and_bytecode_free(tmp_path):
@@ -168,6 +296,250 @@ def test_worker_launch_argv_is_exact_isolated_and_bytecode_free(tmp_path):
     assert kwargs["close_fds"] is True
     assert len(kwargs["pass_fds"]) == 3
     assert "shell" not in kwargs
+
+
+def test_nemotron_bwrap_argv_has_closed_mount_and_namespace_boundary(tmp_path):
+    manifest_path, _, _ = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    source_bundle = stage_test_source_bundle(
+        scratch,
+        load_worker_manifest(manifest_path).worker.path,
+    )
+    manifest = _nemotron_manifest_for_launch(manifest_path, tmp_path)
+    system_paths = (
+        Path("/usr"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/etc/ld.so.cache"),
+        Path("/etc/passwd"),
+        Path("/etc/group"),
+        Path("/sys/bus/pci/drivers/nvidia"),
+        Path("/sys/devices/pci0000:00/0000:01:00.0"),
+        Path("/sys/module/nvidia"),
+        Path("/sys/module/nvidia_uvm"),
+    )
+    device_nodes = (
+        Path("/dev/nvidia0"),
+        Path("/dev/nvidiactl"),
+        Path("/dev/nvidia-uvm"),
+        Path("/dev/nvidia-uvm-tools"),
+    )
+
+    command = _nemotron_bwrap_command(
+        manifest,
+        scratch.resolve(),
+        source_bundle,
+        bundle_descriptor=41,
+        worker_descriptor=42,
+        python_descriptor=43,
+        device_nodes=device_nodes,
+        system_ro_paths=system_paths,
+        proc_driver_available=True,
+    )
+
+    assert command[:19] == [
+        "/usr/bin/bwrap",
+        "--unshare-user-try",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--die-with-parent",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--ro-bind",
+        "/lib",
+        "/lib",
+    ]
+    assert command.count("--unshare-pid") == 1
+    assert command.count("--unshare-net") == 1
+    assert command.count("--die-with-parent") == 1
+    assert command.count("--new-session") == 1
+    assert command.count("--bind") == 1
+    scratch_index = command.index("--bind")
+    assert command[scratch_index : scratch_index + 3] == [
+        "--bind",
+        str(scratch.resolve()),
+        str(scratch.resolve()),
+    ]
+    assert "--ro-bind-try" not in command
+    assert "--dev-bind-try" not in command
+    assert [
+        command[index + 1]
+        for index, value in enumerate(command)
+        if value == "--dev-bind"
+    ] == [str(path) for path in device_nodes]
+    assert all(
+        command[index + 2] == command[index + 1]
+        for index, value in enumerate(command)
+        if value == "--dev-bind"
+    )
+
+    ro_pairs = {
+        (command[index + 1], command[index + 2])
+        for index, value in enumerate(command)
+        if value == "--ro-bind"
+    }
+    assert {(str(path), str(path)) for path in system_paths} <= ro_pairs
+    assert (
+        str(Path("/proc/driver/nvidia")),
+        str(Path("/proc/driver/nvidia")),
+    ) in ro_pairs
+    assert (
+        str(source_bundle.root),
+        str(source_bundle.root),
+    ) in ro_pairs
+    assert (
+        str(source_bundle.worker_path),
+        str(manifest.worker.path),
+    ) in ro_pairs
+    assert (str(manifest.path), str(manifest.path)) in ro_pairs
+    assert (
+        str(manifest.python.path.parent.parent),
+        str(manifest.python.path.parent.parent),
+    ) in ro_pairs
+    model_root = manifest.artifact_by_name["model-config"].path.parent
+    assert (str(model_root), str(model_root)) in ro_pairs
+    receipt = manifest.artifact_by_name["runtime-receipt"].path
+    assert (str(receipt), str(receipt)) in ro_pairs
+    wheel_lock = manifest.artifact_by_name["runtime-wheel-lock"].path
+    assert (str(wheel_lock), str(wheel_lock)) in ro_pairs
+    assert ("/", "/") not in ro_pairs
+    assert str(manifest.worker.path) not in {
+        source for source, _destination in ro_pairs
+    }
+
+    separator = command.index("--")
+    assert command[separator - 4 : separator] == [
+        "--chdir",
+        str(scratch.resolve()),
+        "--argv0",
+        str(manifest.python.path),
+    ]
+    assert command[separator + 1 :] == [
+        "/proc/self/fd/43",
+        "-I",
+        "-S",
+        "-B",
+        "/proc/self/fd/42",
+        "--manifest",
+        str(manifest.path),
+        "--scratch-root",
+        str(scratch.resolve()),
+        "--source-bundle-manifest",
+        "/proc/self/fd/41/source-bundle.json",
+        "--source-bundle-sha256",
+        source_bundle.tree_sha256,
+        "--source-bundle-fd",
+        "41",
+    ]
+
+
+def test_nemotron_start_executes_verified_bwrap_fd_in_outer_process_group(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, _, _ = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _worker(manifest_path, scratch)
+    worker.manifest = _nemotron_manifest_for_launch(manifest_path, tmp_path)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(worker, "_verify_bound_files", lambda: None)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_device_nodes",
+        lambda: (Path("/dev/nvidia0"),),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_system_ro_paths",
+        lambda: (Path("/usr"),),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._NVIDIA_PROC_DRIVER",
+        tmp_path / "missing-proc-driver",
+    )
+
+    def open_bwrap():
+        return os.open("/usr/bin/bwrap", os.O_RDONLY)
+
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._open_bwrap_descriptor",
+        open_bwrap,
+    )
+    monkeypatch.setattr(
+        worker,
+        "_open_bound_python_descriptor",
+        lambda: os.open("/usr/bin/python3", os.O_RDONLY),
+    )
+
+    def rejecting_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        raise OSError
+
+    worker._popen_factory = rejecting_popen  # noqa: SLF001 - launch seam
+    with pytest.raises(WorkerError, match="worker_start"):
+        worker.start()
+
+    command = captured["command"]
+    kwargs = captured["kwargs"]
+    assert isinstance(command, list)
+    assert isinstance(kwargs, dict)
+    assert command[0] == "/usr/bin/bwrap"
+    assert kwargs["start_new_session"] is True
+    assert kwargs["close_fds"] is True
+    assert len(kwargs["pass_fds"]) == 4
+    bwrap_fd = kwargs["pass_fds"][-1]
+    assert kwargs["executable"] == f"/proc/self/fd/{bwrap_fd}"
+    assert worker._bundle_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._worker_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._python_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._bwrap_descriptor == -1  # noqa: SLF001 - cleanup proof
+
+
+def test_nemotron_refuses_missing_gpu_before_runtime_verification(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, _, _ = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _worker(manifest_path, scratch)
+    worker.manifest = replace(
+        worker.manifest,
+        schema_version=3,
+        adapter=NEMOTRON_ADAPTER,
+        adapter_config=NemotronConfig(),
+    )
+    verified = False
+
+    def record_verification():
+        nonlocal verified
+        verified = True
+
+    def no_gpu():
+        raise WorkerError("worker_prerequisite")
+
+    monkeypatch.setattr(worker, "_verify_bound_files", record_verification)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_device_nodes",
+        no_gpu,
+    )
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        worker.start()
+
+    assert verified is False
+    assert worker.pid is None
 
 
 def test_site_free_launch_never_processes_runtime_pth_before_explicit_import(
@@ -384,7 +756,7 @@ def test_timeout_kills_pipe_holding_descendant_before_joining_drainers(
         "scratch=Path(sys.argv[sys.argv.index('--scratch-root')+1])\n"
         "raw=manifest_path.read_bytes()\n"
         "manifest=json.loads(raw)\n"
-        "ready={'v':1,'type':'ready','model_id':manifest['model_id'],"
+        f"ready={{'v':{PROTOCOL_VERSION},'type':'ready','model_id':manifest['model_id'],"
         "'manifest_sha256':hashlib.sha256(raw).hexdigest(),"
         "'source_bundle_sha256':"
         "sys.argv[sys.argv.index('--source-bundle-sha256')+1],"
@@ -401,7 +773,7 @@ def test_timeout_kills_pipe_holding_descendant_before_joining_drainers(
         "deadline=time.monotonic()+2.0\n"
         "while not marker.exists() and time.monotonic()<deadline:time.sleep(0.005)\n"
         "(scratch/'descendant-pid').write_text(str(child.pid))\n"
-        "partial={'v':1,'type':'partial','id':request['id'],'seq':0,'text':'',"
+        f"partial={{'v':{PROTOCOL_VERSION},'type':'partial','id':request['id'],'seq':0,'text':'',"
         "'samples_seen':0,'elapsed_ms':0.0,'decode_ms':0.0}\n"
         "print(json.dumps(partial),flush=True)\n"
         "time.sleep(60)\n",

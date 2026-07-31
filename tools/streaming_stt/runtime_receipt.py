@@ -69,6 +69,15 @@ class RuntimeTreeLimits:
 
 
 DEFAULT_RUNTIME_TREE_LIMITS = RuntimeTreeLimits()
+NEMOTRON_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
+    maximum_receipt_bytes=32 * 1024 * 1024,
+    maximum_files=50_000,
+    maximum_directories=10_000,
+    maximum_file_bytes=2 * 1024 * 1024 * 1024,
+    maximum_aggregate_bytes=12 * 1024 * 1024 * 1024,
+    maximum_relative_path_bytes=1024,
+    maximum_depth=32,
+)
 
 
 @dataclass(frozen=True)
@@ -123,6 +132,27 @@ class RuntimeTreeReceipt:
     @property
     def total_size_bytes(self) -> int:
         return sum(item.size_bytes for item in self.files)
+
+    @property
+    def content_digest(self) -> str:
+        """Root-independent digest of the exact ordered runtime file closure."""
+
+        payload = [
+            {
+                "path": item.relative_path,
+                "sha256": item.sha256,
+                "size_bytes": item.size_bytes,
+            }
+            for item in self.files
+        ]
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass

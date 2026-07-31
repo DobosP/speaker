@@ -32,11 +32,30 @@ def test_worker_environment_is_secret_free_offline_and_single_threaded(tmp_path)
 
     assert "PYTHONPATH" not in environment
     assert "HF_TOKEN" not in environment
-    assert "HOME" in environment
+    assert "PATH" not in environment
+    assert "LD_LIBRARY_PATH" not in environment
+    assert "HTTP_PROXY" not in environment
+    assert "HTTPS_PROXY" not in environment
+    assert environment["HOME"] == str(tmp_path)
+    assert environment["TMPDIR"] == str(tmp_path)
+    assert environment["XDG_CACHE_HOME"] == str(tmp_path / "xdg-cache")
+    assert environment["HF_HOME"] == str(tmp_path / "hf-home")
+    assert environment["HF_HUB_CACHE"] == str(tmp_path / "hf-hub-cache")
+    assert environment["HF_ASSETS_CACHE"] == str(tmp_path / "hf-assets-cache")
+    assert environment["HF_MODULES_CACHE"] == str(tmp_path / "hf-modules-cache")
+    assert environment["TRANSFORMERS_CACHE"] == str(tmp_path / "transformers-cache")
+    assert environment["TORCH_HOME"] == str(tmp_path / "torch-home")
+    assert environment["TRITON_CACHE_DIR"] == str(tmp_path / "triton-cache")
+    assert environment["NUMBA_CACHE_DIR"] == str(tmp_path / "numba-cache")
+    assert "LIBROSA_CACHE_DIR" not in environment
     assert environment["HF_HUB_OFFLINE"] == "1"
     assert environment["TRANSFORMERS_OFFLINE"] == "1"
+    assert environment["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+    assert environment["HF_HUB_DISABLE_TELEMETRY"] == "1"
     assert environment["TOKENIZERS_PARALLELISM"] == "false"
     assert environment["MOONSHINE_ORT_SINGLE_THREAD"] == "1"
+    assert environment["CUDA_DEVICE_ORDER"] == "PCI_BUS_ID"
+    assert environment["CUDA_VISIBLE_DEVICES"] == "0"
     assert {
         environment["OMP_NUM_THREADS"],
         environment["OPENBLAS_NUM_THREADS"],

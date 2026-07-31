@@ -36,6 +36,8 @@ from tools.streaming_stt.corpus import (
 from tools.streaming_stt.manifest import (
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
+    NEMOTRON_ADAPTER,
+    NemotronConfig,
     WorkerManifest,
     load_worker_manifest,
 )
@@ -49,6 +51,7 @@ from tools.streaming_stt.protocol import (
     parse_request,
 )
 from tools.streaming_stt.runtime_receipt import (
+    NEMOTRON_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceiptError,
     load_runtime_tree_receipt,
     verify_runtime_tree_receipt,
@@ -95,6 +98,7 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
+    "tools/streaming_stt/adapters/nemotron.py",
     "tools/__init__.py",
     "tools/recorded_stt_eval.py",
     "core/wer.py",
@@ -303,7 +307,7 @@ def _write_strict_report(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _evaluator_binding(adapter: str) -> dict[str, object]:
-    if adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER}:
+    if adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
         raise ValueError
     files: dict[str, str] = {}
     for relative in _EVALUATOR_FILES:
@@ -322,8 +326,8 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
             else "isolated_streaming_stt_candidate_harness"
         ),
         "production_model": False,
-        "real_candidate_model": adapter == MOONSHINE_ADAPTER,
-        "model_executed": adapter == MOONSHINE_ADAPTER,
+        "real_candidate_model": adapter != _FAKE_ADAPTER,
+        "model_executed": adapter != _FAKE_ADAPTER,
         "files": files,
     }
 
@@ -333,22 +337,43 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
         if "runtime-receipt" in manifest.artifact_by_name:
             raise ValueError
         return None
-    if manifest.adapter != MOONSHINE_ADAPTER:
+    if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
         raise ValueError
     artifact = manifest.artifact_by_name.get("runtime-receipt")
     if artifact is None:
         raise ValueError
+    limits = (
+        NEMOTRON_RUNTIME_TREE_LIMITS if manifest.adapter == NEMOTRON_ADAPTER else None
+    )
     try:
         receipt = load_runtime_tree_receipt(
             artifact.path,
             expected_digest=artifact.sha256,
+            **({} if limits is None else {"limits": limits}),
         )
         verify_venv_runtime_location(receipt, manifest.python.path)
-        verify_runtime_tree_receipt(receipt)
+        verify_runtime_tree_receipt(
+            receipt,
+            **({} if limits is None else {"limits": limits}),
+        )
     except RuntimeTreeReceiptError:
         raise ValueError from None
     if receipt.digest != artifact.sha256:
         raise ValueError
+    if manifest.adapter == NEMOTRON_ADAPTER:
+        config = manifest.adapter_config
+        wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
+        maximum_file = max((item.size_bytes for item in receipt.files), default=0)
+        if (
+            not isinstance(config, NemotronConfig)
+            or wheel_lock is None
+            or wheel_lock.sha256 != config.wheel_lock_sha256
+            or receipt.content_digest != config.runtime_content_sha256
+            or receipt.file_count != config.runtime_file_count
+            or receipt.total_size_bytes != config.runtime_total_size_bytes
+            or maximum_file != config.runtime_maximum_file_bytes
+        ):
+            raise ValueError
     return receipt.digest
 
 
@@ -385,26 +410,35 @@ def _worker_binding(
         ):
             raise ValueError
         return binding
+    expected_schema = {
+        MOONSHINE_ADAPTER: 2,
+        NEMOTRON_ADAPTER: 3,
+    }.get(manifest.adapter)
     if (
-        manifest.adapter != MOONSHINE_ADAPTER
-        or manifest.schema_version != 2
+        expected_schema is None
+        or manifest.schema_version != expected_schema
         or manifest.adapter_config is None
         or runtime_receipt_sha256 is None
     ):
         raise ValueError
     adapter_config = manifest.adapter_config.as_dict()
-    if set(adapter_config) != {
-        "package_version",
-        "api_version",
-        "model_arch",
-        "provider",
-        "language",
-    }:
+    expected_config_fields = (
+        {
+            "package_version",
+            "api_version",
+            "model_arch",
+            "provider",
+            "language",
+        }
+        if manifest.adapter == MOONSHINE_ADAPTER
+        else set(NemotronConfig().as_dict())
+    )
+    if set(adapter_config) != expected_config_fields:
         raise ValueError
     _strict_json(adapter_config)
     binding.update(
         {
-            "manifest_schema_version": 2,
+            "manifest_schema_version": expected_schema,
             "adapter_config": adapter_config,
             "runtime_receipt_sha256": runtime_receipt_sha256,
         }
@@ -412,14 +446,31 @@ def _worker_binding(
     return binding
 
 
-def _evidence_binding(adapter: str, *, pace: str) -> dict[str, object]:
-    if adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER} or pace not in {
+def _evidence_binding(
+    adapter: str,
+    *,
+    pace: str,
+    adapter_config: NemotronConfig | None = None,
+) -> dict[str, object]:
+    if adapter not in {
+        _FAKE_ADAPTER,
+        MOONSHINE_ADAPTER,
+        NEMOTRON_ADAPTER,
+    } or pace not in {
         "burst",
         "realtime",
     }:
         raise ValueError
-    candidate_executed = adapter == MOONSHINE_ADAPTER
-    return {
+    if adapter == NEMOTRON_ADAPTER:
+        if not isinstance(adapter_config, NemotronConfig):
+            raise ValueError
+        config = adapter_config
+    elif adapter_config is not None:
+        raise ValueError
+    else:
+        config = None
+    candidate_executed = adapter != _FAKE_ADAPTER
+    binding: dict[str, object] = {
         "kind": "bounded_pcm_streaming_harness",
         "fake_adapter": adapter == _FAKE_ADAPTER,
         "production_model": False,
@@ -427,9 +478,26 @@ def _evidence_binding(adapter: str, *, pace: str) -> dict[str, object]:
         "model_executed": candidate_executed,
         "replay_pace": pace,
         "accelerated_replay": pace == "burst",
-        "conversational_latency_valid": pace == "realtime",
+        "conversational_latency_valid": (
+            pace == "realtime" and adapter != NEMOTRON_ADAPTER
+        ),
         "timing_scope": "adapter_after_pcm_load_to_result",
-        "compute_rtf_scope": "candidate_calls_only",
+        "compute_rtf_scope": (
+            "generate_wall_minus_pacing"
+            if adapter == NEMOTRON_ADAPTER
+            else "candidate_calls_only"
+        ),
+        "partial_source": (
+            "provisional_streamer"
+            if adapter == NEMOTRON_ADAPTER
+            else "candidate_snapshot"
+        ),
+        "final_source": (
+            "authoritative_generate_sequences"
+            if adapter == NEMOTRON_ADAPTER
+            else "candidate_final"
+        ),
+        "model_padding_reported": True,
         "end_to_end_rtf": False,
         "pcm_snapshot_io_included": False,
         "controller_ipc_included": False,
@@ -440,6 +508,29 @@ def _evidence_binding(adapter: str, *, pace: str) -> dict[str, object]:
         "live_hardware": False,
         "adoption_authority": False,
     }
+    if config is not None:
+        binding.update(
+            {
+                "capture_accrual_included": False,
+                "conversational_latency_scope": (
+                    "diagnostic_replay_excludes_native_capture_accrual"
+                ),
+                "deadline_accounting": "post_consumption_per_native_chunk",
+                "native_stream_geometry": {
+                    "sample_rate_hz": config.native_sample_rate_hz,
+                    "hop_length_samples": config.native_hop_length_samples,
+                    "n_fft_samples": config.native_n_fft_samples,
+                    "win_length_samples": config.native_win_length_samples,
+                    "first_chunk_frames": config.native_first_chunk_frames,
+                    "chunk_frames": config.native_chunk_frames,
+                    "first_window_samples": config.native_first_window_samples,
+                    "window_samples": config.native_window_samples,
+                    "stride_samples": config.native_stride_samples,
+                    "streaming_latency_ms": config.streaming_latency_ms,
+                },
+            }
+        )
+    return binding
 
 
 def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
@@ -626,6 +717,76 @@ def _validated_stream(stream: StreamConfig) -> StreamConfig:
     return parsed.stream
 
 
+def _default_stream(manifest: WorkerManifest) -> StreamConfig:
+    if manifest.adapter == NEMOTRON_ADAPTER:
+        config = manifest.adapter_config
+        if not isinstance(config, NemotronConfig):
+            raise ValueError
+        chunk_samples = config.native_stride_samples
+        partial_interval_ms = config.streaming_latency_ms
+        if (
+            isinstance(chunk_samples, bool)
+            or not isinstance(chunk_samples, int)
+            or isinstance(partial_interval_ms, bool)
+            or not isinstance(partial_interval_ms, int)
+        ):
+            raise ValueError
+        return StreamConfig(
+            chunk_samples=chunk_samples,
+            pace="burst",
+            partial_interval_ms=partial_interval_ms,
+            tail_padding_samples=0,
+        )
+    if manifest.adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER}:
+        raise ValueError
+    return StreamConfig(
+        chunk_samples=1600,
+        pace="burst",
+        partial_interval_ms=200,
+        tail_padding_samples=0,
+    )
+
+
+def _selected_stream(
+    manifest: WorkerManifest,
+    stream: StreamConfig | None,
+    *,
+    chunk_samples: int | None,
+    pace: str | None,
+    partial_interval_ms: int | None,
+    tail_padding_samples: int | None,
+) -> StreamConfig:
+    overrides = (
+        chunk_samples,
+        pace,
+        partial_interval_ms,
+        tail_padding_samples,
+    )
+    if stream is not None:
+        if any(value is not None for value in overrides):
+            raise ValueError
+        return _validated_stream(stream)
+    default = _default_stream(manifest)
+    return _validated_stream(
+        StreamConfig(
+            chunk_samples=(
+                default.chunk_samples if chunk_samples is None else chunk_samples
+            ),
+            pace=default.pace if pace is None else pace,
+            partial_interval_ms=(
+                default.partial_interval_ms
+                if partial_interval_ms is None
+                else partial_interval_ms
+            ),
+            tail_padding_samples=(
+                default.tail_padding_samples
+                if tail_padding_samples is None
+                else tail_padding_samples
+            ),
+        )
+    )
+
+
 def _write_pcm_snapshot(path: Path, payload: bytes) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     flags |= getattr(os, "O_CLOEXEC", 0)
@@ -649,6 +810,10 @@ def run_benchmark(
     scratch_parent: Path | str,
     repeats: int = 3,
     stream: StreamConfig | None = None,
+    chunk_samples: int | None = None,
+    pace: str | None = None,
+    partial_interval_ms: int | None = None,
+    tail_padding_samples: int | None = None,
 ) -> dict[str, object]:
     """Run one exact manifest-selected worker/corpus tuple without transcript rows."""
 
@@ -658,15 +823,16 @@ def run_benchmark(
         or not 1 <= repeats <= 8
     ):
         raise ValueError
-    selected_stream = _validated_stream(
-        stream
-        or StreamConfig(
-            chunk_samples=1600,
-            pace="burst",
-            partial_interval_ms=200,
-            tail_padding_samples=0,
-        )
+    overrides = (
+        chunk_samples,
+        pace,
+        partial_interval_ms,
+        tail_padding_samples,
     )
+    if stream is not None:
+        if any(value is not None for value in overrides):
+            raise ValueError
+        stream = _validated_stream(stream)
     run_lock = _BenchmarkRunLock.acquire(_HOST_LOCK_PATH)
     try:
         run_lock.assert_bound()
@@ -675,7 +841,11 @@ def run_benchmark(
             corpus_path,
             scratch_parent=Path(scratch_parent).expanduser(),
             repeats=repeats,
-            selected_stream=selected_stream,
+            stream=stream,
+            chunk_samples=chunk_samples,
+            pace=pace,
+            partial_interval_ms=partial_interval_ms,
+            tail_padding_samples=tail_padding_samples,
         )
         run_lock.assert_bound()
         return result
@@ -689,9 +859,21 @@ def _run_benchmark_locked(
     *,
     scratch_parent: Path,
     repeats: int,
-    selected_stream: StreamConfig,
+    stream: StreamConfig | None,
+    chunk_samples: int | None,
+    pace: str | None,
+    partial_interval_ms: int | None,
+    tail_padding_samples: int | None,
 ) -> dict[str, object]:
     manifest = load_worker_manifest(worker_manifest_path)
+    selected_stream = _selected_stream(
+        manifest,
+        stream,
+        chunk_samples=chunk_samples,
+        pace=pace,
+        partial_interval_ms=partial_interval_ms,
+        tail_padding_samples=tail_padding_samples,
+    )
     try:
         if manifest.worker.path.resolve(strict=True) != _FIXED_WORKER:
             raise ValueError
@@ -757,6 +939,13 @@ def _run_benchmark_locked(
                         )
                     )
             ready = worker.ready
+        if manifest.adapter == NEMOTRON_ADAPTER:
+            config = manifest.adapter_config
+            if (
+                not isinstance(config, NemotronConfig)
+                or ready.runtime.get("python") != config.python_version
+            ):
+                raise ValueError
         stderr_summary = worker.stderr_summary
         verify_corpus_snapshot(corpus)
         verify_source_bundle(
@@ -788,6 +977,11 @@ def _run_benchmark_locked(
             "evidence": _evidence_binding(
                 manifest.adapter,
                 pace=selected_stream.pace,
+                adapter_config=(
+                    manifest.adapter_config
+                    if isinstance(manifest.adapter_config, NemotronConfig)
+                    else None
+                ),
             ),
             "worker": worker_report,
             "corpus": corpus_binding,
@@ -827,10 +1021,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--scratch-root", type=Path, default=_DEFAULT_SCRATCH)
     parser.add_argument("--repeats", type=int, default=3)
-    parser.add_argument("--chunk-samples", type=int, default=1600)
-    parser.add_argument("--pace", choices=("burst", "realtime"), default="burst")
-    parser.add_argument("--partial-interval-ms", type=int, default=200)
-    parser.add_argument("--tail-padding-samples", type=int, default=0)
+    parser.add_argument("--chunk-samples", type=int)
+    parser.add_argument("--pace", choices=("burst", "realtime"))
+    parser.add_argument("--partial-interval-ms", type=int)
+    parser.add_argument("--tail-padding-samples", type=int)
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -843,12 +1037,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.corpus,
             scratch_parent=args.scratch_root,
             repeats=args.repeats,
-            stream=StreamConfig(
-                chunk_samples=args.chunk_samples,
-                pace=args.pace,
-                partial_interval_ms=args.partial_interval_ms,
-                tail_padding_samples=args.tail_padding_samples,
-            ),
+            chunk_samples=args.chunk_samples,
+            pace=args.pace,
+            partial_interval_ms=args.partial_interval_ms,
+            tail_padding_samples=args.tail_padding_samples,
         )
         if args.output is not None:
             _write_strict_report(args.output, payload)

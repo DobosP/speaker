@@ -30,6 +30,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
+    "tools/streaming_stt/adapters/nemotron.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/protocol.py",
@@ -417,14 +418,18 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     MAX_PYTHON_BYTES,
     ManifestError,
     MOONSHINE_ADAPTER,
+    NEMOTRON_ADAPTER,
+    NemotronConfig,
     WorkerManifest,
     load_worker_manifest,
 )
 from tools.streaming_stt.protocol import (  # noqa: E402
     MAX_CORPUS_BYTES,
     MAX_LINE_BYTES,
+    MAX_MODEL_PADDING_SAMPLES,
     MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
+    MAX_STREAM_SAMPLES,
     PROTOCOL_VERSION,
     ProtocolError,
     ShutdownRequest,
@@ -433,6 +438,7 @@ from tools.streaming_stt.protocol import (  # noqa: E402
     parse_request,
 )
 from tools.streaming_stt.runtime_receipt import (  # noqa: E402
+    NEMOTRON_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
     load_runtime_tree_receipt,
     verify_moonshine_wheel_install,
@@ -498,25 +504,37 @@ def _load_pcm(request: TranscribeRequest, scratch_root: Path) -> bytes:
 def _verify_runtime_receipt(
     manifest: WorkerManifest,
 ) -> RuntimeTreeReceipt | None:
-    if manifest.adapter != MOONSHINE_ADAPTER:
+    if manifest.adapter == "fake-json-v1":
         return None
-    artifact = manifest.artifact_by_name.get("runtime-receipt")
-    wheel = manifest.artifact_by_name.get("release-wheel")
-    if artifact is None or wheel is None:
+    if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
         raise ManifestError()
+    artifact = manifest.artifact_by_name.get("runtime-receipt")
+    if artifact is None:
+        raise ManifestError()
+    limits = (
+        NEMOTRON_RUNTIME_TREE_LIMITS if manifest.adapter == NEMOTRON_ADAPTER else None
+    )
     try:
         receipt = load_runtime_tree_receipt(
             artifact.path,
             expected_digest=artifact.sha256,
+            **({} if limits is None else {"limits": limits}),
         )
         verify_venv_runtime_location(receipt, manifest.python.path)
-        verify_runtime_tree_receipt(receipt)
-        verify_moonshine_wheel_install(
+        verify_runtime_tree_receipt(
             receipt,
-            wheel.path,
-            expected_sha256=wheel.sha256,
-            expected_size_bytes=wheel.size_bytes,
+            **({} if limits is None else {"limits": limits}),
         )
+        if manifest.adapter == MOONSHINE_ADAPTER:
+            wheel = manifest.artifact_by_name.get("release-wheel")
+            if wheel is None:
+                raise ManifestError()
+            verify_moonshine_wheel_install(
+                receipt,
+                wheel.path,
+                expected_sha256=wheel.sha256,
+                expected_size_bytes=wheel.size_bytes,
+            )
     except RuntimeError:
         raise ManifestError() from None
     if (
@@ -524,7 +542,45 @@ def _verify_runtime_receipt(
         or Path(os.path.abspath(sys.executable)) != manifest.python.path
     ):
         raise ManifestError()
+    if manifest.adapter == NEMOTRON_ADAPTER:
+        config = manifest.adapter_config
+        wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
+        maximum_file = max(
+            (item.size_bytes for item in receipt.files),
+            default=0,
+        )
+        if (
+            not isinstance(config, NemotronConfig)
+            or wheel_lock is None
+            or wheel_lock.sha256 != config.wheel_lock_sha256
+            or receipt.content_digest != config.runtime_content_sha256
+            or receipt.file_count != config.runtime_file_count
+            or receipt.total_size_bytes != config.runtime_total_size_bytes
+            or maximum_file != config.runtime_maximum_file_bytes
+        ):
+            raise ManifestError()
+        _verify_nemotron_venv_layout(manifest, receipt)
     return receipt
+
+
+def _verify_nemotron_venv_layout(
+    manifest: WorkerManifest,
+    receipt: RuntimeTreeReceipt,
+) -> None:
+    root = manifest.python.path.parent.parent
+    python_root = receipt.root.parent
+    try:
+        if (
+            set(os.listdir(root)) != {"bin", "lib", "pyvenv.cfg"}
+            or set(os.listdir(root / "bin")) != {"python"}
+            or set(os.listdir(root / "lib")) != {"python3.12"}
+            or set(os.listdir(python_root)) != {"site-packages"}
+            or not manifest.python.path.is_symlink()
+            or manifest.python.path.resolve(strict=True).name != "python3.12"
+        ):
+            raise ManifestError()
+    except (OSError, RuntimeError, ValueError, ManifestError):
+        raise ManifestError() from None
 
 
 def _verify_worker_state(
@@ -549,20 +605,59 @@ def _verify_worker_state(
     return _verify_runtime_receipt(manifest)
 
 
+def _verify_nemotron_python_version(manifest: WorkerManifest) -> None:
+    if manifest.adapter != NEMOTRON_ADAPTER:
+        return
+    config = manifest.adapter_config
+    if (
+        not isinstance(config, NemotronConfig)
+        or platform.python_version() != config.python_version
+    ):
+        raise ManifestError()
+
+
 def _activate_candidate_runtime(
     manifest: WorkerManifest,
     receipt: RuntimeTreeReceipt | None,
 ) -> None:
-    if manifest.adapter != MOONSHINE_ADAPTER:
+    if manifest.adapter == "fake-json-v1":
         if receipt is not None:
             raise ManifestError()
         return
+    if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
+        raise ManifestError()
+    module_prefixes = (
+        ("moonshine_voice",)
+        if manifest.adapter == MOONSHINE_ADAPTER
+        else (
+            "librosa",
+            "llvmlite",
+            "numba",
+            "numpy",
+            "scipy",
+            "sklearn",
+            "soundfile",
+            "soxr",
+            "torch",
+            "transformers",
+            "tokenizers",
+            "safetensors",
+            "huggingface_hub",
+        )
+    )
     if (
         receipt is None
         or sys.flags.no_site != 1
+        or sys.flags.no_user_site != 1
+        or sys.flags.ignore_environment != 1
+        or sys.flags.isolated != 1
+        or sys.flags.dont_write_bytecode != 1
         or not sys.path
         or any(
-            name == "moonshine_voice" or name.startswith("moonshine_voice.")
+            any(
+                name == prefix or name.startswith(prefix + ".")
+                for prefix in module_prefixes
+            )
             for name in sys.modules
         )
     ):
@@ -589,16 +684,6 @@ def _create_adapter(manifest: WorkerManifest):
             ),
             FakeAdapterError,
         )
-    if manifest.adapter != MOONSHINE_ADAPTER or manifest.adapter_config is None:
-        raise ManifestError()
-
-    # This source module is itself in the verified bundle and imports the
-    # external candidate package only while constructing the adapter.
-    from tools.streaming_stt.adapters.moonshine import (  # noqa: PLC0415
-        MoonshineAdapter,
-        MoonshineAdapterError,
-    )
-
     model_artifacts = tuple(
         artifact
         for artifact in manifest.artifacts
@@ -607,13 +692,40 @@ def _create_adapter(manifest: WorkerManifest):
     model_roots = {artifact.path.parent for artifact in model_artifacts}
     if len(model_roots) != 1:
         raise ManifestError()
-    return (
-        MoonshineAdapter(
-            model_roots.pop(),
-            config=manifest.adapter_config,
-        ),
-        MoonshineAdapterError,
-    )
+    model_root = model_roots.pop()
+    if manifest.adapter == NEMOTRON_ADAPTER:
+        try:
+            expected_model_files = {artifact.path.name for artifact in model_artifacts}
+            if set(os.listdir(model_root)) != expected_model_files:
+                raise ManifestError()
+        except (OSError, RuntimeError, ValueError, ManifestError):
+            raise ManifestError() from None
+    if manifest.adapter == MOONSHINE_ADAPTER:
+        if manifest.adapter_config is None:
+            raise ManifestError()
+        # This verified source imports the external package only here.
+        from tools.streaming_stt.adapters.moonshine import (  # noqa: PLC0415
+            MoonshineAdapter,
+            MoonshineAdapterError,
+        )
+
+        return (
+            MoonshineAdapter(model_root, config=manifest.adapter_config),
+            MoonshineAdapterError,
+        )
+    if manifest.adapter == NEMOTRON_ADAPTER:
+        if manifest.adapter_config is None:
+            raise ManifestError()
+        from tools.streaming_stt.adapters.nemotron import (  # noqa: PLC0415
+            NemotronAdapter,
+            NemotronAdapterError,
+        )
+
+        return (
+            NemotronAdapter(model_root, config=manifest.adapter_config),
+            NemotronAdapterError,
+        )
+    raise ManifestError()
 
 
 def _close_adapter(adapter) -> None:
@@ -635,6 +747,7 @@ def _run(
         required_files=WORKER_SOURCE_FILES,
     )
     manifest = load_worker_manifest(manifest_path)
+    _verify_nemotron_python_version(manifest)
     staged_worker = source_bundle.file_by_path.get(source_bundle.worker_relative_path)
     if (
         source_bundle.tree_sha256 != _SOURCE_BUNDLE_SHA256
@@ -730,12 +843,28 @@ def _run(
                 case = adapter.transcribe(request, emit_partial=emit_partial)
                 if len(case.partials) != partial_count:
                     raise ProtocolError()
+                model_padding_samples = getattr(case, "model_padding_samples", 0)
+                if (
+                    isinstance(model_padding_samples, bool)
+                    or not isinstance(model_padding_samples, int)
+                    or model_padding_samples < 0
+                    or model_padding_samples > MAX_MODEL_PADDING_SAMPLES
+                ):
+                    raise ProtocolError()
                 total_samples = (
                     request.pcm.samples + request.stream.tail_padding_samples
                 )
                 chunks = (
                     total_samples + request.stream.chunk_samples - 1
                 ) // request.stream.chunk_samples
+                if manifest.adapter == NEMOTRON_ADAPTER:
+                    chunks = getattr(case, "chunks_yielded", None)
+                    if (
+                        isinstance(chunks, bool)
+                        or not isinstance(chunks, int)
+                        or not 1 <= chunks <= MAX_STREAM_SAMPLES
+                    ):
+                        raise ProtocolError()
                 _write(
                     {
                         "v": PROTOCOL_VERSION,
@@ -751,11 +880,12 @@ def _run(
                         "chunks": chunks,
                         "deadline_misses": case.deadline_misses,
                         "max_backlog_ms": case.max_backlog_ms,
+                        "model_padding_samples": model_padding_samples,
                         "resources": _resource_dict(case.resources),
                     }
                 )
             except (adapter_error, ProtocolError):
-                fatal = manifest.adapter == MOONSHINE_ADAPTER
+                fatal = manifest.adapter != "fake-json-v1"
                 _write(
                     {
                         "v": PROTOCOL_VERSION,

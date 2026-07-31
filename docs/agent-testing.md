@@ -19,13 +19,69 @@
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | exit 0 only when every repetition is full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0064) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Recording-driven STT accuracy | `/home/dobo/work/speaker/.venv/bin/python -m tools.recorded_stt_eval` | aggregate-only streaming/offline/selected WER+CER over every hash-pinned labelled clip; each selected offline recognizer/verifier must complete a decode with zero error outcomes; no runtime, TTS, tools, network, or audio device (ADR-0078/0080) |
-| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_provision_moonshine_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake and Moonshine private-source, exact-runtime, bounded protocol, provenance, aggregate/privacy, and teardown contracts pass; offline flags are not a network sandbox (ADR-0089/0090) |
+| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine, and Nemotron private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091) |
 | Exact Moonshine worker smoke | set absolute `SPEAKER_MOONSHINE_WORKER_MANIFEST` and `SPEAKER_MOONSHINE_STREAMING_CORPUS`, then run `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_streaming_stt_moonshine_worker.py -m real_model -q` | one exact pre-provisioned case runs; no install, download, network, audio device, or adoption claim (ADR-0090) |
+| Exact Nemotron worker smoke | prepare and provision new private paths as shown below, then run the candidate-specific `real_model` command | one exact pre-provisioned case passes through no-network Bubblewrap and the bound inputs still pass close-time rehash; no audio device or adoption claim (ADR-0091) |
 | Opt-in selected final STT setup | `./install.sh --skip-system --final-asr parakeet-unified-en --final-verifier faster-whisper-small` | verify/stage the four-file Parakeet package and pinned Linux/NVIDIA verifier, publish atomically, and pass doctor; normal sessions still use `./live.sh` (ADR-0080) |
 | Verifier recording A/B | `/home/dobo/work/speaker/.venv/bin/python -m tools.recorded_stt_eval --set asr_final_verifier_backend=faster_whisper --set asr_final_verifier_model=/home/dobo/work/speaker/pretrained_models/sherpa/faster_whisper_small-536b0662742c --keyword vault` | aggregate-only baseline/candidate comparison, verifier outcome counts, and artifact-bound provenance; no transcript rows or audio device (ADR-0078/0080) |
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
+
+## Exact Nemotron benchmark setup
+
+Start with an already-downloaded private wheelhouse, the official six-file
+model directory, and the prepared public corpus. Set only absolute paths, and
+choose output paths that do not already exist:
+
+```bash
+export NEMOTRON_WHEELHOUSE=/absolute/private/nemotron-wheelhouse
+export NEMOTRON_MODEL=/absolute/private/nemotron-model
+export NEMOTRON_LOCK=/absolute/private/new-nemotron-runtime-wheels.lock.json
+export NEMOTRON_RUNTIME=/absolute/private/new-nemotron-runtime
+export NEMOTRON_RECEIPT=/absolute/private/new-nemotron-runtime-receipt.json
+export NEMOTRON_PROVISION=/absolute/private/new-nemotron-la6
+export STREAMING_CORPUS=/absolute/private/prepared-public-corpus/corpus.json
+```
+
+Prepare the exact locked Python 3.12 runtime without importing candidate code:
+
+```bash
+install -m 600 \
+  "$PWD/tools/streaming_stt/nemotron_runtime_wheels.lock.json" \
+  "$NEMOTRON_LOCK"
+/home/dobo/work/speaker/.venv/bin/python -B -m tools.prepare_nemotron_runtime \
+  --wheel-lock "$NEMOTRON_LOCK" \
+  --wheelhouse "$NEMOTRON_WHEELHOUSE" \
+  --system-python /usr/bin/python3.12 \
+  --output-root "$NEMOTRON_RUNTIME" \
+  --receipt "$NEMOTRON_RECEIPT"
+```
+
+Bind that runtime and model to one LA6 worker manifest:
+
+```bash
+/home/dobo/work/speaker/.venv/bin/python -B -m tools.provision_nemotron_candidate \
+  --venv-root "$NEMOTRON_RUNTIME" \
+  --model-root "$NEMOTRON_MODEL" \
+  --wheelhouse "$NEMOTRON_WHEELHOUSE" \
+  --output-dir "$NEMOTRON_PROVISION" \
+  --lookahead-tokens 6 \
+  --language en-US
+```
+
+Run the exact one-case GPU smoke through the isolated worker:
+
+```bash
+SPEAKER_NEMOTRON_WORKER_MANIFEST="$NEMOTRON_PROVISION/worker-manifest.json" \
+SPEAKER_NEMOTRON_STREAMING_CORPUS="$STREAMING_CORPUS" \
+/home/dobo/work/speaker/.venv/bin/python -B -m pytest \
+  tests/test_streaming_stt_nemotron_worker.py -m real_model -q
+```
+
+The prepare and provision commands emit aggregate JSON receipts only. The
+smoke opens no audio device and does not validate capture, VAD, endpointing,
+AEC, room echo, perceived latency, or physical barge-in.
 
 ## Before commit
 1. Run `git diff --check`.

@@ -30,6 +30,8 @@ MAX_WORKER_BYTES = 4 * 1024 * 1024
 MAX_FAKE_ARTIFACT_BYTES = 4 * 1024 * 1024
 MAX_MOONSHINE_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_MOONSHINE_TOTAL_ARTIFACT_BYTES = 1024 * 1024 * 1024
+MAX_NEMOTRON_ARTIFACT_BYTES = 3 * 1024 * 1024 * 1024
+MAX_NEMOTRON_TOTAL_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 _MANIFEST_V1_FIELDS = {
     "schema_version",
     "model_id",
@@ -40,6 +42,7 @@ _MANIFEST_V1_FIELDS = {
     "limits",
 }
 _MANIFEST_V2_FIELDS = {*_MANIFEST_V1_FIELDS, "adapter_config"}
+_MANIFEST_V3_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -50,7 +53,44 @@ _MOONSHINE_CONFIG_FIELDS = {
     "provider",
     "language",
 }
+_NEMOTRON_CONFIG_FIELDS = {
+    "python_version",
+    "transformers_version",
+    "librosa_version",
+    "torch_version",
+    "cuda_version",
+    "model_revision",
+    "lookahead_tokens",
+    "language",
+    "device",
+    "dtype",
+    "native_sample_rate_hz",
+    "native_hop_length_samples",
+    "native_n_fft_samples",
+    "native_win_length_samples",
+    "native_first_chunk_frames",
+    "native_chunk_frames",
+    "native_first_window_samples",
+    "native_window_samples",
+    "native_stride_samples",
+    "streaming_latency_ms",
+    "wheel_lock_sha256",
+    "runtime_content_sha256",
+    "runtime_file_count",
+    "runtime_total_size_bytes",
+    "runtime_maximum_file_bytes",
+}
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
+NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
+NEMOTRON_WHEEL_LOCK_SHA256 = (
+    "df268a2e268221428256b3ec525a3ad49da65b526b2e09b88df3802533b5af01"
+)
+NEMOTRON_RUNTIME_CONTENT_SHA256 = (
+    "ebcf9cab82c93ab5503bb438fbc9585475fa138c4e18aaea73d9ab34fc48bb8f"
+)
+NEMOTRON_RUNTIME_FILE_COUNT = 24_273
+NEMOTRON_RUNTIME_TOTAL_SIZE_BYTES = 6_752_927_292
+NEMOTRON_RUNTIME_MAXIMUM_FILE_BYTES = 1_007_735_593
 MOONSHINE_ARTIFACT_NAMES = (
     "runtime-receipt",
     "venv-marker",
@@ -146,6 +186,101 @@ _MOONSHINE_MODEL_RECEIPTS = {
         ),
     },
 }
+NEMOTRON_ARTIFACT_NAMES = (
+    "runtime-receipt",
+    "runtime-wheel-lock",
+    "venv-marker",
+    "model-config",
+    "model-generation-config",
+    "model-weights",
+    "model-processor-config",
+    "model-tokenizer",
+    "model-tokenizer-config",
+)
+_NEMOTRON_ARTIFACT_BASENAMES = {
+    "runtime-receipt": "runtime-receipt.json",
+    "runtime-wheel-lock": "nemotron-runtime-wheels.lock.json",
+    "venv-marker": "pyvenv.cfg",
+    "model-config": "config.json",
+    "model-generation-config": "generation_config.json",
+    "model-weights": "model.safetensors",
+    "model-processor-config": "processor_config.json",
+    "model-tokenizer": "tokenizer.json",
+    "model-tokenizer-config": "tokenizer_config.json",
+}
+_NEMOTRON_SMALL_ARTIFACTS = {
+    "runtime-receipt": 32 * 1024 * 1024,
+    "runtime-wheel-lock": 256 * 1024,
+    "venv-marker": 64 * 1024,
+    "model-config": 4 * 1024 * 1024,
+    "model-generation-config": 4 * 1024 * 1024,
+    "model-processor-config": 4 * 1024 * 1024,
+    "model-tokenizer": 16 * 1024 * 1024,
+    "model-tokenizer-config": 4 * 1024 * 1024,
+}
+_NEMOTRON_CONTROL_RECEIPTS = {
+    "runtime-wheel-lock": (NEMOTRON_WHEEL_LOCK_SHA256, 32_099),
+}
+_NEMOTRON_MODEL_RECEIPTS = {
+    "model-config": (
+        "62d186fd91f518e00e7867500f1f5819225e8ee95ea3e21b546514bf2048e845",
+        1_376,
+    ),
+    "model-generation-config": (
+        "993e5d4cb74a6fe9d6e7084a76b3313c1446740679be4676570c23b664fdc07e",
+        193,
+    ),
+    "model-weights": (
+        "9eebdd6590289cb3030f310858f3df93256600a800a3e8200c5993d5f967e174",
+        2_552_062_944,
+    ),
+    "model-processor-config": (
+        "ec47870f1091ea4f25539208387b45b902c92d0e3f997a30061ef88f73437ab0",
+        2_519,
+    ),
+    "model-tokenizer": (
+        "3f3d481deb073b64c2082e8c7860d487a3a62774bf4e9e4faac83007e181f246",
+        752_051,
+    ),
+    "model-tokenizer-config": (
+        "5c641c5b3f50702a60082690d27c1ce7fcb5a92c4a624793bcae0f21eda3d6e0",
+        881,
+    ),
+}
+_NEMOTRON_STREAM_GEOMETRY = {
+    0: {
+        "native_first_chunk_frames": 1,
+        "native_chunk_frames": 8,
+        "native_first_window_samples": 200,
+        "native_window_samples": 1_680,
+        "native_stride_samples": 1_280,
+        "streaming_latency_ms": 80,
+    },
+    3: {
+        "native_first_chunk_frames": 25,
+        "native_chunk_frames": 32,
+        "native_first_window_samples": 4_040,
+        "native_window_samples": 5_520,
+        "native_stride_samples": 5_120,
+        "streaming_latency_ms": 320,
+    },
+    6: {
+        "native_first_chunk_frames": 49,
+        "native_chunk_frames": 56,
+        "native_first_window_samples": 7_880,
+        "native_window_samples": 9_360,
+        "native_stride_samples": 8_960,
+        "streaming_latency_ms": 560,
+    },
+    13: {
+        "native_first_chunk_frames": 105,
+        "native_chunk_frames": 112,
+        "native_first_window_samples": 16_840,
+        "native_window_samples": 18_320,
+        "native_stride_samples": 17_920,
+        "streaming_latency_ms": 1_120,
+    },
+}
 
 
 class ManifestError(RuntimeError):
@@ -200,6 +335,98 @@ class MoonshineConfig:
 
 
 @dataclass(frozen=True)
+class NemotronConfig:
+    python_version: str = "3.12.3"
+    transformers_version: str = "5.13.1"
+    librosa_version: str = "0.11.0"
+    torch_version: str = "2.12.1+cu126"
+    cuda_version: str = "12.6"
+    model_revision: str = "f3d333391852ba876df169dcc9ba902d25b6ab0b"
+    lookahead_tokens: int = 3
+    language: str = "en-US"
+    device: str = "cuda:0"
+    dtype: str = "float32"
+    native_sample_rate_hz: int | None = None
+    native_hop_length_samples: int | None = None
+    native_n_fft_samples: int | None = None
+    native_win_length_samples: int | None = None
+    native_first_chunk_frames: int | None = None
+    native_chunk_frames: int | None = None
+    native_first_window_samples: int | None = None
+    native_window_samples: int | None = None
+    native_stride_samples: int | None = None
+    streaming_latency_ms: int | None = None
+    wheel_lock_sha256: str = NEMOTRON_WHEEL_LOCK_SHA256
+    runtime_content_sha256: str = NEMOTRON_RUNTIME_CONTENT_SHA256
+    runtime_file_count: int = NEMOTRON_RUNTIME_FILE_COUNT
+    runtime_total_size_bytes: int = NEMOTRON_RUNTIME_TOTAL_SIZE_BYTES
+    runtime_maximum_file_bytes: int = NEMOTRON_RUNTIME_MAXIMUM_FILE_BYTES
+
+    def __post_init__(self) -> None:
+        if (
+            self.python_version != "3.12.3"
+            or self.transformers_version != "5.13.1"
+            or self.librosa_version != "0.11.0"
+            or self.torch_version != "2.12.1+cu126"
+            or self.cuda_version != "12.6"
+            or self.model_revision != "f3d333391852ba876df169dcc9ba902d25b6ab0b"
+            or type(self.lookahead_tokens) is not int
+            or self.lookahead_tokens not in {0, 3, 6, 13}
+            or self.language not in {"en-US", "en-GB", "ro-RO"}
+            or self.device != "cuda:0"
+            or self.dtype != "float32"
+            or self.wheel_lock_sha256 != NEMOTRON_WHEEL_LOCK_SHA256
+            or self.runtime_content_sha256 != NEMOTRON_RUNTIME_CONTENT_SHA256
+            or self.runtime_file_count != NEMOTRON_RUNTIME_FILE_COUNT
+            or self.runtime_total_size_bytes != NEMOTRON_RUNTIME_TOTAL_SIZE_BYTES
+            or self.runtime_maximum_file_bytes != NEMOTRON_RUNTIME_MAXIMUM_FILE_BYTES
+        ):
+            raise ManifestError()
+        expected_geometry = {
+            "native_sample_rate_hz": 16_000,
+            "native_hop_length_samples": 160,
+            "native_n_fft_samples": 512,
+            "native_win_length_samples": 400,
+            **_NEMOTRON_STREAM_GEOMETRY[self.lookahead_tokens],
+        }
+        for field_name, expected in expected_geometry.items():
+            actual = getattr(self, field_name)
+            if actual is None:
+                object.__setattr__(self, field_name, expected)
+            elif type(actual) is not int or actual != expected:
+                raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "python_version": self.python_version,
+            "transformers_version": self.transformers_version,
+            "librosa_version": self.librosa_version,
+            "torch_version": self.torch_version,
+            "cuda_version": self.cuda_version,
+            "model_revision": self.model_revision,
+            "lookahead_tokens": self.lookahead_tokens,
+            "language": self.language,
+            "device": self.device,
+            "dtype": self.dtype,
+            "native_sample_rate_hz": self.native_sample_rate_hz,
+            "native_hop_length_samples": self.native_hop_length_samples,
+            "native_n_fft_samples": self.native_n_fft_samples,
+            "native_win_length_samples": self.native_win_length_samples,
+            "native_first_chunk_frames": self.native_first_chunk_frames,
+            "native_chunk_frames": self.native_chunk_frames,
+            "native_first_window_samples": self.native_first_window_samples,
+            "native_window_samples": self.native_window_samples,
+            "native_stride_samples": self.native_stride_samples,
+            "streaming_latency_ms": self.streaming_latency_ms,
+            "wheel_lock_sha256": self.wheel_lock_sha256,
+            "runtime_content_sha256": self.runtime_content_sha256,
+            "runtime_file_count": self.runtime_file_count,
+            "runtime_total_size_bytes": self.runtime_total_size_bytes,
+            "runtime_maximum_file_bytes": self.runtime_maximum_file_bytes,
+        }
+
+
+@dataclass(frozen=True)
 class WorkerManifest:
     path: Path
     digest: str
@@ -210,7 +437,7 @@ class WorkerManifest:
     worker: BoundFile
     artifacts: tuple[BoundArtifact, ...]
     limits: WorkerLimits
-    adapter_config: MoonshineConfig | None = None
+    adapter_config: MoonshineConfig | NemotronConfig | None = None
 
     @property
     def artifact_by_name(self) -> Mapping[str, BoundArtifact]:
@@ -275,6 +502,11 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
         return _MOONSHINE_SMALL_ARTIFACTS.get(
             artifact_name,
             MAX_MOONSHINE_ARTIFACT_BYTES,
+        )
+    if adapter == NEMOTRON_ADAPTER and artifact_name in NEMOTRON_ARTIFACT_NAMES:
+        return _NEMOTRON_SMALL_ARTIFACTS.get(
+            artifact_name,
+            MAX_NEMOTRON_ARTIFACT_BYTES,
         )
     raise ManifestError()
 
@@ -348,6 +580,64 @@ def _moonshine_config(value: object) -> MoonshineConfig:
         raise ManifestError() from None
 
 
+def _nemotron_config(value: object) -> NemotronConfig:
+    if not isinstance(value, dict) or set(value) != _NEMOTRON_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return NemotronConfig(
+            python_version=value.get("python_version"),  # type: ignore[arg-type]
+            transformers_version=value.get("transformers_version"),  # type: ignore[arg-type]
+            librosa_version=value.get("librosa_version"),  # type: ignore[arg-type]
+            torch_version=value.get("torch_version"),  # type: ignore[arg-type]
+            cuda_version=value.get("cuda_version"),  # type: ignore[arg-type]
+            model_revision=value.get("model_revision"),  # type: ignore[arg-type]
+            lookahead_tokens=value.get("lookahead_tokens"),  # type: ignore[arg-type]
+            language=value.get("language"),  # type: ignore[arg-type]
+            device=value.get("device"),  # type: ignore[arg-type]
+            dtype=value.get("dtype"),  # type: ignore[arg-type]
+            native_sample_rate_hz=value.get("native_sample_rate_hz"),  # type: ignore[arg-type]
+            native_hop_length_samples=value.get("native_hop_length_samples"),  # type: ignore[arg-type]
+            native_n_fft_samples=value.get("native_n_fft_samples"),  # type: ignore[arg-type]
+            native_win_length_samples=value.get("native_win_length_samples"),  # type: ignore[arg-type]
+            native_first_chunk_frames=value.get("native_first_chunk_frames"),  # type: ignore[arg-type]
+            native_chunk_frames=value.get("native_chunk_frames"),  # type: ignore[arg-type]
+            native_first_window_samples=value.get("native_first_window_samples"),  # type: ignore[arg-type]
+            native_window_samples=value.get("native_window_samples"),  # type: ignore[arg-type]
+            native_stride_samples=value.get("native_stride_samples"),  # type: ignore[arg-type]
+            streaming_latency_ms=value.get("streaming_latency_ms"),  # type: ignore[arg-type]
+            wheel_lock_sha256=value.get("wheel_lock_sha256"),  # type: ignore[arg-type]
+            runtime_content_sha256=value.get("runtime_content_sha256"),  # type: ignore[arg-type]
+            runtime_file_count=value.get("runtime_file_count"),  # type: ignore[arg-type]
+            runtime_total_size_bytes=value.get("runtime_total_size_bytes"),  # type: ignore[arg-type]
+            runtime_maximum_file_bytes=value.get("runtime_maximum_file_bytes"),  # type: ignore[arg-type]
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
+def _validate_venv_layout(
+    python: BoundFile,
+    marker: BoundArtifact,
+) -> None:
+    lexical_python = Path(os.path.abspath(python.path))
+    venv_root = lexical_python.parent.parent
+    if (
+        lexical_python != python.path
+        or lexical_python.parent.name != "bin"
+        or marker.path.parent != venv_root
+        or venv_root.resolve(strict=True) != venv_root
+    ):
+        raise ManifestError()
+    try:
+        verify_isolated_venv_marker(
+            marker.path,
+            expected_digest=marker.sha256,
+            expected_bytes=marker.size_bytes,
+        )
+    except RuntimeTreeReceiptError:
+        raise ManifestError() from None
+
+
 def _validate_moonshine_layout(
     python: BoundFile,
     artifacts: tuple[BoundArtifact, ...],
@@ -380,25 +670,41 @@ def _validate_moonshine_layout(
         name for name in MOONSHINE_ARTIFACT_NAMES if name.startswith("model-")
     )
     model_parents = {by_name[name].path.parent for name in model_names}
-    lexical_python = Path(os.path.abspath(python.path))
-    venv_root = lexical_python.parent.parent
+    if len(model_parents) != 1:
+        raise ManifestError()
+    _validate_venv_layout(python, by_name["venv-marker"])
+
+
+def _validate_nemotron_layout(
+    python: BoundFile,
+    artifacts: tuple[BoundArtifact, ...],
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
     if (
-        len(model_parents) != 1
-        or lexical_python != python.path
-        or lexical_python.parent.name != "bin"
-        or by_name["venv-marker"].path.parent != venv_root
-        or venv_root.resolve(strict=True) != venv_root
+        tuple(by_name) != NEMOTRON_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        > MAX_NEMOTRON_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _NEMOTRON_ARTIFACT_BASENAMES.items()
+        )
+        or any(
+            (by_name[name].sha256, by_name[name].size_bytes) != receipt
+            for name, receipt in _NEMOTRON_MODEL_RECEIPTS.items()
+        )
+        or any(
+            (by_name[name].sha256, by_name[name].size_bytes) != receipt
+            for name, receipt in _NEMOTRON_CONTROL_RECEIPTS.items()
+        )
     ):
         raise ManifestError()
-    try:
-        marker = by_name["venv-marker"]
-        verify_isolated_venv_marker(
-            marker.path,
-            expected_digest=marker.sha256,
-            expected_bytes=marker.size_bytes,
-        )
-    except RuntimeTreeReceiptError:
-        raise ManifestError() from None
+    model_names = tuple(
+        name for name in NEMOTRON_ARTIFACT_NAMES if name.startswith("model-")
+    )
+    model_parents = {by_name[name].path.parent for name in model_names}
+    if len(model_parents) != 1:
+        raise ManifestError()
+    _validate_venv_layout(python, by_name["venv-marker"])
 
 
 def load_worker_manifest(path: Path | str) -> WorkerManifest:
@@ -418,17 +724,21 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     if not isinstance(value, dict):
         raise ManifestError()
     schema_version = value.get("schema_version")
-    if type(schema_version) is not int or schema_version not in {1, 2}:
+    if type(schema_version) is not int or schema_version not in {1, 2, 3}:
         raise ManifestError()
-    expected_fields = (
-        _MANIFEST_V1_FIELDS if schema_version == 1 else _MANIFEST_V2_FIELDS
-    )
+    expected_fields = {
+        1: _MANIFEST_V1_FIELDS,
+        2: _MANIFEST_V2_FIELDS,
+        3: _MANIFEST_V3_FIELDS,
+    }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
 
     adapter = _safe_id(value.get("adapter"))
-    if (schema_version == 1 and adapter != "fake-json-v1") or (
-        schema_version == 2 and adapter != MOONSHINE_ADAPTER
+    if (
+        (schema_version == 1 and adapter != "fake-json-v1")
+        or (schema_version == 2 and adapter != MOONSHINE_ADAPTER)
+        or (schema_version == 3 and adapter != NEMOTRON_ADAPTER)
     ):
         raise ManifestError()
 
@@ -446,9 +756,11 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         maximum_bytes=MAX_WORKER_BYTES,
     )
     raw_artifacts = value.get("artifacts")
-    expected_artifact_names = (
-        ("fake-script",) if schema_version == 1 else MOONSHINE_ARTIFACT_NAMES
-    )
+    expected_artifact_names = {
+        1: ("fake-script",),
+        2: MOONSHINE_ARTIFACT_NAMES,
+        3: NEMOTRON_ARTIFACT_NAMES,
+    }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
     ):
@@ -457,12 +769,17 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     artifact_names = [artifact.name for artifact in artifacts]
     if artifact_names != list(expected_artifact_names):
         raise ManifestError()
-    adapter_config = (
-        None if schema_version == 1 else _moonshine_config(value.get("adapter_config"))
-    )
+    adapter_config = {
+        1: lambda: None,
+        2: lambda: _moonshine_config(value.get("adapter_config")),
+        3: lambda: _nemotron_config(value.get("adapter_config")),
+    }[schema_version]()
     if schema_version == 2:
-        assert adapter_config is not None
+        assert isinstance(adapter_config, MoonshineConfig)
         _validate_moonshine_layout(python, artifacts, adapter_config)
+    elif schema_version == 3:
+        assert isinstance(adapter_config, NemotronConfig)
+        _validate_nemotron_layout(python, artifacts)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

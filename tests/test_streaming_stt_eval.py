@@ -21,7 +21,10 @@ from tools.streaming_stt.metrics import RunRecord, aggregate_metrics
 from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
     MOONSHINE_ARTIFACT_NAMES,
+    NEMOTRON_ADAPTER,
+    NEMOTRON_ARTIFACT_NAMES,
     MoonshineConfig,
+    NemotronConfig,
 )
 from tools.streaming_stt.protocol import (
     CaseTrace,
@@ -112,6 +115,9 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
         "conversational_latency_valid": False,
         "timing_scope": "adapter_after_pcm_load_to_result",
         "compute_rtf_scope": "candidate_calls_only",
+        "partial_source": "candidate_snapshot",
+        "final_source": "candidate_final",
+        "model_padding_reported": True,
         "end_to_end_rtf": False,
         "pcm_snapshot_io_included": False,
         "controller_ipc_included": False,
@@ -141,6 +147,8 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
     assert metrics["accuracy"]["command_recall"] == 1.0
     assert metrics["accuracy"]["silence_nonempty_finals"] == 0
     assert metrics["streaming"]["deadline_misses"] == 3
+    assert metrics["streaming"]["model_padding_total_samples"] == 0
+    assert metrics["streaming"]["model_padding_max_samples"] == 0
     assert metrics["latency"]["first_nonempty_partial_p50_ms"] == 40.0
     assert metrics["latency"]["stable_partial_p95_ms"] == 80.0
     assert metrics["resources"]["peak_vram_mb"] == 20.0
@@ -234,6 +242,9 @@ def test_moonshine_worker_and_evidence_bindings_are_closed_and_non_adopting(
         "conversational_latency_valid": True,
         "timing_scope": "adapter_after_pcm_load_to_result",
         "compute_rtf_scope": "candidate_calls_only",
+        "partial_source": "candidate_snapshot",
+        "final_source": "candidate_final",
+        "model_padding_reported": True,
         "end_to_end_rtf": False,
         "pcm_snapshot_io_included": False,
         "controller_ipc_included": False,
@@ -256,6 +267,110 @@ def test_moonshine_worker_and_evidence_bindings_are_closed_and_non_adopting(
         streaming_stt_eval._evidence_binding("unknown-adapter", pace="burst")
     with pytest.raises(ValueError):
         streaming_stt_eval._evidence_binding(MOONSHINE_ADAPTER, pace="warp")
+
+
+def test_nemotron_binding_labels_provisional_finals_padding_and_compute_scope(
+    tmp_path,
+):
+    artifacts = tuple(
+        SimpleNamespace(
+            name=name,
+            sha256=f"{index + 1:064x}",
+            size_bytes=index + 1,
+            path=tmp_path / f"private-nemotron-{index}",
+        )
+        for index, name in enumerate(NEMOTRON_ARTIFACT_NAMES)
+    )
+    config = NemotronConfig(language="ro-RO", lookahead_tokens=6)
+    manifest = SimpleNamespace(
+        digest="a" * 64,
+        schema_version=3,
+        model_id="nemotron-streaming-ro-la6",
+        adapter=NEMOTRON_ADAPTER,
+        python=SimpleNamespace(sha256="b" * 64),
+        worker=SimpleNamespace(sha256="c" * 64),
+        artifacts=artifacts,
+        adapter_config=config,
+    )
+    source_bundle = SimpleNamespace(tree_sha256="d" * 64, files=(object(),))
+
+    binding = streaming_stt_eval._worker_binding(
+        manifest,
+        source_bundle,
+        runtime_receipt_sha256="e" * 64,
+    )
+
+    assert binding["manifest_schema_version"] == 3
+    assert binding["adapter_config"] == config.as_dict()
+    evidence = streaming_stt_eval._evidence_binding(
+        NEMOTRON_ADAPTER,
+        pace="realtime",
+        adapter_config=config,
+    )
+    assert evidence["production_model"] is False
+    assert evidence["real_candidate_model"] is True
+    assert evidence["compute_rtf_scope"] == "generate_wall_minus_pacing"
+    assert evidence["partial_source"] == "provisional_streamer"
+    assert evidence["final_source"] == "authoritative_generate_sequences"
+    assert evidence["model_padding_reported"] is True
+    assert evidence["conversational_latency_valid"] is False
+    assert evidence["capture_accrual_included"] is False
+    assert (
+        evidence["conversational_latency_scope"]
+        == "diagnostic_replay_excludes_native_capture_accrual"
+    )
+    assert evidence["deadline_accounting"] == "post_consumption_per_native_chunk"
+    assert evidence["native_stream_geometry"] == {
+        "sample_rate_hz": 16_000,
+        "hop_length_samples": 160,
+        "n_fft_samples": 512,
+        "win_length_samples": 400,
+        "first_chunk_frames": 49,
+        "chunk_frames": 56,
+        "first_window_samples": 7_880,
+        "window_samples": 9_360,
+        "stride_samples": 8_960,
+        "streaming_latency_ms": 560,
+    }
+    with pytest.raises(ValueError):
+        streaming_stt_eval._evidence_binding(
+            NEMOTRON_ADAPTER,
+            pace="realtime",
+        )
+
+
+def test_adapter_specific_default_streams_preserve_fake_and_moonshine():
+    fake = streaming_stt_eval._default_stream(
+        SimpleNamespace(adapter="fake-json-v1", adapter_config=None)
+    )
+    moonshine = streaming_stt_eval._default_stream(
+        SimpleNamespace(adapter=MOONSHINE_ADAPTER, adapter_config=MoonshineConfig())
+    )
+    nemotron = streaming_stt_eval._default_stream(
+        SimpleNamespace(adapter=NEMOTRON_ADAPTER, adapter_config=NemotronConfig())
+    )
+
+    assert fake == StreamConfig(1600, "burst", 200, 0)
+    assert moonshine == StreamConfig(1600, "burst", 200, 0)
+    assert nemotron == StreamConfig(5120, "burst", 320, 0)
+
+
+def test_stream_overrides_keep_nemotron_native_defaults_for_unspecified_fields():
+    manifest = SimpleNamespace(
+        adapter=NEMOTRON_ADAPTER,
+        adapter_config=NemotronConfig(),
+    )
+
+    selected = streaming_stt_eval._selected_stream(
+        manifest,
+        None,
+        chunk_samples=None,
+        pace="realtime",
+        partial_interval_ms=None,
+        tail_padding_samples=160,
+    )
+
+    assert selected == StreamConfig(5120, "realtime", 320, 160)
 
 
 def test_moonshine_runtime_receipt_is_loaded_and_tree_verified(

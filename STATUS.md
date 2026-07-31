@@ -4,26 +4,23 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate (`-m "not real_model"`): 6105 passed, 13 skipped,
-  21 deselected, 9 pre-existing warnings. Focused gates: typed-ingress/Sherpa/APM
-  354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
+- Repository logic gate: 6276 passed, 13 skipped, 22 deselected, 9 pre-existing warnings.
+  Focused: typed-ingress/Sherpa/APM 354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
 - Bounded capture review: 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
-- Streaming/Moonshine deterministic gate: 249; receipt boundary 98; exact
-  one-case model smoke 1. Candidate adoption remains rejected (ADR-0090).
-- Previous stable evidence remains: production-hybrid MiniCPM/Gemma and
-  Gemma/Gemma 42/42, semantic-memory PASS, strict recorded owner replay 9/9,
-  and two clean synthetic-delay runs (ADR-0051/0065/0067/0068/0070/0080).
+- Streaming deterministic gate: 334; receipt boundary 98. Exact one-case
+  Moonshine/Nemotron smokes passed; both remain rejected (ADR-0090/0091).
+- Previous stable evidence remains: MiniCPM/Gemma and Gemma/Gemma 42/42, semantic-memory
+  PASS, strict recorded owner replay 9/9, and two clean synthetic-delay runs (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
-- The Linux Python runtime is the reference. Its post-recognition `SessionActor`
-  owns bounded admission, binding release, identity, and teardown; phone/remote
-  shells lack it. Only invoked post-ASR data may reach cloud (ADR-0001/0086).
+- Linux Python is the reference. Post-ASR `SessionActor` owns bounded admission, binding
+  release, identity, and teardown; phone/remote lack it. Only invoked post-ASR data may reach cloud (ADR-0001/0086).
 - `./live.sh` is the single Linux physical entry. It owns the host lock,
   reversible echo-control route, conditional Ollama, doctor, and aligned
   private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).
-- Desktop MiniCPM Q8 is the local text tier; Gemma3 is complex/vision. Phone Q4
-  uses native XML tools; phone thermal behavior is unvalidated (ADR-0020/0033/0062).
+- Desktop MiniCPM Q8 is the local text tier; Gemma3 is complex/vision. Phone Q4 uses
+  native XML tools; phone thermal behavior is unvalidated (ADR-0020/0033/0062).
 - Setup may enable bounded PRIVATE vault search, durable reminders, and exact
   trusted apps. Mutations require unchanged direct speech plus confirmation and
   remain outside planners (ADR-0073/0074/0076).
@@ -62,31 +59,34 @@ Last verified: 2026-07-31 on Linux ROG.
 
 ## Live evidence and limits
 
-- Exact physical STOP is still red. Runs `192151`/`193713` failed with
-  enrollment on and off; v5 was rejected. Route settling is unproven (ADR-0072).
+- Exact physical STOP is red: `192151`/`193713` failed with enrollment on/off; v5 was rejected and route settling is unproven (ADR-0072).
 - The 2026-07-16 vault run admitted six unclipped windows without capture,
   decode, finalizer, or echo-separation failure, yet recognized `vault` 0/6.
   Only post-GTCRN mic audio was retained, so the failure seam is unknown (ADR-0077).
-- Private replay WER 0.00 is non-disjoint. Public-v3 trusts its local PyArrow
-  environment; its code-bound Small control WER 0.6685 remains rejected. These
-  are development—not streaming, held-out, live, or adoption—results (ADR-0087).
-- Exact Moonshine 0.1.0 is benchmark-only. Small WER is 0.6884 burst and
-  0.6957 real-time; at 200 ms it had RTF 1.1864, first partial p50 2.02 s,
-  1,000 misses, and 22.01 s backlog. Tiny WER is 0.8478. No default changed.
-  The harness has no network/RAM/VRAM enforcement or `setsid` fence (ADR-0090).
-- Windows communications capture verifies OS AEC; NS and beamforming were
-  measured active, but owner physical talk-over/STOP tests remain (ADR-0081/0082).
-- Diagnostic replay fails closed on malformed heartbeats and silent playback
-  references. GitHub server-side raw-audio PR refs remain owner follow-up (ADR-0083).
+- Private replay WER 0.00 is non-disjoint. Public-v3 trusts local PyArrow; its code-bound Small
+  control WER 0.6685 stays rejected. These are development—not streaming, held-out, live, or adoption—results (ADR-0087).
+- Exact Moonshine 0.1.0 is benchmark-only. Small WER is 0.6884 burst and 0.6957
+  real-time; at 200 ms: RTF 1.1864, first partial p50 2.02 s, 1,000 misses, and
+  22.01 s backlog. Tiny WER is 0.8478. No default changed; its sandbox/resource limits remain as documented (ADR-0090).
+- Exact Nemotron uses an isolated Python 3.12 closure: Torch 2.12.1+cu126,
+  Transformers 5.13.1, Librosa 0.11.0, 74-wheel lock `df268a2...af01`, and runtime
+  content `ebcf9cab...bb8f` (24,273 files; 6,752,927,292 bytes). Bubblewrap denies
+  network, mounts model/runtime read-only, and redirects caches to scratch.
+- Nemotron burst WER/CER/RTF: LA0 .7065/.6606/.4331; LA3 .7065/.6592/.1395;
+  LA6 .6957/.6551/.0859; LA13 .6902/.6467/.0556. LA6 real-time was
+  .6957 WER/.0992 RTF, first-partial p50 1.666 s, one miss, 10.439 ms backlog.
+  Every mode is rejected; this excludes capture/VAD/endpoint/AEC/live validity
+  and leaves `.venv`, defaults, and `./live.sh` unchanged (ADR-0091).
+- Windows communications capture verifies OS AEC/NS/beamforming; owner physical talk-over/STOP tests remain (ADR-0081/0082).
+- Diagnostic replay fails closed on malformed heartbeats/silent playback references; GitHub raw-audio PR refs remain owner follow-up (ADR-0083).
 
 ## Next
 
 - Port session ownership to remote/mobile; bound the central mailbox and add
   targeted tool cancellation before claiming parity.
-- Benchmark exact Nemotron 3.5 Streaming 0.6B next. Then add timestamped
-  frame/AEC replay and a disjoint owner set spanning vault
-  terms, controls, numerals, negation, noise/echo, bystanders, and multiple voices.
-  Run fresh `./live.sh` A/B before claiming stable results (ADR-0090).
+- Add timestamped frame/AEC replay and a disjoint owner set spanning vault terms,
+  controls, numerals, negation, noise/echo, bystanders, and multiple voices.
+  Run fresh `./live.sh` A/B before claiming stable results (ADR-0091).
 
 ## Standard verification
 

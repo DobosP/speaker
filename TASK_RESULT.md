@@ -1,94 +1,84 @@
 Valid until: this branch lands or is superseded — then treat as history.
 
-# Task result — isolated streaming-STT harness
+# Task result — exact Moonshine streaming candidate
 
 ## Outcome
 
-Added a generic controller for future long-lived streaming-STT candidates
-without installing or importing a candidate runtime. The only adapter in this
-change is a deterministic fake keyed by exact PCM hashes. This proves the
-isolation, provenance, bounded protocol, replay, privacy, metrics, and teardown
-seams; it is not model-quality evidence.
+Added exact, disposable Moonshine Voice 0.1.0 Tiny and Small CPU candidates to
+the isolated streaming-STT harness. Both are rejected for adoption; no runtime
+default, setup option, production dependency, or application entry point
+changed.
 
-The controller validates hash/size-bound worker and corpus manifests, copies
-validated f32le PCM into private scratch, and stable-reads the fixed worker
-import closure into a private single-link source bundle. It launches that
-bundle via an inherited directory descriptor with the declared interpreter
-under `-I -B`. Ready and final messages bind the verified bundle digest.
+The worker now launches under `-I -S -B`, verifies its private source bundle,
+manifest, interpreter, disabled-system-site-packages marker, runtime tree,
+official Moonshine-owned wheel contents, and exact model files before directly
+inserting the verified runtime path. Candidate `.pth` startup code is never
+processed. The disposable runtime and models remain outside the production
+virtual environment.
 
-Bounded JSONL, regular-file reads, and original-process-group teardown reject
-oversized output, symlinks, hardlinks, replacement/mutation races, sparse
-oversized inputs, and post-load growth. A pwd-derived host path plus parent/file
-advisory locks serializes cooperating controllers independently of `TMPDIR`.
+The adapter uses one persistent native transcriber and a fresh stream per case.
+Every scheduled hypothesis forces a native update; final force/stop snapshots
+only assemble the final and cannot masquerade as online partials. Reports label
+accelerated replay as non-conversational and identify candidate-call compute
+time separately from end-to-end RTF.
 
-Aggregate-only reports bind the evaluator evidence set, corpus, interpreter,
-source bundle, worker, and artifacts. They contain accuracy, command recall,
-partial stability, latency, backlog, determinism, and worker-reported resource
-metrics without transcript rows, paths, or private case identifiers.
+Public MInDS-14 conversion now emits a strict schema-v2 corpus with structured
+suite, manifest, metadata, and source-set provenance. Reports distinguish a
+real executed candidate from a production model and do not include transcript
+rows, private paths, or case identifiers.
 
-## Files
+## Exact evidence
 
-- `tools/streaming_stt_eval.py` — aggregate controller and CLI.
-- `tools/streaming_stt/` — bounded I/O, manifests, corpus/protocol, source
-  bundle, supervisor, metrics, worker, and deterministic fake adapter.
-- `tests/streaming_stt_helpers.py`, `tests/test_streaming_stt_*.py` —
-  deterministic protocol/privacy/metric and adversarial process regressions.
-- `docs/adr/0089-isolate-streaming-stt-benchmarks.md` — isolation decision and
-  explicit non-adoption boundary.
-- `STATUS.md`, `docs/agent-map.md`, `docs/agent-testing.md` — current truth,
-  routing, limitations, and focused command.
+Inputs:
+
+- `moonshine-voice==0.1.0` official Linux wheel, 56,369,045 bytes, SHA-256
+  `0f833deb43bad5dcfb4cfd3257b6df83ef9abd3f27be3199622fe41932e8d916`;
+- disposable Python 3.12 environment receipt: 1,257 files, 178,422,589 bytes,
+  receipt SHA-256
+  `f742d49cdfa3770387a59b8a1744c1c9bd9d9b1bd66c3d9de96906e327eaed85`;
+- schema-v2 14-case MInDS-14 corpus SHA-256
+  `a9c6859289d28b3bcc79665d890c9934f1f7b17dd7f3fe34b83a8d69a61ed3fe`.
+
+Results:
+
+- Small, 500 ms accelerated replay, three repeats: WER 0.6884, CER 0.6416,
+  candidate-call RTF 0.5752, and one case with final disagreement.
+- Small, 200 ms real-time replay, one full pass: WER 0.6957, first nonempty
+  partial p50 2.016 s, candidate-call RTF 1.1864, 1,000 deadline misses, and
+  maximum backlog 22.006 s.
+- Tiny, 500 ms accelerated replay, one pass: WER 0.8478, CER 0.7204, and
+  candidate-call RTF 0.2370.
+
+The real-time scope begins after PCM loading inside the adapter and excludes
+capture, snapshot I/O, controller IPC, VAD, endpointing, and AEC. The
+accelerated runs provide accuracy and candidate-call throughput only. None is
+live, held-out owner, or adoption evidence.
 
 ## Verification
 
-Independent pre-rebase review:
+- Combined deterministic Moonshine/public/streaming gate: 249 passed,
+  1 real-model test deselected.
+- Receipt/manifest/supervisor repair gate: 98 passed.
+- Independent security/evidence/worker repair gates: 167 passed with one
+  opt-in smoke skipped; 30 passed; and 35 passed with one deselected.
+- Exact one-case Small worker smoke: 1 passed.
+- Full `-m "not real_model"` repository gate: 6,105 passed, 13 skipped,
+  21 deselected, and 9 pre-existing warnings in 113.79 seconds.
+- Exact APM/double-talk gate: 6 passed.
+- Exact official runtime/wheel validation: passed across all 1,257 receipt
+  files.
+- Scoped Ruff check/format and `git diff --check`: passed before final
+  repository gates.
 
-```text
-tests/test_streaming_stt_manifest.py tests/test_streaming_stt_protocol.py
-tests/test_streaming_stt_supervisor.py tests/test_streaming_stt_eval.py
-tests/test_streaming_stt_environment.py
+## Limits and next
 
-79 passed
-```
+Moonshine is English-only here and remains benchmark-only. It does not meet the
+accuracy, determinism, or 200 ms streaming latency requirements. Third-party
+dependencies are integrity-bound by the runtime receipt but are not
+individually traced to upstream wheels; the manifest/receipt directory is a
+trusted local control-plane boundary without a signature. Offline flags do not
+enforce network isolation, and resource values remain worker-reported.
 
-The same files plus existing recorded/public STT evaluator regressions passed
-181 tests. A broader evaluator gate passed 209 tests. Pycompile, scoped Ruff
-check/format, `git diff --check`, and the STATUS-size guard passed.
-
-The first post-rebase full gate exposed a real import-smoke failure: the worker
-required launch arguments while merely being imported. The repair leaves
-normal imports inert but still verifies the inherited private source tree
-before project imports whenever the worker executes.
-
-Independent follow-up review also found that drainer construction/start
-failures occurred outside startup cleanup. Both drainer starts now share the
-process cleanup guard; failures reap the process group, stop any started
-drainer, close inherited descriptors and safe pipe ends, and return a
-detail-free `worker_start` error. Output pipes with live drainers are skipped
-until those threads stop, preventing a buffered-close deadlock.
-
-Final post-rebase receipts:
-
-- five streaming files: 83 passed;
-- exact import/startup/live-drainer repair gate: 8 passed independently;
-- streaming, recorded/public, worker-import, and APM combined: 273 passed;
-- full `-m "not real_model"` gate: 6016 passed, 13 skipped, 20 deselected,
-  9 warnings in 110.90 seconds;
-- pycompile, scoped Ruff check/format, `git diff --check`, and the 100-line
-  STATUS limit: passed.
-
-## Limits and next evidence
-
-- `fake-json-v1` cannot rank STT quality.
-- VAD, endpointing, AEC, playback, multiple speakers, and natural conversation
-  remain outside this harness.
-- Offline environment flags are not a network sandbox. RAM/VRAM values are
-  schema-bounded and finite but self-reported, not OS-enforced.
-- The Linux/POSIX implementation uses `/proc/self/fd` and advisory `flock`.
-  Original-process-group teardown cannot fence a descendant that calls
-  `setsid()` and closes inherited pipes.
-- Each real adapter still needs a disposable exact environment, pinned artifact
-  receipt, public/private corpus runs, recorded endpoint acceptance, and live
-  A/B before any default changes.
-
-No candidate package/model, GPU job, audio device, or live-hardware test was
-used by this change.
+The next isolated candidate is NVIDIA Nemotron 3.5 ASR Streaming 0.6B on the
+available RTX 4090. Any eventual recognizer selection still requires recorded
+endpoint tests and a fresh physical `./live.sh` A/B.

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,6 +18,11 @@ from tests.streaming_stt_helpers import (
 from tools import streaming_stt_eval
 from tools.streaming_stt.corpus import load_corpus
 from tools.streaming_stt.metrics import RunRecord, aggregate_metrics
+from tools.streaming_stt.manifest import (
+    MOONSHINE_ADAPTER,
+    MOONSHINE_ARTIFACT_NAMES,
+    MoonshineConfig,
+)
 from tools.streaming_stt.protocol import (
     CaseTrace,
     FinalEvent,
@@ -99,6 +105,17 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
         "kind": "bounded_pcm_streaming_harness",
         "fake_adapter": True,
         "production_model": False,
+        "real_candidate_model": False,
+        "model_executed": False,
+        "replay_pace": "burst",
+        "accelerated_replay": True,
+        "conversational_latency_valid": False,
+        "timing_scope": "adapter_after_pcm_load_to_result",
+        "compute_rtf_scope": "candidate_calls_only",
+        "end_to_end_rtf": False,
+        "pcm_snapshot_io_included": False,
+        "controller_ipc_included": False,
+        "capture_to_text_latency": False,
         "vad": False,
         "endpointing": False,
         "aec": False,
@@ -106,11 +123,16 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
         "adoption_authority": False,
     }
     assert report["worker"]["adapter"] == "fake-json-v1"
+    assert "manifest_schema_version" not in report["worker"]
+    assert "adapter_config" not in report["worker"]
+    assert "runtime_receipt_sha256" not in report["worker"]
     assert len(report["worker"]["manifest_sha256"]) == 64
     assert len(report["worker"]["source_bundle_sha256"]) == 64
     assert report["worker"]["source_bundle_files"] > 1
     assert len(report["worker"]["artifact_set_sha256"]) == 64
     assert report["corpus"]["cases"] == 2
+    assert "schema_version" not in report["corpus"]
+    assert "provenance" not in report["corpus"]
     metrics = report["metrics"]
     assert metrics["evaluations"] == 6
     assert metrics["coverage_complete"] is True
@@ -123,6 +145,18 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
     assert metrics["latency"]["stable_partial_p95_ms"] == 80.0
     assert metrics["resources"]["peak_vram_mb"] == 20.0
     assert metrics["determinism"]["cases_with_final_disagreement"] == 0
+    assert report["evaluator"]["kind"] == "isolated_streaming_stt_fake_harness"
+    assert report["evaluator"]["production_model"] is False
+    assert report["evaluator"]["real_candidate_model"] is False
+    assert report["evaluator"]["model_executed"] is False
+    assert {
+        "tools/streaming_stt/runtime_receipt.py",
+        "tools/streaming_stt/adapters/moonshine.py",
+    } <= set(report["evaluator"]["files"])
+    assert {
+        "tools/prepare_public_streaming_stt_corpus.py",
+        "tools/provision_moonshine_candidate.py",
+    }.isdisjoint(report["evaluator"]["files"])
     assert not any(scratch.glob(".streaming-stt-*"))
 
     encoded = json.dumps(report)
@@ -135,6 +169,173 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
         "sentinel-private-silence",
     ):
         assert private not in encoded
+
+
+def test_moonshine_worker_and_evidence_bindings_are_closed_and_non_adopting(
+    tmp_path,
+):
+    artifacts = tuple(
+        SimpleNamespace(
+            name=name,
+            sha256=f"{index + 1:064x}",
+            size_bytes=index + 1,
+            path=tmp_path / f"private-artifact-{index}",
+        )
+        for index, name in enumerate(MOONSHINE_ARTIFACT_NAMES)
+    )
+    manifest = SimpleNamespace(
+        digest="a" * 64,
+        schema_version=2,
+        model_id="moonshine-small-streaming",
+        adapter=MOONSHINE_ADAPTER,
+        python=SimpleNamespace(sha256="b" * 64),
+        worker=SimpleNamespace(sha256="c" * 64),
+        artifacts=artifacts,
+        adapter_config=MoonshineConfig(
+            package_version="0.1.0",
+            api_version=30000,
+            model_arch="small-streaming",
+            provider="cpu",
+            language="en",
+        ),
+    )
+    source_bundle = SimpleNamespace(
+        tree_sha256="d" * 64,
+        files=(object(), object()),
+    )
+
+    binding = streaming_stt_eval._worker_binding(
+        manifest,
+        source_bundle,
+        runtime_receipt_sha256="e" * 64,
+    )
+
+    assert binding["manifest_schema_version"] == 2
+    assert binding["adapter_config"] == {
+        "package_version": "0.1.0",
+        "api_version": 30000,
+        "model_arch": "small-streaming",
+        "provider": "cpu",
+        "language": "en",
+    }
+    assert binding["runtime_receipt_sha256"] == "e" * 64
+    assert str(tmp_path) not in json.dumps(binding)
+    assert streaming_stt_eval._evidence_binding(
+        MOONSHINE_ADAPTER,
+        pace="realtime",
+    ) == {
+        "kind": "bounded_pcm_streaming_harness",
+        "fake_adapter": False,
+        "production_model": False,
+        "real_candidate_model": True,
+        "model_executed": True,
+        "replay_pace": "realtime",
+        "accelerated_replay": False,
+        "conversational_latency_valid": True,
+        "timing_scope": "adapter_after_pcm_load_to_result",
+        "compute_rtf_scope": "candidate_calls_only",
+        "end_to_end_rtf": False,
+        "pcm_snapshot_io_included": False,
+        "controller_ipc_included": False,
+        "capture_to_text_latency": False,
+        "vad": False,
+        "endpointing": False,
+        "aec": False,
+        "live_hardware": False,
+        "adoption_authority": False,
+    }
+    evaluator = streaming_stt_eval._evaluator_binding(MOONSHINE_ADAPTER)
+    assert evaluator["production_model"] is False
+    assert evaluator["real_candidate_model"] is True
+    assert evaluator["model_executed"] is True
+    assert {
+        "tools/prepare_public_streaming_stt_corpus.py",
+        "tools/provision_moonshine_candidate.py",
+    }.isdisjoint(evaluator["files"])
+    with pytest.raises(ValueError):
+        streaming_stt_eval._evidence_binding("unknown-adapter", pace="burst")
+    with pytest.raises(ValueError):
+        streaming_stt_eval._evidence_binding(MOONSHINE_ADAPTER, pace="warp")
+
+
+def test_moonshine_runtime_receipt_is_loaded_and_tree_verified(
+    tmp_path,
+    monkeypatch,
+):
+    artifact = SimpleNamespace(
+        path=tmp_path / "runtime-receipt.json",
+        sha256="a" * 64,
+    )
+    manifest = SimpleNamespace(
+        adapter=MOONSHINE_ADAPTER,
+        artifact_by_name={"runtime-receipt": artifact},
+        python=SimpleNamespace(path=tmp_path / "venv" / "bin" / "python"),
+    )
+    receipt = SimpleNamespace(digest=artifact.sha256)
+    calls: list[object] = []
+
+    def load(path, *, expected_digest):
+        calls.append(("load", path, expected_digest))
+        return receipt
+
+    def verify(value):
+        calls.append(("verify", value))
+
+    def verify_location(value, python_path):
+        calls.append(("location", value, python_path))
+
+    monkeypatch.setattr(streaming_stt_eval, "load_runtime_tree_receipt", load)
+    monkeypatch.setattr(streaming_stt_eval, "verify_runtime_tree_receipt", verify)
+    monkeypatch.setattr(
+        streaming_stt_eval,
+        "verify_venv_runtime_location",
+        verify_location,
+    )
+
+    assert (
+        streaming_stt_eval._verified_runtime_receipt_digest(manifest) == artifact.sha256
+    )
+    assert calls == [
+        ("load", artifact.path, artifact.sha256),
+        ("location", receipt, manifest.python.path),
+        ("verify", receipt),
+    ]
+
+
+def test_controller_checks_runtime_receipt_boundary_before_and_after_worker(
+    tmp_path,
+    monkeypatch,
+):
+    manifest, corpus = _benchmark_fixture(tmp_path)
+    calls: list[str] = []
+    real_verify = streaming_stt_eval._verified_runtime_receipt_digest
+
+    def record(candidate):
+        calls.append(candidate.adapter)
+        return real_verify(candidate)
+
+    monkeypatch.setattr(
+        streaming_stt_eval,
+        "_verified_runtime_receipt_digest",
+        record,
+    )
+
+    report = streaming_stt_eval.run_benchmark(
+        manifest,
+        corpus,
+        scratch_parent=tmp_path / "scratch",
+        repeats=1,
+    )
+
+    assert report["ok"] is True
+    assert calls == ["fake-json-v1", "fake-json-v1"]
+
+
+def test_cli_description_is_manifest_adapter_generic():
+    help_text = " ".join(streaming_stt_eval._parser().format_help().split())
+
+    assert "manifest-selected adapter" in help_text
+    assert "fake worker receipts only" not in help_text
 
 
 def test_host_run_lock_rejects_a_second_controller(tmp_path):

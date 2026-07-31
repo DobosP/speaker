@@ -1,8 +1,7 @@
 """Aggregate-only streaming-STT evaluation through an isolated JSONL worker.
 
-This first implementation intentionally supports only the deterministic fake
-adapter. It validates the process, provenance, replay, privacy, and metric
-contracts without importing or installing any candidate model runtime.
+The controller supports the deterministic fake contract and manifest-selected
+real candidates without importing candidate runtimes into this process.
 """
 
 from __future__ import annotations
@@ -36,6 +35,7 @@ from tools.streaming_stt.corpus import (
 )
 from tools.streaming_stt.manifest import (
     MAX_WORKER_BYTES,
+    MOONSHINE_ADAPTER,
     WorkerManifest,
     load_worker_manifest,
 )
@@ -47,6 +47,12 @@ from tools.streaming_stt.protocol import (
     TranscribeRequest,
     encode_message,
     parse_request,
+)
+from tools.streaming_stt.runtime_receipt import (
+    RuntimeTreeReceiptError,
+    load_runtime_tree_receipt,
+    verify_runtime_tree_receipt,
+    verify_venv_runtime_location,
 )
 from tools.streaming_stt.supervisor import StreamingWorker
 from tools.streaming_stt.source_bundle import (
@@ -68,7 +74,8 @@ def _trusted_host_lock_path() -> Path:
 
 
 _HOST_LOCK_PATH = _trusted_host_lock_path()
-_FAKE_WORKER = (_REPO_ROOT / "tools/streaming_stt/worker.py").resolve(strict=True)
+_FIXED_WORKER = (_REPO_ROOT / "tools/streaming_stt/worker.py").resolve(strict=True)
+_FAKE_ADAPTER = "fake-json-v1"
 _SAFE_ERROR = {
     "ok": False,
     "error": "streaming_stt_prerequisites_unavailable",
@@ -80,12 +87,14 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/metrics.py",
     "tools/streaming_stt/protocol.py",
+    "tools/streaming_stt/runtime_receipt.py",
     "tools/streaming_stt/source_bundle.py",
     "tools/streaming_stt/supervisor.py",
     "tools/streaming_stt/worker.py",
     "tools/streaming_stt/__init__.py",
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
+    "tools/streaming_stt/adapters/moonshine.py",
     "tools/__init__.py",
     "tools/recorded_stt_eval.py",
     "core/wer.py",
@@ -293,7 +302,9 @@ def _write_strict_report(path: Path, payload: Mapping[str, object]) -> None:
         raise
 
 
-def _evaluator_binding() -> dict[str, object]:
+def _evaluator_binding(adapter: str) -> dict[str, object]:
+    if adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER}:
+        raise ValueError
     files: dict[str, str] = {}
     for relative in _EVALUATOR_FILES:
         path = (_REPO_ROOT / relative).resolve(strict=True)
@@ -305,15 +316,47 @@ def _evaluator_binding() -> dict[str, object]:
         ).sha256
     return {
         "schema_version": 1,
-        "kind": "isolated_streaming_stt_fake_harness",
+        "kind": (
+            "isolated_streaming_stt_fake_harness"
+            if adapter == _FAKE_ADAPTER
+            else "isolated_streaming_stt_candidate_harness"
+        ),
         "production_model": False,
+        "real_candidate_model": adapter == MOONSHINE_ADAPTER,
+        "model_executed": adapter == MOONSHINE_ADAPTER,
         "files": files,
     }
+
+
+def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
+    if manifest.adapter == _FAKE_ADAPTER:
+        if "runtime-receipt" in manifest.artifact_by_name:
+            raise ValueError
+        return None
+    if manifest.adapter != MOONSHINE_ADAPTER:
+        raise ValueError
+    artifact = manifest.artifact_by_name.get("runtime-receipt")
+    if artifact is None:
+        raise ValueError
+    try:
+        receipt = load_runtime_tree_receipt(
+            artifact.path,
+            expected_digest=artifact.sha256,
+        )
+        verify_venv_runtime_location(receipt, manifest.python.path)
+        verify_runtime_tree_receipt(receipt)
+    except RuntimeTreeReceiptError:
+        raise ValueError from None
+    if receipt.digest != artifact.sha256:
+        raise ValueError
+    return receipt.digest
 
 
 def _worker_binding(
     manifest: WorkerManifest,
     source_bundle: SourceBundle,
+    *,
+    runtime_receipt_sha256: str | None,
 ) -> dict[str, object]:
     artifacts = [
         {
@@ -323,7 +366,7 @@ def _worker_binding(
         }
         for artifact in manifest.artifacts
     ]
-    return {
+    binding: dict[str, object] = {
         "manifest_sha256": manifest.digest,
         "model_id": manifest.model_id,
         "adapter": manifest.adapter,
@@ -333,6 +376,69 @@ def _worker_binding(
         "source_bundle_files": len(source_bundle.files),
         "artifact_set_sha256": _canonical_digest(artifacts),
         "artifacts": artifacts,
+    }
+    if manifest.adapter == _FAKE_ADAPTER:
+        if (
+            manifest.schema_version != 1
+            or manifest.adapter_config is not None
+            or runtime_receipt_sha256 is not None
+        ):
+            raise ValueError
+        return binding
+    if (
+        manifest.adapter != MOONSHINE_ADAPTER
+        or manifest.schema_version != 2
+        or manifest.adapter_config is None
+        or runtime_receipt_sha256 is None
+    ):
+        raise ValueError
+    adapter_config = manifest.adapter_config.as_dict()
+    if set(adapter_config) != {
+        "package_version",
+        "api_version",
+        "model_arch",
+        "provider",
+        "language",
+    }:
+        raise ValueError
+    _strict_json(adapter_config)
+    binding.update(
+        {
+            "manifest_schema_version": 2,
+            "adapter_config": adapter_config,
+            "runtime_receipt_sha256": runtime_receipt_sha256,
+        }
+    )
+    return binding
+
+
+def _evidence_binding(adapter: str, *, pace: str) -> dict[str, object]:
+    if adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER} or pace not in {
+        "burst",
+        "realtime",
+    }:
+        raise ValueError
+    candidate_executed = adapter == MOONSHINE_ADAPTER
+    return {
+        "kind": "bounded_pcm_streaming_harness",
+        "fake_adapter": adapter == _FAKE_ADAPTER,
+        "production_model": False,
+        "real_candidate_model": candidate_executed,
+        "model_executed": candidate_executed,
+        "replay_pace": pace,
+        "accelerated_replay": pace == "burst",
+        "conversational_latency_valid": pace == "realtime",
+        "timing_scope": "adapter_after_pcm_load_to_result",
+        "compute_rtf_scope": "candidate_calls_only",
+        "end_to_end_rtf": False,
+        "pcm_snapshot_io_included": False,
+        "controller_ipc_included": False,
+        "capture_to_text_latency": False,
+        "vad": False,
+        "endpointing": False,
+        "aec": False,
+        "live_hardware": False,
+        "adoption_authority": False,
     }
 
 
@@ -347,13 +453,26 @@ def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
         }
         for case in corpus.cases
     ]
-    return {
+    binding: dict[str, object] = {
         "manifest_sha256": corpus.digest,
         "case_set_sha256": _canonical_digest(case_set),
         "cases": len(corpus.cases),
         "audio_bytes": corpus.audio_bytes,
         "purpose_sha256": hashlib.sha256(corpus.purpose.encode("utf-8")).hexdigest(),
     }
+    if corpus.schema_version == 1:
+        if corpus.provenance is not None:
+            raise ValueError
+        return binding
+    if corpus.schema_version != 2 or corpus.provenance is None:
+        raise ValueError
+    binding.update(
+        {
+            "schema_version": 2,
+            "provenance": corpus.provenance.as_dict(),
+        }
+    )
+    return binding
 
 
 def _prepare_scratch(parent: Path) -> Path:
@@ -531,7 +650,7 @@ def run_benchmark(
     repeats: int = 3,
     stream: StreamConfig | None = None,
 ) -> dict[str, object]:
-    """Run one exact fake worker/corpus tuple and return no transcript rows."""
+    """Run one exact manifest-selected worker/corpus tuple without transcript rows."""
 
     if (
         isinstance(repeats, bool)
@@ -574,12 +693,13 @@ def _run_benchmark_locked(
 ) -> dict[str, object]:
     manifest = load_worker_manifest(worker_manifest_path)
     try:
-        if manifest.worker.path.resolve(strict=True) != _FAKE_WORKER:
+        if manifest.worker.path.resolve(strict=True) != _FIXED_WORKER:
             raise ValueError
     except (OSError, RuntimeError):
         raise ValueError from None
+    runtime_receipt_sha256 = _verified_runtime_receipt_digest(manifest)
     corpus = load_corpus(corpus_path)
-    evaluator_binding = _evaluator_binding()
+    evaluator_binding = _evaluator_binding(manifest.adapter)
     corpus_binding = _corpus_binding(corpus)
     scratch = _prepare_scratch(scratch_parent)
     scratch_metadata = scratch.lstat()
@@ -593,7 +713,11 @@ def _run_benchmark_locked(
             _REPO_ROOT,
             scratch / "source-bundle",
         )
-        worker_binding = _worker_binding(manifest, source_bundle)
+        worker_binding = _worker_binding(
+            manifest,
+            source_bundle,
+            runtime_receipt_sha256=runtime_receipt_sha256,
+        )
         snapshots: list[Path] = []
         for index, case in enumerate(corpus.cases):
             path = scratch / f"case-{index:04d}.f32le"
@@ -640,11 +764,20 @@ def _run_benchmark_locked(
             required_files=WORKER_SOURCE_FILES,
         )
         current_manifest = load_worker_manifest(manifest.path)
+        current_runtime_receipt_sha256 = _verified_runtime_receipt_digest(
+            current_manifest
+        )
         if (
             current_manifest.digest != manifest.digest
-            or current_manifest.worker.path.resolve(strict=True) != _FAKE_WORKER
-            or _worker_binding(current_manifest, source_bundle) != worker_binding
-            or _evaluator_binding() != evaluator_binding
+            or current_manifest.worker.path.resolve(strict=True) != _FIXED_WORKER
+            or current_runtime_receipt_sha256 != runtime_receipt_sha256
+            or _worker_binding(
+                current_manifest,
+                source_bundle,
+                runtime_receipt_sha256=current_runtime_receipt_sha256,
+            )
+            != worker_binding
+            or _evaluator_binding(current_manifest.adapter) != evaluator_binding
         ):
             raise ValueError
         metrics = aggregate_metrics(corpus, records, ready, repeats=repeats)
@@ -652,16 +785,10 @@ def _run_benchmark_locked(
         worker_report["runtime"] = dict(ready.runtime)
         result = {
             "ok": bool(metrics["coverage_complete"]),
-            "evidence": {
-                "kind": "bounded_pcm_streaming_harness",
-                "fake_adapter": True,
-                "production_model": False,
-                "vad": False,
-                "endpointing": False,
-                "aec": False,
-                "live_hardware": False,
-                "adoption_authority": False,
-            },
+            "evidence": _evidence_binding(
+                manifest.adapter,
+                pace=selected_stream.pace,
+            ),
             "worker": worker_report,
             "corpus": corpus_binding,
             "config": {
@@ -692,8 +819,8 @@ def _run_benchmark_locked(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate-only isolated streaming-STT harness. The current "
-            "implementation accepts deterministic fake worker receipts only."
+            "Aggregate-only isolated streaming-STT harness for an exact "
+            "manifest-selected adapter, runtime, artifacts, and corpus."
         )
     )
     parser.add_argument("--worker-manifest", type=Path, required=True)

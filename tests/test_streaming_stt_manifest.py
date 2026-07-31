@@ -5,10 +5,16 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 
 import pytest
 
-from tests.streaming_stt_helpers import REPO_ROOT, scripted_case, write_fixture
+from tests.streaming_stt_helpers import (
+    REPO_ROOT,
+    bound_file,
+    scripted_case,
+    write_fixture,
+)
 from tools.streaming_stt import bounded_io
 from tools.streaming_stt.bounded_io import BoundedReadError, hash_regular_bounded
 from tools.streaming_stt import corpus as corpus_module
@@ -17,7 +23,13 @@ from tools.streaming_stt.corpus import (
     load_corpus,
     verify_corpus_snapshot,
 )
-from tools.streaming_stt.manifest import ManifestError, load_worker_manifest
+from tools.streaming_stt import manifest as manifest_module
+from tools.streaming_stt.manifest import (
+    MOONSHINE_ADAPTER,
+    MOONSHINE_ARTIFACT_NAMES,
+    ManifestError,
+    load_worker_manifest,
+)
 from tools.streaming_stt.manifest import MAX_FAKE_ARTIFACT_BYTES
 from tools.streaming_stt.source_bundle import (
     WORKER_SOURCE_FILES,
@@ -47,6 +59,91 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
     return manifest, corpus
 
 
+def _moonshine_manifest(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    model_arch: str = "tiny-streaming",
+) -> Path:
+    venv = tmp_path / "candidate-venv"
+    python = venv / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(Path(sys.executable).resolve(strict=True))
+    marker = venv / "pyvenv.cfg"
+    marker.write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+
+    receipt = tmp_path / "runtime-receipt.json"
+    receipt.write_text('{"schema_version":1}\n', encoding="utf-8")
+    wheel = tmp_path / "moonshine_voice-0.1.0-py3-none-manylinux_2_34_x86_64.whl"
+    wheel.write_bytes(b"exact-test-wheel")
+    model_root = tmp_path / "model"
+    model_root.mkdir()
+    model_files = {
+        "model-adapter": model_root / "adapter.ort",
+        "model-cross-kv": model_root / "cross_kv.ort",
+        "model-decoder-kv": model_root / "decoder_kv.ort",
+        "model-encoder": model_root / "encoder.ort",
+        "model-frontend": model_root / "frontend.ort",
+        "model-config": model_root / "streaming_config.json",
+        "model-tokenizer": model_root / "tokenizer.bin",
+    }
+    for index, path in enumerate(model_files.values(), start=1):
+        path.write_bytes(bytes([index]))
+
+    monkeypatch.setattr(
+        manifest_module,
+        "_MOONSHINE_RELEASE_RECEIPT",
+        (hashlib.sha256(wheel.read_bytes()).hexdigest(), wheel.stat().st_size),
+    )
+    monkeypatch.setattr(
+        manifest_module,
+        "_MOONSHINE_MODEL_RECEIPTS",
+        {
+            model_arch: {
+                name: (
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                    path.stat().st_size,
+                )
+                for name, path in model_files.items()
+            }
+        },
+    )
+    artifacts_by_name = {
+        "runtime-receipt": receipt,
+        "venv-marker": marker,
+        "release-wheel": wheel,
+        **model_files,
+    }
+    payload = {
+        "schema_version": 2,
+        "model_id": "moonshine-tiny-streaming-en-0.1.0",
+        "adapter": MOONSHINE_ADAPTER,
+        "adapter_config": {
+            "package_version": "0.1.0",
+            "api_version": 30000,
+            "model_arch": model_arch,
+            "provider": "cpu",
+            "language": "en",
+        },
+        "python": bound_file(python.resolve(strict=True), allow_path=python),
+        "worker": bound_file(REPO_ROOT / "tools" / "streaming_stt" / "worker.py"),
+        "artifacts": [
+            {"name": name, **bound_file(artifacts_by_name[name])}
+            for name in MOONSHINE_ARTIFACT_NAMES
+        ],
+        "limits": {
+            "startup_timeout_sec": 30.0,
+            "case_timeout_sec": 60.0,
+        },
+    }
+    manifest = tmp_path / "moonshine-worker-manifest.json"
+    manifest.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    return manifest
+
+
 def test_manifest_binds_exact_interpreter_worker_and_artifact(tmp_path):
     manifest_path, _ = _fixture(tmp_path)
 
@@ -60,6 +157,140 @@ def test_manifest_binds_exact_interpreter_worker_and_artifact(tmp_path):
     )
     assert set(manifest.artifact_by_name) == {"fake-script"}
     assert len(manifest.digest) == 64
+
+
+def test_manifest_v2_binds_closed_moonshine_runtime_and_retains_venv_launcher(
+    tmp_path,
+    monkeypatch,
+):
+    path = _moonshine_manifest(tmp_path, monkeypatch)
+
+    manifest = load_worker_manifest(path)
+
+    assert manifest.schema_version == 2
+    assert manifest.adapter == MOONSHINE_ADAPTER
+    assert manifest.adapter_config is not None
+    assert manifest.adapter_config.as_dict() == {
+        "package_version": "0.1.0",
+        "api_version": 30000,
+        "model_arch": "tiny-streaming",
+        "provider": "cpu",
+        "language": "en",
+    }
+    assert tuple(manifest.artifact_by_name) == MOONSHINE_ARTIFACT_NAMES
+    assert manifest.python.path == tmp_path / "candidate-venv" / "bin" / "python"
+    assert manifest.python.path.is_symlink()
+
+
+def test_manifest_v2_accepts_exact_pinned_small_streaming_model(
+    tmp_path,
+    monkeypatch,
+):
+    path = _moonshine_manifest(
+        tmp_path,
+        monkeypatch,
+        model_arch="small-streaming",
+    )
+
+    manifest = load_worker_manifest(path)
+
+    assert manifest.adapter_config is not None
+    assert manifest.adapter_config.model_arch == "small-streaming"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("package_version", "0.0.69"),
+        ("api_version", 29999),
+        ("model_arch", "base"),
+        ("provider", "cuda"),
+        ("language", "ro"),
+    ],
+)
+def test_manifest_v2_rejects_open_or_unpinned_moonshine_config(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+):
+    path = _moonshine_manifest(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["adapter_config"][field] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+@pytest.mark.parametrize(
+    "marker_text",
+    [
+        "home = /usr/bin\ninclude-system-site-packages = true\n",
+        "home = /usr/bin\n",
+        (
+            "include-system-site-packages = false\n"
+            "include-system-site-packages = false\n"
+        ),
+    ],
+)
+def test_manifest_v2_requires_one_disabled_system_site_setting(
+    tmp_path,
+    monkeypatch,
+    marker_text,
+):
+    path = _moonshine_manifest(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    marker = tmp_path / "candidate-venv" / "pyvenv.cfg"
+    marker.write_text(marker_text, encoding="utf-8")
+    artifact = next(
+        item for item in payload["artifacts"] if item["name"] == "venv-marker"
+    )
+    artifact.update(bound_file(marker))
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
+
+
+@pytest.mark.parametrize("mutation", ["reorder", "basename", "model-parent", "wheel"])
+def test_manifest_v2_rejects_changed_moonshine_provenance_or_layout(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    path = _moonshine_manifest(tmp_path, monkeypatch)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "reorder":
+        payload["artifacts"][-1], payload["artifacts"][-2] = (
+            payload["artifacts"][-2],
+            payload["artifacts"][-1],
+        )
+    else:
+        selected = {
+            "basename": "model-adapter",
+            "model-parent": "model-encoder",
+            "wheel": "release-wheel",
+        }[mutation]
+        artifact = next(
+            item for item in payload["artifacts"] if item["name"] == selected
+        )
+        original = Path(artifact["path"])
+        if mutation == "basename":
+            replacement = original.with_name("wrong.ort")
+            replacement.write_bytes(original.read_bytes())
+        elif mutation == "model-parent":
+            replacement = tmp_path / "other-model" / original.name
+            replacement.parent.mkdir()
+            replacement.write_bytes(original.read_bytes())
+        else:
+            original.write_bytes(b"changed-wheel")
+            replacement = original
+        artifact.update(bound_file(replacement))
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ManifestError):
+        load_worker_manifest(path)
 
 
 def test_private_source_bundle_is_deterministic_exact_and_single_link(tmp_path):

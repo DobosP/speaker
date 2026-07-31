@@ -27,9 +27,11 @@ WORKER_SOURCE_FILES = (
     "tools/streaming_stt/__init__.py",
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
+    "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/protocol.py",
+    "tools/streaming_stt/runtime_receipt.py",
     "tools/streaming_stt/source_bundle.py",
     "tools/streaming_stt/supervisor.py",
     WORKER_RELATIVE_PATH,
@@ -402,6 +404,10 @@ def stage_worker_source_bundle(
                 "tools/streaming_stt/adapters/fake.py": (
                     adapter_descriptor,
                     "fake.py",
+                ),
+                "tools/streaming_stt/adapters/moonshine.py": (
+                    adapter_descriptor,
+                    "moonshine.py",
                 ),
             }
             for relative in WORKER_SOURCE_FILES:

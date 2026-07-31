@@ -36,6 +36,7 @@ def test_worker_environment_is_secret_free_offline_and_single_threaded(tmp_path)
     assert environment["HF_HUB_OFFLINE"] == "1"
     assert environment["TRANSFORMERS_OFFLINE"] == "1"
     assert environment["TOKENIZERS_PARALLELISM"] == "false"
+    assert environment["MOONSHINE_ORT_SINGLE_THREAD"] == "1"
     assert {
         environment["OMP_NUM_THREADS"],
         environment["OPENBLAS_NUM_THREADS"],

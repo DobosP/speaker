@@ -4,12 +4,12 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate (`-m "not real_model"`): 6016 passed, 13 skipped,
-  20 deselected, 9 pre-existing warnings. Focused gates: typed-ingress/Sherpa/APM
+- Repository logic gate (`-m "not real_model"`): 6105 passed, 13 skipped,
+  21 deselected, 9 pre-existing warnings. Focused gates: typed-ingress/Sherpa/APM
   354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
 - Bounded capture review: 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
-- Streaming harness: 83 focused; repaired combined/import/APM gate 273;
-  independent startup/import repair gate 8.
+- Streaming/Moonshine deterministic gate: 249; receipt boundary 98; exact
+  one-case model smoke 1. Candidate adoption remains rejected (ADR-0090).
 - Previous stable evidence remains: production-hybrid MiniCPM/Gemma and
   Gemma/Gemma 42/42, semantic-memory PASS, strict recorded owner replay 9/9,
   and two clean synthetic-delay runs (ADR-0051/0065/0067/0068/0070/0080).
@@ -70,9 +70,10 @@ Last verified: 2026-07-31 on Linux ROG.
 - Private replay WER 0.00 is non-disjoint. Public-v3 trusts its local PyArrow
   environment; its code-bound Small control WER 0.6685 remains rejected. These
   are development—not streaming, held-out, live, or adoption—results (ADR-0087).
-- The fake-only streaming harness FD-launches a private hash-bound bundle and
-  emits aggregate metrics. It has no network/RAM/VRAM enforcement or `setsid`
-  escape fence; no real candidate or default changed (ADR-0089).
+- Exact Moonshine 0.1.0 is benchmark-only. Small WER is 0.6884 burst and
+  0.6957 real-time; at 200 ms it had RTF 1.1864, first partial p50 2.02 s,
+  1,000 misses, and 22.01 s backlog. Tiny WER is 0.8478. No default changed.
+  The harness has no network/RAM/VRAM enforcement or `setsid` fence (ADR-0090).
 - Windows communications capture verifies OS AEC; NS and beamforming were
   measured active, but owner physical talk-over/STOP tests remain (ADR-0081/0082).
 - Diagnostic replay fails closed on malformed heartbeats and silent playback
@@ -82,10 +83,10 @@ Last verified: 2026-07-31 on Linux ROG.
 
 - Port session ownership to remote/mobile; bound the central mailbox and add
   targeted tool cancellation before claiming parity.
-- Provision exact disposable streaming candidates and compare them on public-v3.
-  Then add timestamped frame/AEC replay and a disjoint owner set spanning vault
+- Benchmark exact Nemotron 3.5 Streaming 0.6B next. Then add timestamped
+  frame/AEC replay and a disjoint owner set spanning vault
   terms, controls, numerals, negation, noise/echo, bystanders, and multiple voices.
-  Run fresh `./live.sh` A/B before claiming stable results (ADR-0089).
+  Run fresh `./live.sh` A/B before claiming stable results (ADR-0090).
 
 ## Standard verification
 

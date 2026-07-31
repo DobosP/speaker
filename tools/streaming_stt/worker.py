@@ -1,7 +1,7 @@
 """Isolated JSONL worker for the streaming-STT benchmark.
 
-Only the deterministic fake adapter is present in this first landing. Real
-recognizer imports will live behind this process boundary in later branches.
+Candidate recognizers remain lazy and execute only after source, manifest,
+runtime, interpreter, and model receipts have been verified.
 """
 
 from __future__ import annotations
@@ -29,9 +29,11 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/__init__.py",
     "tools/streaming_stt/adapters/__init__.py",
     "tools/streaming_stt/adapters/fake.py",
+    "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/protocol.py",
+    "tools/streaming_stt/runtime_receipt.py",
     "tools/streaming_stt/source_bundle.py",
     "tools/streaming_stt/supervisor.py",
     _BOOTSTRAP_WORKER_PATH,
@@ -404,7 +406,7 @@ else:
     _SOURCE_BUNDLE_SHA256 = None
 
 from tools.streaming_stt.adapters import FakeJsonAdapter  # noqa: E402
-from tools.streaming_stt.adapters.fake import FakeAdapterError, FakePartial  # noqa: E402
+from tools.streaming_stt.adapters.fake import FakeAdapterError  # noqa: E402
 from tools.streaming_stt.bounded_io import (  # noqa: E402
     BoundedReadError,
     hash_regular_bounded,
@@ -414,11 +416,14 @@ from tools.streaming_stt.bounded_io import (  # noqa: E402
 from tools.streaming_stt.manifest import (  # noqa: E402
     MAX_PYTHON_BYTES,
     ManifestError,
+    MOONSHINE_ADAPTER,
+    WorkerManifest,
     load_worker_manifest,
 )
 from tools.streaming_stt.protocol import (  # noqa: E402
     MAX_CORPUS_BYTES,
     MAX_LINE_BYTES,
+    MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
     PROTOCOL_VERSION,
     ProtocolError,
@@ -426,6 +431,13 @@ from tools.streaming_stt.protocol import (  # noqa: E402
     TranscribeRequest,
     encode_message,
     parse_request,
+)
+from tools.streaming_stt.runtime_receipt import (  # noqa: E402
+    RuntimeTreeReceipt,
+    load_runtime_tree_receipt,
+    verify_moonshine_wheel_install,
+    verify_runtime_tree_receipt,
+    verify_venv_runtime_location,
 )
 from tools.streaming_stt.source_bundle import (  # noqa: E402
     WORKER_SOURCE_FILES,
@@ -483,6 +495,133 @@ def _load_pcm(request: TranscribeRequest, scratch_root: Path) -> bytes:
     return raw
 
 
+def _verify_runtime_receipt(
+    manifest: WorkerManifest,
+) -> RuntimeTreeReceipt | None:
+    if manifest.adapter != MOONSHINE_ADAPTER:
+        return None
+    artifact = manifest.artifact_by_name.get("runtime-receipt")
+    wheel = manifest.artifact_by_name.get("release-wheel")
+    if artifact is None or wheel is None:
+        raise ManifestError()
+    try:
+        receipt = load_runtime_tree_receipt(
+            artifact.path,
+            expected_digest=artifact.sha256,
+        )
+        verify_venv_runtime_location(receipt, manifest.python.path)
+        verify_runtime_tree_receipt(receipt)
+        verify_moonshine_wheel_install(
+            receipt,
+            wheel.path,
+            expected_sha256=wheel.sha256,
+            expected_size_bytes=wheel.size_bytes,
+        )
+    except RuntimeError:
+        raise ManifestError() from None
+    if (
+        receipt.digest != artifact.sha256
+        or Path(os.path.abspath(sys.executable)) != manifest.python.path
+    ):
+        raise ManifestError()
+    return receipt
+
+
+def _verify_worker_state(
+    manifest: WorkerManifest,
+    source_bundle,
+) -> RuntimeTreeReceipt | None:
+    current = load_worker_manifest(manifest.path)
+    if current != manifest:
+        raise ManifestError()
+    verify_source_bundle(
+        source_bundle,
+        required_files=WORKER_SOURCE_FILES,
+    )
+    interpreter = hash_regular_bounded(
+        Path(sys.executable),
+        maximum_bytes=MAX_PYTHON_BYTES,
+        expected_bytes=manifest.python.size_bytes,
+        allow_final_symlink=True,
+    )
+    if interpreter.sha256 != manifest.python.sha256:
+        raise ManifestError()
+    return _verify_runtime_receipt(manifest)
+
+
+def _activate_candidate_runtime(
+    manifest: WorkerManifest,
+    receipt: RuntimeTreeReceipt | None,
+) -> None:
+    if manifest.adapter != MOONSHINE_ADAPTER:
+        if receipt is not None:
+            raise ManifestError()
+        return
+    if (
+        receipt is None
+        or sys.flags.no_site != 1
+        or not sys.path
+        or any(
+            name == "moonshine_voice" or name.startswith("moonshine_voice.")
+            for name in sys.modules
+        )
+    ):
+        raise ManifestError()
+    runtime_root = str(receipt.root)
+    if runtime_root in sys.path:
+        raise ManifestError()
+    # Direct insertion does not process .pth files or sitecustomize. The
+    # verified source bundle retains import precedence at index zero.
+    sys.path.insert(1, runtime_root)
+
+
+def _create_adapter(manifest: WorkerManifest):
+    if manifest.adapter == "fake-json-v1":
+        try:
+            artifact = manifest.artifact_by_name["fake-script"]
+        except KeyError:
+            raise ManifestError() from None
+        return (
+            FakeJsonAdapter(
+                artifact.path,
+                expected_sha256=artifact.sha256,
+                expected_size_bytes=artifact.size_bytes,
+            ),
+            FakeAdapterError,
+        )
+    if manifest.adapter != MOONSHINE_ADAPTER or manifest.adapter_config is None:
+        raise ManifestError()
+
+    # This source module is itself in the verified bundle and imports the
+    # external candidate package only while constructing the adapter.
+    from tools.streaming_stt.adapters.moonshine import (  # noqa: PLC0415
+        MoonshineAdapter,
+        MoonshineAdapterError,
+    )
+
+    model_artifacts = tuple(
+        artifact
+        for artifact in manifest.artifacts
+        if artifact.name.startswith("model-")
+    )
+    model_roots = {artifact.path.parent for artifact in model_artifacts}
+    if len(model_roots) != 1:
+        raise ManifestError()
+    return (
+        MoonshineAdapter(
+            model_roots.pop(),
+            config=manifest.adapter_config,
+        ),
+        MoonshineAdapterError,
+    )
+
+
+def _close_adapter(adapter) -> None:
+    close = getattr(adapter, "close", None)
+    if close is not None:
+        close()
+
+
 def _run(
     manifest_path: Path,
     scratch_root: Path,
@@ -513,15 +652,9 @@ def _run(
         != manifest.python.sha256
     ):
         raise ManifestError()
-    try:
-        artifact = manifest.artifact_by_name["fake-script"]
-    except KeyError:
-        raise ManifestError() from None
-    adapter = FakeJsonAdapter(
-        artifact.path.resolve(strict=True),
-        expected_sha256=artifact.sha256,
-        expected_size_bytes=artifact.size_bytes,
-    )
+    runtime_receipt = _verify_worker_state(manifest, source_bundle)
+    _activate_candidate_runtime(manifest, runtime_receipt)
+    adapter, adapter_error = _create_adapter(manifest)
     _write(
         {
             "v": PROTOCOL_VERSION,
@@ -541,86 +674,102 @@ def _run(
 
     consumed_bytes = 0
     consumed_inputs: set[str] = set()
-    while True:
-        raw = sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
-        if not raw:
-            return 0
-        try:
-            request = parse_request(raw)
-        except ProtocolError:
-            _write(_SAFE_FATAL)
-            return 2
-        try:
-            if isinstance(request, ShutdownRequest):
-                verify_source_bundle(
-                    source_bundle,
-                    required_files=WORKER_SOURCE_FILES,
-                )
-                _write(
-                    {
-                        "v": PROTOCOL_VERSION,
-                        "id": request.request_id,
-                        "type": "shutdown",
-                    }
-                )
-                _write({"v": PROTOCOL_VERSION, "type": "bye"})
+    adapter_closed = False
+    try:
+        while True:
+            raw = sys.stdin.buffer.readline(MAX_LINE_BYTES + 1)
+            if not raw:
                 return 0
+            try:
+                request = parse_request(raw)
+            except ProtocolError:
+                _write(_SAFE_FATAL)
+                return 2
+            try:
+                if isinstance(request, ShutdownRequest):
+                    _close_adapter(adapter)
+                    adapter_closed = True
+                    _verify_worker_state(manifest, source_bundle)
+                    _write(
+                        {
+                            "v": PROTOCOL_VERSION,
+                            "id": request.request_id,
+                            "type": "shutdown",
+                        }
+                    )
+                    _write({"v": PROTOCOL_VERSION, "type": "bye"})
+                    return 0
 
-            pcm = _load_pcm(request, scratch_root)
-            if request.pcm.sha256 not in consumed_inputs:
-                consumed_inputs.add(request.pcm.sha256)
-                consumed_bytes += len(pcm)
-            if consumed_bytes > MAX_CORPUS_BYTES:
-                raise ProtocolError()
+                pcm = _load_pcm(request, scratch_root)
+                if request.pcm.sha256 not in consumed_inputs:
+                    consumed_inputs.add(request.pcm.sha256)
+                    consumed_bytes += len(pcm)
+                if consumed_bytes > MAX_CORPUS_BYTES:
+                    raise ProtocolError()
 
-            def emit_partial(seq: int, partial: FakePartial) -> None:
+                partial_count = 0
+
+                def emit_partial(_adapter_seq: int, partial) -> None:
+                    nonlocal partial_count
+                    if partial_count >= MAX_PARTIALS_PER_CASE:
+                        raise ProtocolError()
+                    _write(
+                        {
+                            "v": PROTOCOL_VERSION,
+                            "id": request.request_id,
+                            "type": "partial",
+                            "seq": partial_count,
+                            "text": partial.text,
+                            "samples_seen": partial.after_samples,
+                            "elapsed_ms": partial.elapsed_ms,
+                            "decode_ms": partial.decode_ms,
+                        }
+                    )
+                    partial_count += 1
+
+                case = adapter.transcribe(request, emit_partial=emit_partial)
+                if len(case.partials) != partial_count:
+                    raise ProtocolError()
+                total_samples = (
+                    request.pcm.samples + request.stream.tail_padding_samples
+                )
+                chunks = (
+                    total_samples + request.stream.chunk_samples - 1
+                ) // request.stream.chunk_samples
                 _write(
                     {
                         "v": PROTOCOL_VERSION,
                         "id": request.request_id,
-                        "type": "partial",
-                        "seq": seq,
-                        "text": partial.text,
-                        "samples_seen": partial.after_samples,
-                        "elapsed_ms": partial.elapsed_ms,
-                        "decode_ms": partial.decode_ms,
+                        "type": "final",
+                        "seq": partial_count,
+                        "text": case.final,
+                        "samples_seen": total_samples,
+                        "elapsed_ms": case.elapsed_ms,
+                        "finalization_ms": case.finalization_ms,
+                        "compute_ms": case.compute_ms,
+                        "audio_seconds": request.pcm.samples / 16_000,
+                        "chunks": chunks,
+                        "deadline_misses": case.deadline_misses,
+                        "max_backlog_ms": case.max_backlog_ms,
+                        "resources": _resource_dict(case.resources),
                     }
                 )
-
-            case = adapter.transcribe(request, emit_partial=emit_partial)
-            total_samples = request.pcm.samples + request.stream.tail_padding_samples
-            chunks = (
-                total_samples + request.stream.chunk_samples - 1
-            ) // request.stream.chunk_samples
-            _write(
-                {
-                    "v": PROTOCOL_VERSION,
-                    "id": request.request_id,
-                    "type": "final",
-                    "seq": len(case.partials),
-                    "text": case.final,
-                    "samples_seen": total_samples,
-                    "elapsed_ms": case.elapsed_ms,
-                    "finalization_ms": case.finalization_ms,
-                    "compute_ms": case.compute_ms,
-                    "audio_seconds": request.pcm.samples / 16_000,
-                    "chunks": chunks,
-                    "deadline_misses": case.deadline_misses,
-                    "max_backlog_ms": case.max_backlog_ms,
-                    "resources": _resource_dict(case.resources),
-                }
-            )
-        except (FakeAdapterError, ProtocolError):
-            request_id = request.request_id
-            _write(
-                {
-                    "v": PROTOCOL_VERSION,
-                    "id": request_id,
-                    "type": "error",
-                    "code": "invalid_case",
-                    "fatal": False,
-                }
-            )
+            except (adapter_error, ProtocolError):
+                fatal = manifest.adapter == MOONSHINE_ADAPTER
+                _write(
+                    {
+                        "v": PROTOCOL_VERSION,
+                        "id": request.request_id,
+                        "type": "error",
+                        "code": ("candidate_failure" if fatal else "invalid_case"),
+                        "fatal": fatal,
+                    }
+                )
+                if fatal:
+                    return 2
+    finally:
+        if not adapter_closed:
+            _close_adapter(adapter)
 
 
 def _parser() -> argparse.ArgumentParser:

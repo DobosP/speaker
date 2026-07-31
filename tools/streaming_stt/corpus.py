@@ -19,7 +19,8 @@ from .protocol import MAX_CORPUS_BYTES, MAX_PCM_BYTES
 
 _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_ROOT_FIELDS = {"schema_version", "purpose", "cases"}
+_ROOT_V1_FIELDS = {"schema_version", "purpose", "cases"}
+_ROOT_V2_FIELDS = {*_ROOT_V1_FIELDS, "provenance"}
 _CASE_FIELDS = {
     "id",
     "file",
@@ -30,6 +31,14 @@ _CASE_FIELDS = {
     "commands",
     "tags",
 }
+_PUBLIC_PROVENANCE_FIELDS = {
+    "kind",
+    "suite",
+    "manifest_sha256",
+    "metadata_sha256",
+    "source_set_sha256",
+}
+_PUBLIC_PROVENANCE_KIND = "public-voice-v1"
 _MAX_CORPUS_MANIFEST_BYTES = 256 * 1024
 _MAX_CASES = 512
 _MAX_REFERENCE_CHARS = 4096
@@ -53,10 +62,30 @@ class CorpusCase:
 
 
 @dataclass(frozen=True)
+class CorpusProvenance:
+    kind: str
+    suite: str
+    manifest_sha256: str
+    metadata_sha256: str
+    source_set_sha256: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {
+            "kind": self.kind,
+            "suite": self.suite,
+            "manifest_sha256": self.manifest_sha256,
+            "metadata_sha256": self.metadata_sha256,
+            "source_set_sha256": self.source_set_sha256,
+        }
+
+
+@dataclass(frozen=True)
 class LoadedCorpus:
     path: Path
     digest: str
+    schema_version: int
     purpose: str
+    provenance: CorpusProvenance | None
     cases: tuple[CorpusCase, ...] = field(repr=False)
     audio_bytes: int
 
@@ -84,6 +113,27 @@ def _safe_id(value: object) -> str:
     if not isinstance(value, str) or _SAFE_ID_RE.fullmatch(value) is None:
         raise CorpusError()
     return value
+
+
+def _sha256(value: object) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise CorpusError()
+    return value
+
+
+def _public_provenance(value: object) -> CorpusProvenance:
+    if not isinstance(value, dict) or set(value) != _PUBLIC_PROVENANCE_FIELDS:
+        raise CorpusError()
+    kind = value.get("kind")
+    if kind != _PUBLIC_PROVENANCE_KIND:
+        raise CorpusError()
+    return CorpusProvenance(
+        kind=_PUBLIC_PROVENANCE_KIND,
+        suite=_safe_id(value.get("suite")),
+        manifest_sha256=_sha256(value.get("manifest_sha256")),
+        metadata_sha256=_sha256(value.get("metadata_sha256")),
+        source_set_sha256=_sha256(value.get("source_set_sha256")),
+    )
 
 
 def _string_list(
@@ -224,14 +274,20 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     value = _strict_json(raw)
     if (
         not isinstance(value, dict)
-        or set(value) != _ROOT_FIELDS
         or type(value.get("schema_version")) is not int
-        or value.get("schema_version") != 1
+        or value.get("schema_version") not in {1, 2}
         or not isinstance(value.get("purpose"), str)
         or not str(value.get("purpose")).strip()
         or len(str(value.get("purpose"))) > 512
     ):
         raise CorpusError()
+    schema_version = value["schema_version"]
+    expected_fields = _ROOT_V1_FIELDS if schema_version == 1 else _ROOT_V2_FIELDS
+    if set(value) != expected_fields:
+        raise CorpusError()
+    provenance = (
+        None if schema_version == 1 else _public_provenance(value.get("provenance"))
+    )
     raw_cases = value.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases or len(raw_cases) > _MAX_CASES:
         raise CorpusError()
@@ -254,7 +310,9 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     return LoadedCorpus(
         path=resolved,
         digest=hashlib.sha256(raw).hexdigest(),
+        schema_version=schema_version,
         purpose=str(value["purpose"]),
+        provenance=provenance,
         cases=cases,
         audio_bytes=total,
     )

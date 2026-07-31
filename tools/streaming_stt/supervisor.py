@@ -19,10 +19,11 @@ from .bounded_io import (
     opened_directory_nofollow,
 )
 from .manifest import (
-    MAX_FAKE_ARTIFACT_BYTES,
     MAX_PYTHON_BYTES,
     MAX_WORKER_BYTES,
+    MOONSHINE_ADAPTER,
     WorkerManifest,
+    artifact_maximum_bytes,
 )
 from .protocol import (
     ByeEvent,
@@ -49,6 +50,12 @@ from .source_bundle import (
     SourceBundle,
     SourceBundleError,
     verify_source_bundle,
+)
+from .runtime_receipt import (
+    load_runtime_tree_receipt,
+    verify_moonshine_wheel_install,
+    verify_runtime_tree_receipt,
+    verify_venv_runtime_location,
 )
 
 
@@ -85,6 +92,7 @@ def sanitized_worker_environment(scratch_root: Path) -> dict[str, str]:
         "OPENBLAS_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1",
         "NUMEXPR_NUM_THREADS": "1",
+        "MOONSHINE_ORT_SINGLE_THREAD": "1",
     }
     if os.name == "nt":
         for name in ("SYSTEMROOT", "WINDIR"):
@@ -182,6 +190,7 @@ class StreamingWorker:
         command = [
             str(self.manifest.python.path),
             "-I",
+            "-S",
             "-B",
             f"/proc/self/fd/{self._worker_descriptor}",
             "--manifest",
@@ -409,7 +418,10 @@ class StreamingWorker:
                 or any(
                     hash_regular_bounded(
                         artifact.path,
-                        maximum_bytes=MAX_FAKE_ARTIFACT_BYTES,
+                        maximum_bytes=artifact_maximum_bytes(
+                            self.manifest.adapter,
+                            artifact.name,
+                        ),
                         expected_bytes=artifact.size_bytes,
                     ).sha256
                     != artifact.sha256
@@ -417,6 +429,26 @@ class StreamingWorker:
                 )
             ):
                 raise WorkerError("worker_artifact_changed")
+            if self.manifest.adapter == MOONSHINE_ADAPTER:
+                receipt_artifact = self.manifest.artifact_by_name.get("runtime-receipt")
+                wheel_artifact = self.manifest.artifact_by_name.get("release-wheel")
+                if receipt_artifact is None or wheel_artifact is None:
+                    raise WorkerError("worker_artifact_changed")
+                receipt = load_runtime_tree_receipt(
+                    receipt_artifact.path,
+                    expected_digest=receipt_artifact.sha256,
+                )
+                verify_venv_runtime_location(
+                    receipt,
+                    self.manifest.python.path,
+                )
+                verify_runtime_tree_receipt(receipt)
+                verify_moonshine_wheel_install(
+                    receipt,
+                    wheel_artifact.path,
+                    expected_sha256=wheel_artifact.sha256,
+                    expected_size_bytes=wheel_artifact.size_bytes,
+                )
             verify_source_bundle(self.source_bundle)
             staged_worker = self.source_bundle.file_by_path.get(
                 self.source_bundle.worker_relative_path

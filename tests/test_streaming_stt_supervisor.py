@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 
@@ -145,6 +147,7 @@ def test_worker_launch_argv_is_exact_isolated_and_bytecode_free(tmp_path):
     assert command == [
         str(manifest.python.path),
         "-I",
+        "-S",
         "-B",
         f"/proc/self/fd/{worker_fd}",
         "--manifest",
@@ -165,6 +168,64 @@ def test_worker_launch_argv_is_exact_isolated_and_bytecode_free(tmp_path):
     assert kwargs["close_fds"] is True
     assert len(kwargs["pass_fds"]) == 3
     assert "shell" not in kwargs
+
+
+def test_site_free_launch_never_processes_runtime_pth_before_explicit_import(
+    tmp_path,
+):
+    venv = tmp_path / "candidate-venv"
+    python = venv / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(Path(sys.executable).resolve(strict=True))
+    (venv / "pyvenv.cfg").write_text(
+        "home = /usr/bin\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+    runtime = (
+        venv
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+    )
+    runtime.mkdir(parents=True)
+    sentinel = tmp_path / "pth-executed"
+    (runtime / "candidate-startup.pth").write_text(
+        f"import pathlib; pathlib.Path({str(sentinel)!r}).write_text('executed')\n",
+        encoding="utf-8",
+    )
+    (runtime / "candidate_runtime.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    control = subprocess.run(
+        [str(python), "-I", "-B", "-c", "pass"],
+        check=False,
+        capture_output=True,
+        timeout=5.0,
+    )
+    assert control.returncode == 0
+    assert sentinel.read_text(encoding="utf-8") == "executed"
+    sentinel.unlink()
+
+    probe = (
+        "import pathlib,sys;"
+        "runtime=pathlib.Path(sys.argv[1]);"
+        "sentinel=pathlib.Path(sys.argv[2]);"
+        "assert not sentinel.exists();"
+        "sys.path.insert(0,str(runtime));"
+        "import candidate_runtime;"
+        "assert candidate_runtime.VALUE==1;"
+        "assert not sentinel.exists()"
+    )
+    isolated = subprocess.run(
+        [str(python), "-I", "-S", "-B", "-c", probe, str(runtime), str(sentinel)],
+        check=False,
+        capture_output=True,
+        timeout=5.0,
+    )
+
+    assert isolated.returncode == 0
+    assert isolated.stdout == b""
+    assert isolated.stderr == b""
+    assert not sentinel.exists()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group proof is POSIX")

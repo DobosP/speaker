@@ -601,13 +601,13 @@ def test_bus_backlog_starts_only_the_newest_committed_final():
         engine.final("first question")
         assert _wait_until(
             lambda: not runtime._dispatcher.has_pending
-            and runtime.bus._queue.unfinished_tasks == 1
+            and runtime.bus.outstanding_count == 1
         )
 
         engine.final("second question")
         assert _wait_until(
             lambda: not runtime._dispatcher.has_pending
-            and runtime.bus._queue.unfinished_tasks == 2
+            and runtime.bus.outstanding_count == 2
         )
 
         assert runtime.wait_idle(timeout=2.0)
@@ -631,12 +631,12 @@ def test_superseded_control_final_cannot_cancel_the_latest_backlogged_turn():
         engine.final("stop")
         assert _wait_until(
             lambda: not runtime._dispatcher.has_pending
-            and runtime.bus._queue.unfinished_tasks == 1
+            and runtime.bus.outstanding_count == 1
         )
         engine.final("latest question")
         assert _wait_until(
             lambda: not runtime._dispatcher.has_pending
-            and runtime.bus._queue.unfinished_tasks == 2
+            and runtime.bus.outstanding_count == 2
         )
 
         assert runtime.wait_idle(timeout=2.0)
@@ -1473,7 +1473,7 @@ def test_new_arrival_fences_a_published_final_before_bus_task_registration():
         engine.final("old question")
         assert _wait_until(
             lambda: not runtime._dispatcher.has_pending
-            and runtime.bus._queue.unfinished_tasks == 1
+            and runtime.bus.outstanding_count == 1
         )
 
         engine.final("latest question")
@@ -1507,7 +1507,7 @@ def test_stale_published_control_cannot_cancel_a_newer_gated_final():
         engine.final("stop")
         assert _wait_until(
             lambda: not runtime._dispatcher.has_pending
-            and runtime.bus._queue.unfinished_tasks == 1
+            and runtime.bus.outstanding_count == 1
         )
         # Publish CONTROL_STOP from generation one, but leave that control event
         # queued until after generation two has arrived.
@@ -1640,7 +1640,7 @@ def test_partial_continues_a_committed_final_still_waiting_on_the_bus():
     runtime.start(run_bus=False)
     try:
         engine.final("explain the moon phases")
-        assert runtime.bus._queue.unfinished_tasks == 1
+        assert runtime.bus.outstanding_count == 1
 
         engine.partial("make it shorter")
         engine.final("make it shorter")

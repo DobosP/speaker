@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from threading import Event, Thread
 import time
 
+from always_on_agent.acoustic import (
+    AcousticLineage,
+    AcousticSource,
+    AcousticSpan,
+)
 from always_on_agent.continuation import (
     CONTINUE,
     NEW,
@@ -193,14 +199,25 @@ def test_search_prefix_runs_even_from_passive_mode():
     assert "Moonshine" in supervisor.state.spoken_outputs[0]
 
 
-def test_partial_stop_has_priority_and_cancels_research():
+def test_only_scoped_partial_stop_cancels_research():
     supervisor = AgentSupervisor()
 
     supervisor.publish(AgentEvent.final("research open source voice pipelines"))
     supervisor.drain()
     assert supervisor.state.active_tasks
 
-    supervisor.publish(AgentEvent.partial("stop"))
+    assert not supervisor.publish(AgentEvent.partial("stop"))
+    assert supervisor.state.active_tasks
+    lineage = AcousticLineage.single(
+        AcousticSpan(
+            stream_id="partial-stop-test",
+            utterance_id="stop-turn",
+            source=AcousticSource.SCRIPTED,
+        )
+    )
+    assert supervisor.publish(
+        AgentEvent.partial("stop", acoustic=lineage, revision=1)
+    )
     _drain_until_idle(supervisor)
 
     assert supervisor.state.active_tasks == {}
@@ -272,6 +289,21 @@ def test_replay_records_and_diagnostics_summary():
     assert summary["decisions"][0]["kind"] == "mode_switch"
 
 
+def test_replay_scopes_partial_control_records():
+    supervisor = replay_records(
+        [
+            {
+                "kind": "stt.final",
+                "text": "research open source voice pipelines",
+            },
+            {"kind": "stt.partial", "text": "stop"},
+        ]
+    )
+
+    assert supervisor.state.active_tasks == {}
+    assert "[cancelled]" in supervisor.state.spoken_outputs
+
+
 def test_runtime_facade_ingests_live_transcripts_and_snapshots_state():
     runtime = AlwaysOnAgentRuntime()
 
@@ -286,6 +318,89 @@ def test_runtime_facade_ingests_live_transcripts_and_snapshots_state():
     assert snapshot.transcripts == ("assistant mode", "search moonshine")
     assert snapshot.outputs
     assert runtime.diagnostics()["tts_requests"] >= 1
+
+
+def test_runtime_facade_scopes_partial_stop_for_immediate_control():
+    runtime = AlwaysOnAgentRuntime()
+    runtime.ingest_final("research open source voice pipelines")
+    assert runtime.supervisor.state.active_tasks
+
+    runtime.ingest_partial("stop")
+    assert runtime.wait_idle()
+
+    assert runtime.supervisor.state.active_tasks == {}
+    assert "[cancelled]" in runtime.snapshot().outputs
+
+
+def test_runtime_facade_serializes_partial_with_final_and_stop_publication():
+    def run_case(terminal: str) -> list[AgentEvent]:
+        entered = Event()
+        release = Event()
+        terminal_done = Event()
+        published: list[AgentEvent] = []
+
+        class BlockingSupervisor(AgentSupervisor):
+            blocked = False
+
+            def publish(self, event: AgentEvent) -> bool:
+                if event.kind == EventKind.STT_PARTIAL and not self.blocked:
+                    self.blocked = True
+                    entered.set()
+                    assert release.wait(2.0)
+                published.append(event)
+                return super().publish(event)
+
+        runtime = AlwaysOnAgentRuntime(BlockingSupervisor())
+        partial_thread = Thread(
+            target=runtime.ingest_partial,
+            args=("hello",),
+        )
+
+        def publish_terminal() -> None:
+            if terminal == "final":
+                runtime.ingest_final("hello there")
+            else:
+                runtime.stop("test")
+            terminal_done.set()
+
+        terminal_thread = Thread(target=publish_terminal)
+        partial_thread.start()
+        assert entered.wait(2.0)
+        terminal_thread.start()
+        assert not terminal_done.wait(0.05)
+        assert published == []
+        release.set()
+        partial_thread.join(timeout=2.0)
+        terminal_thread.join(timeout=2.0)
+        assert not partial_thread.is_alive()
+        assert not terminal_thread.is_alive()
+        return [
+            event
+            for event in published
+            if event.kind
+            in {
+                EventKind.STT_PARTIAL,
+                EventKind.STT_FINAL,
+                EventKind.CONTROL_STOP,
+            }
+        ]
+
+    final_events = run_case("final")
+    assert [event.kind for event in final_events] == [
+        EventKind.STT_PARTIAL,
+        EventKind.STT_FINAL,
+    ]
+    assert [event.payload["revision"] for event in final_events] == [0, 1]
+    assert (
+        final_events[0].payload["acoustic"]
+        == final_events[1].payload["acoustic"]
+    )
+
+    stop_events = run_case("stop")
+    assert [event.kind for event in stop_events] == [
+        EventKind.STT_PARTIAL,
+        EventKind.CONTROL_STOP,
+    ]
 
 
 def test_transcript_bridge_matches_existing_callback_shape():

@@ -870,9 +870,12 @@ class VoiceRuntime:
     ) -> None:
         """Hand receipt-proven history back to the serialized brain thread."""
 
-        self._pending_playback_memory_commits += len(commits)
         for commit in commits:
-            self.bus.publish(
+            # Increment before publish while the playback-effect lock is held:
+            # the bus subscriber's acknowledgement blocks on that same lock.
+            # Roll back immediately when a terminally faulted bus rejects it.
+            self._pending_playback_memory_commits += 1
+            accepted = self.bus.publish(
                 AgentEvent(
                     EventKind.MEMORY_COMMIT,
                     {
@@ -891,6 +894,8 @@ class VoiceRuntime:
                     priority=30,
                 )
             )
+            if not accepted:
+                self._pending_playback_memory_commits -= 1
         if commits:
             self._playback_effect_changed.notify_all()
 
@@ -2736,6 +2741,47 @@ class VoiceRuntime:
 
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:
+        if event.kind == EventKind.MAILBOX_FAULT:
+            # Supervisor (the earlier subscriber) has already retired actor/task
+            # ownership. Cut output immediately, then let a separate thread own
+            # full teardown so this bus thread never tries to join itself.
+            log.critical("event mailbox fault; stopping voice runtime")
+            with self._terminal_effect_lock:
+                self._stopping = True
+                self._post_barge_response.invalidate()
+                self._clear_arrival_continuation()
+                self._clear_published_unheard()
+                self._clear_partial_fence()
+                try:
+                    self.engine.stop_speaking()
+                except Exception:  # noqa: BLE001 - continue fail-closed teardown
+                    log.exception("mailbox-fault speaker cut failed")
+            discarded_kinds = event.payload.get("discarded_kinds")
+            discarded_memory = (
+                discarded_kinds.get(EventKind.MEMORY_COMMIT.value, 0)
+                if isinstance(discarded_kinds, Mapping)
+                else 0
+            )
+            if isinstance(discarded_memory, int) and not isinstance(
+                discarded_memory,
+                bool,
+            ):
+                with self._playback_effect_changed:
+                    self._pending_playback_memory_commits = max(
+                        0,
+                        self._pending_playback_memory_commits
+                        - max(0, discarded_memory),
+                    )
+                    self._playback_effect_changed.notify_all()
+            try:
+                Thread(
+                    target=self.stop,
+                    name="speaker-mailbox-fault-stop",
+                    daemon=True,
+                ).start()
+            except Exception:  # noqa: BLE001
+                log.exception("mailbox-fault runtime stop thread failed to start")
+            return
         if (
             event.kind
             in {

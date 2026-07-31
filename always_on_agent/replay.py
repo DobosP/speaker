@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from .events import AgentEvent, EventKind
+from .runtime import AlwaysOnAgentRuntime
 from .supervisor import AgentSupervisor
 
 
@@ -24,9 +25,19 @@ def event_from_record(record: dict[str, object]) -> AgentEvent:
 
 def replay_records(records: Iterable[dict[str, object]]) -> AgentSupervisor:
     supervisor = AgentSupervisor()
+    runtime = AlwaysOnAgentRuntime(supervisor)
     for record in records:
-        supervisor.publish(event_from_record(record))
-        supervisor.drain()
+        event = event_from_record(record)
+        text = str(event.payload.get("text", ""))
+        if event.kind == EventKind.STT_PARTIAL:
+            runtime.ingest_partial(text)
+        elif event.kind == EventKind.STT_FINAL:
+            runtime.ingest_final(text)
+        elif event.kind == EventKind.CONTROL_STOP:
+            runtime.stop("replay")
+        else:
+            supervisor.publish(event)
+            supervisor.drain()
     deadline = time.time() + 2.0
     while time.time() < deadline:
         supervisor.drain()

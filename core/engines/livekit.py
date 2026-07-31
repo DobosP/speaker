@@ -31,9 +31,20 @@ import json
 import logging
 import queue
 import threading
+import time
 from typing import Callable, Optional
 
-from ..engine import AudioEngine, EngineCallbacks
+from always_on_agent.acoustic import AcousticSource, EndpointReason
+
+from ..engine import (
+    AudioEngine,
+    EngineCallbacks,
+    FinalTranscript,
+    PartialTranscript,
+    TranscriptAbort,
+    TranscriptAbortReason,
+)
+from ._acoustic_turn import AcousticTurnTracker
 from ._sherpa_models import build_recognizer, build_tts, build_vad
 from .sherpa import SherpaConfig
 
@@ -106,6 +117,10 @@ class LiveKitEngine(AudioEngine):
         self._asr_stream = None
         self._last_partial = ""
         self._voiced_run = 0.0
+        self._acoustic_turn = AcousticTurnTracker(
+            "livekit-remote",
+            source=AcousticSource.REMOTE_TRACK,
+        )
 
         self._in_q: "queue.Queue" = queue.Queue(maxsize=queue_max)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -207,14 +222,59 @@ class LiveKitEngine(AudioEngine):
         text = rec.get_result(stream)
         if text and text != self._last_partial:
             self._last_partial = text
-            self._cb.on_partial(text)
+            emitted_at = time.perf_counter()
+            acoustic, revision = self._acoustic_turn.partial(
+                emitted_at=emitted_at,
+            )
+            if self._cb.on_partial_result is not None:
+                self._cb.on_partial_result(
+                    PartialTranscript(
+                        text=text,
+                        acoustic=acoustic,
+                        revision=revision,
+                    )
+                )
+            else:
+                self._cb.on_partial(text)
         if rec.is_endpoint(stream):
             final_text = rec.get_result(stream)
             rec.reset(stream)
             self._last_partial = ""
             if final_text.strip():
-                self._cb.on_final(final_text)
+                emitted_at = time.perf_counter()
+                acoustic, revision = self._acoustic_turn.close(
+                    speech_end_at=emitted_at,
+                    endpoint_committed_at=emitted_at,
+                    emitted_at=emitted_at,
+                    endpoint_reason=EndpointReason.ASR,
+                )
+                if self._cb.on_final_result is not None:
+                    self._cb.on_final_result(
+                        FinalTranscript(
+                            text=final_text,
+                            acoustic=acoustic,
+                            revision=revision,
+                        )
+                    )
+                else:
+                    self._cb.on_final(final_text)
                 self._publish("user_transcript", {"text": final_text})
+            else:
+                aborted = self._acoustic_turn.abort(
+                    emitted_at=time.perf_counter(),
+                )
+                if (
+                    aborted is not None
+                    and self._cb.on_transcript_abort is not None
+                ):
+                    acoustic, revision = aborted
+                    self._cb.on_transcript_abort(
+                        TranscriptAbort(
+                            acoustic=acoustic,
+                            revision=revision,
+                            reason=TranscriptAbortReason.EMPTY_FINAL,
+                        )
+                    )
 
     def _watch_barge_in(self, mono) -> None:
         """While the assistant speaks, treat sustained user voice as barge-in."""

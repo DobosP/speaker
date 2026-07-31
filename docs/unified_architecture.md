@@ -215,7 +215,7 @@ This contract is **not** a binary core passed around; it is **reimplemented fait
 | `events.py` | Event schema (`AgentEvent`, `EventKind`, `Mode`) and constructors for STT, control, and task lifecycle. |
 | `models.py` | Speech observations and intent decisions (`IntentKind`, `SpeechObservation`, `IntentDecision`). |
 | `speech_analyzer.py` | Deterministic `LiveSpeechAnalyzer`: activates on keywords, normalizes text, decides intent (STOP/CONFIRM/MODE_SWITCH/ASSISTANT/SEARCH/RESEARCH/COMMAND/DICTATION/MEETING_NOTE). |
-| `event_bus.py` | `EventBus`: priority queue with `PriorityQueue`, daemon consumer thread, handler subscriptions. Priority order: CONTROL_STOP (0) → CONTROL_MODE/CONFIRM/DENY (5–10) → STT_FINAL (50) → TASK_COMPLETED (60) → TASK_PROGRESS (70) → STT_PARTIAL (90) → default (100). |
+| `event_bus.py` | `EventBus`: finite 512-event mailbox with a 64-slot critical reserve, typed acoustic-partial coalescing, daemon consumer thread, and ordered subscribers (ADR-0093). Non-output control/lifecycle work preempts data by priority/FIFO; TTS requests and their stream terminal retain publication order and gain bounded age promotion over data. |
 | `supervisor.py` | `AgentSupervisor`: owns mode state, active/queued/pending-confirmation tasks, speech epoch (for barge-in). Handles event dispatch, task queueing, timeouts, followups, and continuation merging. |
 | `tasks.py` | `TaskRuntime`: spawns a cancellable coordinator per task and runs synchronous capabilities behind a bounded provider bulkhead; `AgentTask` wraps input_text → output_text with cancel events and deadline tracking (ADR-0021). |
 | `planner.py` | `TaskPlanner`: builds explicit `TaskPlan` (step sequence + metadata) from intent decisions. Complementary to `react.py`. |

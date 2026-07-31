@@ -1,84 +1,57 @@
 Valid until: this branch lands or is superseded — then treat as history.
 
-# Task result — exact Moonshine streaming candidate
+# Task result — bounded post-ASR event mailbox
 
-## Outcome
+## Summary
 
-Added exact, disposable Moonshine Voice 0.1.0 Tiny and Small CPU candidates to
-the isolated streaming-STT harness. Both are rejected for adoption; no runtime
-default, setup option, production dependency, or application entry point
-changed.
+Replaced the unbounded post-ASR `PriorityQueue` with a finite 512-event
+mailbox. Data admission is capped below a 64-slot control reserve; typed
+partial snapshots coalesce by complete acoustic lineage and strictly increasing
+revision. Composite finals/aborts atomically retire every covered partial.
 
-The worker now launches under `-I -S -B`, verifies its private source bundle,
-manifest, interpreter, disabled-system-site-packages marker, runtime tree,
-official Moonshine-owned wheel contents, and exact model files before directly
-inserting the verified runtime path. Candidate `.pth` startup code is never
-processed. The disposable runtime and models remain outside the production
-virtual environment.
+Non-output lifecycle/control work is preemptive. Ordered
+`TTS_REQUEST`/`TTS_STREAM_END` traffic retains fragment-before-terminal order
+and gains service after at most eight data dispatches, preventing cleanup
+starvation. An all-critical overflow installs one durable `MAILBOX_FAULT`,
+rejects later publications, cuts playback, reconciles discarded playback
+commits, retires supervisor ownership, and stops the runtime off the bus thread.
 
-The adapter uses one persistent native transcriber and a fresh stream per case.
-Every scheduled hypothesis forces a native update; final force/stop snapshots
-only assemble the final and cannot masquerade as online partials. Reports label
-accelerated replay as non-conversational and identify candidate-call compute
-time separately from end-to-end RTF.
+Unscoped exact STOP/mode partials fail closed instead of acting after an
+uncorrelated correction. The public text facade, replay path, and LiveKit engine
+now provide scoped monotonic acoustic identity; LiveKit also publishes a typed
+abort when an endpoint retracts to empty.
 
-Public MInDS-14 conversion now emits a strict schema-v2 corpus with structured
-suite, manifest, metadata, and source-set provenance. Reports distinguish a
-real executed candidate from a production model and do not include transcript
-rows, private paths, or case identifiers.
+## Files changed
 
-## Exact evidence
-
-Inputs:
-
-- `moonshine-voice==0.1.0` official Linux wheel, 56,369,045 bytes, SHA-256
-  `0f833deb43bad5dcfb4cfd3257b6df83ef9abd3f27be3199622fe41932e8d916`;
-- disposable Python 3.12 environment receipt: 1,257 files, 178,422,589 bytes,
-  receipt SHA-256
-  `f742d49cdfa3770387a59b8a1744c1c9bd9d9b1bd66c3d9de96906e327eaed85`;
-- schema-v2 14-case MInDS-14 corpus SHA-256
-  `a9c6859289d28b3bcc79665d890c9934f1f7b17dd7f3fe34b83a8d69a61ed3fe`.
-
-Results:
-
-- Small, 500 ms accelerated replay, three repeats: WER 0.6884, CER 0.6416,
-  candidate-call RTF 0.5752, and one case with final disagreement.
-- Small, 200 ms real-time replay, one full pass: WER 0.6957, first nonempty
-  partial p50 2.016 s, candidate-call RTF 1.1864, 1,000 deadline misses, and
-  maximum backlog 22.006 s.
-- Tiny, 500 ms accelerated replay, one pass: WER 0.8478, CER 0.7204, and
-  candidate-call RTF 0.2370.
-
-The real-time scope begins after PCM loading inside the adapter and excludes
-capture, snapshot I/O, controller IPC, VAD, endpointing, and AEC. The
-accelerated runs provide accuracy and candidate-call throughput only. None is
-live, held-out owner, or adoption evidence.
+- Mailbox/schema/runtime: `always_on_agent/event_bus.py`, `events.py`,
+  `supervisor.py`, `runtime.py`, `replay.py`, `core/runtime.py`, and
+  `core/engines/livekit.py`.
+- Tests: mailbox, supervisor facade, playback/preprocessing, and LiveKit
+  regressions.
+- Durable docs: `STATUS.md`, ADR-0093, agent map/testing, and unified
+  architecture.
 
 ## Verification
 
-- Combined deterministic Moonshine/public/streaming gate: 249 passed,
-  1 real-model test deselected.
-- Receipt/manifest/supervisor repair gate: 98 passed.
-- Independent security/evidence/worker repair gates: 167 passed with one
-  opt-in smoke skipped; 30 passed; and 35 passed with one deselected.
-- Exact one-case Small worker smoke: 1 passed.
-- Full `-m "not real_model"` repository gate: 6,105 passed, 13 skipped,
-  21 deselected, and 9 pre-existing warnings in 113.79 seconds.
-- Exact APM/double-talk gate: 6 passed.
-- Exact official runtime/wheel validation: passed across all 1,257 receipt
-  files.
-- Scoped Ruff check/format and `git diff --check`: passed before final
-  repository gates.
+- Mailbox: 57 passed.
+- Mailbox/adjacent focused gate: 221 passed.
+- Scoped LiveKit engine gate: 8 passed.
+- Broader lineage/barge/playback/shutdown/follow-up/LiveKit gate: 107 passed.
+- APM/double-talk gate: 6 passed.
+- Full `-m "not real_model"` repository gate: 6,411 passed, 13 skipped,
+  22 deselected, and 9 pre-existing warnings in 111.70 seconds.
+- Targeted Ruff and `git diff --check`: passed.
+- Three independent read-only blocker audits: clear after fixes.
 
-## Limits and next
+## Risks and manual review
 
-Moonshine is English-only here and remains benchmark-only. It does not meet the
-accuracy, determinism, or 200 ms streaming latency requirements. Third-party
-dependencies are integrity-bound by the runtime receipt but are not
-individually traced to upstream wheels; the manifest/receipt directory is a
-trusted local control-plane boundary without a signature. Offline flags do not
-enforce network isolation, and resource values remain worker-reported.
+All evidence is deterministic and headless. No live audio device, physical
+barge-in, real LiveKit room, or user recording was exercised. The eight-event
+output service bound and scoped remote transcript identity are covered by
+fakes/replay, not measured conversational latency. Phone and cross-participant
+ownership parity remain future work.
 
-The next isolated candidate is NVIDIA Nemotron 3.5 ASR Streaming 0.6B on the
-available RTX 4090. Any eventual recognizer selection still requires recorded
-endpoint tests and a fresh physical `./live.sh` A/B.
+## Merge recommendation
+
+Green for fast-forward landing on `main`. Do not claim live hardware
+validation.

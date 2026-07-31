@@ -32,6 +32,9 @@ class EventKind(str, Enum):
     # the brain surface "I'm reconnecting" feedback and stops the
     # watchdog from misattributing reopen gaps as "stuck turn".
     CAPTURE_STATE = "capture.state"
+    # EventBus-owned terminal fault. Emitted once when a finite mailbox contains
+    # only loss-intolerant work and cannot admit another critical event.
+    MAILBOX_FAULT = "mailbox.fault"
 
 
 class Mode(str, Enum):

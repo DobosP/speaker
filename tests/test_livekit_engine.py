@@ -6,7 +6,8 @@ the no-op speak path, plus import-safety without the optional deps.
 """
 import numpy as np
 
-from core.engine import EngineCallbacks
+from always_on_agent.acoustic import AcousticSource, EndpointReason
+from core.engine import EngineCallbacks, TranscriptAbortReason
 from core.engines.livekit import STT_SR, LiveKitEngine
 from core.engines.sherpa import SherpaConfig
 
@@ -49,6 +50,16 @@ class _FakeRecognizer:
         self._ready = True
 
 
+class _RetractingRecognizer(_FakeRecognizer):
+    def __init__(self):
+        super().__init__()
+        self._result_calls = 0
+
+    def get_result(self, stream):
+        self._result_calls += 1
+        return "assistant mode" if self._result_calls == 1 else ""
+
+
 class _FakeVad:
     def __init__(self, speech=True):
         self._speech = speech
@@ -65,7 +76,7 @@ def _engine():
     return LiveKitEngine(SherpaConfig(), url="ws://localhost:7880", token="t")
 
 
-def test_feed_asr_fires_partial_and_final():
+def test_feed_asr_legacy_callbacks_remain_fallback():
     eng = _engine()
     partials, finals = [], []
     eng._cb = EngineCallbacks(on_partial=partials.append, on_final=finals.append)
@@ -77,6 +88,54 @@ def test_feed_asr_fires_partial_and_final():
     assert partials == ["hello world"]
     assert finals == ["hello world"]
     assert eng._asr_stream.fed == [(STT_SR, 160)]
+
+
+def test_feed_asr_prefers_scoped_typed_partial_and_final():
+    eng = _engine()
+    partials, finals = [], []
+    eng._cb = EngineCallbacks(
+        on_partial_result=partials.append,
+        on_final_result=finals.append,
+    )
+    eng._recognizer = _FakeRecognizer()
+    eng._asr_stream = eng._recognizer.create_stream()
+
+    eng._feed_asr(np.zeros(160, dtype=np.float32))
+
+    assert [result.text for result in partials] == ["hello world"]
+    assert [result.text for result in finals] == ["hello world"]
+    assert partials[0].revision == 0
+    assert finals[0].revision == 1
+    assert partials[0].acoustic is not None
+    assert finals[0].acoustic is not None
+    assert partials[0].acoustic.spans[0].key == finals[0].acoustic.spans[0].key
+    assert partials[0].acoustic.spans[0].source == AcousticSource.REMOTE_TRACK
+    assert (
+        finals[0].acoustic.spans[0].endpoint_reason
+        == EndpointReason.ASR
+    )
+
+
+def test_empty_endpoint_emits_typed_abort_for_scoped_partial():
+    eng = _engine()
+    partials, aborts = [], []
+    eng._cb = EngineCallbacks(
+        on_partial_result=partials.append,
+        on_transcript_abort=aborts.append,
+    )
+    eng._recognizer = _RetractingRecognizer()
+    eng._asr_stream = eng._recognizer.create_stream()
+
+    eng._feed_asr(np.zeros(160, dtype=np.float32))
+
+    assert [result.text for result in partials] == ["assistant mode"]
+    assert len(aborts) == 1
+    assert aborts[0].reason == TranscriptAbortReason.EMPTY_FINAL
+    assert aborts[0].revision == 1
+    assert (
+        partials[0].acoustic.spans[0].key
+        == aborts[0].acoustic.spans[0].key
+    )
 
 
 def test_feed_asr_noop_without_recognizer():

@@ -4,17 +4,17 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate: 6353 passed, 13 skipped, 22 deselected, 9 pre-existing warnings.
+- Repository logic gate: 6411 passed, 13 skipped, 22 deselected, 9 pre-existing warnings.
   Focused: typed-ingress/Sherpa/APM 354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
-- Bounded capture review: 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
+- Post-ASR mailbox/adjacent 221; scoped LiveKit 8; bounded capture review 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
 - Streaming 334; receipt 98; capture-replay 71 (ADR-0092). Moonshine/Nemotron remain rejected (ADR-0090/0091).
 - Stable evidence remains: both conversation pairs 42/42, semantic-memory PASS,
   recorded owner replay 9/9, and two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
-- Linux Python is the reference. Post-ASR `SessionActor` owns bounded admission, binding
-  release, identity, and teardown; phone/remote lack it. Only invoked post-ASR data may reach cloud (ADR-0001/0086).
+- Linux Python is the reference. Its 512-event post-ASR mailbox reserves 64 critical slots,
+  bounds output service, and scopes text/LiveKit ingress; remote/phone ownership lacks parity (ADR-0001/0086/0093).
 - `./live.sh` is the single Linux physical entry. It owns the host lock,
   reversible echo-control route, conditional Ollama, doctor, and aligned
   private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).
@@ -85,7 +85,7 @@ Last verified: 2026-07-31 on Linux ROG.
 
 ## Next
 
-- Bound the post-ASR mailbox; add actor-backed `TurnHandle`; then unify remote/mobile ownership.
+- Add actor-backed `TurnHandle`; then unify remote/mobile ownership.
 - Add native-reader/gap and synchronized AEC replay plus disjoint owner
   controls/vault/noise/multi-voice data; then run fresh `./live.sh` A/B (ADR-0092).
 

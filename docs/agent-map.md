@@ -24,6 +24,7 @@
 |---|---|---|
 | APM/DTD/barge-in bug | `core/engines/`, `tests/test_apm_double_talk.py` | targeted pytest |
 | Native capture latency/gaps | `core/media_session.py`, `core/engines/sherpa.py`, ADR-0088 | reader-time playback/source context + control-lane tests, then APM gate |
+| Post-ASR mailbox/order | `always_on_agent/event_bus.py`, ADR-0093 | `tests/test_event_bus.py` plus supervisor/playback/preprocessing race tests |
 | Session/task/tool/TTS ownership | `always_on_agent/session_actor.py`, `always_on_agent/tasks.py`, `always_on_agent/supervisor.py`, ADR-0086 | `tests/test_session_actor.py` plus focused cancellation/playback tests |
 | Fixture/test update | `tests/barge_fixtures.py`, matching tests | targeted pytest |
 | Recording-driven STT/verifier | `tools/recorded_stt_eval.py`, `tools/local_gpu_stt_eval.py`, `tools/stt_consensus_v2_eval.py`, `core/asr_verifier.py`, `core/engines/_faster_whisper.py` | aggregate endpoint-path A/B, focused verifier/adapter tests, then manual live A/B (ADR-0078/0080) |

@@ -274,15 +274,15 @@ class AgentSupervisor:
         self.latest_arrival_generation = 0
         self.bus.subscribe(self.handle_event)
 
-    def publish(self, event: AgentEvent) -> None:
+    def publish(self, event: AgentEvent) -> bool:
         # Keep shutdown quiescent: task/failure/timer workers may finish after
         # cancellation, but none may enqueue a new lifecycle or TTS event after
         # shutdown has committed. bus.publish is non-blocking and does not call
         # back into the supervisor, so it is safe inside this short lock.
         with self._cancel_lock:
             if self._stopped:
-                return
-            self.bus.publish(event)
+                return False
+            return self.bus.publish(event)
 
     def has_live_tasks(self) -> bool:
         """Whether uncancelled active/queued work can still produce output."""
@@ -703,6 +703,15 @@ class AgentSupervisor:
         if event.kind != EventKind.STT_PARTIAL:
             self.state.event_log.append(event)
 
+        if event.kind == EventKind.MAILBOX_FAULT:
+            self.state.failures.append(
+                "event mailbox fault; runtime restart required"
+            )
+            # The mailbox discarded queued work when serialized delivery could
+            # no longer be guaranteed. Retire every actor/task binding directly;
+            # late worker publications are gated by _stopped.
+            self.shutdown()
+            return
         if event.kind == EventKind.STT_PARTIAL:
             self._handle_speech(str(event.payload.get("text", "")), is_final=False)
             return

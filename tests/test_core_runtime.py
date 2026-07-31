@@ -11,8 +11,14 @@ import threading
 import time
 from typing import Iterator, Optional, Sequence
 
+import pytest
+
+from always_on_agent.capabilities import CapabilityResult, CapabilitySpec
 from always_on_agent.continuation import ContinuationConfig
 from always_on_agent.events import AgentEvent, EventKind, Mode
+from always_on_agent.memory import SessionMemory
+from always_on_agent.models import IntentDecision, IntentKind
+from always_on_agent.session_actor import AdmissionRejected, TaskIdentity
 
 from core.engines.scripted import ScriptedEngine
 from core.engines.sherpa import SherpaConfig
@@ -55,6 +61,387 @@ def test_stop_drops_tts_request_racing_shutdown():
     runtime.stop()
     runtime._on_event(event)
     assert engine.spoken == ["late reply"]  # dropped during/after shutdown
+
+
+def test_shutdown_drains_cooperative_mutation_before_memory_close():
+    provider_started = threading.Event()
+    provider_exited = threading.Event()
+
+    class ClosingMemory(SessionMemory):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+
+        def close(self):
+            assert provider_exited.is_set()
+            self.closed = True
+
+    memory = ClosingMemory()
+    runtime = VoiceRuntime(ScriptedEngine(), EchoLLM(), memory=memory)
+
+    def mutate(_query, context):
+        provider_started.set()
+        cancel = context["cancel_event"]
+        assert isinstance(cancel, threading.Event)
+        assert cancel.wait(timeout=1.0)
+        provider_exited.set()
+        return CapabilityResult(True, "shutdown observed")
+
+    runtime.supervisor.capabilities.register(
+        "shutdown.mutate",
+        mutate,
+        spec=CapabilitySpec(
+            "shutdown.mutate",
+            "shutdown-aware mutation",
+            side_effecting=True,
+        ),
+    )
+    task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.COMMAND,
+            1.0,
+            "hold mutation",
+            "test",
+            mode=Mode.COMMAND,
+        )
+    )
+    invocation_done = threading.Event()
+
+    def invoke() -> None:
+        try:
+            runtime.supervisor.tasks._invoke(  # noqa: SLF001
+                task,
+                "shutdown.mutate",
+            )
+        except BaseException:
+            pass
+        finally:
+            invocation_done.set()
+
+    runtime.start(run_bus=False)
+    invocation = threading.Thread(target=invoke, daemon=True)
+    invocation.start()
+    assert provider_started.wait(timeout=1.0)
+
+    runtime.stop()
+
+    assert provider_exited.is_set()
+    assert memory.closed
+    assert runtime.supervisor.session_actor.active_tool_count == 0
+    assert invocation_done.wait(timeout=1.0)
+    invocation.join(timeout=1.0)
+    with pytest.raises(AdmissionRejected, match="shutting down"):
+        runtime.supervisor.session_actor.open_turn(revision=1)
+
+
+def test_shutdown_drains_watch_mutation_before_watch_manager_shutdown():
+    provider_started = threading.Event()
+    provider_exited = threading.Event()
+    manager_shutdown_seen: list[bool] = []
+    runtime = VoiceRuntime(
+        ScriptedEngine(),
+        EchoLLM(),
+        watch_config={
+            "enabled": True,
+            "grants": [
+                {
+                    "id": "editor",
+                    "label": "Editor",
+                    "app": {"wm_class": "Editor"},
+                    "min_poll_sec": 1.0,
+                }
+            ],
+        },
+    )
+    manager = runtime._watch_manager
+    assert manager is not None
+    manager._autostart = False
+
+    def hold_watch(_query, context):
+        watch_id = manager.start_watch(
+            "editor",
+            "ready",
+            interval_sec=1.0,
+        )
+        provider_started.set()
+        cancel = context["cancel_event"]
+        assert isinstance(cancel, threading.Event)
+        assert cancel.wait(timeout=1.0)
+        manager_shutdown_seen.append(manager._shutdown)
+        manager.stop_watch(watch_id)
+        provider_exited.set()
+        return CapabilityResult(True, "watch stopped")
+
+    runtime.supervisor.capabilities.register("watch.start", hold_watch)
+    task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.COMMAND,
+            1.0,
+            "watch editor",
+            "test",
+            mode=Mode.COMMAND,
+        )
+    )
+    invocation_done = threading.Event()
+
+    def invoke() -> None:
+        try:
+            runtime.supervisor.tasks._invoke(  # noqa: SLF001
+                task,
+                "watch.start",
+            )
+        except BaseException:
+            pass
+        finally:
+            invocation_done.set()
+
+    runtime.start(run_bus=False)
+    invocation = threading.Thread(target=invoke, daemon=True)
+    invocation.start()
+    assert provider_started.wait(timeout=1.0)
+
+    runtime.stop()
+
+    assert provider_exited.is_set()
+    assert manager_shutdown_seen == [False]
+    assert manager._shutdown is True
+    assert runtime.supervisor.session_actor.active_tool_count == 0
+    assert invocation_done.wait(timeout=1.0)
+    invocation.join(timeout=1.0)
+
+
+def test_concurrent_stop_waits_for_watch_mutation_and_backend_teardown():
+    provider_started = threading.Event()
+    cancel_seen = threading.Event()
+    provider_release = threading.Event()
+    provider_exited = threading.Event()
+    manager_shutdown_seen: list[bool] = []
+    runtime = VoiceRuntime(
+        ScriptedEngine(),
+        EchoLLM(),
+        watch_config={
+            "enabled": True,
+            "grants": [
+                {
+                    "id": "editor",
+                    "label": "Editor",
+                    "app": {"wm_class": "Editor"},
+                    "min_poll_sec": 1.0,
+                }
+            ],
+        },
+    )
+    manager = runtime._watch_manager
+    assert manager is not None
+    manager._autostart = False
+
+    def hold_watch(_query, context):
+        watch_id = manager.start_watch(
+            "editor",
+            "ready",
+            interval_sec=1.0,
+        )
+        provider_started.set()
+        cancel = context["cancel_event"]
+        assert isinstance(cancel, threading.Event)
+        assert cancel.wait(timeout=1.0)
+        cancel_seen.set()
+        assert provider_release.wait(timeout=1.0)
+        manager_shutdown_seen.append(manager._shutdown)
+        manager.stop_watch(watch_id)
+        provider_exited.set()
+        return CapabilityResult(True, "watch stopped")
+
+    runtime.supervisor.capabilities.register("watch.start", hold_watch)
+    task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.COMMAND,
+            1.0,
+            "watch editor",
+            "test",
+            mode=Mode.COMMAND,
+        )
+    )
+
+    def invoke() -> None:
+        try:
+            runtime.supervisor.tasks._invoke(  # noqa: SLF001
+                task,
+                "watch.start",
+            )
+        except BaseException:
+            pass
+
+    runtime.start(run_bus=False)
+    invocation = threading.Thread(target=invoke, daemon=True)
+    invocation.start()
+    assert provider_started.wait(timeout=1.0)
+
+    first_done = threading.Event()
+    second_done = threading.Event()
+    first = threading.Thread(
+        target=lambda: (runtime.stop(), first_done.set()),
+        daemon=True,
+    )
+    second = threading.Thread(
+        target=lambda: (runtime.stop(), second_done.set()),
+        daemon=True,
+    )
+    first.start()
+    assert cancel_seen.wait(timeout=1.0)
+    second.start()
+    with runtime._stop_lifecycle:
+        assert runtime._stop_lifecycle.wait_for(
+            lambda: runtime._stop_waiters == 1,
+            timeout=1.0,
+        )
+    assert not first_done.is_set()
+    assert not second_done.is_set()
+    assert manager._shutdown is False
+
+    provider_release.set()
+    first.join(timeout=1.0)
+    second.join(timeout=1.0)
+    invocation.join(timeout=1.0)
+
+    assert first_done.is_set() and second_done.is_set()
+    assert provider_exited.is_set()
+    assert manager_shutdown_seen == [False]
+    assert manager._shutdown is True
+
+
+def test_timeout_apology_uses_fresh_aux_identity_with_newer_turn():
+    from always_on_agent.supervisor import _TIMEOUT_APOLOGY
+
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    actor = runtime.supervisor.session_actor
+    old_task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.ASSISTANT,
+            1.0,
+            "old request",
+            "test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+    assert old_task.identity is not None
+    assert actor.admit_task(old_task.task_id, old_task.identity)
+    old_task.deadline_at = time.monotonic() - 1.0
+    runtime.supervisor.state.active_tasks[old_task.task_id] = old_task
+
+    newer_turn = actor.open_turn(revision=2)
+    newer_task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.ASSISTANT,
+            1.0,
+            "new request",
+            "test",
+            mode=Mode.ASSISTANT,
+        ),
+        turn_identity=newer_turn,
+    )
+    assert newer_task.identity is not None
+    assert actor.admit_task(newer_task.task_id, newer_task.identity)
+    newer_task.deadline_at = time.monotonic() + 100.0
+    runtime.supervisor.state.active_tasks[newer_task.task_id] = newer_task
+    runtime.supervisor.state.turn_identity = newer_turn
+
+    runtime.start(run_bus=False)
+    try:
+        assert runtime.supervisor.reap_overdue_tasks() == 1
+        runtime.bus.drain()
+
+        tts = next(
+            event
+            for event in runtime.supervisor.state.event_log
+            if (
+                event.kind == EventKind.TTS_REQUEST
+                and event.payload.get("text") == _TIMEOUT_APOLOGY
+            )
+        )
+        apology_identity = TaskIdentity.from_payload(tts.payload)
+        assert apology_identity == newer_task.identity
+        assert apology_identity != old_task.identity
+        assert engine.spoken == [_TIMEOUT_APOLOGY]
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+    finally:
+        actor.finish_task(old_task.task_id)
+        actor.finish_task(newer_task.task_id)
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "identity_override",
+    (
+        {"session_id": None},
+        {"revision": "not-an-integer"},
+    ),
+)
+def test_malformed_completed_identity_cannot_upgrade_to_legacy_playback(
+    identity_override,
+):
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.ASSISTANT,
+            1.0,
+            "identity test",
+            "test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+    assert task.identity is not None
+    runtime.supervisor.state.active_tasks[task.task_id] = task
+    identity = task.identity.to_payload()
+    if set(identity_override) == {"session_id"}:
+        identity = {"session_id": task.identity.session_id}
+    else:
+        identity.update(identity_override)
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TASK_COMPLETED,
+            {
+                "task_id": task.task_id,
+                "text": "Must not reach the sink.",
+                "speak": True,
+                "followup": False,
+                "data": {},
+                "epoch": task.speech_epoch,
+                **identity,
+            },
+            priority=60,
+        )
+    )
+    try:
+        runtime.bus.drain()
+
+        tts = next(
+            event
+            for event in runtime.supervisor.state.event_log
+            if (
+                event.kind == EventKind.TTS_REQUEST
+                and event.payload.get("task_id") == task.task_id
+            )
+        )
+        assert any(
+            field in tts.payload
+            for field in (
+                "session_id",
+                "turn_id",
+                "revision",
+                "cancel_generation",
+            )
+        )
+        assert engine.spoken == []
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+        assert runtime.supervisor.session_actor.identity_for_task(
+            task.task_id
+        ) is None
+    finally:
+        runtime.stop()
 
 
 def test_llm_task_does_not_mark_handled_local():

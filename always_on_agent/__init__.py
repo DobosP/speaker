@@ -2,6 +2,7 @@
 
 from .events import AgentEvent, EventKind, Mode
 from .runtime import AlwaysOnAgentRuntime
+from .session_actor import SessionActor, TaskIdentity, TurnIdentity
 from .supervisor import AgentSupervisor
 from .speech_analyzer import LiveSpeechAnalyzer
 
@@ -12,4 +13,7 @@ __all__ = [
     "EventKind",
     "LiveSpeechAnalyzer",
     "Mode",
+    "SessionActor",
+    "TaskIdentity",
+    "TurnIdentity",
 ]

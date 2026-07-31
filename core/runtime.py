@@ -16,6 +16,7 @@ from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.post_barge import PostBargeResponseGate
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
+from always_on_agent.session_actor import PlaybackAdmission
 from always_on_agent.speech_analyzer import (
     LiveSpeechAnalyzer,
     ModePolicy,
@@ -220,6 +221,14 @@ class VoiceRuntime:
         # Set by stop() before any teardown step; _on_event drops
         # action-producing events (TTS_REQUEST) once true.
         self._stopping = False
+        # Serialize the complete teardown, not only the initial effect gate.
+        # A concurrent caller waits until capability drains and backend closes
+        # have both completed; re-entry by the owning thread is a no-op.
+        self._stop_lifecycle = threading.Condition()
+        self._stop_started = False
+        self._stop_complete = False
+        self._stop_owner_ident: int | None = None
+        self._stop_waiters = 0
         # Linearizes the short post-preprocessing commit section against
         # barge-in/stop. It is never held across an LLM/provider call; local
         # intents and bus publication are the only potentially visible effects.
@@ -728,6 +737,32 @@ class VoiceRuntime:
             self.warm_ready.set()
 
     def stop(self) -> None:
+        caller = threading.get_ident()
+        with self._stop_lifecycle:
+            if self._stop_complete:
+                return
+            if self._stop_started:
+                if self._stop_owner_ident == caller:
+                    return
+                self._stop_waiters += 1
+                self._stop_lifecycle.notify_all()
+                try:
+                    while not self._stop_complete:
+                        self._stop_lifecycle.wait()
+                finally:
+                    self._stop_waiters -= 1
+                return
+            self._stop_started = True
+            self._stop_owner_ident = caller
+        try:
+            self._stop_once()
+        finally:
+            with self._stop_lifecycle:
+                self._stop_complete = True
+                self._stop_owner_ident = None
+                self._stop_lifecycle.notify_all()
+
+    def _stop_once(self) -> None:
         # Shutdown gate FIRST: the threaded bus keeps dispatching until
         # bus.stop() below, so a queued TTS_REQUEST could otherwise start
         # speaking mid-teardown (codex-review 2026-07-06). _on_event drops
@@ -755,11 +790,6 @@ class VoiceRuntime:
             self._watchdog.stop()
         except Exception:  # noqa: BLE001
             log.exception("watchdog stop failed")
-        if self._watch_manager is not None:
-            try:
-                self._watch_manager.shutdown()
-            except Exception:  # noqa: BLE001
-                log.exception("watch manager shutdown failed")
         engine_stopped = False
         if self._playback_history is not None:
             # Receipt-capable shutdown must stop/terminalize the sink while the
@@ -797,6 +827,14 @@ class VoiceRuntime:
             self.supervisor.shutdown()
         except Exception:  # noqa: BLE001
             log.exception("supervisor shutdown failed")
+        if self._watch_manager is not None:
+            try:
+                # The supervisor's terminal actor fence signals and boundedly
+                # drains cooperative mutating providers before any backend
+                # they may still be using is torn down.
+                self._watch_manager.shutdown()
+            except Exception:  # noqa: BLE001
+                log.exception("watch manager shutdown failed")
         if self._reminder_manager is not None:
             try:
                 # Closing the local DB does not cancel durable systemd timers;
@@ -937,21 +975,59 @@ class VoiceRuntime:
         if history is None:
             return
         with self._playback_effect_lock:
-            resolution = history.resolve(receipt)
-            if resolution is None:
-                log.warning(
-                    "ignoring unknown/duplicate playback receipt %r",
-                    receipt.fragment_id,
+            playback_admission_id = history.fragment_playback_admission(
+                receipt.fragment_id
+            )
+            try:
+                try:
+                    resolution = history.resolve(receipt)
+                except Exception:  # noqa: BLE001 - adapter contract violation
+                    log.exception(
+                        "malformed playback receipt for %r; forcing failure",
+                        receipt.fragment_id,
+                    )
+                    try:
+                        resolution = history.force_fail(receipt.fragment_id)
+                    except Exception:  # noqa: BLE001 - release capacity anyway
+                        log.exception(
+                            "failed to force-terminalize playback %r",
+                            receipt.fragment_id,
+                        )
+                        resolution = None
+                if resolution is None:
+                    log.warning(
+                        "ignoring unknown/duplicate playback receipt %r",
+                        receipt.fragment_id,
+                    )
+                    return
+                self._resume.note_playback_receipt(
+                    resolution.fragment_id,
+                    resolution.safe_text_prefix,
+                    played=resolution.played,
                 )
-                return
+                self._publish_playback_commits(resolution.commits)
+                self._log_playback_finalizations(history.drain_finalizations())
+            finally:
+                if playback_admission_id:
+                    self.supervisor.finish_playback(playback_admission_id)
+                self._playback_effect_changed.notify_all()
+
+    def _rollback_registered_playback(self, fragment_id: str) -> None:
+        """Resolve a history fragment when transfer to the resume ledger fails."""
+
+        history = self._playback_history
+        if history is None:
+            return
+        resolution = history.force_fail(fragment_id)
+        if resolution is not None:
             self._resume.note_playback_receipt(
                 resolution.fragment_id,
                 resolution.safe_text_prefix,
                 played=resolution.played,
             )
             self._publish_playback_commits(resolution.commits)
-            self._playback_effect_changed.notify_all()
-            self._log_playback_finalizations(history.drain_finalizations())
+        self._log_playback_finalizations(history.drain_finalizations())
+        self._playback_effect_changed.notify_all()
 
     @staticmethod
     def _log_playback_finalizations(
@@ -1275,6 +1351,9 @@ class VoiceRuntime:
                     "epoch": epoch,
                     "auxiliary_tts": True,
                     "aux_tts_id": aux_tts_id,
+                    **self.supervisor.auxiliary_tts_identity_payload(
+                        aux_tts_id
+                    ),
                 }
             )
             self.bus.publish(
@@ -2466,6 +2545,195 @@ class VoiceRuntime:
             )
         )
 
+    def _play_admitted_tts(
+        self,
+        event: AgentEvent,
+        *,
+        text: str,
+        task_id: str,
+        epoch: object,
+        auxiliary_tts: bool,
+        aux_tts_id: str,
+        playback_admission: PlaybackAdmission,
+    ) -> tuple[tuple[str, bool] | None, str, str]:
+        """Own one playback admission until sink or history transfer succeeds."""
+
+        admission_owned = True
+        auxiliary_consumed = False
+        output_consumed = False
+        handoff_succeeded = False
+        admitted_output: tuple[str, bool] | None = None
+        admitted_reminder_id = ""
+        admitted_reminder_token = ""
+        style = None
+        try:
+            if self._reply_voice_continuity is not None:
+                reply = None
+                if (
+                    not auxiliary_tts
+                    and task_id
+                    and epoch is not None
+                    and bool(event.payload.get("streaming", False))
+                ):
+                    reply = ReplySpeechId(task_id=task_id, epoch=int(epoch))
+                prepared = self._reply_voice_continuity.prepare(
+                    text,
+                    reply=reply,
+                )
+                text = prepared.text.strip()
+                style = prepared.style
+                if not text:
+                    return None, "", ""
+
+            if auxiliary_tts:
+                if event.payload.get("reminder_due") is True:
+                    reminder_id = str(
+                        event.payload.get("reminder_id", "") or ""
+                    )
+                    reminder_token = str(
+                        event.payload.get("reminder_claim_token", "") or ""
+                    )
+                    try:
+                        reminder_committed = bool(
+                            self._reminder_manager is not None
+                            and self._reminder_manager.renew_voice_claim(
+                                reminder_id,
+                                claim_token=reminder_token,
+                            )
+                        )
+                    except Exception:  # noqa: BLE001 - retry after claim lease
+                        reminder_committed = False
+                        log.exception("reminder voice-announcement commit failed")
+                    if not reminder_committed:
+                        log.debug("dropping stale reminder voice claim")
+                        return None, "", ""
+                    admitted_reminder_id = reminder_id
+                    admitted_reminder_token = reminder_token
+                self.supervisor.note_aux_tts_admitted(aux_tts_id)
+                auxiliary_consumed = True
+            elif not event.payload.get("latency_ack", False):
+                admitted_output = self.supervisor.note_tts_admitted(
+                    task_id,
+                    epoch,
+                    text,
+                )
+                output_consumed = True
+
+            metrics_turn_token = event.payload.get("metrics_turn_token")
+            if metrics_turn_token is None:
+                self.metrics.mark(TTS_REQUESTED)
+            else:
+                self.metrics.mark(
+                    TTS_REQUESTED,
+                    turn_token=metrics_turn_token,
+                )
+            log.info(
+                "assistant: %r",
+                text,
+                extra={"transcript": {"role": "assistant", "text": text}},
+            )
+
+            if self._playback_history is None:
+                self._resume.note_spoken(text)
+                self.engine.speak(text)
+                handoff_succeeded = True
+            else:
+                epoch_value = int(
+                    epoch if epoch is not None else self.supervisor.speech_epoch
+                )
+                streaming = bool(
+                    not auxiliary_tts and task_id and admitted_output is None
+                )
+                is_followup = bool(
+                    admitted_output[1]
+                    if admitted_output is not None
+                    else event.payload.get("followup", False)
+                )
+                with self._playback_effect_lock:
+                    fragment_id = self._playback_history.register(
+                        task_id=task_id,
+                        epoch=epoch_value,
+                        input_generation=int(
+                            event.payload.get("input_generation")
+                            if event.payload.get("input_generation") is not None
+                            else self.supervisor.latest_arrival_generation
+                        ),
+                        followup_generation=self.supervisor.followup_generation,
+                        text=text,
+                        remember=bool(not auxiliary_tts and task_id),
+                        is_followup=is_followup,
+                        streaming=streaming,
+                        playback_admission_id=(
+                            playback_admission.playback_admission_id
+                        ),
+                        session_id=playback_admission.identity.session_id,
+                        turn_id=playback_admission.identity.turn_id,
+                        revision=playback_admission.identity.revision,
+                        cancel_generation=(
+                            playback_admission.identity.cancel_generation
+                        ),
+                    )
+                    try:
+                        # Both ledgers must own the fragment before the engine
+                        # can synchronously callback from speak_tracked().
+                        self._resume.stage_playback(fragment_id, text)
+                    except BaseException:
+                        try:
+                            self._rollback_registered_playback(fragment_id)
+                        except Exception:  # noqa: BLE001 - retain stage failure
+                            log.exception(
+                                "failed to roll back staged playback %s",
+                                fragment_id,
+                            )
+                        raise
+                    # Actor capacity now belongs to the receipt ledger.
+                    admission_owned = False
+                try:
+                    self.engine.speak_tracked(
+                        TrackedSpeech(
+                            fragment_id=fragment_id,
+                            text=text,
+                            style=style,
+                        ),
+                        on_started=self._on_playback_started,
+                        on_terminal=self._on_playback_terminal,
+                    )
+                    handoff_succeeded = True
+                except Exception:
+                    self._on_playback_terminal(
+                        PlaybackReceipt(
+                            fragment_id=fragment_id,
+                            outcome=PlaybackOutcome.FAILED,
+                        )
+                    )
+                    raise
+            return (
+                admitted_output,
+                admitted_reminder_id,
+                admitted_reminder_token,
+            )
+        finally:
+            if admission_owned:
+                self.supervisor.finish_playback(
+                    playback_admission.playback_admission_id
+                )
+            if auxiliary_tts and not auxiliary_consumed:
+                self.supervisor.note_aux_tts_admitted(aux_tts_id)
+            if not auxiliary_tts and not output_consumed:
+                self.supervisor.note_tts_rejected(task_id)
+            if (
+                admitted_reminder_id
+                and not handoff_succeeded
+                and self._reminder_manager is not None
+            ):
+                try:
+                    self._reminder_manager.release_voice_announcement(
+                        admitted_reminder_id,
+                        claim_token=admitted_reminder_token,
+                    )
+                except Exception:  # noqa: BLE001 - retain primary failure
+                    log.exception("reminder voice claim release failed")
+
     # --- bus subscriber ---
     def _on_event(self, event: AgentEvent) -> None:
         if (
@@ -2594,7 +2862,6 @@ class VoiceRuntime:
             text = str(event.payload.get("text", "")).strip()
             if not text:
                 return
-            style = None
             admitted_output: tuple[str, bool] | None = None
             admitted_reminder_id = ""
             admitted_reminder_token = ""
@@ -2623,158 +2890,42 @@ class VoiceRuntime:
                         # unique ID registered would keep wait_idle/follow-ups
                         # blocked forever after a cancellation race.
                         self.supervisor.note_aux_tts_admitted(aux_tts_id)
+                    else:
+                        self.supervisor.note_tts_rejected(task_id)
                     log.debug(
                         "dropping stale TTS_REQUEST (task_id=%r): %r",
                         task_id,
                         text,
                     )
                     return
-                if self._reply_voice_continuity is not None:
-                    reply = None
-                    if (
-                        not auxiliary_tts
-                        and task_id
-                        and epoch is not None
-                        and bool(event.payload.get("streaming", False))
-                    ):
-                        reply = ReplySpeechId(task_id=task_id, epoch=int(epoch))
-                    prepared = self._reply_voice_continuity.prepare(
-                        text,
-                        reply=reply,
-                    )
-                    text = prepared.text.strip()
-                    style = prepared.style
-                    # A standalone style tag may establish the reply's voice,
-                    # but it is not speech and must not mark the task audible.
-                    if not text:
-                        if auxiliary_tts:
-                            self.supervisor.note_aux_tts_admitted(aux_tts_id)
-                        return
-                if auxiliary_tts:
-                    if event.payload.get("reminder_due") is True:
-                        reminder_id = str(
-                            event.payload.get("reminder_id", "") or ""
-                        )
-                        reminder_token = str(
-                            event.payload.get("reminder_claim_token", "") or ""
-                        )
-                        try:
-                            reminder_committed = bool(
-                                self._reminder_manager is not None
-                                and self._reminder_manager.renew_voice_claim(
-                                    reminder_id,
-                                    claim_token=reminder_token,
-                                )
-                            )
-                        except Exception:  # noqa: BLE001 - retry after claim lease
-                            reminder_committed = False
-                            log.exception("reminder voice-announcement commit failed")
-                        if not reminder_committed:
-                            self.supervisor.note_aux_tts_admitted(aux_tts_id)
-                            log.debug("dropping stale reminder voice claim")
-                            return
-                        admitted_reminder_id = reminder_id
-                        admitted_reminder_token = reminder_token
-                    self.supervisor.note_aux_tts_admitted(aux_tts_id)
-                elif not event.payload.get("latency_ack", False):
-                    admitted_output = self.supervisor.note_tts_admitted(
-                        task_id,
-                        epoch,
-                        text,
-                    )
-                metrics_turn_token = event.payload.get("metrics_turn_token")
-                if metrics_turn_token is None:
-                    self.metrics.mark(TTS_REQUESTED)
-                else:
-                    self.metrics.mark(
-                        TTS_REQUESTED,
-                        turn_token=metrics_turn_token,
-                    )
-                log.info(
-                    "assistant: %r", text,
-                    extra={"transcript": {"role": "assistant", "text": text}},
+                playback_admission = self.supervisor.admit_playback(
+                    event.payload,
+                    task_id=task_id,
+                    auxiliary_tts=auxiliary_tts,
+                    aux_tts_id=aux_tts_id,
                 )
-                if self._playback_history is None:
-                    # Legacy engines expose admission, not sink-drain truth.
-                    self._resume.note_spoken(text)
-                    try:
-                        self.engine.speak(text)
-                    except Exception:
-                        if admitted_reminder_id and self._reminder_manager is not None:
-                            try:
-                                self._reminder_manager.release_voice_announcement(
-                                    admitted_reminder_id,
-                                    claim_token=admitted_reminder_token,
-                                )
-                            except Exception:  # noqa: BLE001 - keep engine error primary
-                                log.exception("reminder voice claim release failed")
-                        raise
-                else:
-                    epoch_value = int(
-                        epoch if epoch is not None else self.supervisor.speech_epoch
+                if playback_admission is None:
+                    if auxiliary_tts:
+                        self.supervisor.note_aux_tts_admitted(aux_tts_id)
+                    log.debug(
+                        "dropping unowned/bounded TTS_REQUEST (task_id=%r): %r",
+                        task_id,
+                        text,
                     )
-                    streaming = bool(
-                        not auxiliary_tts and task_id and admitted_output is None
-                    )
-                    is_followup = bool(
-                        admitted_output[1]
-                        if admitted_output is not None
-                        else event.payload.get("followup", False)
-                    )
-                    with self._playback_effect_lock:
-                        fragment_id = self._playback_history.register(
-                            task_id=task_id,
-                            epoch=epoch_value,
-                            input_generation=int(
-                                event.payload.get("input_generation")
-                                if event.payload.get("input_generation") is not None
-                                else self.supervisor.latest_arrival_generation
-                            ),
-                            followup_generation=self.supervisor.followup_generation,
-                            text=text,
-                            remember=bool(not auxiliary_tts and task_id),
-                            is_followup=is_followup,
-                            streaming=streaming,
-                        )
-                        # Register with both ledgers before the engine call: a
-                        # deterministic engine may start and terminally receipt
-                        # synchronously inside speak_tracked(). The shared effect
-                        # lock prevents a newer conversation barrier from passing
-                        # between admission and ledger registration.
-                        self._resume.stage_playback(fragment_id, text)
-                    # Do not hold the effect lock across the adapter call: a
-                    # compliant adapter may synchronously wait for a callback
-                    # dispatched on another thread, and callbacks acquire that
-                    # same lock while applying their effects.
-                    try:
-                        self.engine.speak_tracked(
-                            TrackedSpeech(
-                                fragment_id=fragment_id,
-                                text=text,
-                                style=style,
-                            ),
-                            on_started=self._on_playback_started,
-                            on_terminal=self._on_playback_terminal,
-                        )
-                    except Exception:
-                        # The capability contract requires a terminal for every
-                        # accepted call. Resolve a failed handoff with no prefix
-                        # so wait_idle cannot leak permanently.
-                        self._on_playback_terminal(
-                            PlaybackReceipt(
-                                fragment_id=fragment_id,
-                                outcome=PlaybackOutcome.FAILED,
-                            )
-                        )
-                        if admitted_reminder_id and self._reminder_manager is not None:
-                            try:
-                                self._reminder_manager.release_voice_announcement(
-                                    admitted_reminder_id,
-                                    claim_token=admitted_reminder_token,
-                                )
-                            except Exception:  # noqa: BLE001 - keep engine error primary
-                                log.exception("reminder voice claim release failed")
-                        raise
+                    return
+                (
+                    admitted_output,
+                    admitted_reminder_id,
+                    admitted_reminder_token,
+                ) = self._play_admitted_tts(
+                    event,
+                    text=text,
+                    task_id=task_id,
+                    epoch=epoch,
+                    auxiliary_tts=auxiliary_tts,
+                    aux_tts_id=aux_tts_id,
+                    playback_admission=playback_admission,
+                )
             if admitted_reminder_id and self._reminder_manager is not None:
                 try:
                     committed = self._reminder_manager.mark_voice_announced(
@@ -2838,7 +2989,11 @@ class VoiceRuntime:
         (``run_bus=False``) pumps the queue from this thread."""
 
         def _playback_quiet() -> bool:
-            if not include_playback or self._playback_history is None:
+            if not include_playback:
+                return True
+            if self.supervisor.session_actor.active_playback_count:
+                return False
+            if self._playback_history is None:
                 return True
             with self._playback_effect_lock:
                 return bool(
@@ -2854,6 +3009,7 @@ class VoiceRuntime:
                 and not self.supervisor.state.pending_audio_tasks
                 and not self.supervisor.state.pending_aux_tts
                 and not self.supervisor.state.queued_tasks
+                and self.supervisor.session_actor.active_tool_count == 0
                 and _playback_quiet()
             )
 

@@ -130,6 +130,8 @@ class CapabilityInvocation:
     planner_tool: bool
     timestamp: float
     monotonic: float
+    tool_call_id: str = ""
+    idempotency_key: str = ""
     result: CapabilityInvocationResult | None = None
 
 
@@ -277,6 +279,8 @@ class CapabilityRegistry:
             "query": query,
             "task_id": str(context.get("task_id", "") or ""),
             "planner_tool": bool(spec is not None and spec.planner_tool),
+            "tool_call_id": str(context.get("tool_call_id", "") or ""),
+            "idempotency_key": str(context.get("idempotency_key", "") or ""),
         }
         self._notify_invocation(
             CapabilityInvocation(

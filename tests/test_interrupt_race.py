@@ -334,3 +334,49 @@ def test_barge_in_during_drain_does_not_resurrect_queued_task(monkeypatch):
 
     assert started == [], "a queued task was resurrected after a mid-drain barge-in"
     assert task.task_id not in sup.state.active_tasks
+
+
+def test_epoch_race_cancels_remaining_and_tail_then_reuses_tiny_actor(
+    monkeypatch,
+):
+    """A stale snapshot can contain both already-deferred and unvisited work."""
+    from always_on_agent.session_actor import SessionActor
+    from always_on_agent.supervisor import AgentSupervisor
+    from always_on_agent.tasks import TaskRuntime
+
+    sup = AgentSupervisor()
+    actor = SessionActor(
+        session_id="queued-race",
+        max_remembered_tasks=2,
+    )
+    sup.session_actor = actor
+    sup.tasks = TaskRuntime(
+        sup.publish,
+        sup.capabilities,
+        session_actor=actor,
+    )
+    first = _make_task(sup)
+    second = _make_task(sup)
+    sup.state.queued_tasks.extend((first, second))
+    calls = 0
+
+    def defer_then_barge(task):
+        nonlocal calls
+        calls += 1
+        assert calls == 1 and task is first
+        # The snapshot is absent from queued_tasks while the drain is unlocked,
+        # so cancel_all can only advance the epoch. The drain owns cleanup.
+        sup.cancel_all()
+        return True
+
+    monkeypatch.setattr(sup, "_should_queue", defer_then_barge)
+
+    sup._start_queued_tasks()  # noqa: SLF001
+
+    assert first.cancel_event.is_set()
+    assert second.cancel_event.is_set()
+    assert sup.state.queued_tasks == []
+    assert actor.snapshot().remembered_tasks == 0
+    replacements = (_make_task(sup), _make_task(sup))
+    assert all(task.identity is not None for task in replacements)
+    assert actor.snapshot().remembered_tasks == 2

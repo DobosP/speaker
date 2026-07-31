@@ -23,6 +23,7 @@ DEFAULT_TASK_TIMEOUTS: dict[str, float] = {
     "meeting": 30.0,
 }
 _FALLBACK_TASK_TIMEOUT = 60.0
+_TOOL_SHUTDOWN_DRAIN_SEC = 0.25
 
 # Spoken when a turn is reaped for exceeding its deadline, so a timed-out turn
 # isn't just dead air.
@@ -68,6 +69,13 @@ from .followups import FollowupConfig, FollowupState
 from .memory import Memory, SessionMemory
 from .models import IntentDecision, IntentKind, SpeechObservation
 from .origin import Origin, combine
+from .session_actor import (
+    AdmissionRejected,
+    PlaybackAdmission,
+    SessionActor,
+    TaskIdentity,
+    TurnIdentity,
+)
 from .speech_analyzer import LiveSpeechAnalyzer
 from .tasks import AgentTask, TaskRuntime
 
@@ -90,7 +98,7 @@ class SupervisorState:
     # until runtime TTS admission marks actual first audio.
     pending_audio_tasks: dict[str, AgentTask] = field(default_factory=dict)
     pending_aux_tts: dict[
-        str, tuple[int, int | None, int | None]
+        str, tuple[int, int | None, int | None, TaskIdentity, str]
     ] = field(default_factory=dict)
     queued_tasks: list[AgentTask] = field(default_factory=list)
     pending_confirmations: dict[str, AgentTask] = field(default_factory=dict)
@@ -101,6 +109,7 @@ class SupervisorState:
     turn_owner_verified: bool = False
     turn_origin: str = "unknown"
     turn_metadata: dict[str, object] = field(default_factory=dict)
+    turn_identity: TurnIdentity | None = None
     spoken_outputs: "deque[str]" = field(default_factory=lambda: deque(maxlen=512))
     event_log: "deque[AgentEvent]" = field(default_factory=lambda: deque(maxlen=1024))
     failures: "deque[str]" = field(default_factory=lambda: deque(maxlen=128))
@@ -159,7 +168,13 @@ class AgentSupervisor:
         self.memory = memory or SessionMemory()
         self.capabilities = capabilities or create_default_capabilities(self.memory)
         self.analyzer = analyzer or LiveSpeechAnalyzer()
-        self.tasks = TaskRuntime(self.publish, self.capabilities, stream_tts=stream_tts)
+        self.session_actor = SessionActor()
+        self.tasks = TaskRuntime(
+            self.publish,
+            self.capabilities,
+            stream_tts=stream_tts,
+            session_actor=self.session_actor,
+        )
         self.followups = followup_config or FollowupConfig()
         # ADD-ON / continuation: detect a follow-up that extends the in-flight
         # turn and merge it instead of spawning a competing cold task. Default
@@ -218,6 +233,7 @@ class AgentSupervisor:
         self._max_queued_tasks = max(1, int(max_queued_tasks))
         self._queue_overflow_announced = False
         self._next_aux_tts = 0
+        self._pending_output_bindings: set[str] = set()
         self._retired_tts_tasks: set[str] = set()
         self._retired_tts_order: deque[str] = deque()
         self._followup_state = FollowupState(
@@ -243,7 +259,7 @@ class AgentSupervisor:
         self._cancel_lock = Lock()
         # Bumped on every cancel_all. A TTS_REQUEST stamped with an older epoch
         # (i.e. produced by an interrupted turn) must not reach ``engine.speak``.
-        self.speech_epoch = 0
+        self.speech_epoch = self.session_actor.cancel_generation
         # Bumped only when external control (barge/stop/shutdown) invalidates
         # finals that may already be dequeued but have not registered a task.
         # Internal newest-turn/continuation cancellation still advances the
@@ -271,7 +287,7 @@ class AgentSupervisor:
     def has_live_tasks(self) -> bool:
         """Whether uncancelled active/queued work can still produce output."""
         with self._cancel_lock:
-            return any(
+            speech_work = any(
                 not task.cancel_event.is_set()
                 for task in self.state.active_tasks.values()
             ) or any(
@@ -281,6 +297,7 @@ class AgentSupervisor:
                 not task.cancel_event.is_set()
                 for task in self.state.queued_tasks
             )
+        return bool(speech_work or self.session_actor.active_tool_count)
 
     @property
     def followup_generation(self) -> int:
@@ -367,6 +384,9 @@ class AgentSupervisor:
                     return None
                 self.state.queued_tasks.remove(queued_continuation)
                 queued_continuation.cancel()
+                self._release_task_binding_if_unowned_locked(
+                    queued_continuation.task_id
+                )
                 return ArrivalContinuation(
                     victim_task_id=victim.task_id,
                     origin=origin,
@@ -400,10 +420,12 @@ class AgentSupervisor:
                 return None
             merge_before_audio = not victim.started_speaking
             if merge_before_audio:
-                self.speech_epoch += 1
+                self._cancel_speech_locked()
                 self.state.active_tasks.pop(victim.task_id, None)
                 self.state.pending_audio_tasks.pop(victim.task_id, None)
+                self._pending_output_bindings.discard(victim.task_id)
                 victim.cancel()
+                self._release_task_binding_if_unowned_locked(victim.task_id)
             return ArrivalContinuation(
                 victim_task_id=victim.task_id,
                 origin=origin,
@@ -482,10 +504,11 @@ class AgentSupervisor:
                     ),
                     awaiting_addon=True,
                 )
-            self.speech_epoch += 1
+            self._cancel_speech_locked()
             for task in candidates:
                 self.state.active_tasks.pop(task.task_id, None)
                 self.state.pending_audio_tasks.pop(task.task_id, None)
+                self._pending_output_bindings.discard(task.task_id)
                 task.cancel()
                 self._retire_task_tts_locked(task.task_id)
             self.state.queued_tasks = [
@@ -493,6 +516,8 @@ class AgentSupervisor:
                 for task in self.state.queued_tasks
                 if task.task_id not in unique
             ]
+            for task in candidates:
+                self._release_task_binding_if_unowned_locked(task.task_id)
             return reservation
 
     @property
@@ -683,10 +708,23 @@ class AgentSupervisor:
             return
         if event.kind == EventKind.STT_FINAL:
             metadata = event.payload.get("metadata")
+            final_metadata = (
+                dict(metadata) if isinstance(metadata, Mapping) else {}
+            )
+            # Revision is controller-owned acoustic identity, not caller
+            # metadata. Untyped/legacy finals explicitly enter revision zero.
+            raw_revision = event.payload.get("revision", 0)
+            try:
+                revision = int(raw_revision)
+            except (TypeError, ValueError):
+                log.warning("dropping final with invalid revision %r", raw_revision)
+                return
+            if isinstance(raw_revision, bool) or revision < 0:
+                log.warning("dropping final with invalid revision %r", raw_revision)
+                return
+            final_metadata["revision"] = revision
             generation = (
-                metadata.get("input_generation")
-                if isinstance(metadata, Mapping)
-                else None
+                final_metadata.get("input_generation")
             )
             try:
                 if self._on_input_claimed is not None and generation is not None:
@@ -696,7 +734,7 @@ class AgentSupervisor:
                     is_final=True,
                     owner_verified=(event.payload.get("owner_verified") is True),
                     origin=str(event.payload.get("origin", "unknown")),
-                    metadata=metadata,
+                    metadata=final_metadata,
                 )
             finally:
                 if self._on_input_resolved is not None and generation is not None:
@@ -773,6 +811,7 @@ class AgentSupervisor:
                 self.state.active_tasks.pop(task_id, None)
                 self.state.pending_audio_tasks.pop(task_id, None)
                 self._retire_task_tts_locked(task_id)
+                self._release_task_binding_if_unowned_locked(task_id)
             self._start_queued_tasks()
             return
         if event.kind == EventKind.TASK_FAILED:
@@ -805,9 +844,12 @@ class AgentSupervisor:
                             "epoch": event.payload.get("epoch", self.speech_epoch),
                             "auxiliary_tts": True,
                             "aux_tts_id": aux_tts_id,
+                            **self._event_identity_payload(event.payload),
                         },
                     )
                 )
+            with self._cancel_lock:
+                self._release_task_binding_if_unowned_locked(task_id)
             self._start_queued_tasks()
             return
         if event.kind == EventKind.TTS_STREAM_END:
@@ -854,10 +896,40 @@ class AgentSupervisor:
             self._followup_shutdown = True
             self._cancel_followup_locked()
         self.cancel_all()
+        self.session_actor.shutdown()
+        tool_deadline = time.monotonic() + _TOOL_SHUTDOWN_DRAIN_SEC
+        while (
+            self.session_actor.active_tool_count
+            and time.monotonic() < tool_deadline
+        ):
+            time.sleep(0.005)
+        remaining_tools = self.session_actor.active_tool_count
+        remaining_playbacks = self.session_actor.active_playback_count
+        if remaining_tools or remaining_playbacks:
+            log.warning(
+                "session shutdown bounded drain ended with %d tool call(s) "
+                "and %d playback admission(s) still active",
+                remaining_tools,
+                remaining_playbacks,
+            )
         # Lifecycle publications are intentionally gated once _stopped is set,
         # so no late TASK_CANCELLED event remains to reap these references.
         with self._cancel_lock:
+            active_binding_ids = tuple(self.state.active_tasks)
             self.state.active_tasks.clear()
+            for task_id in active_binding_ids:
+                self._release_task_binding_if_unowned_locked(task_id)
+
+    def _cancel_speech_locked(self) -> int:
+        """Advance the actor-owned output fence while ``_cancel_lock`` is held."""
+
+        self.speech_epoch = self.session_actor.cancel_speech()
+        return self.speech_epoch
+
+    def cancel_tool_call(self, tool_call_id: str) -> bool:
+        """Explicitly cancel one mutating tool without changing speech state."""
+
+        return self.tasks.cancel_tool_call(tool_call_id)
 
     def cancel_all(self, *, invalidate_inputs: bool = True) -> None:
         """Preempt every active/queued/pending task. Safe to call from the audio
@@ -867,7 +939,11 @@ class AgentSupervisor:
         lock* so that, the instant this returns, no in-flight task can be treated
         as active and no prior-epoch sentence will be spoken. ``task.cancel()``
         only sets an :class:`Event`, so the lock is never held across blocking
-        work (no engine call, no ``stop_speaking()``, no thread join)."""
+        work (no engine call, no ``stop_speaking()``, no thread join). A
+        provider-started mutation owns a separate tool Event and is cancelled
+        only through :meth:`cancel_tool_call`; its later task result remains
+        speech-suppressed. A mutation still waiting to claim provider start is
+        cancelled by this speech-generation transition."""
         with self._cancel_lock:
             self._cancel_all_locked(invalidate_inputs=invalidate_inputs)
         self._after_cancel_all()
@@ -887,7 +963,14 @@ class AgentSupervisor:
         return True
 
     def _cancel_all_locked(self, *, invalidate_inputs: bool) -> None:
-        self.speech_epoch += 1
+        self._cancel_speech_locked()
+        release_candidates = set(self.state.pending_audio_tasks)
+        release_candidates.update(task.task_id for task in self.state.queued_tasks)
+        release_candidates.update(self.state.pending_confirmations)
+        release_candidates.update(
+            pending[4] for pending in self.state.pending_aux_tts.values()
+        )
+        release_candidates.update(self._pending_output_bindings)
         if invalidate_inputs:
             self.input_epoch += 1
         log.info(
@@ -908,6 +991,7 @@ class AgentSupervisor:
             self._retire_task_tts_locked(task.task_id)
         self.state.pending_audio_tasks.clear()
         self.state.pending_aux_tts.clear()
+        self._pending_output_bindings.clear()
         for task in self.state.queued_tasks:
             task.cancel()
             self._retire_task_tts_locked(task.task_id)
@@ -916,6 +1000,8 @@ class AgentSupervisor:
             task.cancel()
             self._retire_task_tts_locked(task.task_id)
         self.state.pending_confirmations.clear()
+        for task_id in release_candidates:
+            self._release_task_binding_if_unowned_locked(task_id)
 
     def _after_cancel_all(self) -> None:
         # Timer cancellation is independent of the in-memory cancel lock.
@@ -960,6 +1046,26 @@ class AgentSupervisor:
             expired = self._retired_tts_order.popleft()
             self._retired_tts_tasks.discard(expired)
 
+    def _task_binding_owned_locked(self, task_id: str) -> bool:
+        """Whether controller state can still emit/admit work for a binding."""
+
+        return bool(
+            task_id in self.state.active_tasks
+            or task_id in self.state.pending_audio_tasks
+            or task_id in self.state.pending_confirmations
+            or task_id in self._pending_output_bindings
+            or any(task.task_id == task_id for task in self.state.queued_tasks)
+            or any(
+                pending[4] == task_id
+                for pending in self.state.pending_aux_tts.values()
+            )
+        )
+
+    def _release_task_binding_if_unowned_locked(self, task_id: str) -> bool:
+        if not task_id or self._task_binding_owned_locked(task_id):
+            return False
+        return self.tasks.release_task_binding(task_id)
+
     def _register_aux_tts_locked(
         self,
         task_id: str,
@@ -972,6 +1078,16 @@ class AgentSupervisor:
             return ""
         self._next_aux_tts += 1
         aux_tts_id = f"{task_id}:{self._next_aux_tts}"
+        identity = self.session_actor.identity_for_task(task_id)
+        identity_task_id = task_id
+        if identity is None:
+            turn = self.state.turn_identity or self.session_actor.open_turn(
+                revision=0
+            )
+            # Auxiliary sources (for example a due reminder) need identity too,
+            # but need not occupy a task-execution slot.
+            identity = self.session_actor.bind_task(aux_tts_id, turn)
+            identity_task_id = aux_tts_id
         self.state.pending_aux_tts[aux_tts_id] = (
             int(speech_epoch) if speech_epoch is not None else self.speech_epoch,
             (
@@ -980,6 +1096,8 @@ class AgentSupervisor:
                 else self.latest_arrival_generation
             ),
             int(input_epoch) if input_epoch is not None else self.input_epoch,
+            identity,
+            identity_task_id,
         )
         return aux_tts_id
 
@@ -1002,7 +1120,12 @@ class AgentSupervisor:
     def cancel_pending_aux_tts(self) -> None:
         """Retire queued ack/apology/clarify audio without touching tasks."""
         with self._cancel_lock:
+            binding_ids = {
+                pending[4] for pending in self.state.pending_aux_tts.values()
+            }
             self.state.pending_aux_tts.clear()
+            for binding_id in binding_ids:
+                self._release_task_binding_if_unowned_locked(binding_id)
 
     def auxiliary_tts_allowed(
         self,
@@ -1013,7 +1136,13 @@ class AgentSupervisor:
             identity = self.state.pending_aux_tts.get(aux_tts_id)
             if identity is None:
                 return False
-            registered_speech_epoch, input_generation, input_epoch = identity
+            (
+                registered_speech_epoch,
+                input_generation,
+                input_epoch,
+                _task_identity,
+                _identity_task_id,
+            ) = identity
             return bool(
                 registered_speech_epoch >= self.speech_epoch
                 and (epoch is None or int(epoch) >= self.speech_epoch)
@@ -1026,7 +1155,125 @@ class AgentSupervisor:
 
     def note_aux_tts_admitted(self, aux_tts_id: str) -> None:
         with self._cancel_lock:
-            self.state.pending_aux_tts.pop(aux_tts_id, None)
+            pending = self.state.pending_aux_tts.pop(aux_tts_id, None)
+            if pending is not None:
+                self._release_task_binding_if_unowned_locked(pending[4])
+
+    def auxiliary_tts_identity_payload(
+        self, aux_tts_id: str
+    ) -> dict[str, object]:
+        with self._cancel_lock:
+            pending = self.state.pending_aux_tts.get(aux_tts_id)
+            return pending[3].to_payload() if pending is not None else {}
+
+    def admit_playback(
+        self,
+        payload: Mapping[str, object],
+        *,
+        task_id: str,
+        auxiliary_tts: bool,
+        aux_tts_id: str,
+    ) -> PlaybackAdmission | None:
+        """Require actor-owned identity at the final speech-output boundary."""
+
+        with self._cancel_lock:
+            identity: TaskIdentity | None = None
+            identity_task_id = ""
+            identity_fields = (
+                "session_id",
+                "turn_id",
+                "revision",
+                "cancel_generation",
+            )
+            carries_identity = any(field in payload for field in identity_fields)
+            if auxiliary_tts:
+                pending = self.state.pending_aux_tts.get(aux_tts_id)
+                if pending is not None:
+                    identity = pending[3]
+                    identity_task_id = pending[4]
+                if carries_identity:
+                    try:
+                        carried = TaskIdentity.from_payload(payload)
+                    except (TypeError, ValueError):
+                        carried = None
+                    if identity is None or carried != identity:
+                        identity = None
+            else:
+                known = self.session_actor.identity_for_task(task_id)
+                if carries_identity:
+                    try:
+                        carried = TaskIdentity.from_payload(payload)
+                    except (TypeError, ValueError):
+                        carried = None
+                    if known is not None and carried == known:
+                        identity = carried
+                        identity_task_id = task_id
+                else:
+                    # Compatibility for direct in-process callers: production
+                    # task emitters always carry the explicit four-field payload.
+                    identity = known
+                    identity_task_id = task_id
+                    if identity is None:
+                        self._next_aux_tts += 1
+                        turn = (
+                            self.state.turn_identity
+                            or self.session_actor.open_turn(revision=0)
+                        )
+                        identity = self.session_actor.bind_task(
+                            f"legacy-tts:{task_id or 'direct'}:{self._next_aux_tts}",
+                            turn,
+                        )
+                        identity_task_id = (
+                            f"legacy-tts:{task_id or 'direct'}:{self._next_aux_tts}"
+                        )
+            if identity is None:
+                if not auxiliary_tts:
+                    self._pending_output_bindings.discard(task_id)
+                    task = self.state.pending_audio_tasks.get(task_id)
+                    if (
+                        task is not None
+                        and not task.metadata.get("stream_audio_pending")
+                    ):
+                        self.state.pending_audio_tasks.pop(task_id, None)
+                        self._retire_task_tts_locked(task_id)
+                    self._release_task_binding_if_unowned_locked(task_id)
+                return None
+            admission = self.session_actor.admit_playback(
+                task_id=identity_task_id,
+                identity=identity,
+            )
+            if not auxiliary_tts:
+                self._pending_output_bindings.discard(task_id)
+                if admission is None:
+                    task = self.state.pending_audio_tasks.get(task_id)
+                    if (
+                        task is not None
+                        and not task.metadata.get("stream_audio_pending")
+                    ):
+                        self.state.pending_audio_tasks.pop(task_id, None)
+                        self._retire_task_tts_locked(task_id)
+                self._release_task_binding_if_unowned_locked(task_id)
+                if identity_task_id != task_id:
+                    self._release_task_binding_if_unowned_locked(
+                        identity_task_id
+                    )
+            return admission
+
+    def finish_playback(self, playback_admission_id: str) -> None:
+        self.session_actor.finish_playback(playback_admission_id)
+
+    def note_tts_rejected(self, task_id: str) -> None:
+        """Release controller ownership for one terminally dropped TTS event."""
+
+        if not task_id:
+            return
+        with self._cancel_lock:
+            self._pending_output_bindings.discard(task_id)
+            task = self.state.pending_audio_tasks.get(task_id)
+            if task is not None and not task.metadata.get("stream_audio_pending"):
+                self.state.pending_audio_tasks.pop(task_id, None)
+                self._retire_task_tts_locked(task_id)
+            self._release_task_binding_if_unowned_locked(task_id)
 
     def note_tts_admitted(
         self,
@@ -1055,6 +1302,7 @@ class AgentSupervisor:
                     fragments.append(text)
             if not task.metadata.get("stream_audio_pending"):
                 self.state.pending_audio_tasks.pop(task_id, None)
+                self._release_task_binding_if_unowned_locked(task_id)
             pending_output = task.metadata.pop("pending_assistant_output", None)
             pending_followup = bool(
                 task.metadata.pop("pending_assistant_followup", False)
@@ -1301,7 +1549,10 @@ class AgentSupervisor:
             mode=Mode.ASSISTANT,
             speak=True,
         )
-        task = self._create_task(decision)
+        task = self._create_task(
+            decision,
+            turn_identity=self.session_actor.open_turn(revision=0),
+        )
         task.metadata["followup"] = True
         # A proactive follow-up is assistant-initiated (a synthetic "[silent]"
         # marker the owner never spoke), so it must NEVER carry the prior turn's
@@ -1330,6 +1581,7 @@ class AgentSupervisor:
                         "metrics_turn_token",
                         "input_epoch",
                         "input_generation",
+                        "revision",
                         "reserved_continuation",
                         "continuation_arrival_kind",
                         "continuation_merged_text",
@@ -1421,6 +1673,9 @@ class AgentSupervisor:
             self.state.turn_owner_verified = owner_verified is True
             self.state.turn_origin = str(origin)
             self.state.turn_metadata = turn_metadata
+            self.state.turn_identity = self.session_actor.open_turn(
+                revision=int(turn_metadata.get("revision", 0))
+            )
         self.state.observations.append(observation)
         if not observation.normalized:
             return
@@ -1496,11 +1751,19 @@ class AgentSupervisor:
                 for key in _RESERVED_CONTINUATION_KEYS:
                     self.state.turn_metadata.pop(key, None)
 
-    def _create_task(self, decision: IntentDecision) -> AgentTask:
+    def _create_task(
+        self,
+        decision: IntentDecision,
+        *,
+        turn_identity: TurnIdentity | None = None,
+    ) -> AgentTask:
         """Create a task and stamp it with the current turn's speaker-ID trust, so
         the capability layer's action chokepoint (always_on_agent.origin) sees
         owner_verified/origin. Fail-closed: defaults to the not-verified turn trust."""
-        task = self.tasks.create_task(decision)
+        task = self.tasks.create_task(
+            decision,
+            turn_identity=turn_identity or self.state.turn_identity,
+        )
         task.metadata.update(self.state.turn_metadata)
         # Stamp authority AFTER generic turn metadata so no custom analyzer or
         # event payload can override the controller-owned trust verdict.
@@ -1511,6 +1774,31 @@ class AgentSupervisor:
         )
         task.metadata["confirmed"] = False
         return task
+
+    @staticmethod
+    def _task_identity_payload(task: AgentTask) -> dict[str, object]:
+        if task.identity is None:
+            raise RuntimeError("task has no session identity")
+        return task.identity.to_payload()
+
+    @staticmethod
+    def _event_identity_payload(
+        payload: Mapping[str, object],
+    ) -> dict[str, object]:
+        fields = (
+            "session_id",
+            "turn_id",
+            "revision",
+            "cancel_generation",
+        )
+        # Only a truly legacy event may remain identity-less. Preserve partial
+        # or malformed fields verbatim so playback sees that identity was
+        # attempted and fails closed instead of taking the legacy upgrade path.
+        return {
+            field: payload[field]
+            for field in fields
+            if field in payload
+        }
 
     def _execute_decision(self, decision: IntentDecision) -> None:
         if (
@@ -1579,6 +1867,7 @@ class AgentSupervisor:
             with self._cancel_lock:
                 if not self._input_metadata_current_locked(task.metadata):
                     task.cancel()
+                    self._release_task_binding_if_unowned_locked(task.task_id)
                     return
                 self.state.pending_confirmations[task.task_id] = task
                 epoch = self.speech_epoch
@@ -1600,6 +1889,7 @@ class AgentSupervisor:
                         "confirmation_prompt": True,
                         "auxiliary_tts": True,
                         "aux_tts_id": aux_tts_id,
+                        **self._task_identity_payload(task),
                     },
                 )
             )
@@ -1627,6 +1917,7 @@ class AgentSupervisor:
         with self._cancel_lock:
             if not self._input_metadata_current_locked(task.metadata):
                 task.cancel()
+                self._release_task_binding_if_unowned_locked(task.task_id)
                 return True
             epoch = self.speech_epoch
             self.state.spoken_outputs.append(_CLARIFY_TEXT)
@@ -1646,6 +1937,7 @@ class AgentSupervisor:
                     "latency_clarify": True,
                     "auxiliary_tts": True,
                     "aux_tts_id": aux_tts_id,
+                    **self._task_identity_payload(task),
                 },
             )
         )
@@ -1667,6 +1959,7 @@ class AgentSupervisor:
             if not self._input_metadata_current_locked(task.metadata):
                 if pending_confirmation_id is None:
                     task.cancel()
+                    self._release_task_binding_if_unowned_locked(task.task_id)
                 return False
             if (
                 pending_confirmation_id is not None
@@ -1674,12 +1967,14 @@ class AgentSupervisor:
                     pending_confirmation_id
                 ) is not task
             ):
+                self._release_task_binding_if_unowned_locked(task.task_id)
                 return False
             # Drop a task whose cancel_event was set after it was queued (e.g. a
             # cancel_all / _cancel_one landed between the queue check and here):
             # never register or spawn a worker for an already-cancelled turn
             # (rc-4). The re-check under the lock is the authoritative drop.
             if task.cancel_event.is_set():
+                self._release_task_binding_if_unowned_locked(task.task_id)
                 return False
             # rc-4 residual window: a task snapshotted by _start_queued_tasks is
             # invisible to cancel_all (it's neither in active_tasks nor
@@ -1688,6 +1983,11 @@ class AgentSupervisor:
             # supersede advanced it since the drain started, drop the task rather
             # than resurrect a turn the user moved past.
             if expected_epoch is not None and self.speech_epoch != expected_epoch:
+                self._release_task_binding_if_unowned_locked(task.task_id)
+                return False
+            if not self.tasks.admit_task(task):
+                task.cancel()
+                self._release_task_binding_if_unowned_locked(task.task_id)
                 return False
             if pending_confirmation_id is not None:
                 self.state.pending_confirmations.pop(
@@ -1701,8 +2001,15 @@ class AgentSupervisor:
             self.state.active_tasks[task.task_id] = task
             epoch = task.speech_epoch
         self._emit_latency_ack(task, epoch)
-        self.tasks.start(task)
-        return True
+        if self.tasks.start(task) is not False:
+            return True
+        with self._cancel_lock:
+            self.state.active_tasks.pop(task.task_id, None)
+            task.cancel()
+        self.tasks.retire_task_admission(task.task_id)
+        with self._cancel_lock:
+            self._release_task_binding_if_unowned_locked(task.task_id)
+        return False
 
     def _emit_latency_ack(self, task: AgentTask, epoch: int) -> None:
         if task.metadata.get("latency_policy") != _ACK_THEN_THINK_POLICY:
@@ -1736,6 +2043,7 @@ class AgentSupervisor:
                     "latency_ack": True,
                     "auxiliary_tts": True,
                     "aux_tts_id": aux_tts_id,
+                    **self._task_identity_payload(task),
                 },
             )
         )
@@ -1769,12 +2077,17 @@ class AgentSupervisor:
         with self._cancel_lock:
             for task in list(self.state.active_tasks.values()):
                 if task.deadline_at and now >= task.deadline_at:
-                    self.state.active_tasks.pop(task.task_id, None)
-                    # Reserve the sole terminal event atomically with cancel so
-                    # the now-responsive task coordinator cannot publish a
-                    # duplicate TASK_CANCELLED while the watchdog is preparing
-                    # the authoritative ``reaped`` event below.
-                    if task.cancel_and_claim_terminal():
+                    # Claim task terminality and actor tool terminality as one
+                    # transition. The callback runs task-lock -> actor-lock;
+                    # SessionActor never calls into AgentTask, so there is no
+                    # inverse nesting. A completed/failed task that won first is
+                    # left in supervisor state for its queued lifecycle event.
+                    if task.cancel_and_claim_terminal(
+                        lambda task_id=task.task_id: (
+                            self.tasks.fence_task_tool_calls(task_id)
+                        )
+                    ):
+                        self.state.active_tasks.pop(task.task_id, None)
                         self._retire_task_tts_locked(task.task_id)
                         reaped.append(task)
             epoch = self.speech_epoch
@@ -1790,31 +2103,56 @@ class AgentSupervisor:
             # notes / a proactive follow-up). Stamped with the current epoch so a
             # barge-in still suppresses it.
             if task.metadata.get("speak", True) and not task.metadata.get("followup"):
-                self.state.spoken_outputs.append(_TIMEOUT_APOLOGY)
-                aux_tts_id = self.register_aux_tts(
-                    task.task_id,
-                    speech_epoch=epoch,
-                    input_generation=task.metadata.get("input_generation"),
-                    input_epoch=task.metadata.get("input_epoch"),
-                )
-                self.publish(
-                    AgentEvent(
-                        EventKind.TTS_REQUEST,
-                        {
-                            "task_id": task.task_id,
-                            "text": _TIMEOUT_APOLOGY,
-                            "epoch": epoch,
-                            "auxiliary_tts": True,
-                            "aux_tts_id": aux_tts_id,
-                        },
+                aux_tts_id = ""
+                try:
+                    aux_tts_id = self.register_aux_tts(
+                        task.task_id,
+                        speech_epoch=epoch,
+                        input_generation=task.metadata.get("input_generation"),
+                        input_epoch=task.metadata.get("input_epoch"),
                     )
-                )
+                    if not aux_tts_id:
+                        raise AdmissionRejected(
+                            "timeout apology identity was not admitted"
+                        )
+                    self.publish(
+                        AgentEvent(
+                            EventKind.TTS_REQUEST,
+                            {
+                                "task_id": task.task_id,
+                                "text": _TIMEOUT_APOLOGY,
+                                "epoch": epoch,
+                                "auxiliary_tts": True,
+                                "aux_tts_id": aux_tts_id,
+                                **self.auxiliary_tts_identity_payload(
+                                    aux_tts_id
+                                ),
+                            },
+                        )
+                    )
+                except AdmissionRejected:
+                    log.warning(
+                        "timeout apology omitted: actor identity capacity unavailable"
+                    )
+                    if aux_tts_id:
+                        self.note_aux_tts_admitted(aux_tts_id)
+                except Exception:  # noqa: BLE001 - lifecycle must still publish
+                    log.exception("timeout apology publication failed")
+                    if aux_tts_id:
+                        self.note_aux_tts_admitted(aux_tts_id)
+                else:
+                    self.state.spoken_outputs.append(_TIMEOUT_APOLOGY)
             # Drain the queue on the bus thread (TASK_CANCELLED -> _start_queued_tasks
             # there). priority 20 matches the normal cancellation lifecycle event.
             self.publish(
                 AgentEvent(
                     EventKind.TASK_CANCELLED,
-                    {"task_id": task.task_id, "mode": task.mode.value, "reaped": True},
+                    {
+                        "task_id": task.task_id,
+                        "mode": task.mode.value,
+                        "reaped": True,
+                        **self._task_identity_payload(task),
+                    },
                     priority=20,
                 )
             )
@@ -1866,9 +2204,13 @@ class AgentSupervisor:
                             "epoch": epoch,
                             "auxiliary_tts": True,
                             "aux_tts_id": aux_tts_id,
+                            **self._task_identity_payload(task),
                         },
                     )
                 )
+        with self._cancel_lock:
+            for task in expired:
+                self._release_task_binding_if_unowned_locked(task.task_id)
         return len(expired)
 
     def looks_like_continuation(self, text: str) -> bool:
@@ -2203,9 +2545,11 @@ class AgentSupervisor:
                 or task.cancel_event.is_set()
             ):
                 return False
-            self.speech_epoch += 1
+            self._cancel_speech_locked()
             self.state.active_tasks.pop(task.task_id, None)
+            self._pending_output_bindings.discard(task.task_id)
             task.cancel()
+            self._release_task_binding_if_unowned_locked(task.task_id)
             return True
 
     def _record_addon(self, addon: str) -> None:
@@ -2271,6 +2615,7 @@ class AgentSupervisor:
         with self._cancel_lock:
             if not self._input_metadata_current_locked(task.metadata):
                 task.cancel()
+                self._release_task_binding_if_unowned_locked(task.task_id)
                 return False
             self.state.queued_tasks.append(task)
             if len(self.state.queued_tasks) > self._max_queued_tasks:
@@ -2281,6 +2626,7 @@ class AgentSupervisor:
                 )
                 dropped = self.state.queued_tasks.pop(idx)
                 dropped.cancel()
+                self._release_task_binding_if_unowned_locked(dropped.task_id)
         if dropped is None:
             return True
         log.warning(
@@ -2307,13 +2653,24 @@ class AgentSupervisor:
             pending = list(self.state.queued_tasks)
             self.state.queued_tasks = []
         remaining: list[AgentTask] = []
-        for task in pending:
+        for index, task in enumerate(pending):
             # A barge-in/stop landed mid-drain (cancel_all/_cancel_one bumped the
             # epoch and already cleared the live queue + cancelled active work):
             # drop the rest of this stale pass instead of starting/re-queuing it.
             if self.speech_epoch != start_epoch:
+                with self._cancel_lock:
+                    # Earlier items may already have been classified into
+                    # ``remaining`` while this snapshot was invisible to
+                    # cancel_all. They are just as stale as the unvisited tail.
+                    for stale_task in (*remaining, *pending[index:]):
+                        stale_task.cancel()
+                        self._release_task_binding_if_unowned_locked(
+                            stale_task.task_id
+                        )
                 return
             if task.cancel_event.is_set():
+                with self._cancel_lock:
+                    self._release_task_binding_if_unowned_locked(task.task_id)
                 continue  # cancelled while queued -- drop it
             if self._should_queue(task):
                 remaining.append(task)
@@ -2330,6 +2687,11 @@ class AgentSupervisor:
             # otherwise strand `remaining` back onto a queue the user moved past;
             # re-check the epoch atomically with the re-queue and drop if stale.
             if self.speech_epoch != start_epoch:
+                for stale_task in remaining:
+                    stale_task.cancel()
+                    self._release_task_binding_if_unowned_locked(
+                        stale_task.task_id
+                    )
                 return
             # Re-queue the not-yet-runnable tasks AHEAD of anything appended
             # while we were unlocked, preserving FIFO order.
@@ -2438,10 +2800,13 @@ class AgentSupervisor:
             if not self.state.pending_confirmations:
                 self.state.spoken_outputs.append("Nothing to cancel.")
                 return
-            for task in self.state.pending_confirmations.values():
+            denied = tuple(self.state.pending_confirmations.values())
+            for task in denied:
                 task.cancel()
                 self._retire_task_tts_locked(task.task_id)
             self.state.pending_confirmations.clear()
+            for task in denied:
+                self._release_task_binding_if_unowned_locked(task.task_id)
         self.state.spoken_outputs.append("Command cancelled.")
 
     def _handle_task_completed(self, event: AgentEvent) -> None:
@@ -2463,6 +2828,15 @@ class AgentSupervisor:
                 completed_epoch is not None
                 and int(completed_epoch) < self.speech_epoch
             )
+            output_event_pending = bool(
+                not stale
+                and text
+                and speak
+                and not streamed
+                and self.session_actor.identity_for_task(task_id) is not None
+            )
+            if output_event_pending:
+                self._pending_output_bindings.add(task_id)
             stream_audio_pending = bool(
                 not stale
                 and task is not None
@@ -2500,6 +2874,7 @@ class AgentSupervisor:
                 defer_memory = True
             else:
                 defer_memory = False
+            self._release_task_binding_if_unowned_locked(task_id)
         self._start_queued_tasks()
         if stale:
             log.info("dropping superseded completion %s (stale epoch)", task_id)
@@ -2538,6 +2913,7 @@ class AgentSupervisor:
                             "metrics_turn_token": event.payload.get(
                                 "metrics_turn_token"
                             ),
+                            **self._event_identity_payload(event.payload),
                         },
                     )
                 )
@@ -2570,6 +2946,7 @@ class AgentSupervisor:
             )
             if task is not None:
                 task.metadata.pop("stream_audio_pending", None)
+            self._release_task_binding_if_unowned_locked(task_id)
         admitted_text = " ".join(
             str(fragment).strip()
             for fragment in fragments

@@ -14,6 +14,13 @@ from .capabilities import CapabilityRegistry, CapabilityResult
 from .events import AgentEvent, EventKind, Mode
 from .models import IntentDecision, IntentKind
 from .planner import TaskPlan, TaskPlanner
+from .session_actor import (
+    AdmissionRejected,
+    SessionActor,
+    TaskIdentity,
+    ToolAdmission,
+    TurnIdentity,
+)
 
 
 class TaskState(str, Enum):
@@ -35,6 +42,10 @@ class AgentTask:
     plan: TaskPlan | None = None
     metadata: dict[str, object] = field(default_factory=dict)
     task_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    # Bound by SessionActor before execution.  Direct test/adapter construction
+    # may leave this unset temporarily; TaskRuntime binds it before admission,
+    # and no lifecycle/provider/TTS work starts without a concrete identity.
+    identity: TaskIdentity | None = None
     state: TaskState = TaskState.QUEUED
     priority: int = 100
     created_at: float = field(default_factory=time.time)
@@ -82,6 +93,12 @@ class AgentTask:
         repr=False,
         compare=False,
     )
+    _next_tool_call: int = field(
+        default=0,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def cancel(self) -> None:
         with self._control_lock:
@@ -125,15 +142,52 @@ class AgentTask:
             self.state = actual
             return actual
 
-    def cancel_and_claim_terminal(self) -> bool:
-        """Atomically cancel and reserve the cancellation lifecycle event."""
+    def cancel_and_claim_terminal(
+        self,
+        fence: Callable[[], object] | None = None,
+    ) -> bool:
+        """Atomically fence dependent work, cancel, and claim terminality.
+
+        The callback must be a short in-memory transition. It runs only when
+        cancellation wins and while ``_control_lock`` is held, establishing the
+        task→session-actor lock order used by timeout reaping.
+        """
+
         with self._control_lock:
-            self.cancel_event.set()
             if self._terminal_claimed:
                 return False
+            if fence is not None:
+                fence()
+            self.cancel_event.set()
             self._terminal_claimed = True
             self.state = TaskState.CANCELLED
             return True
+
+    def allocate_tool_identity(self, capability: str) -> tuple[str, str]:
+        """Allocate generic call/idempotency IDs for one mutating plan step."""
+
+        identity = self.identity
+        if identity is None:
+            raise RuntimeError("task has no session identity")
+        with self._control_lock:
+            self._next_tool_call += 1
+            ordinal = self._next_tool_call
+        explicit_call = self.metadata.get("tool_call_id")
+        explicit_key = self.metadata.get("idempotency_key")
+        tool_call_id = (
+            str(explicit_call)
+            if ordinal == 1 and explicit_call
+            else f"tool-{self.task_id}-{ordinal}"
+        )
+        idempotency_key = (
+            str(explicit_key)
+            if ordinal == 1 and explicit_key
+            else (
+                f"{identity.session_id}:{identity.turn_id}:"
+                f"{identity.revision}:{capability}:{ordinal}"
+            )
+        )
+        return tool_call_id, idempotency_key
 
 
 # Hard ceiling on concurrently running task threads. RESEARCH already has its
@@ -166,6 +220,7 @@ class TaskRuntime:
         *,
         stream_tts: bool = False,
         max_active_tasks: int = DEFAULT_MAX_ACTIVE_TASKS,
+        session_actor: SessionActor | None = None,
     ):
         self._publish = publish
         self._capabilities = capabilities
@@ -178,7 +233,15 @@ class TaskRuntime:
         self._threads_lock = Lock()
         self._stream_tts = stream_tts
         self._max_active_tasks = max(1, int(max_active_tasks))
+        self._session = session_actor or SessionActor(
+            max_active_tasks=self._max_active_tasks,
+            max_active_tools=self._max_active_tasks,
+        )
         self._invocation_slots = BoundedSemaphore(self._max_active_tasks)
+
+    @property
+    def session_actor(self) -> SessionActor:
+        return self._session
 
     def _make_emitter(self, task: "AgentTask"):
         """A callback the speaking capability uses to play each sentence as it
@@ -187,6 +250,7 @@ class TaskRuntime:
         def emit(sentence: str) -> None:
             if task.cancel_event.is_set() or not sentence:
                 return
+            identity = self._require_identity(task)
             # Runtime admission, not queue publication, marks started_speaking:
             # a continuation can still cancel this unheard sentence while the
             # TTS event waits behind higher-priority bus work.
@@ -207,20 +271,26 @@ class TaskRuntime:
                         # uses it to scope voice continuity without guessing
                         # from task lifecycle races.
                         "streaming": True,
+                        **identity.to_payload(),
                     },
                 )
             )
 
         return emit
 
-    def create_task(self, decision: IntentDecision) -> AgentTask:
+    def create_task(
+        self,
+        decision: IntentDecision,
+        *,
+        turn_identity: TurnIdentity | None = None,
+    ) -> AgentTask:
         plan = self._planner.plan(decision)
         controller_metadata = {
             key: decision.metadata[key]
             for key in ("device_tool", "prepared_device_command")
             if key in decision.metadata
         }
-        return AgentTask(
+        task = AgentTask(
             mode=plan.mode,
             input_text=decision.text,
             intent=decision.kind,
@@ -240,13 +310,44 @@ class TaskRuntime:
                 **controller_metadata,
             },
         )
+        turn = turn_identity or self._session.open_turn(revision=0)
+        task.identity = self._session.bind_task(task.task_id, turn)
+        return task
 
-    def start(self, task: AgentTask) -> None:
+    def admit_task(self, task: AgentTask) -> bool:
+        """Reserve actor task capacity before any acknowledgement is emitted."""
+
+        identity = self._ensure_identity(task)
+        with self._threads_lock:
+            self._reap_dead_locked()
+            if task.task_id in self._threads:
+                return False
+        if self._session.task_is_admitted(task.task_id, identity):
+            return True
+        return self._session.admit_task(task.task_id, identity)
+
+    def retire_task_admission(self, task_id: str) -> None:
+        self._session.finish_task(task_id)
+
+    def release_task_binding(self, task_id: str) -> bool:
+        """Declare controller ownership terminal for one bound task."""
+
+        return self._session.release_task_binding(task_id)
+
+    def start(self, task: AgentTask) -> bool:
+        identity = self._ensure_identity(task)
         thread = Thread(target=self._run_task, args=(task,), daemon=True)
         with self._threads_lock:
             # Opportunistically drop any threads that have already exited but
             # whose lifecycle event we never saw, so the dict can't creep.
             self._reap_dead_locked()
+            if task.task_id in self._threads:
+                return False
+            if (
+                not self._session.task_is_admitted(task.task_id, identity)
+                and not self._session.admit_task(task.task_id, identity)
+            ):
+                return False
             self._threads[task.task_id] = thread
             # Start while the registry lock is held. A just-created Thread is
             # not alive yet; exposing it before start let active_count reap it
@@ -255,7 +356,9 @@ class TaskRuntime:
                 thread.start()
             except BaseException:
                 self._threads.pop(task.task_id, None)
+                self._session.finish_task(task.task_id)
                 raise
+        return True
 
     @property
     def active_count(self) -> int:
@@ -274,7 +377,33 @@ class TaskRuntime:
         The supervisor consults this to overflow excess turns into
         ``queued_tasks`` -- the same path a capped RESEARCH task takes.
         """
-        return self.active_count >= self._max_active_tasks
+        return bool(
+            self.active_count >= self._max_active_tasks
+            or self._session.active_task_count >= self._max_active_tasks
+        )
+
+    def cancel_tool_call(self, tool_call_id: str) -> bool:
+        """Explicit tool cancellation; unrelated speech cancellation is separate."""
+
+        return self._session.cancel_tool(tool_call_id)
+
+    def fence_task_tool_calls(self, task_id: str) -> int:
+        """Close a task to future tools and cancel its unstarted admissions."""
+
+        return self._session.fence_task_tools(task_id)
+
+    def _ensure_identity(self, task: AgentTask) -> TaskIdentity:
+        if task.identity is None:
+            turn = self._session.open_turn(revision=0)
+            task.identity = self._session.bind_task(task.task_id, turn)
+        return task.identity
+
+    @staticmethod
+    def _require_identity(task: AgentTask) -> TaskIdentity:
+        identity = task.identity
+        if identity is None:
+            raise RuntimeError("task has no admitted session identity")
+        return identity
 
     def _reap_dead_locked(self) -> None:
         """Drop threads that are no longer alive. Caller must hold the lock.
@@ -285,6 +414,7 @@ class TaskRuntime:
         dead = [tid for tid, thr in self._threads.items() if not thr.is_alive()]
         for tid in dead:
             self._threads.pop(tid, None)
+            self._session.finish_task(tid)
 
     def _reap(self, task_id: str) -> None:
         """Remove a finished task's thread from the registry.
@@ -295,8 +425,10 @@ class TaskRuntime:
         """
         with self._threads_lock:
             self._threads.pop(task_id, None)
+        self._session.finish_task(task_id)
 
     def _run_task(self, task: AgentTask) -> None:
+        identity = self._require_identity(task)
         if not task.mark_running():
             self._publish_cancelled(task)
             return
@@ -311,6 +443,7 @@ class TaskRuntime:
                     "task_id": task.task_id,
                     "mode": task.mode.value,
                     "capability": task.capability,
+                    **identity.to_payload(),
                 },
                 priority=40,
             )
@@ -345,6 +478,7 @@ class TaskRuntime:
                         "task_id": task.task_id,
                         "step": step.name,
                         "capability": step.capability,
+                        **self._require_identity(task).to_payload(),
                     },
                     priority=70,
                 )
@@ -406,21 +540,46 @@ class TaskRuntime:
         capability: str,
         extra_context: dict[str, object] | None = None,
     ) -> CapabilityResult:
+        identity = self._require_identity(task)
+        spec = self._capabilities.spec(capability)
+        tool_admission: ToolAdmission | None = None
+        if spec is not None and spec.side_effecting:
+            tool_call_id, idempotency_key = task.allocate_tool_identity(capability)
+            try:
+                tool_admission = self._session.admit_tool(
+                    task_id=task.task_id,
+                    identity=identity,
+                    tool_call_id=tool_call_id,
+                    idempotency_key=idempotency_key,
+                )
+            except AdmissionRejected as exc:
+                return CapabilityResult(False, "", error=str(exc))
+            operation_cancel = tool_admission.cancel_event
+
+            def claim_start() -> bool:
+                return self._session.claim_tool_start(tool_call_id)
+        else:
+            operation_cancel = task.cancel_event
+            claim_start = task.claim_invocation_start
         context: dict[str, object] = {
             "task_id": task.task_id,
             "mode": task.mode.value,
             "metadata": task.metadata,
-            "cancel_event": task.cancel_event,
+            "cancel_event": operation_cancel,
             # Lets a capability atomically linearize a nested provider start
             # (notably cross-tier retry) against task cancellation.
-            "claim_provider_start": task.claim_invocation_start,
+            "claim_provider_start": claim_start,
             # Lets a long-running capability (e.g. the multi-step ReAct planner,
             # which runs under the short ASSISTANT budget) push its own wall-clock
             # deadline out so the supervisor's reap doesn't kill a turn that is
             # legitimately still working. Extends only -- never shortens, never
             # creates a deadline where the mode disabled it.
             "renew_deadline": lambda secs: self._renew_deadline(task, secs),
+            **identity.to_payload(),
         }
+        if tool_admission is not None:
+            context["tool_call_id"] = tool_admission.tool_call_id
+            context["idempotency_key"] = tool_admission.idempotency_key
         # Forward the IntentKind so downstream routers (HeuristicRouter,
         # SensitivityRouterLLM) can factor it into tier / cloud-chain
         # choice -- e.g. RESEARCH -> main tier, COMMAND -> private chain.
@@ -428,6 +587,15 @@ class TaskRuntime:
             context["intent_kind"] = task.intent.value
         if extra_context:
             context.update(extra_context)
+        # Causal identity and cancellation controls are controller-owned.  An
+        # adapter's extra context may add provider hints, but cannot substitute
+        # a different turn, generation, or tool call.
+        context.update(identity.to_payload())
+        context["cancel_event"] = operation_cancel
+        context["claim_provider_start"] = claim_start
+        if tool_admission is not None:
+            context["tool_call_id"] = tool_admission.tool_call_id
+            context["idempotency_key"] = tool_admission.idempotency_key
         # Forward the turn's provenance to the capability's common authority
         # boundary. Fail-closed: a task without stamped direct/owner/confirmation
         # verdicts receives none of them. Low-risk typed tools may require direct
@@ -448,34 +616,48 @@ class TaskRuntime:
                 task.input_text,
                 context,
             ),
+            cancel_event=operation_cancel,
+            claim_provider_start=claim_start,
+            tool_admission=tool_admission,
         )
 
     def _invoke_cancellable(
         self,
         task: AgentTask,
         invoke: Callable[[], CapabilityResult],
+        *,
+        cancel_event: Event | None = None,
+        claim_provider_start: Callable[[], bool] | None = None,
+        tool_admission: ToolAdmission | None = None,
     ) -> CapabilityResult:
         """Run one synchronous provider behind a cancellable task coordinator.
 
-        ``AgentTask.cancel_event`` cannot interrupt an arbitrary Python/native
-        call that is blocked before returning a first token.  The registered
+        A read/generation call uses ``AgentTask.cancel_event``. A mutating call
+        uses its actor-owned tool Event. Speech interruption cancels it until
+        provider start is claimed; after that, only explicit tool cancellation
+        or terminal shutdown sets the Event. Neither Event can interrupt
+        arbitrary Python/native work blocked before returning. The registered
         task thread therefore coordinates a daemon provider thread instead of
-        becoming that provider thread itself.  Barge-in can retire the
-        coordinator immediately, while ``_invocation_slots`` remains owned by
-        any abandoned provider until it truly exits.  This is a bulkhead: at
-        most ``max_active_tasks`` uncooperative provider calls can survive a
-        cancellation storm.
+        becoming that provider thread itself. ``_invocation_slots`` remains
+        owned by any abandoned provider until it truly exits, bounding
+        uncooperative calls.
         """
+        operation_cancel = cancel_event or task.cancel_event
+        claim_start = claim_provider_start or task.claim_invocation_start
         acquired = False
         while not acquired:
-            if task.cancel_event.is_set():
+            if operation_cancel.is_set():
+                if tool_admission is not None:
+                    self._session.finish_tool(tool_admission.tool_call_id)
                 raise _TaskCancelled
             acquired = self._invocation_slots.acquire(timeout=self._CANCEL_POLL_SEC)
 
         # Cancellation wins the acquire race.  A coordinator cancelled while
         # waiting for capacity must never launch a stale provider invocation.
-        if task.cancel_event.is_set():
+        if operation_cancel.is_set():
             self._invocation_slots.release()
+            if tool_admission is not None:
+                self._session.finish_tool(tool_admission.tool_call_id)
             raise _TaskCancelled
 
         done = Event()
@@ -487,13 +669,15 @@ class TaskRuntime:
                 # post-acquire check is only an early exit; cancellation can
                 # still land before this new thread is scheduled.  In that
                 # case no provider (especially no side effect) may be admitted late.
-                if not task.claim_invocation_start():
+                if not claim_start():
                     outcome["error"] = _TaskCancelled()
                     return
                 outcome["result"] = invoke()
             except BaseException as exc:  # preserve the provider's normal failure
                 outcome["error"] = exc
             finally:
+                if tool_admission is not None:
+                    self._session.finish_tool(tool_admission.tool_call_id)
                 self._invocation_slots.release()
                 done.set()
 
@@ -508,17 +692,19 @@ class TaskRuntime:
             # Ownership only transfers to ``run_provider`` after a successful
             # start; otherwise release synchronously to avoid losing capacity.
             self._invocation_slots.release()
+            if tool_admission is not None:
+                self._session.finish_tool(tool_admission.tool_call_id)
             raise
 
         while True:
-            if task.cancel_event.is_set():
+            if operation_cancel.is_set():
                 raise _TaskCancelled
             if done.wait(self._CANCEL_POLL_SEC):
                 break
 
         # Give cancellation precedence over a provider result that completed in
         # the same scheduling window.  _run_plan performs a final guard too.
-        if task.cancel_event.is_set():
+        if operation_cancel.is_set():
             raise _TaskCancelled
         error = outcome.get("error")
         if isinstance(error, BaseException):
@@ -568,6 +754,7 @@ class TaskRuntime:
                     "metrics_turn_token": task.metadata.get(
                         "metrics_turn_token"
                     ),
+                    **self._require_identity(task).to_payload(),
                 },
                 priority=60,
             )
@@ -579,7 +766,11 @@ class TaskRuntime:
             self._publish(
                 AgentEvent(
                     EventKind.TTS_STREAM_END,
-                    {"task_id": task.task_id, "epoch": task.speech_epoch},
+                    {
+                        "task_id": task.task_id,
+                        "epoch": task.speech_epoch,
+                        **self._require_identity(task).to_payload(),
+                    },
                     priority=110,
                 )
             )
@@ -600,7 +791,11 @@ class TaskRuntime:
         self._publish(
             AgentEvent(
                 EventKind.TASK_CANCELLED,
-                {"task_id": task.task_id, "mode": task.mode.value},
+                {
+                    "task_id": task.task_id,
+                    "mode": task.mode.value,
+                    **self._require_identity(task).to_payload(),
+                },
                 priority=20,
             )
         )
@@ -631,6 +826,7 @@ class TaskRuntime:
                     "epoch": task.speech_epoch,
                     "input_epoch": task.metadata.get("input_epoch"),
                     "input_generation": task.metadata.get("input_generation"),
+                    **self._require_identity(task).to_payload(),
                 },
                 priority=25,
             )

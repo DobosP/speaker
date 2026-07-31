@@ -12,11 +12,17 @@ from __future__ import annotations
 import threading
 import time
 
-from always_on_agent.capabilities import create_default_capabilities
+from always_on_agent.capabilities import (
+    CapabilityResult,
+    CapabilitySpec,
+    create_default_capabilities,
+)
 from always_on_agent.events import EventKind, Mode
 from always_on_agent.models import IntentDecision, IntentKind
 from always_on_agent.react import ReactPlanner
+from always_on_agent.session_actor import SessionActor
 from always_on_agent.supervisor import AgentSupervisor
+from always_on_agent.tasks import TaskRuntime, TaskState
 
 from core.engines.scripted import ScriptedEngine
 from core.metrics import MetricsRecorder
@@ -47,18 +53,319 @@ def test_reap_cancels_and_removes_overdue_task():
     sup.drain()
 
 
+def test_reap_cancels_mutation_waiting_for_provider_capacity():
+    sup = AgentSupervisor()
+    sup.tasks = TaskRuntime(
+        sup.publish,
+        sup.capabilities,
+        max_active_tasks=1,
+        session_actor=sup.session_actor,
+    )
+    provider_called = threading.Event()
+
+    def mutate(_query, _context):
+        provider_called.set()
+        return CapabilityResult(True, "must not execute")
+
+    sup.capabilities.register(
+        "timeout.mutate",
+        mutate,
+        spec=CapabilitySpec(
+            "timeout.mutate",
+            "timeout mutation",
+            side_effecting=True,
+        ),
+    )
+    task = _seat(sup, overdue=True)
+    slot = sup.tasks._invocation_slots  # noqa: SLF001 - deterministic capacity
+    assert slot.acquire(blocking=False)
+    invocation_done = threading.Event()
+
+    def invoke() -> None:
+        try:
+            sup.tasks._invoke(task, "timeout.mutate")  # noqa: SLF001
+        except BaseException:
+            pass
+        finally:
+            invocation_done.set()
+
+    invocation = threading.Thread(target=invoke, daemon=True)
+    invocation.start()
+    deadline = time.monotonic() + 1.0
+    while (
+        sup.session_actor.active_tool_count == 0
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.005)
+    assert sup.session_actor.active_tool_count == 1
+
+    assert sup.reap_overdue_tasks() == 1
+    # Release the slot into the cancellation race. The waiting mutation must
+    # re-check its actor-owned Event before any provider can be claimed.
+    slot.release()
+    assert invocation_done.wait(timeout=1.0)
+    invocation.join(timeout=1.0)
+
+    assert not provider_called.is_set()
+    assert sup.session_actor.active_tool_count == 0
+    sup.drain()
+    sup.shutdown()
+
+
+def test_reap_fences_tool_start_before_claiming_task_terminal(monkeypatch):
+    sup = AgentSupervisor()
+    task = _seat(sup, overdue=True)
+    assert task.identity is not None
+    tool = sup.session_actor.admit_tool(
+        task_id=task.task_id,
+        identity=task.identity,
+        tool_call_id="timeout-gap-tool",
+        idempotency_key="timeout-gap-effect",
+    )
+    actor_fence_complete = threading.Event()
+    claim_attempt_done = threading.Event()
+    claim_results: list[bool] = []
+    original_fence = sup.tasks.fence_task_tool_calls
+
+    def held_fence(task_id):
+        result = original_fence(task_id)
+        actor_fence_complete.set()
+        assert claim_attempt_done.wait(timeout=1.0)
+        return result
+
+    monkeypatch.setattr(
+        sup.tasks,
+        "fence_task_tool_calls",
+        held_fence,
+    )
+
+    def race_provider_start() -> None:
+        assert actor_fence_complete.wait(timeout=1.0)
+        claim_results.append(
+            sup.session_actor.claim_tool_start(tool.tool_call_id)
+        )
+        claim_attempt_done.set()
+
+    claimant = threading.Thread(target=race_provider_start, daemon=True)
+    claimant.start()
+
+    assert sup.reap_overdue_tasks() == 1
+    claimant.join(timeout=1.0)
+
+    assert claim_results == [False]
+    assert tool.cancel_event.is_set()
+    sup.session_actor.finish_tool(tool.tool_call_id)
+    sup.drain()
+    sup.shutdown()
+
+
+def test_completed_task_wins_just_before_timeout_reap(monkeypatch):
+    from always_on_agent.supervisor import _TIMEOUT_APOLOGY
+
+    sup = AgentSupervisor()
+    task = _seat(sup, overdue=True)
+    task.output_text = "Completion already won."
+    task.metadata["result_data"] = {}
+    completion_claimed = threading.Event()
+    release_completion = threading.Event()
+    original_claim_terminal = task.claim_terminal
+
+    def held_completion_claim(desired):
+        result = original_claim_terminal(desired)
+        if desired == TaskState.COMPLETED:
+            completion_claimed.set()
+            assert release_completion.wait(timeout=1.0)
+        return result
+
+    monkeypatch.setattr(task, "claim_terminal", held_completion_claim)
+    completion = threading.Thread(
+        target=sup.tasks._publish_completed,  # noqa: SLF001
+        args=(task,),
+        daemon=True,
+    )
+    completion.start()
+    assert completion_claimed.wait(timeout=1.0)
+
+    assert sup.reap_overdue_tasks() == 0
+    assert sup.state.active_tasks.get(task.task_id) is task
+    assert sup.session_actor.identity_for_task(task.task_id) == task.identity
+    assert _TIMEOUT_APOLOGY not in sup.state.spoken_outputs
+
+    release_completion.set()
+    completion.join(timeout=1.0)
+    assert not completion.is_alive()
+    sup.drain()
+    tts = next(
+        event
+        for event in sup.state.event_log
+        if (
+            event.kind == EventKind.TTS_REQUEST
+            and event.payload.get("task_id") == task.task_id
+        )
+    )
+    admission = sup.admit_playback(
+        tts.payload,
+        task_id=task.task_id,
+        auxiliary_tts=False,
+        aux_tts_id="",
+    )
+    assert admission is not None
+    sup.finish_playback(admission.playback_admission_id)
+    assert _TIMEOUT_APOLOGY not in sup.state.spoken_outputs
+    sup.shutdown()
+
+
+def test_reap_fences_task_while_worker_is_about_to_admit_tool(monkeypatch):
+    sup = AgentSupervisor()
+    provider_called = threading.Event()
+
+    def mutate(_query, _context):
+        provider_called.set()
+        return CapabilityResult(True, "must not execute")
+
+    sup.capabilities.register(
+        "timeout.pre_admit",
+        mutate,
+        spec=CapabilitySpec(
+            "timeout.pre_admit",
+            "pre-admission timeout mutation",
+            side_effecting=True,
+        ),
+    )
+    task = _seat(sup, overdue=True)
+    actor = sup.session_actor
+    admit_entered = threading.Event()
+    release_admit = threading.Event()
+    original_admit = actor.admit_tool
+
+    def held_admit(**kwargs):
+        admit_entered.set()
+        assert release_admit.wait(timeout=1.0)
+        return original_admit(**kwargs)
+
+    monkeypatch.setattr(actor, "admit_tool", held_admit)
+    invocation_done = threading.Event()
+    outcome: list[CapabilityResult] = []
+
+    def invoke() -> None:
+        try:
+            outcome.append(
+                sup.tasks._invoke(task, "timeout.pre_admit")  # noqa: SLF001
+            )
+        finally:
+            invocation_done.set()
+
+    invocation = threading.Thread(target=invoke, daemon=True)
+    invocation.start()
+    assert admit_entered.wait(timeout=1.0)
+
+    assert sup.reap_overdue_tasks() == 1
+    release_admit.set()
+    assert invocation_done.wait(timeout=1.0)
+    invocation.join(timeout=1.0)
+
+    assert not provider_called.is_set()
+    assert actor.active_tool_count == 0
+    assert len(outcome) == 1 and not outcome[0].ok
+    sup.drain()
+    sup.shutdown()
+
+
 def test_reaped_speakable_turn_speaks_an_apology():
     from always_on_agent.supervisor import _TIMEOUT_APOLOGY
 
     sup = AgentSupervisor()
-    _seat(sup, overdue=True)  # ASSISTANT -> speak=True
+    task = _seat(sup, overdue=True)  # ASSISTANT -> speak=True
     sup.reap_overdue_tasks()
     assert _TIMEOUT_APOLOGY in sup.state.spoken_outputs
     sup.drain()
-    assert any(
-        e.kind == EventKind.TTS_REQUEST and e.payload.get("text") == _TIMEOUT_APOLOGY
+    tts = next(
+        e
         for e in sup.state.event_log
+        if (
+            e.kind == EventKind.TTS_REQUEST
+            and e.payload.get("text") == _TIMEOUT_APOLOGY
+        )
     )
+    admission = sup.admit_playback(
+        tts.payload,
+        task_id=task.task_id,
+        auxiliary_tts=True,
+        aux_tts_id=str(tts.payload["aux_tts_id"]),
+    )
+    assert admission is not None
+    assert admission.identity != task.identity
+    sup.note_aux_tts_admitted(str(tts.payload["aux_tts_id"]))
+    sup.finish_playback(admission.playback_admission_id)
+    sup.shutdown()
+
+
+def test_timeout_capacity_omits_apology_but_keeps_cancellation_lifecycle():
+    from always_on_agent.supervisor import _TIMEOUT_APOLOGY
+
+    sup = AgentSupervisor()
+    actor = SessionActor(
+        session_id="timeout-capacity",
+        max_remembered_tasks=1,
+    )
+    sup.session_actor = actor
+    sup.tasks = TaskRuntime(
+        sup.publish,
+        sup.capabilities,
+        session_actor=actor,
+    )
+    task = _seat(sup, overdue=True)
+    assert task.identity is not None
+    assert actor.admit_task(task.task_id, task.identity)
+    worker_saw_cancel = threading.Event()
+    release_worker = threading.Event()
+    worker_drained = threading.Event()
+
+    def drain_worker_admission() -> None:
+        assert task.cancel_event.wait(timeout=1.0)
+        worker_saw_cancel.set()
+        assert release_worker.wait(timeout=1.0)
+        sup.tasks.retire_task_admission(task.task_id)
+        worker_drained.set()
+
+    worker = threading.Thread(target=drain_worker_admission, daemon=True)
+    worker.start()
+
+    assert sup.reap_overdue_tasks() == 1
+    assert worker_saw_cancel.wait(timeout=1.0)
+    assert actor.snapshot().remembered_tasks == 1
+    assert _TIMEOUT_APOLOGY not in sup.state.spoken_outputs
+    sup.drain()
+    terminal = [
+        event
+        for event in sup.state.event_log
+        if (
+            event.kind == EventKind.TASK_CANCELLED
+            and event.payload.get("task_id") == task.task_id
+        )
+    ]
+    assert len(terminal) == 1 and terminal[0].payload.get("reaped") is True
+    assert not any(
+        event.kind == EventKind.TTS_REQUEST
+        and event.payload.get("text") == _TIMEOUT_APOLOGY
+        for event in sup.state.event_log
+    )
+
+    release_worker.set()
+    assert worker_drained.wait(timeout=1.0)
+    worker.join(timeout=1.0)
+    assert actor.snapshot().remembered_tasks == 0
+    replacement = sup.tasks.create_task(
+        IntentDecision(
+            IntentKind.ASSISTANT,
+            1.0,
+            "replacement",
+            "test",
+            mode=Mode.ASSISTANT,
+        )
+    )
+    assert replacement.identity is not None
+    sup.shutdown()
 
 
 def test_reaped_silent_turn_gets_no_apology():

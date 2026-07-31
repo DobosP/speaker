@@ -51,6 +51,10 @@ class PlaybackContext:
     epoch: int
     input_generation: int
     remember: bool
+    session_id: str = ""
+    turn_id: str = ""
+    revision: int = 0
+    cancel_generation: int = 0
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,7 @@ class _Fragment:
     requested_text: str
     order: int
     group_id: int
+    playback_admission_id: str = ""
     started: bool = False
     terminal: bool = False
     receipt: Optional[PlaybackReceipt] = None
@@ -83,6 +88,10 @@ class _Group:
     is_followup: bool
     streaming: bool
     source_closed: bool
+    session_id: str = ""
+    turn_id: str = ""
+    revision: int = 0
+    cancel_generation: int = 0
     interrupted: bool = False
     fragments: list[str] = field(default_factory=list)
 
@@ -139,6 +148,11 @@ class PlaybackHistory:
         remember: bool,
         is_followup: bool,
         streaming: bool,
+        playback_admission_id: str = "",
+        session_id: str = "",
+        turn_id: str = "",
+        revision: int = 0,
+        cancel_generation: int = 0,
     ) -> str:
         """Register before calling ``engine.speak_tracked`` and return its ID."""
 
@@ -162,6 +176,10 @@ class PlaybackHistory:
                     ),
                     streaming=bool(streaming),
                     source_closed=not streaming,
+                    session_id=str(session_id),
+                    turn_id=str(turn_id),
+                    revision=int(revision),
+                    cancel_generation=int(cancel_generation),
                 )
                 self._groups[group_id] = group
                 if remember:
@@ -170,6 +188,20 @@ class PlaybackHistory:
                     self._stream_groups[key] = group_id
             else:
                 group = self._groups[group_id]
+                if (
+                    group.session_id,
+                    group.turn_id,
+                    group.revision,
+                    group.cancel_generation,
+                ) != (
+                    str(session_id),
+                    str(turn_id),
+                    int(revision),
+                    int(cancel_generation),
+                ):
+                    raise ValueError(
+                        "stream fragment session identity changed within group"
+                    )
                 # A later lifecycle event may have supplied follow-up metadata
                 # after the first sentence was emitted.
                 group.is_followup = self._stream_metadata.get(
@@ -183,6 +215,7 @@ class PlaybackHistory:
                 requested_text=text,
                 order=self._next_fragment,
                 group_id=group_id,
+                playback_admission_id=str(playback_admission_id),
             )
             self._fragments[fragment_id] = fragment
             group.fragments.append(fragment_id)
@@ -256,6 +289,27 @@ class PlaybackHistory:
                 epoch=group.epoch,
                 input_generation=group.input_generation,
                 remember=group.remember,
+                session_id=group.session_id,
+                turn_id=group.turn_id,
+                revision=group.revision,
+                cancel_generation=group.cancel_generation,
+            )
+
+    def fragment_playback_admission(self, fragment_id: str) -> str:
+        """Return the actor admission paired with one pending fragment."""
+
+        with self._lock:
+            fragment = self._fragments.get(fragment_id)
+            return fragment.playback_admission_id if fragment is not None else ""
+
+    def pending_playback_admissions(self) -> tuple[str, ...]:
+        """Snapshot actor admissions that still await terminal receipts."""
+
+        with self._lock:
+            return tuple(
+                fragment.playback_admission_id
+                for fragment in self._fragments.values()
+                if not fragment.terminal and fragment.playback_admission_id
             )
 
     def stream_context(self, task_id: str, epoch: int) -> Optional[PlaybackContext]:
@@ -269,6 +323,10 @@ class PlaybackHistory:
                 epoch=group.epoch,
                 input_generation=group.input_generation,
                 remember=group.remember,
+                session_id=group.session_id,
+                turn_id=group.turn_id,
+                revision=group.revision,
+                cancel_generation=group.cancel_generation,
             )
 
     def drain_finalizations(self) -> tuple[PlaybackFinalization, ...]:
@@ -286,9 +344,11 @@ class PlaybackHistory:
             fragment = self._fragments.get(receipt.fragment_id)
             if fragment is None or fragment.terminal:
                 return None
+            if not self._receipt_valid(receipt):
+                return self._force_fail_locked(fragment)
             fragment.terminal = True
             fragment.receipt = receipt
-            safe = (receipt.safe_text_prefix or "").strip()
+            safe = receipt.safe_text_prefix.strip()
             played_samples = receipt.played_samples
             played = bool(
                 fragment.started
@@ -303,6 +363,73 @@ class PlaybackHistory:
                 played=played,
                 commits=commits,
             )
+
+    def force_fail(self, fragment_id: str) -> Optional[PlaybackResolution]:
+        """Terminalize a known fragment after an adapter/ledger exception.
+
+        This deliberately overwrites a partially-applied malformed receipt so
+        the group cannot retain a terminal fragment whose receipt fields break
+        finalization.
+        """
+
+        with self._lock:
+            fragment = self._fragments.get(fragment_id)
+            if fragment is None:
+                return None
+            return self._force_fail_locked(fragment)
+
+    @staticmethod
+    def _receipt_valid(receipt: PlaybackReceipt) -> bool:
+        """Validate an adapter receipt before it can mutate fragment state."""
+
+        if not isinstance(receipt.outcome, PlaybackOutcome):
+            return False
+        if not isinstance(receipt.safe_text_prefix, str):
+            return False
+        for value in (
+            receipt.played_samples,
+            receipt.total_samples,
+            receipt.output_sample_rate,
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int)
+            ):
+                return False
+        if receipt.played_samples is not None and receipt.played_samples < 0:
+            return False
+        if receipt.total_samples is not None and receipt.total_samples < 0:
+            return False
+        if (
+            receipt.played_samples is not None
+            and receipt.total_samples is not None
+            and receipt.played_samples > receipt.total_samples
+        ):
+            return False
+        return bool(
+            receipt.output_sample_rate is None
+            or receipt.output_sample_rate > 0
+        )
+
+    def _force_fail_locked(
+        self,
+        fragment: _Fragment,
+    ) -> PlaybackResolution:
+        """Install one valid terminal failure while ``_lock`` is held."""
+
+        receipt = PlaybackReceipt(
+            fragment_id=fragment.fragment_id,
+            outcome=PlaybackOutcome.FAILED,
+        )
+        fragment.terminal = True
+        fragment.receipt = receipt
+        commits = self._finalize_ready_locked(fragment.group_id)
+        return PlaybackResolution(
+            fragment_id=fragment.fragment_id,
+            requested_text=fragment.requested_text,
+            safe_text_prefix="",
+            played=fragment.started,
+            commits=commits,
+        )
 
     def close_stream(
         self,
@@ -420,6 +547,10 @@ class PlaybackHistory:
                     epoch=group.epoch,
                     input_generation=group.input_generation,
                     remember=group.remember,
+                    session_id=group.session_id,
+                    turn_id=group.turn_id,
+                    revision=group.revision,
+                    cancel_generation=group.cancel_generation,
                 ),
                 outcome=aggregate_outcome,
             )

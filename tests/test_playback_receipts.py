@@ -591,6 +591,22 @@ def test_nonstream_history_and_followup_wait_for_terminal_playout():
     try:
         runtime.bus.drain()
         assert len(engine.fragments) == 1
+        assert runtime.supervisor.session_actor.active_playback_count == 1
+        playback_context = runtime._playback_history.fragment_context(
+            engine.fragments[0].speech.fragment_id
+        )
+        assert playback_context is not None and task.identity is not None
+        assert (
+            playback_context.session_id,
+            playback_context.turn_id,
+            playback_context.revision,
+            playback_context.cancel_generation,
+        ) == (
+            task.identity.session_id,
+            task.identity.turn_id,
+            task.identity.revision,
+            task.identity.cancel_generation,
+        )
         assert _assistant_memory(runtime) == []
         assert runtime.supervisor._followup_timer is None
         assert not runtime.wait_idle(timeout=0.02)
@@ -606,10 +622,154 @@ def test_nonstream_history_and_followup_wait_for_terminal_playout():
             played_samples=16000,
             total_samples=16000,
         )
+        assert runtime.supervisor.session_actor.active_playback_count == 0
         assert runtime.wait_idle()
         assert _assistant_memory(runtime) == ["A complete answer."]
         assert runtime.supervisor.state.spoken_outputs[-1] == "A complete answer."
         assert runtime.supervisor._followup_timer is not None
+    finally:
+        runtime.stop()
+
+
+def test_resume_stage_failure_releases_actor_and_history_ownership(caplog):
+    caplog.set_level(logging.ERROR, logger="speaker.event_bus")
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime)
+
+    def fail_stage(_fragment_id, _text):
+        raise RuntimeError("injected resume staging failure")
+
+    runtime._resume.stage_playback = fail_stage
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TASK_COMPLETED,
+            {
+                "task_id": task.task_id,
+                "text": "Never reaches the sink.",
+                "speak": True,
+                "data": {},
+                "epoch": task.speech_epoch,
+            },
+            priority=60,
+        )
+    )
+    try:
+        runtime.bus.drain()
+
+        assert "injected resume staging failure" in caplog.text
+        assert engine.fragments == []
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+        assert runtime._playback_history.pending is False
+        assert runtime._playback_history.pending_playback_admissions() == ()
+    finally:
+        runtime.stop()
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        {"safe_text_prefix": object()},
+        {"played_samples": 1.5, "total_samples": 2},
+        {"played_samples": True, "total_samples": 2},
+        {"total_samples": 2.0},
+        {"output_sample_rate": 16_000.0},
+    ),
+)
+def test_malformed_terminal_receipt_forces_failure_and_releases_actor(
+    malformed,
+):
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime)
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TASK_COMPLETED,
+            {
+                "task_id": task.task_id,
+                "text": "Malformed receipt target.",
+                "speak": True,
+                "data": {},
+                "epoch": task.speech_epoch,
+            },
+            priority=60,
+        )
+    )
+    try:
+        runtime.bus.drain()
+        fragment_id = engine.fragments[0].speech.fragment_id
+        assert runtime.supervisor.session_actor.active_playback_count == 1
+
+        fields = {
+            "outcome": PlaybackOutcome.COMPLETED,
+            "safe_text_prefix": "",
+            **malformed,
+        }
+        runtime._on_playback_terminal(
+            PlaybackReceipt(fragment_id=fragment_id, **fields)  # type: ignore[arg-type]
+        )
+
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+        assert runtime._playback_history.pending is False
+        assert runtime._playback_history.pending_playback_admissions() == ()
+        assert _assistant_memory(runtime) == []
+    finally:
+        runtime.stop()
+
+
+def test_malformed_stream_outcome_fails_before_close_and_drains_on_end():
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime)
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": "Streaming malformed receipt target.",
+                "epoch": task.speech_epoch,
+                "streaming": True,
+                **task.identity.to_payload(),
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+        fragment_id = engine.fragments[0].speech.fragment_id
+        assert runtime.supervisor.session_actor.active_playback_count == 1
+
+        runtime._on_playback_terminal(
+            PlaybackReceipt(
+                fragment_id=fragment_id,
+                outcome="completed",  # type: ignore[arg-type]
+                safe_text_prefix="must not be accepted",
+            )
+        )
+
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+        assert runtime._playback_history.pending is True
+        assert runtime._playback_history.pending_playback_admissions() == ()
+        assert _assistant_memory(runtime) == []
+
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_STREAM_END,
+                {
+                    "task_id": task.task_id,
+                    "epoch": task.speech_epoch,
+                    **task.identity.to_payload(),
+                },
+                priority=110,
+            )
+        )
+        runtime.bus.drain()
+
+        assert runtime._playback_history.pending is False
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+        assert _assistant_memory(runtime) == []
     finally:
         runtime.stop()
 

@@ -1,57 +1,56 @@
 Valid until: this branch lands or is superseded — then treat as history.
 
-# Task result — task-scoped structured cancellation
+# Task result — LiveKit playback ownership
 
 ## Summary
 
-Added an actor-issued `TurnHandle` for every executable task binding. Its exact
-five-field identity now follows coordinator, provider, mutating tool, TTS,
-stream, and playback work. Cancellation fences new effects immediately;
-caller-bounded drain reports any provider or sink ownership that is still
-exiting instead of declaring the turn idle early.
+LiveKit output now opts into the runtime's tracked playback contract. Each
+legacy or tracked admission receives an object-identity ticket and synchronous
+generation assignment. STOP fences active, queued, synthesizing, and prepared
+work; clears the source before started non-completion receipts; and prevents a
+delayed old clear from erasing fresh output.
 
-Provider leases survive a canceled coordinator until the real provider thread
-returns. Exact `binding_id` checks prevent stale terminal/TTS/playback cleanup
-from touching a newer task that reused the same task ID. Terminal acceptance
-also carries the supervisor-resolved identity to runtime subscribers; a
-completion canceled before dispatch performs interrupted cleanup without
-successful completion effects.
-
-Synchronous task/provider thread-construction failures roll back their actor
-and semaphore ownership. A queued-start failure preserves unvisited siblings,
-and both public/core idle checks include actor task, provider, tool, playback,
-pending-output, and pending-audio ownership. The text-only facade explicitly
-terminalizes TTS events because it has no physical audio sink.
+Completion requires a connected and published transport, an open source, first
+frame acceptance, and `wait_for_playout()` followed by a final generation and
+source check. Transport loss fences playback. A failed clear disposes the
+source before terminal callbacks. Native synthesis remains owned until its real
+in-process call returns. A two-slot pipeline pre-generates only one successor,
+preserving sentence latency without unbounded audio memory.
 
 ## Files changed
 
-- Ownership/control: `always_on_agent/session_actor.py`, `tasks.py`,
-  `supervisor.py`, and the public runtime facade.
-- Output lifecycle: `core/runtime.py`, `playback_history.py`, and
-  `tts_markup.py`.
-- Tests: actor/task/provider races, preprocessing cancellation, queue rollback,
-  terminal authentication, playback receipts, and idle/shutdown accounting.
-- Durable docs: `STATUS.md` and ADR-0094.
+- `core/engines/livekit.py`: tracked tickets, bounded ordered playback,
+  generation/clear barriers, transport readiness, exact source-drain receipts,
+  failure disposal, and owned session/track teardown.
+- `tests/test_livekit_engine.py`: event-driven fake-loop/TTS/source coverage for
+  drain, STOP, native synthesis, bounded pre-generation, reconnect readiness,
+  disposal, clear/capture failure, callback re-entry, and initialization.
+- `tests/test_playback_receipts.py`: exact `binding_id` and `TurnHandle`
+  playback-drain assertions.
+- `requirements-remote.txt`: minimum LiveKit AudioSource contract version.
+- `STATUS.md` and ADR-0095: current facts, decision, limits, and follow-up.
 
 ## Verification
 
-- Structured lifecycle matrix: 270 passed.
-- Full `-m "not real_model"` repository gate: 6,439 passed, 14 skipped,
-  22 deselected, and 9 pre-existing warnings.
-- APM/double-talk, targeted Ruff, and `git diff --check`: passed.
-- Independent audits found and closed terminal-identity, stale-completion,
-  queued-sibling, text-facade, and bare-supervisor lifetime gaps.
+- Focused LiveKit/receipt/actor/runtime matrix: 150 passed.
+- Full repository non-model gate: 6,453 passed, 14 skipped, 22 deselected,
+  9 pre-existing warnings.
+- APM/double-talk: 6 passed.
+- Targeted Ruff and `git diff --check`: passed.
+- All tests were headless, single-core, and low-priority. Full-gate run bundles
+  were redirected to `/tmp`; no model, network, server, or audio device ran.
 
 ## Risks and manual review
 
-All evidence is deterministic and headless. No model, recording, live audio
-device, STT-quality comparison, physical barge-in, or measured conversational
-latency was exercised. A `TurnHandle` starts after task creation; capture,
-VAD/STT/AEC, physical playback, and pre-task preprocessing remain outside it.
-Started external side effects cannot be rolled back. Phone/remote ownership
-parity remains future work.
+`wait_for_playout()` proves only the local LiveKit AudioSource queue drained;
+it does not prove a browser or phone rendered the sound. A native TTS call
+cannot be killed safely in-process: if it wedges forever, bounded `stop()`
+returns degraded while the loop and actor ownership remain retained. A
+process-isolated TTS worker and remote-client audible acknowledgement remain
+follow-up work. No live WebRTC, microphone, speaker, STT, AEC, or barge-in
+quality claim is made.
 
 ## Merge recommendation
 
-Green for fast-forward landing on `main`. Do not claim live hardware
-validation.
+Green for fast-forward landing on `main`; final read-only review found no
+remaining blockers. Do not claim live hardware or remote audible validation.

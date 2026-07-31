@@ -865,6 +865,10 @@ def test_nonstream_history_and_followup_wait_for_terminal_playout():
         runtime.bus.drain()
         assert len(engine.fragments) == 1
         assert runtime.supervisor.session_actor.active_playback_count == 1
+        assert task.turn_handle is not None
+        before = task.turn_handle.wait_drained(0.0)
+        assert not before.drained
+        assert before.active_playbacks == 1
         playback_context = runtime._playback_history.fragment_context(
             engine.fragments[0].speech.fragment_id
         )
@@ -880,6 +884,7 @@ def test_nonstream_history_and_followup_wait_for_terminal_playout():
             task.identity.revision,
             task.identity.cancel_generation,
         )
+        assert playback_context.binding_id == task.identity.binding_id
         assert _assistant_memory(runtime) == []
         assert runtime.supervisor._followup_timer is None
         assert not runtime.wait_idle(timeout=0.02)
@@ -897,6 +902,9 @@ def test_nonstream_history_and_followup_wait_for_terminal_playout():
         )
         assert runtime.supervisor.session_actor.active_playback_count == 0
         assert runtime.wait_idle()
+        after = task.turn_handle.wait_drained(0.1)
+        assert after.drained
+        assert after.active_playbacks == 0
         assert _assistant_memory(runtime) == ["A complete answer."]
         assert runtime.supervisor.state.spoken_outputs[-1] == "A complete answer."
         assert runtime.supervisor._followup_timer is not None

@@ -14,7 +14,7 @@
 # (STT/LLM/TTS still run locally via the base requirements; LiveKit is only the
 # WebRTC transport, so fully-local is preserved.)
 
-livekit                    # rtc primitives (Room/AudioSource/AudioStream/AudioFrame)
+livekit>=1.1.10            # AudioSource wait_for_playout/clear_queue/aclose contract
 livekit-api                # AccessToken / VideoGrants (token server)
 fastapi>=0.110             # token server + /chat + static web hosting
 uvicorn>=0.29              # ASGI server for the token/web server

@@ -109,9 +109,7 @@ def _write_prepared_suite(
     manifest_path: Path = DEFAULT_MANIFEST,
 ) -> tuple[Path, list[dict[str, object]]]:
     manifest = load_manifest(manifest_path)
-    fixtures = [
-        fixture for fixture in manifest.fixtures if fixture["suite"] == suite
-    ]
+    fixtures = [fixture for fixture in manifest.fixtures if fixture["suite"] == suite]
     rows: list[dict[str, object]] = []
     for index, raw_fixture in enumerate(fixtures):
         fixture = dict(raw_fixture)
@@ -160,9 +158,7 @@ def _write_prepared_suite(
         "manifest_sha256": manifest.digest,
         "selection_seed": manifest.data["selection_seed"],
         "cases": rows,
-        "groups": [
-            group for group in manifest.groups if group.get("suite") == suite
-        ],
+        "groups": [group for group in manifest.groups if group.get("suite") == suite],
         "sources": list(source_records_for_suite(manifest, suite)),
     }
     path = root / "metadata.json"
@@ -267,12 +263,12 @@ def test_report_binds_exact_corpus_model_decoder_and_uses_raw_empty_metric(
     assert payload["evaluator"]["production_report"] is False
     assert set(payload["evaluator"]["files"]) == {
         "tools/public_stt_eval.py",
+        "tools/public_voice_fixtures.py",
         "tools/recorded_stt_eval.py",
         "core/wer.py",
     }
     assert all(
-        len(digest) == 64
-        and set(digest) <= set("0123456789abcdef")
+        len(digest) == 64 and set(digest) <= set("0123456789abcdef")
         for digest in payload["evaluator"]["files"].values()
     )
     assert payload["cases"] == {
@@ -440,9 +436,7 @@ def test_case_set_is_exact_and_malformed_rows_fail_before_model_load(
     elif mutation == "float-rate":
         payload["cases"][0]["sample_rate"] = 16000.0
     else:
-        payload["sources"][0]["size_bytes"] = float(
-            payload["sources"][0]["size_bytes"]
-        )
+        payload["sources"][0]["size_bytes"] = float(payload["sources"][0]["size_bytes"])
     metadata.write_text(json.dumps(payload), encoding="utf-8")
     factory, recognizers, _ = _factory_for([])
 
@@ -463,7 +457,9 @@ def test_duplicate_json_keys_are_rejected_before_model_load(tmp_path):
     metadata, _ = _write_prepared_suite(tmp_path)
     raw = metadata.read_text(encoding="utf-8")
     metadata.write_text(
-        raw.replace('"schema_version": 2,', '"schema_version": 2, "schema_version": 2,'),
+        raw.replace(
+            '"schema_version": 2,', '"schema_version": 2, "schema_version": 2,'
+        ),
         encoding="utf-8",
     )
     factory, recognizers, _ = _factory_for([])
@@ -551,12 +547,16 @@ def test_annotation_selection_must_match_transcript_and_speaker_bounds(
     metadata, _ = _write_prepared_suite(tmp_path, suite="conversation")
     payload = json.loads(metadata.read_text(encoding="utf-8"))
     if mutation == "tokens":
-        row = next(item for item in payload["cases"] if item["assertion"] == "transcript")
+        row = next(
+            item for item in payload["cases"] if item["assertion"] == "transcript"
+        )
         row["selection"]["annotation_tokens"] = ["candy"]
         row["selection"]["annotation_token_count"] = 1
         row["selection"]["annotation_transcript"] = "candy"
     else:
-        row = next(item for item in payload["cases"] if item["name"].endswith("overlap"))
+        row = next(
+            item for item in payload["cases"] if item["name"].endswith("overlap")
+        )
         row["selection"]["active_speakers"] = 1
         row["selection"]["max_concurrent_speakers"] = 4
     metadata.write_text(json.dumps(payload), encoding="utf-8")
@@ -574,9 +574,7 @@ def test_annotation_selection_must_match_transcript_and_speaker_bounds(
     assert recognizers == []
 
 
-def test_recognizer_override_is_rejected_without_explicit_test_opt_in(
-    tmp_path, capsys
-):
+def test_recognizer_override_is_rejected_without_explicit_test_opt_in(tmp_path, capsys):
     model = _model(tmp_path)
     metadata, rows = _write_prepared_suite(tmp_path)
     factory, recognizers, _ = _factory_for(_eligible_outputs(rows))
@@ -639,6 +637,7 @@ def test_evaluator_binding_is_versioned_deterministic_and_hashes_exact_files():
         relative: hashlib.sha256((repo_root / relative).read_bytes()).hexdigest()
         for relative in (
             "tools/public_stt_eval.py",
+            "tools/public_voice_fixtures.py",
             "tools/recorded_stt_eval.py",
             "core/wer.py",
         )
@@ -687,7 +686,6 @@ def test_empty_model_tree_is_rejected_before_factory(tmp_path):
     assert recognizers == []
 
 
-
 def test_model_fingerprint_binds_symlink_target_and_content(tmp_path):
     model = tmp_path / "linked-model"
     model.mkdir()
@@ -703,9 +701,7 @@ def test_model_fingerprint_binds_symlink_target_and_content(tmp_path):
     assert first["tree_sha256"] != second["tree_sha256"]
 
 
-def test_cli_failure_is_detail_free_and_success_report_is_mode_600(
-    tmp_path, capsys
-):
+def test_cli_failure_is_detail_free_and_success_report_is_mode_600(tmp_path, capsys):
     model = _model(tmp_path)
     metadata, rows = _write_prepared_suite(tmp_path)
     outputs: list[object] = _eligible_outputs(rows)

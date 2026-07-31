@@ -4,9 +4,9 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate (`-m "not real_model"`): 5801 passed, 13 skipped,
+- Repository logic gate (`-m "not real_model"`): 5883 passed, 13 skipped,
   20 deselected, 9 pre-existing warnings. Focused gates: typed-ingress/Sherpa/APM
-  354 passed, 2 skipped; bounded session ownership 321 passed.
+  354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
 - Previous stable evidence remains: production-hybrid MiniCPM/Gemma and
   Gemma/Gemma 42/42, semantic-memory PASS, strict recorded owner replay 9/9,
   and two clean synthetic-delay runs (ADR-0051/0065/0067/0068/0070/0080).
@@ -67,9 +67,10 @@ Last verified: 2026-07-31 on Linux ROG.
   decode, finalizer, or echo-separation failure, yet recognized `vault` 0/6.
   Only post-GTCRN mic audio was retained, so frontend versus recognizer/domain
   failure remains unresolved (ADR-0077).
-- Private replay selected Parakeet/Small at WER 0.00 over six development
-  clips; it is not a disjoint live-room acceptance set. Public-v2 exact-bound
-  tooling is ready, but no v2 model smoke has run (ADR-0078/0080/0085).
+- Private replay WER 0.00 is non-disjoint; public-v2 has no model smoke. Public-v3 trusts its
+  local PyArrow environment; `-I`/original-group cleanup are not an OS sandbox.
+  Its code-bound Small control is WER 0.6685 and remains rejected. Any
+  result is development—not streaming, held-out, live, or adoption (ADR-0087).
 - Windows IAudioClient2 communications capture now verifies OS AEC. NS and
   beamforming were measured active on that box. Doctor is READY, but the mic
   fix, new-domain re-enrollment, and owner physical talk-over/bare STOP/silent
@@ -83,10 +84,10 @@ Last verified: 2026-07-31 on Linux ROG.
 - Port the session actor contract and golden lifecycle cases to remote/mobile
   brains; bound the central event mailbox separately. Add a controller route
   for targeted tool-call cancellation before claiming cross-device parity.
-- Add timestamped public frame replay and AEC assertions; then build a disjoint
-  owner set spanning vault terms, controls/near-controls, numerals, negation,
-  noise/echo, bystanders, and multiple voices. Run fresh `./live.sh` A/B before
-  claiming stable bare-speaker barge-in, STT, or interaction latency.
+- Compare candidates on public-v3 without adoption claims; add timestamped frame
+  replay/AEC assertions; then build a disjoint owner set spanning vault terms,
+  controls/near-controls, numerals, negation, noise/echo, bystanders, and
+  multiple voices. Run fresh `./live.sh` A/B before claiming stable results.
 
 ## Standard verification
 

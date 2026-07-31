@@ -32,6 +32,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 from collections import Counter
@@ -39,7 +40,7 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from time import perf_counter_ns
-from typing import Callable, Iterator, Mapping, Protocol, Sequence
+from typing import BinaryIO, Callable, Iterator, Mapping, Protocol, Sequence
 
 _CPU_THREAD_DEFAULTS = {
     "OMP_NUM_THREADS": "1",
@@ -66,8 +67,18 @@ from tools.public_voice_fixtures import (  # noqa: E402
     EVIDENCE_SCOPE,
     PublicFixtureError,
     PublicVoiceManifest,
+    _MAX_PARQUET_AUDIO_BYTES,
+    _MAX_PARQUET_CASE_SAMPLES,
+    _MINDS_LANGUAGE_ID,
+    _MINDS_SOURCE_ROW_GROUPS,
+    _MINDS_SOURCE_ROWS,
+    _MINDS_SOURCE_SHA256,
+    _PARQUET_PROTOCOL_VERSION,
+    _PARQUET_PYARROW_VERSION,
+    _PARQUET_WORKER,
     _clone_or_copy_file,
     _contains_token_subsequence,
+    _minds_selection_rank,
     _normalised_word_tokens,
     _strict_json_loads,
     _unlock_private_tree,
@@ -80,6 +91,7 @@ _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SAFE_ERROR = {"ok": False, "error": "public_stt_prerequisites_unavailable"}
 _MAX_CASE_AUDIO_BYTES = 8 * 1024 * 1024
 _MAX_CORPUS_AUDIO_BYTES = 32 * 1024 * 1024
+_MAX_METADATA_BYTES = 2 * 1024 * 1024
 _METADATA_FIELDS = {
     "schema_version",
     "suite",
@@ -107,9 +119,7 @@ _CASE_FIELDS = {
     "selection",
 }
 _ELIGIBLE_ASSERTIONS = frozenset({"transcript", "empty_reference"})
-_DECODER_IMPLEMENTATION = (
-    "core.engines._faster_whisper.FasterWhisperEndpointRecognizer"
-)
+_DECODER_IMPLEMENTATION = "core.engines._faster_whisper.FasterWhisperEndpointRecognizer"
 _MODEL_LOADER_CONFIG = {
     "device": "cuda",
     "device_index": 0,
@@ -208,10 +218,13 @@ def _existing_file(value: object) -> Path:
     if not isinstance(value, (str, os.PathLike)):
         raise _fail()
     try:
-        path = Path(value).expanduser().resolve(strict=True)
+        requested = Path(value).expanduser()
+        parent = requested.parent.resolve(strict=True)
+        path = parent / requested.name
+        info = path.lstat()
     except (OSError, RuntimeError, ValueError):
         raise _fail() from None
-    if not path.is_file():
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise _fail()
     return path
 
@@ -234,26 +247,103 @@ def _positive_integer(value: object) -> int:
     return value
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+@contextmanager
+def _stable_regular_reader(
+    path: Path,
+    *,
+    maximum: int | None,
+    require_single_link: bool,
+) -> Iterator[tuple[BinaryIO, os.stat_result]]:
+    descriptor = -1
+    handle: BinaryIO | None = None
     try:
-        with path.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                digest.update(chunk)
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or (require_single_link and before.st_nlink != 1)
+            or (maximum is not None and before.st_size > maximum)
+        ):
+            raise _fail()
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or (require_single_link and opened.st_nlink != 1)
+            or (maximum is not None and opened.st_size > maximum)
+            or _file_identity(opened) != _file_identity(before)
+        ):
+            raise _fail()
+        handle = os.fdopen(descriptor, "rb", buffering=0)
+        descriptor = -1
+        try:
+            yield handle, opened
+        finally:
+            try:
+                current = path.lstat()
+            except OSError:
+                raise _fail() from None
+            if _file_identity(os.fstat(handle.fileno())) != _file_identity(
+                opened
+            ) or _file_identity(current) != _file_identity(opened):
+                raise _fail()
+    except PublicSttPrerequisiteError:
+        raise
     except OSError:
         raise _fail() from None
+    finally:
+        if handle is not None:
+            handle.close()
+        elif descriptor >= 0:
+            os.close(descriptor)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with _stable_regular_reader(
+        path,
+        maximum=None,
+        require_single_link=False,
+    ) as (source, opened):
+        total = 0
+        while total < opened.st_size:
+            chunk = source.read(min(1024 * 1024, opened.st_size - total))
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+        if total != opened.st_size or source.read(1):
+            raise _fail()
     return digest.hexdigest()
 
 
 def _verified_file_bytes(path: Path, expected_hash: str, maximum: int) -> bytes:
-    try:
-        with path.open("rb") as source:
-            payload = source.read(maximum + 1)
-    except OSError:
-        raise _fail() from None
-    if len(payload) > maximum or hashlib.sha256(payload).hexdigest() != expected_hash:
-        raise _fail()
-    return payload
+    with _stable_regular_reader(
+        path,
+        maximum=maximum,
+        require_single_link=True,
+    ) as (source, opened):
+        payload = source.read(opened.st_size + 1)
+        if (
+            len(payload) != opened.st_size
+            or hashlib.sha256(payload).hexdigest() != expected_hash
+        ):
+            raise _fail()
+        return payload
 
 
 def _canonical_digest(value: object) -> str:
@@ -270,12 +360,11 @@ def _evaluator_binding(*, production_report: bool) -> dict[str, object]:
     repo_root = Path(__file__).resolve(strict=True).parents[1]
     candidates = {
         "tools/public_stt_eval.py": Path(__file__),
-        "tools/recorded_stt_eval.py": Path(
-            inspect.getsourcefile(_measure) or ""
+        "tools/public_voice_fixtures.py": Path(
+            inspect.getsourcefile(load_manifest) or ""
         ),
-        "core/wer.py": Path(
-            inspect.getsourcefile(_wer_module.word_error_rate) or ""
-        ),
+        "tools/recorded_stt_eval.py": Path(inspect.getsourcefile(_measure) or ""),
+        "core/wer.py": Path(inspect.getsourcefile(_wer_module.word_error_rate) or ""),
     }
     files: dict[str, str] = {}
     for relative_path, candidate in candidates.items():
@@ -297,9 +386,22 @@ def _evaluator_binding(*, production_report: bool) -> dict[str, object]:
 
 def _strict_json_file(path: Path) -> tuple[bytes, Mapping[str, object]]:
     try:
-        raw = path.read_bytes()
+        with _stable_regular_reader(
+            path,
+            maximum=_MAX_METADATA_BYTES,
+            require_single_link=True,
+        ) as (source, opened):
+            raw = source.read(opened.st_size + 1)
+            if not raw or len(raw) != opened.st_size:
+                raise _fail()
         payload = _strict_json_loads(raw)
-    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+        PublicSttPrerequisiteError,
+    ):
         raise _fail() from None
     if not isinstance(payload, dict):
         raise _fail()
@@ -353,6 +455,79 @@ def _validate_selection(
     if not isinstance(selection, dict) or not isinstance(extract, dict):
         raise _fail()
     extractor = extract.get("type")
+    if extractor == "hf_audio_parquet":
+        expected_fields = {
+            "intent_id",
+            "intent_label",
+            "language_id",
+            "language",
+            "row_index",
+            "source_path",
+            "transcription_sha256",
+            "audio_sha256",
+            "audio_size_bytes",
+            "selection_rank_sha256",
+            "worker_sha256",
+            "worker_protocol_version",
+            "pyarrow_version",
+            "source_row_count",
+            "source_row_groups",
+        }
+        source_path = selection.get("source_path")
+        row_index = selection.get("row_index")
+        audio_size = selection.get("audio_size_bytes")
+        expected_text = row.get("expected_text")
+        source_hashes = _fixture_source_hashes(manifest, fixture)
+        source_sha256 = source_hashes.get(str(fixture["source_id"]))
+        source_path_parts = (
+            PurePosixPath(source_path).parts if isinstance(source_path, str) else ()
+        )
+        expected_source_directory = f"en-US~{str(extract.get('intent_label')).upper()}"
+        if (
+            set(selection) != expected_fields
+            or selection.get("intent_id") != extract.get("intent_id")
+            or selection.get("intent_label") != extract.get("intent_label")
+            or selection.get("language_id") != _MINDS_LANGUAGE_ID
+            or selection.get("language") != "en-US"
+            or isinstance(row_index, bool)
+            or not isinstance(row_index, int)
+            or not 0 <= row_index < _MINDS_SOURCE_ROWS
+            or not isinstance(source_path, str)
+            or not source_path
+            or "\x00" in source_path
+            or len(source_path.encode("utf-8")) > 2048
+            or len(source_path_parts) != 2
+            or source_path_parts[0] != expected_source_directory
+            or source_path_parts[1].startswith(".")
+            or not source_path_parts[1].lower().endswith(".wav")
+            or source_path != f"{expected_source_directory}/{source_path_parts[1]}"
+            or not isinstance(expected_text, str)
+            or not expected_text.strip()
+            or "\x00" in expected_text
+            or len(expected_text.encode("utf-8")) > 4096
+            or selection.get("transcription_sha256")
+            != hashlib.sha256(expected_text.encode("utf-8")).hexdigest()
+            or _valid_sha(selection.get("audio_sha256"))
+            != selection.get("audio_sha256")
+            or isinstance(audio_size, bool)
+            or not isinstance(audio_size, int)
+            or not 0 < audio_size <= _MAX_PARQUET_AUDIO_BYTES
+            or source_sha256 != _MINDS_SOURCE_SHA256
+            or selection.get("selection_rank_sha256")
+            != _minds_selection_rank(
+                str(manifest.data["selection_seed"]),
+                _MINDS_SOURCE_SHA256,
+                str(extract["intent_label"]),
+                source_path,
+            )
+            or selection.get("worker_sha256") != _sha256_file(_PARQUET_WORKER)
+            or selection.get("worker_protocol_version") != _PARQUET_PROTOCOL_VERSION
+            or selection.get("pyarrow_version") != _PARQUET_PYARROW_VERSION
+            or selection.get("source_row_count") != _MINDS_SOURCE_ROWS
+            or selection.get("source_row_groups") != _MINDS_SOURCE_ROW_GROUPS
+        ):
+            raise _fail()
+        return
     if extractor == "speech_commands_tar":
         expected = {
             "archive_member",
@@ -480,7 +655,9 @@ def _validate_selection(
     if required_vocal is not None and required_vocal not in vocals:
         raise _fail()
     if fixture.get("assertion") == "transcript":
-        expected_tokens = _normalised_word_tokens(str(fixture.get("expected_text") or ""))
+        expected_tokens = _normalised_word_tokens(
+            str(fixture.get("expected_text") or "")
+        )
         observed_tokens = _normalised_word_tokens(" ".join(tokens))
         if not _contains_token_subsequence(observed_tokens, expected_tokens):
             raise _fail()
@@ -514,7 +691,13 @@ def _validate_case_row(
     if not isinstance(expected, str) or not isinstance(row.get("expectation"), str):
         raise _fail()
     if assertion == "transcript":
-        if expected != fixture.get("expected_text") or row.get("expectation") != expected:
+        if fixture.get("expected_text_from_source") is True:
+            if not expected.strip() or row.get("expectation") != expected:
+                raise _fail()
+        elif (
+            expected != fixture.get("expected_text")
+            or row.get("expectation") != expected
+        ):
             raise _fail()
     elif assertion == "unknown_word":
         if not expected or row.get("expectation") != expected:
@@ -523,12 +706,18 @@ def _validate_case_row(
         if expected != "" or row.get("expectation") != assertion:
             raise _fail()
     sample_count = _positive_integer(row.get("sample_count"))
+    extract = fixture.get("extract")
+    if (
+        isinstance(extract, dict)
+        and extract.get("type") == "hf_audio_parquet"
+        and sample_count > _MAX_PARQUET_CASE_SAMPLES
+    ):
+        raise _fail()
     duration = row.get("duration_sec")
     if (
         type(duration) is not float
         or not math.isfinite(duration)
-        or duration
-        != round(sample_count / int(manifest.data["output_sample_rate"]), 6)
+        or duration != round(sample_count / int(manifest.data["output_sample_rate"]), 6)
     ):
         raise _fail()
     expected_hash = _valid_sha(row.get("sha256"))
@@ -577,14 +766,12 @@ def _validate_audio_file(case: _EvaluationCase) -> None:
             _close_memmap(samples)
 
 
-def _load_corpus(
-    metadata_path: Path, manifest: PublicVoiceManifest
-) -> _LoadedCorpus:
+def _load_corpus(metadata_path: Path, manifest: PublicVoiceManifest) -> _LoadedCorpus:
     raw, payload = _strict_json_file(metadata_path)
     if (
         set(payload) != _METADATA_FIELDS
         or type(payload.get("schema_version")) is not int
-        or payload.get("schema_version") != 2
+        or payload.get("schema_version") != manifest.data["schema_version"]
         or payload.get("purpose") != manifest.data["purpose"]
         or _canonical_bytes(payload.get("evidence_scope"))
         != _canonical_bytes(EVIDENCE_SCOPE)
@@ -615,11 +802,35 @@ def _load_corpus(
     if (
         any(not isinstance(name, str) for name in names)
         or len(set(names)) != len(names)
-        or set(names) != set(expected_names)
+        or (
+            names != expected_names
+            if manifest.data["schema_version"] == 3
+            else set(names) != set(expected_names)
+        )
         or len(rows) != len(fixtures)
     ):
         raise _fail()
     row_by_name = {str(row["name"]): row for row in rows}
+    if manifest.data["schema_version"] == 3:
+        row_indexes = [
+            row.get("selection", {}).get("row_index")
+            if isinstance(row.get("selection"), dict)
+            else None
+            for row in rows
+        ]
+        audio_sizes = [
+            row.get("selection", {}).get("audio_size_bytes")
+            if isinstance(row.get("selection"), dict)
+            else None
+            for row in rows
+        ]
+        if (
+            any(type(index) is not int for index in row_indexes)
+            or len(set(row_indexes)) != len(row_indexes)
+            or any(type(size) is not int for size in audio_sizes)
+            or sum(audio_sizes) > _MAX_CORPUS_AUDIO_BYTES
+        ):
+            raise _fail()
     all_cases_list: list[_EvaluationCase] = []
     retained_audio_bytes = 0
     for fixture in fixtures:
@@ -689,7 +900,9 @@ def _fingerprint_model_tree(root: Path) -> dict[str, object]:
     directories = 0
     total_bytes = 0
     try:
-        paths = sorted(root.rglob("*"), key=lambda path: path.relative_to(root).as_posix())
+        paths = sorted(
+            root.rglob("*"), key=lambda path: path.relative_to(root).as_posix()
+        )
         for path in paths:
             relative = path.relative_to(root).as_posix()
             if path.is_symlink():
@@ -1014,9 +1227,7 @@ def evaluate_public_stt(
         production_report=bool(decoder_binding["production"])
     )
     snapshot_parent = (
-        local_model.parent
-        if snapshot_root is None
-        else _local_directory(snapshot_root)
+        local_model.parent if snapshot_root is None else _local_directory(snapshot_root)
     )
     if snapshot_parent == local_model or snapshot_parent.is_relative_to(local_model):
         raise _fail()
@@ -1036,9 +1247,7 @@ def evaluate_public_stt(
             _sha256_file(metadata) != corpus.binding["metadata_sha256"]
             or _sha256_file(manifest.path) != corpus.binding["manifest_sha256"]
             or _fingerprint_model_tree(local_model) != model_binding
-            or _evaluator_binding(
-                production_report=bool(decoder_binding["production"])
-            )
+            or _evaluator_binding(production_report=bool(decoder_binding["production"]))
             != evaluator_binding
         ):
             raise _fail()

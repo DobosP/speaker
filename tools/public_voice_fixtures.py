@@ -24,9 +24,14 @@ import json
 import math
 import os
 import re
+import signal
 import shutil
+import stat
+import subprocess
+import sys
 import tarfile
 import tempfile
+from time import monotonic, sleep
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -44,13 +49,31 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MANIFEST = _REPO_ROOT / "tests" / "fixtures" / "public_voice_manifest.v2.json"
 DEFAULT_CACHE = _REPO_ROOT / ".cache" / "public_voice"
 SUITES = ("commands", "conversation", "echo")
+_V3_SUITES = ("intent-asr",)
+_SUITES_BY_SCHEMA = {2: SUITES, 3: _V3_SUITES}
 _ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,95}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _AMI_WORD_MEMBER_RE = re.compile(
     r"(?P<meeting>[A-Za-z0-9_-]+)\.(?P<speaker>[A-Z])\.words\.xml\Z"
 )
 _MAX_SOURCE_BYTES = 256 * 1024 * 1024
+_MAX_MANIFEST_BYTES = 1024 * 1024
 _MAX_AUDIO_MEMBER_BYTES = 64 * 1024 * 1024
+_MAX_PARQUET_RESULT_BYTES = 128 * 1024
+_MAX_PARQUET_WORKER_BYTES = 512 * 1024
+_MAX_PARQUET_PROBE_BYTES = 4096
+_MAX_VENV_MARKER_BYTES = 4096
+_PARQUET_PROBE_TIMEOUT_SEC = 10.0
+_PARQUET_WORKER_TIMEOUT_SEC = 60.0
+_PARQUET_GROUP_REAP_TIMEOUT_SEC = 2.0
+_PARQUET_WORKER = Path(__file__).with_name("public_voice_parquet_worker.py")
+_PARQUET_PROTOCOL_VERSION = 1
+_PARQUET_PROBE_SCHEMA_VERSION = 1
+_PARQUET_PYARROW_VERSION = "25.0.0"
+_MAX_PARQUET_AUDIO_BYTES = 8 * 1024 * 1024
+_MAX_PARQUET_TOTAL_AUDIO_BYTES = 32 * 1024 * 1024
+_MAX_PARQUET_CASE_SAMPLES = 30 * 16_000
+_MAX_PARQUET_TOTAL_SAMPLES = 14 * _MAX_PARQUET_CASE_SAMPLES
 _DOWNLOAD_CHUNK_BYTES = 64 * 1024
 _COPY_CHUNK_BYTES = 1024 * 1024
 _FICLONE = 0x40049409
@@ -63,9 +86,7 @@ EVIDENCE_SCOPE = {
     "held_out": False,
 }
 _SOURCE_KINDS = frozenset({"canonical", "mirror"})
-_LICENSE_IDS = frozenset(
-    {"Apache-2.0", "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "MIT"}
-)
+_LICENSE_IDS = frozenset({"Apache-2.0", "CC-BY-4.0", "CC-BY-SA-4.0", "CC0-1.0", "MIT"})
 _REDISTRIBUTION_POLICIES = frozenset({"cache-only", "redistributable"})
 _PERSONAL_DATA_CLASSES = frozenset(
     {"none", "public-pseudonymous-voice", "public-transcript-annotations"}
@@ -82,6 +103,7 @@ _ASSERTIONS_BY_SUITE = {
             "doubletalk_mic",
         }
     ),
+    "intent-asr": frozenset({"transcript"}),
 }
 _FIXTURE_TAGS = frozenset(
     {"backchannel", "four-speaker-overlap", "laughter", "meeting", "single-speaker"}
@@ -132,6 +154,96 @@ _COMMAND_WORDS = (
     "stop",
     "go",
 )
+_MINDS_INTENTS = (
+    "abroad",
+    "address",
+    "app_error",
+    "atm_limit",
+    "balance",
+    "business_loan",
+    "card_issues",
+    "cash_deposit",
+    "direct_debit",
+    "freeze",
+    "high_value_payment",
+    "joint_account",
+    "latest_transactions",
+    "pay_bill",
+)
+_MINDS_SOURCE_SHA256 = (
+    "37004471dc896ce20771b3fdda0ee8fb33ec7a030fb4e2fd047c561ec0a1ee30"
+)
+_MINDS_SOURCE_REVISION = "40ce77cb32a384e4d50a568e1ec39ac804019d33"
+_MINDS_SOURCE_SIZE_BYTES = 34_196_221
+_MINDS_SOURCE_ROWS = 563
+_MINDS_SOURCE_ROW_GROUPS = 6
+_MINDS_LANGUAGE_ID = 4
+_MINDS_SELECTION_SEED = "speaker-public-minds14-v1"
+_PARQUET_RESULT_FIELDS = {
+    "schema_version",
+    "source_sha256",
+    "source_size_bytes",
+    "source_row_count",
+    "source_row_groups",
+    "pyarrow_version",
+    "cases",
+}
+_PARQUET_CASE_FIELDS = {
+    "fixture_id",
+    "intent_id",
+    "intent_label",
+    "language_id",
+    "language",
+    "row_index",
+    "source_path",
+    "transcription",
+    "transcription_sha256",
+    "audio_file",
+    "audio_sha256",
+    "audio_size_bytes",
+    "selection_rank_sha256",
+}
+_PARQUET_PROBE_FIELDS = {
+    "schema_version",
+    "prefix",
+    "base_prefix",
+    "enable_user_site",
+    "sys_path",
+    "pyarrow_version",
+    "pyarrow_file",
+}
+_PARQUET_PROBE_CODE = r"""
+import json
+import os
+import site
+import sys
+
+try:
+    import pyarrow
+
+    def resolved(value):
+        return os.path.realpath(os.path.abspath(os.fspath(value)))
+
+    payload = {
+        "schema_version": 1,
+        "prefix": resolved(sys.prefix),
+        "base_prefix": resolved(sys.base_prefix),
+        "enable_user_site": site.ENABLE_USER_SITE,
+        "sys_path": [resolved(value or os.getcwd()) for value in sys.path],
+        "pyarrow_version": pyarrow.__version__,
+        "pyarrow_file": resolved(pyarrow.__file__),
+    }
+    encoded = json.dumps(
+        payload,
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("ascii")
+    os.write(1, encoded)
+except BaseException:
+    raise SystemExit(73)
+"""
 
 
 class PublicFixtureError(RuntimeError):
@@ -241,6 +353,96 @@ def _strict_json_loads(raw: bytes | str) -> object:
         object_pairs_hook=reject_duplicates,
         parse_constant=reject_constant,
     )
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+    )
+
+
+@contextmanager
+def _stable_regular_reader(
+    path: Path,
+    *,
+    field: str,
+    maximum: int | None,
+    expected_size: int | None = None,
+    require_single_link: bool = True,
+) -> Iterator[tuple[BinaryIO, os.stat_result]]:
+    descriptor = -1
+    handle: BinaryIO | None = None
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode) or (
+            require_single_link and before.st_nlink != 1
+        ):
+            raise PublicFixtureError(f"{field} must be a regular single-link file")
+        if expected_size is not None and before.st_size != expected_size:
+            raise PublicFixtureError(f"{field} size does not match")
+        if maximum is not None and before.st_size > maximum:
+            raise PublicFixtureError(f"{field} exceeds its size limit")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or (require_single_link and opened.st_nlink != 1)
+            or (expected_size is not None and opened.st_size != expected_size)
+            or (maximum is not None and opened.st_size > maximum)
+            or _file_identity(opened) != _file_identity(before)
+        ):
+            raise PublicFixtureError(f"{field} changed before reading")
+        handle = os.fdopen(descriptor, "rb", buffering=0)
+        descriptor = -1
+        try:
+            yield handle, opened
+        finally:
+            after = os.fstat(handle.fileno())
+            try:
+                current = path.lstat()
+            except OSError as exc:
+                raise PublicFixtureError(f"{field} changed while reading") from exc
+            if _file_identity(after) != _file_identity(opened) or _file_identity(
+                current
+            ) != _file_identity(opened):
+                raise PublicFixtureError(f"{field} changed while reading")
+    except PublicFixtureError:
+        raise
+    except OSError as exc:
+        raise PublicFixtureError(f"{field} is unavailable") from exc
+    finally:
+        if handle is not None:
+            handle.close()
+        elif descriptor >= 0:
+            os.close(descriptor)
+
+
+def _read_stable_regular_bytes(
+    path: Path,
+    *,
+    field: str,
+    maximum: int,
+    require_single_link: bool = True,
+) -> bytes:
+    with _stable_regular_reader(
+        path,
+        field=field,
+        maximum=maximum,
+        require_single_link=require_single_link,
+    ) as (handle, opened):
+        payload = handle.read(opened.st_size + 1)
+        if len(payload) != opened.st_size:
+            raise PublicFixtureError(f"{field} changed while reading")
+        return payload
 
 
 def _require_exact_keys(
@@ -361,8 +563,10 @@ def _validate_product_scenario(
         if set(slots) != {"search_scope", "terms"} or slots["search_scope"] != "vault":
             raise PublicFixtureError("vault search requires scope and terms")
         terms = slots["terms"]
-        if not isinstance(terms, list) or not terms or any(
-            not isinstance(term, str) or not term for term in terms
+        if (
+            not isinstance(terms, list)
+            or not terms
+            or any(not isinstance(term, str) or not term for term in terms)
         ):
             raise PublicFixtureError("invalid vault search terms")
     elif action == "reminder.create":
@@ -386,11 +590,44 @@ def _validate_extractor(
     raw_fixture: Mapping[str, object],
     *,
     required_source_ids: tuple[str, ...],
+    schema_version: int,
 ) -> None:
     extract = raw_fixture.get("extract")
     if not isinstance(extract, dict):
         raise PublicFixtureError("invalid fixture extractor")
     extractor = extract.get("type")
+    if extractor == "hf_audio_parquet":
+        if schema_version != 3:
+            raise PublicFixtureError("invalid fixture extractor")
+        _require_exact_keys(
+            extract,
+            {
+                "type",
+                "config",
+                "split",
+                "row_count",
+                "row_groups",
+                "language_id",
+                "intent_id",
+                "intent_label",
+            },
+            field="Hugging Face audio Parquet extractor",
+        )
+        intent_id = extract.get("intent_id")
+        if (
+            extract.get("config") != "en-US"
+            or extract.get("split") != "train"
+            or extract.get("row_count") != _MINDS_SOURCE_ROWS
+            or extract.get("row_groups") != _MINDS_SOURCE_ROW_GROUPS
+            or extract.get("language_id") != _MINDS_LANGUAGE_ID
+            or isinstance(intent_id, bool)
+            or not isinstance(intent_id, int)
+            or not 0 <= intent_id < len(_MINDS_INTENTS)
+            or extract.get("intent_label") != _MINDS_INTENTS[intent_id]
+            or required_source_ids
+        ):
+            raise PublicFixtureError("invalid MInDS-14 Parquet extractor")
+        return
     if extractor == "speech_commands_tar":
         allowed = {"type", "target"}
         if "max_duration_sec" in extract:
@@ -487,17 +724,22 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
 
     manifest_path = Path(path)
     try:
-        raw = manifest_path.read_bytes()
+        raw = _read_stable_regular_bytes(
+            manifest_path,
+            field="public voice manifest",
+            maximum=_MAX_MANIFEST_BYTES,
+        )
+        if not raw:
+            raise PublicFixtureError("public voice manifest is empty")
         data = _strict_json_loads(raw)
     except PublicFixtureError:
         raise
     except Exception as exc:  # noqa: BLE001 - converted to a stable public error
         raise PublicFixtureError("unable to load public voice manifest") from exc
-    if (
-        not isinstance(data, dict)
-        or type(data.get("schema_version")) is not int
-        or data.get("schema_version") != 2
-    ):
+    if not isinstance(data, dict) or type(data.get("schema_version")) is not int:
+        raise PublicFixtureError("unsupported public voice manifest schema")
+    schema_version = int(data["schema_version"])
+    if schema_version not in _SUITES_BY_SCHEMA:
         raise PublicFixtureError("unsupported public voice manifest schema")
     _require_exact_keys(
         data,
@@ -540,8 +782,12 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
         raise PublicFixtureError("manifest has no fixtures")
     if not isinstance(groups_raw, list):
         raise PublicFixtureError("invalid groups")
-    if not isinstance(product_scenarios_raw, list) or not product_scenarios_raw:
+    if not isinstance(product_scenarios_raw, list):
         raise PublicFixtureError("manifest has no product scenarios")
+    if schema_version == 2 and not product_scenarios_raw:
+        raise PublicFixtureError("manifest has no product scenarios")
+    if schema_version == 3 and product_scenarios_raw:
+        raise PublicFixtureError("public-v3 intent audio has no product scenarios")
 
     source_ids: set[str] = set()
     source_filenames: set[str] = set()
@@ -553,28 +799,27 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
         if source_id in source_ids:
             raise PublicFixtureError("duplicate source id")
         source_ids.add(source_id)
-        _require_exact_keys(
-            raw_source,
-            {
-                "id",
-                "upstream_dataset",
-                "upstream_version",
-                "source_kind",
-                "canonical_url",
-                "download_url",
-                "filename",
-                "sha256",
-                "size_bytes",
-                "license_id",
-                "license_url",
-                "attribution",
-                "citation",
-                "redistribution",
-                "human_voice",
-                "personal_data",
-            },
-            field="source",
-        )
+        source_fields = {
+            "id",
+            "upstream_dataset",
+            "upstream_version",
+            "source_kind",
+            "canonical_url",
+            "download_url",
+            "filename",
+            "sha256",
+            "size_bytes",
+            "license_id",
+            "license_url",
+            "attribution",
+            "citation",
+            "redistribution",
+            "human_voice",
+            "personal_data",
+        }
+        if schema_version == 3:
+            source_fields.add("acquisition")
+        _require_exact_keys(raw_source, source_fields, field="source")
         filename_value = raw_source.get("filename")
         filename = filename_value if isinstance(filename_value, str) else ""
         folded_filename = filename.casefold()
@@ -615,6 +860,11 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
             personal_data == "public-pseudonymous-voice"
         ):
             raise PublicFixtureError("source voice and personal-data flags disagree")
+        if (
+            schema_version == 3
+            and raw_source.get("acquisition") != "verified-override-only"
+        ):
+            raise PublicFixtureError("public-v3 source requires verified override")
         sources.append(raw_source)
 
     fixture_ids: set[str] = set()
@@ -633,17 +883,20 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
             "extract",
             "assertion",
         }
-        for optional in (
+        optional_fixture_fields = [
             "required_source_ids",
             "expected_text",
             "expected_text_from_archive_label",
             "tags",
-        ):
+        ]
+        if schema_version == 3:
+            optional_fixture_fields.append("expected_text_from_source")
+        for optional in optional_fixture_fields:
             if optional in raw_fixture:
                 allowed_fixture_fields.add(optional)
         _require_exact_keys(raw_fixture, allowed_fixture_fields, field="fixture")
         suite = raw_fixture.get("suite")
-        if suite not in SUITES:
+        if suite not in _SUITES_BY_SCHEMA[schema_version]:
             raise PublicFixtureError("invalid fixture suite")
         source_id = _require_id(raw_fixture.get("source_id"), field="source ref")
         if source_id not in source_ids:
@@ -660,18 +913,27 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
             or source_id in required
         ):
             raise PublicFixtureError("unknown required source")
-        _validate_extractor(raw_fixture, required_source_ids=required)
+        _validate_extractor(
+            raw_fixture,
+            required_source_ids=required,
+            schema_version=schema_version,
+        )
         assertion = raw_fixture.get("assertion")
         if assertion not in _ASSERTIONS_BY_SUITE[str(suite)]:
             raise PublicFixtureError("invalid fixture assertion")
         expected_text = raw_fixture.get("expected_text")
-        if assertion == "transcript":
+        expected_from_source = raw_fixture.get("expected_text_from_source")
+        if assertion == "transcript" and expected_from_source is True:
+            if "expected_text" in raw_fixture:
+                raise PublicFixtureError("source transcript fixture is over-specified")
+        elif assertion == "transcript":
             _require_nonempty_text(expected_text, field="fixture expected text")
         elif assertion == "empty_reference" and expected_text != "":
             raise PublicFixtureError("empty-reference fixture needs an empty reference")
-        elif assertion == "unknown_word" and raw_fixture.get(
-            "expected_text_from_archive_label"
-        ) is not True:
+        elif (
+            assertion == "unknown_word"
+            and raw_fixture.get("expected_text_from_archive_label") is not True
+        ):
             raise PublicFixtureError("unknown-word fixture needs its archive label")
         elif assertion not in {"transcript", "empty_reference", "unknown_word"} and (
             "expected_text" in raw_fixture
@@ -680,6 +942,16 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
             raise PublicFixtureError("non-transcript fixture has a text reference")
         extract = raw_fixture["extract"]
         assert isinstance(extract, dict)
+        if (
+            extract.get("type") == "hf_audio_parquet"
+            and expected_from_source is not True
+        ):
+            raise PublicFixtureError("Parquet transcript must come from source")
+        if (
+            extract.get("type") != "hf_audio_parquet"
+            and "expected_text_from_source" in raw_fixture
+        ):
+            raise PublicFixtureError("unexpected source transcript flag")
         if assertion == "unknown_word" and extract.get("target") != "_unknown_":
             raise PublicFixtureError("unknown-word assertion has the wrong target")
         if assertion == "empty_reference" and extract.get("target") != "_silence_":
@@ -695,6 +967,28 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
             field="fixture tags",
         )
         fixtures.append(raw_fixture)
+
+    if schema_version == 3:
+        intent_ids = []
+        for fixture in fixtures:
+            extract = fixture["extract"]
+            assert isinstance(extract, dict)
+            intent_ids.append(extract.get("intent_id"))
+        if (
+            len(sources) != 1
+            or seed != _MINDS_SELECTION_SEED
+            or sources[0].get("id") != "minds14-en-us-train"
+            or sources[0].get("upstream_version") != _MINDS_SOURCE_REVISION
+            or sources[0].get("sha256") != _MINDS_SOURCE_SHA256
+            or sources[0].get("size_bytes") != _MINDS_SOURCE_SIZE_BYTES
+            or sources[0].get("license_id") != "CC-BY-4.0"
+            or sources[0].get("redistribution") != "cache-only"
+            or sources[0].get("acquisition") != "verified-override-only"
+            or len(fixtures) != len(_MINDS_INTENTS)
+            or intent_ids != list(range(len(_MINDS_INTENTS)))
+            or groups_raw
+        ):
+            raise PublicFixtureError("invalid public-v3 MInDS-14 coverage")
 
     groups: list[Mapping[str, object]] = []
     group_ids: set[str] = set()
@@ -713,7 +1007,7 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
         assertion = raw_group.get("assertion")
         contract = _GROUP_CONTRACTS.get(str(assertion))
         if (
-            suite not in SUITES
+            suite not in _SUITES_BY_SCHEMA[schema_version]
             or not isinstance(roles, dict)
             or contract is None
             or set(roles) != set(contract)
@@ -751,31 +1045,72 @@ def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> PublicVoiceManifest:
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+    with _stable_regular_reader(
+        path,
+        field="hashed file",
+        maximum=_MAX_SOURCE_BYTES,
+    ) as (handle, opened):
+        total = 0
+        while total < opened.st_size:
+            chunk = handle.read(min(1024 * 1024, opened.st_size - total))
+            if not chunk:
+                break
             digest.update(chunk)
+            total += len(chunk)
+        if total != opened.st_size or handle.read(1):
+            raise PublicFixtureError("hashed file changed while reading")
     return digest.hexdigest()
 
 
 def _verify_source_file(path: Path, source: Mapping[str, object]) -> None:
-    try:
-        stat_size = path.stat().st_size
-    except OSError as exc:
-        raise PublicFixtureError("source file is unavailable") from exc
     expected_size = int(source["size_bytes"])
-    if stat_size != expected_size:
-        raise PublicFixtureError("source file size does not match manifest")
-    if _sha256_file(path) != source["sha256"]:
+    digest = hashlib.sha256()
+    with _stable_regular_reader(
+        path,
+        field="source file",
+        maximum=expected_size,
+        expected_size=expected_size,
+    ) as (handle, opened):
+        total = 0
+        while total < opened.st_size:
+            chunk = handle.read(min(1024 * 1024, opened.st_size - total))
+            if not chunk:
+                break
+            digest.update(chunk)
+            total += len(chunk)
+        if total != expected_size or handle.read(1):
+            raise PublicFixtureError("source file size does not match manifest")
+    if digest.hexdigest() != source["sha256"]:
         raise PublicFixtureError("source file hash does not match manifest")
 
 
-def _clone_or_copy_file(source_path: Path, destination: Path) -> None:
+def _clone_or_copy_file(
+    source_path: Path,
+    destination: Path,
+    *,
+    expected_size: int | None = None,
+    require_single_link: bool = False,
+) -> None:
     """Create an independent on-disk file, preferring a CoW reflink."""
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with source_path.open("rb", buffering=0) as source:
-            with destination.open("xb", buffering=0) as output:
+        with _stable_regular_reader(
+            source_path,
+            field="snapshot source",
+            maximum=expected_size,
+            expected_size=expected_size,
+            require_single_link=require_single_link,
+        ) as (source, opened):
+            flags = (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = os.open(destination, flags, 0o600)
+            with os.fdopen(descriptor, "wb", buffering=0) as output:
                 cloned = False
                 if fcntl is not None:
                     try:
@@ -786,10 +1121,36 @@ def _clone_or_copy_file(source_path: Path, destination: Path) -> None:
                         output.truncate(0)
                         source.seek(0)
                 if not cloned:
-                    shutil.copyfileobj(source, output, length=_COPY_CHUNK_BYTES)
+                    remaining = opened.st_size
+                    while remaining:
+                        chunk = source.read(min(_COPY_CHUNK_BYTES, remaining))
+                        if not chunk:
+                            raise PublicFixtureError(
+                                "snapshot source changed while copying"
+                            )
+                        output.write(chunk)
+                        remaining -= len(chunk)
+                    if source.read(1):
+                        raise PublicFixtureError(
+                            "snapshot source changed while copying"
+                        )
+                else:
+                    source.seek(opened.st_size)
+                    if source.read(1):
+                        raise PublicFixtureError(
+                            "snapshot source changed while copying"
+                        )
+                if os.fstat(output.fileno()).st_size != opened.st_size:
+                    raise PublicFixtureError("snapshot output size does not match")
                 output.flush()
                 os.fsync(output.fileno())
-        destination.chmod(0o400)
+                os.fchmod(output.fileno(), 0o400)
+    except PublicFixtureError:
+        try:
+            destination.unlink()
+        except FileNotFoundError:
+            pass
+        raise
     except Exception as exc:  # noqa: BLE001 - stable fail-closed boundary
         try:
             destination.unlink()
@@ -799,19 +1160,48 @@ def _clone_or_copy_file(source_path: Path, destination: Path) -> None:
 
 
 def _unlock_private_tree(root: Path) -> None:
+    """Make only owned directories removable; never chmod files or links."""
+
+    root_descriptor = -1
     try:
-        paths = sorted(root.rglob("*"), key=lambda path: len(path.parts), reverse=True)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_DIRECTORY", 0)
+        )
+        root_descriptor = os.open(root, flags)
     except OSError:
-        paths = []
-    for path in paths:
+        return
+
+    def unlock_directory(descriptor: int) -> None:
         try:
-            path.chmod(0o700 if path.is_dir() else 0o600)
+            os.fchmod(descriptor, 0o700)
+            with os.scandir(descriptor) as entries:
+                names = tuple(entry.name for entry in entries)
         except OSError:
-            pass
+            return
+        for name in names:
+            child_descriptor = -1
+            try:
+                child_descriptor = os.open(
+                    name,
+                    flags,
+                    dir_fd=descriptor,
+                )
+                info = os.fstat(child_descriptor)
+                if stat.S_ISDIR(info.st_mode):
+                    unlock_directory(child_descriptor)
+            except OSError:
+                continue
+            finally:
+                if child_descriptor >= 0:
+                    os.close(child_descriptor)
+
     try:
-        root.chmod(0o700)
-    except OSError:
-        pass
+        unlock_directory(root_descriptor)
+    finally:
+        os.close(root_descriptor)
 
 
 @contextmanager
@@ -839,7 +1229,12 @@ def _verified_source_snapshots(
             if source_path is None:
                 raise PublicFixtureError("resolved source is missing")
             destination = snapshot_root / str(source["filename"])
-            _clone_or_copy_file(source_path, destination)
+            _clone_or_copy_file(
+                source_path,
+                destination,
+                expected_size=int(source["size_bytes"]),
+                require_single_link=True,
+            )
             _verify_source_file(destination, source)
             snapshots[source_id] = destination
         snapshot_root.chmod(0o500)
@@ -924,7 +1319,8 @@ def _download_source(
 def _required_sources(
     manifest: PublicVoiceManifest, suite: str
 ) -> tuple[Mapping[str, object], ...]:
-    if suite not in SUITES:
+    schema_version = int(manifest.data["schema_version"])
+    if suite not in _SUITES_BY_SCHEMA[schema_version]:
         raise PublicFixtureError("unknown public fixture suite")
     wanted: set[str] = set()
     for fixture in manifest.fixtures:
@@ -940,8 +1336,9 @@ def source_records_for_suite(
 ) -> tuple[dict[str, object], ...]:
     """Return the exact public source records bound into prepared metadata."""
 
-    return tuple(
-        {
+    records: list[dict[str, object]] = []
+    for source in _required_sources(manifest, suite):
+        record = {
             "id": source["id"],
             "sha256": source["sha256"],
             "size_bytes": source["size_bytes"],
@@ -957,8 +1354,10 @@ def source_records_for_suite(
             "human_voice": source["human_voice"],
             "personal_data": source["personal_data"],
         }
-        for source in _required_sources(manifest, suite)
-    )
+        if "acquisition" in source:
+            record["acquisition"] = source["acquisition"]
+        records.append(record)
+    return tuple(records)
 
 
 def _resolve_sources(
@@ -982,6 +1381,10 @@ def _resolve_sources(
     for source in required_sources:
         source_id = str(source["id"])
         override = overrides.get(source_id)
+        if source.get("acquisition") == "verified-override-only" and override is None:
+            raise PublicFixtureError(
+                "source requires an explicit hash-verified --source override"
+            )
         if override is not None:
             _verify_source_file(Path(override), source)
             resolved[source_id] = Path(override)
@@ -1073,6 +1476,700 @@ def _read_audio(
     if mono.size == 0 or not np.isfinite(mono).all():
         raise PublicFixtureError("decoded fixture audio is invalid")
     return mono
+
+
+def _minds_selection_rank(
+    seed: str, source_sha256: str, intent_label: str, source_path: str
+) -> str:
+    """Return the approved deterministic MInDS-14 case-selection rank."""
+
+    return hashlib.sha256(
+        seed.encode("utf-8")
+        + b"\0"
+        + source_sha256.encode("ascii")
+        + b"\0"
+        + intent_label.encode("utf-8")
+        + b"\0"
+        + source_path.encode("utf-8")
+    ).hexdigest()
+
+
+def _is_equal_or_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _resolved_production_venv() -> Path:
+    active_root = Path(os.path.abspath(sys.executable)).parent.parent
+    candidates = (
+        active_root if active_root.name == ".venv" else None,
+        _REPO_ROOT / ".venv",
+    )
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_dir():
+            return resolved
+    return (_REPO_ROOT / ".venv").resolve(strict=False)
+
+
+def _snapshot_venv_path(
+    path: Path,
+    *,
+    directory: bool,
+) -> tuple[tuple[int, ...], Path, tuple[int, ...]]:
+    lexical_info = path.lstat()
+    if directory:
+        if not (
+            stat.S_ISDIR(lexical_info.st_mode) or stat.S_ISLNK(lexical_info.st_mode)
+        ):
+            raise PublicFixtureError("invalid isolated --parquet-python")
+    elif not (stat.S_ISREG(lexical_info.st_mode) or stat.S_ISLNK(lexical_info.st_mode)):
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    resolved = path.resolve(strict=True)
+    resolved_info = resolved.stat()
+    if directory:
+        if not stat.S_ISDIR(resolved_info.st_mode):
+            raise PublicFixtureError("invalid isolated --parquet-python")
+    elif not stat.S_ISREG(resolved_info.st_mode):
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    return _file_identity(lexical_info), resolved, _file_identity(resolved_info)
+
+
+def _effective_venv_marker(interpreter: Path, root: Path) -> Path:
+    candidates = (interpreter.parent / "pyvenv.cfg", root / "pyvenv.cfg")
+    present: list[Path] = []
+    for candidate in candidates:
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            raise PublicFixtureError("invalid isolated --parquet-python") from None
+        present.append(candidate)
+    if len(present) != 1:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    return present[0]
+
+
+def _read_valid_venv_marker(path: Path) -> tuple[bytes, tuple[int, ...]]:
+    try:
+        with _stable_regular_reader(
+            path,
+            field="isolated environment marker",
+            maximum=_MAX_VENV_MARKER_BYTES,
+        ) as (handle, opened):
+            marker = handle.read(opened.st_size + 1)
+            if len(marker) != opened.st_size:
+                raise PublicFixtureError("invalid isolated --parquet-python")
+            identity = _file_identity(opened)
+    except PublicFixtureError:
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    try:
+        text = marker.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    if "\x00" in text:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    values: list[str] = []
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip().casefold() == "include-system-site-packages":
+            values.append(value.strip().casefold())
+    if values != ["false"]:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    return marker, identity
+
+
+def _parquet_probe_environment(root: Path) -> dict[str, str]:
+    return {
+        "HOME": str(root),
+        "TMPDIR": str(root),
+        "PATH": os.defpath,
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "ARROW_NUM_THREADS": "1",
+    }
+
+
+def _run_parquet_python_probe(
+    interpreter: Path,
+    *,
+    candidate_root: Path,
+    code: str = _PARQUET_PROBE_CODE,
+    timeout_sec: float = _PARQUET_PROBE_TIMEOUT_SEC,
+) -> bytes:
+    process: subprocess.Popen[bytes] | None = None
+    group_reaped = False
+    output = bytearray()
+    timed_out = False
+    overflowed = False
+    try:
+        process = subprocess.Popen(
+            [str(interpreter), "-I", "-B", "-c", code],
+            cwd=candidate_root,
+            env=_parquet_probe_environment(candidate_root),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+            bufsize=0,
+        )
+        if process.stdout is None:
+            raise PublicFixtureError("invalid isolated --parquet-python")
+        descriptor = process.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        deadline = monotonic() + timeout_sec
+        while True:
+            remaining = _MAX_PARQUET_PROBE_BYTES + 1 - len(output)
+            if remaining <= 0:
+                overflowed = True
+                break
+            try:
+                chunk = os.read(descriptor, min(4096, remaining))
+            except BlockingIOError:
+                chunk = None
+            if chunk:
+                output.extend(chunk)
+                if len(output) > _MAX_PARQUET_PROBE_BYTES:
+                    overflowed = True
+                    break
+            if process.poll() is not None:
+                break
+            if monotonic() >= deadline:
+                timed_out = True
+                break
+            sleep(0.01)
+
+        _terminate_worker_process_group(process)
+        group_reaped = True
+        # A process that left the private group may still hold this pipe.
+        # Consume only bytes already buffered; never wait for a later EOF.
+        while len(output) <= _MAX_PARQUET_PROBE_BYTES:
+            try:
+                chunk = os.read(
+                    descriptor,
+                    min(4096, _MAX_PARQUET_PROBE_BYTES + 1 - len(output)),
+                )
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+        if len(output) > _MAX_PARQUET_PROBE_BYTES:
+            overflowed = True
+        return_code = process.returncode
+        if timed_out or overflowed or return_code != 0 or not output:
+            raise PublicFixtureError("invalid isolated --parquet-python")
+        return bytes(output)
+    except PublicFixtureError:
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    except (OSError, ValueError):
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    finally:
+        try:
+            if process is not None and not group_reaped:
+                _terminate_worker_process_group(process)
+                group_reaped = True
+        finally:
+            if process is not None and process.stdout is not None:
+                process.stdout.close()
+
+
+def _strict_probe_path(value: object) -> Path:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeEncodeError:
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    if len(encoded) > 4096:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    path = Path(value)
+    if (
+        not path.is_absolute()
+        or ".." in path.parts
+        or Path(os.path.normpath(value)) != path
+    ):
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    try:
+        resolved = path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    if resolved != path:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    return resolved
+
+
+def _validate_parquet_probe_result(
+    raw: bytes,
+    *,
+    candidate_root: Path,
+    production_venv: Path,
+) -> None:
+    if not raw or len(raw) > _MAX_PARQUET_PROBE_BYTES:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    try:
+        result = _strict_json_loads(raw)
+    except Exception:
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    if not isinstance(result, dict) or set(result) != _PARQUET_PROBE_FIELDS:
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    prefix = _strict_probe_path(result.get("prefix"))
+    base_prefix = _strict_probe_path(result.get("base_prefix"))
+    pyarrow_file = _strict_probe_path(result.get("pyarrow_file"))
+    sys_path = result.get("sys_path")
+    if (
+        type(result.get("schema_version")) is not int
+        or result.get("schema_version") != _PARQUET_PROBE_SCHEMA_VERSION
+        or prefix != candidate_root
+        or prefix == base_prefix
+        or result.get("enable_user_site") is not False
+        or result.get("pyarrow_version") != _PARQUET_PYARROW_VERSION
+        or pyarrow_file == candidate_root
+        or not _is_equal_or_within(pyarrow_file, candidate_root)
+        or not pyarrow_file.is_file()
+        or not isinstance(sys_path, list)
+        or not 0 < len(sys_path) <= 128
+    ):
+        raise PublicFixtureError("invalid isolated --parquet-python")
+    for raw_path in sys_path:
+        resolved_path = _strict_probe_path(raw_path)
+        if _is_equal_or_within(resolved_path, production_venv):
+            raise PublicFixtureError("invalid isolated --parquet-python")
+
+
+def _validate_parquet_python(value: Path | str | None) -> Path:
+    if value is None:
+        raise PublicFixtureError(
+            "Parquet preparation requires an isolated --parquet-python"
+        )
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise PublicFixtureError("--parquet-python must be an absolute path")
+    lexical = Path(os.path.abspath(path))
+    candidate_root = lexical.parent.parent
+    try:
+        production_venv = _resolved_production_venv()
+        root_snapshot = _snapshot_venv_path(candidate_root, directory=True)
+        executable_snapshot = _snapshot_venv_path(lexical, directory=False)
+        resolved_root = root_snapshot[1]
+        if _is_equal_or_within(resolved_root, production_venv):
+            raise PublicFixtureError("the production .venv cannot prepare Parquet")
+        if not os.access(lexical, os.X_OK):
+            raise PublicFixtureError("invalid isolated --parquet-python")
+        marker_path = _effective_venv_marker(lexical, candidate_root)
+        marker, marker_identity = _read_valid_venv_marker(marker_path)
+        probe = _run_parquet_python_probe(
+            lexical,
+            candidate_root=resolved_root,
+        )
+        _validate_parquet_probe_result(
+            probe,
+            candidate_root=resolved_root,
+            production_venv=production_venv,
+        )
+        if (
+            _resolved_production_venv() != production_venv
+            or _snapshot_venv_path(candidate_root, directory=True) != root_snapshot
+            or _snapshot_venv_path(lexical, directory=False) != executable_snapshot
+            or _effective_venv_marker(lexical, candidate_root) != marker_path
+        ):
+            raise PublicFixtureError("invalid isolated --parquet-python") from None
+        marker_after, marker_identity_after = _read_valid_venv_marker(marker_path)
+        if marker_after != marker or marker_identity_after != marker_identity:
+            raise PublicFixtureError("invalid isolated --parquet-python")
+    except PublicFixtureError:
+        raise
+    except OSError:
+        raise PublicFixtureError("invalid isolated --parquet-python") from None
+    return lexical
+
+
+def _read_stable_worker_file(path: Path, *, maximum: int) -> bytes:
+    with _stable_regular_reader(
+        path,
+        field="Parquet worker output",
+        maximum=maximum,
+    ) as (handle, opened):
+        if stat.S_IMODE(opened.st_mode) & 0o077:
+            raise PublicFixtureError("invalid Parquet worker output")
+        payload = handle.read(opened.st_size + 1)
+        if len(payload) != opened.st_size:
+            raise PublicFixtureError("Parquet worker output changed while reading")
+        return payload
+
+
+def _read_stable_repo_worker(path: Path) -> bytes:
+    payload = _read_stable_regular_bytes(
+        path,
+        field="Parquet worker",
+        maximum=_MAX_PARQUET_WORKER_BYTES,
+    )
+    if not payload:
+        raise PublicFixtureError("invalid Parquet worker")
+    return payload
+
+
+def _write_private_worker_snapshot(path: Path, payload: bytes) -> None:
+    try:
+        with path.open("xb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        path.chmod(0o400)
+    except OSError as exc:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise PublicFixtureError("unable to snapshot Parquet worker") from exc
+
+
+def _validate_parquet_worker_output(
+    manifest: PublicVoiceManifest,
+    fixtures: Sequence[Mapping[str, object]],
+    output_dir: Path,
+    *,
+    worker_sha256: str,
+    output_sample_rate: int,
+) -> dict[str, _PreparedAudio]:
+    if len(fixtures) != len(_MINDS_INTENTS):
+        raise PublicFixtureError("invalid Parquet fixture set")
+    if output_dir.is_symlink() or not output_dir.is_dir():
+        raise PublicFixtureError("invalid Parquet worker output directory")
+    expected_names = {"result.json"} | {f"{fixture['id']}.wav" for fixture in fixtures}
+    try:
+        entries = tuple(output_dir.iterdir())
+    except OSError as exc:
+        raise PublicFixtureError("unable to enumerate Parquet worker output") from exc
+    names = [entry.name for entry in entries]
+    if (
+        set(names) != expected_names
+        or len(names) != len(expected_names)
+        or len({name.casefold() for name in names}) != len(names)
+    ):
+        raise PublicFixtureError("unexpected Parquet worker output")
+
+    raw_result = _read_stable_worker_file(
+        output_dir / "result.json", maximum=_MAX_PARQUET_RESULT_BYTES
+    )
+    try:
+        result = _strict_json_loads(raw_result)
+    except Exception as exc:  # noqa: BLE001 - normalized trust-boundary error
+        raise PublicFixtureError("invalid Parquet worker result") from exc
+    if not isinstance(result, dict) or set(result) != _PARQUET_RESULT_FIELDS:
+        raise PublicFixtureError("invalid Parquet worker result")
+    if (
+        result.get("schema_version") != _PARQUET_PROTOCOL_VERSION
+        or result.get("source_sha256") != _MINDS_SOURCE_SHA256
+        or result.get("source_size_bytes") != _MINDS_SOURCE_SIZE_BYTES
+        or result.get("source_row_count") != _MINDS_SOURCE_ROWS
+        or result.get("source_row_groups") != _MINDS_SOURCE_ROW_GROUPS
+        or result.get("pyarrow_version") != _PARQUET_PYARROW_VERSION
+    ):
+        raise PublicFixtureError("Parquet worker provenance does not match")
+    raw_cases = result.get("cases")
+    if not isinstance(raw_cases, list) or len(raw_cases) != len(fixtures):
+        raise PublicFixtureError("invalid Parquet worker cases")
+
+    source = manifest.source_by_id.get(str(fixtures[0]["source_id"]))
+    if (
+        source is None
+        or source.get("sha256") != _MINDS_SOURCE_SHA256
+        or source.get("size_bytes") != _MINDS_SOURCE_SIZE_BYTES
+    ):
+        raise PublicFixtureError("Parquet source provenance does not match")
+    seed = str(manifest.data["selection_seed"])
+    prepared: dict[str, _PreparedAudio] = {}
+    seen_rows: set[int] = set()
+    total_audio_bytes = 0
+    total_samples = 0
+
+    for fixture, raw_case in zip(fixtures, raw_cases):
+        if not isinstance(raw_case, dict) or set(raw_case) != _PARQUET_CASE_FIELDS:
+            raise PublicFixtureError("invalid Parquet worker case")
+        fixture_id = str(fixture["id"])
+        extract = fixture["extract"]
+        assert isinstance(extract, dict)
+        intent_id = extract["intent_id"]
+        intent_label = str(extract["intent_label"])
+        expected_source_directory = f"en-US~{intent_label.upper()}"
+        row_index = raw_case.get("row_index")
+        source_path = _require_nonempty_text(
+            raw_case.get("source_path"),
+            field="Parquet source path",
+            maximum=2048,
+        )
+        source_path_parts = PurePosixPath(source_path).parts
+        transcript = _require_nonempty_text(
+            raw_case.get("transcription"),
+            field="Parquet transcription",
+            maximum=4096,
+        )
+        audio_file = f"{fixture_id}.wav"
+        audio_size = raw_case.get("audio_size_bytes")
+        if (
+            raw_case.get("fixture_id") != fixture_id
+            or raw_case.get("intent_id") != intent_id
+            or raw_case.get("intent_label") != intent_label
+            or raw_case.get("language_id") != _MINDS_LANGUAGE_ID
+            or raw_case.get("language") != "en-US"
+            or len(source_path_parts) != 2
+            or source_path_parts[0] != expected_source_directory
+            or source_path_parts[1].startswith(".")
+            or not source_path_parts[1].lower().endswith(".wav")
+            or source_path != f"{expected_source_directory}/{source_path_parts[1]}"
+            or isinstance(row_index, bool)
+            or not isinstance(row_index, int)
+            or not 0 <= row_index < _MINDS_SOURCE_ROWS
+            or row_index in seen_rows
+            or raw_case.get("audio_file") != audio_file
+            or isinstance(audio_size, bool)
+            or not isinstance(audio_size, int)
+            or not 0 < audio_size <= _MAX_PARQUET_AUDIO_BYTES
+            or raw_case.get("transcription_sha256")
+            != hashlib.sha256(transcript.encode("utf-8")).hexdigest()
+            or raw_case.get("selection_rank_sha256")
+            != _minds_selection_rank(
+                seed, _MINDS_SOURCE_SHA256, intent_label, source_path
+            )
+        ):
+            raise PublicFixtureError("Parquet worker case does not match manifest")
+        seen_rows.add(row_index)
+        audio_path = output_dir / audio_file
+        payload = _read_stable_worker_file(audio_path, maximum=_MAX_PARQUET_AUDIO_BYTES)
+        if (
+            len(payload) != audio_size
+            or raw_case.get("audio_sha256") != hashlib.sha256(payload).hexdigest()
+        ):
+            raise PublicFixtureError("Parquet worker audio does not match")
+        total_audio_bytes += len(payload)
+        if total_audio_bytes > _MAX_PARQUET_TOTAL_AUDIO_BYTES:
+            raise PublicFixtureError("Parquet worker audio budget exceeded")
+
+        try:
+            import soundfile as sf
+
+            with sf.SoundFile(io.BytesIO(payload)) as audio:
+                if (
+                    audio.format != "WAV"
+                    or audio.subtype != "ULAW"
+                    or int(audio.samplerate) != 8000
+                    or int(audio.channels) != 1
+                    or int(audio.frames) <= 0
+                    or int(audio.frames) > 30 * 8000
+                ):
+                    raise PublicFixtureError("invalid Parquet worker audio")
+        except PublicFixtureError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise PublicFixtureError("unable to inspect Parquet worker audio") from exc
+        samples = _read_audio(
+            io.BytesIO(payload), output_sample_rate=output_sample_rate
+        )
+        if len(samples) > _MAX_PARQUET_CASE_SAMPLES:
+            raise PublicFixtureError("Parquet worker decoded duration exceeded")
+        total_samples += len(samples)
+        if total_samples > _MAX_PARQUET_TOTAL_SAMPLES:
+            raise PublicFixtureError("Parquet worker corpus duration exceeded")
+        prepared[fixture_id] = _PreparedAudio(
+            samples=samples,
+            expected_text=transcript,
+            selection={
+                "intent_id": intent_id,
+                "intent_label": intent_label,
+                "language_id": _MINDS_LANGUAGE_ID,
+                "language": "en-US",
+                "row_index": row_index,
+                "source_path": source_path,
+                "transcription_sha256": raw_case["transcription_sha256"],
+                "audio_sha256": raw_case["audio_sha256"],
+                "audio_size_bytes": audio_size,
+                "selection_rank_sha256": raw_case["selection_rank_sha256"],
+                "worker_sha256": worker_sha256,
+                "worker_protocol_version": _PARQUET_PROTOCOL_VERSION,
+                "pyarrow_version": _PARQUET_PYARROW_VERSION,
+                "source_row_count": _MINDS_SOURCE_ROWS,
+                "source_row_groups": _MINDS_SOURCE_ROW_GROUPS,
+            },
+        )
+    if len(prepared) != len(fixtures):
+        raise PublicFixtureError("Parquet worker did not prepare every case")
+    return prepared
+
+
+def _terminate_worker_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Kill and observe disappearance of the worker's entire private group."""
+
+    process_group = int(process.pid)
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        raise PublicFixtureError("unable to terminate Parquet worker group") from exc
+    try:
+        process.wait(timeout=_PARQUET_GROUP_REAP_TIMEOUT_SEC)
+    except subprocess.TimeoutExpired as exc:
+        raise PublicFixtureError("Parquet worker leader did not terminate") from exc
+
+    deadline = monotonic() + _PARQUET_GROUP_REAP_TIMEOUT_SEC
+    while True:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return
+        except OSError as exc:
+            raise PublicFixtureError(
+                "unable to verify Parquet worker group termination"
+            ) from exc
+        if monotonic() >= deadline:
+            raise PublicFixtureError("Parquet worker group did not terminate")
+        sleep(0.01)
+
+
+def _extract_hf_audio_parquet(
+    source_path: Path,
+    manifest: PublicVoiceManifest,
+    fixtures: Sequence[Mapping[str, object]],
+    *,
+    parquet_python: Path | str | None,
+    output_sample_rate: int,
+    temporary_parent: Path,
+) -> dict[str, _PreparedAudio]:
+    interpreter = _validate_parquet_python(parquet_python)
+    if len(fixtures) != len(_MINDS_INTENTS):
+        raise PublicFixtureError("Parquet preparation requires all intent cases")
+    try:
+        if _PARQUET_WORKER.is_symlink():
+            raise PublicFixtureError("invalid Parquet worker")
+        worker_source = _PARQUET_WORKER.resolve(strict=True)
+    except OSError as exc:
+        raise PublicFixtureError("Parquet worker is unavailable") from exc
+    worker_payload = _read_stable_repo_worker(worker_source)
+    worker_sha256 = hashlib.sha256(worker_payload).hexdigest()
+
+    temporary_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if temporary_parent.is_symlink() or not temporary_parent.is_dir():
+        raise PublicFixtureError("invalid Parquet worker temporary directory")
+    temporary_parent.chmod(0o700)
+    root = Path(
+        tempfile.mkdtemp(prefix="speaker-public-parquet-", dir=temporary_parent)
+    )
+    root.chmod(0o700)
+    worker = root / "public_voice_parquet_worker.py"
+    _write_private_worker_snapshot(worker, worker_payload)
+    output_dir = root / "output"
+    output_dir.mkdir(mode=0o700)
+    request_path = root / "request.json"
+    process: subprocess.Popen[bytes] | None = None
+    group_reaped = False
+    reap_attempted = False
+    try:
+        source = manifest.source_by_id[str(fixtures[0]["source_id"])]
+        request = {
+            "schema_version": _PARQUET_PROTOCOL_VERSION,
+            "source_path": str(source_path.resolve(strict=True)),
+            "source_sha256": source["sha256"],
+            "source_size_bytes": source["size_bytes"],
+            "selection_seed": manifest.data["selection_seed"],
+            "source_id": source["id"],
+            "cases": [
+                {
+                    "fixture_id": fixture["id"],
+                    "intent_id": fixture["extract"]["intent_id"],
+                    "intent_label": fixture["extract"]["intent_label"],
+                }
+                for fixture in fixtures
+            ],
+        }
+        _atomic_write_json(request_path, request)
+        request_path.chmod(0o400)
+        environment = {
+            "HOME": str(root),
+            "TMPDIR": str(root),
+            "PATH": os.defpath,
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PYTHONNOUSERSITE": "1",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "OMP_NUM_THREADS": "1",
+            "OPENBLAS_NUM_THREADS": "1",
+            "MKL_NUM_THREADS": "1",
+            "NUMEXPR_NUM_THREADS": "1",
+            "ARROW_NUM_THREADS": "1",
+        }
+        try:
+            process = subprocess.Popen(
+                [
+                    str(interpreter),
+                    "-I",
+                    "-B",
+                    str(worker),
+                    "--request",
+                    str(request_path),
+                    "--output-dir",
+                    str(output_dir),
+                ],
+                cwd=root,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+            )
+            return_code = process.wait(timeout=_PARQUET_WORKER_TIMEOUT_SEC)
+        except subprocess.TimeoutExpired as exc:
+            raise PublicFixtureError("Parquet worker timed out") from exc
+        except OSError as exc:
+            raise PublicFixtureError("unable to start Parquet worker") from exc
+        reap_attempted = True
+        _terminate_worker_process_group(process)
+        group_reaped = True
+        if return_code != 0:
+            raise PublicFixtureError("Parquet worker failed")
+        if (
+            hashlib.sha256(
+                _read_stable_worker_file(worker, maximum=_MAX_PARQUET_WORKER_BYTES)
+            ).hexdigest()
+            != worker_sha256
+            or hashlib.sha256(_read_stable_repo_worker(worker_source)).hexdigest()
+            != worker_sha256
+        ):
+            raise PublicFixtureError("Parquet worker changed during preparation")
+        return _validate_parquet_worker_output(
+            manifest,
+            fixtures,
+            output_dir,
+            worker_sha256=worker_sha256,
+            output_sample_rate=output_sample_rate,
+        )
+    finally:
+        if process is not None and not group_reaped and not reap_attempted:
+            reap_attempted = True
+            _terminate_worker_process_group(process)
+            group_reaped = True
+        if process is None or group_reaped:
+            _unlock_private_tree(root)
+            shutil.rmtree(root, ignore_errors=True)
 
 
 def _safe_tar_member(
@@ -1549,6 +2646,8 @@ def _prepare_suite_from_snapshots(
     suite: str,
     cache: Path,
     resolved: Mapping[str, Path],
+    *,
+    parquet_python: Path | str | None = None,
 ) -> Path:
     fixtures = tuple(item for item in manifest.fixtures if item["suite"] == suite)
     if not fixtures:
@@ -1569,6 +2668,24 @@ def _prepare_suite_from_snapshots(
                 grouped,
                 seed=str(manifest.data["selection_seed"]),
                 output_sample_rate=sample_rate,
+            )
+        )
+
+    parquet_groups: dict[str, list[Mapping[str, object]]] = {}
+    for fixture in fixtures:
+        extract = fixture["extract"]
+        assert isinstance(extract, dict)
+        if extract["type"] == "hf_audio_parquet":
+            parquet_groups.setdefault(str(fixture["source_id"]), []).append(fixture)
+    for source_id, grouped in parquet_groups.items():
+        prepared.update(
+            _extract_hf_audio_parquet(
+                resolved[source_id],
+                manifest,
+                grouped,
+                parquet_python=parquet_python,
+                output_sample_rate=sample_rate,
+                temporary_parent=cache / ".parquet-workers",
             )
         )
 
@@ -1632,7 +2749,7 @@ def _prepare_suite_from_snapshots(
 
     source_records = list(source_records_for_suite(manifest, suite))
     metadata = {
-        "schema_version": 2,
+        "schema_version": int(manifest.data["schema_version"]),
         "suite": suite,
         "purpose": manifest.data["purpose"],
         "evidence_scope": dict(EVIDENCE_SCOPE),
@@ -1653,6 +2770,7 @@ def prepare_suite(
     cache_dir: Path | str = DEFAULT_CACHE,
     *,
     source_overrides: Mapping[str, Path] | None = None,
+    parquet_python: Path | str | None = None,
     allow_download: bool = False,
     offline: bool = False,
     opener: Callable[[urllib.request.Request, float], BinaryIO] = _open_url,
@@ -1660,6 +2778,15 @@ def prepare_suite(
     """Prepare one suite entirely from private hash-verified source snapshots."""
 
     cache = Path(cache_dir)
+    suite_fixtures = tuple(
+        fixture for fixture in manifest.fixtures if fixture["suite"] == suite
+    )
+    if any(
+        isinstance(fixture.get("extract"), dict)
+        and fixture["extract"].get("type") == "hf_audio_parquet"
+        for fixture in suite_fixtures
+    ):
+        parquet_python = _validate_parquet_python(parquet_python)
     resolved = _resolve_sources(
         manifest,
         suite,
@@ -1675,7 +2802,13 @@ def prepare_suite(
         resolved,
         snapshot_parent=cache / ".source-snapshots",
     ) as snapshots:
-        return _prepare_suite_from_snapshots(manifest, suite, cache, snapshots)
+        return _prepare_suite_from_snapshots(
+            manifest,
+            suite,
+            cache,
+            snapshots,
+            parquet_python=parquet_python,
+        )
 
 
 def _parse_source_overrides(values: Sequence[str]) -> dict[str, Path]:
@@ -1707,7 +2840,11 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("list", help="show suites and maximum source downloads")
     prepare = subparsers.add_parser("prepare", help="fetch/extract one suite")
-    prepare.add_argument("--suite", choices=SUITES, required=True)
+    prepare.add_argument(
+        "--suite",
+        choices=tuple(dict.fromkeys(SUITES + _V3_SUITES)),
+        required=True,
+    )
     prepare.add_argument(
         "--accept-download",
         action="store_true",
@@ -1725,6 +2862,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="ID=PATH",
         help="reuse an already-downloaded source after size/hash verification",
     )
+    prepare.add_argument(
+        "--parquet-python",
+        type=Path,
+        help="absolute interpreter path for the isolated PyArrow preparation worker",
+    )
     return parser
 
 
@@ -1733,7 +2875,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         manifest = load_manifest(args.manifest)
         if args.command == "list":
-            for suite in SUITES:
+            for suite in _SUITES_BY_SCHEMA[int(manifest.data["schema_version"])]:
                 sources = _required_sources(manifest, suite)
                 size = sum(int(source["size_bytes"]) for source in sources)
                 fixtures = sum(
@@ -1753,6 +2895,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.suite,
             args.cache_dir,
             source_overrides=overrides,
+            parquet_python=args.parquet_python,
             allow_download=bool(args.accept_download),
             offline=bool(args.offline),
         )

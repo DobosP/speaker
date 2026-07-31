@@ -55,6 +55,91 @@ The metadata binds the manifest hash, complete source records, every generated
 case hash, deterministic selection evidence, expected assertion, and explicit
 negative evidence scope.
 
+## MInDS-14 intent-ASR slice
+
+[ADR-0087](adr/0087-add-isolated-minds14-intent-asr-corpus.md) records the
+separate public-v3 `intent-asr` preparation path. Its default remains opt-in:
+the unqualified command above still loads public-v2.
+
+The v3 manifest pins MInDS-14 en-US revision
+`40ce77cb32a384e4d50a568e1ec39ac804019d33`, a 34,196,221-byte Parquet object,
+its SHA-256, CC BY 4.0 terms, and the corrected paper DOI. The source file has
+to be supplied explicitly because the common downloader rejects redirects.
+`--accept-download` does not bypass this requirement.
+
+Parquet support stays outside the production `.venv`. Prepare a trusted local
+isolated virtual environment at an absolute path and install exactly PyArrow
+25.0.0 there, then pass its interpreter explicitly:
+
+```bash
+python3 -m venv /absolute/path/to/minds-parquet-env
+/absolute/path/to/minds-parquet-env/bin/python -m pip install \
+  'pyarrow==25.0.0'
+
+python -m tools.public_voice_fixtures \
+  --manifest tests/fixtures/public_voice_manifest.v3.json \
+  prepare \
+  --suite intent-asr \
+  --source minds14-en-us-train=/absolute/path/to/train-00000-of-00001.parquet \
+  --parquet-python /absolute/path/to/minds-parquet-env/bin/python \
+  --offline
+```
+
+Preparation selects one deterministic source transcript and embedded WAV per
+intent label. The repository worker is stable-read and executed from an exact
+private mode-0400 snapshot. It validates the schema and returns only private
+bounded files; the parent verifies them independently before producing the
+usual `.npy` clips. Before running it, the parent resolves the lexical
+environment root, rejects production-`.venv` aliases, reads the one effective
+`pyvenv.cfg`, and requires exactly one false
+`include-system-site-packages` key. A bounded sanitized `-I -B` probe then
+attests the effective prefix, disabled user site, search paths, and exact
+in-environment PyArrow 25.0.0 import; the parent rechecks the root, executable,
+and marker after reaping the probe's original private process group. `-I` and
+group cleanup are not an OS process/filesystem/network sandbox and cannot
+contain a descendant that creates a new session.
+
+Evaluate the prepared slice through the same whole-clip decoder smoke:
+
+```bash
+python -m tools.public_stt_eval \
+  --manifest tests/fixtures/public_voice_manifest.v3.json \
+  --metadata .cache/public_voice/v3/intent-asr/metadata.json \
+  --model-path /absolute/path/to/local/faster-whisper-model \
+  --label candidate
+```
+
+This slice is not held out or speaker-disjoint, and intent labels are
+provenance rather than routing assertions. A decoder result therefore says
+nothing by itself about streaming latency, agent actions, owner selection, or
+live conversation quality.
+
+After the bounded-drain repair passed independent review, pinned preparation
+produced 14 generated and 14 evaluator-eligible cases, 136.615 seconds of
+audio, and 8,745,168 bytes of `.npy` files. The mode-600 metadata at
+`/tmp/speaker-public-v3-20260731-0628/v3/intent-asr/metadata.json` has SHA-256
+`95dd18f9d2abdd63afd6dbaaa447189ef4bcc52c1cc126adbd95bbadc904cf8f`.
+The isolated worker read its request and source through stable descriptors and
+gave PyArrow that already-verified source handle rather than reopening a path.
+
+The code-bound Faster-Whisper Small CUDA control decoded 14/14 with no errors
+and all transcripts nonempty. It produced 5 exact transcripts, WER 0.6685, CER
+0.6412, and 123 word errors: 2 deletions, 20 substitutions, and 101 insertions.
+Whole-clip compute evidence was 3,007.977 ms model load, 1,656.870 ms total
+decode, aggregate RTF 0.0121, p50 65.337 ms, and p95/maximum 448.069 ms. The
+mode-600 report at
+`/tmp/speaker-public-v3-20260731-0628/faster-whisper-small-report.json` has
+SHA-256
+`619dfb5b421317c1e1e13cf9266ac77d97aa050144669a5a283a6e0cef92efa8`.
+Its recorded hashes for `tools/public_stt_eval.py` and the material imported
+`tools/public_voice_fixtures.py` logic are respectively
+`bfd2611e57a261710b47b618fda520b001fdaa4a0b1638a0c011b09b63a71157`
+and `0829139ec9d5b53b2be5b079638799a6148008382f5f7c42c3bad3fab2e657fa`.
+The old `d23492ab...` report remains invalid because it binds pre-repair code.
+Small's poor result rejects it as an adoption candidate. These numbers remain
+development whole-clip evidence, not streaming/interaction latency, held-out,
+live-hardware, or model-adoption evidence.
+
 ## Whole-clip decoder smoke
 
 The evaluator requires Linux and the production Faster-Whisper CUDA contract:
@@ -87,7 +172,8 @@ aggregate payload includes:
 - an exact recursive model-directory fingerprint;
 - decoder implementation hash, dependency versions, and fixed configuration;
 - evaluator schema version plus exact hashes for `tools/public_stt_eval.py`,
-  `tools/recorded_stt_eval.py`, and `core/wer.py`;
+  `tools/public_voice_fixtures.py`, `tools/recorded_stt_eval.py`, and
+  `core/wer.py`;
 - decoded counts for `transcript` and `empty_reference`, plus counts for every
   excluded assertion.
 
@@ -138,9 +224,12 @@ unknown; no release was inferred.
 
 CMU/Festvox speech and Microsoft AEC Challenge material are not accepted v2
 sources. They remain possible future inputs only after exact release bytes,
-hashes, and applicable terms are resolved. Smart Speaker Commands and
-English/Romanian FLEURS have the same prerequisite. SLURP and Audio2Tool audio
-are CC BY-NC or mixed-term schema inspiration, not accepted product data.
+hashes, and applicable terms are resolved. English/Romanian FLEURS has the
+same prerequisite. Smart Speaker Commands contains phrase-level commands, but
+its archive lacks a reliable machine-readable filename-to-phrase map; retakes
+and reordered files make inferred numbering unsafe as ASR ground truth.
+Circular STT labelling is not an acceptable substitute. SLURP and Audio2Tool
+audio are CC BY-NC or mixed-term schema inspiration, not accepted product data.
 
 ## Evidence still required
 

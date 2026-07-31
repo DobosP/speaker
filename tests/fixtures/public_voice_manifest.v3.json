@@ -1,0 +1,277 @@
+{
+  "schema_version": 3,
+  "purpose": "Deterministic public intent-ASR development/regression audio; never a final held-out set, owner-voice result, streaming result, routing result, or live-hardware result.",
+  "selection_seed": "speaker-public-minds14-v1",
+  "output_sample_rate": 16000,
+  "evidence_scope": {
+    "whole_clip_decoder_smoke": true,
+    "frame_replay": false,
+    "aec_behavior": false,
+    "live_hardware": false,
+    "owner_voice": false,
+    "held_out": false
+  },
+  "product_scenarios": [],
+  "sources": [
+    {
+      "id": "minds14-en-us-train",
+      "upstream_dataset": "PolyAI MInDS-14 en-US",
+      "upstream_version": "40ce77cb32a384e4d50a568e1ec39ac804019d33",
+      "source_kind": "canonical",
+      "canonical_url": "https://huggingface.co/datasets/PolyAI/minds14/tree/40ce77cb32a384e4d50a568e1ec39ac804019d33/en-US",
+      "download_url": "https://huggingface.co/datasets/PolyAI/minds14/resolve/40ce77cb32a384e4d50a568e1ec39ac804019d33/en-US/train-00000-of-00001.parquet",
+      "filename": "minds14-en-US-train-40ce77cb.parquet",
+      "sha256": "37004471dc896ce20771b3fdda0ee8fb33ec7a030fb4e2fd047c561ec0a1ee30",
+      "size_bytes": 34196221,
+      "license_id": "CC-BY-4.0",
+      "license_url": "https://huggingface.co/datasets/PolyAI/minds14/blob/40ce77cb32a384e4d50a568e1ec39ac804019d33/README.md",
+      "attribution": "MInDS-14 en-US, PolyAI; Gerz et al. (2021).",
+      "citation": "Gerz et al., Multilingual and Cross-Lingual Intent Detection from Spoken Data, EMNLP 2021, doi:10.18653/v1/2021.emnlp-main.591.",
+      "redistribution": "cache-only",
+      "human_voice": true,
+      "personal_data": "public-pseudonymous-voice",
+      "acquisition": "verified-override-only"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "minds14-en-us-abroad",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 0,
+        "intent_label": "abroad"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-address",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 1,
+        "intent_label": "address"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-app-error",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 2,
+        "intent_label": "app_error"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-atm-limit",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 3,
+        "intent_label": "atm_limit"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-balance",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 4,
+        "intent_label": "balance"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-business-loan",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 5,
+        "intent_label": "business_loan"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-card-issues",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 6,
+        "intent_label": "card_issues"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-cash-deposit",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 7,
+        "intent_label": "cash_deposit"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-direct-debit",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 8,
+        "intent_label": "direct_debit"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-freeze",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 9,
+        "intent_label": "freeze"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-high-value-payment",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 10,
+        "intent_label": "high_value_payment"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-joint-account",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 11,
+        "intent_label": "joint_account"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-latest-transactions",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 12,
+        "intent_label": "latest_transactions"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    },
+    {
+      "id": "minds14-en-us-pay-bill",
+      "suite": "intent-asr",
+      "source_id": "minds14-en-us-train",
+      "extract": {
+        "type": "hf_audio_parquet",
+        "config": "en-US",
+        "split": "train",
+        "row_count": 563,
+        "row_groups": 6,
+        "language_id": 4,
+        "intent_id": 13,
+        "intent_label": "pay_bill"
+      },
+      "expected_text_from_source": true,
+      "assertion": "transcript"
+    }
+  ],
+  "groups": []
+}

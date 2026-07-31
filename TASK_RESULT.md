@@ -1,158 +1,152 @@
 Valid until: this branch lands or is superseded — then treat as history.
 
-# Task result — bounded session actor
+# Task result — isolated MInDS-14 intent-ASR corpus
 
-## Summary
+## Outcome
 
-Implemented one core-free, lock-protected `SessionActor` for the Python
-control plane. It allocates session/turn identity after accepted STT finals,
-carries acoustic revision and speech-cancel generation through executable
-tasks and production TTS, and bounds task, mutating-tool, playback, remembered
-task, and idempotency admission.
+Added a separate public-v3 `intent-asr` development suite without changing the
+public-v2 default manifest, exported suite tuple, source semantics, prepared
+metadata, eligibility, or metric behavior. The shared evaluator report
+provenance now also binds `tools/public_voice_fixtures.py`.
 
-Mutating `CapabilitySpec.side_effecting` calls now receive generic
-`tool_call_id` and `idempotency_key` values. Their explicit tool cancellation
-Event becomes independent after provider start: speech cancellation prevents
-an unstarted mutation from launching, while a provider-started mutation may
-finish with stale speech suppressed. The bounded session idempotency record
-prevents the same turn/step from executing again. A winning task timeout
-atomically retires future/unstarted tool work without overriding a provider or
-completion that already won.
-Timeout apology identity/publication is best-effort: capacity failure omits the
-speech claim but never blocks cancellation lifecycle publication or queue drain.
+The v3 manifest pins the MInDS-14 en-US training Parquet at revision
+`40ce77cb32a384e4d50a568e1ec39ac804019d33`, size 34,196,221 bytes, SHA-256
+`37004471dc896ce20771b3fdda0ee8fb33ec7a030fb4e2fd047c561ec0a1ee30`,
+CC BY 4.0, and the paper DOI `10.18653/v1/2021.emnlp-main.591`. It selects one
+deterministic transcript-labelled recording for each of 14 intents.
 
-Task bindings are reclaimed only after explicit controller release, including
-queued, confirmation, pending-output, and auxiliary ownership. Playback
-requires an exact four-field task binding; partial, malformed, or forged
-identity fails closed. A single lease covers preparation through legacy sink
-return or durable history transfer, including exact task-owner retention and
-stage/receipt failure cleanup. Malformed lifecycle identity remains explicit
-through TTS and cannot enter the all-absent compatibility path.
-Terminal shutdown fences new work, signals every tool, and boundedly drains
-cooperative providers before watch, reminder, or memory dependencies close.
-Concurrent stop callers wait for that whole teardown. Receipt
-outcome/text/sample fields are validated before fragment mutation.
+Parquet support remains out of the production `.venv`. Preparation requires an
+absolute separate virtual-environment interpreter with exactly PyArrow 25.0.0
+and an explicit hash-verified source override. The selected interpreter and
+environment are trusted local inputs. Redirected download behavior was not
+relaxed.
 
-Capture, VAD, endpointing, recognition, and acoustic revision gating remain
-outside the actor. No monolith, device/audio I/O, model, or central event-bus
-rewrite was added.
+The interpreter gate derives and resolves the lexical environment root, rejects
+production-`.venv` aliases, and accepts a shared base `/usr` executable only
+when the environment itself remains distinct. It stable-reads the one effective
+`pyvenv.cfg`, requires exactly one false `include-system-site-packages` key,
+then runs a sanitized bounded `-I -B` probe. Strict probe evidence binds
+`sys.prefix`, `sys.base_prefix`, user-site state, every search path, exact
+PyArrow version, and an in-environment PyArrow file. Root, executable, and
+marker identity are rechecked after the probe, and its original private process
+group is reaped. `-I` and group cleanup are not an OS process/filesystem/network
+sandbox and cannot contain a descendant that creates a new session.
+
+The regular repository worker is stable-read into a private mode-0400 snapshot
+and only that snapshot is invoked with `-I -B`, sanitized environment, no
+inherited standard streams, bounded file IPC, POSIX resource limits, and a
+process-group timeout. It performs one unthreaded Parquet read, validates the
+exact Arrow/Hugging Face schema and pinned row coverage, and never opens either
+path metadata field. Request and source reads are descriptor-stable; PyArrow
+receives the already hash-verified source handle instead of reopening its path.
+The parent and evaluator independently bind source, worker, protocol, PyArrow,
+intent, language, transcript, rank, audio, duration, and private-file
+provenance.
+
+## Final code-bound preparation evidence
+
+After the bounded-drain repair passed independent review, the orchestrating
+session ran the exact pinned source through the isolated PyArrow 25.0.0 path:
+
+- 14 generated cases and 14 evaluator-eligible transcript cases;
+- 136.615 seconds of generated 16 kHz mono float32 audio;
+- 8,745,168 total bytes across generated `.npy` files;
+- prepared metadata accepted by `tools.public_stt_eval._load_corpus`;
+- metadata SHA-256
+  `95dd18f9d2abdd63afd6dbaaa447189ef4bcc52c1cc126adbd95bbadc904cf8f`.
+
+The mode-600 metadata is at
+`/tmp/speaker-public-v3-20260731-0628/v3/intent-asr/metadata.json`. It is
+byte-identical to the pre-repair preparation because the repair changed
+interpreter validation, not fixture selection or audio. This corpus is not
+speaker-disjoint or held out.
+
+## Final GPU whole-clip development control
+
+The same session evaluated that fresh metadata with the existing local
+Faster-Whisper Small model under the production CUDA float16 decoder contract:
+
+- `ok=true`, 14/14 decoded, zero errors, and all transcripts nonempty;
+- 5 exact transcripts, exact rate 0.3571;
+- WER 0.6685 and CER 0.6412;
+- 123 word errors: 2 deletions, 20 substitutions, and 101 insertions;
+- 3,007.977 ms model load and 1,656.870 ms aggregate decode;
+- aggregate RTF 0.0121, p50 65.337 ms, and p95/maximum 448.069 ms;
+- mode-600 report
+  `/tmp/speaker-public-v3-20260731-0628/faster-whisper-small-report.json`;
+- report SHA-256
+  `619dfb5b421317c1e1e13cf9266ac77d97aa050144669a5a283a6e0cef92efa8`;
+- recorded `tools/public_stt_eval.py` SHA-256
+  `bfd2611e57a261710b47b618fda520b001fdaa4a0b1638a0c011b09b63a71157`
+  and `tools/public_voice_fixtures.py` SHA-256
+  `0829139ec9d5b53b2be5b079638799a6148008382f5f7c42c3bad3fab2e657fa`,
+  matching the final files;
+- model tree SHA-256
+  `c0d8567d470d5e51e59e51c7f1d496986b2bbecc7d2b05d277a5d26194c31bbb`
+  across 486,212,372 logical bytes.
+
+The prior `d23492ab...` report remains invalid because it binds pre-repair
+fixture code. The final control's accuracy is poor, so Faster-Whisper Small is
+rejected as an adoption candidate. Its timing is aggregate whole-clip decoder
+compute, not streaming or interaction latency. No intent-routing, agent-action,
+owner-voice, held-out, live-hardware, or model-adoption claim is made.
 
 ## Files changed
 
-- `always_on_agent/session_actor.py` — typed identities and bounded ownership.
-- `always_on_agent/tasks.py` — task binding, tool admission/cancellation, and
-  lifecycle/TTS identity propagation.
-- `always_on_agent/supervisor.py` — one actor per session, accepted-final turn
-  binding, actor-owned speech generation, auxiliary TTS/playback admission,
-  explicit binding release, bounded tool drain, and tool cancellation seam.
-- `always_on_agent/capabilities.py` — tool call/idempotency fields in opt-in
-  invocation observation.
-- `always_on_agent/__init__.py` — public control-plane identity exports.
-- `core/runtime.py`, `core/playback_history.py` — serialized teardown, bounded
-  sink admission, guarded ownership transfer, forced-failure receipt cleanup,
-  and playback identity retention.
-- `tests/test_session_actor.py`, `tests/test_playback_receipts.py`,
-  `tests/test_core_runtime.py` — deterministic ownership/bounds, task-binding
-  lifecycle, start/cancel races, shutdown drain, malformed identity/receipts,
-  interruption/idempotency, and receipt-release regressions.
-- `docs/adr/0086-bound-post-recognition-session-ownership.md` — decision,
-  tradeoffs, and deferred work.
-- `STATUS.md`, `docs/agent-map.md` — current truth and routing.
+- `tests/fixtures/public_voice_manifest.v3.json`
+- `tools/public_voice_parquet_worker.py`
+- `tools/public_voice_fixtures.py`
+- `tools/public_stt_eval.py`
+- `tests/test_public_voice_v3.py`
+- `tests/test_public_stt_eval.py`
+- `docs/adr/0087-add-isolated-minds14-intent-asr-corpus.md`
+- `docs/public_voice_regression.md`
+- `STATUS.md`
+- `TASK_RESULT.md`
 
-## Commands run and exact results
+## Verification
 
-Final focused headless gate:
+Focused deterministic gate after final code hardening:
 
 ```text
-SPEAKER_TEST_LOG=0 PYTHONPYCACHEPREFIX=/tmp/speaker-session-pycache \
-nice -n 10 /home/dobo/work/speaker/.venv/bin/python -m pytest \
--p no:cacheprovider \
-tests/test_session_actor.py tests/test_pretoken_cancellation.py \
-tests/test_owner_verified_actions.py tests/test_interrupt_race.py \
-tests/test_playback_history.py tests/test_playback_receipts.py \
-tests/test_final_preprocessing_cancel.py tests/test_device_tools_runtime.py \
-tests/test_reminders.py tests/test_trusted_apps.py tests/test_core_runtime.py \
-tests/test_always_on_agent.py tests/test_never_stuck.py \
-tests/test_bounded_queues.py tests/test_confirmation_ttl.py \
-tests/test_load_elastic_admission.py -q
-
-321 passed in 14.50s
-```
-
-Combined post-rebase focused gate (SessionActor, public provenance, and APM):
-
-```text
-SPEAKER_TEST_LOG=0 PYTHONPYCACHEPREFIX=/tmp/speaker-session-pycache \
-OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
-NUMEXPR_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false nice -n 19 \
+SPEAKER_TEST_LOG=0 PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 \
+OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+TOKENIZERS_PARALLELISM=false taskset -c 31 nice -n 19 \
 /home/dobo/work/speaker/.venv/bin/python -m pytest -p no:cacheprovider \
-<session-focused files> tests/test_public_voice_fixtures.py \
-tests/test_public_stt_eval.py tests/test_apm_double_talk.py -q
-391 passed in 14.96s
+  tests/test_public_voice_v3.py tests/test_public_voice_fixtures.py \
+  tests/test_public_stt_eval.py -q
+
+145 passed in 7.99s
 ```
 
-Fresh full combined repository gate, pinned to four CPUs:
+The same one-CPU environment passed `tests/test_public_voice_v3.py` alone:
+81 passed in 1.66s.
+
+Static and whitespace checks:
 
 ```text
-PYTHONDONTWRITEBYTECODE=1 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
-MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 TOKENIZERS_PARALLELISM=false \
-taskset -c 28-31 nice -n 19 \
-/home/dobo/work/speaker/.venv/bin/python -m pytest -p no:cacheprovider \
--m "not real_model" -q
-5801 passed, 13 skipped, 20 deselected, 9 warnings in 112.57s
-```
-
-Static/import/whitespace gate:
-
-```text
-PYTHONPYCACHEPREFIX=/tmp/speaker-session-pycache nice -n 10 \
-/home/dobo/work/speaker/.venv/bin/python -m py_compile \
-always_on_agent/session_actor.py always_on_agent/tasks.py \
-always_on_agent/supervisor.py always_on_agent/capabilities.py \
-core/playback_history.py core/runtime.py tests/test_session_actor.py \
-tests/test_interrupt_race.py tests/test_never_stuck.py \
-tests/test_playback_receipts.py tests/test_core_runtime.py
 /home/dobo/.local/bin/ruff check --no-cache \
-always_on_agent/tasks.py always_on_agent/session_actor.py \
-always_on_agent/supervisor.py core/runtime.py core/playback_history.py \
-tests/test_session_actor.py tests/test_interrupt_race.py \
-tests/test_never_stuck.py tests/test_playback_receipts.py \
-tests/test_core_runtime.py --select E731,F841
+  tools/public_voice_fixtures.py tools/public_voice_parquet_worker.py \
+  tools/public_stt_eval.py tests/test_public_voice_v3.py \
+  tests/test_public_stt_eval.py
+/home/dobo/.local/bin/ruff format --check --no-cache \
+  tools/public_voice_fixtures.py tools/public_voice_parquet_worker.py \
+  tools/public_stt_eval.py tests/test_public_voice_v3.py \
+  tests/test_public_stt_eval.py
 git diff --check
-if rg -n "^(from|import) core" always_on_agent; then exit 1; fi
-
-exit 0; Ruff: All checks passed; other checks: no output
 ```
 
-Incremental compatibility gates also completed green at 204 passed, 122 passed,
-93 passed, 20 passed, and smaller targeted subsets. The first pytest attempt
-could not create worktree-local `logs/tests` under the execution sandbox; final
-runs intentionally used `SPEAKER_TEST_LOG=0` and disabled the pytest cache. One
-early focused run exposed a direct-invocation compatibility failure; it was
-fixed before the recorded green gates.
+Clean full deterministic landing gate with normal durable test logging:
 
-No real-model, recorded-audio, network, GPU, or live-hardware test was run.
+```text
+5883 passed, 13 skipped, 20 deselected, 9 warnings in 99.71s
+```
 
-## Risks and manual review
+An earlier invocation incorrectly set `SPEAKER_TEST_LOG=0` and ran inside a
+filesystem boundary that prevented the CLI child from creating its run log.
+Those two environment-caused failures passed together after correction; they
+are not counted as landing evidence.
 
-- Generic idempotency is bounded and session-local. Process restart or eventual
-  eviction requires mutating backends to retain their own durable key, as the
-  reminder and trusted-app implementations already do.
-- A duplicate generic call is rejected before provider execution and currently
-  becomes a controlled task failure; arbitrary provider result bodies are not
-  cached in the actor.
-- A provider-started synchronous/native tool may ignore explicit or shutdown
-  cancellation until its own timeout/return. Actor tool capacity and the
-  existing provider semaphore bound survivors, but Python cannot force-kill
-  them; shutdown logs survivors after its short bounded drain.
-- The central event bus remains unbounded, and remote/mobile brains do not yet
-  implement this actor contract.
-- Manual live A/B still needs to check natural barge timing, real sink receipts,
-  STT quality during/after playback, multiple voices, and physical behavior
-  while a confirmed mutation completes. No live claim is made here.
-
-## Merge recommendation
-
-The branch is rebased onto public-v2 `main`; its focused and fresh full
-deterministic gates are green. ADR-0086 and STATUS are updated. It is ready for
-fast-forward landing; no worker pushed the branch.
+The next evidence step is a controlled candidate comparison on this same
+bound corpus, followed separately by streaming replay, disjoint owner
+acceptance, and live conversation checks. No commit or push has been made.

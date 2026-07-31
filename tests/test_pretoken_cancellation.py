@@ -16,8 +16,12 @@ import threading
 import time
 from typing import Iterator, Optional, Sequence
 
+import pytest
+
+import always_on_agent.tasks as tasks_module
 from always_on_agent.capabilities import CapabilityRegistry, CapabilityResult
 from always_on_agent.events import EventKind, Mode
+from always_on_agent.session_actor import SessionActor
 from always_on_agent.tasks import AgentTask, TaskRuntime
 
 from core.engines.scripted import ScriptedEngine
@@ -351,6 +355,125 @@ def test_cancelled_overcap_waiter_cannot_start_after_provider_slot_releases():
             overcap_coordinator.join(timeout=2.0)
 
 
+def test_actor_provider_lease_handoff_retries_without_spurious_failure(
+    monkeypatch,
+):
+    """A semaphore owner waits until the actor's narrower lease cap clears."""
+
+    actor = SessionActor(
+        session_id="provider-lease-handoff",
+        max_active_tasks=2,
+        max_active_providers=1,
+    )
+    runtime = TaskRuntime(
+        lambda _event: None,
+        CapabilityRegistry(),
+        max_active_tasks=2,
+        session_actor=actor,
+    )
+    first_task = AgentTask(Mode.ASSISTANT, "hold the actor provider lease")
+    second_task = AgentTask(Mode.ASSISTANT, "retry the actor provider lease")
+    first_started = threading.Event()
+    first_release = threading.Event()
+    second_retry_observed = threading.Event()
+    second_started = threading.Event()
+    second_release = threading.Event()
+    outcomes: dict[str, object] = {}
+
+    original_admit_provider = actor.admit_provider
+
+    def observed_admit_provider(*, task_id, identity):
+        admission = original_admit_provider(
+            task_id=task_id,
+            identity=identity,
+        )
+        if task_id == second_task.task_id and admission is None:
+            second_retry_observed.set()
+        return admission
+
+    monkeypatch.setattr(actor, "admit_provider", observed_admit_provider)
+
+    def first_provider() -> CapabilityResult:
+        first_started.set()
+        assert first_release.wait(timeout=5.0)
+        return CapabilityResult(True, "first completed")
+
+    def second_provider() -> CapabilityResult:
+        second_started.set()
+        assert second_release.wait(timeout=5.0)
+        return CapabilityResult(True, "second completed")
+
+    first_coordinator = threading.Thread(
+        target=_run_cancellable,
+        args=(runtime, first_task, first_provider, outcomes),
+        name="first-actor-lease-coordinator",
+        daemon=True,
+    )
+    second_outcome: dict[str, object] = {}
+    second_coordinator = threading.Thread(
+        target=_run_cancellable,
+        args=(runtime, second_task, second_provider, second_outcome),
+        name="second-actor-lease-coordinator",
+        daemon=True,
+    )
+
+    try:
+        first_coordinator.start()
+        assert first_started.wait(timeout=2.0)
+        assert actor.active_provider_count == 1
+
+        second_coordinator.start()
+        assert second_retry_observed.wait(timeout=2.0), (
+            "second coordinator never reached the actor provider-cap retry"
+        )
+        assert not second_started.is_set()
+        assert actor.active_provider_count == 1
+        assert runtime._invocation_slots.acquire(timeout=0.0) is False  # noqa: SLF001
+
+        first_release.set()
+        assert second_started.wait(timeout=2.0), (
+            "second coordinator failed to acquire the released actor lease"
+        )
+        first_coordinator.join(timeout=2.0)
+        assert not first_coordinator.is_alive()
+        assert actor.active_provider_count == 1
+
+        second_release.set()
+        second_coordinator.join(timeout=2.0)
+        assert not second_coordinator.is_alive()
+        assert isinstance(outcomes.get("result"), CapabilityResult)
+        assert "error" not in outcomes
+        assert isinstance(second_outcome.get("result"), CapabilityResult)
+        assert "error" not in second_outcome
+        assert actor.active_provider_count == 0
+
+        recovered_slots = 0
+        try:
+            for _ in range(2):
+                assert runtime._invocation_slots.acquire(  # noqa: SLF001
+                    timeout=0.0
+                )
+                recovered_slots += 1
+            unexpected_slot = runtime._invocation_slots.acquire(  # noqa: SLF001
+                timeout=0.0
+            )
+            if unexpected_slot:
+                recovered_slots += 1
+            assert unexpected_slot is False
+        finally:
+            for _ in range(recovered_slots):
+                runtime._invocation_slots.release()  # noqa: SLF001
+    finally:
+        first_task.cancel()
+        second_task.cancel()
+        first_release.set()
+        second_release.set()
+        if first_coordinator.ident is not None:
+            first_coordinator.join(timeout=2.0)
+        if second_coordinator.ident is not None:
+            second_coordinator.join(timeout=2.0)
+
+
 def test_barge_retires_task_worker_while_provider_is_still_blocked_pre_token():
     """Cancellation must not wait for the provider's first-token read.
 
@@ -407,6 +530,115 @@ def test_barge_retires_task_worker_while_provider_is_still_blocked_pre_token():
         llm.release_all()
         _wait_until(lambda: all(call.finished.is_set() for call in llm.calls()))
         runtime.stop()
+
+
+def test_turn_handle_reports_blocked_provider_until_its_real_exit():
+    """A detached coordinator is fenced, but is not physical provider drain."""
+
+    runtime = TaskRuntime(
+        lambda _event: None,
+        CapabilityRegistry(),
+        max_active_tasks=1,
+    )
+    task = AgentTask(Mode.ASSISTANT, "blocked provider ownership")
+    provider_started = threading.Event()
+    provider_release = threading.Event()
+    provider_finished = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def blocked_provider() -> CapabilityResult:
+        provider_started.set()
+        try:
+            assert provider_release.wait(timeout=5.0)
+            return CapabilityResult(True, "late result")
+        finally:
+            provider_finished.set()
+
+    coordinator = threading.Thread(
+        target=_run_cancellable,
+        args=(runtime, task, blocked_provider, outcome),
+        name="turn-handle-blocked-provider",
+        daemon=True,
+    )
+    try:
+        coordinator.start()
+        assert provider_started.wait(timeout=2.0)
+        handle = task.turn_handle
+        assert handle is not None
+
+        task.cancel()
+        coordinator.join(timeout=2.0)
+        assert not coordinator.is_alive()
+        assert type(outcome.get("error")).__name__ == "_TaskCancelled"
+        assert not provider_finished.is_set()
+
+        wait_started = time.monotonic()
+        pending = handle.wait_drained(0.05)
+        waited = time.monotonic() - wait_started
+        assert pending.effects_fenced is True
+        assert pending.drained is False
+        assert pending.timed_out is True
+        assert pending.active_providers == 1
+        assert 0.025 <= waited < 1.0
+        assert runtime.session_actor.active_provider_count == 1
+
+        provider_release.set()
+        assert provider_finished.wait(timeout=2.0)
+        drained = handle.wait_drained(1.0)
+        assert drained.drained is True
+        assert drained.timed_out is False
+        assert drained.remaining == 0
+        assert runtime.session_actor.active_provider_count == 0
+    finally:
+        task.cancel()
+        provider_release.set()
+        if coordinator.ident is not None:
+            coordinator.join(timeout=2.0)
+
+
+@pytest.mark.parametrize("failure_phase", ("constructor", "start"))
+def test_provider_thread_creation_failure_releases_lease_and_bulkhead(
+    monkeypatch,
+    failure_phase,
+):
+    runtime = TaskRuntime(
+        lambda _event: None,
+        CapabilityRegistry(),
+        max_active_tasks=1,
+    )
+    task = AgentTask(
+        Mode.ASSISTANT,
+        f"provider thread {failure_phase} fails",
+    )
+    provider_called = threading.Event()
+
+    class _FailingThread:
+        def __init__(self, *args, **kwargs):
+            if failure_phase == "constructor":
+                raise RuntimeError("thread constructor failed")
+
+        def start(self) -> None:
+            if failure_phase == "start":
+                raise RuntimeError("thread start failed")
+
+    monkeypatch.setattr(tasks_module, "Thread", _FailingThread)
+
+    with pytest.raises(RuntimeError, match=f"thread {failure_phase} failed"):
+        runtime._invoke_cancellable(  # noqa: SLF001
+            task,
+            lambda: (
+                provider_called.set()
+                or CapabilityResult(True, "unreachable")
+            ),
+        )
+
+    handle = task.turn_handle
+    assert handle is not None
+    assert not provider_called.is_set()
+    assert runtime.session_actor.active_provider_count == 0
+    assert runtime._invocation_slots.acquire(timeout=0.0) is True  # noqa: SLF001
+    runtime._invocation_slots.release()  # noqa: SLF001
+    assert handle.cancel_and_drain(0.0).drained is True
 
 
 def test_cancelled_late_first_token_cannot_stamp_replacement_turn_metrics():

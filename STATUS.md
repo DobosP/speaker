@@ -4,8 +4,8 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate: 6411 passed, 13 skipped, 22 deselected, 9 pre-existing warnings.
-  Focused: typed-ingress/Sherpa/APM 354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
+- Repository logic gate: 6439 passed, 14 skipped, 22 deselected, 9 pre-existing warnings; focused structured lifecycle 270.
+  Typed-ingress/Sherpa/APM 354 passed, 2 skipped; public-v3 81 file/145 combined.
 - Post-ASR mailbox/adjacent 221; scoped LiveKit 8; bounded capture review 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
 - Streaming 334; receipt 98; capture-replay 71 (ADR-0092). Moonshine/Nemotron remain rejected (ADR-0090/0091).
 - Stable evidence remains: both conversation pairs 42/42, semantic-memory PASS,
@@ -50,9 +50,11 @@ Last verified: 2026-07-31 on Linux ROG.
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English
   plus Faster-Whisper Small. Exact acoustic quorum may rewrite text; protected
   controls fail closed. SenseVoice defaults remain unchanged (ADR-0078/0080).
-- Capabilities use bounded cancellable coordinators and actor-owned identities.
-  Timeouts fence unstarted providers; started mutations see explicit/shutdown
-  cancellation. Tools do not retry; failed web gets one local fallback (ADR-0021/0030/0051/0086).
+- Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
+  Task/provider/tool/playback ownership registers before start; cancel fences
+  new children and bounded drain reports providers still exiting (ADR-0094).
+- Same-ID reuse cannot consume stale terminal/TTS/playback cleanup. Tools do not
+  retry; failed web gets one local fallback (ADR-0021/0030/0051/0086/0094).
 - Terminal receipts govern spoken history with fail-closed identity, exact-owner
   capacity, and validated fields; TTS identity is session-locked (ADR-0028/0029/0038/0086).
 
@@ -85,14 +87,13 @@ Last verified: 2026-07-31 on Linux ROG.
 
 ## Next
 
-- Add actor-backed `TurnHandle`; then unify remote/mobile ownership.
+- Unify remote/mobile task, tool, output, and drain ownership with desktop.
 - Add native-reader/gap and synchronized AEC replay plus disjoint owner
   controls/vault/noise/multi-voice data; then run fresh `./live.sh` A/B (ADR-0092).
 
 ## Standard verification
 
-Logic: `...pytest -m "not real_model" -q`; APM: `...pytest tests/test_apm_double_talk.py -q`.
-See `docs/agent-testing.md` for full, recorded, model, live, and whitespace gates.
+Logic: `...pytest -m "not real_model" -q`; APM: `...pytest tests/test_apm_double_talk.py -q`; see `docs/agent-testing.md`.
 
 ## Operating policy
 

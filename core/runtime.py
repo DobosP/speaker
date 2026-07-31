@@ -16,7 +16,7 @@ from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import Memory, SessionMemory
 from always_on_agent.post_barge import PostBargeResponseGate
 from always_on_agent.react import PlannerConfig, attach_react_capability, should_escalate
-from always_on_agent.session_actor import PlaybackAdmission
+from always_on_agent.session_actor import PlaybackAdmission, TaskIdentity
 from always_on_agent.speech_analyzer import (
     LiveSpeechAnalyzer,
     ModePolicy,
@@ -2580,7 +2580,13 @@ class VoiceRuntime:
                     and epoch is not None
                     and bool(event.payload.get("streaming", False))
                 ):
-                    reply = ReplySpeechId(task_id=task_id, epoch=int(epoch))
+                    reply = ReplySpeechId(
+                        task_id=task_id,
+                        epoch=int(epoch),
+                        binding_id=int(
+                            event.payload.get("binding_id", 0) or 0
+                        ),
+                    )
                 prepared = self._reply_voice_continuity.prepare(
                     text,
                     reply=reply,
@@ -2621,6 +2627,7 @@ class VoiceRuntime:
                     task_id,
                     epoch,
                     text,
+                    event.payload,
                 )
                 output_consumed = True
 
@@ -2677,6 +2684,7 @@ class VoiceRuntime:
                         cancel_generation=(
                             playback_admission.identity.cancel_generation
                         ),
+                        binding_id=playback_admission.identity.binding_id,
                     )
                     try:
                         # Both ledgers must own the fragment before the engine
@@ -2725,7 +2733,7 @@ class VoiceRuntime:
             if auxiliary_tts and not auxiliary_consumed:
                 self.supervisor.note_aux_tts_admitted(aux_tts_id)
             if not auxiliary_tts and not output_consumed:
-                self.supervisor.note_tts_rejected(task_id)
+                self.supervisor.note_tts_rejected(task_id, event.payload)
             if (
                 admitted_reminder_id
                 and not handoff_succeeded
@@ -2814,6 +2822,58 @@ class VoiceRuntime:
                 if self._pending_playback_memory_commits > 0:
                     self._pending_playback_memory_commits -= 1
                 self._playback_effect_changed.notify_all()
+        terminal_kinds = {
+            EventKind.TASK_COMPLETED,
+            EventKind.TASK_CANCELLED,
+            EventKind.TASK_FAILED,
+            EventKind.TTS_STREAM_END,
+        }
+        terminal_identity: TaskIdentity | None = None
+        terminal_success_current = True
+        if event.kind in terminal_kinds:
+            (
+                terminal_accepted,
+                terminal_identity,
+                terminal_success_current,
+            ) = self.supervisor.consume_terminal_event_acceptance(event)
+            if not terminal_accepted:
+                log.warning(
+                    "dropping runtime effects for unaccepted terminal event: %s",
+                    event.kind.value,
+                )
+                return
+            if terminal_identity is None:
+                try:
+                    terminal_identity = TaskIdentity.from_payload(event.payload)
+                except (TypeError, ValueError):
+                    terminal_identity = None
+        if event.kind == EventKind.TASK_COMPLETED and not terminal_success_current:
+            # The actor identity was genuine, but a barge-in/superseding turn
+            # won before this completion reached the bus.  Close only the exact
+            # old binding as interrupted.  Successful-completion effects below
+            # (metrics, stream metadata, continuity, and memory) must not run.
+            task_id = str(event.payload.get("task_id", ""))
+            binding_id = (
+                terminal_identity.binding_id
+                if terminal_identity is not None
+                else None
+            )
+            if self._reply_voice_continuity is not None:
+                self._reply_voice_continuity.close_task(task_id, binding_id)
+            if self._playback_history is not None:
+                with self._playback_effect_lock:
+                    self._publish_playback_commits(
+                        self._playback_history.close_task(
+                            task_id,
+                            interrupted=True,
+                            binding_id=binding_id,
+                        )
+                    )
+                    self._playback_effect_changed.notify_all()
+                    self._log_playback_finalizations(
+                        self._playback_history.drain_finalizations()
+                    )
+            return
         if event.kind == EventKind.TASK_COMPLETED:
             capability = str(event.payload.get("capability", "") or "")
             data = event.payload.get("data")
@@ -2847,6 +2907,11 @@ class VoiceRuntime:
                                 else self.supervisor.speech_epoch
                             ),
                             is_followup=bool(event.payload.get("followup", False)),
+                            binding_id=(
+                                terminal_identity.binding_id
+                                if terminal_identity is not None
+                                else 0
+                            ),
                         )
         if self._reply_voice_continuity is not None:
             if event.kind == EventKind.TTS_STREAM_END:
@@ -2859,17 +2924,32 @@ class VoiceRuntime:
                             if stream_epoch is not None
                             else self.supervisor.speech_epoch
                         ),
+                        binding_id=(
+                            terminal_identity.binding_id
+                            if terminal_identity is not None
+                            else 0
+                        ),
                     )
                 )
             elif event.kind in {EventKind.TASK_CANCELLED, EventKind.TASK_FAILED}:
                 self._reply_voice_continuity.close_task(
-                    str(event.payload.get("task_id", ""))
+                    str(event.payload.get("task_id", "")),
+                    (
+                        terminal_identity.binding_id
+                        if terminal_identity is not None
+                        else None
+                    ),
                 )
             elif event.kind == EventKind.TASK_COMPLETED:
                 data = event.payload.get("data")
                 if not (isinstance(data, dict) and data.get("streamed")):
                     self._reply_voice_continuity.close_task(
-                        str(event.payload.get("task_id", ""))
+                        str(event.payload.get("task_id", "")),
+                        (
+                            terminal_identity.binding_id
+                            if terminal_identity is not None
+                            else None
+                        ),
                     )
         if self._playback_history is not None:
             if event.kind == EventKind.TTS_STREAM_END:
@@ -2885,6 +2965,11 @@ class VoiceRuntime:
                         self._playback_history.close_stream(
                             stream_task_id,
                             stream_epoch_value,
+                            binding_id=(
+                                terminal_identity.binding_id
+                                if terminal_identity is not None
+                                else 0
+                            ),
                         )
                     )
                     self._playback_effect_changed.notify_all()
@@ -2898,6 +2983,11 @@ class VoiceRuntime:
                         self._playback_history.close_task(
                             task_id,
                             interrupted=True,
+                            binding_id=(
+                                terminal_identity.binding_id
+                                if terminal_identity is not None
+                                else None
+                            ),
                         )
                     )
                     self._playback_effect_changed.notify_all()
@@ -2928,7 +3018,11 @@ class VoiceRuntime:
                 allowed = (
                     self.supervisor.auxiliary_tts_allowed(aux_tts_id, epoch)
                     if auxiliary_tts
-                    else self.supervisor.tts_request_allowed(task_id, epoch)
+                    else self.supervisor.tts_request_allowed(
+                        task_id,
+                        epoch,
+                        event.payload,
+                    )
                 )
                 if not allowed:
                     if auxiliary_tts:
@@ -2937,7 +3031,10 @@ class VoiceRuntime:
                         # blocked forever after a cancellation race.
                         self.supervisor.note_aux_tts_admitted(aux_tts_id)
                     else:
-                        self.supervisor.note_tts_rejected(task_id)
+                        self.supervisor.note_tts_rejected(
+                            task_id,
+                            event.payload,
+                        )
                     log.debug(
                         "dropping stale TTS_REQUEST (task_id=%r): %r",
                         task_id,
@@ -2953,6 +3050,11 @@ class VoiceRuntime:
                 if playback_admission is None:
                     if auxiliary_tts:
                         self.supervisor.note_aux_tts_admitted(aux_tts_id)
+                    else:
+                        self.supervisor.note_tts_rejected(
+                            task_id,
+                            event.payload,
+                        )
                     log.debug(
                         "dropping unowned/bounded TTS_REQUEST (task_id=%r): %r",
                         task_id,
@@ -3055,6 +3157,9 @@ class VoiceRuntime:
                 and not self.supervisor.state.pending_audio_tasks
                 and not self.supervisor.state.pending_aux_tts
                 and not self.supervisor.state.queued_tasks
+                and self.supervisor.tasks.active_count == 0
+                and self.supervisor.session_actor.active_task_count == 0
+                and self.supervisor.session_actor.active_provider_count == 0
                 and self.supervisor.session_actor.active_tool_count == 0
                 and _playback_quiet()
             )

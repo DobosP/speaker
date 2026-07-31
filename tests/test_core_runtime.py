@@ -48,6 +48,37 @@ def test_assistant_reply_is_spoken():
     assert engine.spoken == ["The time is noon."]
 
 
+def test_wait_idle_waits_for_task_worker_epilogue(monkeypatch):
+    runtime, engine = _runtime(reply="Done.")
+    reap_entered = threading.Event()
+    release_reap = threading.Event()
+    original_reap = runtime.supervisor.tasks._reap
+
+    def gated_reap(task):
+        reap_entered.set()
+        assert release_reap.wait(timeout=2.0)
+        original_reap(task)
+
+    monkeypatch.setattr(runtime.supervisor.tasks, "_reap", gated_reap)
+    try:
+        engine.final("explain the test")
+        deadline = time.monotonic() + 2.0
+        while not reap_entered.is_set() and time.monotonic() < deadline:
+            runtime.bus.drain()
+            time.sleep(0.005)
+        assert reap_entered.is_set()
+
+        assert runtime.wait_idle(timeout=0.05) is False
+        assert runtime.supervisor.tasks.active_count == 1
+        assert runtime.supervisor.session_actor.active_task_count == 1
+
+        release_reap.set()
+        assert runtime.wait_idle(timeout=2.0) is True
+    finally:
+        release_reap.set()
+        runtime.stop()
+
+
 def test_stop_drops_tts_request_racing_shutdown():
     """A queued TTS_REQUEST must never start speaking once stop() has begun:
     the threaded bus keeps dispatching between stop()'s first line and
@@ -361,13 +392,60 @@ def test_timeout_apology_uses_fresh_aux_identity_with_newer_turn():
             )
         )
         apology_identity = TaskIdentity.from_payload(tts.payload)
-        assert apology_identity == newer_task.identity
+        assert apology_identity.session_id == newer_task.identity.session_id
+        assert apology_identity.turn_id == newer_task.identity.turn_id
+        assert apology_identity.revision == newer_task.identity.revision
+        assert (
+            apology_identity.cancel_generation
+            == newer_task.identity.cancel_generation
+        )
+        assert apology_identity.binding_id != newer_task.identity.binding_id
         assert apology_identity != old_task.identity
         assert engine.spoken == [_TIMEOUT_APOLOGY]
         assert runtime.supervisor.session_actor.active_playback_count == 0
     finally:
-        actor.finish_task(old_task.task_id)
-        actor.finish_task(newer_task.task_id)
+        actor.finish_task(old_task.task_id, old_task.identity)
+        actor.finish_task(newer_task.task_id, newer_task.identity)
+        runtime.stop()
+
+
+def test_confirmation_expiry_uses_fresh_aux_binding_and_reaches_sink():
+    engine = ScriptedEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = runtime.supervisor.tasks.create_task(
+        IntentDecision(
+            IntentKind.COMMAND,
+            1.0,
+            "expire this command",
+            "test",
+            mode=Mode.COMMAND,
+        )
+    )
+    assert task.identity is not None
+    task.metadata["confirmation_expires_at"] = 0.0
+    task.metadata["speak"] = True
+    runtime.supervisor.state.pending_confirmations[task.task_id] = task
+    try:
+        assert runtime.supervisor.sweep_expired_confirmations(now=1.0) == 1
+        runtime.bus.drain()
+
+        tts = next(
+            event
+            for event in runtime.supervisor.state.event_log
+            if (
+                event.kind == EventKind.TTS_REQUEST
+                and str(event.payload.get("text", "")).startswith(
+                    "Confirmation expired:"
+                )
+            )
+        )
+        expiry_identity = TaskIdentity.from_payload(tts.payload)
+        assert expiry_identity != task.identity
+        assert expiry_identity.binding_id > task.identity.binding_id
+        assert engine.spoken == ["Confirmation expired: expire this command"]
+        assert runtime.supervisor.session_actor.active_playback_count == 0
+    finally:
         runtime.stop()
 
 
@@ -418,28 +496,18 @@ def test_malformed_completed_identity_cannot_upgrade_to_legacy_playback(
     try:
         runtime.bus.drain()
 
-        tts = next(
-            event
+        assert not any(
+            event.kind == EventKind.TTS_REQUEST
+            and event.payload.get("task_id") == task.task_id
             for event in runtime.supervisor.state.event_log
-            if (
-                event.kind == EventKind.TTS_REQUEST
-                and event.payload.get("task_id") == task.task_id
-            )
         )
-        assert any(
-            field in tts.payload
-            for field in (
-                "session_id",
-                "turn_id",
-                "revision",
-                "cancel_generation",
-            )
-        )
+        assert runtime.supervisor.state.active_tasks.get(task.task_id) is task
         assert engine.spoken == []
         assert runtime.supervisor.session_actor.active_playback_count == 0
-        assert runtime.supervisor.session_actor.identity_for_task(
-            task.task_id
-        ) is None
+        assert (
+            runtime.supervisor.session_actor.identity_for_task(task.task_id)
+            == task.identity
+        )
     finally:
         runtime.stop()
 

@@ -8,6 +8,7 @@ from always_on_agent.acoustic import (
     AcousticSource,
     AcousticSpan,
 )
+from always_on_agent.capabilities import CapabilityResult, CapabilitySpec
 from always_on_agent.continuation import (
     CONTINUE,
     NEW,
@@ -38,6 +39,77 @@ def _drain_until_idle(supervisor: AgentSupervisor, timeout: float = 1.0) -> None
             return
         time.sleep(0.01)
     supervisor.drain()
+
+
+def test_public_wait_idle_includes_detached_provider_ownership():
+    provider_started = Event()
+    release_provider = Event()
+    supervisor = AgentSupervisor()
+
+    def blocked_answer(_query, _context):
+        provider_started.set()
+        assert release_provider.wait(timeout=2.0)
+        return CapabilityResult(True, "late answer")
+
+    supervisor.capabilities.register(
+        "assistant.answer",
+        blocked_answer,
+        spec=CapabilitySpec("assistant.answer", "answer"),
+    )
+    runtime = AlwaysOnAgentRuntime(supervisor)
+    try:
+        task = supervisor.tasks.create_task(
+            IntentDecision(
+                IntentKind.ASSISTANT,
+                1.0,
+                "provider ownership",
+                "test",
+                mode=Mode.ASSISTANT,
+            )
+        )
+        assert supervisor._start_task(task)  # noqa: SLF001
+        assert provider_started.wait(timeout=1.0)
+        supervisor.cancel_all()
+
+        assert runtime.wait_idle(timeout=0.05) is False
+        assert supervisor.session_actor.active_provider_count == 1
+
+        release_provider.set()
+        assert runtime.wait_idle(timeout=2.0) is True
+    finally:
+        release_provider.set()
+        supervisor.shutdown()
+
+
+def test_public_text_output_terminalizes_normal_completion_ownership():
+    supervisor = AgentSupervisor()
+    supervisor.capabilities.register(
+        "assistant.answer",
+        lambda _query, _context: CapabilityResult(True, "text-only answer"),
+        spec=CapabilitySpec("assistant.answer", "answer"),
+    )
+    runtime = AlwaysOnAgentRuntime(supervisor)
+    try:
+        task = supervisor.tasks.create_task(
+            IntentDecision(
+                IntentKind.ASSISTANT,
+                1.0,
+                "text-only completion",
+                "test",
+                mode=Mode.ASSISTANT,
+            )
+        )
+
+        assert supervisor._start_task(task)  # noqa: SLF001
+        assert runtime.wait_idle(timeout=2.0)
+
+        assert "text-only answer" in runtime.snapshot().outputs
+        assert supervisor.pending_output_count == 0
+        assert supervisor.state.pending_audio_tasks == {}
+        assert supervisor.state.pending_aux_tts == {}
+        assert supervisor.session_actor.snapshot().remembered_tasks == 0
+    finally:
+        supervisor.shutdown()
 
 
 def test_event_log_excludes_partials_and_is_bounded():
@@ -462,6 +534,10 @@ def test_command_confirmation_can_be_denied():
 
     runtime.ingest_final("command mode")
     runtime.ingest_final("open browser")
+    assert runtime.wait_idle()
+    assert runtime.supervisor.pending_output_count == 0
+    assert runtime.supervisor.state.pending_aux_tts == {}
+
     runtime.ingest_final("no")
     assert runtime.wait_idle()
 
@@ -469,6 +545,12 @@ def test_command_confirmation_can_be_denied():
     assert snapshot.pending_confirmations == ()
     assert not any("Command staged" in output for output in snapshot.outputs)
     assert "Command cancelled." in snapshot.outputs
+    assert runtime.supervisor.pending_output_count == 0
+    assert runtime.supervisor.state.pending_audio_tasks == {}
+    assert runtime.supervisor.state.pending_aux_tts == {}
+    assert (
+        runtime.supervisor.session_actor.snapshot().remembered_tasks == 0
+    )
 
 
 def test_research_tasks_queue_when_parallel_limit_is_reached():

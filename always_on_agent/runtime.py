@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from .acoustic import AcousticLineage, AcousticSource, AcousticSpan
 from .diagnostics import summarize
-from .events import AgentEvent, Mode
+from .events import AgentEvent, EventKind, Mode
 from .supervisor import AgentSupervisor
 
 
@@ -44,6 +44,24 @@ class AlwaysOnAgentRuntime:
         self._ingress_turn = 0
         self._ingress_lineage: AcousticLineage | None = None
         self._ingress_revision = -1
+        self.supervisor.bus.subscribe(self._consume_text_output)
+
+    def _consume_text_output(self, event: AgentEvent) -> None:
+        """Terminalize speech ownership when this facade has no audio sink."""
+        if event.kind != EventKind.TTS_REQUEST:
+            return
+        if event.payload.get("auxiliary_tts", False):
+            # The historical method name means the one-shot auxiliary output
+            # reached its terminal consumer; this facade does not claim that
+            # physical playback happened.
+            self.supervisor.note_aux_tts_admitted(
+                str(event.payload.get("aux_tts_id", ""))
+            )
+            return
+        self.supervisor.note_tts_rejected(
+            str(event.payload.get("task_id", "")),
+            event.payload,
+        )
 
     def _next_ingress_identity_locked(
         self,
@@ -111,23 +129,34 @@ class AlwaysOnAgentRuntime:
             self.supervisor.drain()
 
     def wait_idle(self, timeout: float = 2.0) -> bool:
+        def _quiet() -> bool:
+            actor = self.supervisor.session_actor
+            return bool(
+                self.supervisor.bus.idle()
+                and not self.supervisor.state.active_tasks
+                and not self.supervisor.state.pending_audio_tasks
+                and not self.supervisor.state.pending_aux_tts
+                and not self.supervisor.state.queued_tasks
+                and self.supervisor.pending_output_count == 0
+                and self.supervisor.tasks.active_count == 0
+                and actor.active_task_count == 0
+                and actor.active_provider_count == 0
+                and actor.active_tool_count == 0
+                and actor.active_playback_count == 0
+            )
+
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self._ingress_lock:
                 self.supervisor.drain()
-                if (
-                    not self.supervisor.state.active_tasks
-                    and not self.supervisor.state.queued_tasks
-                ):
+                if _quiet():
                     self.supervisor.drain()
-                    return True
+                    if _quiet():
+                        return True
             time.sleep(0.01)
         with self._ingress_lock:
             self.supervisor.drain()
-            return (
-                not self.supervisor.state.active_tasks
-                and not self.supervisor.state.queued_tasks
-            )
+            return _quiet()
 
     def snapshot(self) -> RuntimeSnapshot:
         state = self.supervisor.state

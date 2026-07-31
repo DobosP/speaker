@@ -127,8 +127,8 @@ def test_reap_fences_tool_start_before_claiming_task_terminal(monkeypatch):
     claim_results: list[bool] = []
     original_fence = sup.tasks.fence_task_tool_calls
 
-    def held_fence(task_id):
-        result = original_fence(task_id)
+    def held_fence(task_id, identity):
+        result = original_fence(task_id, identity)
         actor_fence_complete.set()
         assert claim_attempt_done.wait(timeout=1.0)
         return result
@@ -142,7 +142,10 @@ def test_reap_fences_tool_start_before_claiming_task_terminal(monkeypatch):
     def race_provider_start() -> None:
         assert actor_fence_complete.wait(timeout=1.0)
         claim_results.append(
-            sup.session_actor.claim_tool_start(tool.tool_call_id)
+            sup.session_actor.claim_tool_start(
+                tool.tool_call_id,
+                tool.identity,
+            )
         )
         claim_attempt_done.set()
 
@@ -154,7 +157,7 @@ def test_reap_fences_tool_start_before_claiming_task_terminal(monkeypatch):
 
     assert claim_results == [False]
     assert tool.cancel_event.is_set()
-    sup.session_actor.finish_tool(tool.tool_call_id)
+    sup.session_actor.finish_tool(tool.tool_call_id, tool.identity)
     sup.drain()
     sup.shutdown()
 
@@ -162,7 +165,7 @@ def test_reap_fences_tool_start_before_claiming_task_terminal(monkeypatch):
 def test_completed_task_wins_just_before_timeout_reap(monkeypatch):
     from always_on_agent.supervisor import _TIMEOUT_APOLOGY
 
-    sup = AgentSupervisor()
+    sup = AgentSupervisor(defer_output_until_tts_admission=True)
     task = _seat(sup, overdue=True)
     task.output_text = "Completion already won."
     task.metadata["result_data"] = {}
@@ -325,7 +328,7 @@ def test_timeout_capacity_omits_apology_but_keeps_cancellation_lifecycle():
         assert task.cancel_event.wait(timeout=1.0)
         worker_saw_cancel.set()
         assert release_worker.wait(timeout=1.0)
-        sup.tasks.retire_task_admission(task.task_id)
+        sup.tasks.retire_task_admission(task)
         worker_drained.set()
 
     worker = threading.Thread(target=drain_worker_admission, daemon=True)

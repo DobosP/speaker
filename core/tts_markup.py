@@ -77,6 +77,7 @@ class ReplySpeechId:
 
     task_id: str
     epoch: int
+    binding_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -255,9 +256,23 @@ class ReplyVoiceContinuity:
         with self._lock:
             self._voice_by_reply.pop(reply, None)
 
-    def close_task(self, task_id: str) -> None:
+    def close_task(
+        self,
+        task_id: str,
+        binding_id: int | None = None,
+    ) -> None:
         with self._lock:
-            stale = [key for key in self._voice_by_reply if key.task_id == task_id]
+            stale = [
+                key
+                for key in self._voice_by_reply
+                if (
+                    key.task_id == task_id
+                    and (
+                        binding_id is None
+                        or key.binding_id == int(binding_id)
+                    )
+                )
+            ]
             for key in stale:
                 self._voice_by_reply.pop(key, None)
 

@@ -55,6 +55,7 @@ class PlaybackContext:
     turn_id: str = ""
     revision: int = 0
     cancel_generation: int = 0
+    binding_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class _Group:
     turn_id: str = ""
     revision: int = 0
     cancel_generation: int = 0
+    binding_id: int = 0
     interrupted: bool = False
     fragments: list[str] = field(default_factory=list)
 
@@ -110,8 +112,8 @@ class PlaybackHistory:
         self._next_group = 0
         self._fragments: dict[str, _Fragment] = {}
         self._groups: dict[int, _Group] = {}
-        self._stream_groups: dict[tuple[str, int], int] = {}
-        self._stream_metadata: dict[tuple[str, int], bool] = {}
+        self._stream_groups: dict[tuple[str, int, int], int] = {}
+        self._stream_metadata: dict[tuple[str, int, int], bool] = {}
         # Conversation commits are released in group-registration order even
         # when terminal callbacks arrive out of order.  Without this, a delayed
         # receipt from an interrupted old reply could be appended *after* a
@@ -153,11 +155,12 @@ class PlaybackHistory:
         turn_id: str = "",
         revision: int = 0,
         cancel_generation: int = 0,
+        binding_id: int = 0,
     ) -> str:
         """Register before calling ``engine.speak_tracked`` and return its ID."""
 
         with self._lock:
-            key = (task_id, int(epoch))
+            key = (task_id, int(epoch), int(binding_id))
             group_id = self._stream_groups.get(key) if streaming else None
             if group_id is None:
                 self._next_group += 1
@@ -180,6 +183,7 @@ class PlaybackHistory:
                     turn_id=str(turn_id),
                     revision=int(revision),
                     cancel_generation=int(cancel_generation),
+                    binding_id=int(binding_id),
                 )
                 self._groups[group_id] = group
                 if remember:
@@ -193,11 +197,13 @@ class PlaybackHistory:
                     group.turn_id,
                     group.revision,
                     group.cancel_generation,
+                    group.binding_id,
                 ) != (
                     str(session_id),
                     str(turn_id),
                     int(revision),
                     int(cancel_generation),
+                    int(binding_id),
                 ):
                     raise ValueError(
                         "stream fragment session identity changed within group"
@@ -222,12 +228,17 @@ class PlaybackHistory:
             return fragment_id
 
     def note_stream_metadata(
-        self, task_id: str, epoch: int, *, is_followup: bool
+        self,
+        task_id: str,
+        epoch: int,
+        *,
+        is_followup: bool,
+        binding_id: int = 0,
     ) -> None:
         """Attach completion metadata without closing ahead of queued TTS events."""
 
         with self._lock:
-            key = (task_id, int(epoch))
+            key = (task_id, int(epoch), int(binding_id))
             self._stream_metadata[key] = bool(is_followup)
             group_id = self._stream_groups.get(key)
             if group_id is not None and group_id in self._groups:
@@ -293,6 +304,7 @@ class PlaybackHistory:
                 turn_id=group.turn_id,
                 revision=group.revision,
                 cancel_generation=group.cancel_generation,
+                binding_id=group.binding_id,
             )
 
     def fragment_playback_admission(self, fragment_id: str) -> str:
@@ -312,9 +324,16 @@ class PlaybackHistory:
                 if not fragment.terminal and fragment.playback_admission_id
             )
 
-    def stream_context(self, task_id: str, epoch: int) -> Optional[PlaybackContext]:
+    def stream_context(
+        self,
+        task_id: str,
+        epoch: int,
+        binding_id: int = 0,
+    ) -> Optional[PlaybackContext]:
         with self._lock:
-            group_id = self._stream_groups.get((task_id, int(epoch)))
+            group_id = self._stream_groups.get(
+                (task_id, int(epoch), int(binding_id))
+            )
             group = self._groups.get(group_id) if group_id is not None else None
             if group is None:
                 return None
@@ -327,6 +346,7 @@ class PlaybackHistory:
                 turn_id=group.turn_id,
                 revision=group.revision,
                 cancel_generation=group.cancel_generation,
+                binding_id=group.binding_id,
             )
 
     def drain_finalizations(self) -> tuple[PlaybackFinalization, ...]:
@@ -437,11 +457,12 @@ class PlaybackHistory:
         epoch: int,
         *,
         interrupted: bool = False,
+        binding_id: int = 0,
     ) -> tuple[PlaybackCommit, ...]:
         """Close after ``TTS_STREAM_END`` (or cancellation) without inventing audio."""
 
         with self._lock:
-            key = (task_id, int(epoch))
+            key = (task_id, int(epoch), int(binding_id))
             group_id = self._stream_groups.get(key)
             self._stream_metadata.pop(key, None)
             if group_id is None or group_id not in self._groups:
@@ -452,7 +473,11 @@ class PlaybackHistory:
             return self._finalize_ready_locked(group_id)
 
     def close_task(
-        self, task_id: str, *, interrupted: bool = True
+        self,
+        task_id: str,
+        *,
+        interrupted: bool = True,
+        binding_id: int | None = None,
     ) -> tuple[PlaybackCommit, ...]:
         """Close every open stream group owned by a task."""
 
@@ -461,7 +486,14 @@ class PlaybackHistory:
             group_ids = [
                 group_id
                 for group_id, group in self._groups.items()
-                if group.task_id == task_id and group.streaming
+                if (
+                    group.task_id == task_id
+                    and group.streaming
+                    and (
+                        binding_id is None
+                        or group.binding_id == int(binding_id)
+                    )
+                )
             ]
             for group_id in group_ids:
                 group = self._groups.get(group_id)
@@ -536,7 +568,7 @@ class PlaybackHistory:
         for fragment in fragments:
             self._fragments.pop(fragment.fragment_id, None)
         self._groups.pop(group_id, None)
-        key = (group.task_id, group.epoch)
+        key = (group.task_id, group.epoch, group.binding_id)
         if self._stream_groups.get(key) == group_id:
             self._stream_groups.pop(key, None)
         self._stream_metadata.pop(key, None)
@@ -551,6 +583,7 @@ class PlaybackHistory:
                     turn_id=group.turn_id,
                     revision=group.revision,
                     cancel_generation=group.cancel_generation,
+                    binding_id=group.binding_id,
                 ),
                 outcome=aggregate_outcome,
             )

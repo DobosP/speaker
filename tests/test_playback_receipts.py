@@ -11,6 +11,7 @@ from always_on_agent.events import AgentEvent, EventKind, Mode
 from always_on_agent.followups import FollowupConfig
 from always_on_agent.memory import SessionMemory
 from always_on_agent.models import IntentDecision, IntentKind
+from always_on_agent.tasks import AgentTask
 from core.engine import (
     AudioEngine,
     EngineCallbacks,
@@ -22,6 +23,7 @@ from core.engine import (
 )
 from core.engines.sherpa import SherpaConfig
 from core.llm import EchoLLM
+from core.metrics import HANDLED_LOCAL
 from core.resume import ResumeConfig
 from core.runtime import VoiceRuntime
 
@@ -562,6 +564,277 @@ def test_task_cancel_logs_early_terminal_stream_context_once(caplog):
         assert caplog.text.count(marker) == 1
     finally:
         runtime.bus.drain()
+        runtime.stop()
+
+
+def test_identityless_stream_terminals_use_supervisor_resolved_binding():
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    task = _task(runtime, "legacy stream identity")
+    assert task.identity is not None
+    history = runtime._playback_history
+    assert history is not None
+    sentence = "Identity-resolved sentence."
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": sentence,
+                "epoch": task.speech_epoch,
+                "streaming": True,
+                **task.identity.to_payload(),
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert len(engine.fragments) == 1
+        fragment_id = engine.fragments[0].speech.fragment_id
+        context = history.fragment_context(fragment_id)
+        assert context is not None
+        assert context.binding_id == task.identity.binding_id
+
+        engine.start_fragment(0)
+        engine.terminal(
+            0,
+            PlaybackOutcome.COMPLETED,
+            safe_text_prefix=sentence,
+            played_samples=100,
+            total_samples=100,
+        )
+        assert history.pending is True
+
+        # Legacy in-process lifecycle events may omit their payload identity.
+        # The supervisor still has the exact task and must pass that resolved
+        # binding to the runtime so the non-zero binding stream can close.
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TASK_COMPLETED,
+                {
+                    "task_id": task.task_id,
+                    "text": sentence,
+                    "speak": True,
+                    "followup": False,
+                    "data": {"streamed": True},
+                    "epoch": task.speech_epoch,
+                },
+                priority=60,
+            )
+        )
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_STREAM_END,
+                {
+                    "task_id": task.task_id,
+                    "epoch": task.speech_epoch,
+                },
+                priority=110,
+            )
+        )
+        runtime.bus.drain()
+
+        assert history.pending is False
+        assert (
+            history.stream_context(
+                task.task_id,
+                task.speech_epoch,
+                task.identity.binding_id,
+            )
+            is None
+        )
+        assert runtime.wait_idle()
+        assert _assistant_memory(runtime) == [sentence]
+    finally:
+        runtime.stop()
+
+
+def test_old_stream_end_closes_exact_group_after_same_task_id_rebind():
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(engine, EchoLLM())
+    runtime.start(run_bus=False)
+    old = _task(runtime, "old same-ID stream")
+    assert old.identity is not None
+    old_identity = old.identity
+    old_handle = old.turn_handle
+    assert old_handle is not None
+    history = runtime._playback_history
+    assert history is not None
+    sentence = "Old exact stream."
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": old.task_id,
+                "text": sentence,
+                "epoch": old.speech_epoch,
+                "streaming": True,
+                **old_identity.to_payload(),
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert len(engine.fragments) == 1
+        engine.start_fragment(0)
+        engine.terminal(
+            0,
+            PlaybackOutcome.COMPLETED,
+            safe_text_prefix=sentence,
+            played_samples=100,
+            total_samples=100,
+        )
+        assert history.pending is True
+
+        # Retire the producer while its already-terminal playback group still
+        # awaits the explicit stream-end marker, then reuse its opaque task ID.
+        runtime.supervisor.cancel_all()
+        runtime.supervisor.state.active_tasks.pop(old.task_id, None)
+        assert old_handle.wait_drained(0.1).drained
+        replacement = AgentTask(
+            mode=Mode.ASSISTANT,
+            input_text="new same-ID stream",
+            task_id=old.task_id,
+        )
+        replacement.attach_turn_handle(
+            runtime.supervisor.session_actor.bind_turn(
+                replacement.task_id,
+                runtime.supervisor.session_actor.open_turn(revision=1),
+            )
+        )
+        assert replacement.identity is not None
+        assert replacement.identity.binding_id != old_identity.binding_id
+        runtime.supervisor.state.pending_audio_tasks[
+            replacement.task_id
+        ] = replacement
+
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_STREAM_END,
+                {
+                    "task_id": old.task_id,
+                    "epoch": old.speech_epoch,
+                    **old_identity.to_payload(),
+                },
+                priority=110,
+            )
+        )
+        runtime.bus.drain()
+
+        assert (
+            runtime.supervisor.state.pending_audio_tasks.get(
+                replacement.task_id
+            )
+            is replacement
+        )
+        assert (
+            history.stream_context(
+                old.task_id,
+                old.speech_epoch,
+                old_identity.binding_id,
+            )
+            is None
+        )
+        assert history.pending is False
+        assert _assistant_memory(runtime) == [sentence]
+    finally:
+        runtime.stop()
+
+
+def test_stale_stream_completion_interrupts_exact_group_and_reaches_idle(
+    monkeypatch,
+):
+    engine = _ControlledReceiptEngine()
+    runtime = VoiceRuntime(
+        engine,
+        EchoLLM(),
+        followup_config=FollowupConfig(enabled=True, delay_sec=60.0),
+    )
+    runtime.start(run_bus=False)
+    task = _task(runtime, "cancel completion before dispatch")
+    assert task.identity is not None
+    history = runtime._playback_history
+    assert history is not None
+    heard = "The prefix reached the sink."
+    whole = "The prefix reached the sink. This stale tail must not succeed."
+    runtime.bus.publish(
+        AgentEvent(
+            EventKind.TTS_REQUEST,
+            {
+                "task_id": task.task_id,
+                "text": heard,
+                "epoch": task.speech_epoch,
+                "streaming": True,
+                **task.identity.to_payload(),
+            },
+        )
+    )
+    try:
+        runtime.bus.drain()
+        assert len(engine.fragments) == 1
+        engine.start_fragment(0)
+        engine.terminal(
+            0,
+            PlaybackOutcome.COMPLETED,
+            safe_text_prefix=heard,
+            played_samples=100,
+            total_samples=100,
+        )
+        assert history.pending is True
+
+        marked: list[str] = []
+        real_mark = runtime.metrics.mark
+
+        def record_mark(stage, *args, **kwargs):
+            marked.append(stage)
+            return real_mark(stage, *args, **kwargs)
+
+        monkeypatch.setattr(runtime.metrics, "mark", record_mark)
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TASK_COMPLETED,
+                {
+                    "task_id": task.task_id,
+                    "capability": "local.synthetic",
+                    "text": whole,
+                    "speak": True,
+                    "followup": False,
+                    "data": {
+                        "streamed": True,
+                        "handled_local": True,
+                    },
+                    "epoch": task.speech_epoch,
+                    **task.identity.to_payload(),
+                },
+                priority=60,
+            )
+        )
+        runtime.bus.publish(
+            AgentEvent(
+                EventKind.TTS_STREAM_END,
+                {
+                    "task_id": task.task_id,
+                    "epoch": task.speech_epoch,
+                    **task.identity.to_payload(),
+                },
+                priority=110,
+            )
+        )
+
+        # Cancellation wins after publication but before supervisor dispatch.
+        # Runtime cleanup must close only this binding as interrupted and must
+        # not apply the event's successful-completion metadata or cadence.
+        task.cancel()
+        runtime.bus.drain()
+
+        assert HANDLED_LOCAL not in marked
+        assert history.pending is False
+        assert runtime.supervisor._followup_timer is None
+        assert runtime.wait_idle()
+        assert _assistant_memory(runtime) == [heard]
+        assert whole not in _assistant_memory(runtime)
+    finally:
         runtime.stop()
 
 

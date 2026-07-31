@@ -16,9 +16,11 @@ from .models import IntentDecision, IntentKind
 from .planner import TaskPlan, TaskPlanner
 from .session_actor import (
     AdmissionRejected,
+    ProviderAdmission,
     SessionActor,
     TaskIdentity,
     ToolAdmission,
+    TurnHandle,
     TurnIdentity,
 )
 
@@ -46,6 +48,11 @@ class AgentTask:
     # may leave this unset temporarily; TaskRuntime binds it before admission,
     # and no lifecycle/provider/TTS work starts without a concrete identity.
     identity: TaskIdentity | None = None
+    turn_handle: TurnHandle | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     state: TaskState = TaskState.QUEUED
     priority: int = 100
     created_at: float = field(default_factory=time.time)
@@ -102,11 +109,28 @@ class AgentTask:
 
     def cancel(self) -> None:
         with self._control_lock:
+            if self.turn_handle is not None:
+                self.turn_handle.cancel()
             self.cancel_event.set()
             # A terminal transition that already won remains authoritative.
             # The Event is still set so epoch/emitter gates suppress stale audio.
             if not self._terminal_claimed:
                 self.state = TaskState.CANCELLED
+
+    def attach_turn_handle(self, handle: TurnHandle) -> None:
+        """Attach the one actor scope before this task can execute."""
+
+        with self._control_lock:
+            if self.turn_handle is not None and self.turn_handle is not handle:
+                raise RuntimeError("task is already bound to another turn handle")
+            if self.identity is not None and self.identity != handle.identity:
+                raise RuntimeError("task identity disagrees with turn handle")
+            was_cancelled = self.cancel_event.is_set()
+            self.turn_handle = handle
+            self.identity = handle.identity
+            self.cancel_event = handle.cancel_event
+            if was_cancelled:
+                handle.cancel()
 
     def claim_invocation_start(self) -> bool:
         """Atomically linearize provider start before or after cancellation."""
@@ -137,7 +161,10 @@ class AgentTask:
                 else desired
             )
             if actual == TaskState.CANCELLED:
-                self.cancel_event.set()
+                if self.turn_handle is not None:
+                    self.turn_handle.cancel()
+                else:
+                    self.cancel_event.set()
             self._terminal_claimed = True
             self.state = actual
             return actual
@@ -158,7 +185,10 @@ class AgentTask:
                 return False
             if fence is not None:
                 fence()
-            self.cancel_event.set()
+            if self.turn_handle is not None:
+                self.turn_handle.cancel()
+            else:
+                self.cancel_event.set()
             self._terminal_claimed = True
             self.state = TaskState.CANCELLED
             return True
@@ -177,7 +207,7 @@ class AgentTask:
         tool_call_id = (
             str(explicit_call)
             if ordinal == 1 and explicit_call
-            else f"tool-{self.task_id}-{ordinal}"
+            else f"tool-{self.task_id}-{identity.binding_id}-{ordinal}"
         )
         idempotency_key = (
             str(explicit_key)
@@ -230,6 +260,7 @@ class TaskRuntime:
         # that is only ever held for the dict mutation -- never across a thread
         # join, engine I/O, or ``_publish`` -- so the supervisor can't deadlock.
         self._threads: dict[str, Thread] = {}
+        self._thread_identities: dict[str, TaskIdentity] = {}
         self._threads_lock = Lock()
         self._stream_tts = stream_tts
         self._max_active_tasks = max(1, int(max_active_tasks))
@@ -311,7 +342,7 @@ class TaskRuntime:
             },
         )
         turn = turn_identity or self._session.open_turn(revision=0)
-        task.identity = self._session.bind_task(task.task_id, turn)
+        task.attach_turn_handle(self._session.bind_turn(task.task_id, turn))
         return task
 
     def admit_task(self, task: AgentTask) -> bool:
@@ -326,17 +357,27 @@ class TaskRuntime:
             return True
         return self._session.admit_task(task.task_id, identity)
 
-    def retire_task_admission(self, task_id: str) -> None:
-        self._session.finish_task(task_id)
+    def retire_task_admission(self, task: AgentTask) -> None:
+        identity = self._require_identity(task)
+        self._session.finish_task(task.task_id, identity)
 
-    def release_task_binding(self, task_id: str) -> bool:
+    def release_task_binding(
+        self,
+        task_id: str,
+        identity: TaskIdentity,
+    ) -> bool:
         """Declare controller ownership terminal for one bound task."""
 
-        return self._session.release_task_binding(task_id)
+        return self._session.release_task_binding(task_id, identity)
 
     def start(self, task: AgentTask) -> bool:
         identity = self._ensure_identity(task)
-        thread = Thread(target=self._run_task, args=(task,), daemon=True)
+        try:
+            thread = Thread(target=self._run_task, args=(task,), daemon=True)
+        except BaseException:
+            self._session.finish_task(task.task_id, identity)
+            task.cancel()
+            raise
         with self._threads_lock:
             # Opportunistically drop any threads that have already exited but
             # whose lifecycle event we never saw, so the dict can't creep.
@@ -349,6 +390,7 @@ class TaskRuntime:
             ):
                 return False
             self._threads[task.task_id] = thread
+            self._thread_identities[task.task_id] = identity
             # Start while the registry lock is held. A just-created Thread is
             # not alive yet; exposing it before start let active_count reap it
             # and undercount a provider that then began running untracked.
@@ -356,7 +398,9 @@ class TaskRuntime:
                 thread.start()
             except BaseException:
                 self._threads.pop(task.task_id, None)
-                self._session.finish_task(task.task_id)
+                self._thread_identities.pop(task.task_id, None)
+                self._session.finish_task(task.task_id, identity)
+                task.cancel()
                 raise
         return True
 
@@ -382,21 +426,51 @@ class TaskRuntime:
             or self._session.active_task_count >= self._max_active_tasks
         )
 
-    def cancel_tool_call(self, tool_call_id: str) -> bool:
+    def cancel_tool_call(
+        self,
+        tool_call_id: str,
+        identity: TaskIdentity,
+    ) -> bool:
         """Explicit tool cancellation; unrelated speech cancellation is separate."""
 
-        return self._session.cancel_tool(tool_call_id)
+        return self._session.cancel_tool(tool_call_id, identity)
 
-    def fence_task_tool_calls(self, task_id: str) -> int:
+    def fence_task_tool_calls(
+        self,
+        task_id: str,
+        identity: TaskIdentity,
+    ) -> int:
         """Close a task to future tools and cancel its unstarted admissions."""
 
-        return self._session.fence_task_tools(task_id)
+        return self._session.fence_task_tools(task_id, identity)
 
     def _ensure_identity(self, task: AgentTask) -> TaskIdentity:
+        if task.turn_handle is not None:
+            if task.identity != task.turn_handle.identity:
+                raise RuntimeError("task identity disagrees with turn handle")
+            if not self._session.binding_matches(
+                task.task_id,
+                task.turn_handle.identity,
+            ):
+                raise RuntimeError("task turn handle is no longer actor-owned")
+            return task.turn_handle.identity
         if task.identity is None:
             turn = self._session.open_turn(revision=0)
-            task.identity = self._session.bind_task(task.task_id, turn)
+            task.attach_turn_handle(self._session.bind_turn(task.task_id, turn))
+        else:
+            handle = self._session.handle_for_task(task.task_id, task.identity)
+            if handle is None:
+                raise RuntimeError("task identity has no open actor turn handle")
+            task.attach_turn_handle(handle)
+        assert task.identity is not None
         return task.identity
+
+    def _ensure_turn_handle(self, task: AgentTask) -> TurnHandle:
+        self._ensure_identity(task)
+        handle = task.turn_handle
+        if handle is None:
+            raise RuntimeError("task has no actor turn handle")
+        return handle
 
     @staticmethod
     def _require_identity(task: AgentTask) -> TaskIdentity:
@@ -414,51 +488,68 @@ class TaskRuntime:
         dead = [tid for tid, thr in self._threads.items() if not thr.is_alive()]
         for tid in dead:
             self._threads.pop(tid, None)
-            self._session.finish_task(tid)
+            identity = self._thread_identities.pop(tid, None)
+            if identity is not None:
+                self._session.finish_task(tid, identity)
 
-    def _reap(self, task_id: str) -> None:
+    def _reap(self, task: AgentTask) -> None:
         """Remove a finished task's thread from the registry.
 
         Called from the worker thread on COMPLETED/CANCELLED/FAILED. It must
         not join (that would be a self-join / deadlock) -- the daemon thread is
         already on its way out; we just stop tracking it.
         """
+        identity = self._require_identity(task)
+        owned = False
         with self._threads_lock:
-            self._threads.pop(task_id, None)
-        self._session.finish_task(task_id)
+            if self._thread_identities.get(task.task_id) == identity:
+                self._threads.pop(task.task_id, None)
+                self._thread_identities.pop(task.task_id, None)
+                owned = True
+        if owned:
+            self._session.finish_task(task.task_id, identity)
 
     def _run_task(self, task: AgentTask) -> None:
-        identity = self._require_identity(task)
-        if not task.mark_running():
-            self._publish_cancelled(task)
-            return
-        log.info(
-            "task %s started: mode=%s capability=%s input=%r",
-            task.task_id, task.mode.value, task.capability, task.input_text,
-        )
-        self._publish(
-            AgentEvent(
-                EventKind.TASK_STARTED,
-                {
-                    "task_id": task.task_id,
-                    "mode": task.mode.value,
-                    "capability": task.capability,
-                    **identity.to_payload(),
-                },
-                priority=40,
-            )
-        )
-
         try:
-            self._run_plan(task)
-        except _TaskCancelled:
-            self._publish_cancelled(task)
-        except Exception as exc:  # noqa: BLE001
-            # Without this, a capability raising (e.g. Ollama unreachable) would
-            # kill the daemon thread silently and the task would sit "active"
-            # forever -- the app looks hung. Turn it into a visible failure.
-            log.exception("task %s raised in capability %r", task.task_id, task.capability)
-            self._publish_failed(task, f"{type(exc).__name__}: {exc}")
+            identity = self._require_identity(task)
+            if not task.mark_running():
+                self._publish_cancelled(task)
+                return
+            log.info(
+                "task %s started: mode=%s capability=%s input=%r",
+                task.task_id, task.mode.value, task.capability, task.input_text,
+            )
+            self._publish(
+                AgentEvent(
+                    EventKind.TASK_STARTED,
+                    {
+                        "task_id": task.task_id,
+                        "mode": task.mode.value,
+                        "capability": task.capability,
+                        **identity.to_payload(),
+                    },
+                    priority=40,
+                )
+            )
+
+            try:
+                self._run_plan(task)
+            except _TaskCancelled:
+                self._publish_cancelled(task)
+            except Exception as exc:  # noqa: BLE001
+                # Without this, a capability raising (e.g. Ollama unreachable)
+                # would kill the daemon thread silently and strand the turn.
+                log.exception(
+                    "task %s raised in capability %r",
+                    task.task_id,
+                    task.capability,
+                )
+                self._publish_failed(task, f"{type(exc).__name__}: {exc}")
+        finally:
+            # Coordinator ownership ends only after terminal publication and
+            # the worker epilogue. A cancelled provider may remain registered
+            # independently until its own thread actually exits.
+            self._reap(task)
 
     def _run_plan(self, task: AgentTask) -> None:
         plan = task.plan
@@ -557,10 +648,18 @@ class TaskRuntime:
             operation_cancel = tool_admission.cancel_event
 
             def claim_start() -> bool:
-                return self._session.claim_tool_start(tool_call_id)
+                return self._session.claim_tool_start(tool_call_id, identity)
         else:
             operation_cancel = task.cancel_event
-            claim_start = task.claim_invocation_start
+
+            def claim_start() -> bool:
+                return bool(
+                    task.claim_invocation_start()
+                    and self._session.task_effects_allowed(
+                        task.task_id,
+                        identity,
+                    )
+                )
         context: dict[str, object] = {
             "task_id": task.task_id,
             "mode": task.mode.value,
@@ -642,13 +741,18 @@ class TaskRuntime:
         owned by any abandoned provider until it truly exits, bounding
         uncooperative calls.
         """
+        handle = self._ensure_turn_handle(task)
+        identity = handle.identity
         operation_cancel = cancel_event or task.cancel_event
         claim_start = claim_provider_start or task.claim_invocation_start
         acquired = False
         while not acquired:
             if operation_cancel.is_set():
                 if tool_admission is not None:
-                    self._session.finish_tool(tool_admission.tool_call_id)
+                    self._session.finish_tool(
+                        tool_admission.tool_call_id,
+                        tool_admission.identity,
+                    )
                 raise _TaskCancelled
             acquired = self._invocation_slots.acquire(timeout=self._CANCEL_POLL_SEC)
 
@@ -657,8 +761,39 @@ class TaskRuntime:
         if operation_cancel.is_set():
             self._invocation_slots.release()
             if tool_admission is not None:
-                self._session.finish_tool(tool_admission.tool_call_id)
+                self._session.finish_tool(
+                    tool_admission.tool_call_id,
+                    tool_admission.identity,
+                )
             raise _TaskCancelled
+
+        provider_admission: ProviderAdmission | None = None
+        while provider_admission is None:
+            if (
+                operation_cancel.is_set()
+                or handle.cancelled
+                or not self._session.task_effects_allowed(
+                    task.task_id,
+                    identity,
+                )
+            ):
+                self._invocation_slots.release()
+                if tool_admission is not None:
+                    self._session.finish_tool(
+                        tool_admission.tool_call_id,
+                        tool_admission.identity,
+                    )
+                raise _TaskCancelled
+            provider_admission = self._session.admit_provider(
+                task_id=task.task_id,
+                identity=identity,
+            )
+            if provider_admission is None:
+                # The previous provider releases its semaphore slot before its
+                # actor lease so drain never claims quiescence while capacity
+                # is still owned. Bridge that tiny handoff without converting
+                # it into a spurious task failure.
+                operation_cancel.wait(self._CANCEL_POLL_SEC)
 
         done = Event()
         outcome: dict[str, object] = {}
@@ -669,7 +804,12 @@ class TaskRuntime:
                 # post-acquire check is only an early exit; cancellation can
                 # still land before this new thread is scheduled.  In that
                 # case no provider (especially no side effect) may be admitted late.
-                if not claim_start():
+                if not claim_start() or (
+                    tool_admission is None
+                    and not self._session.provider_start_allowed(
+                        provider_admission
+                    )
+                ):
                     outcome["error"] = _TaskCancelled()
                     return
                 outcome["result"] = invoke()
@@ -677,23 +817,35 @@ class TaskRuntime:
                 outcome["error"] = exc
             finally:
                 if tool_admission is not None:
-                    self._session.finish_tool(tool_admission.tool_call_id)
+                    self._session.finish_tool(
+                        tool_admission.tool_call_id,
+                        tool_admission.identity,
+                    )
                 self._invocation_slots.release()
+                self._session.finish_provider(
+                    provider_admission.provider_admission_id
+                )
                 done.set()
 
-        provider_thread = Thread(
-            target=run_provider,
-            name=f"speaker-capability-{task.task_id}",
-            daemon=True,
-        )
         try:
+            provider_thread = Thread(
+                target=run_provider,
+                name=f"speaker-capability-{task.task_id}",
+                daemon=True,
+            )
             provider_thread.start()
         except BaseException:
             # Ownership only transfers to ``run_provider`` after a successful
             # start; otherwise release synchronously to avoid losing capacity.
             self._invocation_slots.release()
+            self._session.finish_provider(
+                provider_admission.provider_admission_id
+            )
             if tool_admission is not None:
-                self._session.finish_tool(tool_admission.tool_call_id)
+                self._session.finish_tool(
+                    tool_admission.tool_call_id,
+                    tool_admission.identity,
+                )
             raise
 
         while True:
@@ -719,7 +871,6 @@ class TaskRuntime:
     def _publish_completed(self, task: AgentTask) -> None:
         terminal = task.claim_terminal(TaskState.COMPLETED)
         if terminal is None:
-            self._reap(task.task_id)
             return
         if terminal == TaskState.CANCELLED:
             self._emit_cancelled_claimed(task)
@@ -728,7 +879,6 @@ class TaskRuntime:
             "task %s completed in %.2fs (%d chars)",
             task.task_id, time.time() - task.created_at, len(task.output_text or ""),
         )
-        self._reap(task.task_id)
         result_data = task.metadata.get("result_data", {})
         streamed = bool(
             isinstance(result_data, dict) and result_data.get("streamed")
@@ -779,15 +929,13 @@ class TaskRuntime:
         terminal = task.claim_terminal(TaskState.CANCELLED)
         if terminal is None:
             # The watchdog can reserve + publish the one cancellation event.
-            # The coordinator still owns removal from the thread registry.
-            self._reap(task.task_id)
+            # The coordinator's outer finally still owns registry removal.
             return
         self._emit_cancelled_claimed(task)
 
     def _emit_cancelled_claimed(self, task: AgentTask) -> None:
         """Publish cancellation after this caller reserved the terminal event."""
         log.info("task %s cancelled after %.2fs", task.task_id, time.time() - task.created_at)
-        self._reap(task.task_id)
         self._publish(
             AgentEvent(
                 EventKind.TASK_CANCELLED,
@@ -803,14 +951,12 @@ class TaskRuntime:
     def _publish_failed(self, task: AgentTask, error: str) -> None:
         terminal = task.claim_terminal(TaskState.FAILED)
         if terminal is None:
-            self._reap(task.task_id)
             return
         if terminal == TaskState.CANCELLED:
             self._emit_cancelled_claimed(task)
             return
         log.error("task %s FAILED after %.2fs: %s", task.task_id,
                   time.time() - task.created_at, error)
-        self._reap(task.task_id)
         self._publish(
             AgentEvent(
                 EventKind.TASK_FAILED,

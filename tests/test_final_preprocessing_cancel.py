@@ -697,8 +697,8 @@ def test_tts_admission_and_speak_are_atomic_against_barge_in():
     original_speak_tracked = engine.speak_tracked
     original_stop = engine.stop_speaking
 
-    def gated_allowed(task_id, epoch=None):
-        allowed = original_allowed(task_id, epoch)
+    def gated_allowed(task_id, epoch=None, payload=None):
+        allowed = original_allowed(task_id, epoch, payload)
         allowed_entered.set()
         assert release_allowed.wait(1.0)
         return allowed
@@ -1094,7 +1094,9 @@ def test_arrival_continuation_cannot_upgrade_untrusted_victim_lineage(
     )
 
 
-def test_unrelated_pending_confirmation_does_not_disable_clear_reservation():
+def test_unrelated_pending_confirmation_does_not_disable_clear_reservation(
+    monkeypatch,
+):
     """A staged action must not reopen a pre-audio continuation race."""
     supervisor = AgentSupervisor(
         continuation_config=ContinuationConfig(enabled=True),
@@ -1129,6 +1131,16 @@ def test_unrelated_pending_confirmation_does_not_disable_clear_reservation():
     assert victim.task_id not in supervisor.state.active_tasks
     assert supervisor.state.pending_confirmations == {pending.task_id: pending}
     assert not pending.cancel_event.is_set()
+
+    started = []
+    monkeypatch.setattr(
+        supervisor.tasks,
+        "start",
+        lambda task: started.append(task) or True,
+    )
+    supervisor._confirm_next()  # noqa: SLF001
+    assert started == [pending]
+    assert pending.task_id not in supervisor.state.pending_confirmations
 
 
 def test_cleaner_self_echo_drop_clears_its_owned_arrival_reservation():

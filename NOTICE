@@ -9,6 +9,24 @@ copyright and license of each belongs to its respective authors. This NOTICE
 is provided for attribution and does not modify the LICENSE above.
 
 ================================================================================
+Data-derived test fixtures
+================================================================================
+
+Free Spoken Digit Dataset (FSDD)
+  Project:  https://github.com/Jakobovski/free-spoken-digit-dataset
+  Creators: Zohar Jackson, César Souza, Jason Flaks, Yuxin Pan,
+            Hereman Nicolas, and Adhish Thite. Retained source speaker
+            identifiers are recorded in tests/fixture_audio/FSDD-NOTICE.md.
+  License:  Creative Commons Attribution-ShareAlike 4.0
+             (https://creativecommons.org/licenses/by-sa/4.0/)
+  Use:      Historical derived test audio under
+            tests/fixture_audio/{real_usage_full,virtual_real_world}. Source
+            recordings were resampled and adapted with deterministic acoustic
+            transformations. The adapted arrays are licensed CC BY-SA 4.0 and
+            are not covered by this project's MIT license. The exact source
+            revision is unknown and is not inferred.
+
+================================================================================
 Software components (runtime dependencies)
 ================================================================================
 

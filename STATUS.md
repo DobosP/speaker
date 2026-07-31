@@ -4,7 +4,7 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate (`-m "not real_model"`): 5722 passed, 13 skipped,
+- Repository logic gate (`-m "not real_model"`): 5765 passed, 13 skipped,
   20 deselected, 9 pre-existing warnings. Latest typed-ingress/Sherpa/APM
   focused gate: 354 passed, 2 skipped.
 - Previous stable evidence remains: production-hybrid MiniCPM/Gemma and
@@ -67,8 +67,8 @@ Last verified: 2026-07-31 on Linux ROG.
   decode, finalizer, or echo-separation failure, yet recognized `vault` 0/6.
   Only post-GTCRN mic audio was retained, so frontend versus recognizer/domain
   failure remains unresolved (ADR-0077).
-- Private replay selected Parakeet/Small at WER 0.00 over six development clips.
-  It is not a disjoint live-room acceptance set (ADR-0078/0080).
+- Private replay selected Parakeet/Small at WER 0.00; public-v2 exact-bound
+  tooling is ready, but no v2 model smoke has run (ADR-0078/0080/0085).
 - Windows IAudioClient2 communications capture now verifies OS AEC. NS and
   beamforming were measured active on that box. Doctor is READY, but the mic
   fix, new-domain re-enrollment, and owner physical talk-over/bare STOP/silent
@@ -83,10 +83,10 @@ Last verified: 2026-07-31 on Linux ROG.
   carry turn revisions through tasks, tools, TTS, and playback; separate speech
   cancellation from tool-call cancellation; and accept audio from thin device
   endpoints without blocking their capture loops.
-- Build a disjoint held-out owner set spanning vault terms, controls and
-  near-controls, numerals, negation, noise/echo, bystanders, and multiple
-  voices; then run a fresh `./live.sh` physical A/B. Prompt exact STOP remains
-  required before claiming stable bare-speaker barge-in or STT.
+- Add timestamped public frame replay and AEC assertions; then build a disjoint
+  owner set spanning vault terms, controls/near-controls, numerals, negation,
+  noise/echo, bystanders, and multiple voices. Run fresh `./live.sh` A/B before
+  claiming stable bare-speaker barge-in, STT, or interaction latency.
 
 ## Standard verification
 

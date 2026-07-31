@@ -1,0 +1,434 @@
+{
+  "schema_version": 2,
+  "purpose": "Development and regression fixtures only. This public corpus is never a final held-out set and cannot establish owner-voice, room, microphone, echo-route, or live-hardware quality.",
+  "selection_seed": "speaker-public-v1",
+  "output_sample_rate": 16000,
+  "evidence_scope": {
+    "whole_clip_decoder_smoke": true,
+    "frame_replay": false,
+    "aec_behavior": false,
+    "live_hardware": false,
+    "owner_voice": false,
+    "held_out": false
+  },
+  "product_scenarios": [
+    {
+      "id": "control-stop",
+      "phrase": "stop",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "stop",
+      "expected_slots": {},
+      "runtime_identifiers": [
+        "always_on_agent.models.IntentKind.STOP",
+        "always_on_agent.speech_analyzer.exact_control_class:stop",
+        "always_on_agent.events.EventKind.CONTROL_STOP"
+      ],
+      "tags": []
+    },
+    {
+      "id": "control-cancel",
+      "phrase": "cancel",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "stop",
+      "expected_slots": {},
+      "runtime_identifiers": [
+        "always_on_agent.models.IntentKind.STOP",
+        "always_on_agent.speech_analyzer.exact_control_class:stop",
+        "always_on_agent.events.EventKind.CONTROL_STOP"
+      ],
+      "tags": []
+    },
+    {
+      "id": "control-wait",
+      "phrase": "wait",
+      "evidence": "text-contract-only",
+      "contract_status": "future-taxonomy",
+      "role": "target",
+      "expected_action": null,
+      "expected_slots": {},
+      "runtime_identifiers": [],
+      "tags": ["future-taxonomy"]
+    },
+    {
+      "id": "control-hold-on",
+      "phrase": "hold on",
+      "evidence": "text-contract-only",
+      "contract_status": "future-taxonomy",
+      "role": "target",
+      "expected_action": null,
+      "expected_slots": {},
+      "runtime_identifiers": [],
+      "tags": ["future-taxonomy"]
+    },
+    {
+      "id": "vault-search-in",
+      "phrase": "search in my vault for the speaker roadmap",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "vault.search",
+      "expected_slots": {
+        "search_scope": "vault",
+        "terms": ["speaker", "roadmap"]
+      },
+      "runtime_identifiers": [
+        "always_on_agent.models.IntentKind.SEARCH",
+        "always_on_agent.speech_analyzer.search_scope:vault",
+        "always_on_agent.planner.PlanStep:vault.search",
+        "core.obsidian.ObsidianVault._terms"
+      ],
+      "tags": []
+    },
+    {
+      "id": "vault-go-in",
+      "phrase": "go in my vault and find the latency notes",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "vault.search",
+      "expected_slots": {
+        "search_scope": "vault",
+        "terms": ["latency", "notes"]
+      },
+      "runtime_identifiers": [
+        "always_on_agent.models.IntentKind.SEARCH",
+        "always_on_agent.speech_analyzer.search_scope:vault",
+        "always_on_agent.planner.PlanStep:vault.search",
+        "core.obsidian.ObsidianVault._terms"
+      ],
+      "tags": []
+    },
+    {
+      "id": "vault-find-in",
+      "phrase": "find in my vault the audio project",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "vault.search",
+      "expected_slots": {
+        "search_scope": "vault",
+        "terms": ["audio", "project"]
+      },
+      "runtime_identifiers": [
+        "always_on_agent.models.IntentKind.SEARCH",
+        "always_on_agent.speech_analyzer.search_scope:vault",
+        "always_on_agent.planner.PlanStep:vault.search",
+        "core.obsidian.ObsidianVault._terms"
+      ],
+      "tags": []
+    },
+    {
+      "id": "reminder-numeral",
+      "phrase": "remind me to stretch in ten minutes",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "reminder.create",
+      "expected_slots": {
+        "message": "stretch",
+        "delay_seconds": 600
+      },
+      "runtime_identifiers": [
+        "core.reminders.ReminderParser.parse",
+        "core.trusted_apps.DeviceToolCommandDispatcher:reminder.create",
+        "always_on_agent.planner.PlanStep:device.command"
+      ],
+      "tags": []
+    },
+    {
+      "id": "timer-numeral",
+      "phrase": "set a timer for five minutes",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": "timer",
+      "expected_slots": {
+        "value": "five",
+        "unit": "minutes",
+        "duration_seconds": 300
+      },
+      "runtime_identifiers": [
+        "core.intents.IntentGrammar:timer"
+      ],
+      "tags": []
+    },
+    {
+      "id": "near-control-dont-stop",
+      "phrase": "don't stop",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": null,
+      "expected_slots": {},
+      "runtime_identifiers": [
+        "always_on_agent.speech_analyzer.exact_control_class:none"
+      ],
+      "tags": ["near-control"]
+    },
+    {
+      "id": "near-control-dont-cancel",
+      "phrase": "I said no, don't cancel",
+      "evidence": "text-contract-only",
+      "contract_status": "exact",
+      "role": "target",
+      "expected_action": null,
+      "expected_slots": {},
+      "runtime_identifiers": [
+        "always_on_agent.speech_analyzer.exact_control_class:none"
+      ],
+      "tags": ["near-control"]
+    },
+    {
+      "id": "bystander-vault-command",
+      "phrase": "search in my vault for tax notes",
+      "evidence": "text-contract-only",
+      "contract_status": "future-taxonomy",
+      "role": "bystander",
+      "expected_action": null,
+      "expected_slots": {},
+      "runtime_identifiers": [],
+      "tags": ["future-taxonomy", "multi-speaker"]
+    }
+  ],
+  "sources": [
+    {
+      "id": "google-speech-commands-v001-test",
+      "upstream_dataset": "Google Speech Commands",
+      "upstream_version": "v0.01 test split",
+      "source_kind": "mirror",
+      "canonical_url": "https://www.tensorflow.org/datasets/catalog/speech_commands",
+      "download_url": "https://s3.amazonaws.com/datasets.huggingface.co/SpeechCommands/v0.01/v0.01_test.tar.gz",
+      "filename": "v0.01_test.tar.gz",
+      "sha256": "0ccb217235db6b9e12a3ba3436180bac56d488155ce857614d14584d2b6a3546",
+      "size_bytes": 124959719,
+      "license_id": "CC-BY-4.0",
+      "license_url": "https://huggingface.co/datasets/google/speech_commands/blob/a751309c0fd613e8a5d30d77900f30e8b42bc2da/README.md",
+      "attribution": "Google Speech Commands v0.01 test split; Warden, 2018.",
+      "citation": "Pete Warden, Speech Commands: A Dataset for Limited-Vocabulary Speech Recognition, 2018.",
+      "redistribution": "cache-only",
+      "human_voice": true,
+      "personal_data": "public-pseudonymous-voice"
+    },
+    {
+      "id": "ami-es2002a-mix-headset",
+      "upstream_dataset": "AMI Meeting Corpus",
+      "upstream_version": "meeting ES2002a",
+      "source_kind": "canonical",
+      "canonical_url": "https://groups.inf.ed.ac.uk/ami/corpus/",
+      "download_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2002a/audio/ES2002a.Mix-Headset.wav",
+      "filename": "ES2002a.Mix-Headset.wav",
+      "sha256": "9c76866990fcc8b84006dc32d273ad99df439090b748ebe72103bb78c3216ee7",
+      "size_bytes": 40724524,
+      "license_id": "CC-BY-4.0",
+      "license_url": "https://groups.inf.ed.ac.uk/ami/download/",
+      "attribution": "AMI Meeting Corpus, meeting ES2002a headset mix.",
+      "citation": "Jean Carletta et al., The AMI Meeting Corpus, 2005.",
+      "redistribution": "cache-only",
+      "human_voice": true,
+      "personal_data": "public-pseudonymous-voice"
+    },
+    {
+      "id": "ami-manual-annotations-162",
+      "upstream_dataset": "AMI Meeting Corpus manual annotations",
+      "upstream_version": "1.6.2",
+      "source_kind": "canonical",
+      "canonical_url": "https://groups.inf.ed.ac.uk/ami/corpus/",
+      "download_url": "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip",
+      "filename": "ami_public_manual_1.6.2.zip",
+      "sha256": "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d",
+      "size_bytes": 22887865,
+      "license_id": "CC-BY-4.0",
+      "license_url": "https://groups.inf.ed.ac.uk/ami/download/",
+      "attribution": "AMI manual annotations v1.6.2.",
+      "citation": "Jean Carletta et al., The AMI Meeting Corpus, 2005.",
+      "redistribution": "cache-only",
+      "human_voice": false,
+      "personal_data": "public-transcript-annotations"
+    }
+  ],
+  "fixtures": [
+    {
+      "id": "gsc-yes",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "yes"},
+      "expected_text": "yes",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-no",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "no"},
+      "expected_text": "no",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-up",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "up"},
+      "expected_text": "up",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-down",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "down"},
+      "expected_text": "down",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-left",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "left"},
+      "expected_text": "left",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-right",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "right"},
+      "expected_text": "right",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-on",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "on"},
+      "expected_text": "on",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-off",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "off"},
+      "expected_text": "off",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-stop",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "stop"},
+      "expected_text": "stop",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-go",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "go"},
+      "expected_text": "go",
+      "assertion": "transcript"
+    },
+    {
+      "id": "gsc-unknown",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {"type": "speech_commands_tar", "target": "_unknown_"},
+      "expected_text_from_archive_label": true,
+      "assertion": "unknown_word"
+    },
+    {
+      "id": "gsc-silence",
+      "suite": "commands",
+      "source_id": "google-speech-commands-v001-test",
+      "extract": {
+        "type": "speech_commands_tar",
+        "target": "_silence_",
+        "max_duration_sec": 1.0
+      },
+      "expected_text": "",
+      "assertion": "empty_reference"
+    },
+    {
+      "id": "ami-es2002a-single-speaker",
+      "suite": "conversation",
+      "source_id": "ami-es2002a-mix-headset",
+      "required_source_ids": ["ami-manual-annotations-162"],
+      "extract": {
+        "type": "wav_segment",
+        "start_sec": 104.864,
+        "end_sec": 106.640,
+        "annotation": {
+          "source_id": "ami-manual-annotations-162",
+          "members": [
+            "words/ES2002a.A.words.xml",
+            "words/ES2002a.B.words.xml",
+            "words/ES2002a.C.words.xml",
+            "words/ES2002a.D.words.xml"
+          ],
+          "expected_text": "And you all arrived on time.",
+          "min_active_speakers": 1,
+          "max_active_speakers": 1,
+          "min_concurrent_speakers": 1
+        }
+      },
+      "expected_text": "And you all arrived on time.",
+      "assertion": "transcript",
+      "tags": ["meeting", "single-speaker"]
+    },
+    {
+      "id": "ami-es2002a-overlap",
+      "suite": "conversation",
+      "source_id": "ami-es2002a-mix-headset",
+      "required_source_ids": ["ami-manual-annotations-162"],
+      "extract": {
+        "type": "wav_segment",
+        "start_sec": 138.000,
+        "end_sec": 142.500,
+        "annotation": {
+          "source_id": "ami-manual-annotations-162",
+          "members": [
+            "words/ES2002a.A.words.xml",
+            "words/ES2002a.B.words.xml",
+            "words/ES2002a.C.words.xml",
+            "words/ES2002a.D.words.xml"
+          ],
+          "min_active_speakers": 4,
+          "max_active_speakers": 4,
+          "min_concurrent_speakers": 4
+        }
+      },
+      "assertion": "event_only",
+      "tags": ["meeting", "four-speaker-overlap", "backchannel"]
+    },
+    {
+      "id": "ami-es2002a-laughter",
+      "suite": "conversation",
+      "source_id": "ami-es2002a-mix-headset",
+      "required_source_ids": ["ami-manual-annotations-162"],
+      "extract": {
+        "type": "wav_segment",
+        "start_sec": 265.300,
+        "end_sec": 268.000,
+        "annotation": {
+          "source_id": "ami-manual-annotations-162",
+          "members": [
+            "words/ES2002a.A.words.xml",
+            "words/ES2002a.B.words.xml",
+            "words/ES2002a.C.words.xml",
+            "words/ES2002a.D.words.xml"
+          ],
+          "min_active_speakers": 3,
+          "max_active_speakers": 4,
+          "min_concurrent_speakers": 3,
+          "required_vocal_type": "laugh"
+        }
+      },
+      "assertion": "event_only",
+      "tags": ["meeting", "laughter"]
+    }
+  ],
+  "groups": []
+}

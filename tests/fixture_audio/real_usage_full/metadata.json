@@ -1,6 +1,17 @@
 {
   "version": 1,
-  "dataset": "Free Spoken Digit Dataset (FSDD), MIT License",
+  "dataset": "Derived Free Spoken Digit Dataset (FSDD) fixtures",
+  "dataset_provenance": {
+    "canonical_url": "https://github.com/Jakobovski/free-spoken-digit-dataset",
+    "creator_attribution": "Free Spoken Digit Dataset; credited creators Zohar Jackson, César Souza, Jason Flaks, Yuxin Pan, Hereman Nicolas, and Adhish Thite; source speaker identifiers used here are george, jackson, lucas, nicolas, and theo.",
+    "license_id": "CC-BY-SA-4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "upstream_revision": null,
+    "provenance_complete": false,
+    "adapted_material_license_id": "CC-BY-SA-4.0",
+    "changes": "Source WAV recordings were resampled to 16 kHz and adapted into deterministic gain, distance, room, noise, clipping, and sample-rate regression arrays described per case.",
+    "fixture_notice": "../FSDD-NOTICE.md"
+  },
   "case_count": 400,
   "sample_rate": 16000,
   "cases": [

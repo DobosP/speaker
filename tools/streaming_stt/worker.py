@@ -31,6 +31,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/zipformer.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/protocol.py",
@@ -419,6 +420,7 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     ManifestError,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
+    SHERPA_ZIPFORMER_ADAPTER,
     NemotronConfig,
     WorkerManifest,
     load_worker_manifest,
@@ -505,6 +507,8 @@ def _verify_runtime_receipt(
     manifest: WorkerManifest,
 ) -> RuntimeTreeReceipt | None:
     if manifest.adapter == "fake-json-v1":
+        return None
+    if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
         return None
     if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
         raise ManifestError()
@@ -624,6 +628,25 @@ def _activate_candidate_runtime(
         if receipt is not None:
             raise ManifestError()
         return
+    if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+        module_prefixes = ("numpy", "sherpa_onnx", "_sherpa_onnx")
+        if (
+            receipt is not None
+            or sys.flags.no_site != 0
+            or sys.flags.no_user_site != 1
+            or sys.flags.ignore_environment != 1
+            or sys.flags.isolated != 1
+            or sys.flags.dont_write_bytecode != 1
+            or any(
+                any(
+                    name == prefix or name.startswith(prefix + ".")
+                    for prefix in module_prefixes
+                )
+                for name in sys.modules
+            )
+        ):
+            raise ManifestError()
+        return
     if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
         raise ManifestError()
     module_prefixes = (
@@ -724,6 +747,18 @@ def _create_adapter(manifest: WorkerManifest):
         return (
             NemotronAdapter(model_root, config=manifest.adapter_config),
             NemotronAdapterError,
+        )
+    if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+        if manifest.adapter_config is None:
+            raise ManifestError()
+        from tools.streaming_stt.adapters.zipformer import (  # noqa: PLC0415
+            SherpaZipformerAdapter,
+            SherpaZipformerAdapterError,
+        )
+
+        return (
+            SherpaZipformerAdapter(model_root, config=manifest.adapter_config),
+            SherpaZipformerAdapterError,
         )
     raise ManifestError()
 

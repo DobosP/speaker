@@ -24,6 +24,7 @@ from .manifest import (
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
+    SHERPA_ZIPFORMER_ADAPTER,
     NemotronConfig,
     WorkerManifest,
     artifact_maximum_bytes,
@@ -311,10 +312,7 @@ def _nemotron_device_nodes() -> tuple[Path, ...]:
 def _nemotron_system_ro_paths() -> tuple[Path, ...]:
     """Return the narrow host runtime and NVIDIA sysfs closure."""
 
-    for path in _NEMOTRON_CORE_RO_PATHS[:3]:
-        _require_mount_source(path, directory=True)
-    for path in _NEMOTRON_CORE_RO_PATHS[3:]:
-        _require_mount_source(path, directory=False)
+    core_paths = _core_system_ro_paths()
     _require_mount_source(_NVIDIA_DRIVER_ROOT, directory=True)
     _require_mount_source(_NVIDIA_MODULE_PATHS[0], directory=True)
     _require_mount_source(_NVIDIA_MODULE_PATHS[1], directory=True)
@@ -350,11 +348,21 @@ def _nemotron_system_ro_paths() -> tuple[Path, ...]:
         modules.append(path)
 
     return (
-        *_NEMOTRON_CORE_RO_PATHS,
+        *core_paths,
         _NVIDIA_DRIVER_ROOT,
         *tuple(dict.fromkeys(pci_targets)),
         *modules,
     )
+
+
+def _core_system_ro_paths() -> tuple[Path, ...]:
+    """Return the minimal local interpreter/native-library mount closure."""
+
+    for path in _NEMOTRON_CORE_RO_PATHS[:3]:
+        _require_mount_source(path, directory=True)
+    for path in _NEMOTRON_CORE_RO_PATHS[3:]:
+        _require_mount_source(path, directory=False)
+    return _NEMOTRON_CORE_RO_PATHS
 
 
 def _path_is_within(path: Path, root: Path) -> bool:
@@ -521,6 +529,99 @@ def _nemotron_bwrap_command(
     return command
 
 
+def _zipformer_bwrap_command(
+    manifest: WorkerManifest,
+    scratch: Path,
+    source_bundle: SourceBundle,
+    *,
+    bundle_descriptor: int,
+    worker_descriptor: int,
+    python_descriptor: int,
+    system_ro_paths: Sequence[Path],
+) -> list[str]:
+    """Build the networkless, read-only production-runtime baseline command."""
+
+    try:
+        model_artifacts = tuple(
+            artifact
+            for artifact in manifest.artifacts
+            if artifact.name.startswith("model-")
+        )
+        model_roots = {artifact.path.parent for artifact in model_artifacts}
+        if len(model_roots) != 1 or not model_artifacts:
+            raise WorkerError("worker_prerequisite")
+        model_root = model_roots.pop()
+    except (OSError, RuntimeError, ValueError):
+        raise WorkerError("worker_prerequisite") from None
+    venv_root = manifest.python.path.parent.parent
+    required_paths = (
+        scratch,
+        source_bundle.root,
+        source_bundle.worker_path,
+        manifest.path,
+        manifest.worker.path,
+        venv_root,
+        model_root,
+    )
+    if any(not path.is_absolute() or "\x00" in str(path) for path in required_paths):
+        raise WorkerError("worker_prerequisite")
+
+    command = [
+        str(_BWRAP_PATH),
+        "--unshare-user-try",
+        "--unshare-ipc",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-uts",
+        "--unshare-cgroup-try",
+        "--die-with-parent",
+        "--new-session",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    for path in system_ro_paths:
+        _append_mount(command, "--ro-bind", path)
+    _append_mount(command, "--bind", scratch)
+    _append_mount(command, "--ro-bind", source_bundle.root)
+    _append_mount(
+        command,
+        "--ro-bind",
+        source_bundle.worker_path,
+        manifest.worker.path,
+    )
+    _append_mount(command, "--ro-bind", manifest.path)
+    _append_mount(command, "--ro-bind", venv_root)
+    _append_mount(command, "--ro-bind", model_root)
+
+    bundle_root = Path(f"/proc/self/fd/{bundle_descriptor}")
+    command.extend(
+        (
+            "--chdir",
+            str(scratch),
+            "--argv0",
+            str(manifest.python.path),
+            "--",
+            f"/proc/self/fd/{python_descriptor}",
+            "-I",
+            "-B",
+            f"/proc/self/fd/{worker_descriptor}",
+            "--manifest",
+            str(manifest.path),
+            "--scratch-root",
+            str(scratch),
+            "--source-bundle-manifest",
+            str(bundle_root / source_bundle.manifest_path.name),
+            "--source-bundle-sha256",
+            source_bundle.tree_sha256,
+            "--source-bundle-fd",
+            str(bundle_descriptor),
+        )
+    )
+    return command
+
+
 class StreamingWorker:
     """Own one sequential worker and enforce the bounded JSONL lifecycle."""
 
@@ -595,9 +696,15 @@ class StreamingWorker:
         device_nodes: tuple[Path, ...] = ()
         system_ro_paths: tuple[Path, ...] = ()
         proc_driver_available = False
-        if self.manifest.adapter == NEMOTRON_ADAPTER:
+        if self.manifest.adapter in {
+            NEMOTRON_ADAPTER,
+            SHERPA_ZIPFORMER_ADAPTER,
+        }:
             if os.name != "posix" or not Path("/proc/self/fd").is_dir():
                 raise WorkerError("worker_prerequisite")
+        if self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+            system_ro_paths = _core_system_ro_paths()
+        if self.manifest.adapter == NEMOTRON_ADAPTER:
             device_nodes = _nemotron_device_nodes()
             system_ro_paths = _nemotron_system_ro_paths()
             try:
@@ -620,17 +727,23 @@ class StreamingWorker:
                 self._bundle_descriptor = os.dup(descriptor)
             self._worker_descriptor = self._open_staged_worker_descriptor()
             self._python_descriptor = self._open_bound_python_descriptor()
-            if self.manifest.adapter == NEMOTRON_ADAPTER:
+            if self.manifest.adapter in {
+                NEMOTRON_ADAPTER,
+                SHERPA_ZIPFORMER_ADAPTER,
+            }:
                 self._bwrap_descriptor = _open_bwrap_descriptor()
         except (OSError, BoundedReadError, WorkerError):
             self._close_bundle_descriptors()
             raise WorkerError("worker_prerequisite") from None
         bundle_root = Path(f"/proc/self/fd/{self._bundle_descriptor}")
+        interpreter_flags = (
+            ["-I", "-B"]
+            if self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER
+            else ["-I", "-S", "-B"]
+        )
         worker_command = [
             str(self.manifest.python.path),
-            "-I",
-            "-S",
-            "-B",
+            *interpreter_flags,
             f"/proc/self/fd/{self._worker_descriptor}",
             "--manifest",
             str(self.manifest.path),
@@ -673,6 +786,22 @@ class StreamingWorker:
             # process group. Bubblewrap forks its namespace child before the
             # required --new-session setsid(), so the inner session remains
             # independent and die-with-parent links both lifecycle layers.
+        elif self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
+            try:
+                command = _zipformer_bwrap_command(
+                    self.manifest,
+                    scratch,
+                    self.source_bundle,
+                    bundle_descriptor=self._bundle_descriptor,
+                    worker_descriptor=self._worker_descriptor,
+                    python_descriptor=self._python_descriptor,
+                    system_ro_paths=system_ro_paths,
+                )
+            except WorkerError:
+                self._close_bundle_descriptors()
+                raise
+            executable = f"/proc/self/fd/{self._bwrap_descriptor}"
+            pass_fds = (*pass_fds, self._bwrap_descriptor)
         try:
             process = self._popen_factory(
                 command,

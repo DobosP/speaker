@@ -32,6 +32,8 @@ MAX_MOONSHINE_ARTIFACT_BYTES = 512 * 1024 * 1024
 MAX_MOONSHINE_TOTAL_ARTIFACT_BYTES = 1024 * 1024 * 1024
 MAX_NEMOTRON_ARTIFACT_BYTES = 3 * 1024 * 1024 * 1024
 MAX_NEMOTRON_TOTAL_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
+MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES = 384 * 1024 * 1024
+MAX_SHERPA_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 512 * 1024 * 1024
 _MANIFEST_V1_FIELDS = {
     "schema_version",
     "model_id",
@@ -43,6 +45,7 @@ _MANIFEST_V1_FIELDS = {
 }
 _MANIFEST_V2_FIELDS = {*_MANIFEST_V1_FIELDS, "adapter_config"}
 _MANIFEST_V3_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V4_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -80,8 +83,29 @@ _NEMOTRON_CONFIG_FIELDS = {
     "runtime_total_size_bytes",
     "runtime_maximum_file_bytes",
 }
+_SHERPA_ZIPFORMER_CONFIG_FIELDS = {
+    "package_version",
+    "numpy_version",
+    "source_repo_id",
+    "variant",
+    "language",
+    "sample_rate",
+    "feature_dim",
+    "production_device_profile",
+    "production_num_threads",
+    "benchmark_profile",
+    "num_threads",
+    "provider",
+    "enable_endpoint_detection",
+    "decoding_method",
+    "max_active_paths",
+    "rule1_min_trailing_silence",
+    "rule2_min_trailing_silence",
+    "rule3_min_utterance_length",
+}
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
 NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
+SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
 NEMOTRON_WHEEL_LOCK_SHA256 = (
     "df268a2e268221428256b3ec525a3ad49da65b526b2e09b88df3802533b5af01"
 )
@@ -281,6 +305,43 @@ _NEMOTRON_STREAM_GEOMETRY = {
         "streaming_latency_ms": 1_120,
     },
 }
+SHERPA_ZIPFORMER_ARTIFACT_SPECS = (
+    (
+        "model-encoder",
+        "encoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "a423883ce5754507fd941755ab0b5bc426a84ac670cbe21cf060e9e2c66dc660",
+        262_127_043,
+    ),
+    (
+        "model-decoder",
+        "decoder-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "7bf787f90b194b307e5a4ad6a34fadb4e748304c35f78a8d66358a05b13ee6ef",
+        2_092_621,
+    ),
+    (
+        "model-joiner",
+        "joiner-epoch-99-avg-1-chunk-16-left-128.onnx",
+        "210591f72b3c56b8364f85f345dca240bc2b4c00632848f4aa923630d5639d3b",
+        1_026_405,
+    ),
+    (
+        "model-tokens",
+        "tokens.txt",
+        "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb",
+        5_048,
+    ),
+)
+SHERPA_ZIPFORMER_ARTIFACT_NAMES = tuple(
+    name for name, _basename, _sha256, _size_bytes in SHERPA_ZIPFORMER_ARTIFACT_SPECS
+)
+_SHERPA_ZIPFORMER_ARTIFACT_BASENAMES = {
+    name: basename
+    for name, basename, _sha256, _size_bytes in SHERPA_ZIPFORMER_ARTIFACT_SPECS
+}
+_SHERPA_ZIPFORMER_MODEL_RECEIPTS = {
+    name: (sha256, size_bytes)
+    for name, _basename, sha256, size_bytes in SHERPA_ZIPFORMER_ARTIFACT_SPECS
+}
 
 
 class ManifestError(RuntimeError):
@@ -427,6 +488,92 @@ class NemotronConfig:
 
 
 @dataclass(frozen=True)
+class SherpaZipformerConfig:
+    """Production model/config with an explicit one-thread benchmark override."""
+
+    package_version: str = "1.13.3"
+    numpy_version: str = "2.4.6"
+    source_repo_id: str = (
+        "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+    )
+    variant: str = "epoch-99-avg-1-chunk-16-left-128"
+    language: str = "en"
+    sample_rate: int = 16_000
+    feature_dim: int = 80
+    production_device_profile: str = "desktop_gpu_4090"
+    production_num_threads: int = 4
+    benchmark_profile: str = "resource-controlled-one-thread"
+    num_threads: int = 1
+    provider: str = "cpu"
+    enable_endpoint_detection: bool = True
+    decoding_method: str = "modified_beam_search"
+    max_active_paths: int = 4
+    rule1_min_trailing_silence: float = 2.4
+    rule2_min_trailing_silence: float = 0.8
+    rule3_min_utterance_length: float = 20.0
+
+    def __post_init__(self) -> None:
+        timing = (
+            self.rule1_min_trailing_silence,
+            self.rule2_min_trailing_silence,
+            self.rule3_min_utterance_length,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in timing
+        ):
+            raise ManifestError()
+        if (
+            self.package_version != "1.13.3"
+            or self.numpy_version != "2.4.6"
+            or self.source_repo_id
+            != "csukuangfj/sherpa-onnx-streaming-zipformer-en-2023-06-26"
+            or self.variant != "epoch-99-avg-1-chunk-16-left-128"
+            or self.language != "en"
+            or type(self.sample_rate) is not int
+            or self.sample_rate != 16_000
+            or type(self.feature_dim) is not int
+            or self.feature_dim != 80
+            or self.production_device_profile != "desktop_gpu_4090"
+            or type(self.production_num_threads) is not int
+            or self.production_num_threads != 4
+            or self.benchmark_profile != "resource-controlled-one-thread"
+            or type(self.num_threads) is not int
+            or self.num_threads != 1
+            or self.provider != "cpu"
+            or type(self.enable_endpoint_detection) is not bool
+            or not self.enable_endpoint_detection
+            or self.decoding_method != "modified_beam_search"
+            or type(self.max_active_paths) is not int
+            or self.max_active_paths != 4
+            or tuple(float(value) for value in timing) != (2.4, 0.8, 20.0)
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "package_version": self.package_version,
+            "numpy_version": self.numpy_version,
+            "source_repo_id": self.source_repo_id,
+            "variant": self.variant,
+            "language": self.language,
+            "sample_rate": self.sample_rate,
+            "feature_dim": self.feature_dim,
+            "production_device_profile": self.production_device_profile,
+            "production_num_threads": self.production_num_threads,
+            "benchmark_profile": self.benchmark_profile,
+            "num_threads": self.num_threads,
+            "provider": self.provider,
+            "enable_endpoint_detection": self.enable_endpoint_detection,
+            "decoding_method": self.decoding_method,
+            "max_active_paths": self.max_active_paths,
+            "rule1_min_trailing_silence": self.rule1_min_trailing_silence,
+            "rule2_min_trailing_silence": self.rule2_min_trailing_silence,
+            "rule3_min_utterance_length": self.rule3_min_utterance_length,
+        }
+
+
+@dataclass(frozen=True)
 class WorkerManifest:
     path: Path
     digest: str
@@ -437,7 +584,9 @@ class WorkerManifest:
     worker: BoundFile
     artifacts: tuple[BoundArtifact, ...]
     limits: WorkerLimits
-    adapter_config: MoonshineConfig | NemotronConfig | None = None
+    adapter_config: (
+        MoonshineConfig | NemotronConfig | SherpaZipformerConfig | None
+    ) = None
 
     @property
     def artifact_by_name(self) -> Mapping[str, BoundArtifact]:
@@ -508,6 +657,11 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
             artifact_name,
             MAX_NEMOTRON_ARTIFACT_BYTES,
         )
+    if (
+        adapter == SHERPA_ZIPFORMER_ADAPTER
+        and artifact_name in SHERPA_ZIPFORMER_ARTIFACT_NAMES
+    ):
+        return MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES
     raise ManifestError()
 
 
@@ -615,6 +769,46 @@ def _nemotron_config(value: object) -> NemotronConfig:
         raise ManifestError() from None
 
 
+def _sherpa_zipformer_config(value: object) -> SherpaZipformerConfig:
+    if not isinstance(value, dict) or set(value) != _SHERPA_ZIPFORMER_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return SherpaZipformerConfig(
+            package_version=value.get("package_version"),  # type: ignore[arg-type]
+            numpy_version=value.get("numpy_version"),  # type: ignore[arg-type]
+            source_repo_id=value.get("source_repo_id"),  # type: ignore[arg-type]
+            variant=value.get("variant"),  # type: ignore[arg-type]
+            language=value.get("language"),  # type: ignore[arg-type]
+            sample_rate=value.get("sample_rate"),  # type: ignore[arg-type]
+            feature_dim=value.get("feature_dim"),  # type: ignore[arg-type]
+            production_device_profile=value.get(  # type: ignore[arg-type]
+                "production_device_profile"
+            ),
+            production_num_threads=value.get(  # type: ignore[arg-type]
+                "production_num_threads"
+            ),
+            benchmark_profile=value.get("benchmark_profile"),  # type: ignore[arg-type]
+            num_threads=value.get("num_threads"),  # type: ignore[arg-type]
+            provider=value.get("provider"),  # type: ignore[arg-type]
+            enable_endpoint_detection=value.get(  # type: ignore[arg-type]
+                "enable_endpoint_detection"
+            ),
+            decoding_method=value.get("decoding_method"),  # type: ignore[arg-type]
+            max_active_paths=value.get("max_active_paths"),  # type: ignore[arg-type]
+            rule1_min_trailing_silence=value.get(  # type: ignore[arg-type]
+                "rule1_min_trailing_silence"
+            ),
+            rule2_min_trailing_silence=value.get(  # type: ignore[arg-type]
+                "rule2_min_trailing_silence"
+            ),
+            rule3_min_utterance_length=value.get(  # type: ignore[arg-type]
+                "rule3_min_utterance_length"
+            ),
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
 def _validate_venv_layout(
     python: BoundFile,
     marker: BoundArtifact,
@@ -707,6 +901,27 @@ def _validate_nemotron_layout(
     _validate_venv_layout(python, by_name["venv-marker"])
 
 
+def _validate_sherpa_zipformer_layout(
+    artifacts: tuple[BoundArtifact, ...],
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    if (
+        tuple(by_name) != SHERPA_ZIPFORMER_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        > MAX_SHERPA_ZIPFORMER_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _SHERPA_ZIPFORMER_ARTIFACT_BASENAMES.items()
+        )
+        or any(
+            (by_name[name].sha256, by_name[name].size_bytes) != receipt
+            for name, receipt in _SHERPA_ZIPFORMER_MODEL_RECEIPTS.items()
+        )
+        or len({artifact.path.parent for artifact in artifacts}) != 1
+    ):
+        raise ManifestError()
+
+
 def load_worker_manifest(path: Path | str) -> WorkerManifest:
     """Load and verify one immutable, machine-local worker receipt."""
 
@@ -724,12 +939,13 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     if not isinstance(value, dict):
         raise ManifestError()
     schema_version = value.get("schema_version")
-    if type(schema_version) is not int or schema_version not in {1, 2, 3}:
+    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4}:
         raise ManifestError()
     expected_fields = {
         1: _MANIFEST_V1_FIELDS,
         2: _MANIFEST_V2_FIELDS,
         3: _MANIFEST_V3_FIELDS,
+        4: _MANIFEST_V4_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -739,6 +955,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         (schema_version == 1 and adapter != "fake-json-v1")
         or (schema_version == 2 and adapter != MOONSHINE_ADAPTER)
         or (schema_version == 3 and adapter != NEMOTRON_ADAPTER)
+        or (schema_version == 4 and adapter != SHERPA_ZIPFORMER_ADAPTER)
     ):
         raise ManifestError()
 
@@ -760,6 +977,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         1: ("fake-script",),
         2: MOONSHINE_ARTIFACT_NAMES,
         3: NEMOTRON_ARTIFACT_NAMES,
+        4: SHERPA_ZIPFORMER_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -773,6 +991,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         1: lambda: None,
         2: lambda: _moonshine_config(value.get("adapter_config")),
         3: lambda: _nemotron_config(value.get("adapter_config")),
+        4: lambda: _sherpa_zipformer_config(value.get("adapter_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -780,6 +999,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 3:
         assert isinstance(adapter_config, NemotronConfig)
         _validate_nemotron_layout(python, artifacts)
+    elif schema_version == 4:
+        assert isinstance(adapter_config, SherpaZipformerConfig)
+        _validate_sherpa_zipformer_layout(artifacts)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

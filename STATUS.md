@@ -2,11 +2,11 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-07-31 on Linux ROG.
+Last verified: 2026-08-01 on Linux ROG.
 
-- Repository logic gate: 6532 passed, 13 skipped, 22 deselected, 9 pre-existing warnings; structured lifecycle 270; typed-ingress/Sherpa/APM 354 passed, 2 skipped; public-v3 81 file/145 combined.
-- Post-ASR mailbox/adjacent 221; scoped LiveKit 22; LiveKit Agents seam 28; unified-session focused 55; playback/actor/runtime 150; APM/DTD 6.
-- Streaming 334; receipt 98; capture-replay 71 (ADR-0092). Moonshine/Nemotron remain rejected (ADR-0090/0091).
+- Repository logic gate: 6563 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; public-matrix/Zipformer focused 28; APM/DTD 6.
+- Streaming family: 296 passed, 1 skipped, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron stay rejected (ADR-0090/0091).
+- Post-ASR mailbox/adjacent 221; LiveKit Agents seam 28; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
@@ -49,6 +49,8 @@ Last verified: 2026-07-31 on Linux ROG.
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English
   plus Faster-Whisper Small. Exact acoustic quorum may rewrite text; protected
   controls fail closed. SenseVoice defaults remain unchanged (ADR-0078/0080).
+- Public evaluation separates eight metric tracks across 12 selectable sources
+  with nine exclusions. Exact fp32 Zipformer is a networkless one-thread production-model control only; no corpus, model, default, or live path changed (ADR-0098).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
   new children and bounded drain reports providers still exiting (ADR-0094).
@@ -68,10 +70,6 @@ Last verified: 2026-07-31 on Linux ROG.
 - Exact Moonshine 0.1.0 is benchmark-only. Small WER is 0.6884 burst and 0.6957
   real-time; at 200 ms: RTF 1.1864, first partial p50 2.02 s, 1,000 misses, and
   22.01 s backlog. Tiny WER is 0.8478. No default changed; its sandbox/resource limits remain as documented (ADR-0090).
-- Exact Nemotron uses an isolated Python 3.12 closure: Torch 2.12.1+cu126,
-  Transformers 5.13.1, Librosa 0.11.0, 74-wheel lock `df268a2...af01`, and runtime
-  content `ebcf9cab...bb8f` (24,273 files; 6,752,927,292 bytes). Bubblewrap denies
-  network, mounts model/runtime read-only, and redirects caches to scratch.
 - Nemotron burst WER/CER/RTF: LA0 .7065/.6606/.4331; LA3 .7065/.6592/.1395;
   LA6 .6957/.6551/.0859; LA13 .6902/.6467/.0556. LA6 real-time was
   .6957 WER/.0992 RTF, first-partial p50 1.666 s, one miss, 10.439 ms backlog.
@@ -86,6 +84,9 @@ Last verified: 2026-07-31 on Linux ROG.
 
 ## Next
 
+- Prepare only receipt-bound selected public inputs, then compare a separately
+  isolated Parakeet Realtime EOU candidate with the Zipformer control under
+  bounded GPU/RAM/time gates; do not promote from after-PCM evidence alone.
 - Wire and live-A/B the publisher-scoped session, then converge mobile task/tool/output/drain ownership and add remote audible-playout acknowledgement.
 - Add native-reader/gap and synchronized AEC replay plus disjoint owner
   controls/vault/noise/multi-voice data; then run fresh `./live.sh` A/B (ADR-0092).

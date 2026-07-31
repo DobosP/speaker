@@ -29,6 +29,7 @@ WORKER_SOURCE_FILES = (
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/zipformer.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/manifest.py",
     "tools/streaming_stt/protocol.py",
@@ -413,6 +414,10 @@ def stage_worker_source_bundle(
                 "tools/streaming_stt/adapters/nemotron.py": (
                     adapter_descriptor,
                     "nemotron.py",
+                ),
+                "tools/streaming_stt/adapters/zipformer.py": (
+                    adapter_descriptor,
+                    "zipformer.py",
                 ),
             }
             for relative in WORKER_SOURCE_FILES:

@@ -37,7 +37,9 @@ from tools.streaming_stt.manifest import (
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
+    SHERPA_ZIPFORMER_ADAPTER,
     NemotronConfig,
+    SherpaZipformerConfig,
     WorkerManifest,
     load_worker_manifest,
 )
@@ -99,6 +101,7 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/zipformer.py",
     "tools/__init__.py",
     "tools/recorded_stt_eval.py",
     "core/wer.py",
@@ -307,7 +310,12 @@ def _write_strict_report(path: Path, payload: Mapping[str, object]) -> None:
 
 
 def _evaluator_binding(adapter: str) -> dict[str, object]:
-    if adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
+    if adapter not in {
+        _FAKE_ADAPTER,
+        MOONSHINE_ADAPTER,
+        NEMOTRON_ADAPTER,
+        SHERPA_ZIPFORMER_ADAPTER,
+    }:
         raise ValueError
     files: dict[str, str] = {}
     for relative in _EVALUATOR_FILES:
@@ -323,10 +331,14 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         "kind": (
             "isolated_streaming_stt_fake_harness"
             if adapter == _FAKE_ADAPTER
-            else "isolated_streaming_stt_candidate_harness"
+            else (
+                "isolated_streaming_stt_production_harness"
+                if adapter == SHERPA_ZIPFORMER_ADAPTER
+                else "isolated_streaming_stt_candidate_harness"
+            )
         ),
-        "production_model": False,
-        "real_candidate_model": adapter != _FAKE_ADAPTER,
+        "production_model": adapter == SHERPA_ZIPFORMER_ADAPTER,
+        "real_candidate_model": adapter in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER},
         "model_executed": adapter != _FAKE_ADAPTER,
         "files": files,
     }
@@ -334,6 +346,10 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
 
 def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
     if manifest.adapter == _FAKE_ADAPTER:
+        if "runtime-receipt" in manifest.artifact_by_name:
+            raise ValueError
+        return None
+    if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
         if "runtime-receipt" in manifest.artifact_by_name:
             raise ValueError
         return None
@@ -413,26 +429,34 @@ def _worker_binding(
     expected_schema = {
         MOONSHINE_ADAPTER: 2,
         NEMOTRON_ADAPTER: 3,
+        SHERPA_ZIPFORMER_ADAPTER: 4,
     }.get(manifest.adapter)
     if (
         expected_schema is None
         or manifest.schema_version != expected_schema
         or manifest.adapter_config is None
-        or runtime_receipt_sha256 is None
+        or (
+            manifest.adapter == SHERPA_ZIPFORMER_ADAPTER
+            and runtime_receipt_sha256 is not None
+        )
+        or (
+            manifest.adapter != SHERPA_ZIPFORMER_ADAPTER
+            and runtime_receipt_sha256 is None
+        )
     ):
         raise ValueError
     adapter_config = manifest.adapter_config.as_dict()
-    expected_config_fields = (
-        {
+    expected_config_fields = {
+        MOONSHINE_ADAPTER: {
             "package_version",
             "api_version",
             "model_arch",
             "provider",
             "language",
-        }
-        if manifest.adapter == MOONSHINE_ADAPTER
-        else set(NemotronConfig().as_dict())
-    )
+        },
+        NEMOTRON_ADAPTER: set(NemotronConfig().as_dict()),
+        SHERPA_ZIPFORMER_ADAPTER: set(SherpaZipformerConfig().as_dict()),
+    }[manifest.adapter]
     if set(adapter_config) != expected_config_fields:
         raise ValueError
     _strict_json(adapter_config)
@@ -440,9 +464,10 @@ def _worker_binding(
         {
             "manifest_schema_version": expected_schema,
             "adapter_config": adapter_config,
-            "runtime_receipt_sha256": runtime_receipt_sha256,
         }
     )
+    if runtime_receipt_sha256 is not None:
+        binding["runtime_receipt_sha256"] = runtime_receipt_sha256
     return binding
 
 
@@ -450,12 +475,13 @@ def _evidence_binding(
     adapter: str,
     *,
     pace: str,
-    adapter_config: NemotronConfig | None = None,
+    adapter_config: NemotronConfig | SherpaZipformerConfig | None = None,
 ) -> dict[str, object]:
     if adapter not in {
         _FAKE_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
+        SHERPA_ZIPFORMER_ADAPTER,
     } or pace not in {
         "burst",
         "realtime",
@@ -465,16 +491,23 @@ def _evidence_binding(
         if not isinstance(adapter_config, NemotronConfig):
             raise ValueError
         config = adapter_config
+        zipformer_config = None
+    elif adapter == SHERPA_ZIPFORMER_ADAPTER:
+        if not isinstance(adapter_config, SherpaZipformerConfig):
+            raise ValueError
+        config = None
+        zipformer_config = adapter_config
     elif adapter_config is not None:
         raise ValueError
     else:
         config = None
+        zipformer_config = None
     candidate_executed = adapter != _FAKE_ADAPTER
     binding: dict[str, object] = {
         "kind": "bounded_pcm_streaming_harness",
         "fake_adapter": adapter == _FAKE_ADAPTER,
-        "production_model": False,
-        "real_candidate_model": candidate_executed,
+        "production_model": adapter == SHERPA_ZIPFORMER_ADAPTER,
+        "real_candidate_model": adapter in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER},
         "model_executed": candidate_executed,
         "replay_pace": pace,
         "accelerated_replay": pace == "burst",
@@ -527,6 +560,35 @@ def _evidence_binding(
                     "window_samples": config.native_window_samples,
                     "stride_samples": config.native_stride_samples,
                     "streaming_latency_ms": config.streaming_latency_ms,
+                },
+            }
+        )
+    if zipformer_config is not None:
+        binding.update(
+            {
+                "production_streaming_baseline": True,
+                "runtime_equivalent_to_production": False,
+                "resource_control": {
+                    "benchmark_profile": zipformer_config.benchmark_profile,
+                    "benchmark_num_threads": zipformer_config.num_threads,
+                    "production_device_profile": (
+                        zipformer_config.production_device_profile
+                    ),
+                    "production_num_threads": (
+                        zipformer_config.production_num_threads
+                    ),
+                },
+                "decode_contract": {
+                    "sample_rate_hz": zipformer_config.sample_rate,
+                    "feature_dim": zipformer_config.feature_dim,
+                    "provider": zipformer_config.provider,
+                    "decoding_method": zipformer_config.decoding_method,
+                    "max_active_paths": zipformer_config.max_active_paths,
+                    "endpoint_rules": [
+                        zipformer_config.rule1_min_trailing_silence,
+                        zipformer_config.rule2_min_trailing_silence,
+                        zipformer_config.rule3_min_utterance_length,
+                    ],
                 },
             }
         )
@@ -737,7 +799,11 @@ def _default_stream(manifest: WorkerManifest) -> StreamConfig:
             partial_interval_ms=partial_interval_ms,
             tail_padding_samples=0,
         )
-    if manifest.adapter not in {_FAKE_ADAPTER, MOONSHINE_ADAPTER}:
+    if manifest.adapter not in {
+        _FAKE_ADAPTER,
+        MOONSHINE_ADAPTER,
+        SHERPA_ZIPFORMER_ADAPTER,
+    }:
         raise ValueError
     return StreamConfig(
         chunk_samples=1600,
@@ -979,7 +1045,10 @@ def _run_benchmark_locked(
                 pace=selected_stream.pace,
                 adapter_config=(
                     manifest.adapter_config
-                    if isinstance(manifest.adapter_config, NemotronConfig)
+                    if isinstance(
+                        manifest.adapter_config,
+                        (NemotronConfig, SherpaZipformerConfig),
+                    )
                     else None
                 ),
             ),

@@ -19,6 +19,7 @@
 | Injected Sherpa barge replay | `/home/dobo/work/speaker/.venv/bin/python -m tools.live_session --scenario barge_in_interrupt_stop --repeat 3 --inject --barge-in --llm echo --no-assistant-audio` | exit 0 only when every repetition is full-duplex `ok`, intended FIFO cuts 2/2, zero self-interrupts (ADR-0064) |
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Recording-driven STT accuracy | `/home/dobo/work/speaker/.venv/bin/python -m tools.recorded_stt_eval` | aggregate-only streaming/offline/selected WER+CER over every hash-pinned labelled clip; each selected offline recognizer/verifier must complete a decode with zero error outcomes; no runtime, TTS, tools, network, or audio device (ADR-0078/0080) |
+| Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced Sherpa seam, fixed aggregate conditions/privacy, evaluator, and deterministic AMI preparation pass without a model or audio device (ADR-0092) |
 | Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine, and Nemotron private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091) |
 | Exact Moonshine worker smoke | set absolute `SPEAKER_MOONSHINE_WORKER_MANIFEST` and `SPEAKER_MOONSHINE_STREAMING_CORPUS`, then run `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_streaming_stt_moonshine_worker.py -m real_model -q` | one exact pre-provisioned case runs; no install, download, network, audio device, or adoption claim (ADR-0090) |
 | Exact Nemotron worker smoke | prepare and provision new private paths as shown below, then run the candidate-specific `real_model` command | one exact pre-provisioned case passes through no-network Bubblewrap and the bound inputs still pass close-time rehash; no audio device or adoption claim (ADR-0091) |
@@ -27,6 +28,59 @@
 | Isolated enrollment prep | `/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_enrollment --help` then supply the four explicit absolute paths and a unique `enrollment.v5-<id>.json` | device-free; verified no-clobber backup, empty feature candidate, regular mode-600 config with prepared marker; use its exact printed next command (ADR-0056) |
 | Accepted v5 promotion | `/home/dobo/work/speaker/.venv/bin/python -m tools.promote_enrollment --help` then supply the exact worktree, primary config, prepared candidate/source/backup, candidate-derived adjacent accepted path, and `--accept-live-gate` | device-free and only after manual acceptance; exit 0 = active, 2 = refused, 3 = confirmed staged/inactive, 4 = ambiguous (ADR-0066) |
 | Whitespace | `git diff --check` | no output |
+
+## Timestamped capture-loop replay
+
+Obtain the AMI manual annotations and `ES2004a.Array1-01.wav` from the
+[official AMI corpus](https://groups.inf.ed.ac.uk/ami/download/) under its
+published terms. The tested v1.6.2 sources are:
+
+- annotations: 22,887,865 bytes, SHA-256
+  `b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d`
+- audio: 33,579,394 bytes, SHA-256
+  `6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150`
+
+Prepare a new private output directory; the command refuses overwrite and does
+not download, load a model, open an audio device, or print transcript text:
+
+```bash
+/home/dobo/work/speaker/.venv/bin/python -m tools.prepare_ami_capture_replay \
+  --annotations-zip /absolute/ami_public_manual_1.6.2.zip \
+  --annotations-sha256 b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d \
+  --annotations-bytes 22887865 \
+  --audio-wav /absolute/ES2004a.Array1-01.wav \
+  --audio-sha256 6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150 \
+  --audio-bytes 33579394 \
+  --output-dir /new/private/ami-capture-replay
+```
+
+Run the prepared PCM through the configured Sherpa capture-loop seam into a new
+aggregate-only report. Add `nice`/`taskset` locally when protecting other
+workloads; `--asr-threads 1` bounds Sherpa's configured ASR threads, not final
+verifier memory or total process CPU:
+
+```bash
+/home/dobo/work/speaker/.venv/bin/python -m tools.capture_replay_eval \
+  --corpus /new/private/ami-capture-replay/capture-replay.json \
+  --config /home/dobo/work/speaker/config.json \
+  --local-config /home/dobo/work/speaker/config.local.json \
+  --asr-threads 1 \
+  --repeats 1 \
+  --watchdog-seconds 300 \
+  --report /new/private/production-capture-report.json
+```
+
+`execution_complete=true` means the diagnostic ran; its fixed
+`quality_verdict=diagnostic_only` is never an accuracy pass. The public slice
+grades far-field transcript/silence and timing lineage only. Human-overlap WER
+has ambiguous word ordering, and the turn case does not grade speaker
+boundaries. The evaluator also bypasses the native device reader and real
+capture mailbox. Its endpoint values use engine-owned timestamps and do not
+grade ground-truth VAD onset/offset accuracy.
+It has no playback-reference track, target commands, owner voice, or physical
+device, so it cannot grade AEC, barge-in, identity, authority, or live quality.
+Do not pass `--provider cuda` unless the installed ONNX Runtime exposes
+`CUDAExecutionProvider`; the evaluator refuses Sherpa's silent CPU fallback.
 
 ## Exact Nemotron benchmark setup
 

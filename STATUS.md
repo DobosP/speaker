@@ -4,13 +4,12 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-07-31 on Linux ROG.
 
-- Repository logic gate: 6276 passed, 13 skipped, 22 deselected, 9 pre-existing warnings.
+- Repository logic gate: 6353 passed, 13 skipped, 22 deselected, 9 pre-existing warnings.
   Focused: typed-ingress/Sherpa/APM 354 passed, 2 skipped; session ownership 321; public-v3 81 file/145 combined.
 - Bounded capture review: 201 passed, 1 skipped; adjacent 305; APM/DTD 6.
-- Streaming deterministic gate: 334; receipt boundary 98. Exact one-case
-  Moonshine/Nemotron smokes passed; both remain rejected (ADR-0090/0091).
-- Previous stable evidence remains: MiniCPM/Gemma and Gemma/Gemma 42/42, semantic-memory
-  PASS, strict recorded owner replay 9/9, and two clean synthetic-delay runs (ADR-0051/0065/0067/0068/0070/0080).
+- Streaming 334; receipt 98; capture-replay 71 (ADR-0092). Moonshine/Nemotron remain rejected (ADR-0090/0091).
+- Stable evidence remains: both conversation pairs 42/42, semantic-memory PASS,
+  recorded owner replay 9/9, and two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
@@ -77,16 +76,18 @@ Last verified: 2026-07-31 on Linux ROG.
   .6957 WER/.0992 RTF, first-partial p50 1.666 s, one miss, 10.439 ms backlog.
   Every mode is rejected; this excludes capture/VAD/endpoint/AEC/live validity
   and leaves `.venv`, defaults, and `./live.sh` unchanged (ADR-0091).
+- Corrected mic-only AMI diagnostic has poor recognition: overall-including-
+  linearized-overlap/single/linearized-overlap/transition WER .852/.632/1.000/.933.
+  Silence stayed empty; six verifier decodes had no errors. First-partial/final
+  p50 .184/1.113 s; peak RSS 2,033 MB. Not native-reader/AEC/live evidence (ADR-0092).
 - Windows communications capture verifies OS AEC/NS/beamforming; owner physical talk-over/STOP tests remain (ADR-0081/0082).
 - Diagnostic replay fails closed on malformed heartbeats/silent playback references; GitHub raw-audio PR refs remain owner follow-up (ADR-0083).
 
 ## Next
 
-- Port session ownership to remote/mobile; bound the central mailbox and add
-  targeted tool cancellation before claiming parity.
-- Add timestamped frame/AEC replay and a disjoint owner set spanning vault terms,
-  controls, numerals, negation, noise/echo, bystanders, and multiple voices.
-  Run fresh `./live.sh` A/B before claiming stable results (ADR-0091).
+- Bound the post-ASR mailbox; add actor-backed `TurnHandle`; then unify remote/mobile ownership.
+- Add native-reader/gap and synchronized AEC replay plus disjoint owner
+  controls/vault/noise/multi-voice data; then run fresh `./live.sh` A/B (ADR-0092).
 
 ## Standard verification
 

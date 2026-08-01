@@ -21,6 +21,7 @@ ALL_TERMS = frozenset(
         "AUDIOSET-CC-BY-4.0",
         "FREESOUND-SELECTED-CC0-1.0",
         "DEMAND-CC-BY-SA-3.0",
+        "CC-BY-SA-3.0",
     }
 )
 
@@ -60,7 +61,7 @@ def test_matrix_has_one_track_per_separate_task_metric_family():
 
 
 def test_primary_dataset_ids_revisions_checksums_and_licenses_are_pinned():
-    assert matrix.MATRIX_VERSION == 2
+    assert matrix.MATRIX_VERSION == 3
     speech = matrix.dataset_by_id("speech_commands_v002_test")
     assert speech.revision == "57ba463ab37e1e7845e0626539a6f6d0fcfbe64a"
     assert speech.selection.expected_examples == 4_890
@@ -107,6 +108,63 @@ def test_primary_dataset_ids_revisions_checksums_and_licenses_are_pinned():
     assert all(
         "NC" not in dataset.license.license_id.upper() for dataset in matrix.DATASETS
     )
+
+
+def test_rochester_and_demand_sources_are_exact_and_fail_closed():
+    rochester = matrix.dataset_by_id("rochester_smart_speaker_v1")
+    assert rochester.revision == "10.60593/ur.d.26417548.v1"
+    assert rochester.license.license_id == "CC-BY-4.0"
+    assert matrix.UsageConstraint.HUMAN_LABEL_MAP_REQUIRED in (
+        rochester.usage_constraints
+    )
+    assert (
+        rochester.selection.algorithm
+        is matrix.SelectionAlgorithm.HUMAN_LABEL_MAP_REQUIRED
+    )
+    assert rochester.selection.expected_examples == 28
+    assert "Never infer labels" in rochester.selection.description
+    assert _artifact("rochester_smart_speaker_v1", "archive").size_bytes == (
+        470_415_384
+    )
+    assert _artifact("rochester_smart_speaker_v1", "archive").checksum.digest == (
+        "5cb2f37ad1c4646cc870e653e80eb7e10028ad9d67608e985b8625d45024757d"
+    )
+    assert _artifact("rochester_smart_speaker_v1", "manual").checksum.digest == (
+        "0697dc54ec2365ae534de4135aa4409e55cf4b826eeb782facdf78032d135475"
+    )
+
+    consumed = False
+
+    def inferred_rows():
+        nonlocal consumed
+        consumed = True
+        yield {
+            "filename": "unsafe-inferred.wav",
+            "speaker": "speaker-1",
+            "command": "unsafe inferred label",
+            "take": 1,
+            "command_domain": "unsafe",
+        }
+
+    with pytest.raises(matrix.MatrixError, match="human/author"):
+        matrix.select_subset_rows(rochester.selection, inferred_rows())
+    assert consumed is False
+
+    demand = matrix.dataset_by_id("demand_domestic_16k")
+    assert demand.revision == "10.5281/zenodo.1227121"
+    assert demand.license.license_id == "CC-BY-SA-3.0"
+    assert [item.size_bytes for item in demand.artifacts] == [
+        110_501_049,
+        80_170_627,
+        102_343_250,
+    ]
+    assert [item.checksum.digest for item in demand.artifacts] == [
+        "9d68e46d2709847c59580770e2f8aa160607ebff7475788174aa1080332cc845",
+        "2b1726fe06e41551ce2397f2aaf3e4fb692c912d81914b04708df0bbb5252338",
+        "f687c0806b0e9731b71a9c01c6134a21330efc5fa4aa7ee97cf4df276ad1dae1",
+    ]
+    noise = next(track for track in matrix.TRACKS if track.track_id == "noise-reverb")
+    assert "demand_domestic_16k" in noise.dataset_ids
 
 
 def test_common_voice_spontaneous_v4_pin_terms_and_track_are_exact():
@@ -182,12 +240,17 @@ def test_unlicensed_challenge_only_and_nc_sources_are_non_selectable():
         "morovoc",
         "openwakeword_collections",
         "hey_snips",
+        "fluent_speech_commands",
+        "sonos_voice_control_dataset",
     }
     assert {item.dataset_id for item in matrix.EXCLUSIONS} == expected
     assert all(item.selectable is False for item in matrix.EXCLUSIONS)
     assert not expected & {dataset.dataset_id for dataset in matrix.DATASETS}
     with pytest.raises(matrix.MatrixError, match="explicitly non-selectable"):
         matrix.dataset_by_id("notsofar_1_dev_set_2")
+    exclusions = {item.dataset_id: item.reason for item in matrix.EXCLUSIONS}
+    assert "product testing" in exclusions["fluent_speech_commands"]
+    assert "research/non-commercial" in exclusions["sonos_voice_control_dataset"]
 
 
 def test_default_corpus_root_uses_xdg_and_plan_rejects_git_worktree():

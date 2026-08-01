@@ -326,17 +326,35 @@ def test_evaluator_provenance_labels_endpoint_final_only_not_streaming():
 
 
 def test_evaluator_nulls_final_only_deadline_protocol_placeholders():
+    nested_streaming = {
+        "deadline_misses": 3,
+        "max_backlog_p95_ms": 2.0,
+        "max_backlog_ms": 4.0,
+    }
     metrics: dict[str, object] = {
         "streaming": {
             "deadline_misses": 12,
             "max_backlog_p95_ms": 8.0,
             "max_backlog_ms": 9.0,
-        }
+        },
+        "strata": [
+            {
+                "tag": "noise-kitchen",
+                "cases": 2,
+                "metrics": {"streaming": nested_streaming},
+            }
+        ],
     }
 
     streaming_stt_eval._mark_endpoint_deadline_metrics_not_applicable(metrics)
 
     assert metrics["streaming"] == {
+        "deadline_misses": None,
+        "max_backlog_p95_ms": None,
+        "max_backlog_ms": None,
+        "deadline_metrics_applicable": False,
+    }
+    assert nested_streaming == {
         "deadline_misses": None,
         "max_backlog_p95_ms": None,
         "max_backlog_ms": None,

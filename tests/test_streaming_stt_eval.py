@@ -19,7 +19,11 @@ from tests.streaming_stt_helpers import (
 from tools import streaming_stt_eval
 from tools.streaming_stt.corpus import CorpusProvenance, load_corpus
 from tools.streaming_stt.corpus_writer import CorpusWriteCase, publish_private_corpus
-from tools.streaming_stt.metrics import RunRecord, aggregate_metrics
+from tools.streaming_stt.metrics import (
+    RunRecord,
+    aggregate_metrics,
+    normalize_stratum_tags,
+)
 from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
     MOONSHINE_ARTIFACT_NAMES,
@@ -211,6 +215,25 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
     assert "provenance" not in report["corpus"]
     metrics = report["metrics"]
     assert "endpointing" not in metrics
+    assert "strata" not in metrics
+    assert "stratification" not in report["evidence"]
+    assert "stratum_tags" not in report["config"]
+    assert report["config"] == {
+        "chunk_samples": 64,
+        "pace": "burst",
+        "partial_interval_ms": 100,
+        "tail_padding_samples": 16,
+        "repeats": 3,
+        "contract_sha256": streaming_stt_eval._canonical_digest(
+            {
+                "chunk_samples": 64,
+                "pace": "burst",
+                "partial_interval_ms": 100,
+                "tail_padding_samples": 16,
+                "repeats": 3,
+            }
+        ),
+    }
     assert metrics["evaluations"] == 6
     assert metrics["coverage_complete"] is True
     assert metrics["accuracy"]["transcript"]["clips"] == 3
@@ -253,6 +276,126 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
         "sentinel-private-silence",
     ):
         assert private not in encoded
+
+
+def test_explicit_strata_are_deduplicated_sorted_bound_and_aggregate_only(
+    tmp_path,
+):
+    manifest, corpus = _benchmark_fixture(tmp_path)
+    stream = StreamConfig(64, "burst", 100, 16)
+
+    report = streaming_stt_eval.run_benchmark(
+        manifest,
+        corpus,
+        scratch_parent=tmp_path / "scratch-parent",
+        repeats=2,
+        stream=stream,
+        stratum_tags=("silence", "command", "command"),
+    )
+
+    assert report["config"]["stratum_tags"] == ["command", "silence"]
+    assert report["config"]["contract_sha256"] == (
+        streaming_stt_eval._canonical_digest(
+            {
+                **stream.as_dict(),
+                "repeats": 2,
+                "stratum_tags": ["command", "silence"],
+            }
+        )
+    )
+    assert report["evidence"]["stratification"] == {
+        "kind": "explicit_corpus_case_tags",
+        "aggregate_only": True,
+        "overlapping": True,
+        "tags": 2,
+        "selection_sha256": streaming_stt_eval._canonical_digest(
+            ["command", "silence"]
+        ),
+    }
+    strata = report["metrics"]["strata"]
+    assert [row["tag"] for row in strata] == ["command", "silence"]
+    assert [row["cases"] for row in strata] == [1, 1]
+    command_metrics = strata[0]["metrics"]
+    silence_metrics = strata[1]["metrics"]
+    assert command_metrics["evaluations"] == 2
+    assert command_metrics["coverage_complete"] is True
+    assert command_metrics["accuracy"]["transcript"]["clips"] == 2
+    assert command_metrics["accuracy"]["command_recall"] == 1.0
+    assert silence_metrics["evaluations"] == 2
+    assert silence_metrics["coverage_complete"] is True
+    assert silence_metrics["accuracy"]["transcript"]["clips"] == 0
+    assert silence_metrics["accuracy"]["command_attempts"] == 0
+    assert silence_metrics["accuracy"]["command_hits"] == 0
+    assert silence_metrics["accuracy"]["command_recall"] is None
+    assert silence_metrics["accuracy"]["silence_nonempty_finals"] == 0
+
+    encoded = json.dumps(report)
+    assert (
+        json.loads(encoded)["metrics"]["strata"][1]["metrics"]["accuracy"][
+            "command_recall"
+        ]
+        is None
+    )
+    for private in (
+        "stop now",
+        "sto",
+        "sentinel-private-command",
+        "sentinel-private-silence",
+        str(corpus),
+    ):
+        assert private not in encoded
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    (
+        "command",
+        ("Unsafe",),
+        ("x" * 65,),
+        tuple(f"tag-{index}" for index in range(33)),
+        (object(),),
+    ),
+)
+def test_stratum_tag_selection_is_strict_and_bounded(invalid):
+    with pytest.raises(ValueError, match="invalid stratum tags"):
+        normalize_stratum_tags(invalid)
+
+
+def test_stratum_tag_iterator_failure_is_detail_free():
+    class FailingTags:
+        def __iter__(self):
+            raise ValueError("SENTINEL_PRIVATE_TAG")
+
+    with pytest.raises(ValueError, match="invalid stratum tags") as error:
+        normalize_stratum_tags(FailingTags())
+
+    assert "SENTINEL" not in str(error.value)
+
+
+def test_requested_stratum_must_exist_before_worker_without_leaking_private_rows(
+    tmp_path,
+    monkeypatch,
+):
+    manifest, corpus = _benchmark_fixture(tmp_path)
+    monkeypatch.setattr(
+        streaming_stt_eval,
+        "_prepare_scratch",
+        lambda _path: pytest.fail("missing tag reached scratch/worker setup"),
+    )
+
+    with pytest.raises(ValueError, match="invalid stratum tags") as error:
+        streaming_stt_eval.run_benchmark(
+            manifest,
+            corpus,
+            scratch_parent=tmp_path / "scratch-parent",
+            repeats=1,
+            stream=StreamConfig(64, "burst", 100, 16),
+            stratum_tags=("missing",),
+        )
+
+    assert "stop now" not in str(error.value)
+    assert "sentinel-private" not in str(error.value)
+    assert not any((tmp_path / "scratch-parent").glob(".streaming-stt-*"))
 
 
 def test_schema_v3_private_corpus_runs_through_aggregate_fake_benchmark(
@@ -1498,6 +1641,9 @@ def test_silence_punctuation_hallucinations_are_counted_nonempty(tmp_path):
 
     assert metrics["accuracy"]["silence_nonempty_partials"] == 1
     assert metrics["accuracy"]["silence_nonempty_finals"] == 1
+    assert metrics["accuracy"]["command_attempts"] == 0
+    assert metrics["accuracy"]["command_hits"] == 0
+    assert metrics["accuracy"]["command_recall"] is None
 
 
 def test_metric_reducer_rejects_finite_inputs_whose_sum_overflows(tmp_path):
@@ -1561,6 +1707,12 @@ def test_cli_writes_mode_600_report_and_never_prints_private_rows(
                 str(tmp_path / "scratch"),
                 "--repeats",
                 "1",
+                "--stratum-tag",
+                "silence",
+                "--stratum-tag",
+                "command",
+                "--stratum-tag",
+                "command",
                 "--output",
                 str(output),
             ]
@@ -1568,7 +1720,13 @@ def test_cli_writes_mode_600_report_and_never_prints_private_rows(
         == 0
     )
     stdout = capsys.readouterr().out
-    assert json.loads(stdout) == json.loads(output.read_text(encoding="utf-8"))
+    payload = json.loads(stdout)
+    assert payload == json.loads(output.read_text(encoding="utf-8"))
+    assert payload["config"]["stratum_tags"] == ["command", "silence"]
+    assert [row["tag"] for row in payload["metrics"]["strata"]] == [
+        "command",
+        "silence",
+    ]
     assert "stop now" not in stdout
     assert "audio-0" not in stdout
     assert os.stat(output).st_mode & 0o777 == 0o600

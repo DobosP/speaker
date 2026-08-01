@@ -4,7 +4,7 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Current non-real logic gate: 7,117 passed as 7,087 low-priority repository tests plus 30 isolated logging/thread/permission-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0108 focused 199/1 skipped; adjacent public/app 186/83; current APM/DTD 6.
+- Current non-real logic gate: 7,173 passed as 7,143 low-priority repository tests plus 30 isolated logging/path/thread-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0109 focused 173; streaming 599/1 skipped/3 deselected; current APM/DTD 6.
 - Streaming family: 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
@@ -35,10 +35,8 @@ Last verified: 2026-08-01 on Linux ROG.
 - Owner verification is distinct from admission. Only a finite enrolled final
   match can mint owner trust; advisory, mixed, rescue, and generic rewrite paths
   cannot grant device-action authority (ADR-0027/0041/0051).
-- The opt-in Linux final pair remains checksum-pinned Parakeet Unified English
-  plus Faster-Whisper Small. Exact acoustic quorum may rewrite text; protected
-  controls fail closed. SenseVoice defaults remain unchanged (ADR-0078/0080).
-- Public evaluation has 8 tracks/13 sources/9 exclusions. Common Voice SPS v4 has a twice-hashed private 32-speaker P0 preparer; VoxPopuli has a synthetic-green exact-float-WAV 24-speaker `en_ro` preparer; Zipformer is a one-thread control, Parakeet EOU remains rejected, and receipt-bound Faster-Whisper is final-only (ADR-0098/0099/0101/0102/0106).
+- The opt-in Linux final pair remains checksum-pinned Parakeet Unified English plus Faster-Whisper Small. Protected controls fail closed; SenseVoice defaults remain unchanged (ADR-0078/0080).
+- Public evaluation has 8 tracks/15 sources/11 exclusions. Its checksum-bound DEMAND transform adds balanced kitchen/living/washing 0/10/20 dB strata; Rochester is acquisition-only without a publisher label map (ADR-0098/0099/0101/0102/0106/0109).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
   new children and bounded drain reports providers still exiting (ADR-0094).
@@ -58,10 +56,8 @@ Last verified: 2026-08-01 on Linux ROG.
 - Private replay WER 0.00 is non-disjoint. Public-v3 trusts local PyArrow; its code-bound Small
   control WER 0.6685 stays rejected. These are development—not streaming, held-out, live, or adoption—results (ADR-0087).
 - Common Voice SPS v4 real-archive/model compatibility is unrun. VoxPopuli's first real preparation failed closed on its superseded PCM16 assumption; aggregate inspection found the exact float32 container and a feasible 24-case selection, but no real corpus/model run exists and the slice is not command, domestic, capture/AEC, tool, live, or training-disjoint evidence (ADR-0101/0106).
-- The schema-v6 Faster-Whisper endpoint comparator enforces isolated receipt roots, one exact stdlib/uv Python 3.12.3 marker entry, and final-only worker/supervisor boundaries; fake coverage only—no candidate, corpus, GPU, WER, latency, streaming, or runtime/default claim has run (ADR-0102/0105).
-- Exact Parakeet burst/paced WER is .6576/.6576 and model-input RTF .1910/.2200;
-  paced replay missed three deadlines with 189 ms backlog. Ten of 14 EOU events
-  were source-early, so the 6.43 GB NeMo runtime is rejected after-PCM evidence only (ADR-0099).
+- Strict sequential clean/noisy WER is .6685/.6757 for final-only Faster-Whisper Small, .6848/.6830 for Turbo, and .7283/.9076 for CPU Zipformer. Small wins this 14-source development slice but has no endpoint, live, or adoption validity (ADR-0102/0109).
+- Parakeet clean/noisy WER is .6576/.5429; paced clean first/stable partial p50 is 1.692/5.612 s with two misses/120 ms backlog. Native EOU ended 85/126 noisy evaluations early and one source disagreed across repeats, so it remains rejected after-PCM evidence (ADR-0099/0109).
 - Exact Moonshine 0.1.0 is benchmark-only. Small WER is .6884 burst/.6957 real-time;
   at 200 ms: RTF 1.1864, first partial p50 2.02 s, 1,000 misses, 22.01 s backlog. Tiny WER is .8478 (ADR-0090).
 - Nemotron burst WER/CER/RTF: LA0 .7065/.6606/.4331; LA3 .7065/.6592/.1395;
@@ -76,15 +72,12 @@ Last verified: 2026-08-01 on Linux ROG.
 - Windows communications capture verifies OS AEC/NS/beamforming; owner physical talk-over/STOP tests remain (ADR-0081/0082).
 - Diagnostic replay fails closed on malformed heartbeats/silent playback references; GitHub raw-audio PR refs remain owner follow-up (ADR-0083).
 - The LiveKit Agents wrapper has no SDK, network, audio-device, or live A/B evidence; its headless fake-SDK result cannot promote trusted-LAN (ADR-0104).
-- ADR-0108 is synthetic/headless contract evidence only: no owner labels/export,
-  model/GPU run, WER, latency, AEC, barge-in, device, live, or default claim.
-  It starts after endpoint selection; diagnostic schema v1 is validation-only.
+- ADR-0108 remains exact-input contract evidence only: no owner labels/export or live run. ADR-0109 adds licensed aggregate model/noise evidence, not capture, VAD, AEC, barge-in, command, tool, device, training-disjoint, or default validity.
 
 ## Next
 
 - Give one streaming-decode session exclusive ownership of every Sherpa online recognizer/stream operation before moving that complete owner off the capture processor; compare it by replay before any default change (ADR-0107).
-- Capture fresh `./live.sh` vault/open-speaker evidence, export exact labeled
-  inputs, compare disjoint public/noise/multi-voice strata, then run live A/B; add native-reader/gap and AEC replay (ADR-0092/0100/0108).
+- Capture fresh `./live.sh` vault/open-speaker evidence, export exact owner-labelled inputs, add disjoint command/multi-voice strata, then run live A/B; add native-reader/gap and AEC replay (ADR-0092/0100/0108/0109).
 - Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 
 ## Standard verification

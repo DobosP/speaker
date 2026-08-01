@@ -57,6 +57,7 @@ class CorpusWriteCase:
     audio_bytes: bytes = field(repr=False)
     reference: str = field(repr=False)
     tags: tuple[str, ...]
+    commands: tuple[str, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True)
@@ -403,6 +404,16 @@ def _preflight(
                     for tag in case.tags
                 )
                 or len(set(case.tags)) != len(case.tags)
+                or not isinstance(case.commands, tuple)
+                or len(case.commands) > 16
+                or any(
+                    not isinstance(command, str)
+                    or not command
+                    or len(command) > 128
+                    or not normalize(command)
+                    for command in case.commands
+                )
+                or len(set(case.commands)) != len(case.commands)
             ):
                 raise CorpusWriterError()
             total_bytes += len(case.audio_bytes)
@@ -478,7 +489,7 @@ def _serialize_manifest(
                 "samples": len(raw) // 4,
                 "expected_text": case.reference,
                 "assertion": "transcript",
-                "commands": [],
+                "commands": list(case.commands),
                 "tags": list(case.tags),
             }
         )

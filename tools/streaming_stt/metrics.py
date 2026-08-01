@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -25,6 +26,8 @@ from .protocol import (
 
 
 _SAMPLE_RATE_HZ = 16_000
+_MAX_STRATUM_TAGS = 32
+_SAFE_STRATUM_TAG_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 
 
 @dataclass(frozen=True)
@@ -32,6 +35,46 @@ class RunRecord:
     case_index: int
     repeat: int
     trace: CaseTrace = field(repr=False)
+
+
+def normalize_stratum_tags(value: Sequence[str]) -> tuple[str, ...]:
+    """Return one bounded canonical set of caller-selected corpus tags."""
+
+    if isinstance(value, (str, bytes)):
+        raise ValueError("invalid stratum tags")
+    selected: list[str] = []
+    try:
+        iterator = iter(value)
+        for index in range(_MAX_STRATUM_TAGS + 1):
+            try:
+                tag = next(iterator)
+            except StopIteration:
+                break
+            if index >= _MAX_STRATUM_TAGS:
+                raise ValueError("invalid stratum tags")
+            if (
+                type(tag) is not str
+                or _SAFE_STRATUM_TAG_RE.fullmatch(tag) is None
+            ):
+                raise ValueError("invalid stratum tags")
+            selected.append(tag)
+    except Exception:
+        raise ValueError("invalid stratum tags") from None
+    return tuple(sorted(set(selected)))
+
+
+def validate_stratum_tags(
+    corpus: LoadedCorpus,
+    value: Sequence[str],
+) -> tuple[str, ...]:
+    """Bind a canonical explicit selection to tags present in the corpus."""
+
+    selected = normalize_stratum_tags(value)
+    if selected:
+        available = {tag for case in corpus.cases for tag in case.tags}
+        if any(tag not in available for tag in selected):
+            raise ValueError("invalid stratum tags")
+    return selected
 
 
 def _percentile(values: Sequence[float], quantile: float) -> float | None:
@@ -131,14 +174,29 @@ def _stability(trace: CaseTrace) -> tuple[float | None, float | None, int, int]:
     return first_nonempty, stable, churn, retractions
 
 
-def aggregate_metrics(
+def _aggregate_metrics_for_cases(
     corpus: LoadedCorpus,
     records: Sequence[RunRecord],
     ready: ReadyEvent,
     *,
     repeats: int,
+    expected_case_indices: frozenset[int] | None = None,
 ) -> dict[str, object]:
-    """Reduce all private text to aggregate counters and timing summaries."""
+    """Reduce selected cases without exposing their text or identifiers."""
+
+    selected_case_indices = (
+        frozenset(range(len(corpus.cases)))
+        if expected_case_indices is None
+        else expected_case_indices
+    )
+    if (
+        not selected_case_indices
+        or any(
+            type(index) is not int or not 0 <= index < len(corpus.cases)
+            for index in selected_case_indices
+        )
+    ):
+        raise ValueError("invalid metric case selection")
 
     accuracy = AccuracyTotals()
     first_partial_ms: list[float] = []
@@ -187,6 +245,7 @@ def aggregate_metrics(
         if (
             record.case_index < 0
             or record.case_index >= len(corpus.cases)
+            or record.case_index not in selected_case_indices
             or record.repeat < 0
             or record.repeat >= repeats
             or (record.case_index, record.repeat) in seen_runs
@@ -350,14 +409,14 @@ def aggregate_metrics(
                 else max(peak_vram, trace.final.resources.vram_mb)
             )
 
-    expected_records = len(corpus.cases) * repeats
+    expected_records = len(selected_case_indices) * repeats
     repeat_disagreements = sum(len(outputs) > 1 for outputs in final_by_case.values())
     total_compute_ms = sum(compute_ms)
     result = {
         "evaluations": len(records),
         "coverage_complete": (
             len(records) == expected_records
-            and len(final_by_case) == len(corpus.cases)
+            and len(final_by_case) == len(selected_case_indices)
             and len(seen_runs) == expected_records
         ),
         "accuracy": {
@@ -365,7 +424,9 @@ def aggregate_metrics(
             "command_attempts": command_attempts,
             "command_hits": command_hits,
             "command_recall": (
-                round(command_hits / command_attempts, 4) if command_attempts else 1.0
+                round(command_hits / command_attempts, 4)
+                if command_attempts
+                else None
             ),
             "silence_nonempty_partials": silence_nonempty_partials,
             "silence_nonempty_finals": silence_nonempty_finals,
@@ -476,5 +537,53 @@ def aggregate_metrics(
                 endpoint_probabilities, 0.95
             ),
         }
+    _require_finite_aggregates(result)
+    return result
+
+
+def aggregate_metrics(
+    corpus: LoadedCorpus,
+    records: Sequence[RunRecord],
+    ready: ReadyEvent,
+    *,
+    repeats: int,
+    stratum_tags: Sequence[str] = (),
+) -> dict[str, object]:
+    """Reduce private text globally and, when requested, by explicit tags."""
+
+    selected_tags = validate_stratum_tags(corpus, stratum_tags)
+    result = _aggregate_metrics_for_cases(
+        corpus,
+        records,
+        ready,
+        repeats=repeats,
+    )
+    if selected_tags:
+        strata: list[dict[str, object]] = []
+        for tag in selected_tags:
+            case_indices = frozenset(
+                index
+                for index, case in enumerate(corpus.cases)
+                if tag in case.tags
+            )
+            if not case_indices:
+                raise ValueError("invalid stratum tags")
+            selected_records = tuple(
+                record for record in records if record.case_index in case_indices
+            )
+            strata.append(
+                {
+                    "tag": tag,
+                    "cases": len(case_indices),
+                    "metrics": _aggregate_metrics_for_cases(
+                        corpus,
+                        selected_records,
+                        ready,
+                        repeats=repeats,
+                        expected_case_indices=case_indices,
+                    ),
+                }
+            )
+        result["strata"] = strata
     _require_finite_aggregates(result)
     return result

@@ -32,6 +32,7 @@
 | Synchronized live evidence/private final-input corpus | `core/diagnostic_bundle.py`, `core/engines/sherpa.py`, `tools/prepare_diagnostic_streaming_stt_corpus.py`, `docs/voice_evidence.md`, ADR-0100/0108 | exact-input bundle/export contract tests first; then owner labels, disjoint public comparison, and separate live A/B |
 | Timestamped capture-loop replay | `tools/capture_replay/`, `tools/prepare_ami_capture_replay.py`, `tools/capture_replay_eval.py`, ADR-0092 | strict contracts, pinned aggregate diagnostic, then native-reader/AEC, disjoint owner, and live gates |
 | Isolated streaming/final-STT benchmark | `tools/streaming_stt_eval.py`, `tools/prepare_public_streaming_stt_corpus.py`, `tools/provision_moonshine_candidate.py`, `tools/prepare_nemotron_runtime.py`, `tools/provision_nemotron_candidate.py`, `tools/provision_faster_whisper_endpoint_candidate.py`, `tools/streaming_stt/`, ADR-0089/0090/0091/0102 | deterministic streaming/final-only plus preparation/provision tests; candidate-specific opt-in exact smoke separately |
+| Licensed stratified STT comparison | `tools/prepare_demand_noise_streaming_stt_corpus.py`, `tools/streaming_stt_suite.py`, `tools/public_voice_eval_matrix.py`, ADR-0109 | verify checksum/license/output and aggregate-stratum contracts headlessly; run receipt-bound workers strictly one at a time and keep archives, audio, and reports outside Git |
 | Exact Parakeet NeMo reference | `tools/prepare_parakeet_runtime.py`, `tools/provision_parakeet_realtime_eou_candidate.py`, `tools/streaming_stt/adapters/parakeet_realtime_eou.py`, `tools/streaming_stt_eval.py`, ADR-0099 | deterministic no-model contracts, then an explicit receipt-bound GPU run; benchmark only, never an app entry point |
 | Answering-model adoption | `tools/conversation_eval/`, ADR-0051/0067/0068 | deterministic trace, then production-hybrid real-model A/B; label all-role stress explicitly |
 | Autonomous voice verdict | `tools/autotest/verdicts.py`, `tools/autotest/README.md` | pure verdict tests, then selected cable/delay/speaker runner; cable is incomplete |
@@ -49,4 +50,5 @@
 ## Known pitfalls
 - Headless tests do not prove live microphone/speaker behavior; state manual validation needs.
 - A native terminal marker does not itself authorize a reply; only complete-source EOU may do so (ADR-0099).
+- The Parakeet worker's verified scope requests niceness 15; wrapping it with `nice -n 19` prevents scope creation. Use 15 and keep candidate runs sequential (ADR-0109).
 - Do not commit local audio artifacts or logs.

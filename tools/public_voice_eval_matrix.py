@@ -26,7 +26,7 @@ from typing import Mapping
 from urllib.parse import urlparse
 
 
-MATRIX_VERSION = 2
+MATRIX_VERSION = 3
 SELECTION_SEED = "speaker-public-eval-v1-2026-08-01"
 MDC_TOKEN_ENV = "MDC_TOKEN"
 
@@ -103,6 +103,7 @@ class SelectionAlgorithm(str, Enum):
     FIXED_IDS = "fixed_ids"
     FIXED_TRANSFORM_GRID = "fixed_transform_grid"
     PAIRED_COMPLETE = "paired_complete"
+    HUMAN_LABEL_MAP_REQUIRED = "blocked_until_human_label_map_v1"
 
 
 class UsageConstraint(str, Enum):
@@ -111,6 +112,7 @@ class UsageConstraint(str, Enum):
     NO_REIDENTIFICATION = "no_speaker_reidentification"
     NO_REHOSTING = "no_rehosting"
     NO_VOICE_CLONING = "no_voice_cloning_or_published_voice_clone"
+    HUMAN_LABEL_MAP_REQUIRED = "human_or_author_filename_transcript_map_required"
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +226,11 @@ APACHE_2 = LicenseGate(
     "https://www.apache.org/licenses/LICENSE-2.0",
     ("Apache-2.0",),
 )
+CC_BY_SA_3 = LicenseGate(
+    "CC-BY-SA-3.0",
+    "https://creativecommons.org/licenses/by-sa/3.0/legalcode",
+    ("CC-BY-SA-3.0",),
+)
 AEC_MIXED = LicenseGate(
     (
         "LicenseRef-Microsoft-AEC-Challenge-Mixed:LibriVox-PD+VCTK-terms+"
@@ -328,6 +335,63 @@ DATASETS: tuple[Dataset, ...] = (
         evidence_note=(
             "Parakeet training includes Speech Commands; use this as a STOP "
             "diagnostic, not independent candidate-selection evidence."
+        ),
+    ),
+    Dataset(
+        "rochester_smart_speaker_v1",
+        "University of Rochester Smart Speaker Command Dataset v1",
+        "figshare:26417548:v1",
+        "10.60593/ur.d.26417548.v1",
+        "https://rochester.figshare.com/articles/dataset/26417548",
+        CC_BY_4,
+        (
+            Artifact(
+                "archive",
+                "https://ndownloader.figshare.com/files/48058378",
+                "SmartSpeakerCommandDataset_RutowskiEtAl_2023.zip",
+                470_415_384,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "5cb2f37ad1c4646cc870e653e80eb7e10028ad9d67608e985b8625d45024757d",
+                    "local-freeze-after-upstream-md5-f0561310a234d2be445a5376f08e75c6",
+                ),
+                "Figshare file 48058378 publishes MD5 f0561310a234d2be445a5376f08e75c6.",
+            ),
+            Artifact(
+                "manual",
+                "https://ndownloader.figshare.com/files/48058369",
+                "SmartSpeakerCommandDataset_Manual_2023.pdf",
+                62_533,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "0697dc54ec2365ae534de4135aa4409e55cf4b826eeb782facdf78032d135475",
+                    "local-freeze-after-upstream-md5-0299663feb01cad5c55f8483385525da",
+                ),
+                "Figshare file 48058369 publishes MD5 0299663feb01cad5c55f8483385525da.",
+            ),
+        ),
+        SelectionPolicy(
+            (
+                "After a checksum-bound human/author filename-to-transcript map "
+                "exists, hash-select 28 takes across seven speakers and four "
+                "command domains. Never infer labels from numbering."
+            ),
+            algorithm=SelectionAlgorithm.HUMAN_LABEL_MAP_REQUIRED,
+            identity_fields=("filename", "speaker", "command", "take"),
+            strata_fields=("speaker", "command_domain"),
+            seed=SELECTION_SEED,
+            expected_examples=28,
+        ),
+        evidence_note=(
+            "The deposit has an ordered prose transcription list but no "
+            "authoritative machine-readable filename map. Acquisition may be "
+            "verified now; WER publication must fail closed until the label-map "
+            "constraint is satisfied."
+        ),
+        usage_constraints=(
+            UsageConstraint.EVALUATION_ONLY,
+            UsageConstraint.PRIVATE_CACHE_ONLY,
+            UsageConstraint.HUMAN_LABEL_MAP_REQUIRED,
         ),
     ),
     _mdc_dataset(
@@ -485,6 +549,77 @@ DATASETS: tuple[Dataset, ...] = (
             "Fixed-seed room/noise/SNR degradation grid; never resample cases randomly.",
             algorithm=SelectionAlgorithm.FIXED_TRANSFORM_GRID,
             seed=SELECTION_SEED,
+        ),
+    ),
+    Dataset(
+        "demand_domestic_16k",
+        "DEMAND domestic 16 kHz noise subset",
+        "zenodo:1227121:DKITCHEN+DLIVING+DWASHING",
+        "10.5281/zenodo.1227121",
+        "https://zenodo.org/records/1227121",
+        CC_BY_SA_3,
+        (
+            Artifact(
+                "dkitchen",
+                (
+                    "https://zenodo.org/api/records/1227121/files/"
+                    "DKITCHEN_16k.zip/content"
+                ),
+                "DKITCHEN_16k.zip",
+                110_501_049,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "9d68e46d2709847c59580770e2f8aa160607ebff7475788174aa1080332cc845",
+                    "local-freeze-after-upstream-md5-7ffbf52d7f4699f96927846103dc8788",
+                ),
+                "Zenodo publishes MD5 7ffbf52d7f4699f96927846103dc8788.",
+            ),
+            Artifact(
+                "dliving",
+                (
+                    "https://zenodo.org/api/records/1227121/files/"
+                    "DLIVING_16k.zip/content"
+                ),
+                "DLIVING_16k.zip",
+                80_170_627,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "2b1726fe06e41551ce2397f2aaf3e4fb692c912d81914b04708df0bbb5252338",
+                    "local-freeze-after-upstream-md5-46741384d9e434a0bd8b3ec1830b6052",
+                ),
+                "Zenodo publishes MD5 46741384d9e434a0bd8b3ec1830b6052.",
+            ),
+            Artifact(
+                "dwashing",
+                (
+                    "https://zenodo.org/api/records/1227121/files/"
+                    "DWASHING_16k.zip/content"
+                ),
+                "DWASHING_16k.zip",
+                102_343_250,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "f687c0806b0e9731b71a9c01c6134a21330efc5fa4aa7ee97cf4df276ad1dae1",
+                    "local-freeze-after-upstream-md5-7e5ee9437ce9409c5f9a779b6212a240",
+                ),
+                "Zenodo publishes MD5 7e5ee9437ce9409c5f9a779b6212a240.",
+            ),
+        ),
+        SelectionPolicy(
+            (
+                "Use channel 01 with deterministic non-overlapping intervals "
+                "and a fixed 20/10/0 dB SNR rotation over kitchen, living-room, "
+                "and washing-machine conditions."
+            ),
+            algorithm=SelectionAlgorithm.FIXED_TRANSFORM_GRID,
+            identity_fields=("environment", "channel", "sample_offset"),
+            strata_fields=("environment", "snr_db"),
+            seed=SELECTION_SEED,
+        ),
+        evidence_note=(
+            "The deposit prose and original paper specify CC BY-SA 3.0 while "
+            "current Zenodo structured metadata says CC BY 4.0; the catalog "
+            "conservatively applies ShareAlike 3.0 and keeps derivatives private."
         ),
     ),
     Dataset(
@@ -664,6 +799,7 @@ TRACKS: tuple[EvaluationTrack, ...] = (
             "common_voice_26_irish_english",
             "speechocean762",
             "minds14_english",
+            "rochester_smart_speaker_v1",
         ),
         (
             Metric.LITERAL_WER,
@@ -695,7 +831,7 @@ TRACKS: tuple[EvaluationTrack, ...] = (
     EvaluationTrack(
         "noise-reverb",
         TaskCategory.NOISE_REVERB,
-        ("rirs_noises", "speechocean762"),
+        ("rirs_noises", "speechocean762", "demand_domestic_16k"),
         (Metric.WER_DEGRADATION_GRID,),
         "Apply the fixed seed grid to pinned reference speech and report degradation from its clean decode.",
     ),
@@ -782,6 +918,23 @@ EXCLUSIONS: tuple[ExcludedDataset, ...] = (
         "hey_snips",
         "Hey Snips",
         "Request/research-only access is not a reusable public grant.",
+    ),
+    ExcludedDataset(
+        "fluent_speech_commands",
+        "Fluent Speech Commands",
+        (
+            "The official research-only license forbids product testing, "
+            "benchmarking, and development; a third-party metadata label "
+            "cannot broaden that upstream grant."
+        ),
+    ),
+    ExcludedDataset(
+        "sonos_voice_control_dataset",
+        "Sonos voice-control research dataset",
+        (
+            "The official grant is research/non-commercial and acquisition is "
+            "form-gated, so it is not eligible for this reusable product matrix."
+        ),
     ),
 )
 
@@ -965,6 +1118,11 @@ def select_subset_rows(
     own preparers. This helper owns every policy that reduces a row set.
     """
 
+    if policy.algorithm is SelectionAlgorithm.HUMAN_LABEL_MAP_REQUIRED:
+        raise MatrixError(
+            "selection requires a checksum-bound human/author "
+            "filename-to-transcript map"
+        )
     if policy.algorithm not in {
         SelectionAlgorithm.HASH_TOP_K,
         SelectionAlgorithm.HASH_STRATIFIED,
@@ -1392,6 +1550,14 @@ def validate_matrix() -> None:
             raise MatrixError(f"{dataset.dataset_id} has an invalid selection policy")
         if selection.speaker_disjoint and selection.speaker_field is None:
             raise MatrixError(f"{dataset.dataset_id} lacks a speaker identity field")
+        if (
+            selection.algorithm is SelectionAlgorithm.HUMAN_LABEL_MAP_REQUIRED
+        ) != (
+            UsageConstraint.HUMAN_LABEL_MAP_REQUIRED in dataset.usage_constraints
+        ):
+            raise MatrixError(
+                f"{dataset.dataset_id} has an inconsistent human label-map gate"
+            )
         if selection.algorithm in {
             SelectionAlgorithm.HASH_TOP_K,
             SelectionAlgorithm.HASH_STRATIFIED,

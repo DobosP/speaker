@@ -49,7 +49,12 @@ from tools.streaming_stt.manifest import (
     WorkerManifest,
     load_worker_manifest,
 )
-from tools.streaming_stt.metrics import RunRecord, aggregate_metrics
+from tools.streaming_stt.metrics import (
+    RunRecord,
+    aggregate_metrics,
+    normalize_stratum_tags,
+    validate_stratum_tags,
+)
 from tools.streaming_stt.protocol import (
     MAX_PCM_BYTES,
     NATIVE_ENDPOINT_PROTOCOL_VERSION,
@@ -640,7 +645,9 @@ def _evidence_binding(
         | ParakeetRealtimeEouConfig
         | None
     ) = None,
+    stratum_tags: Sequence[str] = (),
 ) -> dict[str, object]:
+    selected_stratum_tags = normalize_stratum_tags(stratum_tags)
     if adapter not in {
         _FAKE_ADAPTER,
         FASTER_WHISPER_ENDPOINT_ADAPTER,
@@ -865,6 +872,14 @@ def _evidence_binding(
                 },
             }
         )
+    if selected_stratum_tags:
+        binding["stratification"] = {
+            "kind": "explicit_corpus_case_tags",
+            "aggregate_only": True,
+            "overlapping": True,
+            "tags": len(selected_stratum_tags),
+            "selection_sha256": _canonical_digest(list(selected_stratum_tags)),
+        }
     return binding
 
 
@@ -885,6 +900,18 @@ def _mark_endpoint_deadline_metrics_not_applicable(
             raise ValueError
         streaming[field_name] = None
     streaming["deadline_metrics_applicable"] = False
+    strata = metrics.get("strata")
+    if strata is None:
+        return
+    if not isinstance(strata, list):
+        raise ValueError
+    for row in strata:
+        if not isinstance(row, dict) or set(row) != {"tag", "cases", "metrics"}:
+            raise ValueError
+        nested = row.get("metrics")
+        if not isinstance(nested, dict):
+            raise ValueError
+        _mark_endpoint_deadline_metrics_not_applicable(nested)
 
 
 def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
@@ -1210,6 +1237,7 @@ def run_benchmark(
     pace: str | None = None,
     partial_interval_ms: int | None = None,
     tail_padding_samples: int | None = None,
+    stratum_tags: Sequence[str] = (),
 ) -> dict[str, object]:
     """Run one exact manifest-selected worker/corpus tuple without transcript rows."""
 
@@ -1219,6 +1247,7 @@ def run_benchmark(
         or not 1 <= repeats <= 8
     ):
         raise ValueError
+    selected_stratum_tags = normalize_stratum_tags(stratum_tags)
     overrides = (
         chunk_samples,
         pace,
@@ -1248,6 +1277,7 @@ def run_benchmark(
             pace=pace,
             partial_interval_ms=partial_interval_ms,
             tail_padding_samples=tail_padding_samples,
+            stratum_tags=selected_stratum_tags,
         )
         run_lock.assert_bound()
         return result
@@ -1266,7 +1296,9 @@ def _run_benchmark_locked(
     pace: str | None,
     partial_interval_ms: int | None,
     tail_padding_samples: int | None,
+    stratum_tags: Sequence[str] = (),
 ) -> dict[str, object]:
+    selected_stratum_tags = normalize_stratum_tags(stratum_tags)
     manifest = load_worker_manifest(worker_manifest_path)
     selected_stream = _selected_stream(
         manifest,
@@ -1284,6 +1316,7 @@ def _run_benchmark_locked(
     runtime_receipt_sha256 = _verified_runtime_receipt_digest(manifest)
     model_receipt_sha256 = _verified_model_receipt_digest(manifest)
     corpus = load_corpus(corpus_path)
+    selected_stratum_tags = validate_stratum_tags(corpus, selected_stratum_tags)
     evaluator_binding = _evaluator_binding(manifest.adapter)
     corpus_binding = _corpus_binding(corpus)
     scratch = _prepare_scratch(scratch_parent)
@@ -1392,7 +1425,13 @@ def _run_benchmark_locked(
             or _evaluator_binding(current_manifest.adapter) != evaluator_binding
         ):
             raise ValueError
-        metrics = aggregate_metrics(corpus, records, ready, repeats=repeats)
+        metrics = aggregate_metrics(
+            corpus,
+            records,
+            ready,
+            repeats=repeats,
+            stratum_tags=selected_stratum_tags,
+        )
         if manifest.adapter == FASTER_WHISPER_ENDPOINT_ADAPTER:
             _mark_endpoint_deadline_metrics_not_applicable(metrics)
         worker_report = _worker_report(
@@ -1419,16 +1458,27 @@ def _run_benchmark_locked(
                     )
                     else None
                 ),
+                stratum_tags=selected_stratum_tags,
             ),
             "worker": worker_report,
             "corpus": corpus_binding,
             "config": {
                 **selected_stream.as_dict(),
                 "repeats": repeats,
+                **(
+                    {"stratum_tags": list(selected_stratum_tags)}
+                    if selected_stratum_tags
+                    else {}
+                ),
                 "contract_sha256": _canonical_digest(
                     {
                         **selected_stream.as_dict(),
                         "repeats": repeats,
+                        **(
+                            {"stratum_tags": list(selected_stratum_tags)}
+                            if selected_stratum_tags
+                            else {}
+                        ),
                     }
                 ),
             },
@@ -1462,6 +1512,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--pace", choices=("burst", "realtime"))
     parser.add_argument("--partial-interval-ms", type=int)
     parser.add_argument("--tail-padding-samples", type=int)
+    parser.add_argument(
+        "--stratum-tag",
+        action="append",
+        help="bounded corpus case tag to report as an aggregate-only stratum",
+    )
     parser.add_argument("--output", type=Path)
     return parser
 
@@ -1478,6 +1533,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pace=args.pace,
             partial_interval_ms=args.partial_interval_ms,
             tail_padding_samples=args.tail_padding_samples,
+            stratum_tags=args.stratum_tag or (),
         )
         if args.output is not None:
             _write_strict_report(args.output, payload)

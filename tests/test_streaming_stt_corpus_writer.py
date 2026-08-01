@@ -91,6 +91,17 @@ def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
         load_corpus(destination / "corpus.json")
 
 
+def test_publication_preserves_explicit_command_targets(tmp_path: Path):
+    loaded = corpus_writer.publish_private_corpus(
+        cases=(replace(_case(), commands=("spontaneous answer",)),),
+        provenance=_provenance(),
+        output_dir=tmp_path / "command-corpus",
+        purpose="command target preservation",
+    )
+
+    assert loaded.cases[0].commands == ("spontaneous answer",)
+
+
 def test_arbitrary_sidecar_digest_is_not_the_source_set_digest(tmp_path: Path):
     destination = tmp_path / "private-corpus"
     receipt = b'{"schema_version":1,"kind":"independent-receipt"}\n'

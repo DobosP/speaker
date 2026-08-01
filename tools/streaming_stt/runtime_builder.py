@@ -1,4 +1,4 @@
-"""Build one script-free Nemotron runtime from an exact verified wheelhouse.
+"""Build one script-free candidate runtime from an exact verified wheelhouse.
 
 The runtime worker imports packages by inserting a receipt-verified
 ``site-packages`` directory while Python runs with ``-I -S``.  It therefore
@@ -17,6 +17,7 @@ import hashlib
 import io
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 from typing import Mapping
 import zipfile
@@ -32,6 +33,8 @@ from .wheel_lock import (
     InstalledContentExpectation,
     VerifiedWheel,
     WHEEL_LOCK_RUNTIME_TREE_LIMITS,
+    NEMOTRON_WHEEL_ARCHIVE_POLICY,
+    WheelArchivePolicy,
     WheelLock,
     WheelLockError,
     verify_installed_wheels,
@@ -39,14 +42,47 @@ from .wheel_lock import (
 )
 
 
-_PYTHON_VERSION = "3.12.3"
-_PYTHON_DIRECTORY = "python3.12"
 _COPY_CHUNK_BYTES = 1024 * 1024
 _MAXIMUM_PYTHON_BYTES = 512 * 1024 * 1024
+_PYTHON_VERSION_RE = re.compile(
+    r"(?P<major>0|[1-9][0-9]*)\."
+    r"(?P<minor>0|[1-9][0-9]*)\."
+    r"(?P<patch>0|[1-9][0-9]*)\Z"
+)
 
 
 class RuntimeBuildError(RuntimeError):
     """A detail-free unsafe input, archive change, or incomplete runtime."""
+
+
+@dataclass(frozen=True)
+class RuntimeBuildPolicy:
+    """Exact interpreter identity and closed wheel archive policy."""
+
+    python_version: str
+    python_directory: str
+    wheel_archive_policy: WheelArchivePolicy
+
+    def __post_init__(self) -> None:
+        match = (
+            _PYTHON_VERSION_RE.fullmatch(self.python_version)
+            if isinstance(self.python_version, str)
+            else None
+        )
+        if (
+            match is None
+            or self.python_directory
+            != f"python{match.group('major')}.{match.group('minor')}"
+            or not isinstance(self.wheel_archive_policy, WheelArchivePolicy)
+        ):
+            raise RuntimeBuildError()
+
+
+NEMOTRON_RUNTIME_BUILD_POLICY = RuntimeBuildPolicy(
+    python_version="3.12.3",
+    python_directory="python3.12",
+    wheel_archive_policy=NEMOTRON_WHEEL_ARCHIVE_POLICY,
+)
 
 
 @dataclass(frozen=True)
@@ -147,7 +183,11 @@ def _write_new_private(path: Path, data: bytes) -> None:
                 pass
 
 
-def _validated_python(path: Path | str) -> Path:
+def _validated_python(
+    path: Path | str,
+    *,
+    policy: RuntimeBuildPolicy,
+) -> Path:
     candidate = _absolute(path)
     try:
         canonical = candidate.resolve(strict=True)
@@ -156,7 +196,7 @@ def _validated_python(path: Path | str) -> Path:
         raise RuntimeBuildError() from None
     if (
         candidate != canonical
-        or canonical.name != "python3.12"
+        or canonical.name != policy.python_directory
         or not stat.S_ISREG(metadata.st_mode)
         or metadata.st_nlink < 1
         or metadata.st_size <= 0
@@ -167,10 +207,15 @@ def _validated_python(path: Path | str) -> Path:
     return canonical
 
 
-def _create_minimal_venv(root: Path, system_python: Path) -> tuple[Path, Path]:
+def _create_minimal_venv(
+    root: Path,
+    system_python: Path,
+    *,
+    policy: RuntimeBuildPolicy,
+) -> tuple[Path, Path]:
     bin_root = root / "bin"
     lib_root = root / "lib"
-    python_root = lib_root / _PYTHON_DIRECTORY
+    python_root = lib_root / policy.python_directory
     site_packages = python_root / "site-packages"
     for path in (bin_root, lib_root, python_root, site_packages):
         _mkdir_private(path)
@@ -182,7 +227,7 @@ def _create_minimal_venv(root: Path, system_python: Path) -> tuple[Path, Path]:
     marker = (
         f"home = {system_python.parent}\n"
         "include-system-site-packages = false\n"
-        f"version = {_PYTHON_VERSION}\n"
+        f"version = {policy.python_version}\n"
         f"executable = {system_python}\n"
     ).encode("utf-8")
     _write_new_private(root / "pyvenv.cfg", marker)
@@ -403,6 +448,7 @@ def _verify_minimal_layout(
     root: Path,
     *,
     system_python: Path,
+    policy: RuntimeBuildPolicy,
 ) -> None:
     try:
         if set(path.name for path in root.iterdir()) != {
@@ -413,11 +459,14 @@ def _verify_minimal_layout(
             raise RuntimeBuildError()
         if set(path.name for path in (root / "bin").iterdir()) != {"python"}:
             raise RuntimeBuildError()
-        if set(path.name for path in (root / "lib").iterdir()) != {_PYTHON_DIRECTORY}:
-            raise RuntimeBuildError()
-        if set(path.name for path in (root / "lib" / _PYTHON_DIRECTORY).iterdir()) != {
-            "site-packages"
+        if set(path.name for path in (root / "lib").iterdir()) != {
+            policy.python_directory
         }:
+            raise RuntimeBuildError()
+        if set(
+            path.name
+            for path in (root / "lib" / policy.python_directory).iterdir()
+        ) != {"site-packages"}:
             raise RuntimeBuildError()
         python = root / "bin" / "python"
         if not python.is_symlink() or Path(os.readlink(python)) != system_python:
@@ -433,15 +482,16 @@ def prepare_locked_runtime(
     system_python: Path | str,
     output_root: Path | str,
     receipt_path: Path | str,
+    policy: RuntimeBuildPolicy = NEMOTRON_RUNTIME_BUILD_POLICY,
 ) -> PreparedRuntime:
     """Create and verify a new minimal runtime without running an installer."""
 
-    if not isinstance(lock, WheelLock):
+    if not isinstance(lock, WheelLock) or not isinstance(policy, RuntimeBuildPolicy):
         raise RuntimeBuildError()
     selected_wheelhouse = _absolute(wheelhouse)
     root = _absolute(output_root)
     selected_receipt_path = _absolute(receipt_path)
-    python_target = _validated_python(system_python)
+    python_target = _validated_python(system_python, policy=policy)
     production_venv = Path(__file__).resolve().parents[2] / ".venv"
     forbidden = (selected_wheelhouse, production_venv)
     if (
@@ -455,12 +505,20 @@ def prepare_locked_runtime(
     ):
         raise RuntimeBuildError()
     try:
-        verified = verify_wheelhouse(lock, selected_wheelhouse)
+        verified = verify_wheelhouse(
+            lock,
+            selected_wheelhouse,
+            archive_policy=policy.wheel_archive_policy,
+        )
     except WheelLockError:
         raise RuntimeBuildError() from None
 
     root = _new_private_directory(root)
-    python, site_packages = _create_minimal_venv(root, python_target)
+    python, site_packages = _create_minimal_venv(
+        root,
+        python_target,
+        policy=policy,
+    )
     expected_by_path = {
         receipt.relative_path: receipt
         for wheel in verified.wheels
@@ -498,7 +556,11 @@ def prepare_locked_runtime(
         or expectation.total_size_bytes != receipt.total_size_bytes
     ):
         raise RuntimeBuildError()
-    _verify_minimal_layout(root, system_python=python_target)
+    _verify_minimal_layout(
+        root,
+        system_python=python_target,
+        policy=policy,
+    )
     return PreparedRuntime(
         root=root,
         python=python,
@@ -511,6 +573,8 @@ def prepare_locked_runtime(
 
 __all__ = [
     "PreparedRuntime",
+    "RuntimeBuildPolicy",
     "RuntimeBuildError",
+    "NEMOTRON_RUNTIME_BUILD_POLICY",
     "prepare_locked_runtime",
 ]

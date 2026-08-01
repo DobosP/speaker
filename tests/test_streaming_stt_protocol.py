@@ -7,10 +7,14 @@ import pytest
 
 from tools.streaming_stt.protocol import (
     MAX_HYPOTHESIS_CHARS,
+    MAX_LEGACY_STREAM_SAMPLES,
     MAX_LINE_BYTES,
+    MAX_NATIVE_STREAM_SAMPLES,
     MAX_STREAM_CHUNK_SAMPLES,
+    NATIVE_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     FinalEvent,
+    NativeFinalEvent,
     PcmInput,
     ProtocolError,
     StreamConfig,
@@ -45,6 +49,72 @@ def test_transcribe_request_round_trips_the_exact_v2_contract(tmp_path):
 
     assert parsed == request
     assert parsed.pcm.size_bytes == 6400
+
+
+@pytest.mark.parametrize(
+    ("version", "accepted_tail", "rejected_tail"),
+    [
+        (PROTOCOL_VERSION, 16_000, 16_001),
+        (NATIVE_ENDPOINT_PROTOCOL_VERSION, 48_000, 48_001),
+    ],
+)
+def test_request_tail_bound_is_exact_for_each_protocol_version(
+    tmp_path,
+    version,
+    accepted_tail,
+    rejected_tail,
+):
+    payload = _request(tmp_path).as_dict()
+    payload["v"] = version
+    payload["stream"]["tail_padding_samples"] = accepted_tail
+
+    parsed = parse_request(encode_message(payload))
+
+    assert isinstance(parsed, TranscribeRequest)
+    assert parsed.protocol_version == version
+    assert parsed.stream.tail_padding_samples == accepted_tail
+
+    payload["stream"]["tail_padding_samples"] = rejected_tail
+    with pytest.raises(ProtocolError):
+        parse_request(encode_message(payload))
+
+
+@pytest.mark.parametrize(
+    ("version", "accepted_samples", "rejected_samples"),
+    [
+        (
+            PROTOCOL_VERSION,
+            MAX_LEGACY_STREAM_SAMPLES,
+            MAX_LEGACY_STREAM_SAMPLES + 1,
+        ),
+        (
+            NATIVE_ENDPOINT_PROTOCOL_VERSION,
+            MAX_NATIVE_STREAM_SAMPLES,
+            MAX_NATIVE_STREAM_SAMPLES + 1,
+        ),
+    ],
+)
+def test_partial_progress_bound_is_exact_for_each_protocol_version(
+    version,
+    accepted_samples,
+    rejected_samples,
+):
+    payload = {
+        "v": version,
+        "id": "case-1",
+        "type": "partial",
+        "seq": 0,
+        "text": "x",
+        "samples_seen": accepted_samples,
+        "elapsed_ms": 1.0,
+        "decode_ms": 1.0,
+    }
+
+    assert parse_response(encode_message(payload)).samples_seen == accepted_samples
+
+    payload["samples_seen"] = rejected_samples
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
 
 
 def test_request_allows_la13_native_stride_but_keeps_a_bounded_chunk_limit(
@@ -125,6 +195,161 @@ def test_final_response_is_strict_typed_and_text_is_repr_private():
     assert result.text == private
     assert result.model_padding_samples == 37
     assert private not in repr(result)
+
+
+def _native_final_payload() -> dict[str, object]:
+    return {
+        "v": NATIVE_ENDPOINT_PROTOCOL_VERSION,
+        "id": "case-1",
+        "type": "native_final",
+        "seq": 1,
+        "text": "stop now",
+        "samples_seen": 1920,
+        "elapsed_ms": 150.0,
+        "finalization_ms": 4.0,
+        "compute_ms": 30.0,
+        "audio_seconds": 0.1,
+        "chunks": 2,
+        "deadline_misses": 0,
+        "max_backlog_ms": 2.0,
+        "model_padding_samples": 640,
+        "resources": {"rss_mb": 50.0, "threads": 2, "vram_mb": 512.0},
+        "source_samples": 1600,
+        "source_samples_consumed": 1600,
+        "declared_tail_samples": 48_000,
+        "tail_samples_consumed": 320,
+        "endpoint_reason": "eou",
+        "native_endpoint": True,
+        "endpoint_probability": 0.75,
+        "endpoint_sample": 2560,
+        "endpoint_latency_ms": 60.0,
+        "authoritative": True,
+    }
+
+
+def test_native_final_response_is_a_distinct_exact_v3_contract():
+    payload = _native_final_payload()
+
+    result = parse_response(json.dumps(payload).encode())
+
+    assert isinstance(result, NativeFinalEvent)
+    assert not isinstance(result, FinalEvent)
+    assert result.source_samples_consumed == 1600
+    assert result.tail_samples_consumed == 320
+    assert result.endpoint_reason == "eou"
+    assert result.endpoint_probability == 0.75
+    assert result.protocol_version == NATIVE_ENDPOINT_PROTOCOL_VERSION
+    assert "stop now" not in repr(result)
+
+
+def test_complete_source_eob_is_native_but_never_authoritative():
+    payload = _native_final_payload()
+    payload.update(
+        {
+            "endpoint_reason": "eob",
+            "endpoint_latency_ms": None,
+            "authoritative": False,
+        }
+    )
+
+    result = parse_response(encode_message(payload))
+
+    assert isinstance(result, NativeFinalEvent)
+    assert result.endpoint_reason == "eob"
+    assert result.native_endpoint is True
+    assert result.source_samples_consumed == result.source_samples
+    assert result.endpoint_latency_ms is None
+    assert result.authoritative is False
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"endpoint_reason": "eob", "authoritative": True},
+        {"endpoint_reason": "eob", "endpoint_latency_ms": 60.0},
+    ],
+)
+def test_complete_source_eob_rejects_response_authority_and_latency(updates):
+    payload = _native_final_payload()
+    payload.update(
+        {
+            "endpoint_reason": "eob",
+            "endpoint_latency_ms": None,
+            "authoritative": False,
+        }
+    )
+    payload.update(updates)
+
+    with pytest.raises(ProtocolError):
+        parse_response(encode_message(payload))
+
+
+@pytest.mark.parametrize(
+    ("mutation", "value"),
+    [
+        ("version", PROTOCOL_VERSION),
+        ("type", "final"),
+        ("endpoint_reason", "silence"),
+        ("native_endpoint", 1),
+        ("endpoint_probability", 1.01),
+        ("source_samples_consumed", True),
+        ("declared_tail_samples", 48_001),
+    ],
+)
+def test_native_final_rejects_wrong_version_type_and_unbounded_fields(
+    mutation,
+    value,
+):
+    payload = _native_final_payload()
+    if mutation == "version":
+        payload["v"] = value
+    elif mutation == "type":
+        payload["type"] = value
+    else:
+        payload[mutation] = value
+
+    with pytest.raises(ProtocolError):
+        parse_response(json.dumps(payload).encode())
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"samples_seen": 1919},
+        {"source_samples_consumed": 1599, "tail_samples_consumed": 321},
+        {"endpoint_sample": 1919},
+        {"endpoint_probability": None},
+        {"endpoint_latency_ms": None},
+        {"authoritative": False},
+        {
+            "native_endpoint": False,
+            "endpoint_reason": "eou",
+        },
+        {
+            "native_endpoint": False,
+            "endpoint_reason": "tail_exhausted",
+            "endpoint_probability": None,
+            "endpoint_sample": None,
+            "endpoint_latency_ms": None,
+            "authoritative": False,
+        },
+    ],
+)
+def test_native_final_rejects_relationally_inconsistent_evidence(updates):
+    payload = _native_final_payload()
+    payload.update(updates)
+
+    with pytest.raises(ProtocolError):
+        parse_response(json.dumps(payload).encode())
+
+
+def test_v2_final_rejects_native_fields_instead_of_relaxing_legacy_schema():
+    payload = _native_final_payload()
+    payload["v"] = PROTOCOL_VERSION
+    payload["type"] = "final"
+
+    with pytest.raises(ProtocolError):
+        parse_response(json.dumps(payload).encode())
 
 
 @pytest.mark.parametrize("padding", [-1, 32_001, True])

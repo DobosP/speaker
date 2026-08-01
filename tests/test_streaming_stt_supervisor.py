@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,22 +21,33 @@ from tools.streaming_stt.manifest import (
     BoundArtifact,
     BoundFile,
     NEMOTRON_ADAPTER,
+    PARAKEET_REALTIME_EOU_ADAPTER,
     NemotronConfig,
+    ParakeetRealtimeEouConfig,
     load_worker_manifest,
 )
 from tools.streaming_stt.protocol import (
     FinalEvent,
     MAX_STDERR_BYTES,
+    NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    NativeFinalEvent,
+    PartialEvent,
     PROTOCOL_VERSION,
     PcmInput,
     ResourceUsage,
     StreamConfig,
     TranscribeRequest,
 )
+from tools.streaming_stt.runtime_receipt import PARAKEET_RUNTIME_TREE_LIMITS
 from tools.streaming_stt.supervisor import (
     StreamingWorker,
     WorkerError,
+    _await_parakeet_cgroup,
     _nemotron_bwrap_command,
+    _parakeet_systemd_scope_command,
+    _parse_unified_cgroup_path,
+    _verified_user_runtime_directory,
+    _verify_parakeet_cgroup_evidence,
 )
 
 
@@ -168,6 +180,88 @@ def _nemotron_manifest_for_launch(
     )
 
 
+def _parakeet_config() -> ParakeetRealtimeEouConfig:
+    return ParakeetRealtimeEouConfig()
+
+
+def _parakeet_manifest_for_launch(
+    manifest_path: Path,
+    tmp_path: Path,
+):
+    return replace(
+        _nemotron_manifest_for_launch(manifest_path, tmp_path),
+        schema_version=5,
+        adapter=PARAKEET_REALTIME_EOU_ADAPTER,
+        adapter_config=_parakeet_config(),
+    )
+
+
+def _parakeet_request(
+    scratch: Path,
+    corpus_path: Path,
+    digest: str,
+    *,
+    protocol_version: int = NATIVE_ENDPOINT_PROTOCOL_VERSION,
+) -> TranscribeRequest:
+    request = _request(scratch, corpus_path, digest)
+    return replace(
+        request,
+        stream=replace(
+            request.stream,
+            chunk_samples=1_280,
+            tail_padding_samples=48_000,
+        ),
+        protocol_version=protocol_version,
+    )
+
+
+def _parakeet_native_final(request: TranscribeRequest) -> NativeFinalEvent:
+    source_samples = request.pcm.samples
+    tail_samples = 1_280
+    samples_seen = source_samples + tail_samples
+    return NativeFinalEvent(
+        request_id=request.request_id,
+        seq=0,
+        text="stop now",
+        samples_seen=samples_seen,
+        elapsed_ms=90.0,
+        finalization_ms=2.0,
+        compute_ms=8.0,
+        audio_seconds=source_samples / request.pcm.sample_rate,
+        chunks=2,
+        deadline_misses=0,
+        max_backlog_ms=0.0,
+        resources=ResourceUsage(rss_mb=1.0, threads=1, vram_mb=1.0),
+        model_padding_samples=2 * 1_280 - samples_seen,
+        source_samples=source_samples,
+        source_samples_consumed=source_samples,
+        declared_tail_samples=request.stream.tail_padding_samples,
+        tail_samples_consumed=tail_samples,
+        endpoint_reason="eou",
+        native_endpoint=True,
+        endpoint_probability=0.75,
+        endpoint_sample=2 * 1_280,
+        endpoint_latency_ms=(tail_samples + 2 * 1_280 - samples_seen) / 16.0,
+        authoritative=True,
+    )
+
+
+def _stub_parakeet_worker(
+    manifest_path: Path,
+    scratch: Path,
+) -> StreamingWorker:
+    manifest = replace(
+        load_worker_manifest(manifest_path),
+        schema_version=5,
+        adapter=PARAKEET_REALTIME_EOU_ADAPTER,
+        adapter_config=_parakeet_config(),
+    )
+    bundle = stage_test_source_bundle(scratch, manifest.worker.path)
+    worker = StreamingWorker(manifest, scratch, bundle)
+    worker.ready = object()
+    return worker
+
+
 def test_real_worker_is_a_new_process_session_and_closes_cleanly(tmp_path):
     manifest_path, corpus_path, digest = _fixture(tmp_path)
     scratch = tmp_path / "scratch"
@@ -245,6 +339,191 @@ def test_nemotron_supervisor_validates_native_final_evidence(
             worker.transcribe(request)
 
 
+@pytest.mark.parametrize(
+    "endpoint_kind",
+    ["tail-eou", "complete-eob", "early-eob", "exhausted"],
+)
+def test_parakeet_supervisor_accepts_exact_native_consumption_evidence(
+    tmp_path,
+    monkeypatch,
+    endpoint_kind,
+):
+    manifest_path, corpus_path, digest = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _stub_parakeet_worker(manifest_path, scratch)
+    request = _parakeet_request(scratch, corpus_path, digest)
+    event = _parakeet_native_final(request)
+    if endpoint_kind == "complete-eob":
+        event = replace(
+            event,
+            endpoint_reason="eob",
+            endpoint_latency_ms=None,
+            authoritative=False,
+        )
+    elif endpoint_kind == "early-eob":
+        event = replace(
+            event,
+            samples_seen=3,
+            chunks=1,
+            model_padding_samples=1_277,
+            source_samples_consumed=3,
+            tail_samples_consumed=0,
+            endpoint_reason="eob",
+            endpoint_sample=1_280,
+            endpoint_latency_ms=None,
+            authoritative=False,
+        )
+    elif endpoint_kind == "exhausted":
+        samples_seen = request.pcm.samples + request.stream.tail_padding_samples
+        event = replace(
+            event,
+            samples_seen=samples_seen,
+            elapsed_ms=3_010.0,
+            chunks=38,
+            model_padding_samples=38 * 1_280 - samples_seen,
+            tail_samples_consumed=request.stream.tail_padding_samples,
+            endpoint_reason="tail_exhausted",
+            native_endpoint=False,
+            endpoint_probability=None,
+            endpoint_sample=None,
+            endpoint_latency_ms=None,
+            authoritative=False,
+        )
+    monkeypatch.setattr(worker, "_verify_pcm", lambda _request: None)
+    monkeypatch.setattr(worker, "_send", lambda _message: None)
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: event)
+
+    trace = worker.transcribe(request)
+
+    assert type(trace.final) is NativeFinalEvent
+    assert trace.final == event
+    if endpoint_kind == "complete-eob":
+        assert trace.final.source_samples_consumed == trace.final.source_samples
+        assert trace.final.endpoint_latency_ms is None
+        assert trace.final.authoritative is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"endpoint_sample": 1},
+        {"chunks": 1},
+        {"model_padding_samples": 0},
+        {"source_samples": 5},
+        {"declared_tail_samples": 47_999},
+        {
+            "samples_seen": 4,
+            "chunks": 1,
+            "model_padding_samples": 1_276,
+            "source_samples_consumed": 3,
+            "tail_samples_consumed": 1,
+            "endpoint_sample": 4,
+            "endpoint_latency_ms": None,
+            "authoritative": False,
+        },
+        {
+            "endpoint_reason": "tail_exhausted",
+            "native_endpoint": False,
+            "endpoint_probability": None,
+            "endpoint_sample": None,
+            "endpoint_latency_ms": None,
+            "authoritative": False,
+        },
+    ],
+)
+def test_parakeet_supervisor_rejects_inconsistent_native_evidence(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    manifest_path, corpus_path, digest = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _stub_parakeet_worker(manifest_path, scratch)
+    request = _parakeet_request(scratch, corpus_path, digest)
+    event = replace(_parakeet_native_final(request), **mutation)
+    monkeypatch.setattr(worker, "_verify_pcm", lambda _request: None)
+    monkeypatch.setattr(worker, "_send", lambda _message: None)
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: event)
+
+    with pytest.raises(WorkerError, match="worker_protocol"):
+        worker.transcribe(request)
+
+
+def test_parakeet_supervisor_rejects_partial_beyond_native_endpoint(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, corpus_path, digest = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _stub_parakeet_worker(manifest_path, scratch)
+    request = _parakeet_request(scratch, corpus_path, digest)
+    final = replace(_parakeet_native_final(request), seq=1)
+    partial = PartialEvent(
+        request_id=request.request_id,
+        seq=0,
+        text="stop",
+        samples_seen=final.samples_seen + 1,
+        elapsed_ms=50.0,
+        decode_ms=1.0,
+        protocol_version=NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    )
+    events = iter((partial, final))
+    monkeypatch.setattr(worker, "_verify_pcm", lambda _request: None)
+    monkeypatch.setattr(worker, "_send", lambda _message: None)
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: next(events))
+
+    with pytest.raises(WorkerError, match="worker_protocol"):
+        worker.transcribe(request)
+
+
+def test_parakeet_supervisor_rejects_legacy_request_and_terminal(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, corpus_path, digest = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _stub_parakeet_worker(manifest_path, scratch)
+    legacy_request = _parakeet_request(
+        scratch,
+        corpus_path,
+        digest,
+        protocol_version=PROTOCOL_VERSION,
+    )
+    monkeypatch.setattr(worker, "_verify_pcm", lambda _request: None)
+    monkeypatch.setattr(worker, "_send", lambda _message: None)
+
+    with pytest.raises(WorkerError, match="invalid_request"):
+        worker.transcribe(legacy_request)
+
+    request = replace(
+        legacy_request,
+        protocol_version=NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    )
+    native = _parakeet_native_final(request)
+    legacy_final = FinalEvent(
+        request_id=request.request_id,
+        seq=0,
+        text=native.text,
+        samples_seen=request.pcm.samples + request.stream.tail_padding_samples,
+        elapsed_ms=native.elapsed_ms,
+        finalization_ms=native.finalization_ms,
+        compute_ms=native.compute_ms,
+        audio_seconds=native.audio_seconds,
+        chunks=38,
+        deadline_misses=0,
+        max_backlog_ms=0.0,
+        resources=native.resources,
+    )
+    monkeypatch.setattr(worker, "_next_event", lambda _timeout: legacy_final)
+
+    with pytest.raises(WorkerError, match="worker_protocol"):
+        worker.transcribe(request)
+
+
 def test_worker_launch_argv_is_exact_isolated_and_bytecode_free(tmp_path):
     manifest_path, _, _ = _fixture(tmp_path)
     scratch = tmp_path / "scratch"
@@ -295,6 +574,7 @@ def test_worker_launch_argv_is_exact_isolated_and_bytecode_free(tmp_path):
     assert kwargs["start_new_session"] is True
     assert kwargs["close_fds"] is True
     assert len(kwargs["pass_fds"]) == 3
+    assert "PATH" not in kwargs["env"]
     assert "shell" not in kwargs
 
 
@@ -504,6 +784,472 @@ def test_nemotron_start_executes_verified_bwrap_fd_in_outer_process_group(
     assert worker._worker_descriptor == -1  # noqa: SLF001 - cleanup proof
     assert worker._python_descriptor == -1  # noqa: SLF001 - cleanup proof
     assert worker._bwrap_descriptor == -1  # noqa: SLF001 - cleanup proof
+
+
+def test_parakeet_scope_command_has_exact_hard_limits_and_pinned_inner_exec():
+    command = _parakeet_systemd_scope_command(
+        [
+            "/usr/bin/bwrap",
+            "--unshare-net",
+            "--die-with-parent",
+            "--",
+            "/proc/self/fd/9",
+        ],
+        bwrap_descriptor=42,
+    )
+
+    assert command == [
+        "/usr/bin/systemd-run",
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--no-ask-password",
+        "--expand-environment=no",
+        "--slice-inherit",
+        "--nice=15",
+        "--description=speaker-parakeet-realtime-eou-worker",
+        "--property",
+        "MemoryHigh=6442450944",
+        "--property",
+        "MemoryMax=8589934592",
+        "--property",
+        "MemorySwapMax=0",
+        "--property",
+        "CPUQuota=200%",
+        "--property",
+        "TasksMax=128",
+        "--property",
+        "OOMPolicy=kill",
+        "--",
+        "/proc/self/fd/42",
+        "--unsetenv",
+        "XDG_RUNTIME_DIR",
+        "--unsetenv",
+        "INVOCATION_ID",
+        "--unshare-net",
+        "--die-with-parent",
+        "--",
+        "/proc/self/fd/9",
+    ]
+    assert "/usr/bin/bwrap" not in command
+    assert "--pipe" not in command
+    assert "--wait" not in command
+    assert "--service-type" not in command
+
+
+@pytest.mark.parametrize(
+    ("inner", "descriptor"),
+    [
+        ([], 1),
+        (["/usr/bin/bwrap"], -1),
+        (["/alternate/bwrap"], 1),
+        (["/usr/bin/bwrap", "bad\x00value"], 1),
+    ],
+)
+def test_parakeet_scope_command_rejects_unpinned_or_unsafe_inputs(
+    inner,
+    descriptor,
+):
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _parakeet_systemd_scope_command(inner, bwrap_descriptor=descriptor)
+
+
+def test_parakeet_start_executes_pinned_scope_then_pinned_bwrap(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, _, _ = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _worker(manifest_path, scratch)
+    worker.manifest = _parakeet_manifest_for_launch(manifest_path, tmp_path)
+    captured: dict[str, object] = {}
+    runtime_directory = tmp_path / "user-runtime"
+
+    monkeypatch.setattr(worker, "_verify_bound_files", lambda: None)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_device_nodes",
+        lambda: (Path("/dev/nvidia0"),),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_system_ro_paths",
+        lambda: (Path("/usr"),),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._NVIDIA_PROC_DRIVER",
+        tmp_path / "missing-proc-driver",
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._verified_user_runtime_directory",
+        lambda: runtime_directory,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._open_bwrap_descriptor",
+        lambda: os.open("/usr/bin/bwrap", os.O_RDONLY),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._open_systemd_run_descriptor",
+        lambda: os.open("/usr/bin/systemd-run", os.O_RDONLY),
+    )
+    monkeypatch.setattr(
+        worker,
+        "_open_bound_python_descriptor",
+        lambda: os.open("/usr/bin/python3", os.O_RDONLY),
+    )
+
+    def rejecting_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        raise OSError
+
+    worker._popen_factory = rejecting_popen  # noqa: SLF001 - launch seam
+    with pytest.raises(WorkerError, match="worker_start"):
+        worker.start()
+
+    command = captured["command"]
+    kwargs = captured["kwargs"]
+    assert isinstance(command, list)
+    assert isinstance(kwargs, dict)
+    bundle_fd, worker_fd, python_fd, bwrap_fd, systemd_fd = kwargs["pass_fds"]
+    assert command[0] == "/usr/bin/systemd-run"
+    assert command[command.index("--") + 1] == f"/proc/self/fd/{bwrap_fd}"
+    assert command.count("--") == 2
+    assert "/usr/bin/bwrap" not in command
+    assert kwargs["executable"] == f"/proc/self/fd/{systemd_fd}"
+    assert kwargs["start_new_session"] is True
+    assert kwargs["close_fds"] is True
+    assert len({bundle_fd, worker_fd, python_fd, bwrap_fd, systemd_fd}) == 5
+    assert kwargs["env"]["XDG_RUNTIME_DIR"] == str(runtime_directory)
+    assert kwargs["env"]["PATH"] == "/usr/bin"
+    assert "DBUS_SESSION_BUS_ADDRESS" not in kwargs["env"]
+    assert "INVOCATION_ID" not in kwargs["env"]
+    assert "shell" not in kwargs
+    assert worker._bundle_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._worker_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._python_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._bwrap_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._systemd_run_descriptor == -1  # noqa: SLF001
+
+
+def test_supervisor_runtime_receipt_load_is_the_single_tree_scan(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, _, _ = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _worker(manifest_path, scratch)
+    worker.manifest = _parakeet_manifest_for_launch(manifest_path, tmp_path)
+    receipt_artifact = worker.manifest.artifact_by_name["runtime-receipt"]
+    receipt = SimpleNamespace(digest=receipt_artifact.sha256)
+    receipt_loads: list[tuple[object, ...]] = []
+    digest_by_path = {
+        worker.manifest.worker.path: worker.manifest.worker.sha256,
+        worker.manifest.python.path: worker.manifest.python.sha256,
+        **{
+            artifact.path: artifact.sha256
+            for artifact in worker.manifest.artifacts
+        },
+    }
+
+    def digest(path, **_kwargs):
+        return SimpleNamespace(sha256=digest_by_path[path])
+
+    def load(path, *, expected_digest, limits):
+        receipt_loads.append((path, expected_digest, limits))
+        return receipt
+
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.hash_regular_bounded",
+        digest,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.artifact_maximum_bytes",
+        lambda *_args: 1024,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.load_runtime_tree_receipt",
+        load,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.verify_venv_runtime_location",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._verify_nemotron_runtime_layout",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.verify_source_bundle",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor.verify_runtime_tree_receipt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("redundant runtime scan")
+        ),
+        raising=False,
+    )
+
+    worker._verify_bound_files()  # noqa: SLF001 - exact scan-count seam
+
+    assert receipt_loads == [
+        (
+            receipt_artifact.path,
+            receipt_artifact.sha256,
+            PARAKEET_RUNTIME_TREE_LIMITS,
+        )
+    ]
+
+
+def test_parakeet_refuses_missing_systemd_run_without_launching(
+    tmp_path,
+    monkeypatch,
+):
+    manifest_path, _, _ = _fixture(tmp_path)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    worker = _worker(manifest_path, scratch)
+    worker.manifest = _parakeet_manifest_for_launch(manifest_path, tmp_path)
+    launched = False
+
+    monkeypatch.setattr(worker, "_verify_bound_files", lambda: None)
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_device_nodes",
+        lambda: (Path("/dev/nvidia0"),),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._nemotron_system_ro_paths",
+        lambda: (Path("/usr"),),
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._NVIDIA_PROC_DRIVER",
+        tmp_path / "missing-proc-driver",
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._verified_user_runtime_directory",
+        lambda: tmp_path / "user-runtime",
+    )
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._open_bwrap_descriptor",
+        lambda: os.open("/usr/bin/bwrap", os.O_RDONLY),
+    )
+
+    def missing_systemd():
+        raise WorkerError("worker_prerequisite")
+
+    def popen(*_args, **_kwargs):
+        nonlocal launched
+        launched = True
+        raise AssertionError
+
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._open_systemd_run_descriptor",
+        missing_systemd,
+    )
+    worker._popen_factory = popen  # noqa: SLF001 - launch seam
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        worker.start()
+
+    assert launched is False
+    assert worker.pid is None
+    assert worker._bundle_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._worker_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._python_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._bwrap_descriptor == -1  # noqa: SLF001 - cleanup proof
+    assert worker._systemd_run_descriptor == -1  # noqa: SLF001
+
+
+def _write_parakeet_cgroup_tree(
+    root: Path,
+    *,
+    overrides: dict[str, str] | None = None,
+) -> tuple[bytes, Path]:
+    root.mkdir()
+    (root / "cgroup.controllers").write_text(
+        "cpuset cpu io memory pids\n",
+        encoding="ascii",
+    )
+    relative = Path(
+        "user.slice/user-1000.slice/user@1000.service/app.slice/run-r1234.scope"
+    )
+    scope = root / relative
+    scope.mkdir(parents=True)
+    values = {
+        "memory.high": "6442450944",
+        "memory.max": "8589934592",
+        "memory.swap.max": "0",
+        "memory.oom.group": "1",
+        "cpu.max": "200000 100000",
+        "pids.max": "128",
+    }
+    values.update(overrides or {})
+    for name, value in values.items():
+        (scope / name).write_text(value + "\n", encoding="ascii")
+    return f"0::/{relative}\n".encode("ascii"), scope
+
+
+def test_parakeet_cgroup_v2_evidence_is_exact_and_path_independent(tmp_path):
+    payload, _scope = _write_parakeet_cgroup_tree(tmp_path / "cgroup")
+
+    evidence = _verify_parakeet_cgroup_evidence(
+        payload,
+        cgroup_root=tmp_path / "cgroup",
+    )
+
+    assert evidence == {
+        "kind": "systemd-user-scope-cgroup-v2",
+        "memory_high_bytes": 6442450944,
+        "memory_max_bytes": 8589934592,
+        "memory_swap_max_bytes": 0,
+        "cpu_quota_percent": 200,
+        "tasks_max": 128,
+        "oom_policy": "kill",
+        "verified": True,
+    }
+    assert "run-r1234.scope" not in repr(evidence)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"",
+        b"0::/\n",
+        b"1:name=/run-r1234.scope\n",
+        b"0::/run-r1234.scope\nextra\n",
+        b"0::/../run-r1234.scope\n",
+        b"0::/app.slice/not-a-run-scope.scope\n",
+        b"0::/app.slice/run-r1234.scope",
+        b"0::/app.slice/run-r1234.scope\r\n",
+        b"0::/app.slice/run-r\xff.scope\n",
+    ],
+)
+def test_parakeet_cgroup_path_rejects_non_v2_or_unsafe_values(payload):
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _parse_unified_cgroup_path(payload)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("memory.high", "max"),
+        ("memory.max", "8589934591"),
+        ("memory.swap.max", "1"),
+        ("memory.oom.group", "0"),
+        ("cpu.max", "max 100000"),
+        ("cpu.max", "100000 100000"),
+        ("pids.max", "129"),
+    ],
+)
+def test_parakeet_cgroup_evidence_rejects_any_relaxed_or_missing_bound(
+    tmp_path,
+    name,
+    value,
+):
+    payload, _scope = _write_parakeet_cgroup_tree(
+        tmp_path / "cgroup",
+        overrides={name: value},
+    )
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _verify_parakeet_cgroup_evidence(
+            payload,
+            cgroup_root=tmp_path / "cgroup",
+        )
+
+
+def test_parakeet_cgroup_evidence_rejects_missing_controller(tmp_path):
+    root = tmp_path / "cgroup"
+    payload, _scope = _write_parakeet_cgroup_tree(root)
+    (root / "cgroup.controllers").write_text("cpu memory\n", encoding="ascii")
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _verify_parakeet_cgroup_evidence(payload, cgroup_root=root)
+
+
+def test_parakeet_cgroup_wait_retries_migration_then_returns_evidence(monkeypatch):
+    expected = {"verified": True}
+    attempts = 0
+    sleeps: list[float] = []
+
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+    def read(_pid):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise WorkerError("worker_prerequisite")
+        return expected
+
+    ticks = iter((0.0, 0.0))
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._read_parakeet_cgroup_evidence",
+        read,
+    )
+
+    result = _await_parakeet_cgroup(
+        Process(),  # type: ignore[arg-type]
+        monotonic=lambda: next(ticks),
+        sleeper=sleeps.append,
+    )
+
+    assert result == expected
+    assert attempts == 2
+    assert sleeps == [0.01]
+
+
+def test_parakeet_cgroup_wait_fails_immediately_if_scope_launcher_dies():
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return 1
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _await_parakeet_cgroup(Process())  # type: ignore[arg-type]
+
+
+def test_parakeet_cgroup_wait_fails_closed_at_setup_deadline(monkeypatch):
+    class Process:
+        pid = 123
+
+        @staticmethod
+        def poll():
+            return None
+
+    monkeypatch.setattr(
+        "tools.streaming_stt.supervisor._read_parakeet_cgroup_evidence",
+        lambda _pid: (_ for _ in ()).throw(WorkerError("worker_prerequisite")),
+    )
+    ticks = iter((0.0, 5.0))
+
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _await_parakeet_cgroup(
+            Process(),  # type: ignore[arg-type]
+            monotonic=lambda: next(ticks),
+            sleeper=lambda _delay: None,
+        )
+
+
+def test_user_runtime_directory_requires_private_owned_exact_directory(tmp_path):
+    root = tmp_path / "run-user"
+    runtime = root / str(os.getuid())
+    runtime.mkdir(parents=True)
+    runtime.chmod(0o700)
+
+    assert _verified_user_runtime_directory(root=root) == runtime
+
+    runtime.chmod(0o750)
+    with pytest.raises(WorkerError, match="worker_prerequisite"):
+        _verified_user_runtime_directory(root=root)
 
 
 def test_nemotron_refuses_missing_gpu_before_runtime_verification(

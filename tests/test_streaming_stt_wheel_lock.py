@@ -21,7 +21,10 @@ from tools.streaming_stt.runtime_receipt import (
     generate_runtime_tree_receipt,
 )
 from tools.streaming_stt.wheel_lock import (
+    HighCompressionMemberPolicy,
     InstallerFile,
+    SharedRuntimeFilePolicy,
+    WheelArchivePolicy,
     WheelLockError,
     generate_measured_wheel_lock,
     load_wheel_lock,
@@ -78,6 +81,60 @@ def _write_pylock(
                 "",
             ]
         )
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def _write_archive_pylock(
+    path: Path,
+    wheel: tuple[str, bytes, dict[str, bytes]],
+    *,
+    url: str | None = None,
+    digest: str | None = None,
+    include_hashes: bool = True,
+    size: int | bool | None = None,
+    include_wheels: bool = False,
+    include_sdist: bool = False,
+    archive_extra: str | None = None,
+) -> Path:
+    filename, data, _contents = wheel
+    selected = _entry(filename, data)
+    archive_fields = [
+        f'url = {json.dumps(url or selected["source_url"])}',
+    ]
+    if size is not None:
+        archive_fields.append(f"size = {json.dumps(size)}")
+    if include_hashes:
+        archive_fields.append(
+            "hashes = { sha256 = "
+            f'{json.dumps(digest or selected["sha256"])} }}'
+        )
+    if archive_extra is not None:
+        archive_fields.append(archive_extra)
+    lines = [
+        'lock-version = "1.0"',
+        'created-by = "uv"',
+        'requires-python = ">=3.12.3"',
+        "",
+        "[[packages]]",
+        f'name = "{selected["distribution"]}"',
+        f'version = "{selected["version"]}"',
+        f"archive = {{ {', '.join(archive_fields)} }}",
+    ]
+    if include_wheels:
+        lines.append(
+            "wheels = [{ url = "
+            f'{json.dumps(selected["source_url"])}, '
+            "hashes = { sha256 = "
+            f'{json.dumps(selected["sha256"])} }} }}]'
+        )
+    if include_sdist:
+        lines.append(
+            "sdist = { url = "
+            '"https://files.example.invalid/source/alpha-1.0.tar.gz", '
+            f'hashes = {{ sha256 = {json.dumps("0" * 64)} }} }}'
+        )
+    lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 
@@ -210,6 +267,8 @@ def _write_lock(
 def _selection(
     tmp_path: Path,
     wheels: list[tuple[str, bytes, dict[str, bytes]]],
+    *,
+    archive_policy: WheelArchivePolicy | None = None,
 ):
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir(mode=0o700)
@@ -221,7 +280,15 @@ def _selection(
         installed.update(mapped)
     lock_path = _write_lock(tmp_path / "wheel-lock.json", entries)
     lock = load_wheel_lock(lock_path)
-    verified = verify_wheelhouse(lock, wheelhouse)
+    verified = (
+        verify_wheelhouse(lock, wheelhouse)
+        if archive_policy is None
+        else verify_wheelhouse(
+            lock,
+            wheelhouse,
+            archive_policy=archive_policy,
+        )
+    )
     return lock, verified, wheelhouse, installed
 
 
@@ -334,6 +401,100 @@ def test_generator_allows_absent_context_size_but_uses_measurement(tmp_path):
     )
 
     assert lock.wheels[0].size_bytes == len(alpha[1])
+
+
+@pytest.mark.parametrize("include_size", (False, True))
+def test_generator_accepts_exact_https_wheel_in_archive_context(
+    tmp_path,
+    include_size,
+):
+    alpha = _wheel("alpha")
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir(mode=0o700)
+    (wheelhouse / alpha[0]).write_bytes(alpha[1])
+    pylock = _write_archive_pylock(
+        tmp_path / "pylock.toml",
+        alpha,
+        size=len(alpha[1]) if include_size else None,
+    )
+
+    lock = generate_measured_wheel_lock(
+        pylock,
+        wheelhouse,
+        tmp_path / "strict-lock.json",
+    )
+
+    assert lock.wheels == (
+        wheel_lock_module.WheelLockEntry(**_entry(alpha[0], alpha[1])),
+    )
+    assert len(verify_wheelhouse(lock, wheelhouse).wheels) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "http-url",
+        "local-url",
+        "sdist-url",
+        "missing-hash",
+        "bad-hash",
+        "bad-size",
+        "negative-size",
+        "boolean-size",
+        "archive-and-wheels",
+        "archive-and-sdist",
+        "unknown-archive-field",
+    ),
+)
+def test_generator_rejects_unsafe_or_ambiguous_archive_context(
+    tmp_path,
+    mutation,
+):
+    alpha = _wheel("alpha")
+    selected = _entry(alpha[0], alpha[1])
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir(mode=0o700)
+    (wheelhouse / alpha[0]).write_bytes(alpha[1])
+    options: dict[str, object] = {}
+    if mutation == "http-url":
+        options["url"] = selected["source_url"].replace(
+            "https://",
+            "http://",
+            1,
+        )
+    elif mutation == "local-url":
+        options["url"] = f"file:///private/{alpha[0]}"
+    elif mutation == "sdist-url":
+        options["url"] = selected["source_url"].removesuffix(
+            ".whl"
+        ) + ".tar.gz"
+    elif mutation == "missing-hash":
+        options["include_hashes"] = False
+    elif mutation == "bad-hash":
+        options["digest"] = "0" * 64
+    elif mutation == "bad-size":
+        options["size"] = len(alpha[1]) + 1
+    elif mutation == "negative-size":
+        options["size"] = -1
+    elif mutation == "boolean-size":
+        options["size"] = False
+    elif mutation == "archive-and-wheels":
+        options["include_wheels"] = True
+    elif mutation == "archive-and-sdist":
+        options["include_sdist"] = True
+    else:
+        options["archive_extra"] = 'path = "/private/alpha.whl"'
+    pylock = _write_archive_pylock(
+        tmp_path / "pylock.toml",
+        alpha,
+        **options,
+    )
+    destination = tmp_path / "strict-lock.json"
+
+    with pytest.raises(WheelLockError):
+        generate_measured_wheel_lock(pylock, wheelhouse, destination)
+
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize(
@@ -521,23 +682,38 @@ def test_nemotron_profile_allows_only_exact_inert_cuda_redirector_pth(tmp_path):
     assert verify_installed_wheels(verified, receipt).files == receipt.files
 
 
+def test_nested_package_data_with_pth_suffix_is_not_a_site_hook(tmp_path):
+    wheel = _wheel(
+        "alpha",
+        package_path="alpha/weights/perceptual-model.pth",
+        package_bytes=b"locked package data",
+    )
+
+    _lock, verified, _wheelhouse, _contents = _selection(tmp_path, [wheel])
+
+    assert {
+        item.relative_path for item in verified.wheels[0].release_files
+    } >= {"alpha/weights/perceptual-model.pth"}
+
+
 def test_nemotron_profile_deduplicates_only_exact_shared_namespace_file(
     tmp_path,
-    monkeypatch,
 ):
     alpha = _wheel("alpha", package_path="shared/__init__.py", package_bytes=b"")
     bravo = _wheel("bravo", package_path="shared/__init__.py", package_bytes=b"")
-    monkeypatch.setitem(
-        wheel_lock_module._NEMOTRON_SHARED_RUNTIME_FILES,
-        "shared/__init__.py",
-        {
-            "receipt": (hashlib.sha256(b"").hexdigest(), 0),
-            "owners": frozenset({("alpha", "1.0"), ("bravo", "1.0")}),
-        },
+    archive_policy = WheelArchivePolicy(
+        shared_runtime_files={
+            "shared/__init__.py": SharedRuntimeFilePolicy(
+                sha256=hashlib.sha256(b"").hexdigest(),
+                size_bytes=0,
+                owners=frozenset({("alpha", "1.0"), ("bravo", "1.0")}),
+            )
+        }
     )
     _lock, verified, _wheelhouse, contents = _selection(
         tmp_path,
         [alpha, bravo],
+        archive_policy=archive_policy,
     )
     _root, receipt = _install(tmp_path, verified, contents)
 
@@ -552,14 +728,16 @@ def test_nemotron_profile_deduplicates_only_exact_shared_namespace_file(
 
 def test_nemotron_profile_binds_one_external_non_runtime_file(
     tmp_path,
-    monkeypatch,
 ):
     archive_path = "sympy-1.14.0.data/data/share/man/man1/isympy.1"
     data = b"exact non-runtime manual fixture\n"
-    monkeypatch.setitem(
-        wheel_lock_module._NEMOTRON_EXTERNAL_RUNTIME_EXCLUSIONS,
-        ("sympy", "1.14.0", archive_path),
-        (hashlib.sha256(data).hexdigest(), len(data)),
+    archive_policy = WheelArchivePolicy(
+        external_runtime_exclusions={
+            ("sympy", "1.14.0", archive_path): (
+                hashlib.sha256(data).hexdigest(),
+                len(data),
+            )
+        }
     )
     wheel = _wheel(
         "sympy",
@@ -567,7 +745,11 @@ def test_nemotron_profile_binds_one_external_non_runtime_file(
         package_path=archive_path,
         package_bytes=data,
     )
-    _lock, verified, _wheelhouse, contents = _selection(tmp_path, [wheel])
+    _lock, verified, _wheelhouse, contents = _selection(
+        tmp_path,
+        [wheel],
+        archive_policy=archive_policy,
+    )
     contents.pop(archive_path)
     _root, receipt = _install(tmp_path, verified, contents)
 
@@ -863,6 +1045,135 @@ def test_archive_rejects_unsafe_paths_hooks_hidden_payloads_and_bombs(
 
     with pytest.raises(WheelLockError):
         verify_wheelhouse(lock, wheelhouse)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("path", "hash", "size", "compressed-size"),
+)
+def test_high_compression_member_requires_exact_closed_policy(tmp_path, mutation):
+    filename, data, _contents = _unsafe_wheel("zip-bomb")
+    with zipfile.ZipFile(io.BytesIO(data), mode="r") as archive:
+        info = archive.getinfo("alpha/__init__.py")
+    key = ("alpha", "1.0", "alpha/__init__.py")
+    digest = hashlib.sha256(b"\x00" * (2 * 1024 * 1024)).hexdigest()
+    profile = HighCompressionMemberPolicy(
+        sha256=digest,
+        size_bytes=info.file_size,
+        compressed_size_bytes=info.compress_size,
+    )
+    if mutation == "path":
+        key = ("alpha", "1.0", "alpha/other.bin")
+    elif mutation == "hash":
+        profile = HighCompressionMemberPolicy(
+            sha256="0" * 64,
+            size_bytes=profile.size_bytes,
+            compressed_size_bytes=profile.compressed_size_bytes,
+        )
+    elif mutation == "size":
+        profile = HighCompressionMemberPolicy(
+            sha256=profile.sha256,
+            size_bytes=profile.size_bytes + 1,
+            compressed_size_bytes=profile.compressed_size_bytes,
+        )
+    else:
+        profile = HighCompressionMemberPolicy(
+            sha256=profile.sha256,
+            size_bytes=profile.size_bytes,
+            compressed_size_bytes=profile.compressed_size_bytes + 1,
+        )
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir(mode=0o700)
+    (wheelhouse / filename).write_bytes(data)
+    lock = load_wheel_lock(
+        _write_lock(tmp_path / "lock.json", [_entry(filename, data)])
+    )
+
+    with pytest.raises(WheelLockError):
+        verify_wheelhouse(
+            lock,
+            wheelhouse,
+            archive_policy=WheelArchivePolicy(
+                high_compression_members={key: profile}
+            ),
+        )
+
+
+def test_high_compression_member_accepts_one_exact_closed_policy(tmp_path):
+    filename, data, _contents = _unsafe_wheel("zip-bomb")
+    with zipfile.ZipFile(io.BytesIO(data), mode="r") as archive:
+        info = archive.getinfo("alpha/__init__.py")
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir(mode=0o700)
+    (wheelhouse / filename).write_bytes(data)
+    lock = load_wheel_lock(
+        _write_lock(tmp_path / "lock.json", [_entry(filename, data)])
+    )
+    policy = WheelArchivePolicy(
+        high_compression_members={
+            (
+                "alpha",
+                "1.0",
+                "alpha/__init__.py",
+            ): HighCompressionMemberPolicy(
+                sha256=hashlib.sha256(
+                    b"\x00" * (2 * 1024 * 1024)
+                ).hexdigest(),
+                size_bytes=info.file_size,
+                compressed_size_bytes=info.compress_size,
+            )
+        }
+    )
+
+    verified = verify_wheelhouse(lock, wheelhouse, archive_policy=policy)
+
+    assert len(verified.wheels) == 1
+
+
+def _with_zip_general_purpose_flag(data: bytes, flag: int) -> bytes:
+    mutated = bytearray(data)
+    with zipfile.ZipFile(io.BytesIO(data), mode="r") as archive:
+        infos = archive.infolist()
+    for info in infos:
+        current = struct.unpack_from("<H", mutated, info.header_offset + 6)[0]
+        struct.pack_into("<H", mutated, info.header_offset + 6, current | flag)
+    eocd = mutated.rfind(b"PK\x05\x06")
+    assert eocd >= 0
+    central = struct.unpack_from("<L", mutated, eocd + 16)[0]
+    for _info in infos:
+        assert mutated[central : central + 4] == b"PK\x01\x02"
+        current = struct.unpack_from("<H", mutated, central + 8)[0]
+        struct.pack_into("<H", mutated, central + 8, current | flag)
+        filename_size, extra_size, comment_size = struct.unpack_from(
+            "<3H", mutated, central + 28
+        )
+        central += 46 + filename_size + extra_size + comment_size
+    return bytes(mutated)
+
+
+@pytest.mark.parametrize(
+    ("flag", "accepted"),
+    ((0x2, True), (0x4, True), (0x1, False), (0x10, False)),
+)
+def test_zip_flags_allow_only_standard_non_encryption_options(
+    tmp_path,
+    flag,
+    accepted,
+):
+    filename, data, contents = _wheel("alpha")
+    wheel = filename, _with_zip_general_purpose_flag(data, flag), contents
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir(mode=0o700)
+    (wheelhouse / filename).write_bytes(wheel[1])
+    lock = load_wheel_lock(
+        _write_lock(tmp_path / "lock.json", [_entry(filename, wheel[1])])
+    )
+
+    if accepted:
+        assert len(verify_wheelhouse(lock, wheelhouse).wheels) == 1
+    else:
+        with pytest.raises(WheelLockError):
+            verify_wheelhouse(lock, wheelhouse)
 
 
 def test_zip_central_directory_is_bounded_before_archive_allocation(tmp_path):

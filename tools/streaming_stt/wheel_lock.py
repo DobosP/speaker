@@ -50,7 +50,10 @@ from .runtime_receipt import (
 
 
 WHEEL_LOCK_SCHEMA_VERSION = 1
-MAXIMUM_WHEELS = 96
+# A NeMo ASR-only resolution currently selects 183 binary wheels.  Keep one
+# generic parser/archive ceiling above that measured closure; the committed
+# lock digest still closes each candidate to its exact package count and bytes.
+MAXIMUM_WHEELS = 256
 MAXIMUM_LOCK_BYTES = 256 * 1024
 MAXIMUM_PYLOCK_BYTES = 8 * 1024 * 1024
 MAXIMUM_WHEELHOUSE_BYTES = 8 * 1024 * 1024 * 1024
@@ -97,6 +100,7 @@ _HASH_CHUNK_BYTES = 1024 * 1024
 _ZIP_BOMB_RATIO_FLOOR = 1024 * 1024
 _ZIP_BOMB_MAX_RATIO = 32
 _ALLOWED_ZIP_COMPRESSION = {zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED}
+_ALLOWED_ZIP_GENERAL_PURPOSE_FLAGS = 0x80E
 _END_CENTRAL_DIRECTORY = b"PK\x05\x06"
 _CENTRAL_DIRECTORY_ENTRY = b"PK\x01\x02"
 _MAXIMUM_ZIP_COMMENT_BYTES = 65_535
@@ -161,6 +165,134 @@ _NEMOTRON_SHARED_RUNTIME_FILES = {
         ),
     }
 }
+_PARAKEET_EXTERNAL_RUNTIME_EXCLUSIONS = {
+    (
+        "antlr4-python3-runtime",
+        "4.9.3",
+        "antlr4_python3_runtime-4.9.3.data/scripts/pygrun",
+    ): (
+        "02d4202c724d47965d015e9d62ad2f243359b840516db9629ce964d4e1150461",
+        6_111,
+    ),
+    ("dill", "0.4.1", "dill-0.4.1.data/scripts/get_gprof"): (
+        "58aa5b2c4a9e41c431aa67f1aa9293273fbbfc8c9ae0f2433b7e8ed0959639b4",
+        2_447,
+    ),
+    ("dill", "0.4.1", "dill-0.4.1.data/scripts/get_objgraph"): (
+        "bba436bafd74ef68d8c4f52c34176da4a30ea77324af7f15b82a9c80725cb42e",
+        1_641,
+    ),
+    ("dill", "0.4.1", "dill-0.4.1.data/scripts/undill"): (
+        "4eff608512b7721a070f1114407d6eec2a04bd2455b42ec43505e5541271c5fa",
+        577,
+    ),
+    (
+        "fonttools",
+        "4.63.0",
+        "fonttools-4.63.0.data/data/share/man/man1/ttx.1",
+    ): (
+        "70b6e6fe938e8f50bbe93d905ef0f1cf00e3f6093e193779473b6f4ccb28b85c",
+        5_377,
+    ),
+    ("greenlet", "3.5.4", "greenlet-3.5.4.data/headers/greenlet.h"): (
+        "b33e69611490a9e7603add80320c4b65d4e33bea9caff24cbe0884251f48009f",
+        4_755,
+    ),
+    (
+        "ipython",
+        "9.16.0",
+        "ipython-9.16.0.data/data/share/man/man1/ipython.1",
+    ): (
+        "3d57503f6847987c94130ccb38f7206af9c27bd8d30d5accd63299b7872717f4",
+        2_058,
+    ),
+    (
+        "numba",
+        "0.66.0",
+        "numba-0.66.0.data/scripts/numba",
+    ): (
+        "f2744e313bbffe42661c58d2dc5066cc32e0470e403ce8afc615db3a94d39d71",
+        178,
+    ),
+    (
+        "sympy",
+        "1.14.0",
+        "sympy-1.14.0.data/data/share/man/man1/isympy.1",
+    ): (
+        "f4365d48e2102e292b0131e56e4743674e0b0508a0643504d3fa025c10ef741b",
+        6_659,
+    ),
+}
+_PARAKEET_INERT_PTH_FILES = {
+    ("setuptools", "83.0.0", "distutils-precedence.pth"): (
+        "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d224",
+        151,
+    )
+}
+_PARAKEET_SHARED_RUNTIME_FILES = {
+    "nv_one_logger/no_init.md": {
+        "receipt": (
+            "4b98d924ee7e8253db8816fcba5d6d7ce5fddb0db7bdbf2ccecaabeee8727177",
+            222,
+        ),
+        "owners": frozenset(
+            {
+                ("nv-one-logger-core", "2.3.1"),
+                ("nv-one-logger-pytorch-lightning-integration", "2.3.1"),
+                ("nv-one-logger-training-telemetry", "2.3.1"),
+            }
+        ),
+    },
+    "nvidia/__init__.py": {
+        "receipt": (
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            0,
+        ),
+        "owners": frozenset(
+            {
+                ("nvidia-cublas-cu12", "12.6.4.1"),
+                ("nvidia-cuda-cupti-cu12", "12.6.80"),
+                ("nvidia-cuda-nvrtc-cu12", "12.6.77"),
+                ("nvidia-cuda-runtime-cu12", "12.6.77"),
+                ("nvidia-cudnn-cu12", "9.5.1.17"),
+                ("nvidia-cufft-cu12", "11.3.0.4"),
+                ("nvidia-cufile-cu12", "1.11.1.6"),
+                ("nvidia-curand-cu12", "10.3.7.77"),
+                ("nvidia-cusolver-cu12", "11.7.1.2"),
+                ("nvidia-cusparse-cu12", "12.5.4.2"),
+                ("nvidia-nccl-cu12", "2.26.2"),
+                ("nvidia-nvjitlink-cu12", "12.6.85"),
+                ("nvidia-nvtx-cu12", "12.6.77"),
+            }
+        ),
+    },
+}
+_PARAKEET_HIGH_COMPRESSION_MEMBERS = {
+    (
+        "onnx",
+        "1.22.0",
+        (
+            "onnx/backend/test/data/pytorch-operator/test_operator_conv/"
+            "test_data_set_0/input_0.pb"
+        ),
+    ): (
+        "52f2215b35016c85c17a5ad4d471c71ebedbf49140a881af0f7f80f023ebeb70",
+        2_560_015,
+        2_520,
+    ),
+    (
+        "onnx",
+        "1.22.0",
+        (
+            "onnx/backend/test/data/pytorch-operator/test_operator_conv/"
+            "test_data_set_0/output_0.pb"
+        ),
+    ): (
+        "fb558f63a7fb8e9193c98103f279861c389d171edeab5e0d4d82a5926824d5ea",
+        1_896_974,
+        3_010,
+    ),
+}
 
 WHEEL_LOCK_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
     maximum_receipt_bytes=32 * 1024 * 1024,
@@ -175,6 +307,176 @@ WHEEL_LOCK_RUNTIME_TREE_LIMITS = RuntimeTreeLimits(
 
 class WheelLockError(RuntimeError):
     """A detail-free invalid lock, wheelhouse, archive, or installation."""
+
+
+@dataclass(frozen=True)
+class SharedRuntimeFilePolicy:
+    """One exact byte-identical path deliberately shared by locked wheels."""
+
+    sha256: str
+    size_bytes: int
+    owners: frozenset[tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class HighCompressionMemberPolicy:
+    """One exact locked member allowed above the generic ZIP ratio ceiling."""
+
+    sha256: str
+    size_bytes: int
+    compressed_size_bytes: int
+
+
+@dataclass(frozen=True)
+class WheelArchivePolicy:
+    """Closed exceptions for one measured wheel/runtime family.
+
+    Empty mappings are the strict default for a new family.  Exceptions are
+    deliberately carried through wheelhouse verification so a caller cannot
+    verify with one policy and later validate installed ownership with another.
+    """
+
+    external_runtime_exclusions: Mapping[
+        tuple[str, str, str], tuple[str, int]
+    ] = field(default_factory=dict, repr=False)
+    inert_pth_files: Mapping[
+        tuple[str, str, str], tuple[str, int]
+    ] = field(default_factory=dict, repr=False)
+    shared_runtime_files: Mapping[
+        str, SharedRuntimeFilePolicy
+    ] = field(default_factory=dict, repr=False)
+    high_compression_members: Mapping[
+        tuple[str, str, str], HighCompressionMemberPolicy
+    ] = field(default_factory=dict, repr=False)
+
+    def __post_init__(self) -> None:
+        exact_files: list[
+            Mapping[tuple[str, str, str], tuple[str, int]]
+        ] = [self.external_runtime_exclusions, self.inert_pth_files]
+        if (
+            not all(isinstance(mapping, Mapping) for mapping in exact_files)
+            or not isinstance(self.shared_runtime_files, Mapping)
+            or not isinstance(self.high_compression_members, Mapping)
+        ):
+            raise WheelLockError()
+        normalized_exact: list[
+            Mapping[tuple[str, str, str], tuple[str, int]]
+        ] = []
+        for mapping in exact_files:
+            copied: dict[tuple[str, str, str], tuple[str, int]] = {}
+            for key, receipt in mapping.items():
+                if (
+                    not isinstance(key, tuple)
+                    or len(key) != 3
+                    or not all(isinstance(value, str) and value for value in key)
+                    or not _valid_policy_distribution_version(key[0], key[1])
+                    or _safe_policy_path(key[2]) != key[2]
+                    or not isinstance(receipt, tuple)
+                    or len(receipt) != 2
+                    or not isinstance(receipt[0], str)
+                    or _SHA256_RE.fullmatch(receipt[0]) is None
+                    or isinstance(receipt[1], bool)
+                    or not isinstance(receipt[1], int)
+                    or not 0 <= receipt[1] <= MAXIMUM_INSTALLED_FILE_BYTES
+                ):
+                    raise WheelLockError()
+                copied[key] = receipt
+            normalized_exact.append(MappingProxyType(copied))
+
+        shared: dict[str, SharedRuntimeFilePolicy] = {}
+        for path, profile in self.shared_runtime_files.items():
+            if (
+                not isinstance(path, str)
+                or _safe_policy_path(path) != path
+                or not isinstance(profile, SharedRuntimeFilePolicy)
+                or _SHA256_RE.fullmatch(profile.sha256) is None
+                or isinstance(profile.size_bytes, bool)
+                or not isinstance(profile.size_bytes, int)
+                or not 0 <= profile.size_bytes <= MAXIMUM_INSTALLED_FILE_BYTES
+                or not isinstance(profile.owners, frozenset)
+                or not profile.owners
+                or any(
+                    not isinstance(owner, tuple)
+                    or len(owner) != 2
+                    or not _valid_policy_distribution_version(owner[0], owner[1])
+                    for owner in profile.owners
+                )
+            ):
+                raise WheelLockError()
+            shared[path] = profile
+        object.__setattr__(
+            self,
+            "external_runtime_exclusions",
+            normalized_exact[0],
+        )
+        object.__setattr__(self, "inert_pth_files", normalized_exact[1])
+        object.__setattr__(
+            self,
+            "shared_runtime_files",
+            MappingProxyType(shared),
+        )
+        high_compression: dict[
+            tuple[str, str, str], HighCompressionMemberPolicy
+        ] = {}
+        for key, profile in self.high_compression_members.items():
+            if (
+                not isinstance(key, tuple)
+                or len(key) != 3
+                or not all(isinstance(value, str) and value for value in key)
+                or not _valid_policy_distribution_version(key[0], key[1])
+                or _safe_policy_path(key[2]) != key[2]
+                or not isinstance(profile, HighCompressionMemberPolicy)
+                or _SHA256_RE.fullmatch(profile.sha256) is None
+                or isinstance(profile.size_bytes, bool)
+                or not isinstance(profile.size_bytes, int)
+                or not 0 <= profile.size_bytes <= MAXIMUM_INSTALLED_FILE_BYTES
+                or isinstance(profile.compressed_size_bytes, bool)
+                or not isinstance(profile.compressed_size_bytes, int)
+                or not 0
+                <= profile.compressed_size_bytes
+                <= MAXIMUM_WHEELHOUSE_BYTES
+            ):
+                raise WheelLockError()
+            high_compression[key] = profile
+        object.__setattr__(
+            self,
+            "high_compression_members",
+            MappingProxyType(high_compression),
+        )
+
+
+def _safe_policy_path(value: str) -> str:
+    """Validate policy paths without depending on later archive helpers."""
+
+    pure = PurePosixPath(value)
+    try:
+        encoded = value.encode("utf-8", errors="strict")
+    except UnicodeError:
+        raise WheelLockError() from None
+    if (
+        not value
+        or "\x00" in value
+        or pure.is_absolute()
+        or len(encoded) > MAXIMUM_PATH_BYTES
+        or len(pure.parts) > MAXIMUM_PATH_DEPTH
+        or any(part in {"", ".", ".."} for part in pure.parts)
+        or pure.as_posix() != value
+    ):
+        raise WheelLockError()
+    return value
+
+
+def _valid_policy_distribution_version(distribution: object, version: object) -> bool:
+    if not isinstance(distribution, str) or not isinstance(version, str):
+        return False
+    try:
+        return (
+            bool(distribution)
+            and canonicalize_name(distribution) == distribution
+            and str(Version(version)) == version
+        )
+    except InvalidVersion:
+        return False
 
 
 @dataclass(frozen=True)
@@ -254,6 +556,7 @@ class VerifiedWheelhouse:
 
     root: Path = field(repr=False)
     wheels: tuple[VerifiedWheel, ...]
+    archive_policy: WheelArchivePolicy = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -299,6 +602,41 @@ class _MeasuredWheel:
     filename: str
     size_bytes: int
     sha256: str
+
+
+STRICT_WHEEL_ARCHIVE_POLICY = WheelArchivePolicy()
+NEMOTRON_WHEEL_ARCHIVE_POLICY = WheelArchivePolicy(
+    external_runtime_exclusions=_NEMOTRON_EXTERNAL_RUNTIME_EXCLUSIONS,
+    inert_pth_files=_NEMOTRON_INERT_PTH_FILES,
+    shared_runtime_files={
+        path: SharedRuntimeFilePolicy(
+            sha256=profile["receipt"][0],
+            size_bytes=profile["receipt"][1],
+            owners=profile["owners"],
+        )
+        for path, profile in _NEMOTRON_SHARED_RUNTIME_FILES.items()
+    },
+)
+PARAKEET_WHEEL_ARCHIVE_POLICY = WheelArchivePolicy(
+    external_runtime_exclusions=_PARAKEET_EXTERNAL_RUNTIME_EXCLUSIONS,
+    inert_pth_files=_PARAKEET_INERT_PTH_FILES,
+    shared_runtime_files={
+        path: SharedRuntimeFilePolicy(
+            sha256=profile["receipt"][0],
+            size_bytes=profile["receipt"][1],
+            owners=profile["owners"],
+        )
+        for path, profile in _PARAKEET_SHARED_RUNTIME_FILES.items()
+    },
+    high_compression_members={
+        key: HighCompressionMemberPolicy(
+            sha256=profile[0],
+            size_bytes=profile[1],
+            compressed_size_bytes=profile[2],
+        )
+        for key, profile in _PARAKEET_HIGH_COMPRESSION_MEMBERS.items()
+    },
+)
 
 
 def _fail() -> object:
@@ -843,7 +1181,6 @@ def _measured_lock_entries(
     for package in packages:
         name = package.get("name")
         version = package.get("version")
-        wheels = package.get("wheels")
         if (
             not isinstance(name, str)
             or not name
@@ -852,9 +1189,6 @@ def _measured_lock_entries(
             or not isinstance(version, str)
             or not version
             or not version.isascii()
-            or not isinstance(wheels, list)
-            or not 1 <= len(wheels) <= 256
-            or any(not isinstance(wheel, dict) for wheel in wheels)
         ):
             raise WheelLockError()
         try:
@@ -868,9 +1202,33 @@ def _measured_lock_entries(
         selected = measured_by_identity.get(identity)
         if selected is None:
             raise WheelLockError()
+
+        if "archive" in package:
+            archive = package.get("archive")
+            if (
+                "wheels" in package
+                or "sdist" in package
+                or not isinstance(archive, dict)
+                or not {"url", "hashes"}.issubset(archive)
+                or not set(archive).issubset(
+                    {"url", "size", "hashes", "upload-time"}
+                )
+            ):
+                raise WheelLockError()
+            contexts: tuple[Mapping[str, object], ...] = (archive,)
+        else:
+            wheels = package.get("wheels")
+            if (
+                not isinstance(wheels, list)
+                or not 1 <= len(wheels) <= 256
+                or any(not isinstance(wheel, dict) for wheel in wheels)
+            ):
+                raise WheelLockError()
+            contexts = tuple(wheels)
+
         matching: list[Mapping[str, object]] = []
-        for wheel in wheels:
-            url = wheel.get("url")
+        for context in contexts:
+            url = context.get("url")
             if not isinstance(url, str):
                 raise WheelLockError()
             try:
@@ -878,7 +1236,7 @@ def _measured_lock_entries(
             except (UnicodeError, ValueError):
                 raise WheelLockError() from None
             if basename == selected.filename:
-                matching.append(wheel)
+                matching.append(context)
         if len(matching) != 1:
             raise WheelLockError()
         selected_context = matching[0]
@@ -889,6 +1247,9 @@ def _measured_lock_entries(
                 and (
                     isinstance(selected_context.get("size"), bool)
                     or not isinstance(selected_context.get("size"), int)
+                    or not 0
+                    <= selected_context.get("size")
+                    <= MAXIMUM_WHEELHOUSE_BYTES
                     or selected_context.get("size") != selected.size_bytes
                 )
             )
@@ -1110,6 +1471,24 @@ def _read_zip_member(
     return data
 
 
+def _hash_zip_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> str:
+    digest = hashlib.sha256()
+    remaining = info.file_size
+    try:
+        with archive.open(info, mode="r") as handle:
+            while remaining:
+                chunk = handle.read(min(_HASH_CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise WheelLockError()
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if handle.read(1):
+                raise WheelLockError()
+    except (OSError, RuntimeError, ValueError, zipfile.BadZipFile):
+        raise WheelLockError() from None
+    return digest.hexdigest()
+
+
 def _read_exact(handle: io.FileIO, size: int) -> bytes:
     data = handle.read(size)
     if len(data) != size:
@@ -1192,6 +1571,7 @@ def _installed_path(
     *,
     entry: WheelLockEntry,
     dist_info: str,
+    archive_policy: WheelArchivePolicy,
 ) -> tuple[str, bool]:
     parts = PurePosixPath(archive_path).parts
     data_directory = f"{dist_info[: -len('.dist-info')]}.data"
@@ -1202,10 +1582,9 @@ def _installed_path(
             entry.distribution,
             entry.version,
             archive_path,
-        ) in _NEMOTRON_EXTERNAL_RUNTIME_EXCLUSIONS:
-            # This exact SymPy man page is a CLI/documentation scheme output.
-            # Its original RECORD row stays bound while the isolated ASR
-            # runtime deliberately exposes no external data/scripts scheme.
+        ) in archive_policy.external_runtime_exclusions:
+            # The original RECORD row stays bound while the isolated runtime
+            # deliberately exposes no external data/scripts scheme.
             return archive_path, False
         raise WheelLockError()
     if parts[0].endswith(".data"):
@@ -1342,6 +1721,7 @@ def _parse_release_record(
     entry: WheelLockEntry,
     dist_info: str,
     record_path: str,
+    archive_policy: WheelArchivePolicy,
 ) -> tuple[
     tuple[RuntimeFileReceipt, ...],
     tuple[RuntimeFileReceipt, ...],
@@ -1379,6 +1759,7 @@ def _parse_release_record(
                 archive_path,
                 entry=entry,
                 dist_info=dist_info,
+                archive_policy=archive_policy,
             )
             installed_folded = installed_path.casefold()
             if (
@@ -1417,7 +1798,7 @@ def _parse_release_record(
             if runtime_owned:
                 expected.append(receipt)
             else:
-                exact_exclusion = _NEMOTRON_EXTERNAL_RUNTIME_EXCLUSIONS.get(
+                exact_exclusion = archive_policy.external_runtime_exclusions.get(
                     (entry.distribution, entry.version, archive_path)
                 )
                 if exact_exclusion != (digest, size):
@@ -1460,7 +1841,12 @@ def _parse_release_record(
     return tuple(expected), tuple(excluded), tuple(rows_out)
 
 
-def _inspect_wheel(handle: io.FileIO, entry: WheelLockEntry) -> VerifiedWheel:
+def _inspect_wheel(
+    handle: io.FileIO,
+    entry: WheelLockEntry,
+    *,
+    archive_policy: WheelArchivePolicy,
+) -> VerifiedWheel:
     try:
         expected_members, central_offset = _preflight_zip(handle, entry)
         with zipfile.ZipFile(handle, mode="r") as archive:
@@ -1478,7 +1864,7 @@ def _inspect_wheel(handle: io.FileIO, entry: WheelLockEntry) -> VerifiedWheel:
                 if (
                     path in infos
                     or folded in casefolded
-                    or info.flag_bits & ~0x808
+                    or info.flag_bits & ~_ALLOWED_ZIP_GENERAL_PURPOSE_FLAGS
                     or info.header_offset < 0
                     or info.header_offset >= central_offset
                     or info.header_offset in local_offsets
@@ -1497,18 +1883,26 @@ def _inspect_wheel(handle: io.FileIO, entry: WheelLockEntry) -> VerifiedWheel:
                     raise WheelLockError()
                 expanded_bytes += info.file_size
                 compressed_bytes += info.compress_size
+                ratio_exceeded = info.file_size > _ZIP_BOMB_RATIO_FLOOR and (
+                    info.compress_size == 0
+                    or info.file_size > info.compress_size * _ZIP_BOMB_MAX_RATIO
+                )
                 if (
                     expanded_bytes > MAXIMUM_INSTALLED_BYTES
                     or compressed_bytes > entry.size_bytes
-                    or (
-                        info.file_size > _ZIP_BOMB_RATIO_FLOOR
-                        and (
-                            info.compress_size == 0
-                            or info.file_size > info.compress_size * _ZIP_BOMB_MAX_RATIO
-                        )
-                    )
                 ):
                     raise WheelLockError()
+                if ratio_exceeded:
+                    profile = archive_policy.high_compression_members.get(
+                        (entry.distribution, entry.version, path)
+                    )
+                    if (
+                        profile is None
+                        or profile.size_bytes != info.file_size
+                        or profile.compressed_size_bytes != info.compress_size
+                        or _hash_zip_member(archive, info) != profile.sha256
+                    ):
+                        raise WheelLockError()
             dist_info, record_path = _dist_info_identity(infos, entry)
             dist_info_directories = {
                 PurePosixPath(path).parts[0]
@@ -1540,6 +1934,7 @@ def _inspect_wheel(handle: io.FileIO, entry: WheelLockEntry) -> VerifiedWheel:
                 entry=entry,
                 dist_info=dist_info,
                 record_path=record_path,
+                archive_policy=archive_policy,
             )
     except (
         OSError,
@@ -1563,6 +1958,8 @@ def _inspect_wheel(handle: io.FileIO, entry: WheelLockEntry) -> VerifiedWheel:
 def _hash_open_wheel(
     root_descriptor: int,
     entry: WheelLockEntry,
+    *,
+    archive_policy: WheelArchivePolicy,
 ) -> VerifiedWheel:
     descriptor = -1
     try:
@@ -1597,7 +1994,11 @@ def _hash_open_wheel(
                 remaining -= len(chunk)
             if handle.read(1) or digest.hexdigest() != entry.sha256:
                 raise WheelLockError()
-            verified = _inspect_wheel(handle, entry)
+            verified = _inspect_wheel(
+                handle,
+                entry,
+                archive_policy=archive_policy,
+            )
             after = os.fstat(handle.fileno())
         current = os.stat(
             entry.filename,
@@ -1628,6 +2029,8 @@ def _hash_open_wheel(
 
 def _runtime_release_file_union(
     wheels: Iterable[VerifiedWheel],
+    *,
+    archive_policy: WheelArchivePolicy,
 ) -> tuple[RuntimeFileReceipt, ...]:
     by_path: dict[str, list[tuple[VerifiedWheel, RuntimeFileReceipt]]] = {}
     for wheel in wheels:
@@ -1639,14 +2042,14 @@ def _runtime_release_file_union(
         if len(owned) == 1:
             union.append(owned[0][1])
             continue
-        profile = _NEMOTRON_SHARED_RUNTIME_FILES.get(path)
+        profile = archive_policy.shared_runtime_files.get(path)
         identities = frozenset(
             (wheel.entry.distribution, wheel.entry.version) for wheel, _receipt in owned
         )
         if (
             profile is None
-            or receipts != {profile["receipt"]}
-            or identities != profile["owners"]
+            or receipts != {(profile.sha256, profile.size_bytes)}
+            or identities != profile.owners
         ):
             raise WheelLockError()
         union.append(owned[0][1])
@@ -1662,10 +2065,14 @@ def _runtime_release_file_union(
 def verify_wheelhouse(
     lock: WheelLock,
     wheelhouse: Path | str,
+    *,
+    archive_policy: WheelArchivePolicy = NEMOTRON_WHEEL_ARCHIVE_POLICY,
 ) -> VerifiedWheelhouse:
     """Verify and parse exactly the locked files in one private wheelhouse."""
 
     if not isinstance(lock, WheelLock):
+        raise WheelLockError()
+    if not isinstance(archive_policy, WheelArchivePolicy):
         raise WheelLockError()
     current_lock = load_wheel_lock(lock.path, expected_digest=lock.digest)
     if current_lock != lock:
@@ -1693,7 +2100,11 @@ def verify_wheelhouse(
             aggregate_installed_bytes = 0
             aggregate_installed_files = 0
             for entry in lock.wheels:
-                wheel = _hash_open_wheel(descriptor, entry)
+                wheel = _hash_open_wheel(
+                    descriptor,
+                    entry,
+                    archive_policy=archive_policy,
+                )
                 aggregate_members += wheel.archive_member_count
                 aggregate_installed_files += len(wheel.release_files)
                 aggregate_installed_bytes += sum(
@@ -1730,27 +2141,44 @@ def verify_wheelhouse(
         WheelLockError,
     ):
         raise WheelLockError() from None
-    release_union = _runtime_release_file_union(wheels)
+    release_union = _runtime_release_file_union(
+        wheels,
+        archive_policy=archive_policy,
+    )
     all_paths = [item.relative_path for item in release_union]
     if (
         len(all_paths) > WHEEL_LOCK_RUNTIME_TREE_LIMITS.maximum_files
         or sum(item.size_bytes for item in release_union) > MAXIMUM_INSTALLED_BYTES
     ):
         raise WheelLockError()
-    _reject_import_interposition(wheels, all_paths)
-    return VerifiedWheelhouse(root=stable_root, wheels=wheels)
+    _reject_import_interposition(
+        wheels,
+        all_paths,
+        archive_policy=archive_policy,
+    )
+    return VerifiedWheelhouse(
+        root=stable_root,
+        wheels=wheels,
+        archive_policy=archive_policy,
+    )
 
 
 def _reject_import_interposition(
     wheels: Iterable[VerifiedWheel],
     paths: Iterable[str],
+    *,
+    archive_policy: WheelArchivePolicy,
 ) -> None:
     allowed_inert_pth: set[str] = set()
     for wheel in wheels:
         for receipt in wheel.release_files:
-            if not receipt.relative_path.casefold().endswith(".pth"):
+            relative = PurePosixPath(receipt.relative_path)
+            if (
+                len(relative.parts) != 1
+                or not relative.name.casefold().endswith(".pth")
+            ):
                 continue
-            expected = _NEMOTRON_INERT_PTH_FILES.get(
+            expected = archive_policy.inert_pth_files.get(
                 (
                     wheel.entry.distribution,
                     wheel.entry.version,
@@ -1766,7 +2194,11 @@ def _reject_import_interposition(
         top = pure.parts[0]
         top_stem = top.split(".", 1)[0].casefold()
         if (
-            (folded.endswith(".pth") and path not in allowed_inert_pth)
+            (
+                len(pure.parts) == 1
+                and folded.endswith(".pth")
+                and path not in allowed_inert_pth
+            )
             or "__pycache__" in {part.casefold() for part in pure.parts}
             or folded in {"sitecustomize.py", "usercustomize.py"}
             or top.casefold() in {"sitecustomize", "usercustomize"}
@@ -1897,7 +2329,12 @@ def verify_installed_wheels(
         wheelhouse,
         installer_files,
     )
-    release_files = list(_runtime_release_file_union(wheelhouse.wheels))
+    release_files = list(
+        _runtime_release_file_union(
+            wheelhouse.wheels,
+            archive_policy=wheelhouse.archive_policy,
+        )
+    )
     release_paths = {item.relative_path for item in release_files}
     installer_paths = {item.relative_path for item in installer_receipts}
     record_paths = {wheel.record_path for wheel in wheelhouse.wheels}
@@ -1957,7 +2394,11 @@ def verify_installed_wheels(
         or files != receipt.files
     ):
         raise WheelLockError()
-    _reject_import_interposition(wheelhouse.wheels, paths)
+    _reject_import_interposition(
+        wheelhouse.wheels,
+        paths,
+        archive_policy=wheelhouse.archive_policy,
+    )
     try:
         verify_runtime_tree_receipt(
             receipt,
@@ -1977,10 +2418,15 @@ def verify_locked_wheel_install(
     receipt: RuntimeTreeReceipt,
     *,
     installer_files: Iterable[InstallerFile] = (),
+    archive_policy: WheelArchivePolicy = NEMOTRON_WHEEL_ARCHIVE_POLICY,
 ) -> InstalledContentExpectation:
     """Convenience wrapper for exact wheelhouse and installation verification."""
 
-    verified = verify_wheelhouse(lock, wheelhouse)
+    verified = verify_wheelhouse(
+        lock,
+        wheelhouse,
+        archive_policy=archive_policy,
+    )
     return verify_installed_wheels(
         verified,
         receipt,

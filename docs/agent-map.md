@@ -30,6 +30,7 @@
 | Recording-driven STT/verifier | `tools/recorded_stt_eval.py`, `tools/local_gpu_stt_eval.py`, `tools/stt_consensus_v2_eval.py`, `core/asr_verifier.py`, `core/engines/_faster_whisper.py` | aggregate endpoint-path A/B, focused verifier/adapter tests, then manual live A/B (ADR-0078/0080) |
 | Timestamped capture-loop replay | `tools/capture_replay/`, `tools/prepare_ami_capture_replay.py`, `tools/capture_replay_eval.py`, ADR-0092 | strict contracts, pinned aggregate diagnostic, then native-reader/AEC, disjoint owner, and live gates |
 | Isolated streaming-STT benchmark | `tools/streaming_stt_eval.py`, `tools/prepare_public_streaming_stt_corpus.py`, `tools/provision_moonshine_candidate.py`, `tools/prepare_nemotron_runtime.py`, `tools/provision_nemotron_candidate.py`, `tools/streaming_stt/`, ADR-0089/0090/0091 | deterministic streaming plus preparation/provision tests; candidate-specific opt-in exact smoke separately |
+| Exact Parakeet NeMo reference | `tools/prepare_parakeet_runtime.py`, `tools/provision_parakeet_realtime_eou_candidate.py`, `tools/streaming_stt/adapters/parakeet_realtime_eou.py`, `tools/streaming_stt_eval.py`, ADR-0099 | deterministic no-model contracts, then an explicit receipt-bound GPU run; benchmark only, never an app entry point |
 | Answering-model adoption | `tools/conversation_eval/`, ADR-0051/0067/0068 | deterministic trace, then production-hybrid real-model A/B; label all-role stress explicitly |
 | Autonomous voice verdict | `tools/autotest/verdicts.py`, `tools/autotest/README.md` | pure verdict tests, then selected cable/delay/speaker runner; cable is incomplete |
 | Silent delay route | `tools/autotest/acoustics.py`, `tools/autotest/audio.py`, `tools/autotest/voice_loop.py`, `core/readiness.py`, ADR-0069/0070 | deterministic contract/topology/stream-binding/command-timing tests, then two fresh exact delay runs; never substitute host EC or physical evidence |
@@ -45,4 +46,5 @@
 
 ## Known pitfalls
 - Headless tests do not prove live microphone/speaker behavior; state manual validation needs.
+- A native terminal marker does not itself authorize a reply; only complete-source EOU may do so (ADR-0099).
 - Do not commit local audio artifacts or logs.

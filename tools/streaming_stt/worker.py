@@ -31,6 +31,7 @@ _BOOTSTRAP_SOURCE_FILES = (
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
     "tools/streaming_stt/adapters/zipformer.py",
     "tools/streaming_stt/bounded_io.py",
     "tools/streaming_stt/manifest.py",
@@ -420,8 +421,10 @@ from tools.streaming_stt.manifest import (  # noqa: E402
     ManifestError,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
+    PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     NemotronConfig,
+    ParakeetRealtimeEouConfig,
     WorkerManifest,
     load_worker_manifest,
 )
@@ -432,6 +435,7 @@ from tools.streaming_stt.protocol import (  # noqa: E402
     MAX_PARTIALS_PER_CASE,
     MAX_PCM_BYTES,
     MAX_STREAM_SAMPLES,
+    NATIVE_ENDPOINT_PROTOCOL_VERSION,
     PROTOCOL_VERSION,
     ProtocolError,
     ShutdownRequest,
@@ -441,10 +445,10 @@ from tools.streaming_stt.protocol import (  # noqa: E402
 )
 from tools.streaming_stt.runtime_receipt import (  # noqa: E402
     NEMOTRON_RUNTIME_TREE_LIMITS,
+    PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
     load_runtime_tree_receipt,
     verify_moonshine_wheel_install,
-    verify_runtime_tree_receipt,
     verify_venv_runtime_location,
 )
 from tools.streaming_stt.source_bundle import (  # noqa: E402
@@ -454,13 +458,22 @@ from tools.streaming_stt.source_bundle import (  # noqa: E402
 )
 
 
-_SAFE_FATAL = {
-    "v": PROTOCOL_VERSION,
-    "id": "invalid",
-    "type": "error",
-    "code": "invalid_request",
-    "fatal": True,
-}
+def _wire_protocol_version(manifest: WorkerManifest) -> int:
+    return (
+        NATIVE_ENDPOINT_PROTOCOL_VERSION
+        if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
+        else PROTOCOL_VERSION
+    )
+
+
+def _safe_fatal(protocol_version: int) -> dict[str, object]:
+    return {
+        "v": protocol_version,
+        "id": "invalid",
+        "type": "error",
+        "code": "invalid_request",
+        "fatal": True,
+    }
 
 
 def _write(value: Mapping[str, object]) -> None:
@@ -473,6 +486,132 @@ def _resource_dict(value) -> dict[str, object]:
         "rss_mb": value.rss_mb,
         "threads": value.threads,
         "vram_mb": value.vram_mb,
+    }
+
+
+def _native_final_payload(
+    request: TranscribeRequest,
+    case,
+    *,
+    partial_count: int,
+) -> dict[str, object]:
+    """Validate and serialize exact adapter-owned native endpoint evidence."""
+
+    integer_fields = {
+        "source_samples": getattr(case, "source_samples", None),
+        "source_samples_consumed": getattr(case, "source_samples_consumed", None),
+        "declared_tail_samples": getattr(case, "declared_tail_samples", None),
+        "tail_samples_consumed": getattr(case, "tail_samples_consumed", None),
+        "chunks_yielded": getattr(case, "chunks_yielded", None),
+        "model_padding_samples": getattr(case, "model_padding_samples", None),
+    }
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0
+        for value in integer_fields.values()
+    ):
+        raise ProtocolError()
+    source_seen = integer_fields["source_samples_consumed"]
+    tail_seen = integer_fields["tail_samples_consumed"]
+    source_samples = integer_fields["source_samples"]
+    declared_tail_samples = integer_fields["declared_tail_samples"]
+    chunks = integer_fields["chunks_yielded"]
+    model_padding = integer_fields["model_padding_samples"]
+    assert isinstance(source_seen, int)
+    assert isinstance(tail_seen, int)
+    assert isinstance(source_samples, int)
+    assert isinstance(declared_tail_samples, int)
+    assert isinstance(chunks, int)
+    assert isinstance(model_padding, int)
+    samples_seen = source_seen + tail_seen
+    reason = getattr(case, "endpoint_reason", None)
+    native = getattr(case, "native_endpoint", None)
+    probability = getattr(case, "endpoint_probability", None)
+    endpoint_sample = getattr(case, "endpoint_sample", None)
+    endpoint_latency_ms = getattr(case, "endpoint_latency_ms", None)
+    authoritative = getattr(case, "authoritative", None)
+    expected_chunks = (
+        samples_seen + request.stream.chunk_samples - 1
+    ) // request.stream.chunk_samples
+    expected_model_padding = expected_chunks * request.stream.chunk_samples - samples_seen
+    expected_endpoint_sample = samples_seen + expected_model_padding
+    if (
+        source_samples != request.pcm.samples
+        or declared_tail_samples != request.stream.tail_padding_samples
+        or source_seen > request.pcm.samples
+        or tail_seen > request.stream.tail_padding_samples
+        or (source_seen < request.pcm.samples and tail_seen != 0)
+        or samples_seen <= 0
+        or chunks != expected_chunks
+        or model_padding != expected_model_padding
+        or model_padding > MAX_MODEL_PADDING_SAMPLES
+        or type(native) is not bool
+        or type(authoritative) is not bool
+    ):
+        raise ProtocolError()
+    expected_authoritative = (
+        native and reason == "eou" and source_seen == request.pcm.samples
+    )
+    expected_latency = (
+        (tail_seen + expected_model_padding) * 1000.0 / request.pcm.sample_rate
+        if expected_authoritative
+        else None
+    )
+    if native:
+        if (
+            reason not in {"eou", "eob"}
+            or isinstance(probability, bool)
+            or not isinstance(probability, (int, float))
+            or not math.isfinite(float(probability))
+            or not 0.0 <= float(probability) <= 1.0
+            or endpoint_sample != expected_endpoint_sample
+            or authoritative != expected_authoritative
+            or (expected_latency is None and endpoint_latency_ms is not None)
+            or (
+                expected_latency is not None
+                and (
+                    not isinstance(endpoint_latency_ms, (int, float))
+                    or isinstance(endpoint_latency_ms, bool)
+                    or abs(float(endpoint_latency_ms) - expected_latency) > 1e-6
+                )
+            )
+        ):
+            raise ProtocolError()
+    elif (
+        reason != "tail_exhausted"
+        or probability is not None
+        or endpoint_sample is not None
+        or endpoint_latency_ms is not None
+        or authoritative
+        or source_seen != request.pcm.samples
+        or tail_seen != request.stream.tail_padding_samples
+    ):
+        raise ProtocolError()
+    return {
+        "v": NATIVE_ENDPOINT_PROTOCOL_VERSION,
+        "id": request.request_id,
+        "type": "native_final",
+        "seq": partial_count,
+        "text": case.final,
+        "samples_seen": samples_seen,
+        "elapsed_ms": case.elapsed_ms,
+        "finalization_ms": case.finalization_ms,
+        "compute_ms": case.compute_ms,
+        "audio_seconds": request.pcm.samples / request.pcm.sample_rate,
+        "chunks": chunks,
+        "deadline_misses": case.deadline_misses,
+        "max_backlog_ms": case.max_backlog_ms,
+        "model_padding_samples": model_padding,
+        "resources": _resource_dict(case.resources),
+        "source_samples": request.pcm.samples,
+        "source_samples_consumed": source_seen,
+        "declared_tail_samples": request.stream.tail_padding_samples,
+        "tail_samples_consumed": tail_seen,
+        "endpoint_reason": reason,
+        "native_endpoint": native,
+        "endpoint_probability": probability,
+        "endpoint_sample": endpoint_sample,
+        "endpoint_latency_ms": endpoint_latency_ms,
+        "authoritative": authoritative,
     }
 
 
@@ -510,14 +649,20 @@ def _verify_runtime_receipt(
         return None
     if manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
         return None
-    if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
+    if manifest.adapter not in {
+        MOONSHINE_ADAPTER,
+        NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         raise ManifestError()
     artifact = manifest.artifact_by_name.get("runtime-receipt")
     if artifact is None:
         raise ManifestError()
-    limits = (
-        NEMOTRON_RUNTIME_TREE_LIMITS if manifest.adapter == NEMOTRON_ADAPTER else None
-    )
+    limits = {
+        MOONSHINE_ADAPTER: None,
+        NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
+        PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
+    }[manifest.adapter]
     try:
         receipt = load_runtime_tree_receipt(
             artifact.path,
@@ -525,10 +670,6 @@ def _verify_runtime_receipt(
             **({} if limits is None else {"limits": limits}),
         )
         verify_venv_runtime_location(receipt, manifest.python.path)
-        verify_runtime_tree_receipt(
-            receipt,
-            **({} if limits is None else {"limits": limits}),
-        )
         if manifest.adapter == MOONSHINE_ADAPTER:
             wheel = manifest.artifact_by_name.get("release-wheel")
             if wheel is None:
@@ -546,7 +687,7 @@ def _verify_runtime_receipt(
         or Path(os.path.abspath(sys.executable)) != manifest.python.path
     ):
         raise ManifestError()
-    if manifest.adapter == NEMOTRON_ADAPTER:
+    if manifest.adapter in {NEMOTRON_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER}:
         config = manifest.adapter_config
         wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
         maximum_file = max(
@@ -554,7 +695,7 @@ def _verify_runtime_receipt(
             default=0,
         )
         if (
-            not isinstance(config, NemotronConfig)
+            not isinstance(config, (NemotronConfig, ParakeetRealtimeEouConfig))
             or wheel_lock is None
             or wheel_lock.sha256 != config.wheel_lock_sha256
             or receipt.content_digest != config.runtime_content_sha256
@@ -563,11 +704,11 @@ def _verify_runtime_receipt(
             or maximum_file != config.runtime_maximum_file_bytes
         ):
             raise ManifestError()
-        _verify_nemotron_venv_layout(manifest, receipt)
+        _verify_python312_venv_layout(manifest, receipt)
     return receipt
 
 
-def _verify_nemotron_venv_layout(
+def _verify_python312_venv_layout(
     manifest: WorkerManifest,
     receipt: RuntimeTreeReceipt,
 ) -> None:
@@ -609,15 +750,24 @@ def _verify_worker_state(
     return _verify_runtime_receipt(manifest)
 
 
-def _verify_nemotron_python_version(manifest: WorkerManifest) -> None:
-    if manifest.adapter != NEMOTRON_ADAPTER:
+def _verify_candidate_python_version(manifest: WorkerManifest) -> None:
+    if manifest.adapter not in {
+        NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         return
     config = manifest.adapter_config
     if (
-        not isinstance(config, NemotronConfig)
+        not isinstance(config, (NemotronConfig, ParakeetRealtimeEouConfig))
         or platform.python_version() != config.python_version
     ):
         raise ManifestError()
+
+
+def _verify_nemotron_python_version(manifest: WorkerManifest) -> None:
+    """Retain the existing test seam while applying the shared GPU check."""
+
+    _verify_candidate_python_version(manifest)
 
 
 def _activate_candidate_runtime(
@@ -647,12 +797,16 @@ def _activate_candidate_runtime(
         ):
             raise ManifestError()
         return
-    if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
+    if manifest.adapter not in {
+        MOONSHINE_ADAPTER,
+        NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         raise ManifestError()
-    module_prefixes = (
-        ("moonshine_voice",)
-        if manifest.adapter == MOONSHINE_ADAPTER
-        else (
+    if manifest.adapter == MOONSHINE_ADAPTER:
+        module_prefixes = ("moonshine_voice",)
+    elif manifest.adapter == NEMOTRON_ADAPTER:
+        module_prefixes = (
             "librosa",
             "llvmlite",
             "numba",
@@ -667,7 +821,21 @@ def _activate_candidate_runtime(
             "safetensors",
             "huggingface_hub",
         )
-    )
+    else:
+        module_prefixes = (
+            "hydra",
+            "lightning",
+            "librosa",
+            "lhotse",
+            "nemo",
+            "numpy",
+            "omegaconf",
+            "sentencepiece",
+            "soundfile",
+            "torch",
+            "torchaudio",
+            "transformers",
+        )
     if (
         receipt is None
         or sys.flags.no_site != 1
@@ -716,7 +884,7 @@ def _create_adapter(manifest: WorkerManifest):
     if len(model_roots) != 1:
         raise ManifestError()
     model_root = model_roots.pop()
-    if manifest.adapter == NEMOTRON_ADAPTER:
+    if manifest.adapter in {NEMOTRON_ADAPTER, PARAKEET_REALTIME_EOU_ADAPTER}:
         try:
             expected_model_files = {artifact.path.name for artifact in model_artifacts}
             if set(os.listdir(model_root)) != expected_model_files:
@@ -760,6 +928,23 @@ def _create_adapter(manifest: WorkerManifest):
             SherpaZipformerAdapter(model_root, config=manifest.adapter_config),
             SherpaZipformerAdapterError,
         )
+    if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        if not isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig):
+            raise ManifestError()
+        if len(model_artifacts) != 1:
+            raise ManifestError()
+        from tools.streaming_stt.adapters.parakeet_realtime_eou import (  # noqa: PLC0415
+            ParakeetRealtimeEouAdapter,
+            ParakeetRealtimeEouAdapterError,
+        )
+
+        return (
+            ParakeetRealtimeEouAdapter(
+                model_artifacts[0].path,
+                config=manifest.adapter_config,
+            ),
+            ParakeetRealtimeEouAdapterError,
+        )
     raise ManifestError()
 
 
@@ -782,7 +967,8 @@ def _run(
         required_files=WORKER_SOURCE_FILES,
     )
     manifest = load_worker_manifest(manifest_path)
-    _verify_nemotron_python_version(manifest)
+    _verify_candidate_python_version(manifest)
+    protocol_version = _wire_protocol_version(manifest)
     staged_worker = source_bundle.file_by_path.get(source_bundle.worker_relative_path)
     if (
         source_bundle.tree_sha256 != _SOURCE_BUNDLE_SHA256
@@ -805,7 +991,7 @@ def _run(
     adapter, adapter_error = _create_adapter(manifest)
     _write(
         {
-            "v": PROTOCOL_VERSION,
+            "v": protocol_version,
             "type": "ready",
             "model_id": manifest.model_id,
             "manifest_sha256": manifest.digest,
@@ -831,7 +1017,10 @@ def _run(
             try:
                 request = parse_request(raw)
             except ProtocolError:
-                _write(_SAFE_FATAL)
+                _write(_safe_fatal(protocol_version))
+                return 2
+            if request.protocol_version != protocol_version:
+                _write(_safe_fatal(protocol_version))
                 return 2
             try:
                 if isinstance(request, ShutdownRequest):
@@ -840,12 +1029,12 @@ def _run(
                     _verify_worker_state(manifest, source_bundle)
                     _write(
                         {
-                            "v": PROTOCOL_VERSION,
+                            "v": protocol_version,
                             "id": request.request_id,
                             "type": "shutdown",
                         }
                     )
-                    _write({"v": PROTOCOL_VERSION, "type": "bye"})
+                    _write({"v": protocol_version, "type": "bye"})
                     return 0
 
                 pcm = _load_pcm(request, scratch_root)
@@ -863,7 +1052,7 @@ def _run(
                         raise ProtocolError()
                     _write(
                         {
-                            "v": PROTOCOL_VERSION,
+                            "v": protocol_version,
                             "id": request.request_id,
                             "type": "partial",
                             "seq": partial_count,
@@ -878,6 +1067,15 @@ def _run(
                 case = adapter.transcribe(request, emit_partial=emit_partial)
                 if len(case.partials) != partial_count:
                     raise ProtocolError()
+                if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+                    _write(
+                        _native_final_payload(
+                            request,
+                            case,
+                            partial_count=partial_count,
+                        )
+                    )
+                    continue
                 model_padding_samples = getattr(case, "model_padding_samples", 0)
                 if (
                     isinstance(model_padding_samples, bool)
@@ -902,7 +1100,7 @@ def _run(
                         raise ProtocolError()
                 _write(
                     {
-                        "v": PROTOCOL_VERSION,
+                        "v": protocol_version,
                         "id": request.request_id,
                         "type": "final",
                         "seq": partial_count,
@@ -923,7 +1121,7 @@ def _run(
                 fatal = manifest.adapter != "fake-json-v1"
                 _write(
                     {
-                        "v": PROTOCOL_VERSION,
+                        "v": protocol_version,
                         "id": request.request_id,
                         "type": "error",
                         "code": ("candidate_failure" if fatal else "invalid_case"),
@@ -972,7 +1170,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception:  # noqa: BLE001 - worker stderr/stdout stay detail-free
         try:
-            _write(_SAFE_FATAL)
+            _write(_safe_fatal(PROTOCOL_VERSION))
         except Exception:  # noqa: BLE001 - the protocol itself may be unavailable
             pass
         return 2

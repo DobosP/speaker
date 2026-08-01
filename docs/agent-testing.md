@@ -21,7 +21,7 @@
 | Recorded owner-voice landing gate | `SPEAKER_REQUIRE_RECORDED=1 /home/dobo/work/speaker/.venv/bin/python -m pytest tests/replay_recorded_voice_test.py -q` | reference host: exactly 9 passed/0 skipped (six utterances, one same-session multi-turn, two causal fake-stream owner talk-overs); missing private clips/models fail (ADR-0053) |
 | Recording-driven STT accuracy | `/home/dobo/work/speaker/.venv/bin/python -m tools.recorded_stt_eval` | aggregate-only streaming/offline/selected WER+CER over every hash-pinned labelled clip; each selected offline recognizer/verifier must complete a decode with zero error outcomes; no runtime, TTS, tools, network, or audio device (ADR-0078/0080) |
 | Capture-loop replay contracts | `/home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_capture_replay_corpus.py tests/test_capture_replay.py tests/test_capture_replay_metrics.py tests/test_capture_replay_eval.py tests/test_prepare_ami_capture_replay.py -q` | strict corpus, paced Sherpa seam, fixed aggregate conditions/privacy, evaluator, and deterministic AMI preparation pass without a model or audio device (ADR-0092) |
-| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine, and Nemotron private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091) |
+| Isolated streaming-STT harness | `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_prepare_public_streaming_stt_corpus.py tests/test_prepare_nemotron_runtime.py tests/test_prepare_parakeet_runtime.py tests/test_provision_moonshine_candidate.py tests/test_provision_nemotron_candidate.py tests/test_provision_parakeet_realtime_eou_candidate.py tests/test_streaming_stt_*.py -m "not real_model" -q` | fake, Moonshine, Nemotron, and Parakeet private-source/exact-runtime, bounded protocol, sandbox, provenance, aggregate/privacy, and teardown contracts pass (ADR-0089/0090/0091/0099) |
 | Public matrix + production-model STT control | `SPEAKER_TEST_LOG=0 /home/dobo/work/speaker/.venv/bin/python -B -m pytest tests/test_public_voice_eval_matrix.py tests/test_streaming_stt_zipformer.py -m "not real_model" -q` | no-download license/receipt/selection/privacy contracts and exact fp32 Zipformer Bubblewrap control pass without a corpus, model load, network, or audio device (ADR-0098) |
 | Exact Moonshine worker smoke | set absolute `SPEAKER_MOONSHINE_WORKER_MANIFEST` and `SPEAKER_MOONSHINE_STREAMING_CORPUS`, then run `/home/dobo/work/speaker/.venv/bin/python -m pytest tests/test_streaming_stt_moonshine_worker.py -m real_model -q` | one exact pre-provisioned case runs; no install, download, network, audio device, or adoption claim (ADR-0090) |
 | Exact Nemotron worker smoke | prepare and provision new private paths as shown below, then run the candidate-specific `real_model` command | one exact pre-provisioned case passes through no-network Bubblewrap and the bound inputs still pass close-time rehash; no audio device or adoption claim (ADR-0091) |
@@ -83,6 +83,76 @@ It has no playback-reference track, target commands, owner voice, or physical
 device, so it cannot grade AEC, barge-in, identity, authority, or live quality.
 Do not pass `--provider cuda` unless the installed ONNX Runtime exposes
 `CUDAExecutionProvider`; the evaluator refuses Sherpa's silent CPU fallback.
+
+## Exact Parakeet Realtime EOU reference setup
+
+Start with an already-downloaded private 183-wheel closure, the exact local
+`.nemo` model, and a prepared schema-v2 streaming corpus. Every output below
+must be a new absolute private path:
+
+```bash
+export PARAKEET_WHEELHOUSE=/absolute/private/parakeet-wheelhouse
+export PARAKEET_MODEL=/absolute/private/parakeet-model
+export PARAKEET_LOCK=/absolute/private/new-parakeet-runtime-wheels.lock.json
+export PARAKEET_RUNTIME=/absolute/private/new-parakeet-runtime
+export PARAKEET_RECEIPT=/absolute/private/new-parakeet-runtime-receipt.json
+export PARAKEET_PROVISION=/absolute/private/new-parakeet-candidate
+export STREAMING_CORPUS=/absolute/private/prepared-public-corpus/corpus.json
+export PARAKEET_BURST_SCRATCH=/absolute/private/new-parakeet-burst-scratch
+export PARAKEET_REALTIME_SCRATCH=/absolute/private/new-parakeet-realtime-scratch
+export PARAKEET_BURST_REPORT=/absolute/private/new-parakeet-burst-report.json
+export PARAKEET_REALTIME_REPORT=/absolute/private/new-parakeet-realtime-report.json
+```
+
+Copy the reviewed lock, extract the runtime without executing installer code,
+and bind the runtime/model into a new schema-v5 manifest:
+
+```bash
+install -m 600 \
+  "$PWD/tools/streaming_stt/parakeet-realtime-eou-runtime-wheels.lock.json" \
+  "$PARAKEET_LOCK"
+/home/dobo/work/speaker/.venv/bin/python -B -m tools.prepare_parakeet_runtime \
+  --wheel-lock "$PARAKEET_LOCK" \
+  --wheelhouse "$PARAKEET_WHEELHOUSE" \
+  --system-python /usr/bin/python3.12 \
+  --python-version 3.12.3 \
+  --output-root "$PARAKEET_RUNTIME" \
+  --receipt "$PARAKEET_RECEIPT"
+/home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.provision_parakeet_realtime_eou_candidate \
+  --venv-root "$PARAKEET_RUNTIME" \
+  --model-root "$PARAKEET_MODEL" \
+  --wheelhouse "$PARAKEET_WHEELHOUSE" \
+  --output-dir "$PARAKEET_PROVISION"
+```
+
+Run one aggregate-only burst and one paced replay. The supervisor independently
+places the model worker in its verified 2-CPU/8-GiB/zero-swap scope; keep the
+controller one-threaded and low priority:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$PARAKEET_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 1 --chunk-samples 1280 \
+  --partial-interval-ms 80 --tail-padding-samples 48000 --pace burst \
+  --scratch-root "$PARAKEET_BURST_SCRATCH" --output "$PARAKEET_BURST_REPORT"
+
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+NUMEXPR_NUM_THREADS=1 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B -m tools.streaming_stt_eval \
+  --worker-manifest "$PARAKEET_PROVISION/worker-manifest.json" \
+  --corpus "$STREAMING_CORPUS" --repeats 1 --chunk-samples 1280 \
+  --partial-interval-ms 80 --tail-padding-samples 48000 --pace realtime \
+  --scratch-root "$PARAKEET_REALTIME_SCRATCH" \
+  --output "$PARAKEET_REALTIME_REPORT"
+```
+
+Preparation, provisioning, and evaluation refuse overwrite. They download
+nothing and open no audio device. Preserve reports privately. These runs begin
+after PCM is available and cannot validate capture, VAD, AEC, turn ground
+truth, conversational latency, live audio, or a default change (ADR-0099).
 
 ## Exact Nemotron benchmark setup
 

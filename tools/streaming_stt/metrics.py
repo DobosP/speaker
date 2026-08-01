@@ -15,7 +15,16 @@ from tools.recorded_stt_eval import (
 )
 
 from .corpus import LoadedCorpus
-from .protocol import CaseTrace, ReadyEvent
+from .manifest import PARAKEET_REALTIME_EOU_ADAPTER
+from .protocol import (
+    NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    CaseTrace,
+    NativeFinalEvent,
+    ReadyEvent,
+)
+
+
+_SAMPLE_RATE_HZ = 16_000
 
 
 @dataclass(frozen=True)
@@ -76,6 +85,20 @@ def _require_finite_aggregates(value: object) -> None:
             _require_finite_aggregates(item)
         return
     raise ValueError("unsupported aggregate")
+
+
+def _is_finite_number(value: object, *, minimum: float = 0.0) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        number = float(value)
+    except OverflowError:
+        return False
+    return math.isfinite(number) and number >= minimum
+
+
+def _is_nonnegative_int(value: object) -> bool:
+    return type(value) is int and value >= 0
 
 
 def _stability(trace: CaseTrace) -> tuple[float | None, float | None, int, int]:
@@ -139,6 +162,26 @@ def aggregate_metrics(
     peak_threads = ready.resources.threads
     peak_vram = ready.resources.vram_mb
     seen_runs: set[tuple[int, int]] = set()
+    endpoint_records: list[NativeFinalEvent] = []
+    endpoint_source_offered = 0
+    endpoint_source_consumed = 0
+    endpoint_tail_declared = 0
+    endpoint_tail_consumed = 0
+    endpoint_model_padding = 0
+    endpoint_reasons = {"eou": 0, "eob": 0, "tail_exhausted": 0}
+    endpoint_samples: list[float] = []
+    endpoint_latencies: list[float] = []
+    endpoint_probabilities: list[float] = []
+    authoritative_endpoints = 0
+    source_early_native_events = 0
+    source_early_eou_events = 0
+    source_early_eob_backchannels = 0
+
+    if (
+        ready.adapter == PARAKEET_REALTIME_EOU_ADAPTER
+        and ready.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
+    ):
+        raise ValueError("invalid native endpoint ready event")
 
     for record in records:
         if (
@@ -152,6 +195,115 @@ def aggregate_metrics(
         seen_runs.add((record.case_index, record.repeat))
         case = corpus.cases[record.case_index]
         trace = record.trace
+        if type(trace.final) is NativeFinalEvent:
+            final = trace.final
+            source_complete = final.source_samples_consumed == final.source_samples
+            expected_authoritative = (
+                final.native_endpoint
+                and final.endpoint_reason == "eou"
+                and source_complete
+            )
+            expected_audio_seconds = case.samples / _SAMPLE_RATE_HZ
+            if (
+                ready.adapter != PARAKEET_REALTIME_EOU_ADAPTER
+                or final.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
+                or type(final.native_endpoint) is not bool
+                or type(final.authoritative) is not bool
+                or any(
+                    event.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
+                    for event in trace.partials
+                )
+                or not _is_nonnegative_int(final.samples_seen)
+                or final.samples_seen == 0
+                or not _is_nonnegative_int(final.model_padding_samples)
+                or not _is_nonnegative_int(final.source_samples)
+                or final.source_samples == 0
+                or not _is_nonnegative_int(final.source_samples_consumed)
+                or not _is_nonnegative_int(final.declared_tail_samples)
+                or not _is_nonnegative_int(final.tail_samples_consumed)
+                or not _is_finite_number(final.audio_seconds)
+                or not math.isclose(
+                    float(final.audio_seconds),
+                    expected_audio_seconds,
+                    rel_tol=0.0,
+                    abs_tol=1e-9,
+                )
+                or final.source_samples != case.samples
+                or final.source_samples_consumed > final.source_samples
+                or final.tail_samples_consumed > final.declared_tail_samples
+                or (
+                    final.source_samples_consumed < final.source_samples
+                    and final.tail_samples_consumed != 0
+                )
+                or final.samples_seen
+                != final.source_samples_consumed + final.tail_samples_consumed
+                or (
+                    final.native_endpoint
+                    and (
+                        final.endpoint_reason not in {"eou", "eob"}
+                        or not _is_nonnegative_int(final.endpoint_sample)
+                        or final.endpoint_sample
+                        != final.samples_seen + final.model_padding_samples
+                        or not _is_finite_number(final.endpoint_probability)
+                        or float(final.endpoint_probability) > 1.0
+                        or final.authoritative != expected_authoritative
+                        or (
+                            final.authoritative
+                            and (
+                                not _is_finite_number(final.endpoint_latency_ms)
+                                or abs(
+                                    float(final.endpoint_latency_ms)
+                                    - (
+                                        final.tail_samples_consumed
+                                        + final.model_padding_samples
+                                    )
+                                    * 1000.0
+                                    / _SAMPLE_RATE_HZ
+                                )
+                                > 1e-6
+                            )
+                        )
+                        or (
+                            not final.authoritative
+                            and final.endpoint_latency_ms is not None
+                        )
+                    )
+                )
+                or (
+                    not final.native_endpoint
+                    and (
+                        final.endpoint_reason != "tail_exhausted"
+                        or final.endpoint_sample is not None
+                        or final.endpoint_probability is not None
+                        or final.endpoint_latency_ms is not None
+                        or final.authoritative
+                        or final.source_samples_consumed != final.source_samples
+                        or final.tail_samples_consumed != final.declared_tail_samples
+                    )
+                )
+            ):
+                raise ValueError("invalid native endpoint record")
+            endpoint_records.append(final)
+            endpoint_source_offered += final.source_samples
+            endpoint_source_consumed += final.source_samples_consumed
+            endpoint_tail_declared += final.declared_tail_samples
+            endpoint_tail_consumed += final.tail_samples_consumed
+            endpoint_model_padding += final.model_padding_samples
+            endpoint_reasons[final.endpoint_reason] += 1
+            if final.native_endpoint:
+                endpoint_samples.append(float(final.endpoint_sample))
+                endpoint_probabilities.append(float(final.endpoint_probability))
+                if final.authoritative:
+                    authoritative_endpoints += 1
+                    endpoint_latencies.append(float(final.endpoint_latency_ms))
+                if not source_complete:
+                    source_early_native_events += 1
+                    if final.endpoint_reason == "eou":
+                        source_early_eou_events += 1
+                    else:
+                        source_early_eob_backchannels += 1
+        elif ready.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+            raise ValueError("missing native endpoint record")
         hypothesis = trace.final.text
         if case.assertion == "transcript":
             accuracy = _sum_accuracy(
@@ -253,11 +405,76 @@ def aggregate_metrics(
             "cases_with_final_disagreement": repeat_disagreements,
         },
         "resources": {
-            "peak_rss_mb": round(peak_rss, 3),
+            "max_reported_rss_mb": round(peak_rss, 3),
             "peak_threads": peak_threads,
             "peak_vram_mb": None if peak_vram is None else round(peak_vram, 3),
-            "source": "worker_reported",
+            "source": "worker_ready_and_final_resource_reports",
+            "rss_scope": "maximum_of_ready_and_final_samples_not_process_peak",
         },
     }
+    if endpoint_records:
+        source_dropped = endpoint_source_offered - endpoint_source_consumed
+        tail_unconsumed = endpoint_tail_declared - endpoint_tail_consumed
+        model_input_samples = (
+            endpoint_source_consumed
+            + endpoint_tail_consumed
+            + endpoint_model_padding
+        )
+        model_input_seconds = model_input_samples / _SAMPLE_RATE_HZ
+        result["throughput"].update(
+            {
+                "aggregate_rtf_scope": "declared_source_audio",
+                "model_input_total_sec": round(model_input_seconds, 3),
+                "model_input_aggregate_rtf": (
+                    round((total_compute_ms / 1000.0) / model_input_seconds, 4)
+                    if model_input_seconds
+                    else 0.0
+                ),
+            }
+        )
+        result["endpointing"] = {
+            "evaluations": len(endpoint_records),
+            "native_endpoints": (
+                endpoint_reasons["eou"] + endpoint_reasons["eob"]
+            ),
+            "native_eou_events": endpoint_reasons["eou"],
+            "native_eob_backchannels": endpoint_reasons["eob"],
+            "authoritative_endpoints": authoritative_endpoints,
+            "early_source_endpoints": source_early_native_events,
+            "source_early_native_events": source_early_native_events,
+            "source_early_eou_events": source_early_eou_events,
+            "source_early_eob_backchannels": source_early_eob_backchannels,
+            "tail_exhaustions": endpoint_reasons["tail_exhausted"],
+            "reasons": endpoint_reasons,
+            "source_samples": {
+                "offered_total": endpoint_source_offered,
+                "consumed_total": endpoint_source_consumed,
+                "dropped_total": source_dropped,
+            },
+            "declared_tail_samples": {
+                "offered_total": endpoint_tail_declared,
+                "consumed_total": endpoint_tail_consumed,
+                "unconsumed_total": tail_unconsumed,
+            },
+            "terminal_model_padding_samples_total": endpoint_model_padding,
+            "model_input_samples_consumed_total": model_input_samples,
+            "endpoint_sample_p50": _percentile(endpoint_samples, 0.50),
+            "endpoint_sample_p95": _percentile(endpoint_samples, 0.95),
+            "authoritative_endpoint_latency_p50_ms": _percentile(
+                endpoint_latencies, 0.50
+            ),
+            "authoritative_endpoint_latency_p95_ms": _percentile(
+                endpoint_latencies, 0.95
+            ),
+            "authoritative_endpoint_latency_max_ms": _percentile(
+                endpoint_latencies, 1.0
+            ),
+            "endpoint_probability_p50": _percentile(
+                endpoint_probabilities, 0.50
+            ),
+            "endpoint_probability_p95": _percentile(
+                endpoint_probabilities, 0.95
+            ),
+        }
     _require_finite_aggregates(result)
     return result

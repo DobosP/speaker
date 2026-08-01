@@ -10,7 +10,14 @@ from pathlib import Path
 from typing import Mapping
 
 
+# Version 2 remains the wire contract for the existing fake, Moonshine,
+# Nemotron, and Zipformer workers. Version 3 is opt-in for recognizers that can
+# finish on a native endpoint before consuming the request's declared tail.
 PROTOCOL_VERSION = 2
+NATIVE_ENDPOINT_PROTOCOL_VERSION = 3
+SUPPORTED_PROTOCOL_VERSIONS = frozenset(
+    {PROTOCOL_VERSION, NATIVE_ENDPOINT_PROTOCOL_VERSION}
+)
 MAX_LINE_BYTES = 64 * 1024
 MAX_HYPOTHESIS_CHARS = 4096
 MAX_PARTIALS_PER_CASE = 256
@@ -18,10 +25,19 @@ MAX_PCM_BYTES = 8 * 1024 * 1024
 MAX_CORPUS_BYTES = 32 * 1024 * 1024
 MAX_STDOUT_BYTES = 4 * 1024 * 1024
 MAX_STDERR_BYTES = 256 * 1024
+# Protocol v2 keeps its original one-second tail and total-stream bounds.
+# Native-endpoint protocol v3 may offer up to three seconds so the model can
+# emit its own EOU/EOB marker without weakening any legacy worker contract.
 MAX_TAIL_PADDING_SAMPLES = 16_000
+MAX_NATIVE_TAIL_PADDING_SAMPLES = 48_000
 MAX_MODEL_PADDING_SAMPLES = 32_000
 MAX_STREAM_CHUNK_SAMPLES = 32_000
-MAX_STREAM_SAMPLES = MAX_PCM_BYTES // 4 + MAX_TAIL_PADDING_SAMPLES
+MAX_LEGACY_STREAM_SAMPLES = MAX_PCM_BYTES // 4 + MAX_TAIL_PADDING_SAMPLES
+MAX_NATIVE_STREAM_SAMPLES = MAX_PCM_BYTES // 4 + MAX_NATIVE_TAIL_PADDING_SAMPLES
+# Adapter-internal callers predate protocol v3 and use this as the widest
+# process-local allocation guard. Wire parsing below selects the exact bound
+# for each protocol version.
+MAX_STREAM_SAMPLES = MAX_NATIVE_STREAM_SAMPLES
 MAX_AUDIO_SECONDS = (MAX_PCM_BYTES // 4) / 16_000
 MAX_MODEL_LOAD_MS = 10 * 60 * 1000.0
 MAX_CASE_EVENT_MS = 60 * 60 * 1000.0
@@ -46,6 +62,7 @@ _STREAM_FIELDS = {
 }
 _RESOURCE_FIELDS = {"rss_mb", "threads", "vram_mb"}
 _RUNTIME_FIELDS = {"python", "platform"}
+_NATIVE_ENDPOINT_REASONS = {"eou", "eob", "tail_exhausted"}
 
 
 class ProtocolError(RuntimeError):
@@ -97,10 +114,11 @@ class TranscribeRequest:
     request_id: str
     pcm: PcmInput
     stream: StreamConfig
+    protocol_version: int = PROTOCOL_VERSION
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "v": PROTOCOL_VERSION,
+            "v": self.protocol_version,
             "id": self.request_id,
             "op": "transcribe",
             "pcm": self.pcm.as_dict(),
@@ -111,10 +129,11 @@ class TranscribeRequest:
 @dataclass(frozen=True)
 class ShutdownRequest:
     request_id: str
+    protocol_version: int = PROTOCOL_VERSION
 
     def as_dict(self) -> dict[str, object]:
         return {
-            "v": PROTOCOL_VERSION,
+            "v": self.protocol_version,
             "id": self.request_id,
             "op": "shutdown",
         }
@@ -136,6 +155,7 @@ class ReadyEvent:
     model_load_ms: float
     resources: ResourceUsage
     runtime: Mapping[str, str]
+    protocol_version: int = PROTOCOL_VERSION
 
 
 @dataclass(frozen=True)
@@ -146,6 +166,7 @@ class PartialEvent:
     samples_seen: int
     elapsed_ms: float
     decode_ms: float
+    protocol_version: int = PROTOCOL_VERSION
 
 
 @dataclass(frozen=True)
@@ -163,6 +184,37 @@ class FinalEvent:
     max_backlog_ms: float
     resources: ResourceUsage
     model_padding_samples: int = 0
+    protocol_version: int = PROTOCOL_VERSION
+
+
+@dataclass(frozen=True)
+class NativeFinalEvent:
+    """One terminal with exact early-endpoint consumption evidence."""
+
+    request_id: str
+    seq: int
+    text: str = field(repr=False)
+    samples_seen: int
+    elapsed_ms: float
+    finalization_ms: float
+    compute_ms: float
+    audio_seconds: float
+    chunks: int
+    deadline_misses: int
+    max_backlog_ms: float
+    resources: ResourceUsage
+    model_padding_samples: int
+    source_samples: int
+    source_samples_consumed: int
+    declared_tail_samples: int
+    tail_samples_consumed: int
+    endpoint_reason: str
+    native_endpoint: bool
+    endpoint_probability: float | None
+    endpoint_sample: int | None
+    endpoint_latency_ms: float | None
+    authoritative: bool
+    protocol_version: int = NATIVE_ENDPOINT_PROTOCOL_VERSION
 
 
 @dataclass(frozen=True)
@@ -170,27 +222,35 @@ class ErrorEvent:
     request_id: str
     code: str
     fatal: bool
+    protocol_version: int = PROTOCOL_VERSION
 
 
 @dataclass(frozen=True)
 class ShutdownEvent:
     request_id: str
+    protocol_version: int = PROTOCOL_VERSION
 
 
 @dataclass(frozen=True)
 class ByeEvent:
-    pass
+    protocol_version: int = PROTOCOL_VERSION
 
 
 Response = (
-    ReadyEvent | PartialEvent | FinalEvent | ErrorEvent | ShutdownEvent | ByeEvent
+    ReadyEvent
+    | PartialEvent
+    | FinalEvent
+    | NativeFinalEvent
+    | ErrorEvent
+    | ShutdownEvent
+    | ByeEvent
 )
 
 
 @dataclass(frozen=True)
 class CaseTrace:
     partials: tuple[PartialEvent, ...] = field(repr=False)
-    final: FinalEvent = field(repr=False)
+    final: FinalEvent | NativeFinalEvent = field(repr=False)
 
 
 def _bad() -> object:
@@ -279,6 +339,29 @@ def _number(value: object, *, maximum: float | None = None) -> float:
     return number
 
 
+def _optional_number(value: object, *, maximum: float | None = None) -> float | None:
+    if value is None:
+        return None
+    return _number(value, maximum=maximum)
+
+
+def _optional_integer(
+    value: object,
+    *,
+    minimum: int = 0,
+    maximum: int | None = None,
+) -> int | None:
+    if value is None:
+        return None
+    return _integer(value, minimum=minimum, maximum=maximum)
+
+
+def _protocol_version(value: object) -> int:
+    if type(value) is not int or value not in SUPPORTED_PROTOCOL_VERSIONS:
+        raise ProtocolError()
+    return value
+
+
 def _text(value: object) -> str:
     if not isinstance(value, str) or len(value) > MAX_HYPOTHESIS_CHARS:
         raise ProtocolError()
@@ -327,7 +410,7 @@ def _pcm(value: object) -> PcmInput:
     )
 
 
-def _stream(value: object) -> StreamConfig:
+def _stream(value: object, *, protocol_version: int) -> StreamConfig:
     if not isinstance(value, dict) or set(value) != _STREAM_FIELDS:
         raise ProtocolError()
     pace = value.get("pace")
@@ -347,7 +430,11 @@ def _stream(value: object) -> StreamConfig:
         ),
         tail_padding_samples=_integer(
             value.get("tail_padding_samples"),
-            maximum=MAX_TAIL_PADDING_SAMPLES,
+            maximum=(
+                MAX_NATIVE_TAIL_PADDING_SAMPLES
+                if protocol_version == NATIVE_ENDPOINT_PROTOCOL_VERSION
+                else MAX_TAIL_PADDING_SAMPLES
+            ),
         ),
     )
 
@@ -356,30 +443,35 @@ def parse_request(raw: bytes) -> TranscribeRequest | ShutdownRequest:
     value = strict_json_bytes(raw)
     if not isinstance(value, dict):
         raise ProtocolError()
-    if value.get("v") != PROTOCOL_VERSION or type(value.get("v")) is not int:
-        raise ProtocolError()
+    protocol_version = _protocol_version(value.get("v"))
     operation = value.get("op")
     if operation == "shutdown":
         if set(value) != {"v", "id", "op"}:
             raise ProtocolError()
-        return ShutdownRequest(request_id=_safe_id(value.get("id")))
+        return ShutdownRequest(
+            request_id=_safe_id(value.get("id")),
+            protocol_version=protocol_version,
+        )
     if operation != "transcribe" or set(value) != {"v", "id", "op", "pcm", "stream"}:
         raise ProtocolError()
     return TranscribeRequest(
         request_id=_safe_id(value.get("id")),
         pcm=_pcm(value.get("pcm")),
-        stream=_stream(value.get("stream")),
+        stream=_stream(value.get("stream"), protocol_version=protocol_version),
+        protocol_version=protocol_version,
     )
 
 
 def parse_response(raw: bytes) -> Response:
     value = strict_json_bytes(raw)
-    if (
-        not isinstance(value, dict)
-        or value.get("v") != PROTOCOL_VERSION
-        or type(value.get("v")) is not int
-    ):
+    if not isinstance(value, dict):
         raise ProtocolError()
+    protocol_version = _protocol_version(value.get("v"))
+    maximum_stream_samples = (
+        MAX_NATIVE_STREAM_SAMPLES
+        if protocol_version == NATIVE_ENDPOINT_PROTOCOL_VERSION
+        else MAX_LEGACY_STREAM_SAMPLES
+    )
     event_type = value.get("type")
     if event_type == "ready":
         expected = {
@@ -412,6 +504,7 @@ def parse_response(raw: bytes) -> Response:
             ),
             resources=_resources(value.get("resources")),
             runtime=dict(runtime),
+            protocol_version=protocol_version,
         )
     if event_type == "partial":
         if set(value) != {
@@ -431,7 +524,7 @@ def parse_response(raw: bytes) -> Response:
             text=_text(value.get("text")),
             samples_seen=_integer(
                 value.get("samples_seen"),
-                maximum=MAX_STREAM_SAMPLES,
+                maximum=maximum_stream_samples,
             ),
             elapsed_ms=_number(
                 value.get("elapsed_ms"),
@@ -441,9 +534,12 @@ def parse_response(raw: bytes) -> Response:
                 value.get("decode_ms"),
                 maximum=MAX_CASE_EVENT_MS,
             ),
+            protocol_version=protocol_version,
         )
     if event_type == "final":
-        if set(value) != {
+        if protocol_version != PROTOCOL_VERSION:
+            raise ProtocolError()
+        expected_fields = {
             "v",
             "id",
             "type",
@@ -459,7 +555,8 @@ def parse_response(raw: bytes) -> Response:
             "max_backlog_ms",
             "model_padding_samples",
             "resources",
-        }:
+        }
+        if set(value) != expected_fields:
             raise ProtocolError()
         return FinalEvent(
             request_id=_safe_id(value.get("id")),
@@ -467,7 +564,7 @@ def parse_response(raw: bytes) -> Response:
             text=_text(value.get("text")),
             samples_seen=_integer(
                 value.get("samples_seen"),
-                maximum=MAX_STREAM_SAMPLES,
+                maximum=MAX_LEGACY_STREAM_SAMPLES,
             ),
             elapsed_ms=_number(
                 value.get("elapsed_ms"),
@@ -488,11 +585,11 @@ def parse_response(raw: bytes) -> Response:
             chunks=_integer(
                 value.get("chunks"),
                 minimum=1,
-                maximum=MAX_STREAM_SAMPLES,
+                maximum=MAX_LEGACY_STREAM_SAMPLES,
             ),
             deadline_misses=_integer(
                 value.get("deadline_misses"),
-                maximum=MAX_STREAM_SAMPLES,
+                maximum=MAX_LEGACY_STREAM_SAMPLES,
             ),
             max_backlog_ms=_number(
                 value.get("max_backlog_ms"),
@@ -503,6 +600,165 @@ def parse_response(raw: bytes) -> Response:
                 value.get("model_padding_samples"),
                 maximum=MAX_MODEL_PADDING_SAMPLES,
             ),
+            protocol_version=protocol_version,
+        )
+    if event_type == "native_final":
+        if protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION:
+            raise ProtocolError()
+        expected_fields = {
+            "v",
+            "id",
+            "type",
+            "seq",
+            "text",
+            "samples_seen",
+            "elapsed_ms",
+            "finalization_ms",
+            "compute_ms",
+            "audio_seconds",
+            "chunks",
+            "deadline_misses",
+            "max_backlog_ms",
+            "model_padding_samples",
+            "resources",
+            "source_samples",
+            "source_samples_consumed",
+            "declared_tail_samples",
+            "tail_samples_consumed",
+            "endpoint_reason",
+            "native_endpoint",
+            "endpoint_probability",
+            "endpoint_sample",
+            "endpoint_latency_ms",
+            "authoritative",
+        }
+        if set(value) != expected_fields:
+            raise ProtocolError()
+        endpoint_reason = value.get("endpoint_reason")
+        native_endpoint = value.get("native_endpoint")
+        authoritative = value.get("authoritative")
+        if (
+            endpoint_reason not in _NATIVE_ENDPOINT_REASONS
+            or type(native_endpoint) is not bool
+            or type(authoritative) is not bool
+        ):
+            raise ProtocolError()
+        samples_seen = _integer(
+            value.get("samples_seen"),
+            maximum=MAX_NATIVE_STREAM_SAMPLES,
+        )
+        source_samples = _integer(
+            value.get("source_samples"),
+            minimum=1,
+            maximum=MAX_PCM_BYTES // 4,
+        )
+        source_samples_consumed = _integer(
+            value.get("source_samples_consumed"),
+            maximum=MAX_PCM_BYTES // 4,
+        )
+        declared_tail_samples = _integer(
+            value.get("declared_tail_samples"),
+            maximum=MAX_NATIVE_TAIL_PADDING_SAMPLES,
+        )
+        tail_samples_consumed = _integer(
+            value.get("tail_samples_consumed"),
+            maximum=MAX_NATIVE_TAIL_PADDING_SAMPLES,
+        )
+        model_padding_samples = _integer(
+            value.get("model_padding_samples"),
+            maximum=MAX_MODEL_PADDING_SAMPLES,
+        )
+        endpoint_probability = _optional_number(
+            value.get("endpoint_probability"), maximum=1.0
+        )
+        endpoint_sample = _optional_integer(
+            value.get("endpoint_sample"),
+            maximum=MAX_NATIVE_STREAM_SAMPLES + MAX_MODEL_PADDING_SAMPLES,
+        )
+        endpoint_latency_ms = _optional_number(
+            value.get("endpoint_latency_ms"),
+            maximum=MAX_CASE_EVENT_MS,
+        )
+        if (
+            samples_seen <= 0
+            or source_samples_consumed > source_samples
+            or tail_samples_consumed > declared_tail_samples
+            or (
+                source_samples_consumed < source_samples
+                and tail_samples_consumed != 0
+            )
+            or samples_seen != source_samples_consumed + tail_samples_consumed
+        ):
+            raise ProtocolError()
+        if native_endpoint:
+            source_complete = source_samples_consumed == source_samples
+            expected_authoritative = endpoint_reason == "eou" and source_complete
+            if (
+                endpoint_reason not in {"eou", "eob"}
+                or endpoint_probability is None
+                or endpoint_sample != samples_seen + model_padding_samples
+                or authoritative != expected_authoritative
+                or (authoritative and endpoint_latency_ms is None)
+                or (not authoritative and endpoint_latency_ms is not None)
+            ):
+                raise ProtocolError()
+        elif (
+            endpoint_reason != "tail_exhausted"
+            or endpoint_probability is not None
+            or endpoint_sample is not None
+            or endpoint_latency_ms is not None
+            or authoritative
+            or source_samples_consumed != source_samples
+            or tail_samples_consumed != declared_tail_samples
+        ):
+            raise ProtocolError()
+        return NativeFinalEvent(
+            request_id=_safe_id(value.get("id")),
+            seq=_integer(value.get("seq"), maximum=MAX_PARTIALS_PER_CASE),
+            text=_text(value.get("text")),
+            samples_seen=samples_seen,
+            elapsed_ms=_number(
+                value.get("elapsed_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            finalization_ms=_number(
+                value.get("finalization_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            compute_ms=_number(
+                value.get("compute_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            audio_seconds=_number(
+                value.get("audio_seconds"),
+                maximum=MAX_AUDIO_SECONDS,
+            ),
+            chunks=_integer(
+                value.get("chunks"),
+                minimum=1,
+                maximum=MAX_NATIVE_STREAM_SAMPLES,
+            ),
+            deadline_misses=_integer(
+                value.get("deadline_misses"),
+                maximum=MAX_NATIVE_STREAM_SAMPLES,
+            ),
+            max_backlog_ms=_number(
+                value.get("max_backlog_ms"),
+                maximum=MAX_CASE_EVENT_MS,
+            ),
+            resources=_resources(value.get("resources")),
+            model_padding_samples=model_padding_samples,
+            source_samples=source_samples,
+            source_samples_consumed=source_samples_consumed,
+            declared_tail_samples=declared_tail_samples,
+            tail_samples_consumed=tail_samples_consumed,
+            endpoint_reason=str(endpoint_reason),
+            native_endpoint=bool(native_endpoint),
+            endpoint_probability=endpoint_probability,
+            endpoint_sample=endpoint_sample,
+            endpoint_latency_ms=endpoint_latency_ms,
+            authoritative=bool(authoritative),
+            protocol_version=protocol_version,
         )
     if event_type == "error":
         if set(value) != {"v", "id", "type", "code", "fatal"}:
@@ -514,13 +770,17 @@ def parse_response(raw: bytes) -> Response:
             request_id=_safe_id(value.get("id")),
             code=_safe_id(value.get("code")),
             fatal=fatal,
+            protocol_version=protocol_version,
         )
     if event_type == "shutdown":
         if set(value) != {"v", "id", "type"}:
             raise ProtocolError()
-        return ShutdownEvent(request_id=_safe_id(value.get("id")))
+        return ShutdownEvent(
+            request_id=_safe_id(value.get("id")),
+            protocol_version=protocol_version,
+        )
     if event_type == "bye":
         if set(value) != {"v", "type"}:
             raise ProtocolError()
-        return ByeEvent()
+        return ByeEvent(protocol_version=protocol_version)
     raise ProtocolError()

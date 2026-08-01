@@ -37,8 +37,10 @@ from tools.streaming_stt.manifest import (
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
+    PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     NemotronConfig,
+    ParakeetRealtimeEouConfig,
     SherpaZipformerConfig,
     WorkerManifest,
     load_worker_manifest,
@@ -46,6 +48,8 @@ from tools.streaming_stt.manifest import (
 from tools.streaming_stt.metrics import RunRecord, aggregate_metrics
 from tools.streaming_stt.protocol import (
     MAX_PCM_BYTES,
+    NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    PROTOCOL_VERSION,
     PcmInput,
     StreamConfig,
     TranscribeRequest,
@@ -54,9 +58,9 @@ from tools.streaming_stt.protocol import (
 )
 from tools.streaming_stt.runtime_receipt import (
     NEMOTRON_RUNTIME_TREE_LIMITS,
+    PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceiptError,
     load_runtime_tree_receipt,
-    verify_runtime_tree_receipt,
     verify_venv_runtime_location,
 )
 from tools.streaming_stt.supervisor import StreamingWorker
@@ -85,6 +89,16 @@ _SAFE_ERROR = {
     "ok": False,
     "error": "streaming_stt_prerequisites_unavailable",
 }
+_PARAKEET_CGROUP_EVIDENCE = {
+    "kind": "systemd-user-scope-cgroup-v2",
+    "memory_high_bytes": 6_442_450_944,
+    "memory_max_bytes": 8_589_934_592,
+    "memory_swap_max_bytes": 0,
+    "cpu_quota_percent": 200,
+    "tasks_max": 128,
+    "oom_policy": "kill",
+    "verified": True,
+}
 _EVALUATOR_FILES = (
     "tools/streaming_stt_eval.py",
     "tools/streaming_stt/bounded_io.py",
@@ -101,6 +115,7 @@ _EVALUATOR_FILES = (
     "tools/streaming_stt/adapters/fake.py",
     "tools/streaming_stt/adapters/moonshine.py",
     "tools/streaming_stt/adapters/nemotron.py",
+    "tools/streaming_stt/adapters/parakeet_realtime_eou.py",
     "tools/streaming_stt/adapters/zipformer.py",
     "tools/__init__.py",
     "tools/recorded_stt_eval.py",
@@ -314,6 +329,7 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
         _FAKE_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     }:
         raise ValueError
@@ -338,7 +354,12 @@ def _evaluator_binding(adapter: str) -> dict[str, object]:
             )
         ),
         "production_model": adapter == SHERPA_ZIPFORMER_ADAPTER,
-        "real_candidate_model": adapter in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER},
+        "real_candidate_model": adapter
+        in {
+            MOONSHINE_ADAPTER,
+            NEMOTRON_ADAPTER,
+            PARAKEET_REALTIME_EOU_ADAPTER,
+        },
         "model_executed": adapter != _FAKE_ADAPTER,
         "files": files,
     }
@@ -353,14 +374,19 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
         if "runtime-receipt" in manifest.artifact_by_name:
             raise ValueError
         return None
-    if manifest.adapter not in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
+    if manifest.adapter not in {
+        MOONSHINE_ADAPTER,
+        NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
+    }:
         raise ValueError
     artifact = manifest.artifact_by_name.get("runtime-receipt")
     if artifact is None:
         raise ValueError
-    limits = (
-        NEMOTRON_RUNTIME_TREE_LIMITS if manifest.adapter == NEMOTRON_ADAPTER else None
-    )
+    limits = {
+        NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
+        PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
+    }.get(manifest.adapter)
     try:
         receipt = load_runtime_tree_receipt(
             artifact.path,
@@ -368,10 +394,6 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
             **({} if limits is None else {"limits": limits}),
         )
         verify_venv_runtime_location(receipt, manifest.python.path)
-        verify_runtime_tree_receipt(
-            receipt,
-            **({} if limits is None else {"limits": limits}),
-        )
     except RuntimeTreeReceiptError:
         raise ValueError from None
     if receipt.digest != artifact.sha256:
@@ -382,6 +404,20 @@ def _verified_runtime_receipt_digest(manifest: WorkerManifest) -> str | None:
         maximum_file = max((item.size_bytes for item in receipt.files), default=0)
         if (
             not isinstance(config, NemotronConfig)
+            or wheel_lock is None
+            or wheel_lock.sha256 != config.wheel_lock_sha256
+            or receipt.content_digest != config.runtime_content_sha256
+            or receipt.file_count != config.runtime_file_count
+            or receipt.total_size_bytes != config.runtime_total_size_bytes
+            or maximum_file != config.runtime_maximum_file_bytes
+        ):
+            raise ValueError
+    if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        config = manifest.adapter_config
+        wheel_lock = manifest.artifact_by_name.get("runtime-wheel-lock")
+        maximum_file = max((item.size_bytes for item in receipt.files), default=0)
+        if (
+            not isinstance(config, ParakeetRealtimeEouConfig)
             or wheel_lock is None
             or wheel_lock.sha256 != config.wheel_lock_sha256
             or receipt.content_digest != config.runtime_content_sha256
@@ -430,11 +466,16 @@ def _worker_binding(
         MOONSHINE_ADAPTER: 2,
         NEMOTRON_ADAPTER: 3,
         SHERPA_ZIPFORMER_ADAPTER: 4,
+        PARAKEET_REALTIME_EOU_ADAPTER: 5,
     }.get(manifest.adapter)
     if (
         expected_schema is None
         or manifest.schema_version != expected_schema
         or manifest.adapter_config is None
+        or (
+            manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
+            and not isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig)
+        )
         or (
             manifest.adapter == SHERPA_ZIPFORMER_ADAPTER
             and runtime_receipt_sha256 is not None
@@ -456,6 +497,11 @@ def _worker_binding(
         },
         NEMOTRON_ADAPTER: set(NemotronConfig().as_dict()),
         SHERPA_ZIPFORMER_ADAPTER: set(SherpaZipformerConfig().as_dict()),
+        PARAKEET_REALTIME_EOU_ADAPTER: (
+            set(manifest.adapter_config.as_dict())
+            if isinstance(manifest.adapter_config, ParakeetRealtimeEouConfig)
+            else set()
+        ),
     }[manifest.adapter]
     if set(adapter_config) != expected_config_fields:
         raise ValueError
@@ -471,16 +517,58 @@ def _worker_binding(
     return binding
 
 
+def _validated_parakeet_cgroup_evidence(
+    manifest: WorkerManifest,
+    value: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Bind only schema-v5 reports to the supervisor-verified hard scope."""
+
+    if manifest.adapter != PARAKEET_REALTIME_EOU_ADAPTER:
+        return None
+    if manifest.schema_version != 5 or not isinstance(value, Mapping):
+        raise ValueError
+    if set(value) != set(_PARAKEET_CGROUP_EVIDENCE) or any(
+        type(value[name]) is not type(expected) or value[name] != expected
+        for name, expected in _PARAKEET_CGROUP_EVIDENCE.items()
+    ):
+        raise ValueError
+    result = {
+        name: value[name]
+        for name in _PARAKEET_CGROUP_EVIDENCE
+    }
+    _strict_json(result)
+    return result
+
+
+def _worker_report(
+    manifest: WorkerManifest,
+    worker_binding: Mapping[str, object],
+    runtime: Mapping[str, str],
+    cgroup_evidence: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Add runtime provenance without changing any legacy report shape."""
+
+    report = dict(worker_binding)
+    report["runtime"] = dict(runtime)
+    cgroup = _validated_parakeet_cgroup_evidence(manifest, cgroup_evidence)
+    if cgroup is not None:
+        report["cgroup_evidence"] = cgroup
+    return report
+
+
 def _evidence_binding(
     adapter: str,
     *,
     pace: str,
-    adapter_config: NemotronConfig | SherpaZipformerConfig | None = None,
+    adapter_config: (
+        NemotronConfig | SherpaZipformerConfig | ParakeetRealtimeEouConfig | None
+    ) = None,
 ) -> dict[str, object]:
     if adapter not in {
         _FAKE_ADAPTER,
         MOONSHINE_ADAPTER,
         NEMOTRON_ADAPTER,
+        PARAKEET_REALTIME_EOU_ADAPTER,
         SHERPA_ZIPFORMER_ADAPTER,
     } or pace not in {
         "burst",
@@ -492,27 +580,42 @@ def _evidence_binding(
             raise ValueError
         config = adapter_config
         zipformer_config = None
+        parakeet_config = None
     elif adapter == SHERPA_ZIPFORMER_ADAPTER:
         if not isinstance(adapter_config, SherpaZipformerConfig):
             raise ValueError
         config = None
         zipformer_config = adapter_config
+        parakeet_config = None
+    elif adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        if not isinstance(adapter_config, ParakeetRealtimeEouConfig):
+            raise ValueError
+        config = None
+        zipformer_config = None
+        parakeet_config = adapter_config
     elif adapter_config is not None:
         raise ValueError
     else:
         config = None
         zipformer_config = None
+        parakeet_config = None
     candidate_executed = adapter != _FAKE_ADAPTER
     binding: dict[str, object] = {
         "kind": "bounded_pcm_streaming_harness",
         "fake_adapter": adapter == _FAKE_ADAPTER,
         "production_model": adapter == SHERPA_ZIPFORMER_ADAPTER,
-        "real_candidate_model": adapter in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER},
+        "real_candidate_model": adapter
+        in {
+            MOONSHINE_ADAPTER,
+            NEMOTRON_ADAPTER,
+            PARAKEET_REALTIME_EOU_ADAPTER,
+        },
         "model_executed": candidate_executed,
         "replay_pace": pace,
         "accelerated_replay": pace == "burst",
-        "conversational_latency_valid": (
-            pace == "realtime" and adapter != NEMOTRON_ADAPTER
+        "conversational_latency_valid": False,
+        "latency_evidence": (
+            "paced_replay_only" if pace == "realtime" else "accelerated_replay_only"
         ),
         "timing_scope": "adapter_after_pcm_load_to_result",
         "compute_rtf_scope": (
@@ -536,7 +639,7 @@ def _evidence_binding(
         "controller_ipc_included": False,
         "capture_to_text_latency": False,
         "vad": False,
-        "endpointing": False,
+        "endpointing": adapter == PARAKEET_REALTIME_EOU_ADAPTER,
         "aec": False,
         "live_hardware": False,
         "adoption_authority": False,
@@ -589,6 +692,50 @@ def _evidence_binding(
                         zipformer_config.rule2_min_trailing_silence,
                         zipformer_config.rule3_min_utterance_length,
                     ],
+                },
+            }
+        )
+    if parakeet_config is not None:
+        binding.update(
+            {
+                "final_source": (
+                    "candidate_native_eou_eob_or_declared_tail_exhaustion"
+                ),
+                "native_endpoint_source": "candidate_eou_eob",
+                "response_authority": "complete_source_native_eou_only",
+                "endpoint_stop_policy": (
+                    "first_native_endpoint_or_declared_tail_exhaustion"
+                ),
+                "endpoint_ground_truth": False,
+                "endpoint_latency_scope": (
+                    "declared_source_end_to_observed_native_chunk_boundary"
+                ),
+                "endpoint_sample_domain": (
+                    "model_input_including_terminal_zero_fill"
+                ),
+                "source_tail_accounting": "worker_reported_supervisor_validated",
+                "capture_accrual_included": False,
+                "resource_control": {
+                    "kind": "systemd-user-scope-cgroup-v2",
+                    "proof_source": "supervisor_cgroup_files_before_ready",
+                    "receipt_field": "worker.cgroup_evidence",
+                    "hard_host_memory_limit": True,
+                    "hard_cpu_quota": True,
+                    "hard_tasks_limit": True,
+                    "hard_vram_limit": False,
+                },
+                "native_stream_geometry": {
+                    "sample_rate_hz": parakeet_config.sample_rate,
+                    "chunk_samples": parakeet_config.native_chunk_samples,
+                    "chunk_ms": round(
+                        parakeet_config.native_chunk_samples
+                        * 1000.0
+                        / parakeet_config.sample_rate,
+                        3,
+                    ),
+                    "maximum_tail_padding_samples": (
+                        parakeet_config.maximum_tail_padding_samples
+                    ),
                 },
             }
         )
@@ -760,7 +907,11 @@ def _remove_private_scratch(
         raise ValueError
 
 
-def _validated_stream(stream: StreamConfig) -> StreamConfig:
+def _validated_stream(
+    stream: StreamConfig,
+    *,
+    protocol_version: int,
+) -> StreamConfig:
     probe = TranscribeRequest(
         request_id="stream-validation",
         pcm=PcmInput(
@@ -769,6 +920,7 @@ def _validated_stream(stream: StreamConfig) -> StreamConfig:
             samples=1,
         ),
         stream=stream,
+        protocol_version=protocol_version,
     )
     try:
         parsed = parse_request(encode_message(probe.as_dict()))
@@ -780,6 +932,19 @@ def _validated_stream(stream: StreamConfig) -> StreamConfig:
 
 
 def _default_stream(manifest: WorkerManifest) -> StreamConfig:
+    if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        config = manifest.adapter_config
+        if not isinstance(config, ParakeetRealtimeEouConfig):
+            raise ValueError
+        return StreamConfig(
+            chunk_samples=config.native_chunk_samples,
+            pace="burst",
+            partial_interval_ms=(
+                config.native_chunk_samples * 1000 + config.sample_rate - 1
+            )
+            // config.sample_rate,
+            tail_padding_samples=config.maximum_tail_padding_samples,
+        )
     if manifest.adapter == NEMOTRON_ADAPTER:
         config = manifest.adapter_config
         if not isinstance(config, NemotronConfig):
@@ -822,6 +987,11 @@ def _selected_stream(
     partial_interval_ms: int | None,
     tail_padding_samples: int | None,
 ) -> StreamConfig:
+    protocol_version = (
+        NATIVE_ENDPOINT_PROTOCOL_VERSION
+        if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
+        else PROTOCOL_VERSION
+    )
     overrides = (
         chunk_samples,
         pace,
@@ -831,26 +1001,40 @@ def _selected_stream(
     if stream is not None:
         if any(value is not None for value in overrides):
             raise ValueError
-        return _validated_stream(stream)
-    default = _default_stream(manifest)
-    return _validated_stream(
-        StreamConfig(
-            chunk_samples=(
-                default.chunk_samples if chunk_samples is None else chunk_samples
-            ),
-            pace=default.pace if pace is None else pace,
-            partial_interval_ms=(
-                default.partial_interval_ms
-                if partial_interval_ms is None
-                else partial_interval_ms
-            ),
-            tail_padding_samples=(
-                default.tail_padding_samples
-                if tail_padding_samples is None
-                else tail_padding_samples
-            ),
+        selected = _validated_stream(
+            stream,
+            protocol_version=protocol_version,
         )
-    )
+    else:
+        default = _default_stream(manifest)
+        selected = _validated_stream(
+            StreamConfig(
+                chunk_samples=(
+                    default.chunk_samples if chunk_samples is None else chunk_samples
+                ),
+                pace=default.pace if pace is None else pace,
+                partial_interval_ms=(
+                    default.partial_interval_ms
+                    if partial_interval_ms is None
+                    else partial_interval_ms
+                ),
+                tail_padding_samples=(
+                    default.tail_padding_samples
+                    if tail_padding_samples is None
+                    else tail_padding_samples
+                ),
+            ),
+            protocol_version=protocol_version,
+        )
+    if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+        config = manifest.adapter_config
+        if (
+            not isinstance(config, ParakeetRealtimeEouConfig)
+            or selected.chunk_samples != config.native_chunk_samples
+            or selected.tail_padding_samples > config.maximum_tail_padding_samples
+        ):
+            raise ValueError
+    return selected
 
 
 def _write_pcm_snapshot(path: Path, payload: bytes) -> None:
@@ -898,7 +1082,13 @@ def run_benchmark(
     if stream is not None:
         if any(value is not None for value in overrides):
             raise ValueError
-        stream = _validated_stream(stream)
+        # Reject geometry that is invalid under every supported protocol before
+        # touching caller-supplied inputs. The exact v2/v3 bound is applied
+        # after the manifest selects the worker protocol.
+        _validated_stream(
+            stream,
+            protocol_version=NATIVE_ENDPOINT_PROTOCOL_VERSION,
+        )
     run_lock = _BenchmarkRunLock.acquire(_HOST_LOCK_PATH)
     try:
         run_lock.assert_bound()
@@ -996,6 +1186,11 @@ def _run_benchmark_locked(
                             samples=case.samples,
                         ),
                         stream=selected_stream,
+                        protocol_version=(
+                            NATIVE_ENDPOINT_PROTOCOL_VERSION
+                            if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
+                            else PROTOCOL_VERSION
+                        ),
                     )
                     records.append(
                         RunRecord(
@@ -1005,10 +1200,16 @@ def _run_benchmark_locked(
                         )
                     )
             ready = worker.ready
-        if manifest.adapter == NEMOTRON_ADAPTER:
+        if manifest.adapter in {
+            NEMOTRON_ADAPTER,
+            PARAKEET_REALTIME_EOU_ADAPTER,
+        }:
             config = manifest.adapter_config
             if (
-                not isinstance(config, NemotronConfig)
+                not isinstance(
+                    config,
+                    (NemotronConfig, ParakeetRealtimeEouConfig),
+                )
                 or ready.runtime.get("python") != config.python_version
             ):
                 raise ValueError
@@ -1036,8 +1237,12 @@ def _run_benchmark_locked(
         ):
             raise ValueError
         metrics = aggregate_metrics(corpus, records, ready, repeats=repeats)
-        worker_report = dict(worker_binding)
-        worker_report["runtime"] = dict(ready.runtime)
+        worker_report = _worker_report(
+            manifest,
+            worker_binding,
+            ready.runtime,
+            worker.cgroup_evidence,
+        )
         result = {
             "ok": bool(metrics["coverage_complete"]),
             "evidence": _evidence_binding(
@@ -1047,7 +1252,11 @@ def _run_benchmark_locked(
                     manifest.adapter_config
                     if isinstance(
                         manifest.adapter_config,
-                        (NemotronConfig, SherpaZipformerConfig),
+                        (
+                            NemotronConfig,
+                            SherpaZipformerConfig,
+                            ParakeetRealtimeEouConfig,
+                        ),
                     )
                     else None
                 ),

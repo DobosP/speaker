@@ -34,6 +34,8 @@ MAX_NEMOTRON_ARTIFACT_BYTES = 3 * 1024 * 1024 * 1024
 MAX_NEMOTRON_TOTAL_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES = 384 * 1024 * 1024
 MAX_SHERPA_ZIPFORMER_TOTAL_ARTIFACT_BYTES = 512 * 1024 * 1024
+MAX_PARAKEET_ARTIFACT_BYTES = 512 * 1024 * 1024
+MAX_PARAKEET_TOTAL_ARTIFACT_BYTES = 640 * 1024 * 1024
 _MANIFEST_V1_FIELDS = {
     "schema_version",
     "model_id",
@@ -46,6 +48,7 @@ _MANIFEST_V1_FIELDS = {
 _MANIFEST_V2_FIELDS = {*_MANIFEST_V1_FIELDS, "adapter_config"}
 _MANIFEST_V3_FIELDS = _MANIFEST_V2_FIELDS
 _MANIFEST_V4_FIELDS = _MANIFEST_V2_FIELDS
+_MANIFEST_V5_FIELDS = _MANIFEST_V2_FIELDS
 _FILE_FIELDS = {"path", "sha256", "size_bytes"}
 _ARTIFACT_FIELDS = {"name", *_FILE_FIELDS}
 _LIMIT_FIELDS = {"startup_timeout_sec", "case_timeout_sec"}
@@ -103,9 +106,37 @@ _SHERPA_ZIPFORMER_CONFIG_FIELDS = {
     "rule2_min_trailing_silence",
     "rule3_min_utterance_length",
 }
+_PARAKEET_CONFIG_FIELDS = {
+    "python_version",
+    "nemo_version",
+    "torch_version",
+    "cuda_version",
+    "numpy_version",
+    "model_repo_id",
+    "model_revision",
+    "model_filename",
+    "language",
+    "device",
+    "dtype",
+    "sample_rate",
+    "native_chunk_samples",
+    "maximum_tail_padding_samples",
+    "attention_context_left",
+    "attention_context_right",
+    "batch_size",
+    "eou_token",
+    "eob_token",
+    "use_amp",
+    "wheel_lock_sha256",
+    "runtime_content_sha256",
+    "runtime_file_count",
+    "runtime_total_size_bytes",
+    "runtime_maximum_file_bytes",
+}
 MOONSHINE_ADAPTER = "moonshine-voice-stream-v1"
 NEMOTRON_ADAPTER = "transformers-nemotron-3.5-stream-v1"
 SHERPA_ZIPFORMER_ADAPTER = "sherpa-onnx-gigaspeech-zipformer-stream-v1"
+PARAKEET_REALTIME_EOU_ADAPTER = "nemo-parakeet-realtime-eou-v1"
 NEMOTRON_WHEEL_LOCK_SHA256 = (
     "df268a2e268221428256b3ec525a3ad49da65b526b2e09b88df3802533b5af01"
 )
@@ -115,6 +146,21 @@ NEMOTRON_RUNTIME_CONTENT_SHA256 = (
 NEMOTRON_RUNTIME_FILE_COUNT = 24_273
 NEMOTRON_RUNTIME_TOTAL_SIZE_BYTES = 6_752_927_292
 NEMOTRON_RUNTIME_MAXIMUM_FILE_BYTES = 1_007_735_593
+PARAKEET_REALTIME_EOU_PYTHON_VERSION = "3.12.3"
+PARAKEET_REALTIME_EOU_NEMO_VERSION = "2.7.3"
+PARAKEET_REALTIME_EOU_TORCH_VERSION = "2.7.1+cu126"
+PARAKEET_REALTIME_EOU_CUDA_VERSION = "12.6"
+PARAKEET_REALTIME_EOU_NUMPY_VERSION = "2.2.6"
+PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256 = (
+    "b58bc18fda01e91fc92d70fdb7d69451faa392bf846245feecea8f24be4f7069"
+)
+PARAKEET_REALTIME_EOU_WHEEL_LOCK_SIZE_BYTES = 77_368
+PARAKEET_REALTIME_EOU_RUNTIME_CONTENT_SHA256 = (
+    "36224564c7b0c1895e91fae76b060382dd4376e9d4e93e575b99ca043475df39"
+)
+PARAKEET_REALTIME_EOU_RUNTIME_FILE_COUNT = 49_600
+PARAKEET_REALTIME_EOU_RUNTIME_TOTAL_SIZE_BYTES = 6_430_910_098
+PARAKEET_REALTIME_EOU_RUNTIME_MAXIMUM_FILE_BYTES = 984_633_129
 MOONSHINE_ARTIFACT_NAMES = (
     "runtime-receipt",
     "venv-marker",
@@ -342,6 +388,27 @@ _SHERPA_ZIPFORMER_MODEL_RECEIPTS = {
     name: (sha256, size_bytes)
     for name, _basename, sha256, size_bytes in SHERPA_ZIPFORMER_ARTIFACT_SPECS
 }
+PARAKEET_REALTIME_EOU_ARTIFACT_NAMES = (
+    "runtime-receipt",
+    "runtime-wheel-lock",
+    "venv-marker",
+    "model-nemo",
+)
+_PARAKEET_ARTIFACT_BASENAMES = {
+    "runtime-receipt": "runtime-receipt.json",
+    "runtime-wheel-lock": "parakeet-realtime-eou-runtime-wheels.lock.json",
+    "venv-marker": "pyvenv.cfg",
+    "model-nemo": "parakeet_realtime_eou_120m-v1.nemo",
+}
+_PARAKEET_SMALL_ARTIFACTS = {
+    "runtime-receipt": 32 * 1024 * 1024,
+    "runtime-wheel-lock": 512 * 1024,
+    "venv-marker": 64 * 1024,
+}
+PARAKEET_REALTIME_EOU_MODEL_RECEIPT = (
+    "6603a22a53b7c1a4bac4736cb24628fb568a7102ba931a28c799e2e72f109893",
+    460_062_720,
+)
 
 
 class ManifestError(RuntimeError):
@@ -574,6 +641,108 @@ class SherpaZipformerConfig:
 
 
 @dataclass(frozen=True)
+class ParakeetRealtimeEouConfig:
+    """Exact model semantics plus a receipt-bound disposable NeMo runtime."""
+
+    python_version: str = PARAKEET_REALTIME_EOU_PYTHON_VERSION
+    nemo_version: str = PARAKEET_REALTIME_EOU_NEMO_VERSION
+    torch_version: str = PARAKEET_REALTIME_EOU_TORCH_VERSION
+    cuda_version: str = PARAKEET_REALTIME_EOU_CUDA_VERSION
+    numpy_version: str = PARAKEET_REALTIME_EOU_NUMPY_VERSION
+    wheel_lock_sha256: str = PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
+    runtime_content_sha256: str = PARAKEET_REALTIME_EOU_RUNTIME_CONTENT_SHA256
+    runtime_file_count: int = PARAKEET_REALTIME_EOU_RUNTIME_FILE_COUNT
+    runtime_total_size_bytes: int = PARAKEET_REALTIME_EOU_RUNTIME_TOTAL_SIZE_BYTES
+    runtime_maximum_file_bytes: int = PARAKEET_REALTIME_EOU_RUNTIME_MAXIMUM_FILE_BYTES
+    model_repo_id: str = "nvidia/parakeet_realtime_eou_120m-v1"
+    model_revision: str = "a7e2b4629593dce0ec19f600e00e9904353fda2d"
+    model_filename: str = "parakeet_realtime_eou_120m-v1.nemo"
+    language: str = "en"
+    device: str = "cuda:0"
+    dtype: str = "float32"
+    sample_rate: int = 16_000
+    native_chunk_samples: int = 1_280
+    maximum_tail_padding_samples: int = 48_000
+    attention_context_left: int = 70
+    attention_context_right: int = 1
+    batch_size: int = 1
+    eou_token: str = "<EOU>"
+    eob_token: str = "<EOB>"
+    use_amp: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.python_version != PARAKEET_REALTIME_EOU_PYTHON_VERSION
+            or self.nemo_version != PARAKEET_REALTIME_EOU_NEMO_VERSION
+            or self.torch_version != PARAKEET_REALTIME_EOU_TORCH_VERSION
+            or self.cuda_version != PARAKEET_REALTIME_EOU_CUDA_VERSION
+            or self.numpy_version != PARAKEET_REALTIME_EOU_NUMPY_VERSION
+            or self.model_repo_id != "nvidia/parakeet_realtime_eou_120m-v1"
+            or self.model_revision
+            != "a7e2b4629593dce0ec19f600e00e9904353fda2d"
+            or self.model_filename != "parakeet_realtime_eou_120m-v1.nemo"
+            or self.language != "en"
+            or self.device != "cuda:0"
+            or self.dtype != "float32"
+            or type(self.sample_rate) is not int
+            or self.sample_rate != 16_000
+            or type(self.native_chunk_samples) is not int
+            or self.native_chunk_samples != 1_280
+            or type(self.maximum_tail_padding_samples) is not int
+            or self.maximum_tail_padding_samples != 48_000
+            or type(self.attention_context_left) is not int
+            or self.attention_context_left != 70
+            or type(self.attention_context_right) is not int
+            or self.attention_context_right != 1
+            or type(self.batch_size) is not int
+            or self.batch_size != 1
+            or self.eou_token != "<EOU>"
+            or self.eob_token != "<EOB>"
+            or type(self.use_amp) is not bool
+            or self.use_amp
+            or self.wheel_lock_sha256
+            != PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256
+            or self.runtime_content_sha256
+            != PARAKEET_REALTIME_EOU_RUNTIME_CONTENT_SHA256
+            or self.runtime_file_count != PARAKEET_REALTIME_EOU_RUNTIME_FILE_COUNT
+            or self.runtime_total_size_bytes
+            != PARAKEET_REALTIME_EOU_RUNTIME_TOTAL_SIZE_BYTES
+            or self.runtime_maximum_file_bytes
+            != PARAKEET_REALTIME_EOU_RUNTIME_MAXIMUM_FILE_BYTES
+        ):
+            raise ManifestError()
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "python_version": self.python_version,
+            "nemo_version": self.nemo_version,
+            "torch_version": self.torch_version,
+            "cuda_version": self.cuda_version,
+            "numpy_version": self.numpy_version,
+            "model_repo_id": self.model_repo_id,
+            "model_revision": self.model_revision,
+            "model_filename": self.model_filename,
+            "language": self.language,
+            "device": self.device,
+            "dtype": self.dtype,
+            "sample_rate": self.sample_rate,
+            "native_chunk_samples": self.native_chunk_samples,
+            "maximum_tail_padding_samples": self.maximum_tail_padding_samples,
+            "attention_context_left": self.attention_context_left,
+            "attention_context_right": self.attention_context_right,
+            "batch_size": self.batch_size,
+            "eou_token": self.eou_token,
+            "eob_token": self.eob_token,
+            "use_amp": self.use_amp,
+            "wheel_lock_sha256": self.wheel_lock_sha256,
+            "runtime_content_sha256": self.runtime_content_sha256,
+            "runtime_file_count": self.runtime_file_count,
+            "runtime_total_size_bytes": self.runtime_total_size_bytes,
+            "runtime_maximum_file_bytes": self.runtime_maximum_file_bytes,
+        }
+
+
+@dataclass(frozen=True)
 class WorkerManifest:
     path: Path
     digest: str
@@ -585,7 +754,11 @@ class WorkerManifest:
     artifacts: tuple[BoundArtifact, ...]
     limits: WorkerLimits
     adapter_config: (
-        MoonshineConfig | NemotronConfig | SherpaZipformerConfig | None
+        MoonshineConfig
+        | NemotronConfig
+        | SherpaZipformerConfig
+        | ParakeetRealtimeEouConfig
+        | None
     ) = None
 
     @property
@@ -662,6 +835,14 @@ def artifact_maximum_bytes(adapter: str, artifact_name: str) -> int:
         and artifact_name in SHERPA_ZIPFORMER_ARTIFACT_NAMES
     ):
         return MAX_SHERPA_ZIPFORMER_ARTIFACT_BYTES
+    if (
+        adapter == PARAKEET_REALTIME_EOU_ADAPTER
+        and artifact_name in PARAKEET_REALTIME_EOU_ARTIFACT_NAMES
+    ):
+        return _PARAKEET_SMALL_ARTIFACTS.get(
+            artifact_name,
+            MAX_PARAKEET_ARTIFACT_BYTES,
+        )
     raise ManifestError()
 
 
@@ -809,6 +990,55 @@ def _sherpa_zipformer_config(value: object) -> SherpaZipformerConfig:
         raise ManifestError() from None
 
 
+def _parakeet_config(value: object) -> ParakeetRealtimeEouConfig:
+    if not isinstance(value, dict) or set(value) != _PARAKEET_CONFIG_FIELDS:
+        raise ManifestError()
+    try:
+        return ParakeetRealtimeEouConfig(
+            python_version=value.get("python_version"),  # type: ignore[arg-type]
+            nemo_version=value.get("nemo_version"),  # type: ignore[arg-type]
+            torch_version=value.get("torch_version"),  # type: ignore[arg-type]
+            cuda_version=value.get("cuda_version"),  # type: ignore[arg-type]
+            numpy_version=value.get("numpy_version"),  # type: ignore[arg-type]
+            wheel_lock_sha256=value.get("wheel_lock_sha256"),  # type: ignore[arg-type]
+            runtime_content_sha256=value.get(  # type: ignore[arg-type]
+                "runtime_content_sha256"
+            ),
+            runtime_file_count=value.get("runtime_file_count"),  # type: ignore[arg-type]
+            runtime_total_size_bytes=value.get(  # type: ignore[arg-type]
+                "runtime_total_size_bytes"
+            ),
+            runtime_maximum_file_bytes=value.get(  # type: ignore[arg-type]
+                "runtime_maximum_file_bytes"
+            ),
+            model_repo_id=value.get("model_repo_id"),  # type: ignore[arg-type]
+            model_revision=value.get("model_revision"),  # type: ignore[arg-type]
+            model_filename=value.get("model_filename"),  # type: ignore[arg-type]
+            language=value.get("language"),  # type: ignore[arg-type]
+            device=value.get("device"),  # type: ignore[arg-type]
+            dtype=value.get("dtype"),  # type: ignore[arg-type]
+            sample_rate=value.get("sample_rate"),  # type: ignore[arg-type]
+            native_chunk_samples=value.get(  # type: ignore[arg-type]
+                "native_chunk_samples"
+            ),
+            maximum_tail_padding_samples=value.get(  # type: ignore[arg-type]
+                "maximum_tail_padding_samples"
+            ),
+            attention_context_left=value.get(  # type: ignore[arg-type]
+                "attention_context_left"
+            ),
+            attention_context_right=value.get(  # type: ignore[arg-type]
+                "attention_context_right"
+            ),
+            batch_size=value.get("batch_size"),  # type: ignore[arg-type]
+            eou_token=value.get("eou_token"),  # type: ignore[arg-type]
+            eob_token=value.get("eob_token"),  # type: ignore[arg-type]
+            use_amp=value.get("use_amp"),  # type: ignore[arg-type]
+        )
+    except (TypeError, ValueError, ManifestError):
+        raise ManifestError() from None
+
+
 def _validate_venv_layout(
     python: BoundFile,
     marker: BoundArtifact,
@@ -922,6 +1152,36 @@ def _validate_sherpa_zipformer_layout(
         raise ManifestError()
 
 
+def _validate_parakeet_layout(
+    python: BoundFile,
+    artifacts: tuple[BoundArtifact, ...],
+    config: ParakeetRealtimeEouConfig,
+) -> None:
+    by_name = {artifact.name: artifact for artifact in artifacts}
+    model = by_name.get("model-nemo")
+    wheel_lock = by_name.get("runtime-wheel-lock")
+    if (
+        tuple(by_name) != PARAKEET_REALTIME_EOU_ARTIFACT_NAMES
+        or sum(artifact.size_bytes for artifact in artifacts)
+        > MAX_PARAKEET_TOTAL_ARTIFACT_BYTES
+        or any(
+            by_name[name].path.name != basename
+            for name, basename in _PARAKEET_ARTIFACT_BASENAMES.items()
+        )
+        or model is None
+        or (model.sha256, model.size_bytes)
+        != PARAKEET_REALTIME_EOU_MODEL_RECEIPT
+        or wheel_lock is None
+        or (wheel_lock.sha256, wheel_lock.size_bytes)
+        != (
+            PARAKEET_REALTIME_EOU_WHEEL_LOCK_SHA256,
+            PARAKEET_REALTIME_EOU_WHEEL_LOCK_SIZE_BYTES,
+        )
+    ):
+        raise ManifestError()
+    _validate_venv_layout(python, by_name["venv-marker"])
+
+
 def load_worker_manifest(path: Path | str) -> WorkerManifest:
     """Load and verify one immutable, machine-local worker receipt."""
 
@@ -939,13 +1199,14 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     if not isinstance(value, dict):
         raise ManifestError()
     schema_version = value.get("schema_version")
-    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4}:
+    if type(schema_version) is not int or schema_version not in {1, 2, 3, 4, 5}:
         raise ManifestError()
     expected_fields = {
         1: _MANIFEST_V1_FIELDS,
         2: _MANIFEST_V2_FIELDS,
         3: _MANIFEST_V3_FIELDS,
         4: _MANIFEST_V4_FIELDS,
+        5: _MANIFEST_V5_FIELDS,
     }[schema_version]
     if set(value) != expected_fields:
         raise ManifestError()
@@ -956,6 +1217,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         or (schema_version == 2 and adapter != MOONSHINE_ADAPTER)
         or (schema_version == 3 and adapter != NEMOTRON_ADAPTER)
         or (schema_version == 4 and adapter != SHERPA_ZIPFORMER_ADAPTER)
+        or (schema_version == 5 and adapter != PARAKEET_REALTIME_EOU_ADAPTER)
     ):
         raise ManifestError()
 
@@ -978,6 +1240,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         2: MOONSHINE_ARTIFACT_NAMES,
         3: NEMOTRON_ARTIFACT_NAMES,
         4: SHERPA_ZIPFORMER_ARTIFACT_NAMES,
+        5: PARAKEET_REALTIME_EOU_ARTIFACT_NAMES,
     }[schema_version]
     if not isinstance(raw_artifacts, list) or len(raw_artifacts) != len(
         expected_artifact_names
@@ -992,6 +1255,7 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
         2: lambda: _moonshine_config(value.get("adapter_config")),
         3: lambda: _nemotron_config(value.get("adapter_config")),
         4: lambda: _sherpa_zipformer_config(value.get("adapter_config")),
+        5: lambda: _parakeet_config(value.get("adapter_config")),
     }[schema_version]()
     if schema_version == 2:
         assert isinstance(adapter_config, MoonshineConfig)
@@ -1002,6 +1266,9 @@ def load_worker_manifest(path: Path | str) -> WorkerManifest:
     elif schema_version == 4:
         assert isinstance(adapter_config, SherpaZipformerConfig)
         _validate_sherpa_zipformer_layout(artifacts)
+    elif schema_version == 5:
+        assert isinstance(adapter_config, ParakeetRealtimeEouConfig)
+        _validate_parakeet_layout(python, artifacts, adapter_config)
 
     raw_limits = value.get("limits")
     if not isinstance(raw_limits, dict) or set(raw_limits) != _LIMIT_FIELDS:

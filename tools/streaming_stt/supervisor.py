@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 from pathlib import Path
 import queue
@@ -24,8 +25,10 @@ from .manifest import (
     MAX_WORKER_BYTES,
     MOONSHINE_ADAPTER,
     NEMOTRON_ADAPTER,
+    PARAKEET_REALTIME_EOU_ADAPTER,
     SHERPA_ZIPFORMER_ADAPTER,
     NemotronConfig,
+    ParakeetRealtimeEouConfig,
     WorkerManifest,
     artifact_maximum_bytes,
 )
@@ -39,6 +42,9 @@ from .protocol import (
     MAX_PCM_BYTES,
     MAX_STDERR_BYTES,
     MAX_STDOUT_BYTES,
+    NATIVE_ENDPOINT_PROTOCOL_VERSION,
+    NativeFinalEvent,
+    PROTOCOL_VERSION,
     PartialEvent,
     ProtocolError,
     ReadyEvent,
@@ -57,10 +63,10 @@ from .source_bundle import (
 )
 from .runtime_receipt import (
     NEMOTRON_RUNTIME_TREE_LIMITS,
+    PARAKEET_RUNTIME_TREE_LIMITS,
     RuntimeTreeReceipt,
     load_runtime_tree_receipt,
     verify_moonshine_wheel_install,
-    verify_runtime_tree_receipt,
     verify_venv_runtime_location,
 )
 
@@ -69,6 +75,23 @@ _TERM_GRACE_SEC = 5.0
 _KILL_GRACE_SEC = 2.0
 _QUEUE_CAPACITY = MAX_PARTIALS_PER_CASE + 16
 _BWRAP_PATH = Path("/usr/bin/bwrap")
+_SYSTEMD_RUN_PATH = Path("/usr/bin/systemd-run")
+_USER_RUNTIME_ROOT = Path("/run/user")
+_CGROUP_ROOT = Path("/sys/fs/cgroup")
+_PROC_ROOT = Path("/proc")
+_CGROUP_SETUP_TIMEOUT_SEC = 5.0
+_PARAKEET_MEMORY_HIGH_BYTES = 6 * 1024**3
+_PARAKEET_MEMORY_MAX_BYTES = 8 * 1024**3
+_PARAKEET_CPU_QUOTA_PERCENT = 200
+_PARAKEET_TASKS_MAX = 128
+_PARAKEET_SCOPE_PROPERTIES = (
+    f"MemoryHigh={_PARAKEET_MEMORY_HIGH_BYTES}",
+    f"MemoryMax={_PARAKEET_MEMORY_MAX_BYTES}",
+    "MemorySwapMax=0",
+    f"CPUQuota={_PARAKEET_CPU_QUOTA_PERCENT}%",
+    f"TasksMax={_PARAKEET_TASKS_MAX}",
+    "OOMPolicy=kill",
+)
 _NVIDIA_REQUIRED_DEVICE_NAMES = ("nvidia0", "nvidiactl", "nvidia-uvm")
 _NVIDIA_OPTIONAL_DEVICE_NAMES = ("nvidia-modeset", "nvidia-uvm-tools")
 _NVIDIA_CAP_RE = re.compile(r"nvidia-cap[0-9]{1,3}\Z")
@@ -198,6 +221,111 @@ def _expected_final_evidence(
     return chunks, model_padding_samples
 
 
+def _wire_protocol_version(manifest: WorkerManifest) -> int:
+    return (
+        NATIVE_ENDPOINT_PROTOCOL_VERSION
+        if manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER
+        else PROTOCOL_VERSION
+    )
+
+
+def _validate_native_final(
+    manifest: WorkerManifest,
+    request: TranscribeRequest,
+    event: NativeFinalEvent,
+    *,
+    expected_seq: int,
+    last_samples: int,
+    last_elapsed: float,
+) -> None:
+    config = manifest.adapter_config
+    if not isinstance(config, ParakeetRealtimeEouConfig):
+        raise WorkerError("worker_protocol")
+    if (
+        request.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
+        or request.stream.chunk_samples != config.native_chunk_samples
+        or request.stream.tail_padding_samples
+        > config.maximum_tail_padding_samples
+    ):
+        raise WorkerError("worker_protocol")
+    samples_seen = event.source_samples_consumed + event.tail_samples_consumed
+    expected_chunks = (
+        samples_seen + config.native_chunk_samples - 1
+    ) // config.native_chunk_samples
+    expected_padding = expected_chunks * config.native_chunk_samples - samples_seen
+    expected_endpoint_sample = samples_seen + expected_padding
+    source_complete = event.source_samples_consumed == request.pcm.samples
+    expected_authoritative = (
+        event.native_endpoint
+        and event.endpoint_reason == "eou"
+        and source_complete
+    )
+    expected_latency = (
+        (event.tail_samples_consumed + expected_padding)
+        * 1000.0
+        / request.pcm.sample_rate
+        if expected_authoritative
+        else None
+    )
+    common_invalid = (
+        event.protocol_version != NATIVE_ENDPOINT_PROTOCOL_VERSION
+        or event.request_id != request.request_id
+        or event.seq != expected_seq
+        or event.source_samples != request.pcm.samples
+        or event.declared_tail_samples != request.stream.tail_padding_samples
+        or event.source_samples_consumed > request.pcm.samples
+        or event.tail_samples_consumed > request.stream.tail_padding_samples
+        or (
+            event.source_samples_consumed < request.pcm.samples
+            and event.tail_samples_consumed != 0
+        )
+        or event.samples_seen != samples_seen
+        or event.samples_seen < last_samples
+        or event.elapsed_ms < last_elapsed
+        or event.finalization_ms > event.elapsed_ms
+        or event.chunks != expected_chunks
+        or event.model_padding_samples != expected_padding
+        or abs(
+            event.audio_seconds - request.pcm.samples / request.pcm.sample_rate
+        )
+        > 1e-6
+    )
+    if common_invalid:
+        raise WorkerError("worker_protocol")
+    if event.native_endpoint:
+        if (
+            event.endpoint_reason not in {"eou", "eob"}
+            or isinstance(event.endpoint_probability, bool)
+            or not isinstance(event.endpoint_probability, (int, float))
+            or not math.isfinite(float(event.endpoint_probability))
+            or not 0.0 <= float(event.endpoint_probability) <= 1.0
+            or event.endpoint_sample != expected_endpoint_sample
+            or event.authoritative != expected_authoritative
+            or (expected_latency is None and event.endpoint_latency_ms is not None)
+            or (
+                expected_latency is not None
+                and (
+                    isinstance(event.endpoint_latency_ms, bool)
+                    or not isinstance(event.endpoint_latency_ms, (int, float))
+                    or not math.isfinite(float(event.endpoint_latency_ms))
+                    or abs(float(event.endpoint_latency_ms) - expected_latency) > 1e-6
+                )
+            )
+        ):
+            raise WorkerError("worker_protocol")
+        return
+    if (
+        event.endpoint_reason != "tail_exhausted"
+        or event.endpoint_probability is not None
+        or event.endpoint_sample is not None
+        or event.endpoint_latency_ms is not None
+        or event.authoritative
+        or not source_complete
+        or event.tail_samples_consumed != request.stream.tail_padding_samples
+    ):
+        raise WorkerError("worker_protocol")
+
+
 def _stable_path_metadata(metadata: os.stat_result) -> tuple[int, ...]:
     return (
         metadata.st_dev,
@@ -209,12 +337,12 @@ def _stable_path_metadata(metadata: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _open_bwrap_descriptor() -> int:
-    """Open the exact Bubblewrap executable without following a replacement."""
+def _open_pinned_executable_descriptor(path: Path) -> int:
+    """Open one stable executable without following a path replacement."""
 
     descriptor = -1
     try:
-        before = _BWRAP_PATH.lstat()
+        before = path.lstat()
         if (
             not stat.S_ISREG(before.st_mode)
             or before.st_nlink < 1
@@ -223,9 +351,9 @@ def _open_bwrap_descriptor() -> int:
             raise WorkerError("worker_prerequisite")
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
         flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(_BWRAP_PATH, flags)
+        descriptor = os.open(path, flags)
         opened = os.fstat(descriptor)
-        current = _BWRAP_PATH.lstat()
+        current = path.lstat()
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink < 1
@@ -242,6 +370,206 @@ def _open_bwrap_descriptor() -> int:
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _open_bwrap_descriptor() -> int:
+    """Open the exact Bubblewrap executable without following a replacement."""
+
+    return _open_pinned_executable_descriptor(_BWRAP_PATH)
+
+
+def _open_systemd_run_descriptor() -> int:
+    """Open the exact systemd-run executable used for the bounded scope."""
+
+    return _open_pinned_executable_descriptor(_SYSTEMD_RUN_PATH)
+
+
+def _verified_user_runtime_directory(
+    *,
+    root: Path | None = None,
+) -> Path:
+    """Return the private runtime directory needed by the local user manager."""
+
+    if os.name != "posix" or not hasattr(os, "getuid"):
+        raise WorkerError("worker_prerequisite")
+    uid = os.getuid()
+    selected_root = _USER_RUNTIME_ROOT if root is None else root
+    runtime = selected_root / str(uid)
+    try:
+        before = runtime.lstat()
+        resolved = runtime.resolve(strict=True)
+        current = runtime.lstat()
+        if (
+            resolved != runtime.absolute()
+            or not stat.S_ISDIR(before.st_mode)
+            or before.st_uid != uid
+            or stat.S_IMODE(before.st_mode) & 0o077 != 0
+            or _stable_path_metadata(before) != _stable_path_metadata(current)
+        ):
+            raise WorkerError("worker_prerequisite")
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    return runtime
+
+
+def _read_small_pseudo_file(path: Path, *, maximum_bytes: int = 4096) -> bytes:
+    """Read one no-follow procfs/cgroupfs value under a fixed small bound."""
+
+    descriptor = -1
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise WorkerError("worker_prerequisite")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise WorkerError("worker_prerequisite")
+        payload = os.read(descriptor, maximum_bytes + 1)
+        if len(payload) > maximum_bytes:
+            raise WorkerError("worker_prerequisite")
+        current = path.lstat()
+        if _stable_path_metadata(opened) != _stable_path_metadata(
+            before
+        ) or _stable_path_metadata(current) != _stable_path_metadata(before):
+            raise WorkerError("worker_prerequisite")
+        return payload
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _single_ascii_line(payload: bytes) -> str:
+    try:
+        value = payload.decode("ascii", errors="strict")
+    except UnicodeError:
+        raise WorkerError("worker_prerequisite") from None
+    if not value.endswith("\n") or "\n" in value[:-1] or "\r" in value:
+        raise WorkerError("worker_prerequisite")
+    return value[:-1]
+
+
+def _parse_unified_cgroup_path(payload: bytes) -> Path:
+    """Parse one cgroup-v2 proc line for an automatic systemd-run scope."""
+
+    line = _single_ascii_line(payload)
+    if not line.startswith("0::/") or len(line) > 4096:
+        raise WorkerError("worker_prerequisite")
+    raw_path = line[3:]
+    parts = raw_path.split("/")
+    if (
+        not raw_path.startswith("/")
+        or len(parts) < 2
+        or any(
+            not part
+            or part in {".", ".."}
+            or len(part) > 255
+            or any(ord(character) < 0x21 or ord(character) > 0x7E for character in part)
+            for part in parts[1:]
+        )
+        or re.fullmatch(r"run-[A-Za-z0-9_.:@-]{1,128}\.scope", parts[-1]) is None
+    ):
+        raise WorkerError("worker_prerequisite")
+    return Path(raw_path)
+
+
+def _verify_parakeet_cgroup_evidence(
+    proc_cgroup: bytes,
+    *,
+    cgroup_root: Path | None = None,
+) -> dict[str, object]:
+    """Verify exact effective cgroup-v2 limits and return stable evidence."""
+
+    selected_root = _CGROUP_ROOT if cgroup_root is None else cgroup_root
+    relative = _parse_unified_cgroup_path(proc_cgroup).relative_to("/")
+    try:
+        root = selected_root.resolve(strict=True)
+        controllers = set(
+            _single_ascii_line(
+                _read_small_pseudo_file(root / "cgroup.controllers")
+            ).split()
+        )
+        scope = (root / relative).resolve(strict=True)
+        scope.relative_to(root)
+        if not scope.is_dir() or not {"cpu", "memory", "pids"} <= controllers:
+            raise WorkerError("worker_prerequisite")
+        values = {
+            name: _single_ascii_line(_read_small_pseudo_file(scope / name))
+            for name in (
+                "memory.high",
+                "memory.max",
+                "memory.swap.max",
+                "memory.oom.group",
+                "cpu.max",
+                "pids.max",
+            )
+        }
+        quota_fields = values["cpu.max"].split()
+        if len(quota_fields) != 2 or "max" in quota_fields:
+            raise WorkerError("worker_prerequisite")
+        quota, period = (int(field, 10) for field in quota_fields)
+        if (
+            values["memory.high"] != str(_PARAKEET_MEMORY_HIGH_BYTES)
+            or values["memory.max"] != str(_PARAKEET_MEMORY_MAX_BYTES)
+            or values["memory.swap.max"] != "0"
+            or values["memory.oom.group"] != "1"
+            or values["pids.max"] != str(_PARAKEET_TASKS_MAX)
+            or quota <= 0
+            or period <= 0
+            or quota * 100 != _PARAKEET_CPU_QUOTA_PERCENT * period
+        ):
+            raise WorkerError("worker_prerequisite")
+    except (OSError, RuntimeError, ValueError, OverflowError):
+        raise WorkerError("worker_prerequisite") from None
+    return {
+        "kind": "systemd-user-scope-cgroup-v2",
+        "memory_high_bytes": _PARAKEET_MEMORY_HIGH_BYTES,
+        "memory_max_bytes": _PARAKEET_MEMORY_MAX_BYTES,
+        "memory_swap_max_bytes": 0,
+        "cpu_quota_percent": _PARAKEET_CPU_QUOTA_PERCENT,
+        "tasks_max": _PARAKEET_TASKS_MAX,
+        "oom_policy": "kill",
+        "verified": True,
+    }
+
+
+def _read_parakeet_cgroup_evidence(
+    pid: int,
+    *,
+    proc_root: Path | None = None,
+    cgroup_root: Path | None = None,
+) -> dict[str, object]:
+    if type(pid) is not int or pid <= 0:
+        raise WorkerError("worker_prerequisite")
+    selected_proc = _PROC_ROOT if proc_root is None else proc_root
+    return _verify_parakeet_cgroup_evidence(
+        _read_small_pseudo_file(selected_proc / str(pid) / "cgroup"),
+        cgroup_root=cgroup_root,
+    )
+
+
+def _await_parakeet_cgroup(
+    process: subprocess.Popen[bytes],
+    *,
+    monotonic=time.monotonic,
+    sleeper=time.sleep,
+) -> dict[str, object]:
+    """Wait briefly for systemd's atomic PID migration, then fail closed."""
+
+    deadline = monotonic() + _CGROUP_SETUP_TIMEOUT_SEC
+    while True:
+        if process.poll() is not None:
+            raise WorkerError("worker_prerequisite")
+        try:
+            return _read_parakeet_cgroup_evidence(process.pid)
+        except WorkerError:
+            remaining = deadline - monotonic()
+            if remaining <= 0.0:
+                raise WorkerError("worker_prerequisite") from None
+            sleeper(min(0.01, remaining))
 
 
 def _require_mount_source(path: Path, *, directory: bool) -> None:
@@ -384,7 +712,7 @@ def _verify_nemotron_runtime_layout(
     maximum_file = max((item.size_bytes for item in receipt.files), default=0)
     try:
         if (
-            not isinstance(config, NemotronConfig)
+            not isinstance(config, (NemotronConfig, ParakeetRealtimeEouConfig))
             or wheel_lock is None
             or wheel_lock.sha256 != config.wheel_lock_sha256
             or receipt.content_digest != config.runtime_content_sha256
@@ -529,6 +857,47 @@ def _nemotron_bwrap_command(
     return command
 
 
+def _parakeet_systemd_scope_command(
+    bwrap_command: Sequence[str],
+    *,
+    bwrap_descriptor: int,
+) -> list[str]:
+    """Place the unchanged Parakeet sandbox beneath one hard user scope."""
+
+    if (
+        type(bwrap_descriptor) is not int
+        or bwrap_descriptor < 0
+        or not bwrap_command
+        or bwrap_command[0] != str(_BWRAP_PATH)
+        or any(not isinstance(value, str) or "\x00" in value for value in bwrap_command)
+    ):
+        raise WorkerError("worker_prerequisite")
+    inner = [
+        f"/proc/self/fd/{bwrap_descriptor}",
+        "--unsetenv",
+        "XDG_RUNTIME_DIR",
+        "--unsetenv",
+        "INVOCATION_ID",
+        *bwrap_command[1:],
+    ]
+    command = [
+        str(_SYSTEMD_RUN_PATH),
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--no-ask-password",
+        "--expand-environment=no",
+        "--slice-inherit",
+        "--nice=15",
+        "--description=speaker-parakeet-realtime-eou-worker",
+    ]
+    for value in _PARAKEET_SCOPE_PROPERTIES:
+        command.extend(("--property", value))
+    command.extend(("--", *inner))
+    return command
+
+
 def _zipformer_bwrap_command(
     manifest: WorkerManifest,
     scratch: Path,
@@ -644,6 +1013,8 @@ class StreamingWorker:
         self._worker_descriptor = -1
         self._python_descriptor = -1
         self._bwrap_descriptor = -1
+        self._systemd_run_descriptor = -1
+        self._cgroup_evidence: dict[str, object] | None = None
         self._stdout_queue: queue.Queue[bytes | None] = queue.Queue(
             maxsize=_QUEUE_CAPACITY
         )
@@ -665,6 +1036,10 @@ class StreamingWorker:
             "sha256": self._stderr_digest.hexdigest(),
             "truncated": self._stderr_bytes > MAX_STDERR_BYTES,
         }
+
+    @property
+    def cgroup_evidence(self) -> Mapping[str, object] | None:
+        return None if self._cgroup_evidence is None else dict(self._cgroup_evidence)
 
     @property
     def pid(self) -> int | None:
@@ -696,15 +1071,20 @@ class StreamingWorker:
         device_nodes: tuple[Path, ...] = ()
         system_ro_paths: tuple[Path, ...] = ()
         proc_driver_available = False
+        user_runtime_directory: Path | None = None
         if self.manifest.adapter in {
             NEMOTRON_ADAPTER,
+            PARAKEET_REALTIME_EOU_ADAPTER,
             SHERPA_ZIPFORMER_ADAPTER,
         }:
             if os.name != "posix" or not Path("/proc/self/fd").is_dir():
                 raise WorkerError("worker_prerequisite")
         if self.manifest.adapter == SHERPA_ZIPFORMER_ADAPTER:
             system_ro_paths = _core_system_ro_paths()
-        if self.manifest.adapter == NEMOTRON_ADAPTER:
+        if self.manifest.adapter in {
+            NEMOTRON_ADAPTER,
+            PARAKEET_REALTIME_EOU_ADAPTER,
+        }:
             device_nodes = _nemotron_device_nodes()
             system_ro_paths = _nemotron_system_ro_paths()
             try:
@@ -716,6 +1096,8 @@ class StreamingWorker:
             else:
                 _require_mount_source(_NVIDIA_PROC_DRIVER, directory=True)
                 proc_driver_available = True
+        if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+            user_runtime_directory = _verified_user_runtime_directory()
         self._verify_bound_files()
         if os.name != "posix" or not Path("/proc/self/fd").is_dir():
             raise WorkerError("worker_prerequisite")
@@ -729,9 +1111,12 @@ class StreamingWorker:
             self._python_descriptor = self._open_bound_python_descriptor()
             if self.manifest.adapter in {
                 NEMOTRON_ADAPTER,
+                PARAKEET_REALTIME_EOU_ADAPTER,
                 SHERPA_ZIPFORMER_ADAPTER,
             }:
                 self._bwrap_descriptor = _open_bwrap_descriptor()
+            if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+                self._systemd_run_descriptor = _open_systemd_run_descriptor()
         except (OSError, BoundedReadError, WorkerError):
             self._close_bundle_descriptors()
             raise WorkerError("worker_prerequisite") from None
@@ -764,7 +1149,10 @@ class StreamingWorker:
             self._python_descriptor,
         )
         start_new_session = True
-        if self.manifest.adapter == NEMOTRON_ADAPTER:
+        if self.manifest.adapter in {
+            NEMOTRON_ADAPTER,
+            PARAKEET_REALTIME_EOU_ADAPTER,
+        }:
             try:
                 command = _nemotron_bwrap_command(
                     self.manifest,
@@ -782,6 +1170,13 @@ class StreamingWorker:
                 raise
             executable = f"/proc/self/fd/{self._bwrap_descriptor}"
             pass_fds = (*pass_fds, self._bwrap_descriptor)
+            if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+                command = _parakeet_systemd_scope_command(
+                    command,
+                    bwrap_descriptor=self._bwrap_descriptor,
+                )
+                executable = f"/proc/self/fd/{self._systemd_run_descriptor}"
+                pass_fds = (*pass_fds, self._systemd_run_descriptor)
             # Popen's session owns the outer Bubblewrap monitor as a bounded
             # process group. Bubblewrap forks its namespace child before the
             # required --new-session setsid(), so the inner session remains
@@ -802,11 +1197,21 @@ class StreamingWorker:
                 raise
             executable = f"/proc/self/fd/{self._bwrap_descriptor}"
             pass_fds = (*pass_fds, self._bwrap_descriptor)
+        environment = sanitized_worker_environment(scratch)
+        if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+            if user_runtime_directory is None:
+                self._close_bundle_descriptors()
+                raise WorkerError("worker_prerequisite")
+            environment["XDG_RUNTIME_DIR"] = str(user_runtime_directory)
+            # NeMo imports lhotse, whose environment probe requires the normal
+            # host binary directory even though the worker has no network and
+            # executes only receipt-bound Python/source artifacts.
+            environment["PATH"] = "/usr/bin"
         try:
             process = self._popen_factory(
                 command,
                 cwd=str(scratch),
-                env=sanitized_worker_environment(scratch),
+                env=environment,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -835,9 +1240,15 @@ class StreamingWorker:
                 self._stderr_thread.start()
             except Exception:
                 raise WorkerError("worker_start") from None
+            if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+                self._cgroup_evidence = _await_parakeet_cgroup(
+                    process,
+                    monotonic=self._monotonic,
+                )
             event = self._next_event(self.manifest.limits.startup_timeout_sec)
             if (
-                not isinstance(event, ReadyEvent)
+                type(event) is not ReadyEvent
+                or event.protocol_version != _wire_protocol_version(self.manifest)
                 or event.model_id != self.manifest.model_id
                 or event.manifest_sha256 != self.manifest.digest
                 or event.source_bundle_sha256 != self.source_bundle.tree_sha256
@@ -869,6 +1280,9 @@ class StreamingWorker:
                 raise WorkerError("invalid_request") from None
             if not isinstance(checked, TranscribeRequest):
                 raise WorkerError("invalid_request")
+            expected_protocol = _wire_protocol_version(self.manifest)
+            if checked.protocol_version != expected_protocol:
+                raise WorkerError("invalid_request")
             self._verify_pcm(checked)
             self._send(encoded)
             partials: list[PartialEvent] = []
@@ -877,9 +1291,10 @@ class StreamingWorker:
             case_deadline = self._monotonic() + self.manifest.limits.case_timeout_sec
             while True:
                 event = self._next_event(max(0.0, case_deadline - self._monotonic()))
-                if isinstance(event, PartialEvent):
+                if type(event) is PartialEvent:
                     if (
-                        event.request_id != checked.request_id
+                        event.protocol_version != expected_protocol
+                        or event.request_id != checked.request_id
                         or event.seq != len(partials)
                         or event.samples_seen < last_samples
                         or event.samples_seen
@@ -892,20 +1307,36 @@ class StreamingWorker:
                     last_samples = event.samples_seen
                     last_elapsed = event.elapsed_ms
                     continue
-                if isinstance(event, ErrorEvent):
-                    if event.request_id != checked.request_id:
+                if type(event) is ErrorEvent:
+                    if (
+                        event.protocol_version != expected_protocol
+                        or event.request_id != checked.request_id
+                    ):
                         raise WorkerError("worker_protocol")
                     if event.fatal:
                         self._terminate()
                     raise WorkerError("worker_case")
-                if not isinstance(event, FinalEvent):
+                if self.manifest.adapter == PARAKEET_REALTIME_EOU_ADAPTER:
+                    if type(event) is not NativeFinalEvent:
+                        raise WorkerError("worker_protocol")
+                    _validate_native_final(
+                        self.manifest,
+                        checked,
+                        event,
+                        expected_seq=len(partials),
+                        last_samples=last_samples,
+                        last_elapsed=last_elapsed,
+                    )
+                    return CaseTrace(partials=tuple(partials), final=event)
+                if type(event) is not FinalEvent:
                     raise WorkerError("worker_protocol")
                 expected_chunks, expected_model_padding = _expected_final_evidence(
                     self.manifest,
                     checked,
                 )
                 if (
-                    event.request_id != checked.request_id
+                    event.protocol_version != PROTOCOL_VERSION
+                    or event.request_id != checked.request_id
                     or event.seq != len(partials)
                     or event.samples_seen
                     != checked.pcm.samples + checked.stream.tail_padding_samples
@@ -950,14 +1381,20 @@ class StreamingWorker:
                 return
             if process.poll() is None and self.ready is not None:
                 try:
-                    request = ShutdownRequest("shutdown")
+                    expected_protocol = _wire_protocol_version(self.manifest)
+                    request = ShutdownRequest(
+                        "shutdown",
+                        protocol_version=expected_protocol,
+                    )
                     self._send(encode_message(request.as_dict()))
                     acknowledgement = self._next_event(_TERM_GRACE_SEC)
                     goodbye = self._next_event(_TERM_GRACE_SEC)
                     if (
-                        not isinstance(acknowledgement, ShutdownEvent)
+                        type(acknowledgement) is not ShutdownEvent
+                        or acknowledgement.protocol_version != expected_protocol
                         or acknowledgement.request_id != request.request_id
-                        or not isinstance(goodbye, ByeEvent)
+                        or type(goodbye) is not ByeEvent
+                        or goodbye.protocol_version != expected_protocol
                     ):
                         raise WorkerError("worker_protocol")
                     process.wait(timeout=_KILL_GRACE_SEC)
@@ -1025,15 +1462,19 @@ class StreamingWorker:
                 )
             ):
                 raise WorkerError("worker_artifact_changed")
-            if self.manifest.adapter in {MOONSHINE_ADAPTER, NEMOTRON_ADAPTER}:
+            if self.manifest.adapter in {
+                MOONSHINE_ADAPTER,
+                NEMOTRON_ADAPTER,
+                PARAKEET_REALTIME_EOU_ADAPTER,
+            }:
                 receipt_artifact = self.manifest.artifact_by_name.get("runtime-receipt")
                 if receipt_artifact is None:
                     raise WorkerError("worker_artifact_changed")
-                limits = (
-                    NEMOTRON_RUNTIME_TREE_LIMITS
-                    if self.manifest.adapter == NEMOTRON_ADAPTER
-                    else None
-                )
+                limits = {
+                    MOONSHINE_ADAPTER: None,
+                    NEMOTRON_ADAPTER: NEMOTRON_RUNTIME_TREE_LIMITS,
+                    PARAKEET_REALTIME_EOU_ADAPTER: PARAKEET_RUNTIME_TREE_LIMITS,
+                }[self.manifest.adapter]
                 receipt = load_runtime_tree_receipt(
                     receipt_artifact.path,
                     expected_digest=receipt_artifact.sha256,
@@ -1043,11 +1484,10 @@ class StreamingWorker:
                     receipt,
                     self.manifest.python.path,
                 )
-                verify_runtime_tree_receipt(
-                    receipt,
-                    **({} if limits is None else {"limits": limits}),
-                )
-                if self.manifest.adapter == NEMOTRON_ADAPTER:
+                if self.manifest.adapter in {
+                    NEMOTRON_ADAPTER,
+                    PARAKEET_REALTIME_EOU_ADAPTER,
+                }:
                     _verify_nemotron_runtime_layout(self.manifest, receipt)
                 if self.manifest.adapter == MOONSHINE_ADAPTER:
                     wheel_artifact = self.manifest.artifact_by_name.get("release-wheel")
@@ -1224,6 +1664,13 @@ class StreamingWorker:
                 os.close(descriptor)
 
     def _close_bundle_descriptors(self) -> None:
+        systemd_run_descriptor = self._systemd_run_descriptor
+        self._systemd_run_descriptor = -1
+        if systemd_run_descriptor >= 0:
+            try:
+                os.close(systemd_run_descriptor)
+            except OSError:
+                pass
         bwrap_descriptor = self._bwrap_descriptor
         self._bwrap_descriptor = -1
         if bwrap_descriptor >= 0:

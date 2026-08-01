@@ -219,7 +219,7 @@ def test_prepares_private_schema_v2_slice_and_path_free_receipt(tmp_path, monkey
         "fixture_id": "unit-v1",
         "production_evidence": False,
     }
-    assert receipt["preparer"]["contract"].endswith("-v2")
+    assert receipt["preparer"]["contract"].endswith("-v3")
     assert set(receipt["preparer"]["files"]) == {
         "core/wer.py",
         "tools/prepare_common_voice_spontaneous_v4.py",
@@ -239,10 +239,13 @@ def test_prepares_private_schema_v2_slice_and_path_free_receipt(tmp_path, monkey
         "d2_10_15s": 8,
         "d3_15_25s": 8,
     }
+    assert len({item["prompt_sha256"] for item in receipt["cases"]}) == 32
+    assert all(len(item["prompt_sha256"]) == 64 for item in receipt["cases"])
     encoded = json.dumps(receipt)
     for private in (
         "private reference words",
         "speaker-",
+        "prompt-",
         "spontaneous-speech-en-",
         "private-reported-sentinel",
         str(tmp_path),

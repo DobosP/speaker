@@ -1,0 +1,1163 @@
+{
+  "schema_version": 1,
+  "kind": "public-conversation-fixture-lock-v1",
+  "fixture_id": "public-conversation-96-v1",
+  "matrix_version": 4,
+  "selection_seed": "speaker-public-conversation-96-v1-2026-08-02",
+  "sample_format": {
+    "encoding": "f32le",
+    "sample_rate_hz": 16000,
+    "channels": 1
+  },
+  "totals": {
+    "sources": 4,
+    "cases": 96,
+    "cases_per_source": 24
+  },
+  "privacy": {
+    "audio_committed": false,
+    "transcripts_committed": false,
+    "selected_identities_committed": false,
+    "local_paths_committed": false,
+    "private_receipts_required": true
+  },
+  "evidence_scope": {
+    "development_only": true,
+    "hard_wer_requires_unambiguous_nonoverlap": true,
+    "ambiguous_overlap": "diagnostic_only",
+    "capture": false,
+    "vad": false,
+    "aec": false,
+    "agent_tools": false,
+    "live_latency": false,
+    "default_promotion": false
+  },
+  "sources": [
+    {
+      "source_id": "harper-valley",
+      "dataset_id": "harper_valley_bank_v1",
+      "dataset_contract_sha256": "96c25be93a07a3866378806c798308f49ed95efc0e03115ead73900e8645e7aa",
+      "corpus_suite": "conversation96-harper",
+      "expected_cases": 24,
+      "selection_recipe": {
+        "algorithm": "hash_speaker_stratified_v1",
+        "matrix_policy_sha256": "a1fe0714c55afa5e923f5b517e9f3bcb16e939011c0962de4bd9a3c216279ac1",
+        "split": "all",
+        "seed": "speaker-public-eval-v1-2026-08-01",
+        "eligibility": [
+          "caller_channel",
+          "human_transcript",
+          "no_names",
+          "no_timestamps",
+          "no_nonlexical_marker_only",
+          "no_machine_transcript",
+          "no_dialog_act",
+          "no_emotion_labels"
+        ],
+        "strata": [
+          {
+            "id": "task_00",
+            "cases": 3
+          },
+          {
+            "id": "task_01",
+            "cases": 3
+          },
+          {
+            "id": "task_02",
+            "cases": 3
+          },
+          {
+            "id": "task_03",
+            "cases": 3
+          },
+          {
+            "id": "task_04",
+            "cases": 3
+          },
+          {
+            "id": "task_05",
+            "cases": 3
+          },
+          {
+            "id": "task_06",
+            "cases": 3
+          },
+          {
+            "id": "task_07",
+            "cases": 3
+          }
+        ],
+        "speaker_requirement": "exactly_24_distinct",
+        "scoreability": "hard_wer_nonoverlap_only"
+      },
+      "selection_recipe_sha256": "8ed07c5fa5e0279d4864c3becfb7bbb757bcb70638316684abea9cb11bf8207c",
+      "receipt_kind": "public-conversation-source-receipt-v1",
+      "preparer_contract": "public-conversation-harper-v1",
+      "preparer_files": [
+        "core/wer.py",
+        "tools/prepare_harper_valley_conversation_fixture.py",
+        "tools/public_conversation_fixture.py",
+        "tools/public_voice_eval_matrix.py",
+        "tools/streaming_stt/bounded_io.py",
+        "tools/streaming_stt/corpus.py",
+        "tools/streaming_stt/corpus_writer.py",
+        "tools/streaming_stt/protocol.py"
+      ],
+      "decoder_contract": "python-stdlib-wave-pcm-linear-mono-f32le-16000-v1",
+      "required_tags": [
+        "public-voice",
+        "conversation96",
+        "harper-valley",
+        "caller"
+      ]
+    },
+    {
+      "source_id": "edacc-test",
+      "dataset_id": "edacc_v1_test",
+      "dataset_contract_sha256": "539beeaba87285f67f24ad134d9bf340735cbdef77f3551aedc2e1f5aaf43fd9",
+      "corpus_suite": "conversation96-edacc",
+      "expected_cases": 24,
+      "selection_recipe": {
+        "algorithm": "hash_speaker_stratified_v1",
+        "matrix_policy_sha256": "2b83367bb22b0185c3c9cb036b9e6b7ea9b66b276b482674ec1480caae908b59",
+        "split": "test",
+        "seed": "speaker-public-eval-v1-2026-08-01",
+        "eligibility": [
+          "official_test_human_text",
+          "raw_text_stm_agreement",
+          "scoreable_filtered_stm",
+          "no_actual_overlap",
+          "no_ignore_segments",
+          "no_alternative_references",
+          "no_noise_only",
+          "no_paralinguistic_only"
+        ],
+        "strata": [
+          {
+            "id": "clean",
+            "cases": 8
+          },
+          {
+            "id": "disfluent",
+            "cases": 8
+          },
+          {
+            "id": "overlap_adjacent",
+            "cases": 8
+          }
+        ],
+        "speaker_requirement": "exactly_24_distinct",
+        "scoreability": "hard_wer_nonoverlap_only"
+      },
+      "selection_recipe_sha256": "699cff60e176e506e0e90eb14021710e657de7acd80ad108ea6574d3c85a8cfc",
+      "receipt_kind": "public-conversation-source-receipt-v1",
+      "preparer_contract": "public-conversation-edacc-v1",
+      "preparer_files": [
+        "core/wer.py",
+        "tools/prepare_edacc_conversation_fixture.py",
+        "tools/public_conversation_fixture.py",
+        "tools/public_voice_eval_matrix.py",
+        "tools/streaming_stt/bounded_io.py",
+        "tools/streaming_stt/corpus.py",
+        "tools/streaming_stt/corpus_writer.py",
+        "tools/streaming_stt/protocol.py"
+      ],
+      "decoder_contract": "edacc-wav-pcm16-mono32k-box2-f32le16k-v1",
+      "required_tags": [
+        "public-voice",
+        "conversation96",
+        "edacc",
+        "accented"
+      ]
+    },
+    {
+      "source_id": "ami-es2004a-close-far",
+      "dataset_id": "ami_es2004a_close_far_v1",
+      "dataset_contract_sha256": "43e0ea31b02931892d8e9755629d7f8cdd19da66d11f72fac1991d74afc5de28",
+      "corpus_suite": "conversation96-ami",
+      "expected_cases": 24,
+      "selection_recipe": {
+        "algorithm": "paired_window_projection_v1",
+        "matrix_policy_sha256": "ec50d398225b38191f6012c9cc23e1dfee9fc5211e26ceed35802d5e5cf62d31",
+        "split": "es2004a",
+        "seed": "speaker-public-conversation-96-v1-2026-08-02",
+        "eligibility": [
+          "manual_word_timings",
+          "synchronized_channels",
+          "no_actual_overlap",
+          "identical_pair_interval",
+          "identical_pair_reference"
+        ],
+        "strata": [
+          {
+            "id": "isolated_close",
+            "cases": 8
+          },
+          {
+            "id": "isolated_far",
+            "cases": 8
+          },
+          {
+            "id": "turn_transition_close",
+            "cases": 4
+          },
+          {
+            "id": "turn_transition_far",
+            "cases": 4
+          }
+        ],
+        "speaker_requirement": "not_required_pair_bound",
+        "scoreability": "hard_wer_nonoverlap_only"
+      },
+      "selection_recipe_sha256": "6628adc67113aef543e8f87ee50e385395f0601dccc9843bf0ad2a88c548282a",
+      "receipt_kind": "public-conversation-source-receipt-v1",
+      "preparer_contract": "public-conversation-ami-v1",
+      "preparer_files": [
+        "core/wer.py",
+        "tools/prepare_ami_capture_replay.py",
+        "tools/prepare_ami_conversation_fixture.py",
+        "tools/public_conversation_fixture.py",
+        "tools/public_voice_eval_matrix.py",
+        "tools/streaming_stt/bounded_io.py",
+        "tools/streaming_stt/corpus.py",
+        "tools/streaming_stt/corpus_writer.py",
+        "tools/streaming_stt/protocol.py"
+      ],
+      "decoder_contract": "ami-riff-pcm16-mono16k-window-to-f32le-v1",
+      "required_tags": [
+        "public-voice",
+        "conversation96",
+        "ami",
+        "paired"
+      ]
+    },
+    {
+      "source_id": "cvss4-en",
+      "dataset_id": "common_voice_spontaneous_4_en",
+      "dataset_contract_sha256": "e3462f407edbe2f3899331829a7351d20fe275ac2380cc2448179207830ec701",
+      "corpus_suite": "conversation96-cvss4",
+      "expected_cases": 24,
+      "selection_recipe": {
+        "algorithm": "cvss4_32_to_24_projection_v1",
+        "matrix_policy_sha256": "bf6cca457e8427d5e204345334683d604942e5699ba4a8ce142fe2991bd79bab",
+        "split": "test",
+        "seed": "speaker-public-conversation-96-v1-2026-08-02",
+        "eligibility": [
+          "existing_verified_32",
+          "six_per_duration_bucket",
+          "distinct_speakers",
+          "unique_prompt_digests"
+        ],
+        "strata": [
+          {
+            "id": "d0_2_6s",
+            "cases": 6
+          },
+          {
+            "id": "d1_6_10s",
+            "cases": 6
+          },
+          {
+            "id": "d2_10_15s",
+            "cases": 6
+          },
+          {
+            "id": "d3_15_25s",
+            "cases": 6
+          }
+        ],
+        "speaker_requirement": "exactly_24_distinct",
+        "scoreability": "hard_wer_nonoverlap_only"
+      },
+      "selection_recipe_sha256": "2d586a9fb54ab366eac359730d31a7acfb6f4819dcde8d820e97adbd2ba19fa8",
+      "receipt_kind": "public-conversation-source-receipt-v1",
+      "preparer_contract": "public-conversation-cv-projection-v1",
+      "preparer_files": [
+        "core/wer.py",
+        "tools/prepare_common_voice_conversation_fixture.py",
+        "tools/prepare_common_voice_spontaneous_v4.py",
+        "tools/public_conversation_fixture.py",
+        "tools/public_voice_eval_matrix.py",
+        "tools/streaming_stt/bounded_io.py",
+        "tools/streaming_stt/corpus.py",
+        "tools/streaming_stt/corpus_writer.py",
+        "tools/streaming_stt/protocol.py"
+      ],
+      "decoder_contract": "verified-cvss4-parent-f32le-copy-v1",
+      "required_tags": [
+        "public-voice",
+        "conversation96",
+        "cvss4-en",
+        "spontaneous"
+      ]
+    }
+  ],
+  "slots": [
+    {
+      "slot_id": "hvb-task-00-0",
+      "source_id": "harper-valley",
+      "ordinal": 0,
+      "stratum": "task_00",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-00-1",
+      "source_id": "harper-valley",
+      "ordinal": 1,
+      "stratum": "task_00",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-00-2",
+      "source_id": "harper-valley",
+      "ordinal": 2,
+      "stratum": "task_00",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-01-0",
+      "source_id": "harper-valley",
+      "ordinal": 3,
+      "stratum": "task_01",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-01-1",
+      "source_id": "harper-valley",
+      "ordinal": 4,
+      "stratum": "task_01",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-01-2",
+      "source_id": "harper-valley",
+      "ordinal": 5,
+      "stratum": "task_01",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-02-0",
+      "source_id": "harper-valley",
+      "ordinal": 6,
+      "stratum": "task_02",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-02-1",
+      "source_id": "harper-valley",
+      "ordinal": 7,
+      "stratum": "task_02",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-02-2",
+      "source_id": "harper-valley",
+      "ordinal": 8,
+      "stratum": "task_02",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-03-0",
+      "source_id": "harper-valley",
+      "ordinal": 9,
+      "stratum": "task_03",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-03-1",
+      "source_id": "harper-valley",
+      "ordinal": 10,
+      "stratum": "task_03",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-03-2",
+      "source_id": "harper-valley",
+      "ordinal": 11,
+      "stratum": "task_03",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-04-0",
+      "source_id": "harper-valley",
+      "ordinal": 12,
+      "stratum": "task_04",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-04-1",
+      "source_id": "harper-valley",
+      "ordinal": 13,
+      "stratum": "task_04",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-04-2",
+      "source_id": "harper-valley",
+      "ordinal": 14,
+      "stratum": "task_04",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-05-0",
+      "source_id": "harper-valley",
+      "ordinal": 15,
+      "stratum": "task_05",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-05-1",
+      "source_id": "harper-valley",
+      "ordinal": 16,
+      "stratum": "task_05",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-05-2",
+      "source_id": "harper-valley",
+      "ordinal": 17,
+      "stratum": "task_05",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-06-0",
+      "source_id": "harper-valley",
+      "ordinal": 18,
+      "stratum": "task_06",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-06-1",
+      "source_id": "harper-valley",
+      "ordinal": 19,
+      "stratum": "task_06",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-06-2",
+      "source_id": "harper-valley",
+      "ordinal": 20,
+      "stratum": "task_06",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-07-0",
+      "source_id": "harper-valley",
+      "ordinal": 21,
+      "stratum": "task_07",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-07-1",
+      "source_id": "harper-valley",
+      "ordinal": 22,
+      "stratum": "task_07",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "hvb-task-07-2",
+      "source_id": "harper-valley",
+      "ordinal": 23,
+      "stratum": "task_07",
+      "channel": "caller",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-00",
+      "source_id": "edacc-test",
+      "ordinal": 0,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-01",
+      "source_id": "edacc-test",
+      "ordinal": 1,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-02",
+      "source_id": "edacc-test",
+      "ordinal": 2,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-03",
+      "source_id": "edacc-test",
+      "ordinal": 3,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-04",
+      "source_id": "edacc-test",
+      "ordinal": 4,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-05",
+      "source_id": "edacc-test",
+      "ordinal": 5,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-06",
+      "source_id": "edacc-test",
+      "ordinal": 6,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-clean-07",
+      "source_id": "edacc-test",
+      "ordinal": 7,
+      "stratum": "clean",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-00",
+      "source_id": "edacc-test",
+      "ordinal": 8,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-01",
+      "source_id": "edacc-test",
+      "ordinal": 9,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-02",
+      "source_id": "edacc-test",
+      "ordinal": 10,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-03",
+      "source_id": "edacc-test",
+      "ordinal": 11,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-04",
+      "source_id": "edacc-test",
+      "ordinal": 12,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-05",
+      "source_id": "edacc-test",
+      "ordinal": 13,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-06",
+      "source_id": "edacc-test",
+      "ordinal": 14,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-disfluent-07",
+      "source_id": "edacc-test",
+      "ordinal": 15,
+      "stratum": "disfluent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-00",
+      "source_id": "edacc-test",
+      "ordinal": 16,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-01",
+      "source_id": "edacc-test",
+      "ordinal": 17,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-02",
+      "source_id": "edacc-test",
+      "ordinal": 18,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-03",
+      "source_id": "edacc-test",
+      "ordinal": 19,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-04",
+      "source_id": "edacc-test",
+      "ordinal": 20,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-05",
+      "source_id": "edacc-test",
+      "ordinal": 21,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-06",
+      "source_id": "edacc-test",
+      "ordinal": 22,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "edacc-overlap-adjacent-07",
+      "source_id": "edacc-test",
+      "ordinal": 23,
+      "stratum": "overlap_adjacent",
+      "channel": "single",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-00-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 0,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-00",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-00-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 1,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-00",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-01-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 2,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-01",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-01-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 3,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-01",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-02-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 4,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-02",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-02-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 5,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-02",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-03-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 6,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-03",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-03-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 7,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-03",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-04-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 8,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-04",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-04-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 9,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-04",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-05-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 10,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-05",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-05-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 11,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-05",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-06-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 12,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-06",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-06-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 13,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-06",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-07-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 14,
+      "stratum": "isolated",
+      "channel": "close",
+      "pair_id": "ami-pair-07",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-07-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 15,
+      "stratum": "isolated",
+      "channel": "far",
+      "pair_id": "ami-pair-07",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-08-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 16,
+      "stratum": "turn_transition",
+      "channel": "close",
+      "pair_id": "ami-pair-08",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-08-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 17,
+      "stratum": "turn_transition",
+      "channel": "far",
+      "pair_id": "ami-pair-08",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-09-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 18,
+      "stratum": "turn_transition",
+      "channel": "close",
+      "pair_id": "ami-pair-09",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-09-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 19,
+      "stratum": "turn_transition",
+      "channel": "far",
+      "pair_id": "ami-pair-09",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-10-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 20,
+      "stratum": "turn_transition",
+      "channel": "close",
+      "pair_id": "ami-pair-10",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-10-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 21,
+      "stratum": "turn_transition",
+      "channel": "far",
+      "pair_id": "ami-pair-10",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-11-close",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 22,
+      "stratum": "turn_transition",
+      "channel": "close",
+      "pair_id": "ami-pair-11",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "ami-pair-11-far",
+      "source_id": "ami-es2004a-close-far",
+      "ordinal": 23,
+      "stratum": "turn_transition",
+      "channel": "far",
+      "pair_id": "ami-pair-11",
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d0-00",
+      "source_id": "cvss4-en",
+      "ordinal": 0,
+      "stratum": "d0_2_6s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d0-01",
+      "source_id": "cvss4-en",
+      "ordinal": 1,
+      "stratum": "d0_2_6s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d0-02",
+      "source_id": "cvss4-en",
+      "ordinal": 2,
+      "stratum": "d0_2_6s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d0-03",
+      "source_id": "cvss4-en",
+      "ordinal": 3,
+      "stratum": "d0_2_6s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d0-04",
+      "source_id": "cvss4-en",
+      "ordinal": 4,
+      "stratum": "d0_2_6s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d0-05",
+      "source_id": "cvss4-en",
+      "ordinal": 5,
+      "stratum": "d0_2_6s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d1-00",
+      "source_id": "cvss4-en",
+      "ordinal": 6,
+      "stratum": "d1_6_10s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d1-01",
+      "source_id": "cvss4-en",
+      "ordinal": 7,
+      "stratum": "d1_6_10s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d1-02",
+      "source_id": "cvss4-en",
+      "ordinal": 8,
+      "stratum": "d1_6_10s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d1-03",
+      "source_id": "cvss4-en",
+      "ordinal": 9,
+      "stratum": "d1_6_10s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d1-04",
+      "source_id": "cvss4-en",
+      "ordinal": 10,
+      "stratum": "d1_6_10s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d1-05",
+      "source_id": "cvss4-en",
+      "ordinal": 11,
+      "stratum": "d1_6_10s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d2-00",
+      "source_id": "cvss4-en",
+      "ordinal": 12,
+      "stratum": "d2_10_15s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d2-01",
+      "source_id": "cvss4-en",
+      "ordinal": 13,
+      "stratum": "d2_10_15s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d2-02",
+      "source_id": "cvss4-en",
+      "ordinal": 14,
+      "stratum": "d2_10_15s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d2-03",
+      "source_id": "cvss4-en",
+      "ordinal": 15,
+      "stratum": "d2_10_15s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d2-04",
+      "source_id": "cvss4-en",
+      "ordinal": 16,
+      "stratum": "d2_10_15s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d2-05",
+      "source_id": "cvss4-en",
+      "ordinal": 17,
+      "stratum": "d2_10_15s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d3-00",
+      "source_id": "cvss4-en",
+      "ordinal": 18,
+      "stratum": "d3_15_25s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d3-01",
+      "source_id": "cvss4-en",
+      "ordinal": 19,
+      "stratum": "d3_15_25s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d3-02",
+      "source_id": "cvss4-en",
+      "ordinal": 20,
+      "stratum": "d3_15_25s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d3-03",
+      "source_id": "cvss4-en",
+      "ordinal": 21,
+      "stratum": "d3_15_25s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d3-04",
+      "source_id": "cvss4-en",
+      "ordinal": 22,
+      "stratum": "d3_15_25s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    },
+    {
+      "slot_id": "cvss4-d3-05",
+      "source_id": "cvss4-en",
+      "ordinal": 23,
+      "stratum": "d3_15_25s",
+      "channel": "original",
+      "pair_id": null,
+      "scoreability": "hard_wer"
+    }
+  ],
+  "recipe_sha256": "256d453166ad974a39ec6bf9a3b2073a1ed033e0b7e194c8a14d5acd331173eb"
+}

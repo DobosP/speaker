@@ -26,7 +26,7 @@ from typing import Mapping
 from urllib.parse import urlparse
 
 
-MATRIX_VERSION = 3
+MATRIX_VERSION = 4
 SELECTION_SEED = "speaker-public-eval-v1-2026-08-01"
 MDC_TOKEN_ENV = "MDC_TOKEN"
 
@@ -230,6 +230,11 @@ CC_BY_SA_3 = LicenseGate(
     "CC-BY-SA-3.0",
     "https://creativecommons.org/licenses/by-sa/3.0/legalcode",
     ("CC-BY-SA-3.0",),
+)
+CC_BY_SA_4 = LicenseGate(
+    "CC-BY-SA-4.0",
+    "https://creativecommons.org/licenses/by-sa/4.0/legalcode",
+    ("CC-BY-SA-4.0",),
 )
 AEC_MIXED = LicenseGate(
     (
@@ -653,6 +658,155 @@ DATASETS: tuple[Dataset, ...] = (
         ),
     ),
     Dataset(
+        "harper_valley_bank_v1",
+        "HarperValleyBank",
+        "github:cricketclub/gridspace-stanford-harper-valley",
+        "0bd721e877c4a85d8c13ff837e68661ea6200a98",
+        "https://github.com/cricketclub/gridspace-stanford-harper-valley",
+        CC_BY_4,
+        (
+            Artifact(
+                "repository",
+                "https://github.com/cricketclub/gridspace-stanford-harper-valley.git",
+                None,
+                None,
+                IntegrityKind.GIT_COMMIT,
+                _git("0bd721e877c4a85d8c13ff837e68661ea6200a98"),
+                "Verify the exact commit before reading metadata or audio.",
+            ),
+        ),
+        SelectionPolicy(
+            (
+                "Select exactly three human-transcribed caller turns from each "
+                "of the eight authoritative task_type values and require 24 "
+                "distinct callers. Use human_transcript only; reject names, "
+                "timestamps, and known marker-only noise/paralinguistic "
+                "references, and never use machine transcript, dialog-act, or "
+                "emotion output as a reference or label."
+            ),
+            algorithm=SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+            split="all",
+            identity_fields=("sid", "index"),
+            strata_fields=("task_type",),
+            seed=SELECTION_SEED,
+            expected_examples=24,
+            speaker_disjoint=True,
+            speaker_field="speaker_id",
+        ),
+    ),
+    Dataset(
+        "edacc_v1_test",
+        "Edinburgh International Accents of English Corpus v1.0 test",
+        "doi:10.7488/ds/7914",
+        "10.7488/ds/7914",
+        "https://datashare.ed.ac.uk/items/355c07b4-500d-4e80-8f12-225e646293c9/full",
+        CC_BY_SA_4,
+        (
+            Artifact(
+                "archive",
+                "https://datashare.ed.ac.uk/server/api/core/bitstreams/819f726e-1a65-4b3c-88d2-efdf0a7021ce/content",
+                "edacc_v1.0.tar.gz",
+                5_916_732_170,
+                IntegrityKind.PINNED,
+                _md5("146b4b8026b5d0ce9611667c708456b3"),
+                (
+                    "The current corrected DataShare deposit publishes this MD5; "
+                    "also freeze a local SHA-256 content receipt before use."
+                ),
+            ),
+        ),
+        SelectionPolicy(
+            (
+                "From the official test human text/segments/utt2spk/raw STM, "
+                "select eight clean, eight disfluent, and eight overlap-adjacent "
+                "human segments with distinct speakers. Require raw text/STM "
+                "agreement, but score only the key-matched official filtered STM. "
+                "Exclude actual ambiguous overlap, IGNORE_TIME_SEGMENT_IN_SCORING, "
+                "empty or alternative filtered references, and "
+                "noise/paralinguistic-only references from hard WER."
+            ),
+            algorithm=SelectionAlgorithm.HASH_SPEAKER_STRATIFIED,
+            split="test",
+            identity_fields=("utterance_id",),
+            strata_fields=("scoreability_stratum",),
+            seed=SELECTION_SEED,
+            expected_examples=24,
+            speaker_disjoint=True,
+            speaker_field="speaker_id",
+        ),
+        evidence_note=(
+            "Accent subgroup results are diagnostic because the deposit warns "
+            "that linguistic-background labels may be unreliable. Older "
+            "conversions are not evidence without proven content/license equivalence."
+        ),
+    ),
+    Dataset(
+        "ami_es2004a_close_far_v1",
+        "AMI ES2004a synchronized close/far fixture source",
+        "AMI:ES2004a:Mix-Headset+Array1-01",
+        "manual-annotations-1.6.2",
+        "https://groups.inf.ed.ac.uk/ami/corpus/",
+        CC_BY_4,
+        (
+            Artifact(
+                "annotations",
+                "https://groups.inf.ed.ac.uk/ami/AMICorpusAnnotations/ami_public_manual_1.6.2.zip",
+                "ami_public_manual_1.6.2.zip",
+                22_887_865,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d",
+                    "local-freeze",
+                ),
+            ),
+            Artifact(
+                "es2004a-array1-01",
+                "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Array1-01.wav",
+                "ES2004a.Array1-01.wav",
+                33_579_394,
+                IntegrityKind.PINNED,
+                _sha256(
+                    "6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150",
+                    "local-freeze",
+                ),
+            ),
+            Artifact(
+                "es2004a-mix-headset",
+                "https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2004a/audio/ES2004a.Mix-Headset.wav",
+                "ES2004a.Mix-Headset.wav",
+                None,
+                IntegrityKind.LOCAL_SHA256_RECEIPT,
+                integrity_note=(
+                    "No upstream content digest is pinned; require a locally "
+                    "computed SHA-256 receipt before preparation."
+                ),
+            ),
+        ),
+        SelectionPolicy(
+            (
+                "Select eight isolated single-speaker and four non-overlapping "
+                "turn-transition windows, then emit the identical sample interval "
+                "and reference once for close and once for far audio. Actual "
+                "overlap is diagnostic-only and excluded from hard WER."
+            ),
+            algorithm=SelectionAlgorithm.FIXED_TRANSFORM_GRID,
+            split="es2004a",
+            identity_fields=(
+                "meeting_id",
+                "window_start_sample",
+                "window_end_sample",
+                "channel",
+            ),
+            strata_fields=("window_type", "channel"),
+            seed=SELECTION_SEED,
+            expected_examples=24,
+        ),
+        evidence_note=(
+            "Parakeet training includes AMI; this paired close/far fixture is "
+            "development diagnostic evidence, not independent selection evidence."
+        ),
+    ),
+    Dataset(
         "ami_eval_three",
         "AMI official evaluation meetings (three-channel subset)",
         "AMI:ES2004a+IS1009a+TS3003a",
@@ -800,6 +954,8 @@ TRACKS: tuple[EvaluationTrack, ...] = (
             "speechocean762",
             "minds14_english",
             "rochester_smart_speaker_v1",
+            "harper_valley_bank_v1",
+            "edacc_v1_test",
         ),
         (
             Metric.LITERAL_WER,
@@ -824,7 +980,7 @@ TRACKS: tuple[EvaluationTrack, ...] = (
     EvaluationTrack(
         "far-field-device",
         TaskCategory.FAR_FIELD_DEVICE,
-        ("dr_vctk_small", "ami_eval_three"),
+        ("dr_vctk_small", "ami_eval_three", "ami_es2004a_close_far_v1"),
         (Metric.LITERAL_WER, Metric.CANONICAL_WER, Metric.PAIRED_WER_DELTA),
         "Keep paired clean/device deltas separate from AMI far-field absolute WER.",
     ),

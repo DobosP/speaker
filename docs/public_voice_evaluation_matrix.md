@@ -1,15 +1,18 @@
 # Public voice evaluation matrix
 
 Architecture and evidence policy are recorded in
-[ADR-0098](adr/0098-separate-public-voice-evidence-and-bind-production-baseline.md).
+[ADR-0098](adr/0098-separate-public-voice-evidence-and-bind-production-baseline.md)
+and [ADR-0113](adr/0113-bind-public-conversation-stt-fixture.md). Matrix v4 has
+eight metric-isolated tracks, 18 selectable sources, and 11 explicit
+exclusions.
 `tools.public_voice_eval_matrix` is a typed catalog and acquisition planner; it
 does not download, extract, or run any corpus.
 
 | Track | Public inputs | Report family |
 |---|---|---|
-| STT/accent | Common Voice 26, Common Voice SPS 4 English, SpeechOcean762, MInDS-14 | literal/canonical WER and CER |
+| STT/accent | Common Voice 26, Common Voice SPS 4 English, SpeechOcean762, MInDS-14, HarperValleyBank, EdAcc test | literal/canonical WER and CER |
 | STOP | Speech Commands v0.02 test | precision, recall, confusions, false alarms |
-| Far field/device | DR-VCTK Small, AMI | absolute and paired WER delta |
+| Far field/device | DR-VCTK Small, AMI array evidence, paired AMI ES2004a close/far | absolute and paired WER delta |
 | Noise/reverb | RIRS_NOISES plus pinned speech | fixed-grid WER degradation |
 | AEC/double-talk | Microsoft AEC synthetic pairs | ERLE/AECMOS, near-end loss, barge errors/latency |
 | Overlap/turns | AMI manual timing | overlap WER, early cuts, delay, backchannels |
@@ -23,6 +26,91 @@ its value, and an API/local SHA-256 receipt wherever upstream lacks one. Its
 returned usage constraints include cache-only/evaluation-only handling and any
 corpus-specific privacy limits. Reduced row sets use `select_subset_rows`; the
 prepared manifest can bind their order with `selected_rows_sha256`.
+
+## Public conversation/STT fixture
+
+The committed
+`tools/streaming_stt/public-conversation-96.lock.json` contains four exact
+source recipes and 96 abstract slots. Its canonical digest excludes only its
+own `recipe_sha256` field. It contains no audio, literal reference, selected
+source identity, or local path. The root seed contributes to the receipt-hash
+domain; each source recipe separately records the seed its executable selector
+actually uses.
+
+| Source | Exact acquisition binding | Fixture selection |
+|---|---|---|
+| HarperValleyBank | Git commit `0bd721e877c4a85d8c13ff837e68661ea6200a98`, CC-BY-4.0 | three lexical `human_transcript` caller turns for each of eight authoritative task types; 24 distinct callers; metadata names, recognizable dates/clocks, and known marker-only noise/paralinguistic references excluded; machine transcript/dialog-act/emotion output forbidden as labels |
+| EdAcc v1.0 test | current corrected DOI `10.7488/ds/7914`; `edacc_v1.0.tar.gz`; 5,916,732,170 bytes; publisher MD5 `146b4b8026b5d0ce9611667c708456b3`; CC-BY-SA-4.0 | eight clean, eight disfluent, eight overlap-adjacent official human segments; raw text/STM agreement binds and classifies the source, while the key-matched official filtered STM is the hard-WER reference; actual overlap plus empty/alternative filtered references excluded; accent strata diagnostic only |
+| AMI ES2004a | annotations: 22,887,865 bytes/SHA-256 `b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d`; Array1-01: 33,579,394 bytes/SHA-256 `6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150`; local SHA-256 receipt required for unpinned Mix-Headset; CC-BY-4.0 | eight isolated and four non-overlapping transition intervals, each emitted once close and once far with the identical interval/reference; actual overlap diagnostic only |
+| Common Voice SPS 4 English | existing 522,005,930-byte MDC archive/SHA-256 `3b03ada7676a5f440a797d896035137fd073d0683133c3e9a83963480d88abfe`; CC0 plus MDC consumer terms | deterministic six-case projection from each of the unchanged 32-case preparer's four duration bands; 24 distinct speaker and prompt digests |
+
+Each source is published as its own schema-v2 corpus with exactly 24 cases.
+Keeping four corpora avoids widening the loader's 32 MiB eager-PCM bound. A
+mode-0600 fixed sibling `preparation-receipt.json` binds the catalog dataset,
+accepted terms, artifact content receipts, selection/eligible sets,
+preparer/decoder closure, opaque identity/speaker/reference hashes, and exact
+PCM hashes. The four source materializers recompute that evidence from the
+actual checkout/archive/audio rather than accepting caller-authored hashes:
+
+- `tools.prepare_harper_valley_conversation_fixture` verifies the exact clean
+  Git commit/tree and tracked metadata/audio blobs.
+- `tools.prepare_edacc_conversation_fixture` verifies both the 5.9 GB archive
+  and its direct private extraction, key-matches raw and filtered official test
+  STM, and records `official_filtered_stm` on every hard-WER receipt case.
+- `tools.prepare_ami_conversation_fixture` verifies the pinned annotations and
+  far WAV plus the caller-supplied local SHA-256 freeze for Mix-Headset.
+- `tools.prepare_common_voice_conversation_fixture` re-verifies the pinned SPS
+  archive, recomputes its 32 parent rows and MP3 hashes, and binds the parent
+  preparation receipt and corpus manifest before projecting 24 cases.
+
+Use each module's `--help` for its explicit source and license arguments. Their
+unit-test source injections always emit `production_evidence=false` and cannot
+pass the production fixture validator.
+
+Receipts cross-bind one same-owner snapshot; they are not signatures. The
+validator catches drift and inconsistent layer changes, but an actor able to
+rewrite the corpus, receipt, and all hashes can reauthor that private record.
+Only a raw-source materializer run against the pinned inputs establishes the
+preparation claim. Production-shaped grammar fixtures in validator unit tests
+are contract tests, never source evidence.
+
+Validation-only reloads all four sources twice and prints aggregate values:
+
+```bash
+SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.public_conversation_fixture \
+  --corpus /absolute/private/harper/corpus.json \
+  --corpus /absolute/private/edacc/corpus.json \
+  --corpus /absolute/private/ami-close-far/corpus.json \
+  --corpus /absolute/private/cvss4-projection/corpus.json
+```
+
+For a model run, use the same entry point with one or more receipt-bound worker
+manifests. It validates first, passes the corpora to the existing suite in lock
+order, runs its cross-product strictly one cell at a time, revalidates every
+receipt/manifest/PCM afterward even when the suite fails, and only then wraps
+the private aggregate report:
+
+```bash
+SPEAKER_TEST_LOG=0 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
+  /home/dobo/work/speaker/.venv/bin/python -B \
+  -m tools.public_conversation_fixture \
+  --corpus /absolute/private/harper/corpus.json \
+  --corpus /absolute/private/edacc/corpus.json \
+  --corpus /absolute/private/ami-close-far/corpus.json \
+  --corpus /absolute/private/cvss4-projection/corpus.json \
+  --worker-manifest /absolute/private/candidate/worker-manifest.json \
+  --scratch-root /absolute/private/new-candidate-scratch \
+  --output /absolute/private/new-conversation96-report.json \
+  --repeats 1 --pace burst
+```
+
+Preserve private aggregate reports; this is after-PCM development evidence,
+not native capture/VAD/AEC, agent/tool, training-disjoint, device-latency, or
+live evidence.
 
 ## Common Voice spontaneous English P0
 
@@ -59,12 +147,15 @@ NUMEXPR_NUM_THREADS=1 ionice -c 3 nice -n 15 \
   --mdc-api-checksum sha256:3b03ada7676a5f440a797d896035137fd073d0683133c3e9a83963480d88abfe
 ```
 
-Success prints only counts and hashes. The output contains `corpus.json`, 32
+Success prints only counts and hashes. The unchanged output contains `corpus.json`, 32
 f32le clips, and `preparation-receipt.json`, all mode 0600 under a mode-0700
 directory. The receipt contains no transcript text, raw speaker/source
 identifiers, local paths, credential material, or reported comments; the private
 `corpus.json` necessarily retains literal reference text for WER. A failed run
 may retain partial private evidence for diagnosis; only exit zero is readiness.
+ADR-0113 adds a salted prompt digest to each private case receipt so the later
+24-case fixture projection can prove prompt diversity without changing the
+accepted 32-case selector.
 
 ## Zipformer comparison control
 

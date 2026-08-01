@@ -181,6 +181,7 @@ class SpsRow:
     client_id: str = field(repr=False)
     audio_id: str = field(repr=False)
     audio_file: str = field(repr=False)
+    prompt_id: str = field(repr=False)
     duration_ms: int
     transcription: str = field(repr=False)
     split: str
@@ -665,6 +666,7 @@ def _parse_main_tsv(payload: bytes) -> ParsedMetadata:
             client_id = raw["client_id"]
             audio_id = raw["audio_id"]
             audio_file = raw["audio_file"]
+            prompt_id = raw["prompt_id"]
             transcription = raw["transcription"]
             language = raw["language"]
             split = raw["split"] or "unassigned"
@@ -675,6 +677,7 @@ def _parse_main_tsv(payload: bytes) -> ParsedMetadata:
                 or not audio_id
                 or len(audio_id) > 256
                 or _SAFE_AUDIO_RE.fullmatch(audio_file) is None
+                or len(prompt_id) > 256
                 or audio_id in seen_audio_ids
                 or audio_file in seen_audio_files
                 or len(language) > 32
@@ -697,6 +700,7 @@ def _parse_main_tsv(payload: bytes) -> ParsedMetadata:
                     client_id=client_id,
                     audio_id=audio_id,
                     audio_file=audio_file,
+                    prompt_id=prompt_id,
                     duration_ms=duration_ms,
                     transcription=transcription,
                     split=split,
@@ -1182,7 +1186,7 @@ def _preparer_code_provenance() -> dict[str, object]:
         "tools/streaming_stt/protocol.py",
     )
     return {
-        "contract": "common-voice-spontaneous-v4-private-preparer-v2",
+        "contract": "common-voice-spontaneous-v4-private-preparer-v3",
         "files": {
             relative: _module_digest(str(_REPO_ROOT / relative)) for relative in files
         },
@@ -1292,6 +1296,7 @@ def prepare_common_voice_spontaneous_v4(
                 "case_id": case_id,
                 "identity_sha256": identity_sha256,
                 "speaker_sha256": _salted_digest("speaker", row.client_id),
+                "prompt_sha256": _salted_digest("prompt", row.prompt_id),
                 "duration_ms": row.duration_ms,
                 "duration_bucket": bucket,
                 "quality_tags": list(row.quality_tags),

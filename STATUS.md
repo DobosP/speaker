@@ -2,7 +2,7 @@
 
 Single source of truth: this file > newest accepted ADR > everything else; dated handoffs are history.
 
-Last verified: 2026-08-01 on Linux ROG.
+Last verified: 2026-08-02 on Linux ROG.
 
 - Current non-real logic gate: 7,300 passed as 7,269 low-priority broad tests plus 31 isolated sandbox/logging/path/thread-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0112 focused 118; exact headless CLI 42/42 + 12/12; current APM/DTD 6.
 - Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
@@ -38,7 +38,7 @@ Last verified: 2026-08-01 on Linux ROG.
   match can mint owner trust; advisory, mixed, rescue, and generic rewrite paths
   cannot grant device-action authority (ADR-0027/0041/0051).
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English plus Faster-Whisper Small. Protected controls fail closed; SenseVoice defaults remain unchanged (ADR-0078/0080).
-- Public evaluation has 8 tracks/15 sources/11 exclusions. Its checksum-bound DEMAND transform adds balanced kitchen/living/washing 0/10/20 dB strata; Rochester is acquisition-only without a publisher label map (ADR-0098/0099/0101/0102/0106/0109).
+- Public matrix v4 has 8 tracks/18 sources/11 exclusions. One self-digested, transcript/path/identity-free lock binds four separate private schema-v2 corpora at exactly 24 cases each: HarperValleyBank, EdAcc test, paired AMI ES2004a close/far, and a 6x4 Common Voice SPS v4 projection. Source-specific materializers recompute checkout/archive/audio evidence; the CV parent receipt/corpus and every generic receipt/reference/PCM are cross-bound. One entry validates, runs the existing suite sequentially, then revalidates. Raw-source materializer injections are explicitly non-production; separate production-shaped validator grammar fixtures prove consistency/tamper behavior, not receipt authorship. None are real-corpus, model, GPU, capture, or live evidence (ADR-0098/0101/0109/0113).
 - The opt-in conversation flow-v1 gate composes unchanged v4 semantics with exact 4x3 deterministic journeys for typed incremental turns, scripted interruption recovery, delayed read tools/follow-up, and confirmed synthetic-action stop/restart fencing. It uses production runtime/session ownership but explicitly excludes microphone/VAD wiring, STT/WER, real TTS/audio, AEC/room, physical audibility, external effects, and live latency (ADR-0112).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
@@ -79,7 +79,7 @@ Last verified: 2026-08-01 on Linux ROG.
 
 ## Next
 
-- Add a hash-bound small public conversation/STT fixture lock, then compare isolated GPU model/configuration cells without changing runtime defaults; keep live promotion dependent on fresh private recording A/B (ADR-0112).
+- Acquire, prepare, and validate all four private conversation/STT corpora, then compare isolated GPU model/configuration cells sequentially without changing runtime defaults; keep live promotion dependent on fresh private recording A/B (ADR-0112/0113).
 - Capture fresh `./live.sh` vault/open-speaker evidence, export exact owner-labelled inputs, add disjoint command/multi-voice strata, then run live A/B; add native-reader/gap and AEC replay (ADR-0092/0100/0108/0109).
 - Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 

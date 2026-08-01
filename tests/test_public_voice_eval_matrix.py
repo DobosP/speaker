@@ -22,6 +22,7 @@ ALL_TERMS = frozenset(
         "FREESOUND-SELECTED-CC0-1.0",
         "DEMAND-CC-BY-SA-3.0",
         "CC-BY-SA-3.0",
+        "CC-BY-SA-4.0",
     }
 )
 
@@ -61,7 +62,7 @@ def test_matrix_has_one_track_per_separate_task_metric_family():
 
 
 def test_primary_dataset_ids_revisions_checksums_and_licenses_are_pinned():
-    assert matrix.MATRIX_VERSION == 3
+    assert matrix.MATRIX_VERSION == 4
     speech = matrix.dataset_by_id("speech_commands_v002_test")
     assert speech.revision == "57ba463ab37e1e7845e0626539a6f6d0fcfbe64a"
     assert speech.selection.expected_examples == 4_890
@@ -227,6 +228,94 @@ def test_ami_local_freeze_is_exact_and_warns_about_training_overlap():
         "not independent"
         in matrix.dataset_by_id("speech_commands_v002_test").evidence_note
     )
+
+
+def test_public_conversation_fixture_sources_are_exact_and_track_scoped(tmp_path):
+    harper = matrix.dataset_by_id("harper_valley_bank_v1")
+    assert harper.revision == "0bd721e877c4a85d8c13ff837e68661ea6200a98"
+    assert harper.license.license_id == "CC-BY-4.0"
+    assert harper.selection.algorithm is matrix.SelectionAlgorithm.HASH_SPEAKER_STRATIFIED
+    assert harper.selection.seed == matrix.SELECTION_SEED
+    assert harper.selection.expected_examples == 24
+    assert harper.selection.strata_fields == ("task_type",)
+    assert harper.selection.speaker_field == "speaker_id"
+    assert "marker-only" in harper.selection.description
+    assert _artifact("harper_valley_bank_v1", "repository").checksum == matrix.Checksum(
+        matrix.ChecksumAlgorithm.GIT_SHA1,
+        "0bd721e877c4a85d8c13ff837e68661ea6200a98",
+        "upstream-git",
+    )
+
+    edacc = matrix.dataset_by_id("edacc_v1_test")
+    assert edacc.revision == "10.7488/ds/7914"
+    assert edacc.license.license_id == "CC-BY-SA-4.0"
+    assert edacc.license.acceptance_ids == ("CC-BY-SA-4.0",)
+    assert edacc.selection.expected_examples == 24
+    assert edacc.selection.strata_fields == ("scoreability_stratum",)
+    assert "official filtered STM" in edacc.selection.description
+    edacc_archive = _artifact("edacc_v1_test", "archive")
+    assert edacc_archive.filename == "edacc_v1.0.tar.gz"
+    assert edacc_archive.size_bytes == 5_916_732_170
+    assert edacc_archive.checksum == matrix.Checksum(
+        matrix.ChecksumAlgorithm.MD5,
+        "146b4b8026b5d0ce9611667c708456b3",
+        "upstream",
+    )
+
+    ami = matrix.dataset_by_id("ami_es2004a_close_far_v1")
+    assert ami.revision == "manual-annotations-1.6.2"
+    assert ami.selection.algorithm is matrix.SelectionAlgorithm.FIXED_TRANSFORM_GRID
+    assert ami.selection.expected_examples == 24
+    assert [artifact.artifact_id for artifact in ami.artifacts] == [
+        "annotations",
+        "es2004a-array1-01",
+        "es2004a-mix-headset",
+    ]
+    assert _artifact("ami_es2004a_close_far_v1", "annotations").checksum.digest == (
+        "b56e5babb2496b8795deeeda7e71178d7fbc9963f94276cf2a3f4b56ebbc9f9d"
+    )
+    assert _artifact(
+        "ami_es2004a_close_far_v1", "es2004a-array1-01"
+    ).checksum.digest == (
+        "6936edac5d0904fc5c4ab175546c5cc5366601fdc1b1e5183a6ea2c10f05d150"
+    )
+    assert _artifact(
+        "ami_es2004a_close_far_v1", "es2004a-mix-headset"
+    ).integrity is matrix.IntegrityKind.LOCAL_SHA256_RECEIPT
+
+    stt = next(track for track in matrix.TRACKS if track.track_id == "stt")
+    far = next(track for track in matrix.TRACKS if track.track_id == "far-field-device")
+    overlap = next(
+        track for track in matrix.TRACKS if track.track_id == "overlap-turn-taking"
+    )
+    assert {"harper_valley_bank_v1", "edacc_v1_test"} <= set(stt.dataset_ids)
+    assert "ami_es2004a_close_far_v1" in far.dataset_ids
+    assert overlap.dataset_ids == ("ami_eval_three",)
+
+    with pytest.raises(matrix.MatrixError, match="explicit SHA-256"):
+        matrix.build_acquisition_plan(
+            ("ami_es2004a_close_far_v1",),
+            root=tmp_path / "corpora",
+            accepted_terms=ALL_TERMS,
+            environ={},
+        )
+    receipt = matrix.Checksum(
+        matrix.ChecksumAlgorithm.SHA256,
+        "a" * 64,
+        "local-freeze",
+    )
+    plan = matrix.build_acquisition_plan(
+        ("ami_es2004a_close_far_v1",),
+        root=tmp_path / "corpora",
+        accepted_terms=ALL_TERMS,
+        checksum_receipts={"ami_es2004a_close_far_v1/es2004a-mix-headset": receipt},
+        environ={},
+    )
+    assert len(plan.artifacts) == 3
+    assert next(
+        item for item in plan.artifacts if item.artifact_id == "es2004a-mix-headset"
+    ).checksum == receipt
+    assert len(matrix.DATASETS) == 18
 
 
 def test_unlicensed_challenge_only_and_nc_sources_are_non_selectable():

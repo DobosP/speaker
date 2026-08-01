@@ -113,6 +113,7 @@ _EVALUATOR_SOURCE_FILES = (
     "core/engines/_dtd.py",
     "core/engines/_faster_whisper.py",
     "core/engines/_sherpa_models.py",
+    "core/engines/_sherpa_streaming_decode.py",
     "core/engines/_speech_evidence.py",
     "core/engines/echo_coherence.py",
     "core/engines/sherpa.py",
@@ -407,6 +408,29 @@ def _attest_verifier_execution(
         "available_after_run": True,
         **snapshot,
     }
+
+
+def _attest_streaming_decode_execution(
+    engine: SherpaOnnxEngine,
+    *,
+    expected_capture_runs: int,
+) -> str:
+    session = engine._streaming_decode_session
+    if session is None or expected_capture_runs <= 0:
+        raise CaptureReplayEvaluationError()
+    snapshot = session.snapshot()
+    if (
+        not snapshot.bound
+        or not snapshot.closed
+        or snapshot.native_call_active
+        or snapshot.live_streams != 0
+        or snapshot.retained_streams != 0
+        or snapshot.orphaned_streams != 0
+        or snapshot.streams_created < expected_capture_runs
+        or snapshot.streams_retired != snapshot.streams_created
+    ):
+        raise CaptureReplayEvaluationError()
+    return "single-owner-synchronous"
 
 
 def _safe_label(value: object, allowed: frozenset[str]) -> str:
@@ -757,7 +781,10 @@ def _execute_case(
         engine._capture_media_session = session
         engine._running.set()
         session.start()
-        engine._capture_loop()
+        # The evaluator batch is one decode-owner run. Each case still creates
+        # fresh opaque streams, but the loaded native recognizer is released
+        # only after every case/repeat has completed on this same thread.
+        engine._capture_loop(close_decode_session=False)
         wall_seconds = time.perf_counter() - started
         if not session.naturally_exhausted or session.error is not None:
             raise CaptureReplayEvaluationError()
@@ -825,17 +852,25 @@ def evaluate_capture_replay(
     model_load_ms = (time.perf_counter() - build_started) * 1000.0
 
     records: list[ReplayRunRecord] = []
-    with _quiet_model_output():
-        for repeat in range(repeats):
-            for case_index, case in enumerate(corpus.cases):
-                records.append(
-                    _execute_case(
-                        engine,
-                        case,
-                        case_index=case_index,
-                        repeat=repeat,
+    try:
+        with _quiet_model_output():
+            for repeat in range(repeats):
+                for case_index, case in enumerate(corpus.cases):
+                    records.append(
+                        _execute_case(
+                            engine,
+                            case,
+                            case_index=case_index,
+                            repeat=repeat,
+                        )
                     )
-                )
+    finally:
+        decode_session = engine._streaming_decode_session
+        if decode_session is not None and not decode_session.closed:
+            try:
+                decode_session.close()
+            except Exception:
+                raise CaptureReplayEvaluationError() from None
     verify_corpus_snapshot(corpus)
     if _evaluator_source_digest() != source_digest:
         raise CaptureReplayEvaluationError()
@@ -846,6 +881,10 @@ def evaluate_capture_replay(
         engine,
         verifier_probe,
         text_expected=any(bool(case.expected_text.strip()) for case in corpus.cases),
+    )
+    streaming_decode_execution = _attest_streaming_decode_execution(
+        engine,
+        expected_capture_runs=len(corpus.cases) * repeats,
     )
     result: dict[str, object] = {
         "execution_complete": True,
@@ -877,6 +916,7 @@ def evaluate_capture_replay(
             ),
             "asr_final_verifier_execution": verifier_execution,
             "final_execution": "inline-deterministic-replay",
+            "streaming_decode_execution": streaming_decode_execution,
             "public_identity_models_loaded": False,
             "output_models_loaded": False,
             "model_load_ms": round(model_load_ms, 3),

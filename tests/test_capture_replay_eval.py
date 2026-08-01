@@ -43,6 +43,86 @@ from tools.capture_replay.metrics import ReplayAcousticEvent
 from tools import capture_replay_eval as evaluate
 
 
+def test_evaluator_provenance_includes_streaming_decode_owner() -> None:
+    assert (
+        "core/engines/_sherpa_streaming_decode.py"
+        in evaluate._EVALUATOR_SOURCE_FILES
+    )
+    digest = evaluate._evaluator_source_digest()
+    assert len(digest) == 64
+    assert set(digest) <= set("0123456789abcdef")
+
+
+def test_multi_case_replay_reuses_one_owner_then_closes_it(tmp_path) -> None:
+    class _Stream:
+        def accept_waveform(self, _sample_rate, _samples) -> None:
+            pass
+
+    class _Recognizer:
+        def __init__(self) -> None:
+            self.streams_created = 0
+
+        def create_stream(self):
+            self.streams_created += 1
+            return _Stream()
+
+        def is_ready(self, _stream) -> bool:
+            return False
+
+        def decode_stream(self, _stream) -> None:  # pragma: no cover - never ready
+            pass
+
+        def get_result(self, _stream) -> str:
+            return ""
+
+        def is_endpoint(self, _stream) -> bool:
+            return False
+
+        def reset(self, _stream) -> None:
+            pass
+
+    values = np.zeros(FRAME_SAMPLES, dtype="float32")
+    replay_case = ReplayCase(
+        case_id="owner-lifecycle",
+        sample_rate_hz=SAMPLE_RATE_HZ,
+        frame_samples=FRAME_SAMPLES,
+        tracks=MappingProxyType({"mic": _track(tmp_path, values)}),
+        speech_intervals=(),
+        speaker_intervals=(),
+        word_intervals=(),
+        assertion=ReplayAssertion.SILENCE,
+        expected_text="",
+        commands=(),
+        tags=("owner-lifecycle",),
+        aec_delay_samples=0,
+    )
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            input_calibrate=False,
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+        )
+    )
+    recognizer = _Recognizer()
+    engine._recognizer = recognizer
+
+    first = evaluate._execute_case(engine, replay_case, case_index=0, repeat=0)
+    session = engine._streaming_decode_session
+    assert session is not None and not session.closed
+    second = evaluate._execute_case(engine, replay_case, case_index=1, repeat=0)
+    assert engine._streaming_decode_session is session
+    assert recognizer.streams_created == 2
+
+    session.close()
+
+    assert first.case_index == 0
+    assert second.case_index == 1
+    assert evaluate._attest_streaming_decode_execution(
+        engine,
+        expected_capture_runs=2,
+    ) == "single-owner-synchronous"
+
+
 def _track(tmp_path: Path, values: np.ndarray) -> ReplayTrack:
     raw = np.asarray(values, dtype="<f4").tobytes()
     return ReplayTrack(
@@ -294,7 +374,8 @@ def test_case_failure_cleans_private_callbacks_and_capture_state(
 ):
     engine = SherpaOnnxEngine(SherpaConfig(input_calibrate=False))
 
-    def fail_capture() -> None:
+    def fail_capture(*, close_decode_session: bool = True) -> None:
+        assert close_decode_session is False
         raise RuntimeError("private capture failure")
 
     monkeypatch.setattr(engine, "_capture_loop", fail_capture)

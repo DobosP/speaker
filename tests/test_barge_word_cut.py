@@ -3293,6 +3293,9 @@ def test_capture_confirmed_word_cut_handoff_finalizes_candidate_once():
     thread.start()
     thread.join(timeout=3.0)
     assert not thread.is_alive()
+    assert eng._recognizer is None
+    assert eng._streaming_decode_session is not None
+    assert eng._streaming_decode_session.closed
 
     assert len(finalized) == 1
     primary, raw, speech_end, alternate, speech_sec = finalized[0]

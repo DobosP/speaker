@@ -132,7 +132,8 @@ def test_rearmed_duplex_grant_initializes_word_cut_in_same_reply():
 
     binder = _Binder()
     engine = _engine(binder)
-    engine._recognizer = _Recognizer()
+    recognizer = _Recognizer()
+    engine._recognizer = recognizer
     engine._vad = _Vad()
     engine._capture_sr = engine.config.sample_rate
     engine._stream_in = _OneBlockInput(engine)
@@ -147,9 +148,9 @@ def test_rearmed_duplex_grant_initializes_word_cut_in_same_reply():
     engine._running.set()
     engine._capture_loop()
 
-    assert len(engine._recognizer.streams) == 2
-    assert len(engine._recognizer.streams[0].blocks) == 0
-    assert len(engine._recognizer.streams[1].blocks) == 1
+    assert len(recognizer.streams) == 2
+    assert len(recognizer.streams[0].blocks) == 0
+    assert len(recognizer.streams[1].blocks) == 1
 
 
 def test_private_kws_rechecks_route_at_callback_seam():

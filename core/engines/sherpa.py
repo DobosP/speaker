@@ -192,6 +192,7 @@ from ._speech_evidence import (
     SpeechEvidenceSnapshot,
     build_speech_evidence_profile,
 )
+from ._sherpa_streaming_decode import SherpaStreamingDecodeSession
 from ._denoiser import build_denoiser
 from ._aec import (
     AecDelayCalibrator,
@@ -1814,6 +1815,12 @@ class SherpaOnnxEngine(AudioEngine):
             and getattr(self._turn_detector, "needs_audio", False)
         )
         self._recognizer = None
+        # The raw primary OnlineRecognizer exists only between model build and
+        # capture-session transfer. Every online operation and stream lifetime
+        # after that transfer belongs to this exact-thread owner.
+        self._streaming_decode_session: Optional[
+            SherpaStreamingDecodeSession
+        ] = None
         self._final_recognizer = None
         self._final_verifier = None
         self._final_verifier_lock = threading.Lock()
@@ -2675,6 +2682,13 @@ class SherpaOnnxEngine(AudioEngine):
     # --- lazy model construction ---
     def _build(self) -> None:
         c = self.config
+        prior_decode_session = self._streaming_decode_session
+        if prior_decode_session is not None:
+            if not prior_decode_session.closed:
+                raise RuntimeError(
+                    "cannot rebuild while the streaming decode owner is live"
+                )
+            self._streaming_decode_session = None
         self._recognizer = build_recognizer(c)
         # Optional offline second-pass recognizer for the final transcript.
         self._final_recognizer = build_final_recognizer(c)
@@ -3282,6 +3296,11 @@ class SherpaOnnxEngine(AudioEngine):
 
     def _start_receipt_dispatcher(self) -> None:
         with self._receipt_lock:
+            # Linearize dispatcher admission with stop/startup rollback. A
+            # speak_tracked() caller may have observed _running immediately
+            # before the stop fence; it must not resurrect a receipt owner.
+            if self._playback_stopping.is_set() or not self._running.is_set():
+                return
             thread = self._receipt_thread
             if thread is not None and thread.is_alive():
                 return
@@ -3886,11 +3905,47 @@ class SherpaOnnxEngine(AudioEngine):
         with self._capture_effect_condition:
             return self._capture_effects == 0
 
+    @staticmethod
+    def _thread_start_was_observed(thread: Optional[threading.Thread]) -> bool:
+        """Whether a capture Thread crossed Python's start publication point."""
+
+        if thread is None:
+            return False
+        missing = object()
+        started = getattr(thread, "_started", missing)
+        if started is not missing:
+            try:
+                if started.is_set():
+                    return True
+            except Exception:  # noqa: BLE001 - nonstandard injected Thread
+                pass
+            return getattr(thread, "ident", None) is not None
+        # Narrow compatibility for simple injected worker doubles that expose
+        # only join()/is_alive(); an alive double represents an already-started
+        # owner, while a quiescent one remains conservatively unpublished.
+        try:
+            return bool(thread.is_alive())
+        except Exception:  # noqa: BLE001 - malformed injected worker
+            return getattr(thread, "ident", None) is not None
+
+    @classmethod
+    def _thread_may_start_or_is_alive(
+        cls,
+        thread: Optional[threading.Thread],
+    ) -> bool:
+        """Treat an ambiguously launched Thread as live until proven finished."""
+
+        if thread is None:
+            return False
+        if not cls._thread_start_was_observed(thread):
+            return True
+        return thread.is_alive()
+
     def _capture_owner_and_effects_are_idle(self) -> bool:
         capture_thread = self._capture_thread
         media_session = self._capture_media_session
         return bool(
-            (capture_thread is None or not capture_thread.is_alive())
+            not self._thread_may_start_or_is_alive(capture_thread)
             and (media_session is None or not media_session.is_alive)
             and self._capture_effects_are_idle()
         )
@@ -3966,8 +4021,178 @@ class SherpaOnnxEngine(AudioEngine):
             self._close_recorders(log_completed=True)
         return True
 
+    def _rollback_failed_capture_processor_launch(
+        self,
+        decode_session: Optional[SherpaStreamingDecodeSession],
+        *,
+        capture_start_ambiguous: bool = False,
+    ) -> None:
+        """Reclaim resources when capture-processor launch does not return.
+
+        A constructor failure precedes ownership transfer, but any exception
+        raised while ``Thread.start`` waits for publication may arrive after the
+        OS thread began. Fence first, then join-or-retain both capture owners
+        before releasing native, recorder, finalizer, or decode state.
+        """
+
+        # start() opened playback admission before it launched the capture
+        # processor. Fence it first, then invalidate and drain anything that
+        # raced that window; no playback worker exists to consume such work.
+        self._playback_stopping.set()
+        self._running.clear()
+        with self._capture_effect_condition:
+            self._capture_epoch += 1
+            self._capture_stopping.set()
+            self._capture_effect_condition.notify_all()
+
+        grace = max(0.01, float(self.config.block_sec) + 0.05)
+        capture_thread = self._capture_thread
+        if (
+            capture_start_ambiguous
+            and capture_thread is not None
+            and not self._thread_start_was_observed(capture_thread)
+        ):
+            # CPython launches the OS thread before the child publishes ident
+            # and sets _started. A Python signal-handler exception can land in
+            # the parent's _started.wait() during that gap. Give publication
+            # one bounded opportunity; if it still has not happened, retain the
+            # Thread and every resource as a potentially pending owner.
+            started = getattr(capture_thread, "_started", None)
+            wait = getattr(started, "wait", None)
+            if callable(wait):
+                wait(timeout=grace)
+        if capture_thread is not None and (
+            (
+                not capture_start_ambiguous
+                and not self._thread_start_was_observed(capture_thread)
+            )
+            or (
+                self._thread_start_was_observed(capture_thread)
+                and not capture_thread.is_alive()
+            )
+        ):
+            # Constructor/pre-transfer failures leave an unstarted Thread.
+            # A published thread that already finished is equally safe to
+            # normalize. Do this before a dropped-receipt callback can re-enter
+            # stop(); an ambiguous unpublished Thread stays retained.
+            self._capture_thread = None
+            capture_thread = None
+        with self._gen_lock:
+            self._stop_speaking.set()
+            self._speak_gen += 1
+        with self._receipt_lock:
+            self._drain_play_q()
+            self._terminalize_unbound_receipts()
+        self._stop_receipt_dispatcher()
+        # A terminal callback may re-enter stop() and enqueue its playback
+        # sentinel while no playback worker exists. Remove that callback-owned
+        # residue before a future cleanup/restart can observe it.
+        with self._receipt_lock:
+            self._drain_play_q()
+            self._terminalize_unbound_receipts()
+
+        lane = self._capture_control_lane
+        if lane is not None:
+            lane.close()
+            self._capture_control_lane = None
+
+        self._virtual_route_stop.set()
+        virtual_route_thread = self._virtual_route_thread
+        if (
+            virtual_route_thread is not None
+            and virtual_route_thread is not threading.current_thread()
+        ):
+            virtual_route_thread.join(timeout=0.5)
+            if not virtual_route_thread.is_alive():
+                self._virtual_route_thread = None
+
+        media_session = self._capture_media_session
+        capture_stream = self._stream_in
+        if media_session is not None:
+            media_session.request_stop()
+        if capture_stream is not None:
+            request_close = getattr(capture_stream, "request_close", None)
+            if callable(request_close):
+                request_close()
+
+        if (
+            capture_thread is not None
+            and capture_thread is not threading.current_thread()
+            and self._thread_start_was_observed(capture_thread)
+            and capture_thread.is_alive()
+        ):
+            capture_thread.join(timeout=grace)
+        if media_session is not None:
+            media_session.join(timeout=grace)
+        capture_processor_active = self._thread_may_start_or_is_alive(
+            capture_thread
+        )
+        capture_reader_alive = bool(
+            media_session is not None and media_session.is_alive
+        )
+        if (
+            (capture_processor_active or capture_reader_alive)
+            and capture_stream is not None
+        ):
+            abort_read = getattr(capture_stream, "abort_read", None)
+            if callable(abort_read):
+                try:
+                    abort_read(timeout=grace)
+                except Exception:  # noqa: BLE001 - cleanup remains bounded
+                    pass
+            if (
+                capture_processor_active
+                and capture_thread is not None
+                and self._thread_start_was_observed(capture_thread)
+            ):
+                capture_thread.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
+            if capture_reader_alive and media_session is not None:
+                media_session.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
+
+        capture_processor_active = self._thread_may_start_or_is_alive(
+            capture_thread
+        )
+        capture_reader_alive = bool(
+            media_session is not None and media_session.is_alive
+        )
+        capture_alive = capture_processor_active or capture_reader_alive
+        capture_quiesced = not capture_alive and self._capture_effects_are_idle()
+
+        if (
+            not capture_processor_active
+            and decode_session is not None
+            and not decode_session.closed
+        ):
+            try:
+                decode_session.close()
+            except Exception:  # noqa: BLE001 - retain the live owner fail-closed
+                log.exception(
+                    "streaming decode session cleanup failed after capture "
+                    "launch failure"
+                )
+
+        input_closed = False
+        if capture_quiesced:
+            input_closed = self._close_capture_input()
+        if not input_closed:
+            self._capture_resource_hold.set()
+
+        if capture_quiesced:
+            final_stage = self._final_stage
+            if final_stage is not None:
+                final_stage.close()
+                self._final_stage = None
+            self._close_recorders(log_completed=False)
+        if not capture_processor_active:
+            self._capture_thread = None
+
     # --- AudioEngine ---
     def start(self, callbacks: EngineCallbacks) -> None:
+        prior_decode_session = self._streaming_decode_session
+        if prior_decode_session is not None and not prior_decode_session.closed:
+            raise RuntimeError(
+                "cannot start audio: previous streaming decode owner is still live"
+            )
         prior_media_session = self._capture_media_session
         prior_workers = (
             ("capture thread", self._capture_thread),
@@ -4068,7 +4293,11 @@ class SherpaOnnxEngine(AudioEngine):
             log.warning("could not query audio devices: %s", exc)
         log.info(
             "models: recognizer=%s vad=%s tts=%s kws=%s",
-            self._recognizer is not None,
+            self._recognizer is not None
+            or (
+                self._streaming_decode_session is not None
+                and not self._streaming_decode_session.closed
+            ),
             self._vad is not None,
             self._tts is not None,
             self._kws is not None,
@@ -4326,8 +4555,32 @@ class SherpaOnnxEngine(AudioEngine):
         else:
             self._capture_media_session = None
         self._start_virtual_route_monitor()
-        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
-        self._capture_thread.start()
+        decode_session = self._claim_streaming_decode_session()
+        try:
+            capture_thread = threading.Thread(
+                target=self._capture_loop,
+                args=(decode_session,),
+                daemon=True,
+                name="speaker-capture-processor",
+            )
+        except BaseException:
+            self._rollback_failed_capture_processor_launch(
+                decode_session,
+                capture_start_ambiguous=False,
+            )
+            raise
+        self._capture_thread = capture_thread
+        try:
+            capture_thread.start()
+        except BaseException:
+            # Any exception may come from a Python signal handler while
+            # Thread.start() is waiting for the already-launched child to
+            # publish ident/_started. Exception hierarchy is not transfer proof.
+            self._rollback_failed_capture_processor_launch(
+                decode_session,
+                capture_start_ambiguous=True,
+            )
+            raise
         self._start_receipt_dispatcher()
         self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self._play_thread.start()
@@ -4406,12 +4659,15 @@ class SherpaOnnxEngine(AudioEngine):
             if callable(request_close):
                 request_close()
         capture_grace = max(0.01, float(self.config.block_sec) + 0.05)
-        if capture_thread is not None:
+        if (
+            capture_thread is not None
+            and self._thread_start_was_observed(capture_thread)
+        ):
             capture_thread.join(timeout=capture_grace)
         if media_session is not None:
             media_session.join(timeout=capture_grace)
-        capture_processor_alive = bool(
-            capture_thread is not None and capture_thread.is_alive()
+        capture_processor_alive = self._thread_may_start_or_is_alive(
+            capture_thread
         )
         capture_reader_alive = bool(
             media_session is not None and media_session.is_alive
@@ -4435,16 +4691,20 @@ class SherpaOnnxEngine(AudioEngine):
                     pass
             if media_session is not None:
                 media_session.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
-            elif capture_thread is not None:
+            elif (
+                capture_thread is not None
+                and self._thread_start_was_observed(capture_thread)
+            ):
                 capture_thread.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
         if (
             media_session is not None
             and capture_thread is not None
+            and self._thread_start_was_observed(capture_thread)
             and capture_thread.is_alive()
         ):
             capture_thread.join(timeout=_CAPTURE_FORCE_JOIN_TIMEOUT_SEC)
         capture_alive = bool(
-            (capture_thread is not None and capture_thread.is_alive())
+            self._thread_may_start_or_is_alive(capture_thread)
             or (media_session is not None and media_session.is_alive)
         )
         capture_effects_idle = self._capture_effects_are_idle()
@@ -4497,24 +4757,36 @@ class SherpaOnnxEngine(AudioEngine):
                     except Exception:  # noqa: BLE001 - device may be mid-teardown
                         pass
             self._terminalize_unbound_receipts()
-        sentinel = (None, None, 0, None, None)
-        try:
-            self._play_q.put_nowait(sentinel)
-        except queue.Full:
-            # Admissions are gated above; a full queue can only contain work
-            # that raced the gate before it closed. Drop it with receipts, then
-            # reserve the wake slot without turning shutdown into a blocker.
-            self._drain_play_q()
+        play_thread = self._play_thread
+        wake_play_thread = bool(
+            play_thread is not None
+            and play_thread is not threading.current_thread()
+            and play_thread.is_alive()
+        )
+        if wake_play_thread:
+            sentinel = (None, None, 0, None, None)
             try:
                 self._play_q.put_nowait(sentinel)
             except queue.Full:
-                pass
-        if self._play_thread is not None:
-            self._play_thread.join(timeout=1.0)
-            if self._play_thread.is_alive():
+                # Admissions are gated above; a full queue can only contain
+                # work that raced the gate before it closed. Drop it with
+                # receipts, then reserve the wake slot without blocking.
+                self._drain_play_q()
+                try:
+                    self._play_q.put_nowait(sentinel)
+                except queue.Full:
+                    pass
+        if play_thread is not None and play_thread is not threading.current_thread():
+            play_thread.join(timeout=1.0)
+            if play_thread.is_alive():
                 log.warning("playback thread did not exit within 1.0s; proceeding")
                 if self._diagnostic_bundle is not None:
                     self._diagnostic_bundle.invalidate("playback_timeout")
+        # A worker can leave its loop after `_running` clears without consuming
+        # the wake item. Remove that private sentinel before any later restart;
+        # playback admissions remain fenced for this whole shutdown.
+        with self._receipt_lock:
+            self._drain_play_q()
         if (
             self._final_thread is not None
             and self._final_thread is not threading.current_thread()
@@ -4868,14 +5140,50 @@ class SherpaOnnxEngine(AudioEngine):
         return self._speaker_gate_warmed
 
     # --- ASR text helpers ---
-    def _new_asr_stream(self):
+    def _claim_streaming_decode_session(
+        self,
+    ) -> Optional[SherpaStreamingDecodeSession]:
+        """Transfer the primary online recognizer into one run-scoped owner.
+
+        Production calls this immediately before capture-thread launch. Direct
+        finite-loop tests may call it from the capture thread itself. A closed
+        prior-run session is metadata only and can be replaced; an unclosed one
+        must never be silently aliased into a second run.
+        """
+
+        session = self._streaming_decode_session
+        if session is not None and not session.closed:
+            if self._recognizer is not None:
+                raise RuntimeError(
+                    "online recognizer and decode session cannot both be live"
+                )
+            return session
+        recognizer = self._recognizer
+        if recognizer is None:
+            return None
+        session = SherpaStreamingDecodeSession(recognizer)
+        self._recognizer = None
+        self._streaming_decode_session = session
+        return session
+
+    def _new_asr_stream(self, recognizer=None):
         """Create a recognizer stream, with hotword biasing when available.
 
         Contextual biasing is per-stream in sherpa-onnx and only honored by
         ``modified_beam_search``. We try the hotword-aware factory and fall back
-        to the plain one, so an older build (or greedy decoding) still works."""
+        to the plain one, so an older build (or greedy decoding) still works.
+
+        ``recognizer`` is the run-scoped decode session in production. The
+        fallback exists only for narrow stream-factory unit tests that inject a
+        fake recognizer without starting capture.
+        """
+        owner = recognizer
+        if owner is None:
+            owner = self._streaming_decode_session or self._recognizer
+        if owner is None:
+            raise RuntimeError("no online recognizer is available")
         return create_recognizer_stream(
-            self._recognizer,
+            owner,
             self.config,
             hotwords=self._hotwords,
         )
@@ -6285,9 +6593,20 @@ class SherpaOnnxEngine(AudioEngine):
                     capture_epoch=capture_epoch,
                 )
 
-    def _capture_loop(self) -> None:
+    def _capture_loop(
+        self,
+        decode_session: Optional[SherpaStreamingDecodeSession] = None,
+        *,
+        close_decode_session: bool = True,
+    ) -> None:
+        owns_decode_session = False
         try:
-            self._capture_loop_body()
+            if decode_session is None:
+                decode_session = self._claim_streaming_decode_session()
+            if decode_session is not None:
+                decode_session.bind_current_thread()
+                owns_decode_session = True
+            self._capture_loop_body(decode_session)
         except Exception:
             if self._running.is_set():
                 log.exception(
@@ -6296,6 +6615,16 @@ class SherpaOnnxEngine(AudioEngine):
                 )
             self._running.clear()
         finally:
+            if (
+                owns_decode_session
+                and close_decode_session
+                and decode_session is not None
+            ):
+                try:
+                    decode_session.close()
+                except Exception:  # noqa: BLE001 - ownership failure is fatal
+                    log.exception("streaming decode session did not close cleanly")
+                    self._running.clear()
             media_session = self._capture_media_session
             if media_session is not None:
                 media_session.request_stop()
@@ -6311,19 +6640,22 @@ class SherpaOnnxEngine(AudioEngine):
                 "virtual capture loop stopped unexpectedly"
             )
 
-    def _capture_loop_body(self) -> None:
+    def _capture_loop_body(
+        self,
+        decode_session: Optional[SherpaStreamingDecodeSession],
+    ) -> None:
         import numpy as np
 
         last_partial = ""
         last_published_partial = ""
-        recognizer = self._recognizer
+        recognizer = decode_session
         if recognizer is None:
             log.error(
                 "no recognizer built (ASR model paths missing in config?); "
                 "capture loop idle -- the assistant will never hear you"
             )
             return
-        stream = self._new_asr_stream()
+        stream = self._new_asr_stream(recognizer)
         # ADR-0013 uses a dedicated playback-time stream. It may ingest residual
         # own echo freely; only candidate PCM is ever replayed into ``stream``.
         word_cut_stream = None
@@ -6599,7 +6931,7 @@ class SherpaOnnxEngine(AudioEngine):
                     try:
                         recognizer.reset(stream)
                     except Exception:  # noqa: BLE001 - next block can recover
-                        stream = self._new_asr_stream()
+                        stream = self._new_asr_stream(recognizer)
                     log.warning(
                         "capture discontinuity: reason=%s generation=%d "
                         "dropped_frames=%d dropped_samples=%d",
@@ -6910,7 +7242,7 @@ class SherpaOnnxEngine(AudioEngine):
                     try:
                         recognizer.reset(stream)
                     except Exception:  # noqa: BLE001 - next block can recover
-                        stream = self._new_asr_stream()
+                        stream = self._new_asr_stream(recognizer)
                     self._confirm_handoff_stream_live = False
                     self._confirm_handoff_pending = None
                     last_partial = ""
@@ -6987,7 +7319,7 @@ class SherpaOnnxEngine(AudioEngine):
                             )
                         ):
                             try:
-                                word_cut_stream = self._new_asr_stream()
+                                word_cut_stream = self._new_asr_stream(recognizer)
                             except Exception:  # noqa: BLE001 - fail closed this reply
                                 word_cut_stream = None
                                 log.warning(
@@ -7906,7 +8238,7 @@ class SherpaOnnxEngine(AudioEngine):
                     try:
                         recognizer.reset(stream)
                     except Exception:
-                        stream = self._new_asr_stream()
+                        stream = self._new_asr_stream(recognizer)
                     if asr_errors >= 10:
                         log.error(
                             "ASR failed %d times in a row -- likely an ASR model/tokens "

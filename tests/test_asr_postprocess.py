@@ -6,6 +6,10 @@ wiring directly (the threaded capture loop is out of scope).
 """
 from __future__ import annotations
 
+from core.engines._sherpa_streaming_decode import (
+    SherpaStreamingDecodeSession,
+    SherpaStreamingDecodeStream,
+)
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
 
 
@@ -103,3 +107,42 @@ def test_new_asr_stream_falls_back_when_build_rejects_hotwords():
     eng._hotwords = ["Flurry"]
     eng._new_asr_stream()  # TypeError on hotwords= -> retried plain
     assert rec.plain_calls == 1
+
+
+def test_capture_owner_preserves_hotword_stream_creation():
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            asr_decoding_method="modified_beam_search",
+            asr_hotwords="Flurry\nParis",
+        )
+    )
+    rec = _FakeRecognizer()
+    session = SherpaStreamingDecodeSession(rec)
+    session.bind_current_thread()
+    eng._hotwords = ["Flurry", "Paris"]
+
+    stream = eng._new_asr_stream(session)
+
+    assert type(stream) is SherpaStreamingDecodeStream
+    assert rec.hotwords_arg == "Flurry\nParis"
+    session.close()
+
+
+def test_capture_owner_preserves_older_sherpa_plain_stream_fallback():
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            asr_decoding_method="modified_beam_search",
+            asr_hotwords="Flurry",
+        )
+    )
+    rec = _NoHotwordRecognizer()
+    session = SherpaStreamingDecodeSession(rec)
+    session.bind_current_thread()
+    eng._hotwords = ["Flurry"]
+
+    stream = eng._new_asr_stream(session)
+
+    assert type(stream) is SherpaStreamingDecodeStream
+    assert rec.plain_calls == 1
+    assert session.snapshot().native_calls_failed == 1
+    session.close()

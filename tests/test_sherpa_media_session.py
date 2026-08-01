@@ -116,6 +116,9 @@ class _AsrStream:
         self.decoded = False
 
     def accept_waveform(self, _sample_rate: int, samples) -> None:
+        note_native_thread = getattr(self.recognizer, "note_native_thread", None)
+        if callable(note_native_thread):
+            note_native_thread()
         block = np.asarray(samples, dtype="float32").copy()
         self.samples.append(block)
         self.recognizer.trace.append(("accept", float(np.mean(block))))
@@ -130,6 +133,7 @@ class _StallingRecognizer:
     def __init__(self, engine: SherpaOnnxEngine) -> None:
         self.engine = engine
         self.trace: list[tuple[str, object]] = []
+        self.native_threads: list[threading.Thread] = []
         self.resets = 0
         self.first_accepted = threading.Event()
         self.decode_stalled = threading.Event()
@@ -137,30 +141,39 @@ class _StallingRecognizer:
         self.post_gap_accepted = threading.Event()
 
     def create_stream(self):
+        self.note_native_thread()
         return _AsrStream(self)
 
     def is_ready(self, stream: _AsrStream) -> bool:
+        self.note_native_thread()
         return bool(stream.samples and not stream.decoded)
 
     def decode_stream(self, stream: _AsrStream) -> None:
+        self.note_native_thread()
         if self.resets == 0:
             self.decode_stalled.set()
             assert self.release_decode.wait(2.0)
         stream.decoded = True
 
     def get_result(self, stream: _AsrStream) -> str:
+        self.note_native_thread()
         if self.resets == 0 and stream.decoded:
             return "before gap"
         return ""
 
     def is_endpoint(self, _stream: _AsrStream) -> bool:
+        self.note_native_thread()
         return False
 
     def reset(self, stream: _AsrStream) -> None:
+        self.note_native_thread()
         self.trace.append(("reset", self.resets))
         self.resets += 1
         stream.samples.clear()
         stream.decoded = False
+
+    def note_native_thread(self) -> None:
+        self.native_threads.append(threading.current_thread())
 
 
 class _BurstingInput:
@@ -228,6 +241,11 @@ def test_bounded_reader_aborts_and_resets_before_post_gap_pcm() -> None:
         capture.join(timeout=3.0)
 
         assert not capture.is_alive()
+        assert engine._recognizer is None
+        assert engine._streaming_decode_session is not None
+        assert engine._streaming_decode_session.closed
+        assert recognizer.native_threads
+        assert all(thread is capture for thread in recognizer.native_threads)
         assert recognizer.post_gap_accepted.is_set()
         assert [item.text for item in partials] == ["Before gap"]
         assert [item.reason for item in aborts] == [TranscriptAbortReason.BACKPRESSURE]

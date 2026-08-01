@@ -84,6 +84,13 @@ def _wait_until(predicate, timeout=1.0):
     return predicate()
 
 
+def _fifo_count_is(engine: SherpaOnnxEngine, expected: int) -> bool:
+    """Snapshot the asynchronously published FIFO before reading its count."""
+
+    fifo = engine._fifo
+    return fifo is not None and fifo.count() == expected
+
+
 class _ManualOutputStream:
     """Device-free PortAudio sink whose callback advances only on ``pull``."""
 
@@ -222,7 +229,7 @@ def test_sherpa_tracked_receipt_waits_for_exact_sink_drain(monkeypatch):
         on_terminal=probe.on_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 3)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 3))
         assert probe.snapshot() == ([], [])
 
         holder["stream"].pull(2)
@@ -258,7 +265,7 @@ def test_sherpa_tracked_barge_receipt_waits_for_owned_fade(monkeypatch):
         on_terminal=probe.on_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 200))
         holder["stream"].pull(50)
         assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
 
@@ -386,7 +393,7 @@ def test_sherpa_shutdown_dispatches_partial_receipt_before_return(monkeypatch):
         on_started=probe.on_started,
         on_terminal=probe.on_terminal,
     )
-    assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+    assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 200))
     holder["stream"].pull(20)
     assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
 
@@ -463,7 +470,7 @@ def test_sherpa_receipt_callback_failure_does_not_kill_later_callbacks(monkeypat
         on_terminal=second_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 6)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 6))
         holder["stream"].pull(6)
         assert _wait_until(lambda: events.count(("terminal", "second")) == 1)
         assert events == [
@@ -493,7 +500,7 @@ def test_sherpa_tracked_completion_attests_sanitized_markup(monkeypatch):
         on_terminal=probe.on_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 3)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 3))
         holder["stream"].pull(3)
         assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
         receipt = probe.snapshot()[1][0][0]
@@ -518,7 +525,7 @@ def test_sherpa_tracked_counts_use_resampled_output_domain(monkeypatch):
         on_terminal=probe.on_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 30)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 30))
         holder["stream"].pull(30)
         assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
         receipt = probe.snapshot()[1][0][0]
@@ -550,8 +557,7 @@ def test_sherpa_tracked_receipts_survive_idle_fifo_reopen(monkeypatch):
             assert _wait_until(
                 lambda: (
                     len(holder["streams"]) == index
-                    and engine._fifo is not None
-                    and engine._fifo.count() == 3
+                    and _fifo_count_is(engine, 3)
                 )
             )
             holder["streams"][index - 1].pull(3)
@@ -582,7 +588,7 @@ def test_sherpa_wedged_synth_cannot_orphan_stalled_barge_fade(monkeypatch):
     )
     try:
         assert tts.entered.wait(timeout=1.0)
-        assert _wait_until(lambda: engine._fifo.count() == 200)
+        assert _wait_until(lambda: _fifo_count_is(engine, 200))
         holder["stream"].pull(50)
         assert _wait_until(lambda: len(probe.snapshot()[0]) == 1)
 
@@ -611,7 +617,7 @@ def test_sherpa_capture_liveness_loss_fails_fifo_bound_receipt(monkeypatch):
         on_terminal=probe.on_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 200))
 
         # Capture fatal paths share this liveness flag with playback. The worker
         # must fail—not abandon—the bound FIFO ownership on its normal loop exit.
@@ -640,7 +646,7 @@ def test_sherpa_drain_timeout_fails_exact_fifo_accounting(monkeypatch):
         on_terminal=probe.on_terminal,
     )
     try:
-        assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 200)
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 200))
         assert engine._wait_for_playback_drain(timeout_sec=0.0) is False
         assert _wait_until(lambda: len(probe.snapshot()[1]) == 1)
         started, terminal = probe.snapshot()
@@ -677,7 +683,7 @@ def test_sherpa_terminal_callback_can_reenter_stop_and_drain_later_receipts(
         on_terminal=lambda _receipt: second_terminal.set(),
     )
 
-    assert _wait_until(lambda: "stream" in holder and engine._fifo.count() == 6)
+    assert _wait_until(lambda: "stream" in holder and _fifo_count_is(engine, 6))
     holder["stream"].pull(6)
     assert stop_returned.wait(timeout=2.0)
     assert second_terminal.is_set()
@@ -1141,6 +1147,26 @@ def test_stop_flushes_and_closes_live_stream_before_join():
     assert "barge_in_stop" not in metrics  # teardown, not a barge-in
     assert not eng._running.is_set()
     assert eng._stop_speaking.is_set()
+
+
+def test_stop_without_worker_is_idempotent_and_does_not_poison_restart(monkeypatch):
+    eng = _engine(_StreamingTts())
+
+    eng.stop()
+    eng.stop()
+
+    assert eng._play_thread is None
+    assert eng._play_q.empty()
+
+    holder = _start_playback_harness(monkeypatch, eng, default_sr=22050)
+    try:
+        eng.speak("play after an idle stop")
+        assert _wait_until(lambda: "stream" in holder and _fifo_count_is(eng, 3))
+        assert eng._play_thread.is_alive()
+    finally:
+        eng.stop()
+
+    assert eng._play_q.empty()
 
 
 def test_playback_finalizer_defers_to_coordinated_stop_without_false_error(

@@ -1,6 +1,8 @@
-"""Session recorder: write the exact 16 kHz mono audio the recognizer hears to a
-WAV file, so a recorded run can be replayed bit-for-bit through the real
-pipeline (``python -m core --session replay``) and frozen into a regression test.
+"""Session recorder for one 16 kHz mono model-rate WAV track.
+
+An independent utterance WAV can feed generic session replay. In a synchronized
+diagnostic bundle the WAVs are continuous parallel stage views, not turn
+fixtures; exact endpoint-owned final inputs live in the separate f32le spool.
 
 Concurrency: the real-time capture thread only enqueues a copy of each block
 (cheap); a dedicated writer thread does the float32->int16 conversion and the

@@ -13,14 +13,20 @@ private directory under `logs/live/`:
 <bundle>/run-<id>.txt           full DEBUG log (always written)
 <bundle>/run-<id>.summary.json  condensed digest   (always written)
 <bundle>/run-<id>.wav           processed mic audio (with --record)
-<bundle>/run-<id>.ref.wav       aligned playback reference (when selected)
+<bundle>/run-<id>.pre-dsp.wav   model-rate pre-application-DSP tap (live.sh)
+<bundle>/run-<id>.asr.wav       continuous selected-ASR PCM16 tap (live.sh)
+<bundle>/run-<id>.ref.wav       reader-time playback reference (live.sh)
+<bundle>/run-<id>.final-input.f32le  exact final-selection inputs (live.sh)
+<bundle>/run-<id>.timeline.jsonl     typed causal receipts (live.sh)
+<bundle>/run-<id>.diagnostic.json    complete-bundle authority (live.sh)
 ```
 
-New run/test/live bundles are ignored and stay on-device. They can be replayed
-and diagnosed directly from their local directory.
+New run/test/live bundles are ignored and stay on-device. Diagnose them in
+place. A synchronized diagnostic directory is not a generic replay fixture;
+export its receipt-bound exact inputs as described below.
 
-> **Privacy — raw voice never leaves the device (architecture §9.7).** A run
-> bundle can contain *raw voice* (`run-<id>.wav`), *verbatim transcripts*
+> **Privacy — voice evidence never leaves the device (architecture §9.7).** A run
+> bundle can contain *private voice audio* (the WAV/f32le artifacts), *verbatim transcripts*
 > (`summary.json` → `transcript[].text`), and *full prompts* (the `.txt` DEBUG
 > trace). Do **not** stage, push, upload, or paste a real live bundle. Give a
 > local agent only its directory name and inspect the summary first. A separately
@@ -43,7 +49,9 @@ One-command physical Linux capture: **`./live.sh`**. It locks the session,
 starts/reuses loopback Ollama only when the selected profile uses that backend,
 prepares the PipeWire EC route, and runs the applicable shared preflight before
 recording both mic and aligned playback reference in a private `logs/live/`
-directory. Normal Ollama and llama.cpp profiles require full doctor `READY`;
+directory. Its synchronized bundle also binds the exact lossless float32 segment
+offered to final transcript selection; see [voice evidence](voice_evidence.md)
+and ADR-0108. Normal Ollama and llama.cpp profiles require full doctor `READY`;
 explicit echo uses the applicable base/deferred preflight. Cleanup restores
 only launcher-owned state (ADR-0075).
 
@@ -56,16 +64,19 @@ The bundle is written on a clean exit, on `Ctrl-C`, **and on an unhandled
 exception** (`finalize()` is idempotent and also runs at interpreter exit), so a
 crash still leaves artifacts.
 
-Performance note: logging and recording are **off the hot path** — the
-`speaker` logger only enqueues (a background `QueueListener` thread does the disk
-writes + summary aggregation), and the recorder hands audio blocks to a writer
-thread over a queue. So capturing does not slow the real-time pipeline.
+Performance note: log formatting and diagnostic disk writes run on background
+writers. Admission still performs bounded synchronous memory work. In
+particular, an exact final input is checked, canonicalized/copied, and hashed on
+the finalizer thread before a non-waiting queue admission. This is not a
+zero-cost or fully nonblocking operation; saturation invalidates evidence while
+the voice path continues (ADR-0108).
 
 ---
 
-## Performance & reliability (why capturing is cheap)
+## Performance & reliability (bounded diagnostic cost)
 
-Capturing is designed to **never block the real-time audio/LLM threads**:
+Capturing keeps filesystem work off real-time audio/LLM threads, with bounded
+admission work and fail-closed evidence:
 
 - **Logging is fully async.** The `speaker` logger holds a custom
   `_ThreadQueueHandler` whose only job on the hot path is to drop the raw
@@ -78,6 +89,12 @@ Capturing is designed to **never block the real-time audio/LLM threads**:
   it; a dedicated writer thread does the float32→int16 conversion and the WAV
   writes. A bounded queue drops (and counts) under backpressure rather than
   stalling capture — it never does in practice at 16 kHz mono.
+- **Exact final-input admission is synchronous and bounded.** The finalizer
+  scans the selected float32 segment for finite values, canonicalizes/copies it,
+  and hashes the bytes before `put_nowait`. Limits are 8 MiB per input, 32 MiB
+  pending, 256 MiB per session, and 4,096 receipts. Disk write and timeline
+  publication remain on the bundle writer. Rejection marks evidence incomplete
+  and does not change transcript selection.
 - **Telemetry is sampled, not continuous.** `SystemMonitor` runs on its own
   thread at a 10 s interval (plus one-off baseline/mark/final reads), so
   `nvidia-smi`/`psutil` cost stays off the main thread and infrequent.
@@ -87,9 +104,9 @@ Reliability tradeoffs we chose: the background listener flushes **per record**
 (not buffered into large chunks), so a `Ctrl-C` or crash still leaves a complete
 `.txt`; and `finalize()` is idempotent + `atexit`-registered so the
 `.summary.json` is written on clean exit, interrupt, or unhandled exception.
-The only thing a hard `SIGKILL` can lose is the in-flight queue tail. Net: hot
-path pays ~a queue append per log line; everything heavy is on background
-threads that communicate via queues/events only.
+The only thing a hard `SIGKILL` can lose is the in-flight queue tail. The normal
+logging path pays about one queue append per line; diagnostic audio admission
+also pays the bounded copies and exact-input checks described above.
 
 ---
 
@@ -175,13 +192,17 @@ Async DEBUG log from these loggers (grep by prefix):
      cold? `keep_alive`?) and `system.peak` (VRAM/CPU saturation).
    - cut off → `llm.requests[].cancelled = true` (barge-in storm).
 3. **Open `.txt`** around the relevant timestamps for the full trace + traceback.
-4. **Reproduce from the recording** (if `.wav` present): replay the exact audio
-   through the real pipeline, no mic needed —
-   `python -m core --session replay --replay-dir <bundle-dir> --debug`.
-5. **Freeze it as a test:** the recorded WAV is the same format the replay
-   loader (`core/engines/file_replay.py: load_waveform`) consumes, so a captured
-   session becomes a deterministic regression fixture (see
-   `docs/testing.md`).
+4. **Choose the correct replay source.** A directory of independent `.wav`/`.npy`
+   fixtures can use `python -m core --session replay --replay-dir <fixture-dir>
+   --debug`. Generic replay rejects a synchronized diagnostic directory because
+   its four WAVs are parallel tracks, not four turns (ADR-0108).
+   Label and export its exact f32le final-input receipts using
+   [voice evidence](voice_evidence.md).
+5. **Freeze the right evidence as a test.** Export receipt-bound exact final
+   inputs with [voice evidence](voice_evidence.md). The generic replay loader
+   (`core/engines/file_replay.py: load_waveform`) remains for directories of
+   independent utterance fixtures; do not present a synchronized bundle as one
+   (see `docs/testing.md`).
 
 ---
 
@@ -211,11 +232,13 @@ When the assistant has misbehaved in real life and you want to debug it:
      model (catches LLM stalls);
    - if you can reproduce a "freeze," let it freeze — don't Ctrl-C; the
      watchdog will warn at the deadline.
-3. **Keep the original bundle local.** Record its directory name, then replay it
-   with `python -m core --session replay --replay-dir <bundle-dir> --debug`.
-   Preserve the mic/reference pair byte-for-byte. If a regression fixture is
-   needed, create a separate synthetic/non-sensitive derivative; never stage or
-   push the real-voice original.
+3. **Keep the original bundle local.** Record its directory name and validate
+   its manifest. Generic replay deliberately rejects that directory because
+   its WAVs are parallel stages, not turns. Preserve every artifact byte-for-
+   byte; use [voice evidence](voice_evidence.md) to label/export exact final
+   inputs. If another regression fixture is needed, create a separate
+   synthetic/non-sensitive derivative; never stage or push the real-voice
+   original.
 4. **Open `summary.json` → `stuck_hints` first.** If the list is non-empty
    the watchdog or post-hoc check has named the failure; if it's still
    empty, the watchdog deadlines may be too generous for what you saw — the

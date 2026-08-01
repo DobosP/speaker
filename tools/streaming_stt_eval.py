@@ -909,11 +909,11 @@ def _corpus_binding(corpus: LoadedCorpus) -> dict[str, object]:
         if corpus.provenance is not None:
             raise ValueError
         return binding
-    if corpus.schema_version != 2 or corpus.provenance is None:
+    if corpus.schema_version not in {2, 3} or corpus.provenance is None:
         raise ValueError
     binding.update(
         {
-            "schema_version": 2,
+            "schema_version": corpus.schema_version,
             "provenance": corpus.provenance.as_dict(),
         }
     )

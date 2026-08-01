@@ -109,10 +109,13 @@ python -m core --session console --llm echo
 
 Run a private recorded physical session on Linux. For an Ollama profile this
 starts/reuses loopback Ollama; every profile gets PipeWire echo cancellation,
-the applicable doctor gate, three aligned private audio tracks for STT diagnosis,
-and restoration of session-owned state when you press Ctrl-C
+the applicable doctor gate, four continuous private PCM16 stage tracks plus an
+exact lossless f32le final-input spool, and restoration of session-owned state
+when you press Ctrl-C
 ([ADR-0075](docs/adr/0075-make-recorded-linux-live-session-one-command-and-reversible.md),
-[ADR-0077](docs/adr/0077-capture-aligned-pre-dsp-live-stt-evidence.md)):
+[ADR-0077](docs/adr/0077-capture-aligned-pre-dsp-live-stt-evidence.md),
+[ADR-0108](docs/adr/0108-bind-exact-final-model-inputs-to-private-stt-replay.md),
+[evidence guide](docs/voice_evidence.md)):
 
 ```bash
 ./live.sh

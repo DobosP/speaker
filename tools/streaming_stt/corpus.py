@@ -21,6 +21,7 @@ _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _ROOT_V1_FIELDS = {"schema_version", "purpose", "cases"}
 _ROOT_V2_FIELDS = {*_ROOT_V1_FIELDS, "provenance"}
+_ROOT_V3_FIELDS = _ROOT_V2_FIELDS
 _CASE_FIELDS = {
     "id",
     "file",
@@ -31,7 +32,7 @@ _CASE_FIELDS = {
     "commands",
     "tags",
 }
-_PUBLIC_PROVENANCE_FIELDS = {
+_PROVENANCE_FIELDS = {
     "kind",
     "suite",
     "manifest_sha256",
@@ -39,6 +40,7 @@ _PUBLIC_PROVENANCE_FIELDS = {
     "source_set_sha256",
 }
 _PUBLIC_PROVENANCE_KIND = "public-voice-v1"
+_PRIVATE_DIAGNOSTIC_PROVENANCE_KIND = "private-diagnostic-v1"
 _MAX_CORPUS_MANIFEST_BYTES = 256 * 1024
 _MAX_CASES = 512
 _MAX_REFERENCE_CHARS = 4096
@@ -121,14 +123,18 @@ def _sha256(value: object) -> str:
     return value
 
 
-def _public_provenance(value: object) -> CorpusProvenance:
-    if not isinstance(value, dict) or set(value) != _PUBLIC_PROVENANCE_FIELDS:
+def _provenance(value: object, *, schema_version: int) -> CorpusProvenance:
+    if not isinstance(value, dict) or set(value) != _PROVENANCE_FIELDS:
         raise CorpusError()
     kind = value.get("kind")
-    if kind != _PUBLIC_PROVENANCE_KIND:
+    expected_kind = {
+        2: _PUBLIC_PROVENANCE_KIND,
+        3: _PRIVATE_DIAGNOSTIC_PROVENANCE_KIND,
+    }.get(schema_version)
+    if kind != expected_kind:
         raise CorpusError()
     return CorpusProvenance(
-        kind=_PUBLIC_PROVENANCE_KIND,
+        kind=str(kind),
         suite=_safe_id(value.get("suite")),
         manifest_sha256=_sha256(value.get("manifest_sha256")),
         metadata_sha256=_sha256(value.get("metadata_sha256")),
@@ -275,18 +281,24 @@ def load_corpus(path: Path | str) -> LoadedCorpus:
     if (
         not isinstance(value, dict)
         or type(value.get("schema_version")) is not int
-        or value.get("schema_version") not in {1, 2}
+        or value.get("schema_version") not in {1, 2, 3}
         or not isinstance(value.get("purpose"), str)
         or not str(value.get("purpose")).strip()
         or len(str(value.get("purpose"))) > 512
     ):
         raise CorpusError()
     schema_version = value["schema_version"]
-    expected_fields = _ROOT_V1_FIELDS if schema_version == 1 else _ROOT_V2_FIELDS
+    expected_fields = {
+        1: _ROOT_V1_FIELDS,
+        2: _ROOT_V2_FIELDS,
+        3: _ROOT_V3_FIELDS,
+    }[schema_version]
     if set(value) != expected_fields:
         raise CorpusError()
     provenance = (
-        None if schema_version == 1 else _public_provenance(value.get("provenance"))
+        None
+        if schema_version == 1
+        else _provenance(value.get("provenance"), schema_version=schema_version)
     )
     raw_cases = value.get("cases")
     if not isinstance(raw_cases, list) or not raw_cases or len(raw_cases) > _MAX_CASES:

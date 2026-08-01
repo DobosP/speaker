@@ -17,7 +17,8 @@ from tests.streaming_stt_helpers import (
     write_fixture,
 )
 from tools import streaming_stt_eval
-from tools.streaming_stt.corpus import load_corpus
+from tools.streaming_stt.corpus import CorpusProvenance, load_corpus
+from tools.streaming_stt.corpus_writer import CorpusWriteCase, publish_private_corpus
 from tools.streaming_stt.metrics import RunRecord, aggregate_metrics
 from tools.streaming_stt.manifest import (
     MOONSHINE_ADAPTER,
@@ -252,6 +253,78 @@ def test_end_to_end_report_is_aggregate_exact_bound_and_fake_labelled(tmp_path):
         "sentinel-private-silence",
     ):
         assert private not in encoded
+
+
+def test_schema_v3_private_corpus_runs_through_aggregate_fake_benchmark(
+    tmp_path: Path,
+) -> None:
+    private_reference = "find in my private vault"
+    private_case_id = "private-diagnostic-case"
+    manifest, _legacy_corpus, _digests = write_fixture(
+        tmp_path,
+        [
+            {
+                "id": private_case_id,
+                "values": [0.01] * 160,
+                "expected_text": private_reference,
+                "tags": ["owner-voice", "quiet-room"],
+            }
+        ],
+        [
+            scripted_case(
+                partials=[(80, "find in", 20.0, 1.0)],
+                final=private_reference,
+                elapsed_ms=40.0,
+                finalization_ms=5.0,
+                compute_ms=2.0,
+            )
+        ],
+    )
+    tmp_path.chmod(0o700)
+    published = publish_private_corpus(
+        cases=(
+            CorpusWriteCase(
+                case_id=private_case_id,
+                audio_bytes=(tmp_path / "audio-0.f32le").read_bytes(),
+                reference=private_reference,
+                tags=("owner-voice", "quiet-room"),
+            ),
+        ),
+        provenance=CorpusProvenance(
+            kind="private-diagnostic-v1",
+            suite="final-model-input",
+            manifest_sha256="1" * 64,
+            metadata_sha256="2" * 64,
+            source_set_sha256="3" * 64,
+        ),
+        output_dir=tmp_path / "private-v3",
+        purpose="exact private final model input benchmark",
+    )
+    assert published.schema_version == 3
+
+    report = streaming_stt_eval.run_benchmark(
+        manifest,
+        published.path,
+        scratch_parent=tmp_path / "scratch-parent",
+        repeats=1,
+        stream=StreamConfig(80, "burst", 100, 0),
+    )
+
+    assert report["ok"] is True
+    assert report["corpus"]["schema_version"] == 3
+    assert report["corpus"]["provenance"] == {
+        "kind": "private-diagnostic-v1",
+        "suite": "final-model-input",
+        "manifest_sha256": "1" * 64,
+        "metadata_sha256": "2" * 64,
+        "source_set_sha256": "3" * 64,
+    }
+    assert report["metrics"]["evaluations"] == 1
+    assert report["metrics"]["coverage_complete"] is True
+    encoded = json.dumps(report)
+    assert private_reference not in encoded
+    assert private_case_id not in encoded
+    assert str(published.path) not in encoded
 
 
 def test_moonshine_worker_and_evidence_bindings_are_closed_and_non_adopting(

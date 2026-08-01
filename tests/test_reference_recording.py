@@ -142,6 +142,7 @@ def test_actual_aligned_wavs_finalize_to_equal_frame_counts(tmp_path):
         "pre": tmp_path / "run.pre-dsp.wav",
         "asr": tmp_path / "run.asr.wav",
         "ref": tmp_path / "run.ref.wav",
+        "final": tmp_path / "run.final-input.f32le",
         "timeline": tmp_path / "run.timeline.jsonl",
         "manifest": tmp_path / "run.diagnostic.json",
     }
@@ -198,6 +199,11 @@ def test_actual_aligned_wavs_finalize_to_equal_frame_counts(tmp_path):
             )
     assert counts == [2000, 2000, 2000, 2000]
     assert first_samples == [6553, 3276, 9830, 0]
+    assert paths["final"].read_bytes() == b""
+    assert paths["final"].stat().st_mode & 0o777 == 0o600
+    payload = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    assert payload["final_model_input"]["file"] == paths["final"].name
+    assert payload["final_model_input"]["input_count"] == 0
     assert validate_manifest(paths["manifest"])
     assert eng._recorder is None
     assert eng._pre_dsp_recorder is None

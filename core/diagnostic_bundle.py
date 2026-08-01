@@ -35,9 +35,15 @@ import wave
 import numpy as np
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _MANIFEST_MAX_BYTES = 1 << 20
+_TIMELINE_MAX_BYTES = 64 << 20
+_TIMELINE_MAX_RECORDS = 131_072
 _TIMELINE_LINE_MAX_BYTES = 1 << 16
+_FINAL_MODEL_INPUT_MAX_BYTES = 8 << 20
+_FINAL_MODEL_INPUT_QUEUE_MAX_BYTES = 32 << 20
+_FINAL_MODEL_INPUT_SESSION_MAX_BYTES = 256 << 20
+_FINAL_MODEL_INPUT_MAX_RECEIPTS = 4096
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _SYMBOL_RE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
@@ -54,6 +60,7 @@ _EXTERNAL_FAILURE_CODES = frozenset(
         "capture_integration_error",
         "capture_shutdown_timeout",
         "finalizer_timeout",
+        "final_input_integration_error",
         "observation_error",
         "playback_timeout",
         "receipt_timeout",
@@ -135,6 +142,13 @@ class DiagnosticTrack(str, Enum):
     MODEL_GATE_PCM = "model_gate_pcm"
     MODEL_ASR_TAP = "model_asr_tap"
     PLAYBACK_REFERENCE_READER_SNAPSHOT = "playback_reference_reader_snapshot"
+
+
+class FinalModelInputRole(str, Enum):
+    """Closed provenance for one endpoint-owned final-selection segment."""
+
+    MODEL_GATE_SEGMENT = "model_gate_segment"
+    SELECTED_ASR_SEGMENT = "selected_asr_segment"
 
 
 class DiagnosticStage(str, Enum):
@@ -550,6 +564,136 @@ class BundleAudioSpan:
 
 
 @dataclass(frozen=True, slots=True)
+class FinalModelInputReceipt:
+    """Identity and exact f32le range for one final-selection model input."""
+
+    input_index: int
+    monotonic_ns: int
+    stream_id: str
+    utterance_id: str
+    capture_epoch: int
+    capture_generation: int
+    revision: int
+    role: FinalModelInputRole
+    sample_rate_hz: int
+    sample_start: int
+    sample_end: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        _non_negative_int("input_index", self.input_index)
+        _non_negative_int("monotonic_ns", self.monotonic_ns)
+        _opaque_id("stream_id", self.stream_id)
+        _opaque_id("utterance_id", self.utterance_id)
+        _non_negative_int("capture_epoch", self.capture_epoch)
+        _non_negative_int("capture_generation", self.capture_generation)
+        _non_negative_int("revision", self.revision)
+        if not isinstance(self.role, FinalModelInputRole):
+            raise TypeError("role must be FinalModelInputRole")
+        if (
+            isinstance(self.sample_rate_hz, bool)
+            or not isinstance(self.sample_rate_hz, int)
+            or self.sample_rate_hz <= 0
+        ):
+            raise ValueError("sample_rate_hz must be a positive integer")
+        _non_negative_int("sample_start", self.sample_start)
+        _non_negative_int("sample_end", self.sample_end)
+        if self.sample_end <= self.sample_start:
+            raise ValueError("sample_end must follow sample_start")
+        if self.samples * 4 > _FINAL_MODEL_INPUT_MAX_BYTES:
+            raise ValueError("final model input receipt exceeds its byte bound")
+        if not isinstance(self.sha256, str) or _HASH_RE.fullmatch(self.sha256) is None:
+            raise ValueError("sha256 must be a lowercase digest")
+
+    @property
+    def samples(self) -> int:
+        return self.sample_end - self.sample_start
+
+    @property
+    def bytes(self) -> int:
+        return self.samples * 4
+
+    @property
+    def byte_start(self) -> int:
+        return self.sample_start * 4
+
+    @property
+    def byte_end(self) -> int:
+        return self.sample_end * 4
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "kind": "final_model_input",
+            "input_index": self.input_index,
+            "monotonic_ns": self.monotonic_ns,
+            "stream_id": self.stream_id,
+            "utterance_id": self.utterance_id,
+            "capture_epoch": self.capture_epoch,
+            "capture_generation": self.capture_generation,
+            "revision": self.revision,
+            "role": self.role.value,
+            "sample_rate_hz": self.sample_rate_hz,
+            "sample_start": self.sample_start,
+            "sample_end": self.sample_end,
+            "samples": self.samples,
+            "bytes": self.bytes,
+            "byte_start": self.byte_start,
+            "byte_end": self.byte_end,
+            "sha256": self.sha256,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: object) -> "FinalModelInputReceipt":
+        expected = {
+            "kind",
+            "input_index",
+            "monotonic_ns",
+            "stream_id",
+            "utterance_id",
+            "capture_epoch",
+            "capture_generation",
+            "revision",
+            "role",
+            "sample_rate_hz",
+            "sample_start",
+            "sample_end",
+            "samples",
+            "bytes",
+            "byte_start",
+            "byte_end",
+            "sha256",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected:
+            raise ValueError("final model input receipt has an invalid shape")
+        if payload.get("kind") != "final_model_input":
+            raise ValueError("final model input receipt has an invalid kind")
+        receipt = cls(
+            input_index=payload.get("input_index"),  # type: ignore[arg-type]
+            monotonic_ns=payload.get("monotonic_ns"),  # type: ignore[arg-type]
+            stream_id=payload.get("stream_id"),  # type: ignore[arg-type]
+            utterance_id=payload.get("utterance_id"),  # type: ignore[arg-type]
+            capture_epoch=payload.get("capture_epoch"),  # type: ignore[arg-type]
+            capture_generation=payload.get("capture_generation"),  # type: ignore[arg-type]
+            revision=payload.get("revision"),  # type: ignore[arg-type]
+            role=FinalModelInputRole(payload.get("role")),
+            sample_rate_hz=payload.get("sample_rate_hz"),  # type: ignore[arg-type]
+            sample_start=payload.get("sample_start"),  # type: ignore[arg-type]
+            sample_end=payload.get("sample_end"),  # type: ignore[arg-type]
+            sha256=payload.get("sha256"),  # type: ignore[arg-type]
+        )
+        if payload.get("samples") != receipt.samples:
+            raise ValueError("final model input receipt sample count disagrees")
+        if payload.get("bytes") != receipt.bytes:
+            raise ValueError("final model input receipt byte count disagrees")
+        if (
+            payload.get("byte_start") != receipt.byte_start
+            or payload.get("byte_end") != receipt.byte_end
+        ):
+            raise ValueError("final model input receipt byte range disagrees")
+        return receipt
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticObservation:
     """One typed, transcript-free semantic observation.
 
@@ -745,7 +889,9 @@ class _SecureWavFile:
             raise RuntimeError("WAV is closed")
         pcm = np.clip(samples, -1.0, 1.0)
         payload = (pcm * 32767.0).astype("<i2", copy=False).tobytes()
-        self.handle.write(payload)
+        written = self.handle.write(payload)
+        if written != len(payload):
+            raise OSError("short WAV write")
         self.samples += int(samples.size)
         self.data_bytes += len(payload)
 
@@ -757,6 +903,48 @@ class _SecureWavFile:
         self.handle.seek(40)
         self.handle.write(struct.pack("<I", self.data_bytes))
         self.handle.seek(0, 2)
+        self.handle.flush()
+        if sync:
+            os.fsync(self.handle.fileno())
+
+    def close(self) -> None:
+        if self.handle is None:
+            return
+        try:
+            self.flush(sync=True)
+        finally:
+            self.handle.close()
+            self.handle = None
+
+
+class _SecureF32File:
+    """No-clobber lossless little-endian float32 spool owned by one writer."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        fd = _exclusive_descriptor(path)
+        try:
+            self.handle: Optional[BinaryIO] = os.fdopen(fd, "w+b")
+        except BaseException:
+            os.close(fd)
+            raise
+        self.samples = 0
+        self.data_bytes = 0
+
+    def write(self, payload: bytes) -> None:
+        if self.handle is None:
+            raise RuntimeError("f32le spool is closed")
+        if not payload or len(payload) % 4:
+            raise ValueError("f32le payload must contain complete samples")
+        written = self.handle.write(payload)
+        if written != len(payload):
+            raise OSError("short f32le spool write")
+        self.samples += len(payload) // 4
+        self.data_bytes += len(payload)
+
+    def flush(self, *, sync: bool) -> None:
+        if self.handle is None:
+            return
         self.handle.flush()
         if sync:
             os.fsync(self.handle.fileno())
@@ -783,6 +971,12 @@ class _ObservationItem:
     observation: DiagnosticObservation
 
 
+@dataclass(frozen=True, slots=True)
+class _FinalModelInputItem:
+    receipt: FinalModelInputReceipt
+    payload: bytes = field(repr=False)
+
+
 _STOP = object()
 
 
@@ -799,6 +993,8 @@ class SynchronizedDiagnosticBundle:
         queue_max: int = 4096,
         flush_sec: float = 2.0,
         close_timeout_sec: float = 5.0,
+        final_model_input_path: os.PathLike[str] | str | None = None,
+        final_input_queue_max_bytes: int = _FINAL_MODEL_INPUT_QUEUE_MAX_BYTES,
     ) -> None:
         if (
             isinstance(sample_rate, bool)
@@ -812,6 +1008,12 @@ class SynchronizedDiagnosticBundle:
             or queue_max <= 0
         ):
             raise ValueError("queue_max must be a positive integer")
+        if (
+            isinstance(final_input_queue_max_bytes, bool)
+            or not isinstance(final_input_queue_max_bytes, int)
+            or final_input_queue_max_bytes <= 0
+        ):
+            raise ValueError("final_input_queue_max_bytes must be positive")
         if (
             isinstance(flush_sec, bool)
             or not isinstance(flush_sec, (int, float))
@@ -843,8 +1045,20 @@ class SynchronizedDiagnosticBundle:
 
         self.timeline_path = _absolute_path(timeline_path)
         self.manifest_path = _absolute_path(manifest_path)
+        self.final_model_input_path = (
+            self.manifest_path.with_name(
+                f"{self.manifest_path.stem}.final-input.f32le"
+            )
+            if final_model_input_path is None
+            else _absolute_path(final_model_input_path)
+        )
         parent = self.manifest_path.parent
-        all_paths = [*normalized.values(), self.timeline_path, self.manifest_path]
+        all_paths = [
+            *normalized.values(),
+            self.final_model_input_path,
+            self.timeline_path,
+            self.manifest_path,
+        ]
         if any(path.parent != parent for path in all_paths):
             raise ValueError("all bundle artifacts must share the manifest directory")
         if len({path.name for path in all_paths}) != len(all_paths):
@@ -856,6 +1070,7 @@ class SynchronizedDiagnosticBundle:
         self.path_by_role = dict(normalized)
         self.sample_rate = sample_rate
         self.endpoint_replay_config = endpoint_replay_config
+        self._final_input_queue_max_bytes = final_input_queue_max_bytes
         self._flush_sec = float(flush_sec)
         self._close_timeout_sec = float(close_timeout_sec)
         self._queue: queue.Queue[object] = queue.Queue(maxsize=queue_max)
@@ -870,20 +1085,27 @@ class SynchronizedDiagnosticBundle:
         self._closed = False
         self._next_frame_index = 0
         self._next_sample_by_role = {role: 0 for role in DiagnosticTrack}
+        self._next_final_input_index = 0
+        self._next_final_input_sample = 0
+        self._pending_final_input_bytes = 0
         self._receipt_token = object()
         self._written_frames = 0
         self._written_samples_by_role = {role: 0 for role in DiagnosticTrack}
+        self._written_final_inputs = 0
+        self._written_final_input_samples = 0
         self._manifest_payload: Optional[dict[str, object]] = None
         self._manifest_status = DiagnosticManifestStatus.OPEN
         self._last_flush = time.monotonic()
 
         self._wav_files: dict[DiagnosticTrack, _SecureWavFile] = {}
+        self._final_input_file: Optional[_SecureF32File] = None
         self._timeline: Optional[BinaryIO] = None
         try:
             for role in DiagnosticTrack:
                 self._wav_files[role] = _SecureWavFile(
                     self.path_by_role[role], sample_rate
                 )
+            self._final_input_file = _SecureF32File(self.final_model_input_path)
             fd = _exclusive_descriptor(self.timeline_path)
             try:
                 self._timeline = os.fdopen(fd, "w+b")
@@ -896,6 +1118,10 @@ class SynchronizedDiagnosticBundle:
                     "schema_version": SCHEMA_VERSION,
                     "sample_rate_hz": sample_rate,
                     "tracks": [role.value for role in DiagnosticTrack],
+                    "final_model_input": {
+                        "encoding": "f32le",
+                        "sample_rate_hz": sample_rate,
+                    },
                     "endpoint_replay_config": endpoint_replay_config.to_payload(),
                 }
             )
@@ -921,6 +1147,7 @@ class SynchronizedDiagnosticBundle:
         """Read-only basename-role view of every artifact path."""
 
         values = {role.value: self.path_by_role[role] for role in DiagnosticTrack}
+        values["final_model_input"] = self.final_model_input_path
         values["timeline"] = self.timeline_path
         values["manifest"] = self.manifest_path
         return MappingProxyType(values)
@@ -1023,6 +1250,90 @@ class SynchronizedDiagnosticBundle:
                 self._next_sample_by_role[role] = end
             return span
 
+    def write_final_model_input(
+        self,
+        samples: np.ndarray,
+        *,
+        stream_id: str,
+        utterance_id: str,
+        capture_epoch: int,
+        capture_generation: int,
+        revision: int,
+        role: FinalModelInputRole,
+    ) -> Optional[FinalModelInputReceipt]:
+        """Admit one exact endpoint-owned model input with bounded overhead.
+
+        Copying, finite-value validation, and hashing happen synchronously at
+        the semantic decode seam; file I/O stays on the bundle writer. The
+        f32le payload and its receipt share that queue, so a complete manifest
+        proves byte/range/order agreement. Any invalid input, item-count
+        saturation, or byte-budget saturation fails evidence closed while the
+        voice path remains semantically unchanged.
+        """
+
+        try:
+            array = np.asarray(samples)
+            if (
+                array.dtype != np.dtype("float32")
+                or array.ndim != 1
+                or array.size <= 0
+                or array.nbytes > _FINAL_MODEL_INPUT_MAX_BYTES
+                or not bool(np.all(np.isfinite(array)))
+            ):
+                raise ValueError
+            canonical = np.ascontiguousarray(array, dtype="<f4")
+            payload = canonical.tobytes(order="C")
+            if not payload or len(payload) > _FINAL_MODEL_INPUT_MAX_BYTES:
+                raise ValueError
+            payload_sha256 = hashlib.sha256(payload).hexdigest()
+        except (TypeError, ValueError, MemoryError):
+            self._mark_incomplete("invalid_final_input")
+            return None
+
+        with self._state_lock:
+            if not self._accepting:
+                raise RuntimeError("diagnostic bundle is closed")
+            if self._pending_final_input_bytes + len(payload) > (
+                self._final_input_queue_max_bytes
+            ):
+                self._failure_codes.add("final_input_backpressure")
+                return None
+            if (
+                self._next_final_input_index >= _FINAL_MODEL_INPUT_MAX_RECEIPTS
+                or self._next_final_input_sample * 4 + len(payload)
+                > _FINAL_MODEL_INPUT_SESSION_MAX_BYTES
+            ):
+                self._failure_codes.add("final_input_session_limit")
+                return None
+            start = self._next_final_input_sample
+            try:
+                receipt = FinalModelInputReceipt(
+                    input_index=self._next_final_input_index,
+                    monotonic_ns=time.monotonic_ns(),
+                    stream_id=stream_id,
+                    utterance_id=utterance_id,
+                    capture_epoch=capture_epoch,
+                    capture_generation=capture_generation,
+                    revision=revision,
+                    role=role,
+                    sample_rate_hz=self.sample_rate,
+                    sample_start=start,
+                    sample_end=start + int(canonical.size),
+                    sha256=payload_sha256,
+                )
+            except (TypeError, ValueError):
+                self._failure_codes.add("invalid_final_input_identity")
+                return None
+            try:
+                self._queue.put_nowait(_FinalModelInputItem(receipt, payload))
+            except queue.Full:
+                self._failure_codes.add("final_input_drop")
+                return None
+            self._next_final_input_index += 1
+            self._next_final_input_sample = receipt.sample_end
+            self._pending_final_input_bytes += len(payload)
+            return receipt
+
     def observe(self, observation: DiagnosticObservation) -> bool:
         """Admit a typed semantic observation to the same ordered writer."""
 
@@ -1065,12 +1376,20 @@ class SynchronizedDiagnosticBundle:
                         self._write_frame_item(item)
                     elif isinstance(item, _ObservationItem):
                         self._write_timeline_payload(item.observation.to_payload())
+                    elif isinstance(item, _FinalModelInputItem):
+                        self._write_final_model_input_item(item)
                     else:
                         self._mark_incomplete("write_error")
                     self._periodic_flush()
                 except BaseException:  # an evidence failure must not kill capture
                     self._mark_incomplete("write_error")
                 finally:
+                    if isinstance(item, _FinalModelInputItem):
+                        with self._state_lock:
+                            self._pending_final_input_bytes = max(
+                                0,
+                                self._pending_final_input_bytes - len(item.payload),
+                            )
                     self._queue.task_done()
             with self._state_lock:
                 clean_shutdown = self._close_clean_shutdown
@@ -1112,6 +1431,21 @@ class SynchronizedDiagnosticBundle:
             start, end = item.track_ranges[role]
             self._written_samples_by_role[role] += end - start
 
+    def _write_final_model_input_item(self, item: _FinalModelInputItem) -> None:
+        if self._final_input_file is None:
+            raise RuntimeError("final model input spool is closed")
+        if (
+            item.receipt.input_index != self._written_final_inputs
+            or item.receipt.sample_start != self._written_final_input_samples
+            or item.receipt.samples * 4 != len(item.payload)
+            or hashlib.sha256(item.payload).hexdigest() != item.receipt.sha256
+        ):
+            raise ValueError("final model input receipt does not bind its payload")
+        self._final_input_file.write(item.payload)
+        self._write_timeline_payload(item.receipt.to_payload())
+        self._written_final_inputs += 1
+        self._written_final_input_samples += item.receipt.samples
+
     def _write_timeline_payload(self, payload: Mapping[str, object]) -> None:
         if self._timeline is None:
             raise RuntimeError("timeline is closed")
@@ -1140,6 +1474,8 @@ class SynchronizedDiagnosticBundle:
     def _flush_outputs(self, *, sync: bool) -> None:
         for wav_file in self._wav_files.values():
             wav_file.flush(sync=sync)
+        if self._final_input_file is not None:
+            self._final_input_file.flush(sync=sync)
         if self._timeline is not None:
             self._timeline.flush()
             if sync:
@@ -1150,6 +1486,11 @@ class SynchronizedDiagnosticBundle:
         for wav_file in self._wav_files.values():
             try:
                 wav_file.close()
+            except BaseException:
+                pass
+        if self._final_input_file is not None:
+            try:
+                self._final_input_file.close()
             except BaseException:
                 pass
         if self._timeline is not None:
@@ -1201,6 +1542,11 @@ class SynchronizedDiagnosticBundle:
                 wav_file.close()
             except BaseException:
                 self._mark_incomplete("close_error")
+        if self._final_input_file is not None:
+            try:
+                self._final_input_file.close()
+            except BaseException:
+                self._mark_incomplete("close_error")
 
         if self._written_frames == 0:
             with self._state_lock:
@@ -1211,6 +1557,12 @@ class SynchronizedDiagnosticBundle:
         }
         if actual_counts != self._written_samples_by_role:
             self._mark_incomplete("track_mismatch")
+        if self._final_input_file is None or (
+            self._final_input_file.samples != self._written_final_input_samples
+            or self._written_final_inputs != self._next_final_input_index
+            or self._written_final_input_samples != self._next_final_input_sample
+        ):
+            self._mark_incomplete("final_input_mismatch")
         with self._state_lock:
             provisional_complete = clean_shutdown and not self._failure_codes
             footer_failures = sorted(self._failure_codes)
@@ -1228,6 +1580,8 @@ class SynchronizedDiagnosticBundle:
                         role.value: self._written_samples_by_role[role]
                         for role in DiagnosticTrack
                     },
+                    "final_model_input_count": self._written_final_inputs,
+                    "final_model_input_samples": self._written_final_input_samples,
                     "failure_codes": footer_failures,
                 }
             )
@@ -1257,11 +1611,15 @@ class SynchronizedDiagnosticBundle:
             },
             sample_rate_hz=self.sample_rate,
             endpoint_replay_config=self.endpoint_replay_config,
+            final_model_input_path=self.final_model_input_path,
+            final_model_input_count=self._written_final_inputs,
+            final_model_input_samples=self._written_final_input_samples,
         ):
             self._mark_incomplete("timeline_validation_error")
 
         artifacts: dict[str, dict[str, object]] = {}
         timeline_artifact: dict[str, object] = {}
+        final_model_input_artifact: dict[str, object] = {}
         try:
             timeline_digest, timeline_bytes = _hash_private_regular(
                 self.timeline_path
@@ -1280,6 +1638,19 @@ class SynchronizedDiagnosticBundle:
                     "bytes": size,
                     "samples": self._wav_files[role].samples,
                 }
+            if self._final_input_file is None:
+                raise RuntimeError("final model input spool is unavailable")
+            final_digest, final_size = _hash_private_regular(
+                self.final_model_input_path
+            )
+            final_model_input_artifact = {
+                "file": self.final_model_input_path.name,
+                "sha256": final_digest,
+                "bytes": final_size,
+                "samples": self._final_input_file.samples,
+                "input_count": self._written_final_inputs,
+                "encoding": "f32le",
+            }
         except BaseException:
             self._mark_incomplete("hash_error")
 
@@ -1294,10 +1665,12 @@ class SynchronizedDiagnosticBundle:
                     "physical_raw_mic_present": False,
                     "model_pre_gain_tap_may_include_host_processing": True,
                     "model_pre_gain_tap_includes_application_resampling": True,
-                    "audio_storage_is_pcm16_quantized": True,
+                    "continuous_audio_storage_is_pcm16_quantized": True,
+                    "final_model_input_storage_is_lossless_f32le": True,
+                    "final_model_input_receipts_present": True,
                     "model_asr_track_is_continuous_selected_tap": True,
                     "recognizer_reset_replay_receipts_present": False,
-                    "turn_selection_ranges_present": False,
+                    "turn_selection_ranges_present": True,
                     "frame_track_lengths_may_differ": True,
                     "observation_spans_use_model_gate_track": True,
                     "playback_reference_preserves_reader_snapshot": True,
@@ -1313,6 +1686,7 @@ class SynchronizedDiagnosticBundle:
                 "failure_codes": sorted(self._failure_codes),
                 "timeline": timeline_artifact,
                 "tracks": artifacts,
+                "final_model_input": final_model_input_artifact,
             }
             self._manifest_payload = manifest
 
@@ -1417,25 +1791,107 @@ def _publish_manifest(path: Path, payload: Mapping[str, object]) -> None:
                     os.close(directory_fd)
 
 
-def _hash_private_regular(path: Path) -> tuple[str, int]:
+_PrivateFileIdentity = tuple[int, int, int, int, int, int, int, int]
+
+
+def _private_file_identity(metadata: os.stat_result) -> _PrivateFileIdentity:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        stat.S_IFMT(metadata.st_mode),
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+        metadata.st_nlink,
+        getattr(metadata, "st_uid", -1),
+    )
+
+
+def _open_private_regular(
+    path: Path,
+    *,
+    expected_identity: Optional[_PrivateFileIdentity] = None,
+    require_single_link: bool = True,
+) -> tuple[int, _PrivateFileIdentity]:
+    before = path.lstat()
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags)
+    try:
+        info = os.fstat(fd)
+        identity = _private_file_identity(info)
+        if (
+            identity != _private_file_identity(before)
+            or (expected_identity is not None and identity != expected_identity)
+            or not stat.S_ISREG(info.st_mode)
+            or stat.S_IMODE(info.st_mode) != 0o600
+            or (require_single_link and info.st_nlink != 1)
+            or (
+                hasattr(os, "geteuid")
+                and getattr(info, "st_uid", -1) != os.geteuid()
+            )
+        ):
+            raise ValueError("artifact must be one private owned regular file")
+        return fd, identity
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _descriptor_matches_path(
+    descriptor: int,
+    path: Path,
+    identity: _PrivateFileIdentity,
+) -> bool:
+    try:
+        return bool(
+            _private_file_identity(os.fstat(descriptor)) == identity
+            and _private_file_identity(path.lstat()) == identity
+        )
+    except OSError:
+        return False
+
+
+def _path_matches_identity(path: Path, identity: _PrivateFileIdentity) -> bool:
+    try:
+        return _private_file_identity(path.lstat()) == identity
+    except OSError:
+        return False
+
+
+def _artifact_paths_match_identities(
+    parent: Path,
+    identities: Mapping[str, _PrivateFileIdentity],
+) -> bool:
+    return all(
+        _path_matches_identity(parent / filename, identity)
+        for filename, identity in identities.items()
+    )
+
+
+def _hash_private_regular_snapshot(
+    path: Path,
+) -> tuple[str, int, _PrivateFileIdentity]:
+    fd, identity = _open_private_regular(path)
     digest = hashlib.sha256()
     size = 0
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-            raise ValueError("artifact must be a private regular file")
         while True:
             chunk = os.read(fd, 1 << 20)
             if not chunk:
                 break
             digest.update(chunk)
             size += len(chunk)
+        if not _descriptor_matches_path(fd, path, identity):
+            raise ValueError("artifact changed while it was hashed")
     finally:
         os.close(fd)
-    return digest.hexdigest(), size
+    return digest.hexdigest(), size, identity
+
+
+def _hash_private_regular(path: Path) -> tuple[str, int]:
+    digest, size, _identity = _hash_private_regular_snapshot(path)
+    return digest, size
 
 
 def _duplicate_safe_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -1447,16 +1903,15 @@ def _duplicate_safe_object(pairs: list[tuple[str, object]]) -> dict[str, object]
     return result
 
 
-def _read_manifest(path: Path) -> Optional[dict[str, object]]:
+def _read_manifest_snapshot(
+    path: Path,
+) -> Optional[tuple[dict[str, object], _PrivateFileIdentity]]:
     try:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
-    except OSError:
+        fd, identity = _open_private_regular(path, require_single_link=False)
+    except (OSError, ValueError):
         return None
     try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+        if os.fstat(fd).st_nlink > 2:
             return None
         chunks: list[bytes] = []
         total = 0
@@ -1468,15 +1923,22 @@ def _read_manifest(path: Path) -> Optional[dict[str, object]]:
             total += len(chunk)
             if total > _MANIFEST_MAX_BYTES:
                 return None
+        if not _descriptor_matches_path(fd, path, identity):
+            return None
         parsed = json.loads(
             b"".join(chunks).decode("utf-8"),
             object_pairs_hook=_duplicate_safe_object,
         )
-        return parsed if isinstance(parsed, dict) else None
+        return (parsed, identity) if isinstance(parsed, dict) else None
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return None
     finally:
         os.close(fd)
+
+
+def _read_manifest(path: Path) -> Optional[dict[str, object]]:
+    snapshot = _read_manifest_snapshot(path)
+    return None if snapshot is None else snapshot[0]
 
 
 def _valid_artifact_entry(value: object, *, track: bool) -> bool:
@@ -1507,6 +1969,74 @@ def _valid_artifact_entry(value: object, *, track: bool) -> bool:
     return True
 
 
+def _valid_final_model_input_entry(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {
+        "file",
+        "sha256",
+        "bytes",
+        "samples",
+        "input_count",
+        "encoding",
+    }:
+        return False
+    common = {
+        name: value[name] for name in ("file", "sha256", "bytes", "samples")
+    }
+    if not _valid_artifact_entry(common, track=True):
+        return False
+    inputs = value.get("input_count")
+    return (
+        value.get("encoding") == "f32le"
+        and type(inputs) is int
+        and inputs >= 0
+        and inputs <= _FINAL_MODEL_INPUT_MAX_RECEIPTS
+        and value.get("bytes") == value.get("samples") * 4
+        and value.get("bytes") <= _FINAL_MODEL_INPUT_SESSION_MAX_BYTES
+    )
+
+
+def _validate_final_model_input_spool(
+    path: Path,
+    receipts: list[FinalModelInputReceipt],
+    *,
+    total_samples: int,
+    expected_identity: Optional[_PrivateFileIdentity] = None,
+) -> bool:
+    descriptor = -1
+    try:
+        descriptor, identity = _open_private_regular(
+            path,
+            expected_identity=expected_identity,
+        )
+        metadata = os.fstat(descriptor)
+        if (
+            metadata.st_size != total_samples * 4
+        ):
+            return False
+        for receipt in receipts:
+            remaining = receipt.samples * 4
+            digest = hashlib.sha256()
+            while remaining:
+                chunk = os.read(descriptor, min(1 << 20, remaining))
+                if not chunk:
+                    return False
+                if not bool(np.all(np.isfinite(np.frombuffer(chunk, dtype="<f4")))):
+                    return False
+                digest.update(chunk)
+                remaining -= len(chunk)
+            if digest.hexdigest() != receipt.sha256:
+                return False
+        return bool(
+            os.read(descriptor, 1) == b""
+            and _descriptor_matches_path(descriptor, path, identity)
+        )
+    except (OSError, ValueError, OverflowError):
+        return False
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _validate_timeline(
     path: Path,
     *,
@@ -1515,44 +2045,64 @@ def _validate_timeline(
     track_sample_counts: Mapping[str, int],
     sample_rate_hz: int,
     endpoint_replay_config: EndpointReplayConfig,
+    final_model_input_path: Optional[Path] = None,
+    final_model_input_count: int = 0,
+    final_model_input_samples: int = 0,
+    schema_version: int = SCHEMA_VERSION,
+    expected_identity: Optional[_PrivateFileIdentity] = None,
+    final_model_input_identity: Optional[_PrivateFileIdentity] = None,
 ) -> bool:
+    fd = -1
     try:
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        fd = os.open(path, flags)
-    except OSError:
+        fd, timeline_identity = _open_private_regular(
+            path,
+            expected_identity=expected_identity,
+        )
+    except (OSError, ValueError):
         return False
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
-            return False
-        with os.fdopen(fd, "rb") as handle:
-            fd = -1
-            lines = handle.readlines()
-        if len(lines) < 2 or any(
-            not line.endswith(b"\n") or len(line) > _TIMELINE_LINE_MAX_BYTES
-            for line in lines
-        ):
+        if info.st_size <= 0 or info.st_size > _TIMELINE_MAX_BYTES:
             return False
         records: list[dict[str, object]] = []
-        for line in lines:
-            record = json.loads(
-                line.decode("utf-8"), object_pairs_hook=_duplicate_safe_object
-            )
-            if not isinstance(record, dict):
-                return False
-            records.append(record)
+        with open(fd, "rb", closefd=False) as handle:
+            while True:
+                line = handle.readline(_TIMELINE_LINE_MAX_BYTES + 1)
+                if not line:
+                    break
+                if (
+                    len(line) > _TIMELINE_LINE_MAX_BYTES
+                    or not line.endswith(b"\n")
+                    or len(records) >= _TIMELINE_MAX_RECORDS
+                ):
+                    return False
+                record = json.loads(
+                    line.decode("utf-8"), object_pairs_hook=_duplicate_safe_object
+                )
+                if not isinstance(record, dict):
+                    return False
+                records.append(record)
+        if len(records) < 2:
+            return False
         header = records[0]
-        if header != {
+        expected_header: dict[str, object] = {
             "kind": "header",
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": schema_version,
             "sample_rate_hz": sample_rate_hz,
             "tracks": [role.value for role in DiagnosticTrack],
             "endpoint_replay_config": endpoint_replay_config.to_payload(),
-        }:
+        }
+        if schema_version == SCHEMA_VERSION:
+            expected_header["final_model_input"] = {
+                "encoding": "f32le",
+                "sample_rate_hz": sample_rate_hz,
+            }
+        elif schema_version != 1:
+            return False
+        if header != expected_header:
             return False
         footer = records[-1]
-        if set(footer) != {
+        expected_footer = {
             "kind",
             "complete",
             "clean_shutdown",
@@ -1560,7 +2110,12 @@ def _validate_timeline(
             "sample_count",
             "sample_count_by_track",
             "failure_codes",
-        }:
+        }
+        if schema_version == SCHEMA_VERSION:
+            expected_footer.update(
+                {"final_model_input_count", "final_model_input_samples"}
+            )
+        if set(footer) != expected_footer:
             return False
         if (
             footer.get("kind") != "footer"
@@ -1572,10 +2127,22 @@ def _validate_timeline(
             or footer.get("failure_codes") != []
         ):
             return False
+        if schema_version == SCHEMA_VERSION and (
+            footer.get("final_model_input_count") != final_model_input_count
+            or footer.get("final_model_input_samples")
+            != final_model_input_samples
+        ):
+            return False
 
         seen_frames = 0
+        receipts: list[FinalModelInputReceipt] = []
+        next_final_input_sample = 0
         next_sample_by_track = {role.value: 0 for role in DiagnosticTrack}
         gate_spans: dict[int, tuple[int, int]] = {}
+        coordinates_by_frame: dict[int, CaptureCoordinate] = {}
+        committed_coordinates: dict[
+            tuple[object, object, object], tuple[int, int]
+        ] = {}
         previous_coordinate: Optional[CaptureCoordinate] = None
         for record in records[1:-1]:
             kind = record.get("kind")
@@ -1674,19 +2241,78 @@ def _validate_timeline(
                             return False
                 previous_coordinate = parsed_coordinate
                 gate_spans[seen_frames] = (start, end)
+                coordinates_by_frame[seen_frames] = parsed_coordinate
                 seen_frames += 1
+            elif kind == "final_model_input":
+                if schema_version != SCHEMA_VERSION:
+                    return False
+                try:
+                    receipt = FinalModelInputReceipt.from_payload(record)
+                except (TypeError, ValueError):
+                    return False
+                if (
+                    receipt.input_index != len(receipts)
+                    or receipt.sample_rate_hz != sample_rate_hz
+                    or receipt.sample_start != next_final_input_sample
+                    or committed_coordinates.get(
+                        (
+                            receipt.stream_id,
+                            receipt.utterance_id,
+                            receipt.revision,
+                        )
+                    )
+                    != (receipt.capture_epoch, receipt.capture_generation)
+                ):
+                    return False
+                receipts.append(receipt)
+                next_final_input_sample = receipt.sample_end
             elif kind == "observation":
                 if not _validate_observation_payload(record, gate_spans):
                     return False
+                if record.get("stage") == DiagnosticStage.ENDPOINT_COMMITTED.value:
+                    coordinate = coordinates_by_frame.get(record.get("frame_index"))
+                    turn_key = (
+                        record.get("stream_id"),
+                        record.get("utterance_id"),
+                        record.get("revision"),
+                    )
+                    if coordinate is None or turn_key in committed_coordinates:
+                        return False
+                    committed_coordinates[turn_key] = (
+                        coordinate.capture_epoch,
+                        coordinate.capture_generation,
+                    )
             else:
                 return False
-        return bool(
+        valid = bool(
             seen_frames == frame_count
             and next_sample_by_track == dict(track_sample_counts)
             and next_sample_by_track[DiagnosticTrack.MODEL_GATE_PCM.value]
             == sample_count
+            and (
+                schema_version == 1
+                or (
+                    final_model_input_path is not None
+                    and len(receipts) == final_model_input_count
+                    and next_final_input_sample == final_model_input_samples
+                    and _validate_final_model_input_spool(
+                        final_model_input_path,
+                        receipts,
+                        total_samples=final_model_input_samples,
+                        expected_identity=final_model_input_identity,
+                    )
+                )
+            )
             and _validate_endpoint_replay(records, endpoint_replay_config)
-            and _validate_lifecycle(records)
+            and _validate_lifecycle(
+                records,
+                require_final_input=schema_version == SCHEMA_VERSION,
+                require_streaming_final=schema_version == SCHEMA_VERSION,
+            )
+        )
+        return bool(
+            valid
+            and _descriptor_matches_path(fd, path, timeline_identity)
         )
     except (
         OSError,
@@ -1938,14 +2564,41 @@ def _validate_endpoint_replay(
         return False
 
 
-def _validate_lifecycle(records: list[dict[str, object]]) -> bool:
+def _validate_lifecycle(
+    records: list[dict[str, object]],
+    *,
+    require_final_input: bool = True,
+    require_streaming_final: bool = True,
+) -> bool:
     """Require paired terminals and immutable causal identity per lifecycle."""
 
     turns: dict[tuple[object, object, object], dict[str, bool]] = {}
     dispatched_turns: set[tuple[object, object, object]] = set()
     playbacks: dict[object, dict[str, object]] = {}
     for record in records:
-        if record.get("kind") != "observation":
+        kind = record.get("kind")
+        if kind == "final_model_input":
+            try:
+                receipt = FinalModelInputReceipt.from_payload(record)
+            except (TypeError, ValueError):
+                return False
+            turn_key = (
+                receipt.stream_id,
+                receipt.utterance_id,
+                receipt.revision,
+            )
+            state = turns.get(turn_key)
+            if (
+                state is None
+                or not state["started"]
+                or state["input_written"]
+                or state["selected"]
+                or state["terminal"]
+            ):
+                return False
+            state["input_written"] = True
+            continue
+        if kind != "observation":
             continue
         try:
             stage = DiagnosticStage(record["stage"])
@@ -1964,22 +2617,42 @@ def _validate_lifecycle(records: list[dict[str, object]]) -> bool:
                 "streaming_final": False,
                 "queued": False,
                 "started": False,
+                "input_written": False,
                 "selected": False,
                 "terminal": False,
             }
         elif stage is DiagnosticStage.ASR_STREAMING_FINAL:
             state = turns.get(turn_key)
-            if state is None or state["streaming_final"] or state["terminal"]:
+            if (
+                state is None
+                or state["streaming_final"]
+                or state["started"]
+                or state["input_written"]
+                or state["selected"]
+                or state["terminal"]
+            ):
                 return False
             state["streaming_final"] = True
         elif stage is DiagnosticStage.FINALIZER_QUEUED:
             state = turns.get(turn_key)
-            if state is None or state["queued"] or state["terminal"]:
+            # offer_nowait() logically precedes worker execution, but the
+            # capture thread records this receipt after the offer returns. The
+            # worker can therefore serialize STARTED through TERMINAL first.
+            if (
+                state is None
+                or state["queued"]
+                or (require_streaming_final and not state["streaming_final"])
+            ):
                 return False
             state["queued"] = True
         elif stage is DiagnosticStage.FINALIZER_STARTED:
             state = turns.get(turn_key)
-            if state is None or state["started"] or state["terminal"]:
+            if (
+                state is None
+                or (require_streaming_final and not state["streaming_final"])
+                or state["started"]
+                or state["terminal"]
+            ):
                 return False
             state["started"] = True
         elif stage is DiagnosticStage.FINAL_SELECTION:
@@ -1987,6 +2660,8 @@ def _validate_lifecycle(records: list[dict[str, object]]) -> bool:
             if (
                 state is None
                 or not state["started"]
+                or (require_streaming_final and not state["streaming_final"])
+                or (require_final_input and not state["input_written"])
                 or state["selected"]
                 or state["terminal"]
             ):
@@ -2011,6 +2686,7 @@ def _validate_lifecycle(records: list[dict[str, object]]) -> bool:
                     "streaming_final": False,
                     "queued": False,
                     "started": False,
+                    "input_written": False,
                     "selected": False,
                     "terminal": True,
                 }
@@ -2076,6 +2752,20 @@ def _validate_lifecycle(records: list[dict[str, object]]) -> bool:
 
     return bool(
         all(state["terminal"] for state in turns.values())
+        and (
+            not require_streaming_final
+            or all(
+                not state["committed"] or state["streaming_final"]
+                for state in turns.values()
+            )
+        )
+        and (
+            not require_final_input
+            or all(
+                not state["started"] or state["input_written"]
+                for state in turns.values()
+            )
+        )
         and all(state["terminal"] for state in playbacks.values())
         and all(
             state["acoustic_link"] is None
@@ -2085,13 +2775,52 @@ def _validate_lifecycle(records: list[dict[str, object]]) -> bool:
     )
 
 
-def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
-    """Return ``True`` only for a complete, private, internally bound bundle."""
+def _validate_wav_artifacts(
+    parent: Path,
+    tracks: Mapping[str, object],
+    *,
+    sample_rate_hz: int,
+    expected_identities: Optional[Mapping[str, _PrivateFileIdentity]] = None,
+) -> bool:
+    for role in DiagnosticTrack:
+        entry = tracks.get(role.value)
+        if not isinstance(entry, dict):
+            return False
+        wav_path = parent / entry["file"]
+        descriptor = -1
+        try:
+            expected_identity = (
+                None
+                if expected_identities is None
+                else expected_identities.get(entry["file"])
+            )
+            descriptor, identity = _open_private_regular(
+                wav_path,
+                expected_identity=expected_identity,
+            )
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            with open(descriptor, "rb", closefd=False) as handle:
+                with wave.open(handle, "rb") as recording:
+                    if (
+                        recording.getnchannels() != 1
+                        or recording.getsampwidth() != 2
+                        or recording.getframerate() != sample_rate_hz
+                        or recording.getnframes() != entry["samples"]
+                    ):
+                        return False
+            if not _descriptor_matches_path(descriptor, wav_path, identity):
+                return False
+        except (OSError, EOFError, KeyError, TypeError, ValueError, wave.Error):
+            return False
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+    return True
 
-    path = _absolute_path(manifest_path)
-    manifest = _read_manifest(path)
-    if manifest is None:
-        return False
+
+def _validate_legacy_manifest(path: Path, manifest: Mapping[str, object]) -> bool:
+    """Retain read-only validation for durable schema-v1 diagnostic bundles."""
+
     if set(manifest) != {
         "schema_version",
         "complete",
@@ -2107,7 +2836,7 @@ def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
     }:
         return False
     if (
-        manifest.get("schema_version") != SCHEMA_VERSION
+        manifest.get("schema_version") != 1
         or manifest.get("complete") is not True
         or manifest.get("clean_shutdown") is not True
         or manifest.get("failure_codes") != []
@@ -2121,6 +2850,133 @@ def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
             "model_asr_track_is_continuous_selected_tap": True,
             "recognizer_reset_replay_receipts_present": False,
             "turn_selection_ranges_present": False,
+            "frame_track_lengths_may_differ": True,
+            "observation_spans_use_model_gate_track": True,
+            "playback_reference_preserves_reader_snapshot": True,
+            "playback_timestamps_are_receipt_dispatch_time": True,
+            "physical_playback_audibility_present": False,
+        }
+    ):
+        return False
+    sample_rate = manifest.get("sample_rate_hz")
+    frame_count = manifest.get("frame_count")
+    sample_count = manifest.get("sample_count")
+    if (
+        type(sample_rate) is not int
+        or sample_rate <= 0
+        or type(frame_count) is not int
+        or frame_count <= 0
+        or type(sample_count) is not int
+        or sample_count <= 0
+    ):
+        return False
+    try:
+        endpoint_replay_config = EndpointReplayConfig.from_payload(
+            manifest.get("endpoint_replay_config")
+        )
+    except (TypeError, ValueError):
+        return False
+    timeline = manifest.get("timeline")
+    tracks = manifest.get("tracks")
+    if not _valid_artifact_entry(timeline, track=False) or not isinstance(
+        tracks, dict
+    ):
+        return False
+    if set(tracks) != {role.value for role in DiagnosticTrack} or any(
+        not _valid_artifact_entry(value, track=True) for value in tracks.values()
+    ):
+        return False
+    track_sample_counts = {
+        role.value: tracks[role.value]["samples"] for role in DiagnosticTrack
+    }
+    if (
+        sample_count != track_sample_counts[DiagnosticTrack.MODEL_GATE_PCM.value]
+        or timeline["bytes"] > _TIMELINE_MAX_BYTES
+    ):
+        return False
+    entries = [timeline, *tracks.values()]
+    names = [entry["file"] for entry in entries]
+    if len(names) != len(set(names)) or path.name in names:
+        return False
+    parent = path.parent
+    identities: dict[str, _PrivateFileIdentity] = {}
+    for entry in entries:
+        try:
+            digest, size, identity = _hash_private_regular_snapshot(
+                parent / entry["file"]
+            )
+        except (OSError, TypeError, ValueError):
+            return False
+        if digest != entry["sha256"] or size != entry["bytes"]:
+            return False
+        identities[entry["file"]] = identity
+    if not _validate_timeline(
+        parent / timeline["file"],
+        frame_count=frame_count,
+        sample_count=sample_count,
+        track_sample_counts=track_sample_counts,
+        sample_rate_hz=sample_rate,
+        endpoint_replay_config=endpoint_replay_config,
+        schema_version=1,
+        expected_identity=identities[timeline["file"]],
+    ):
+        return False
+    return bool(
+        _validate_wav_artifacts(
+            parent,
+            tracks,
+            sample_rate_hz=sample_rate,
+            expected_identities=identities,
+        )
+        and _artifact_paths_match_identities(parent, identities)
+    )
+
+
+def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
+    """Return ``True`` only for a complete, private, internally bound bundle."""
+
+    path = _absolute_path(manifest_path)
+    manifest_snapshot = _read_manifest_snapshot(path)
+    if manifest_snapshot is None:
+        return False
+    manifest, manifest_identity = manifest_snapshot
+    if manifest.get("schema_version") == 1:
+        return bool(
+            _validate_legacy_manifest(path, manifest)
+            and _path_matches_identity(path, manifest_identity)
+        )
+    if set(manifest) != {
+        "schema_version",
+        "complete",
+        "clean_shutdown",
+        "provenance",
+        "sample_rate_hz",
+        "endpoint_replay_config",
+        "frame_count",
+        "sample_count",
+        "failure_codes",
+        "timeline",
+        "tracks",
+        "final_model_input",
+    }:
+        return False
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest.get("complete") is not True
+        or manifest.get("clean_shutdown") is not True
+        or manifest.get("failure_codes") != []
+        or manifest.get("provenance")
+        != {
+            "native_host_pcm_present": False,
+            "physical_raw_mic_present": False,
+            "model_pre_gain_tap_may_include_host_processing": True,
+            "model_pre_gain_tap_includes_application_resampling": True,
+            "continuous_audio_storage_is_pcm16_quantized": True,
+            "final_model_input_storage_is_lossless_f32le": True,
+            "final_model_input_receipts_present": True,
+            "model_asr_track_is_continuous_selected_tap": True,
+            "recognizer_reset_replay_receipts_present": False,
+            "turn_selection_ranges_present": True,
             "frame_track_lengths_may_differ": True,
             "observation_spans_use_model_gate_track": True,
             "playback_reference_preserves_reader_snapshot": True,
@@ -2153,9 +3009,10 @@ def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
 
     timeline = manifest.get("timeline")
     tracks = manifest.get("tracks")
+    final_model_input = manifest.get("final_model_input")
     if not _valid_artifact_entry(timeline, track=False) or not isinstance(
         tracks, dict
-    ):
+    ) or not _valid_final_model_input_entry(final_model_input):
         return False
     if set(tracks) != {role.value for role in DiagnosticTrack}:
         return False
@@ -2166,22 +3023,27 @@ def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
     }
     if sample_count != track_sample_counts[DiagnosticTrack.MODEL_GATE_PCM.value]:
         return False
-    entries = [timeline, *tracks.values()]
+    if timeline["bytes"] > _TIMELINE_MAX_BYTES:  # type: ignore[index]
+        return False
+    entries = [timeline, *tracks.values(), final_model_input]
     names = [entry["file"] for entry in entries]  # type: ignore[index]
     if len(names) != len(set(names)) or path.name in names:
         return False
 
     parent = path.parent
+    identities: dict[str, _PrivateFileIdentity] = {}
     for entry in entries:
         artifact = parent / entry["file"]  # type: ignore[index,operator]
         try:
-            digest, size = _hash_private_regular(artifact)
+            digest, size, identity = _hash_private_regular_snapshot(artifact)
         except (OSError, ValueError):
             return False
         if digest != entry["sha256"] or size != entry["bytes"]:  # type: ignore[index]
             return False
+        identities[entry["file"]] = identity  # type: ignore[index]
 
     timeline_path = parent / timeline["file"]  # type: ignore[index,operator]
+    final_model_input_path = parent / final_model_input["file"]  # type: ignore[index,operator]
     if not _validate_timeline(
         timeline_path,
         frame_count=frame_count,
@@ -2189,39 +3051,24 @@ def validate_manifest(manifest_path: os.PathLike[str] | str) -> bool:
         track_sample_counts=track_sample_counts,
         sample_rate_hz=sample_rate,
         endpoint_replay_config=endpoint_replay_config,
+        final_model_input_path=final_model_input_path,
+        final_model_input_count=final_model_input["input_count"],  # type: ignore[index]
+        final_model_input_samples=final_model_input["samples"],  # type: ignore[index]
+        expected_identity=identities[timeline["file"]],  # type: ignore[index]
+        final_model_input_identity=identities[final_model_input["file"]],  # type: ignore[index]
     ):
         return False
 
-    for role in DiagnosticTrack:
-        entry = tracks[role.value]
-        wav_path = parent / entry["file"]
-        try:
-            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
-            flags |= getattr(os, "O_NOFOLLOW", 0)
-            fd = os.open(wav_path, flags)
-            try:
-                info = os.fstat(fd)
-                if (
-                    not stat.S_ISREG(info.st_mode)
-                    or stat.S_IMODE(info.st_mode) != 0o600
-                ):
-                    return False
-                with os.fdopen(fd, "rb") as handle:
-                    fd = -1
-                    with wave.open(handle, "rb") as recording:
-                        if (
-                            recording.getnchannels() != 1
-                            or recording.getsampwidth() != 2
-                            or recording.getframerate() != sample_rate
-                            or recording.getnframes() != entry["samples"]
-                        ):
-                            return False
-            finally:
-                if fd >= 0:
-                    os.close(fd)
-        except (OSError, EOFError, wave.Error):
-            return False
-    return True
+    return bool(
+        _validate_wav_artifacts(
+            parent,
+            tracks,
+            sample_rate_hz=sample_rate,
+            expected_identities=identities,
+        )
+        and _artifact_paths_match_identities(parent, identities)
+        and _path_matches_identity(path, manifest_identity)
+    )
 
 
 __all__ = [
@@ -2232,6 +3079,8 @@ __all__ = [
     "DiagnosticStage",
     "DiagnosticTrack",
     "EndpointReplayConfig",
+    "FinalModelInputReceipt",
+    "FinalModelInputRole",
     "SynchronizedDiagnosticBundle",
     "validate_manifest",
 ]

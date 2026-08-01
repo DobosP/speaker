@@ -9,7 +9,7 @@ import struct
 
 import pytest
 
-from tools.streaming_stt.corpus import CorpusProvenance
+from tools.streaming_stt.corpus import CorpusError, CorpusProvenance, load_corpus
 from tools.streaming_stt import corpus_writer
 
 
@@ -59,6 +59,36 @@ def test_publishes_private_schema_v2_corpus_and_sidecar(tmp_path: Path):
     }
     manifest = json.loads((destination / "corpus.json").read_text(encoding="utf-8"))
     assert manifest["provenance"] == _provenance().as_dict()
+
+
+def test_private_diagnostic_provenance_publishes_schema_v3_only(tmp_path: Path):
+    destination = tmp_path / "private-diagnostic-corpus"
+    provenance = replace(
+        _provenance(),
+        kind="private-diagnostic-v1",
+        suite="final-model-input",
+    )
+
+    loaded = corpus_writer.publish_private_corpus(
+        cases=(_case(),),
+        provenance=provenance,
+        output_dir=destination,
+        purpose="exact private diagnostic final input",
+    )
+
+    assert loaded.schema_version == 3
+    assert loaded.provenance == provenance
+    payload = json.loads((destination / "corpus.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == 3
+    assert payload["provenance"]["kind"] == "private-diagnostic-v1"
+
+    payload["schema_version"] = 2
+    (destination / "corpus.json").write_text(
+        json.dumps(payload, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(CorpusError):
+        load_corpus(destination / "corpus.json")
 
 
 def test_arbitrary_sidecar_digest_is_not_the_source_set_digest(tmp_path: Path):
@@ -150,6 +180,7 @@ def test_loader_rejects_nonfinite_pcm_and_partial_evidence_is_retained(
 @pytest.mark.parametrize(
     ("field_name", "invalid"),
     (
+        ("kind", "unknown-private-v1"),
         ("suite", "Spontaneous-English"),
         ("manifest_sha256", "a" * 63),
         ("metadata_sha256", "B" * 64),

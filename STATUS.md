@@ -4,7 +4,7 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Complete non-real logic gate: 7,080 passed as 7,052 repository tests plus 28 isolated scheduling-sensitive LiveKit engine tests; 13 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0107 affected-area 381/1 deselected; current APM/DTD 6.
+- Current non-real logic gate: 7,117 passed as 7,087 low-priority repository tests plus 30 isolated logging/thread/permission-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0108 focused 199/1 skipped; adjacent public/app 186/83; current APM/DTD 6.
 - Streaming family: 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
@@ -45,8 +45,9 @@ Last verified: 2026-08-01 on Linux ROG.
 - Same-ID reuse cannot consume stale terminal/TTS/playback cleanup. Tools do not
   retry; failed web gets one local fallback (ADR-0021/0030/0051/0086/0094).
 - Terminal receipts govern spoken history with fail-closed identity and exact
-  ownership. Opt-in recording atomically binds four private tracks, exact endpoint
-  replay, and causal playback; loss is incomplete and proves no audibility/live quality (ADR-0028/0029/0038/0086/0100).
+  ownership. Diagnostic schema v2 binds four continuous private PCM16 tracks,
+  a separate lossless f32le final-input spool, endpoint replay, and causal
+  playback; private labels export corpus schema v3 while public corpora stay v2 (ADR-0028/0029/0038/0086/0100/0108).
 
 ## Live evidence and limits
 
@@ -75,11 +76,15 @@ Last verified: 2026-08-01 on Linux ROG.
 - Windows communications capture verifies OS AEC/NS/beamforming; owner physical talk-over/STOP tests remain (ADR-0081/0082).
 - Diagnostic replay fails closed on malformed heartbeats/silent playback references; GitHub raw-audio PR refs remain owner follow-up (ADR-0083).
 - The LiveKit Agents wrapper has no SDK, network, audio-device, or live A/B evidence; its headless fake-SDK result cannot promote trusted-LAN (ADR-0104).
+- ADR-0108 is synthetic/headless contract evidence only: no owner labels/export,
+  model/GPU run, WER, latency, AEC, barge-in, device, live, or default claim.
+  It starts after endpoint selection; diagnostic schema v1 is validation-only.
 
 ## Next
 
 - Give one streaming-decode session exclusive ownership of every Sherpa online recognizer/stream operation before moving that complete owner off the capture processor; compare it by replay before any default change (ADR-0107).
-- Run fresh `./live.sh` vault/open-speaker A/B with the synchronized bundle; add native-reader/gap, AEC replay, and disjoint owner/noise/multi-voice data (ADR-0092/0100).
+- Capture fresh `./live.sh` vault/open-speaker evidence, export exact labeled
+  inputs, compare disjoint public/noise/multi-voice strata, then run live A/B; add native-reader/gap and AEC replay (ADR-0092/0100/0108).
 - Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 
 ## Standard verification

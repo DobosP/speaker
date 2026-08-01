@@ -20,6 +20,7 @@ from core.diagnostic_bundle import (
     DiagnosticStage,
     DiagnosticTrack,
     EndpointReplayConfig,
+    FinalModelInputRole,
     SynchronizedDiagnosticBundle,
     validate_manifest,
 )
@@ -89,6 +90,100 @@ def _bundle(
     )
 
 
+def _complete_turn(
+    bundle: SynchronizedDiagnosticBundle,
+    span,
+    *,
+    utterance_id: str,
+    revision: int,
+    samples: np.ndarray,
+    role: FinalModelInputRole,
+):
+    stream_id = "sherpa-11111111111111111111111111111111"
+    observations = (
+        DiagnosticObservation(
+            stage=DiagnosticStage.ENDPOINT_EVALUATED,
+            monotonic_ns=10 + revision * 10,
+            span=span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            reason="asr",
+            basis="acoustic",
+            completion_state="unavailable",
+            acoustic_endpoint=True,
+            vad_active=False,
+            early_endpoint_allowed=True,
+            trailing_silence_sec=0.8,
+            boolean_value=True,
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.ENDPOINT_COMMITTED,
+            monotonic_ns=10 + revision * 10,
+            span=span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=revision,
+            reason="asr",
+            basis="acoustic",
+            completion_state="unavailable",
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.ASR_STREAMING_FINAL,
+            monotonic_ns=12 + revision * 10,
+            span=span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=revision,
+            outcome="nonempty",
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINALIZER_STARTED,
+            monotonic_ns=13 + revision * 10,
+            span=span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=revision,
+        ),
+    )
+    for observation in observations:
+        assert bundle.observe(observation)
+    receipt = bundle.write_final_model_input(
+        samples,
+        stream_id=stream_id,
+        utterance_id=utterance_id,
+        capture_epoch=span.coordinate.capture_epoch,
+        capture_generation=span.coordinate.capture_generation,
+        revision=revision,
+        role=role,
+    )
+    assert receipt is not None
+    for observation in (
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINAL_SELECTION,
+            monotonic_ns=14 + revision * 10,
+            span=span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=revision,
+            selected_source="streaming",
+            outcome="unavailable",
+            support=0,
+            boolean_value=False,
+        ),
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINAL_DISPATCHED,
+            monotonic_ns=15 + revision * 10,
+            span=span,
+            stream_id=stream_id,
+            utterance_id=utterance_id,
+            revision=revision,
+            outcome="callback_returned",
+        ),
+    ):
+        assert bundle.observe(observation)
+    return receipt
+
+
 def _timeline(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
 
@@ -111,6 +206,37 @@ def _rewrite_timeline_and_bind(
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _downgrade_to_schema_v1(timeline: Path, manifest: Path) -> None:
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["schema_version"] = 1
+    payload.pop("final_model_input")
+    payload["provenance"] = {
+        "native_host_pcm_present": False,
+        "physical_raw_mic_present": False,
+        "model_pre_gain_tap_may_include_host_processing": True,
+        "model_pre_gain_tap_includes_application_resampling": True,
+        "audio_storage_is_pcm16_quantized": True,
+        "model_asr_track_is_continuous_selected_tap": True,
+        "recognizer_reset_replay_receipts_present": False,
+        "turn_selection_ranges_present": False,
+        "frame_track_lengths_may_differ": True,
+        "observation_spans_use_model_gate_track": True,
+        "playback_reference_preserves_reader_snapshot": True,
+        "playback_timestamps_are_receipt_dispatch_time": True,
+        "physical_playback_audibility_present": False,
+    }
+    manifest.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    records = _timeline(timeline)
+    records[0]["schema_version"] = 1
+    records[0].pop("final_model_input")
+    records[-1].pop("final_model_input_count")
+    records[-1].pop("final_model_input_samples")
+    _rewrite_timeline_and_bind(timeline, manifest, records)
 
 
 def test_clean_bundle_writes_equal_tracks_typed_observation_hashes_and_footer(
@@ -140,6 +266,7 @@ def test_clean_bundle_writes_equal_tracks_typed_observation_hashes_and_footer(
     assert bundle.manifest_status is DiagnosticManifestStatus.COMPLETE
     assert set(bundle.paths) == {
         *(role.value for role in DiagnosticTrack),
+        "final_model_input",
         "timeline",
         "manifest",
     }
@@ -177,12 +304,16 @@ def test_clean_bundle_writes_equal_tracks_typed_observation_hashes_and_footer(
         "sample_count_by_track": {
             role.value: 20 for role in DiagnosticTrack
         },
+        "final_model_input_count": 0,
+        "final_model_input_samples": 0,
     }
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     assert payload["complete"] is True
     assert payload["sample_count"] == 20
     assert payload["provenance"] == {
-        "audio_storage_is_pcm16_quantized": True,
+        "continuous_audio_storage_is_pcm16_quantized": True,
+        "final_model_input_storage_is_lossless_f32le": True,
+        "final_model_input_receipts_present": True,
         "frame_track_lengths_may_differ": True,
         "model_asr_track_is_continuous_selected_tap": True,
         "model_pre_gain_tap_includes_application_resampling": True,
@@ -194,14 +325,234 @@ def test_clean_bundle_writes_equal_tracks_typed_observation_hashes_and_footer(
         "playback_reference_preserves_reader_snapshot": True,
         "playback_timestamps_are_receipt_dispatch_time": True,
         "recognizer_reset_replay_receipts_present": False,
-        "turn_selection_ranges_present": False,
+        "turn_selection_ranges_present": True,
     }
-    for entry in [payload["timeline"], *payload["tracks"].values()]:
+    for entry in [
+        payload["timeline"],
+        *payload["tracks"].values(),
+        payload["final_model_input"],
+    ]:
         assert Path(entry["file"]).name == entry["file"]
         artifact = tmp_path / entry["file"]
         raw = artifact.read_bytes()
         assert entry["sha256"] == hashlib.sha256(raw).hexdigest()
         assert entry["bytes"] == len(raw)
+
+
+def test_constructor_preserves_legacy_positional_optional_arguments(
+    tmp_path: Path,
+) -> None:
+    tracks, timeline, manifest = _paths(tmp_path)
+    replay = EndpointReplayConfig(enabled=True)
+
+    bundle = SynchronizedDiagnosticBundle(
+        tracks,
+        timeline,
+        manifest,
+        16_000,
+        replay,
+        7,
+        0.02,
+        1.5,
+    )
+
+    assert bundle.endpoint_replay_config is replay
+    assert bundle._queue.maxsize == 7
+    assert bundle._flush_sec == 0.02
+    assert bundle._close_timeout_sec == 1.5
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    assert validate_manifest(manifest)
+
+
+def test_schema_v1_bundle_remains_read_only_validatable(tmp_path: Path) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(8), _coordinate(1, 0, 24)) is not None
+    bundle.close()
+    _downgrade_to_schema_v1(timeline, manifest)
+
+    assert validate_manifest(manifest)
+    track = bundle.path_by_role[DiagnosticTrack.MODEL_ASR_TAP]
+    with track.open("r+b") as handle:
+        handle.seek(-1, os.SEEK_END)
+        value = handle.read(1)
+        handle.seek(-1, os.SEEK_END)
+        handle.write(bytes([value[0] ^ 0x01]))
+    assert not validate_manifest(manifest)
+
+
+def test_exact_final_inputs_are_lossless_packed_identity_bound_and_immutable(
+    tmp_path: Path,
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    span = bundle.write_frame(_frame(8), _coordinate(1, 0, 24))
+    assert span is not None
+    first = np.array([1.25, -1.5, 0.1234567], dtype="float32")
+    second = np.array([-0.33333334, 0.75], dtype="float32")
+    expected = first.astype("<f4", copy=True).tobytes() + second.astype(
+        "<f4", copy=True
+    ).tobytes()
+
+    first_receipt = _complete_turn(
+        bundle,
+        span,
+        utterance_id="u1",
+        revision=1,
+        samples=first,
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    )
+    first[:] = 0.0
+    second_receipt = _complete_turn(
+        bundle,
+        span,
+        utterance_id="u2",
+        revision=2,
+        samples=second,
+        role=FinalModelInputRole.SELECTED_ASR_SEGMENT,
+    )
+    bundle.close()
+
+    assert bundle.final_model_input_path.read_bytes() == expected
+    assert (first_receipt.sample_start, first_receipt.sample_end) == (0, 3)
+    assert (first_receipt.byte_start, first_receipt.byte_end) == (0, 12)
+    assert (second_receipt.sample_start, second_receipt.sample_end) == (3, 5)
+    assert (second_receipt.byte_start, second_receipt.byte_end) == (12, 20)
+    receipts = [
+        record
+        for record in _timeline(timeline)
+        if record["kind"] == "final_model_input"
+    ]
+    assert [record["role"] for record in receipts] == [
+        FinalModelInputRole.MODEL_GATE_SEGMENT.value,
+        FinalModelInputRole.SELECTED_ASR_SEGMENT.value,
+    ]
+    assert [record["capture_epoch"] for record in receipts] == [3, 3]
+    assert [record["capture_generation"] for record in receipts] == [4, 4]
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    assert payload["final_model_input"] == {
+        "file": bundle.final_model_input_path.name,
+        "sha256": hashlib.sha256(expected).hexdigest(),
+        "bytes": len(expected),
+        "samples": 5,
+        "input_count": 2,
+        "encoding": "f32le",
+    }
+    assert validate_manifest(manifest)
+
+
+def test_per_input_digest_rejects_spool_mutation_even_when_outer_hash_is_rebound(
+    tmp_path: Path,
+) -> None:
+    bundle = _bundle(tmp_path)
+    span = bundle.write_frame(_frame(8), _coordinate(1, 0, 24))
+    assert span is not None
+    _complete_turn(
+        bundle,
+        span,
+        utterance_id="u1",
+        revision=1,
+        samples=np.array([0.1234567, -0.7654321], dtype="float32"),
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    )
+    manifest = bundle.close()
+    assert validate_manifest(manifest)
+
+    mutated = bytearray(bundle.final_model_input_path.read_bytes())
+    mutated[0] ^= 0x01
+    bundle.final_model_input_path.write_bytes(mutated)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["final_model_input"]["sha256"] = hashlib.sha256(mutated).hexdigest()
+    manifest.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    assert not validate_manifest(manifest)
+
+
+def test_final_input_byte_backpressure_rejects_atomically_and_fails_closed(
+    tmp_path: Path,
+) -> None:
+    tracks, timeline, manifest = _paths(tmp_path)
+    bundle = SynchronizedDiagnosticBundle(
+        tracks,
+        timeline,
+        manifest,
+        sample_rate=16_000,
+        final_input_queue_max_bytes=8,
+        flush_sec=10.0,
+    )
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    entered = threading.Event()
+    release = threading.Event()
+    original = bundle._write_final_model_input_item
+
+    def blocked(item) -> None:
+        entered.set()
+        assert release.wait(timeout=2.0)
+        original(item)
+
+    bundle._write_final_model_input_item = blocked  # type: ignore[method-assign]
+    first = bundle.write_final_model_input(
+        np.array([0.1, 0.2], dtype="float32"),
+        stream_id="sherpa-11111111111111111111111111111111",
+        utterance_id="u1",
+        capture_epoch=3,
+        capture_generation=4,
+        revision=1,
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    )
+    assert first is not None
+    assert entered.wait(timeout=1.0)
+    second = bundle.write_final_model_input(
+        np.array([0.3], dtype="float32"),
+        stream_id="sherpa-11111111111111111111111111111111",
+        utterance_id="u2",
+        capture_epoch=3,
+        capture_generation=4,
+        revision=2,
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    )
+    assert second is None
+    assert bundle.failure_codes == ("final_input_backpressure",)
+    assert bundle._next_final_input_index == 1
+    assert bundle._next_final_input_sample == 2
+    release.set()
+    bundle.close()
+    assert not validate_manifest(manifest)
+
+
+@pytest.mark.parametrize(
+    "samples",
+    (
+        np.array([], dtype="float32"),
+        np.array([0.1], dtype="float64"),
+        np.array([[0.1]], dtype="float32"),
+        np.array([np.nan], dtype="float32"),
+        np.array([np.inf], dtype="float32"),
+    ),
+)
+def test_invalid_final_input_never_advances_spool_cursor(
+    tmp_path: Path, samples: np.ndarray
+) -> None:
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+
+    assert bundle.write_final_model_input(
+        samples,
+        stream_id="sherpa-11111111111111111111111111111111",
+        utterance_id="u1",
+        capture_epoch=3,
+        capture_generation=4,
+        revision=1,
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    ) is None
+    assert bundle._next_final_input_index == 0
+    assert bundle._next_final_input_sample == 0
+    bundle.close()
+    assert bundle.failure_codes == ("invalid_final_input",)
 
 
 def test_timeline_maps_packed_samples_to_source_gap_and_generation(tmp_path: Path) -> None:
@@ -408,7 +759,12 @@ def test_files_are_private_and_leaf_symlinks_or_existing_paths_are_never_followe
         bundle.close()
     finally:
         os.umask(previous)
-    for path in [*tracks.values(), timeline, manifest]:
+    for path in [
+        *tracks.values(),
+        bundle.final_model_input_path,
+        timeline,
+        manifest,
+    ]:
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
     occupied = tmp_path / "occupied"
@@ -658,6 +1014,264 @@ def test_manifest_validation_fails_closed_when_missing_or_artifact_mutates(
     assert not validate_manifest(manifest)
 
 
+def test_oversized_timeline_is_rejected_before_opening_a_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeline = tmp_path / "oversized.timeline.jsonl"
+    with timeline.open("wb") as handle:
+        handle.truncate((64 << 20) + 1)
+    timeline.chmod(0o600)
+    reader_opened = False
+
+    def forbidden_reader(*_args, **_kwargs):
+        nonlocal reader_opened
+        reader_opened = True
+        raise AssertionError("oversized timeline must be rejected before reading")
+
+    monkeypatch.setattr(diagnostic_bundle.os, "fdopen", forbidden_reader)
+    monkeypatch.setattr("builtins.open", forbidden_reader)
+
+    assert not diagnostic_bundle._validate_timeline(
+        timeline,
+        frame_count=1,
+        sample_count=1,
+        track_sample_counts={role.value: 1 for role in DiagnosticTrack},
+        sample_rate_hz=16_000,
+        endpoint_replay_config=EndpointReplayConfig(),
+    )
+    assert reader_opened is False
+
+
+def test_schema_v2_timeline_replacement_after_hash_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    assert validate_manifest(manifest)
+    replacement = tmp_path / "replacement.timeline.jsonl"
+    replacement.write_bytes(timeline.read_bytes())
+    replacement.chmod(0o600)
+    original_hash = diagnostic_bundle._hash_private_regular_snapshot
+    replaced = False
+
+    def hash_then_replace(path: Path):
+        nonlocal replaced
+        result = original_hash(path)
+        if path == timeline and not replaced:
+            os.replace(replacement, timeline)
+            replaced = True
+        return result
+
+    monkeypatch.setattr(
+        diagnostic_bundle, "_hash_private_regular_snapshot", hash_then_replace
+    )
+
+    assert not validate_manifest(manifest)
+    assert replaced
+
+
+def test_same_size_valid_wav_replacement_after_hash_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tracks, _timeline_path, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    assert validate_manifest(manifest)
+    target = tracks[DiagnosticTrack.MODEL_GATE_PCM]
+    original_payload = target.read_bytes()
+    replacement_payload = bytearray(original_payload)
+    replacement_payload[-1] ^= 0x01
+    replacement = tmp_path / "replacement.wav"
+    replacement.write_bytes(replacement_payload)
+    replacement.chmod(0o600)
+    assert replacement.stat().st_size == target.stat().st_size
+    with wave.open(str(replacement), "rb") as recording:
+        assert recording.getnframes() == 4
+    original_hash = diagnostic_bundle._hash_private_regular_snapshot
+    replaced = False
+
+    def hash_then_replace(path: Path):
+        nonlocal replaced
+        result = original_hash(path)
+        if path == target and not replaced:
+            os.replace(replacement, target)
+            replaced = True
+        return result
+
+    monkeypatch.setattr(
+        diagnostic_bundle, "_hash_private_regular_snapshot", hash_then_replace
+    )
+
+    assert not validate_manifest(manifest)
+    assert replaced
+
+
+def test_timeline_replacement_after_wav_validation_is_rejected_by_final_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    assert validate_manifest(manifest)
+    replacement = tmp_path / "late-replacement.timeline.jsonl"
+    replacement.write_bytes(timeline.read_bytes())
+    replacement.chmod(0o600)
+    original_validator = diagnostic_bundle._validate_wav_artifacts
+    replaced = False
+
+    def validate_then_replace(*args, **kwargs):
+        nonlocal replaced
+        result = original_validator(*args, **kwargs)
+        assert result
+        os.replace(replacement, timeline)
+        replaced = True
+        return result
+
+    monkeypatch.setattr(
+        diagnostic_bundle, "_validate_wav_artifacts", validate_then_replace
+    )
+
+    assert not validate_manifest(manifest)
+    assert replaced
+
+
+@pytest.mark.parametrize("race", ("mutate", "replace"))
+def test_manifest_change_during_last_artifact_parser_is_rejected_by_final_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, race: str
+) -> None:
+    _tracks, _timeline_path, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    assert validate_manifest(manifest)
+    original_manifest = manifest.read_bytes()
+    replacement = tmp_path / "replacement.manifest.json"
+    replacement.write_bytes(original_manifest)
+    replacement.chmod(0o600)
+    initial_metadata = manifest.stat()
+    original_validator = diagnostic_bundle._validate_wav_artifacts
+    raced = False
+
+    def validate_during_manifest_race(*args, **kwargs):
+        nonlocal raced
+        result = original_validator(*args, **kwargs)
+        assert result
+        if race == "replace":
+            os.replace(replacement, manifest)
+        else:
+            assert original_manifest.endswith(b"\n")
+            manifest.write_bytes(original_manifest[:-1] + b" ")
+            os.utime(
+                manifest,
+                ns=(
+                    initial_metadata.st_atime_ns,
+                    initial_metadata.st_mtime_ns + 1_000_000_000,
+                ),
+            )
+        raced = True
+        return result
+
+    monkeypatch.setattr(
+        diagnostic_bundle,
+        "_validate_wav_artifacts",
+        validate_during_manifest_race,
+    )
+
+    assert not validate_manifest(manifest)
+    assert raced
+
+
+def test_timeline_record_count_cap_rejects_an_otherwise_valid_schema_v2_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tracks, _timeline_path, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    assert validate_manifest(manifest)
+
+    monkeypatch.setattr(diagnostic_bundle, "_TIMELINE_MAX_RECORDS", 2)
+
+    assert not validate_manifest(manifest)
+
+
+def test_schema_v1_timeline_replacement_after_hash_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    _downgrade_to_schema_v1(timeline, manifest)
+    assert validate_manifest(manifest)
+    replacement = tmp_path / "legacy-replacement.timeline.jsonl"
+    replacement.write_bytes(timeline.read_bytes())
+    replacement.chmod(0o600)
+    original_hash = diagnostic_bundle._hash_private_regular_snapshot
+    replaced = False
+
+    def hash_then_replace(path: Path):
+        nonlocal replaced
+        result = original_hash(path)
+        if path == timeline and not replaced:
+            os.replace(replacement, timeline)
+            replaced = True
+        return result
+
+    monkeypatch.setattr(
+        diagnostic_bundle, "_hash_private_regular_snapshot", hash_then_replace
+    )
+
+    assert not validate_manifest(manifest)
+    assert replaced
+
+
+def test_schema_v1_timeline_size_cap_precedes_artifact_hashing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    _downgrade_to_schema_v1(timeline, manifest)
+    assert validate_manifest(manifest)
+    monkeypatch.setattr(
+        diagnostic_bundle, "_TIMELINE_MAX_BYTES", timeline.stat().st_size - 1
+    )
+    hashed = False
+
+    def forbidden_hash(_path: Path):
+        nonlocal hashed
+        hashed = True
+        raise AssertionError("oversized legacy timeline must fail before hashing")
+
+    monkeypatch.setattr(
+        diagnostic_bundle, "_hash_private_regular_snapshot", forbidden_hash
+    )
+
+    assert not validate_manifest(manifest)
+    assert not hashed
+
+
+def test_schema_v1_timeline_record_count_cap_is_enforced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    assert bundle.write_frame(_frame(4), _coordinate(1, 0, 12)) is not None
+    bundle.close()
+    _downgrade_to_schema_v1(timeline, manifest)
+    assert validate_manifest(manifest)
+
+    monkeypatch.setattr(diagnostic_bundle, "_TIMELINE_MAX_RECORDS", 2)
+
+    assert not validate_manifest(manifest)
+
+
 def test_observation_schema_rejects_canary_text_and_never_persists_it(
     tmp_path: Path,
 ) -> None:
@@ -833,9 +1447,17 @@ def test_required_finalizer_playback_and_barge_stages_are_closed_and_persisted(
         ),
     )
     for observation in observations:
-        assert bundle.observe(
-            observation
-        )
+        assert bundle.observe(observation)
+        if observation.stage is DiagnosticStage.FINALIZER_STARTED:
+            assert bundle.write_final_model_input(
+                np.array([0.125, -0.25], dtype="float32"),
+                stream_id="sherpa-11111111111111111111111111111111",
+                utterance_id="u1",
+                capture_epoch=3,
+                capture_generation=4,
+                revision=1,
+                role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+            ) is not None
     bundle.close()
 
     observed = [
@@ -844,6 +1466,74 @@ def test_required_finalizer_playback_and_barge_stages_are_closed_and_persisted(
     assert [record["stage"] for record in observed] == [
         observation.stage.value for observation in observations
     ]
+    assert validate_manifest(manifest)
+
+
+@pytest.mark.parametrize("mutation", ("missing", "after_started"))
+def test_finalizer_lifecycle_requires_streaming_final_before_worker_events(
+    tmp_path: Path, mutation: str
+) -> None:
+    _tracks, timeline, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    span = bundle.write_frame(_frame(4), _coordinate(1, 0, 12))
+    assert span is not None
+    _complete_turn(
+        bundle,
+        span,
+        utterance_id="u1",
+        revision=1,
+        samples=np.array([0.125, -0.25], dtype="float32"),
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    )
+    bundle.close()
+    assert validate_manifest(manifest)
+
+    records = _timeline(timeline)
+    streaming_final = next(
+        record
+        for record in records
+        if record.get("stage") == DiagnosticStage.ASR_STREAMING_FINAL.value
+    )
+    records.remove(streaming_final)
+    if mutation == "after_started":
+        started_index = next(
+            index
+            for index, record in enumerate(records)
+            if record.get("stage") == DiagnosticStage.FINALIZER_STARTED.value
+        )
+        records.insert(started_index + 1, streaming_final)
+    _rewrite_timeline_and_bind(timeline, manifest, records)
+
+    assert not validate_manifest(manifest)
+
+
+def test_async_queue_observation_may_follow_worker_terminal(tmp_path: Path) -> None:
+    _tracks, _timeline_path, manifest = _paths(tmp_path)
+    bundle = _bundle(tmp_path)
+    span = bundle.write_frame(_frame(4), _coordinate(1, 0, 12))
+    assert span is not None
+    _complete_turn(
+        bundle,
+        span,
+        utterance_id="u1",
+        revision=1,
+        samples=np.array([0.125, -0.25], dtype="float32"),
+        role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+    )
+    # The capture thread records this after offer_nowait() returns. The worker
+    # can serialize its complete lifecycle first without violating queue causality.
+    assert bundle.observe(
+        DiagnosticObservation(
+            stage=DiagnosticStage.FINALIZER_QUEUED,
+            monotonic_ns=26,
+            span=span,
+            stream_id="sherpa-11111111111111111111111111111111",
+            utterance_id="u1",
+            revision=1,
+        )
+    )
+    bundle.close()
+
     assert validate_manifest(manifest)
 
 
@@ -986,6 +1676,16 @@ def test_adaptive_endpoint_snapshot_and_pause_sequence_replay_exactly(
     )
     for observation in observations:
         assert bundle.observe(observation)
+        if observation.stage is DiagnosticStage.FINALIZER_STARTED:
+            assert bundle.write_final_model_input(
+                np.array([0.125, -0.25], dtype="float32"),
+                stream_id=stream_id,
+                utterance_id="u1",
+                capture_epoch=3,
+                capture_generation=4,
+                revision=1,
+                role=FinalModelInputRole.MODEL_GATE_SEGMENT,
+            ) is not None
     bundle.close()
 
     payload = json.loads(manifest.read_text(encoding="utf-8"))

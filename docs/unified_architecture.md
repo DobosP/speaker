@@ -342,7 +342,7 @@ Optional **capability router** (`core/capability_router.py`): When configured, i
   backend `options` bags replace wholesale. Profiles can therefore override
   `engine="livekit"`, disable costly features, etc. (See
   [§11](#11--observability-testing--device-profiles).)
-- **Session recording** (`WavRecorder`, `core/recorder.py`): Background-threaded writer of the exact 16 kHz mono audio the recognizer hears to WAV, so recorded runs can be replayed bit-for-bit and frozen as regression tests.
+- **Session recording** (`WavRecorder`, `core/recorder.py`): Background-threaded writer for one 16 kHz mono model-rate WAV. Independent utterance fixtures can feed generic replay; synchronized diagnostic WAVs are parallel stage views, with exact final-selection input bytes in their f32le spool (ADR-0108).
 
 ---
 
@@ -915,16 +915,21 @@ voice, transcripts, and full prompts (ADR-0001/0008/0075):
 - **Always written:** `run-<id>.txt` (full async DEBUG log) + `run-<id>.summary.json` (condensed digest)
 - **With `--record`:** `run-<id>.wav` (16 kHz mono audio, replayable)
 - **With playback-reference capture:** `run-<id>.ref.wav` (frame-aligned TTS)
+- **Physical `./live.sh` evidence:** pre-DSP, continuous selected-ASR, and
+  reader-time reference WAVs plus a typed timeline, authoritative diagnostic
+  manifest, and exact lossless `.final-input.f32le` final-selection slices
+  (ADR-0100/0108; [operator guide](voice_evidence.md))
 - **Console verbosity:** `--debug` mirrors DEBUG to the terminal; the file is always full DEBUG regardless
 
 `./live.sh` is the Linux physical-session wrapper: it owns conditional loopback
 Ollama plus reversible PipeWire setup, shared readiness, mic + aligned-reference
 capture, and exact-resource cleanup. Portable `python -m core` performs no automatic
 host-service or default-audio-route provisioning (ADR-0075). `./session.sh`
-remains the lower-level recorder for a prepared route. Capture is **off the hot
-path**: logging is fully async (a background
-`QueueListener` does formatting + disk I/O), recording hands blocks to a writer
-thread, and telemetry samples on its own thread (10 s interval).
+remains the lower-level recorder for a prepared route. Log formatting, audio
+file writes, and telemetry sampling run on background threads. Diagnostic
+admission still performs bounded synchronous copying; exact final inputs are
+also checked and hashed before non-waiting writer-queue admission. Failure
+invalidates evidence without changing transcript selection (ADR-0100/0108).
 
 **`run-<id>.summary.json`** has these top-level keys:
 

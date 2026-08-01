@@ -2377,12 +2377,16 @@ class SherpaOnnxEngine(AudioEngine):
                 manifest_path = self._diagnostic_sidecar_path(
                     self._record_path, "diagnostic.json"
                 )
+                final_model_input_path = self._diagnostic_sidecar_path(
+                    self._record_path, "final-input.f32le"
+                )
                 self._diagnostic_bundle = SynchronizedDiagnosticBundle(
                     path_by_role,
                     timeline_path,
                     manifest_path,
                     self.config.sample_rate,
                     endpoint_replay_config=endpoint_replay_config,
+                    final_model_input_path=final_model_input_path,
                 )
                 self._diagnostic_last_status = "open"
                 self._diagnostic_last_failure_codes = ()
@@ -2396,6 +2400,10 @@ class SherpaOnnxEngine(AudioEngine):
                 log.info(
                     "recording continuous selected ASR tap (PCM16 replay) -> %s",
                     path_by_role[DiagnosticTrack.MODEL_ASR_TAP],
+                )
+                log.info(
+                    "recording exact final-selection inputs (f32le) -> %s",
+                    final_model_input_path,
                 )
                 log.info(
                     "recording unmodified reader-time playback reference -> %s",
@@ -3738,6 +3746,45 @@ class SherpaOnnxEngine(AudioEngine):
             self._diagnostic_spans.pop(key, None)
         return accepted
 
+    def _diagnostic_final_model_input(
+        self,
+        samples,
+        *,
+        acoustic: Optional[AcousticLineage],
+        revision: int,
+        selected_asr_segment: bool,
+    ) -> None:
+        """Snapshot one exact input without changing transcript selection."""
+
+        bundle = self._diagnostic_bundle
+        if bundle is None:
+            return
+        try:
+            if acoustic is None or not acoustic.spans:
+                raise ValueError("final input requires acoustic identity")
+            from ..diagnostic_bundle import FinalModelInputRole
+
+            span = acoustic.spans[-1]
+            bundle.write_final_model_input(
+                samples,
+                stream_id=span.stream_id,
+                utterance_id=span.utterance_id,
+                capture_epoch=int(span.capture_epoch),
+                capture_generation=int(span.capture_generation),
+                revision=revision,
+                role=(
+                    FinalModelInputRole.SELECTED_ASR_SEGMENT
+                    if selected_asr_segment
+                    else FinalModelInputRole.MODEL_GATE_SEGMENT
+                ),
+            )
+        except Exception:  # noqa: BLE001 - evidence cannot alter voice behavior
+            try:
+                bundle.invalidate("final_input_integration_error")
+            except Exception:  # noqa: BLE001 - retain the voice path
+                pass
+            log.warning("could not record exact final-selection input", exc_info=True)
+
     def _diagnostic_final_aborted(
         self,
         acoustic: Optional[AcousticLineage],
@@ -4946,6 +4993,12 @@ class SherpaOnnxEngine(AudioEngine):
                 revision=revision,
             )
         decode_seg = asr_seg if asr_seg is not None else seg
+        self._diagnostic_final_model_input(
+            decode_seg,
+            acoustic=acoustic,
+            revision=revision,
+            selected_asr_segment=asr_seg is not None,
+        )
         final_decision = None
 
         def established_transcribe() -> str:

@@ -1,4 +1,4 @@
-"""No-overwrite publication for private schema-v2 streaming-STT corpora.
+"""No-overwrite publication for private versioned streaming-STT corpora.
 
 Callers validate source provenance and choose the cases.  This module owns the
 small shared publication boundary: exact private permissions, exclusive file
@@ -29,6 +29,11 @@ _SAFE_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _SAFE_SIDECAR_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PUBLIC_PROVENANCE_KIND = "public-voice-v1"
+_PRIVATE_DIAGNOSTIC_PROVENANCE_KIND = "private-diagnostic-v1"
+_SCHEMA_BY_PROVENANCE_KIND = {
+    _PUBLIC_PROVENANCE_KIND: 2,
+    _PRIVATE_DIAGNOSTIC_PROVENANCE_KIND: 3,
+}
 _MAX_CASES = 512
 _MAX_PURPOSE_CHARS = 512
 _MAX_REFERENCE_CHARS = 4096
@@ -46,7 +51,7 @@ class CorpusWriterError(RuntimeError):
 
 @dataclass(frozen=True)
 class CorpusWriteCase:
-    """One caller-selected transcript case ready for schema-v2 publication."""
+    """One caller-selected transcript case ready for corpus publication."""
 
     case_id: str
     audio_bytes: bytes = field(repr=False)
@@ -351,7 +356,7 @@ def _preflight(
         or not purpose.strip()
         or len(purpose) > _MAX_PURPOSE_CHARS
         or type(provenance) is not CorpusProvenance
-        or provenance.kind != _PUBLIC_PROVENANCE_KIND
+        or provenance.kind not in _SCHEMA_BY_PROVENANCE_KIND
         or not isinstance(provenance.suite, str)
         or _SAFE_ID_RE.fullmatch(provenance.suite) is None
         or not isinstance(provenance.manifest_sha256, str)
@@ -458,6 +463,10 @@ def _serialize_manifest(
     provenance: CorpusProvenance,
     purpose: str,
 ) -> tuple[list[dict[str, object]], bytes]:
+    try:
+        schema_version = _SCHEMA_BY_PROVENANCE_KIND[provenance.kind]
+    except (KeyError, TypeError):
+        raise CorpusWriterError() from None
     rows: list[dict[str, object]] = []
     for case in cases:
         raw = case.audio_bytes
@@ -477,7 +486,7 @@ def _serialize_manifest(
         payload = (
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": schema_version,
                     "purpose": purpose,
                     "provenance": {
                         "kind": provenance.kind,

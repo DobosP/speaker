@@ -485,6 +485,11 @@ def _run_replay(runtime: VoiceRuntime, engine, replay_dir: str) -> None:
 
     from .engines.file_replay import load_waveform
 
+    if glob.glob(os.path.join(replay_dir, "*.diagnostic.json")):
+        raise SystemExit(
+            "A synchronized diagnostic bundle is not a directory of replay "
+            "utterances. Label/export its exact final-input spool first."
+        )
     paths = sorted(glob.glob(os.path.join(replay_dir, "*.npy")))
     paths += sorted(glob.glob(os.path.join(replay_dir, "*.wav")))
     if not paths:
@@ -1120,6 +1125,7 @@ def main(argv: list[str] | None = None) -> int:
     pre_dsp_reference_path = None
     playback_reference_path = None
     asr_input_reference_path = None
+    final_model_input_path = None
     diagnostic_timeline_path = None
     diagnostic_manifest_path = None
     if args.record and hasattr(engine, "set_record_path"):
@@ -1138,6 +1144,11 @@ def main(argv: list[str] | None = None) -> int:
             runlog.summary.note(playback_reference=playback_reference_path)
         if pre_dsp_reference_path is not None and playback_reference_path is not None:
             asr_input_reference_path = sidecar_wav_path(record_path, "asr")
+            final_model_input_path = (
+                record_path[:-4] + ".final-input.f32le"
+                if record_path.lower().endswith(".wav")
+                else record_path + ".final-input.f32le"
+            )
             diagnostic_timeline_path = (
                 record_path[:-4] + ".timeline.jsonl"
                 if record_path.lower().endswith(".wav")
@@ -1150,6 +1161,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             runlog.summary.note(
                 asr_input_reference=asr_input_reference_path,
+                final_model_input=final_model_input_path,
                 diagnostic_timeline=diagnostic_timeline_path,
                 diagnostic_manifest=diagnostic_manifest_path,
             )
@@ -1266,6 +1278,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[log] playback: {playback_reference_path}")
         if asr_input_reference_path is not None:
             print(f"[log] ASR input: {asr_input_reference_path}")
+        if final_model_input_path is not None:
+            print(f"[log] final input: {final_model_input_path}")
         if diagnostic_timeline_path is not None:
             print(f"[log] timeline:  {diagnostic_timeline_path}")
         if diagnostic_manifest_path is not None:

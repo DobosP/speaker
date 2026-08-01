@@ -168,11 +168,15 @@ file must be a materialized single-link regular file; symlink-backed Hugging
 Face snapshots and package-manager hard links require separate materialized
 copies. The environment must expose only `python3.12` as its `lib/pythonX.Y`
 runtime, its interpreter must resolve to `python3.12`, and `pyvenv.cfg` must
-report version 3.12.3. Use a new absolute private output that neither contains
-nor is contained by the virtual environment, `site-packages`, or model root;
-the runtime and model roots also cannot overlap. Provisioning hashes both trees
-but does not import candidate packages, load a model, download, or open an
-audio device. Receipt strictness is intentional and is not relaxed for local caches:
+contain exactly one recognized interpreter-version entry: either
+`version = 3.12.3` or uv's `version_info = 3.12.3`. Both keys, duplicates,
+wrong values, and malformed recognized entries are rejected, while the full
+marker remains receipt-bound. Use a new absolute private output that neither
+contains nor is contained by the virtual environment, `site-packages`, or
+model root; the runtime and model roots also cannot overlap. Provisioning
+hashes both trees but does not import candidate packages, load a model,
+download, or open an audio device. Receipt strictness is intentional and is
+not relaxed for local caches:
 
 ```bash
 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \

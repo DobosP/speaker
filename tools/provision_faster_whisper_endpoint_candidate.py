@@ -50,6 +50,11 @@ _FIXED_WORKER = _REPO_ROOT / "tools" / "streaming_stt" / "worker.py"
 _PYTHON_DIRECTORY_RE = re.compile(r"python[0-9]+\.[0-9]+\Z")
 _PYTHON_DIRECTORY = "python3.12"
 _PYTHON_VERSION = "3.12.3"
+_PYTHON_VERSION_KEYS = frozenset({"version", "version_info"})
+_PYTHON_VERSION_ENTRY_RE = re.compile(
+    r"(?:version_info|version)(?=\Z|[\s:=])",
+    flags=re.ASCII | re.IGNORECASE,
+)
 _SAFE_MODEL_ID_RE = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}\Z")
 _EXPECTED_RUNTIME_PATHS = frozenset(
     {
@@ -149,14 +154,19 @@ def _verify_python3123_marker(path: Path) -> None:
         RuntimeTreeReceiptError,
     ):
         raise ProvisionError() from None
-    versions: list[str] = []
+    versions: list[tuple[str, str]] = []
     for raw_line in text.splitlines():
-        if "=" not in raw_line:
+        stripped = raw_line.strip()
+        if _PYTHON_VERSION_ENTRY_RE.match(stripped) is None:
             continue
+        if "=" not in raw_line:
+            raise ProvisionError()
         key, value = raw_line.split("=", 1)
-        if key.strip().casefold() == "version":
-            versions.append(value.strip())
-    if versions != [_PYTHON_VERSION]:
+        normalized_key = key.strip().lower()
+        if normalized_key not in _PYTHON_VERSION_KEYS:
+            raise ProvisionError()
+        versions.append((normalized_key, value.strip()))
+    if len(versions) != 1 or versions[0][1] != _PYTHON_VERSION:
         raise ProvisionError()
 
 

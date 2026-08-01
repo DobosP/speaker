@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -100,6 +101,105 @@ def test_provision_binds_runtime_and_model_trees_without_importing_candidate(
     model_digest = streaming_stt_eval._verified_model_receipt_digest(manifest)
     assert runtime_digest == manifest.artifact_by_name["runtime-receipt"].sha256
     assert model_digest == manifest.artifact_by_name["model-receipt"].sha256
+
+
+def test_provision_accepts_exact_uv_version_info_and_binds_complete_marker(tmp_path):
+    venv, _site_packages, model = _inputs(tmp_path)
+    marker = venv / "pyvenv.cfg"
+    marker.write_text(
+        "home = /usr/bin\n"
+        "implementation = CPython\n"
+        "uv = 0.11.23\n"
+        "version_info = 3.12.3\n"
+        "include-system-site-packages = false\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "receipt"
+
+    manifest = provision.provision_candidate(
+        venv_root=venv,
+        model_root=model,
+        output_dir=output,
+    )
+
+    artifact = manifest.artifact_by_name["venv-marker"]
+    assert artifact.sha256 == hashlib.sha256(marker.read_bytes()).hexdigest()
+    assert artifact.size_bytes == marker.stat().st_size
+
+
+@pytest.mark.parametrize(
+    "marker_text",
+    [
+        (
+            "home = /usr/bin\n"
+            "include-system-site-packages = false\n"
+            "version = 3.12.3\n"
+            "version_info = 3.12.3\n"
+        ),
+        (
+            "home = /usr/bin\n"
+            "include-system-site-packages = false\n"
+            "version = 3.12.3\n"
+            "version = 3.12.3\n"
+        ),
+        (
+            "home = /usr/bin\n"
+            "include-system-site-packages = false\n"
+            "version_info = 3.12.3\n"
+            "version_info = 3.12.3\n"
+        ),
+        (
+            "home = /usr/bin\n"
+            "include-system-site-packages = false\n"
+            "version_info = 3.12.13\n"
+        ),
+        (
+            "home = /usr/bin\n"
+            "include-system-site-packages = false\n"
+            "version_info 3.12.3\n"
+        ),
+        (
+            "home = /usr/bin\n"
+            "include-system-site-packages = false\n"
+            "version_info: 3.12.3\n"
+        ),
+        ("home = /usr/bin\ninclude-system-site-packages = false\nverſion = 3.12.3\n"),
+    ],
+    ids=(
+        "both-recognized-keys",
+        "duplicate-version",
+        "duplicate-version-info",
+        "wrong-version-info",
+        "missing-equals",
+        "colon-instead-of-equals",
+        "unicode-confusable-key",
+    ),
+)
+def test_invalid_recognized_version_entries_fail_before_output_mutation(
+    tmp_path,
+    monkeypatch,
+    marker_text,
+):
+    venv, _site_packages, model = _inputs(tmp_path)
+    (venv / "pyvenv.cfg").write_text(marker_text, encoding="utf-8")
+    output = tmp_path / "receipt"
+    mkdir_calls: list[tuple[object, ...]] = []
+
+    def forbidden_mkdir(*args, **_kwargs):
+        mkdir_calls.append(args)
+        raise OSError
+
+    monkeypatch.setattr(provision.os, "mkdir", forbidden_mkdir)
+
+    with pytest.raises(provision.ProvisionError):
+        provision.provision_candidate(
+            venv_root=venv,
+            model_root=model,
+            output_dir=output,
+        )
+
+    assert mkdir_calls == []
+    assert not output.exists()
 
 
 def test_provision_is_no_overwrite_and_preserves_first_receipt(tmp_path):

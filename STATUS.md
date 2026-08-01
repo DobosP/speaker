@@ -66,7 +66,7 @@ Last verified: 2026-08-01 on Linux ROG.
 - Private replay WER 0.00 is non-disjoint. Public-v3 trusts local PyArrow; its code-bound Small
   control WER 0.6685 stays rejected. These are development—not streaming, held-out, live, or adoption—results (ADR-0087).
 - Common Voice SPS v4 real-archive/model compatibility is unrun. VoxPopuli real-Parquet preparation is also unrun; its formal L2-accent slice is not command, domestic, capture/AEC, tool, live, or training-disjoint evidence (ADR-0101/0103).
-- The schema-v6 Faster-Whisper endpoint comparator enforces isolated receipt roots and final-only worker/supervisor boundaries; fake coverage only—no candidate, corpus, GPU, WER, latency, streaming, or runtime/default claim has run (ADR-0102).
+- The schema-v6 Faster-Whisper endpoint comparator enforces isolated receipt roots, one exact stdlib/uv Python 3.12.3 marker entry, and final-only worker/supervisor boundaries; fake coverage only—no candidate, corpus, GPU, WER, latency, streaming, or runtime/default claim has run (ADR-0102/0105).
 - Exact Parakeet burst/paced WER is .6576/.6576 and model-input RTF .1910/.2200;
   paced replay missed three deadlines with 189 ms backlog. Ten of 14 EOU events
   were source-early, so the 6.43 GB NeMo runtime is rejected after-PCM evidence only (ADR-0099).

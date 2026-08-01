@@ -73,7 +73,7 @@ class SpeechHandleLike(Protocol):
 
 @dataclass(frozen=True)
 class PublisherSessionPolicy:
-    """Fail-closed construction facts owned by the future trusted wrapper.
+    """Fail-closed construction facts owned by the trusted wrapper.
 
     This is an explicit configuration contract, not identity or cryptographic
     proof. Production composition must accept only Speaker's concrete wrapper,
@@ -116,11 +116,12 @@ class PublisherSessionLike(Protocol):
     raw output mutations, and never exposes the raw session/output. Its atomic
     ``say_tracked`` installs ``on_done`` before returning and either returns a
     handle plus opaque output lease or raises only when no output was admitted.
-    The lease is invalidated by every sink/tail replacement, enable transition,
-    detach, or close. ``close`` is forwarded only after SDK playout drains and
-    output detaches. ``close_on_playout_failure`` must immediately fence wrapper
-    admission and schedule a non-draining SDK close; its later ``close`` event is
-    the disposal proof for unresolved handles.
+    The lease is invalidated by every sink/tail-change request, enable
+    transition, detach, or close. ``close`` is forwarded only after the wrapper
+    has disposed its manual media route and, following successful SDK start,
+    observed SDK close. ``close_on_playout_failure`` must immediately fence
+    admission and schedule non-draining cleanup; the wrapper's later ``close``
+    event is the disposal proof for unresolved handles.
     """
 
     @property
@@ -128,6 +129,9 @@ class PublisherSessionLike(Protocol):
 
     @property
     def policy(self) -> PublisherSessionPolicy: ...
+
+    @property
+    def closed(self) -> bool: ...
 
     def on(self, event: str, callback: Callable[[Any], None]) -> Any: ...
 
@@ -167,6 +171,7 @@ class _SessionHandlers:
     user_state: Callable[[Any], None]
     agent_state: Callable[[Any], None]
     false_interruption: Callable[[Any], None]
+    completed_turn: Callable[..., bool]
     close: Callable[[Any], None]
 
 
@@ -194,11 +199,12 @@ class LiveKitAgentsEngine(AudioEngine):
     use ``origin="remote_audio"`` (which the current authority enum coerces to
     untrusted UNKNOWN) and :class:`OwnerVerification.UNKNOWN`.
 
-    The future composition owns SDK start/close ordering. ``start`` here binds
-    wrapper events; ``stop`` unbinds input events and interrupts only handles
-    captured before its generation fence. A retained ``close`` observer resolves
-    otherwise-unobservable output only after SDK drain/detach. Every session
-    operation is marshalled onto ``loop``.
+    The manual-RoomIO composition owns SDK start/close ordering. ``start`` here
+    binds wrapper events; ``stop`` unbinds input events and interrupts only
+    handles captured before its generation fence. A retained ``close`` observer
+    resolves otherwise-unobservable output only after the wrapper proves SDK
+    close (when started) and manual RoomIO disposal. Every session operation is
+    marshalled onto ``loop``.
     """
 
     def __init__(
@@ -277,7 +283,8 @@ class LiveKitAgentsEngine(AudioEngine):
         with self._lock:
             if self._running:
                 raise RuntimeError("LiveKit Agents engine is already started")
-            if self._session_closed:
+            if self._session_closed or bool(getattr(self._session, "closed", False)):
+                self._session_closed = True
                 raise RuntimeError("LiveKit Agents session is closed")
             if self._fatal_close_requested:
                 raise RuntimeError("LiveKit Agents session close is pending")
@@ -298,6 +305,11 @@ class LiveKitAgentsEngine(AudioEngine):
                 agent_state=lambda event: self._on_agent_state(event, state),
                 false_interruption=lambda event: self._on_false_interruption(
                     event, state
+                ),
+                completed_turn=lambda text, *, turn_id=None: self._commit_user_turn(
+                    text,
+                    turn_id=turn_id,
+                    state=state,
                 ),
                 close=lambda event: self._on_session_close(event, state, handlers),
             )
@@ -354,7 +366,7 @@ class LiveKitAgentsEngine(AudioEngine):
             log.warning("LiveKit Agents cleanup could not reach its loop", exc_info=True)
             # A handle may still be playing when its loop disappears. Never
             # release that ownership without a real handle terminal or the
-            # wrapper's post-drain close event. Calls not yet handed to the
+            # wrapper's disposal-proven close event. Calls not yet handed to the
             # wrapper are safe to drop.
             for call in calls:
                 if call.handle is None:
@@ -562,6 +574,13 @@ class LiveKitAgentsEngine(AudioEngine):
             "agent_false_interruption", handlers.false_interruption
         )
         self._session.on("close", handlers.close)
+        bind_committer = getattr(
+            self._session,
+            "bind_user_turn_committer",
+            None,
+        )
+        if callable(bind_committer):
+            bind_committer(handlers.completed_turn)
 
     def _unbind_on_loop(
         self,
@@ -582,6 +601,19 @@ class LiveKitAgentsEngine(AudioEngine):
                 self._session.off(event, callback)
             except Exception:
                 log.debug("failed to remove LiveKit %s callback", event, exc_info=True)
+        unbind_committer = getattr(
+            self._session,
+            "unbind_user_turn_committer",
+            None,
+        )
+        if callable(unbind_committer):
+            try:
+                unbind_committer(handlers.completed_turn)
+            except Exception:
+                log.debug(
+                    "failed to remove LiveKit completed-turn committer",
+                    exc_info=True,
+                )
 
     def _stop_on_loop(
         self,
@@ -642,9 +674,9 @@ class LiveKitAgentsEngine(AudioEngine):
             )
             self._retained_close_handlers.clear()
 
-        # LiveKit emits close only after current speech drains/interrupts and
-        # output.audio is detached. Any impossible leftover lease is therefore
-        # safe to resolve with no text, even when an interrupt request failed.
+        # The trusted wrapper forwards close only after SDK drain/detach (for a
+        # started session) and its separately-owned manual RoomIO disposal. Any
+        # impossible leftover lease is then safe to resolve with no text.
         if was_output_active:
             try:
                 callbacks.on_speech_end()
@@ -906,7 +938,7 @@ class LiveKitAgentsEngine(AudioEngine):
             except Exception:
                 log.warning("LiveKit speech-handle interruption failed", exc_info=True)
                 # The sink may still be audible. Retain playback ownership until
-                # the real handle terminal or post-drain session close arrives.
+                # the real handle terminal or wrapper disposal proof arrives.
                 self._request_playout_failure_close_on_loop()
 
     def _request_playout_failure_close_on_loop(self) -> None:

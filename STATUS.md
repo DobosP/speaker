@@ -4,16 +4,16 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Repository logic gate: 6937 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; synchronized-diagnostic focused 253/3 skipped; APM/DTD 6.
+- Repository logic baseline before ADR-0104 source-audit fixes: 6951 passed, 13 skipped, 23 model-only deselected, 9 pre-existing warnings; synchronized-diagnostic focused 253/3 skipped; current APM/DTD 6.
 - Streaming family: 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
-- Post-ASR mailbox/adjacent 221; LiveKit Agents seam 28; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
+- Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
 ## Runtime
 
 - `python -m core --session` is the one public core entry; `VoiceSession` owns one injected `VoiceRuntime`, and `build_runtime` remains the sole tool/authority plane.
-- Audio defaults to device-only. Setup may grant encrypted self-hosted trusted-LAN
-  egress, but it stays unselectable until its publisher wrapper passes live A/B; legacy remote is rollback only (ADR-0096/0097).
+- Audio defaults to device-only. The exact-pair manual-RoomIO trusted-LAN wrapper
+  passes fake-SDK isolation but stays unselectable until live A/B; legacy remote is rollback only (ADR-0096/0097/0104).
 - `./live.sh` is the single Linux physical entry. It owns the host lock,
   reversible echo-control route, conditional Ollama, doctor, and aligned
   private pre-DSP/processed-mic/playback-reference evidence (ADR-0075/0077).
@@ -83,6 +83,7 @@ Last verified: 2026-08-01 on Linux ROG.
   p50 .184/1.113 s; peak RSS 2,033 MB. Not native-reader/AEC/live evidence (ADR-0092).
 - Windows communications capture verifies OS AEC/NS/beamforming; owner physical talk-over/STOP tests remain (ADR-0081/0082).
 - Diagnostic replay fails closed on malformed heartbeats/silent playback references; GitHub raw-audio PR refs remain owner follow-up (ADR-0083).
+- The LiveKit Agents wrapper has no SDK, network, audio-device, or live A/B evidence; its headless fake-SDK result cannot promote trusted-LAN (ADR-0104).
 
 ## Next
 

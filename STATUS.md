@@ -47,7 +47,7 @@ Last verified: 2026-08-01 on Linux ROG.
 - The opt-in Linux final pair remains checksum-pinned Parakeet Unified English
   plus Faster-Whisper Small. Exact acoustic quorum may rewrite text; protected
   controls fail closed. SenseVoice defaults remain unchanged (ADR-0078/0080).
-- Public evaluation has 8 tracks/13 sources/9 exclusions. Common Voice SPS v4 has a twice-hashed private 32-speaker P0 preparer; VoxPopuli has a synthetic-green explicit-local 24-speaker `en_ro` preparer; Zipformer is a one-thread control, Parakeet EOU remains rejected, and receipt-bound Faster-Whisper is final-only (ADR-0098/0099/0101/0102/0103).
+- Public evaluation has 8 tracks/13 sources/9 exclusions. Common Voice SPS v4 has a twice-hashed private 32-speaker P0 preparer; VoxPopuli has a synthetic-green exact-float-WAV 24-speaker `en_ro` preparer; Zipformer is a one-thread control, Parakeet EOU remains rejected, and receipt-bound Faster-Whisper is final-only (ADR-0098/0099/0101/0102/0106).
 - Capabilities use actor-issued per-task `TurnHandle`s and five-field bindings.
   Task/provider/tool/playback ownership registers before start; cancel fences
   new children and bounded drain reports providers still exiting (ADR-0094).
@@ -65,7 +65,7 @@ Last verified: 2026-08-01 on Linux ROG.
   Only post-GTCRN mic audio was retained, so the failure seam is unknown (ADR-0077).
 - Private replay WER 0.00 is non-disjoint. Public-v3 trusts local PyArrow; its code-bound Small
   control WER 0.6685 stays rejected. These are development—not streaming, held-out, live, or adoption—results (ADR-0087).
-- Common Voice SPS v4 real-archive/model compatibility is unrun. VoxPopuli real-Parquet preparation is also unrun; its formal L2-accent slice is not command, domestic, capture/AEC, tool, live, or training-disjoint evidence (ADR-0101/0103).
+- Common Voice SPS v4 real-archive/model compatibility is unrun. VoxPopuli's first real preparation failed closed on its superseded PCM16 assumption; aggregate inspection found the exact float32 container and a feasible 24-case selection, but no real corpus/model run exists and the slice is not command, domestic, capture/AEC, tool, live, or training-disjoint evidence (ADR-0101/0106).
 - The schema-v6 Faster-Whisper endpoint comparator enforces isolated receipt roots, one exact stdlib/uv Python 3.12.3 marker entry, and final-only worker/supervisor boundaries; fake coverage only—no candidate, corpus, GPU, WER, latency, streaming, or runtime/default claim has run (ADR-0102/0105).
 - Exact Parakeet burst/paced WER is .6576/.6576 and model-input RTF .1910/.2200;
   paced replay missed three deadlines with 189 ms backlog. Ten of 14 EOU events

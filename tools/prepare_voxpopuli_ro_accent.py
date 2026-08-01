@@ -10,7 +10,6 @@ the shared hardened corpus writer.  CLI output is aggregate-only.
 
 from __future__ import annotations
 
-from array import array
 import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -500,7 +499,7 @@ def _run_worker(
         yield _WorkerRun(
             output_dir=output,
             binding={
-                "contract": "isolated-pyarrow-voxpopuli-worker-v1",
+                "contract": "isolated-pyarrow-voxpopuli-worker-v2",
                 "protocol_version": PROTOCOL_VERSION,
                 "worker_sha256": worker_sha256,
                 "pyarrow_version": PYARROW_VERSION,
@@ -523,66 +522,52 @@ def _run_worker(
 
 
 def _wav_data(payload: bytes) -> tuple[bytes, int]:
+    """Independently validate one selected exact IEEE-float32 WAV."""
+
     if (
         not isinstance(payload, bytes)
-        or len(payload) < 44
+        or len(payload) < 58
         or len(payload) > _MAX_AUDIO_BYTES
         or payload[:4] != b"RIFF"
         or payload[8:12] != b"WAVE"
         or struct.unpack_from("<I", payload, 4)[0] + 8 != len(payload)
     ):
         raise VoxPopuliPreparationError("audio decode failed")
-    offset = 12
-    fmt: tuple[int, int, int, int, int, int] | None = None
-    raw: bytes | None = None
-    while offset + 8 <= len(payload):
-        kind = payload[offset : offset + 4]
-        size = struct.unpack_from("<I", payload, offset + 4)[0]
-        start = offset + 8
-        end = start + size
-        if end > len(payload):
-            raise VoxPopuliPreparationError("audio decode failed")
-        if kind == b"fmt ":
-            if fmt is not None or size < 16:
-                raise VoxPopuliPreparationError("audio decode failed")
-            fmt = struct.unpack_from("<HHIIHH", payload, start)
-        elif kind == b"data":
-            if raw is not None or size <= 0:
-                raise VoxPopuliPreparationError("audio decode failed")
-            raw = payload[start:end]
-        offset = end + (size & 1)
+    fmt_size = struct.unpack_from("<I", payload, 16)[0]
+    fmt = struct.unpack_from("<HHIIHH", payload, 20)
+    fact_size = struct.unpack_from("<I", payload, 42)[0]
+    fact_samples = struct.unpack_from("<I", payload, 46)[0]
+    data_size = struct.unpack_from("<I", payload, 54)[0]
     if (
-        offset != len(payload)
-        or fmt != (1, 1, 16_000, 32_000, 2, 16)
-        or raw is None
-        or len(raw) % 2
+        payload[12:16] != b"fmt "
+        or fmt_size != 18
+        or fmt != (3, 1, 16_000, 64_000, 4, 32)
+        or payload[36:38] != b"\x00\x00"
+        or payload[38:42] != b"fact"
+        or fact_size != 4
+        or payload[50:54] != b"data"
+        or data_size <= 0
+        or data_size % 4
+        or 58 + data_size != len(payload)
+        or fact_samples != data_size // 4
     ):
         raise VoxPopuliPreparationError("audio decode failed")
-    return raw, len(raw) // 2
+    return payload[58:], data_size // 4
 
 
 def _wav_to_f32le(payload: bytes, *, expected_samples: int) -> bytes:
     pcm, samples = _wav_data(payload)
     if samples != expected_samples or samples * 4 > MAX_PCM_BYTES:
         raise VoxPopuliPreparationError("audio decode failed")
-    integers = array("h")
     try:
-        integers.frombytes(pcm)
-    except (BufferError, ValueError):
+        values = struct.iter_unpack("<f", pcm)
+        if any(not math.isfinite(value) for (value,) in values):
+            raise VoxPopuliPreparationError("audio decode failed")
+    except struct.error:
         raise VoxPopuliPreparationError("audio decode failed") from None
-    if sys.byteorder != "little":
-        integers.byteswap()
-    floats = array("f", (value / 32768.0 for value in integers))
-    if sys.byteorder != "little":
-        floats.byteswap()
-    raw = floats.tobytes()
-    if (
-        len(integers) != samples
-        or len(raw) != samples * 4
-        or any(not math.isfinite(value) for value in floats)
-    ):
-        raise VoxPopuliPreparationError("audio decode failed")
-    return raw
+    # IEEE float WAV does not impose a normative [-1, 1] magnitude bound.
+    # Preserve every finite binary32 bit-pattern; never clip or normalize it.
+    return bytes(pcm)
 
 
 def _safe_text(value: object, *, maximum: int) -> str:
@@ -881,11 +866,12 @@ def _preparer_provenance() -> dict[str, object]:
         "tools/streaming_stt/protocol.py",
     )
     return {
-        "contract": "voxpopuli-en-ro-private-preparer-v1",
+        "contract": "voxpopuli-en-ro-private-preparer-v2",
         "files": {
             relative: _module_digest(_REPO_ROOT / relative) for relative in files
         },
-        "pcm_decoder": "strict-pcm16-wav-to-f32le-16000-v1",
+        "pcm_decoder": "exact-ieee-float32-wav-finite-identity-16000-v2",
+        "amplitude_policy": "finite-binary32-no-bound-no-clipping-no-normalization",
         "python_implementation": sys.implementation.name,
         "single_thread_worker_environment": True,
     }

@@ -4,7 +4,7 @@
 The parent passes two already-open, hash-pinned Parquet descriptors.  This
 worker imports PyArrow only in the explicitly selected preparation environment,
 validates the exact physical and Hugging Face feature schema, scans with one
-thread, and writes only the selected embedded PCM WAVs plus a private result.
+thread, and writes only selected exact IEEE-float32 WAVs plus a private result.
 It never opens an audio ``path`` value and never writes to stdout or stderr.
 """
 
@@ -22,7 +22,7 @@ import struct
 from typing import BinaryIO, Iterator, Mapping, Sequence
 
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 PYARROW_VERSION = "25.0.0"
 SOURCE_REVISION = "42f01879c780b4a2e90ec0b4f616c2ece526e4f1"
 SELECTION_SEED = "speaker-voxpopuli-en-ro-accent-v1"
@@ -95,6 +95,16 @@ SCHEMA_CONTRACT = {
         ["accent", "string"],
     ],
     "huggingface_metadata": "semantic-exact-v1",
+    "embedded_audio": {
+        "container": "exact-riff-wave-v2",
+        "chunk_order": [["fmt ", 18], ["fact", 4], ["data", "4*n"]],
+        "fmt_le": [3, 1, 16_000, 64_000, 4, 32],
+        "fmt_extra_hex": "0000",
+        "fact_le": "uint32-samples-equals-data-bytes-div-4",
+        "data": "little-endian-ieee-binary32",
+        "empty_data": "valid-container-ineligible-row",
+        "selected_values": "finite-no-amplitude-bound-no-transform",
+    },
 }
 
 _MAX_REQUEST_BYTES = 64 * 1024
@@ -543,45 +553,36 @@ def _metadata_rows(shard: _OpenedShard) -> Iterator[Mapping[str, object]]:
 
 
 def _wav_samples(payload: bytes) -> int:
+    """Validate the pinned embedded IEEE-float WAV shape and return samples."""
+
     if (
         not isinstance(payload, bytes)
-        or len(payload) < 44
+        or len(payload) < 58
         or len(payload) > _MAX_AUDIO_BYTES
         or payload[:4] != b"RIFF"
         or payload[8:12] != b"WAVE"
         or struct.unpack_from("<I", payload, 4)[0] + 8 != len(payload)
     ):
         raise WorkerError()
-    offset = 12
-    fmt: tuple[int, int, int, int, int, int] | None = None
-    data_size: int | None = None
-    while offset + 8 <= len(payload):
-        kind = payload[offset : offset + 4]
-        size = struct.unpack_from("<I", payload, offset + 4)[0]
-        start = offset + 8
-        end = start + size
-        if end > len(payload):
-            raise WorkerError()
-        if kind == b"fmt ":
-            if fmt is not None or size < 16:
-                raise WorkerError()
-            tag, channels, sample_rate, byte_rate, block_align, bits = (
-                struct.unpack_from("<HHIIHH", payload, start)
-            )
-            fmt = (tag, channels, sample_rate, byte_rate, block_align, bits)
-        elif kind == b"data":
-            if data_size is not None or size <= 0:
-                raise WorkerError()
-            data_size = size
-        offset = end + (size & 1)
+    fmt_size = struct.unpack_from("<I", payload, 16)[0]
+    fmt = struct.unpack_from("<HHIIHH", payload, 20)
+    fact_size = struct.unpack_from("<I", payload, 42)[0]
+    fact_samples = struct.unpack_from("<I", payload, 46)[0]
+    data_size = struct.unpack_from("<I", payload, 54)[0]
     if (
-        offset != len(payload)
-        or fmt != (1, 1, 16_000, 32_000, 2, 16)
-        or data_size is None
-        or data_size % 2
+        payload[12:16] != b"fmt "
+        or fmt_size != 18
+        or fmt != (3, 1, 16_000, 64_000, 4, 32)
+        or payload[36:38] != b"\x00\x00"
+        or payload[38:42] != b"fact"
+        or fact_size != 4
+        or payload[50:54] != b"data"
+        or data_size % 4
+        or 58 + data_size != len(payload)
+        or fact_samples != data_size // 4
     ):
         raise WorkerError()
-    return data_size // 2
+    return data_size // 4
 
 
 def duration_bucket(samples: int) -> str | None:
@@ -933,8 +934,10 @@ def _write_selected_audio(
                 not _audio_path_matches(audio_path, candidate.audio_id)
                 or len(payload) != candidate.audio_size_bytes
                 or hashlib.sha256(payload).hexdigest() != candidate.audio_sha256
-                or _wav_samples(payload) != candidate.duration_samples
             ):
+                raise WorkerError()
+            selected_samples = _wav_samples(payload)
+            if selected_samples <= 0 or selected_samples != candidate.duration_samples:
                 raise WorkerError()
             filename = f"case-{selection_index:02d}.wav"
             destination = output_dir / filename

@@ -32,6 +32,32 @@ def _pcm16_wav(samples: int, value: int = 1000) -> bytes:
     return b"RIFF" + struct.pack("<I", len(payload) + 4) + b"WAVE" + payload
 
 
+def _wav_chunk(kind: bytes, payload: bytes) -> bytes:
+    assert len(kind) == 4
+    return kind + struct.pack("<I", len(payload)) + payload
+
+
+def _riff_wave(*chunks: bytes) -> bytes:
+    payload = b"".join(chunks)
+    return b"RIFF" + struct.pack("<I", len(payload) + 4) + b"WAVE" + payload
+
+
+def _float32_wav(
+    samples: int,
+    value: float = 0.25,
+    *,
+    fact_samples: int | None = None,
+) -> bytes:
+    pcm = struct.pack(f"<{samples}f", *([value] * samples))
+    fmt = struct.pack("<HHIIHH", 3, 1, 16_000, 64_000, 4, 32) + b"\x00\x00"
+    fact = struct.pack("<I", samples if fact_samples is None else fact_samples)
+    return _riff_wave(
+        _wav_chunk(b"fmt ", fmt),
+        _wav_chunk(b"fact", fact),
+        _wav_chunk(b"data", pcm),
+    )
+
+
 def _patch_tiny_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     payloads = (b"synthetic-shard-zero", b"synthetic-shard-one")
     paths: list[Path] = []
@@ -99,7 +125,7 @@ def _fake_worker_result(output: Path, shards: tuple[prepare.SourceShard, ...]) -
         bucket = TINY_BUCKETS[bucket_index][0]
         samples = sample_by_bucket[bucket]
         transcript = f"known private reference {bucket_index} {offset}"
-        wav = _pcm16_wav(samples, value=1000 + index)
+        wav = _float32_wav(samples, value=(index + 1) / 100.0)
         filename = f"case-{index:02d}.wav"
         path = output / filename
         path.write_bytes(wav)
@@ -163,6 +189,31 @@ def _injection(shards: tuple[prepare.SourceShard, ...]):
         lambda _descriptors, output: _fake_worker_result(output, shards),
         "synthetic-v1",
     )
+
+
+def _corrupt_worker_result(
+    output: Path,
+    shards: tuple[prepare.SourceShard, ...],
+    field: str,
+) -> None:
+    _fake_worker_result(output, shards)
+    result_path = output / "result.json"
+    result_path.chmod(0o600)
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    case = result["cases"][0]
+    if field == "audio_file":
+        case[field] = "case-wrong.wav"
+    elif field == "audio_size_bytes":
+        case[field] += 4
+    elif field == "audio_sha256":
+        case[field] = "0" * 64
+    else:  # pragma: no cover - test helper contract
+        raise AssertionError(field)
+    result_path.write_text(
+        json.dumps(result, ensure_ascii=True, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    result_path.chmod(0o400)
 
 
 def _prepare_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -229,6 +280,17 @@ def _hf_metadata() -> dict[bytes, bytes]:
 
 
 def test_exact_official_revision_artifacts_and_legal_provenance_are_pinned():
+    assert worker.PROTOCOL_VERSION == 2
+    assert worker.SCHEMA_CONTRACT["embedded_audio"] == {
+        "container": "exact-riff-wave-v2",
+        "chunk_order": [["fmt ", 18], ["fact", 4], ["data", "4*n"]],
+        "fmt_le": [3, 1, 16_000, 64_000, 4, 32],
+        "fmt_extra_hex": "0000",
+        "fact_le": "uint32-samples-equals-data-bytes-div-4",
+        "data": "little-endian-ieee-binary32",
+        "empty_data": "valid-container-ineligible-row",
+        "selected_values": "finite-no-amplitude-bound-no-transform",
+    }
     assert prepare.SOURCE_REVISION == ("42f01879c780b4a2e90ec0b4f616c2ece526e4f1")
     assert [(item.size_bytes, item.sha256) for item in prepare.SOURCE_SHARDS] == [
         (
@@ -339,19 +401,161 @@ def test_huggingface_metadata_contract_is_semantically_exact():
         )
 
 
-def test_pcm_wav_parser_and_decoder_are_strict_and_deterministic():
-    wav = _pcm16_wav(4, value=-16_384)
+def test_embedded_audio_path_requires_the_audio_id_wav_basename():
+    assert worker._audio_path_matches("audio-id.wav", "audio-id")
+    assert worker._audio_path_matches("nested/audio-id.wav", "audio-id")
+    assert not worker._audio_path_matches("nested/other.wav", "audio-id")
+    assert not worker._audio_path_matches("audio-id.mp3", "audio-id")
+
+
+def test_exact_float32_wav_parser_preserves_finite_samples_without_clipping():
+    wav = _float32_wav(4, value=-1.5)
+    expected = struct.pack("<4f", -1.5, -1.5, -1.5, -1.5)
 
     assert worker._wav_samples(wav) == 4
-    raw = prepare._wav_to_f32le(wav, expected_samples=4)
-    assert raw == struct.pack("<4f", -0.5, -0.5, -0.5, -0.5)
+    assert prepare._wav_to_f32le(wav, expected_samples=4) == expected
 
-    malformed = bytearray(wav)
-    struct.pack_into("<H", malformed, 20, 3)
-    with pytest.raises(worker.WorkerError):
-        worker._wav_samples(bytes(malformed))
+
+def test_exact_empty_float32_wav_is_valid_but_ineligible_and_not_decodable():
+    wav = _float32_wav(0)
+
+    assert worker._wav_samples(wav) == 0
+    assert worker.duration_bucket(worker._wav_samples(wav)) is None
     with pytest.raises(prepare.VoxPopuliPreparationError):
-        prepare._wav_to_f32le(bytes(malformed), expected_samples=4)
+        prepare._wav_to_f32le(wav, expected_samples=0)
+
+
+def test_collect_candidates_skips_exact_empty_row_and_never_selects_it(monkeypatch):
+    monkeypatch.setattr(worker, "SOURCE_TOTAL_ROWS", 25)
+    monkeypatch.setattr(worker, "EXPECTED_EN_RO_SPEAKERS", 25)
+    monkeypatch.setattr(worker, "DURATION_BUCKETS", TINY_BUCKETS)
+
+    class FakeShard:
+        def __init__(self, shard_index: int):
+            self.record = {"shard_index": shard_index}
+
+    shards = (FakeShard(0), FakeShard(1))
+    metadata_rows: list[dict[str, object]] = []
+    audio_rows: list[tuple[int, bytes, str]] = []
+    for index in range(25):
+        audio_id = f"audio-{index}"
+        metadata_rows.append(
+            {
+                "audio_id": audio_id,
+                "language": worker.LANGUAGE_ID,
+                "raw_text": f"reference {index}",
+                "normalized_text": f"reference {index}",
+                "gender": "unknown",
+                "speaker_id": f"speaker-{index}",
+                "is_gold_transcript": True,
+                "accent": worker.ACCENT,
+            }
+        )
+        samples = 0 if index == 0 else (2, 4, 6, 8)[(index - 1) // 6]
+        audio_rows.append((index, _float32_wav(samples), f"{audio_id}.wav"))
+
+    def fake_metadata(shard):
+        return iter(metadata_rows if shard.record["shard_index"] == 0 else ())
+
+    def fake_audio(shard, requested):
+        rows = audio_rows if shard.record["shard_index"] == 0 else ()
+        return iter(row for row in rows if row[0] in requested)
+
+    monkeypatch.setattr(worker, "_metadata_rows", fake_metadata)
+    monkeypatch.setattr(worker, "_audio_rows", fake_audio)
+
+    candidates, accent_speakers, eligible_speakers, _digest = (
+        worker._collect_candidates(shards)
+    )
+    selected = worker.select_candidates(candidates)
+
+    assert accent_speakers == 25
+    assert eligible_speakers == 24
+    assert len(candidates) == len(selected) == 24
+    assert all(
+        item.audio_id != "audio-0" and item.duration_samples > 0 for item in selected
+    )
+
+
+def test_pcm16_and_non_exact_float_wav_shapes_are_rejected_independently():
+    exact = _float32_wav(4)
+    fmt = exact[20:38]
+    fact = exact[46:50]
+    data = exact[58:]
+    invalid = {
+        "pcm16": _pcm16_wav(4),
+        "wrong-riff-size": (exact[:4] + struct.pack("<I", len(exact) - 9) + exact[8:]),
+        "missing-fmt": _riff_wave(
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+        ),
+        "duplicate-fmt": _riff_wave(
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+        ),
+        "short-fmt": _riff_wave(
+            _wav_chunk(b"fmt ", fmt[:16]),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+        ),
+        "wrong-fmt-tag": _riff_wave(
+            _wav_chunk(
+                b"fmt ",
+                struct.pack("<HHIIHH", 1, 1, 16_000, 64_000, 4, 32) + b"\x00\x00",
+            ),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+        ),
+        "wrong-fmt-extra": _riff_wave(
+            _wav_chunk(b"fmt ", fmt[:16] + b"\x01\x00"),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+        ),
+        "missing-fact": _riff_wave(
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"data", data),
+        ),
+        "duplicate-fact": _riff_wave(
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+        ),
+        "wrong-fact-size": _riff_wave(
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"fact", fact + b"\x00\x00\x00\x00"),
+            _wav_chunk(b"data", data),
+        ),
+        "wrong-fact-value": _float32_wav(4, fact_samples=3),
+        "wrong-order": _riff_wave(
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"data", data),
+        ),
+        "trailing-chunk": _riff_wave(
+            _wav_chunk(b"fmt ", fmt),
+            _wav_chunk(b"fact", fact),
+            _wav_chunk(b"data", data),
+            _wav_chunk(b"JUNK", b""),
+        ),
+    }
+
+    for wav in invalid.values():
+        with pytest.raises(worker.WorkerError):
+            worker._wav_samples(wav)
+        with pytest.raises(prepare.VoxPopuliPreparationError):
+            prepare._wav_to_f32le(wav, expected_samples=4)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_selected_float32_wav_rejects_non_finite_samples(value: float):
+    wav = _float32_wav(4, value=value)
+
+    assert worker._wav_samples(wav) == 4
+    with pytest.raises(prepare.VoxPopuliPreparationError):
+        prepare._wav_to_f32le(wav, expected_samples=4)
 
 
 def test_prepares_private_schema_v2_corpus_and_transcript_free_receipt(
@@ -396,6 +600,13 @@ def test_prepares_private_schema_v2_corpus_and_transcript_free_receipt(
         "tools/streaming_stt/corpus_writer.py",
         "tools/streaming_stt/protocol.py",
     }
+    assert receipt["preparer"]["contract"] == ("voxpopuli-en-ro-private-preparer-v2")
+    assert receipt["preparer"]["pcm_decoder"] == (
+        "exact-ieee-float32-wav-finite-identity-16000-v2"
+    )
+    assert receipt["preparer"]["amplitude_policy"] == (
+        "finite-binary32-no-bound-no-clipping-no-normalization"
+    )
     assert all(
         {"gender_sha256", "shard_index", "source_row_index"}.isdisjoint(case)
         for case in receipt["cases"]
@@ -416,6 +627,36 @@ def test_prepares_private_schema_v2_corpus_and_transcript_free_receipt(
     safe = prepare._safe_result(result)
     assert str(tmp_path) not in json.dumps(safe)
     assert "known private reference" not in json.dumps(safe)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["audio_file", "audio_size_bytes", "audio_sha256"],
+)
+def test_parent_rejects_worker_audio_path_size_or_hash_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+):
+    paths, _payloads, shards = _patch_tiny_sources(tmp_path, monkeypatch)
+    destination = tmp_path / f"invalid-{field}"
+
+    with pytest.raises(prepare.VoxPopuliPreparationError):
+        prepare.prepare_voxpopuli_ro_accent(
+            source_shard_0=paths[0],
+            source_shard_1=paths[1],
+            parquet_python=None,
+            output_dir=destination,
+            accepted_terms=TERMS,
+            test_worker_injection=prepare.TestWorkerInjection(
+                lambda _descriptors, output: _corrupt_worker_result(
+                    output, shards, field
+                ),
+                f"invalid-{field.replace('_', '-')}",
+            ),
+        )
+
+    assert not destination.exists()
 
 
 def test_no_overwrite_and_missing_term_fail_before_worker(
@@ -603,7 +844,10 @@ def test_worker_request_is_strict_and_contains_descriptors_not_paths(tmp_path: P
     assert loaded == request
     assert "path" not in json.dumps(loaded).casefold()
     path.chmod(0o600)
-    path.write_text('{"schema_version":1,"schema_version":1}')
+    path.write_text(
+        '{"schema_version":2,"schema_version":2}',
+        encoding="utf-8",
+    )
     path.chmod(0o400)
     with pytest.raises(worker.WorkerError):
         worker._load_request(path)

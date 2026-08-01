@@ -142,7 +142,7 @@ live-hardware, or model-adoption evidence.
 
 ## VoxPopuli Romanian-accented English slice
 
-[ADR-0103](adr/0103-add-romanian-accented-english-voxpopuli-slice.md) records
+[ADR-0106](adr/0106-correct-voxpopuli-embedded-float-wav-contract.md) records
 the separate 24-speaker `en_ro` preparation path. It accepts only two explicit
 local files from the official `en_accented` test split at revision
 `42f01879c780b4a2e90ec0b4f616c2ece526e4f1`; the tool contains no downloader
@@ -181,12 +181,22 @@ receipt carries only domain-separated identity hashes, transcript hashes, source
 hashes, selection evidence, and official provenance. The worker inherits the
 already-open source descriptors and never follows Parquet audio path values.
 
+Embedded audio must have the exact observed RIFF/WAVE order `fmt `(18 bytes),
+`fact` (4 bytes), then `data`; the format is mono 16 kHz little-endian IEEE
+float32 and `fact` must equal the data sample count. Exact empty containers are
+valid source rows but cannot be selected. The parent repeats these checks and
+publishes selected finite float32 samples bit-for-bit. It applies no amplitude
+bound, clipping, or normalization because IEEE float WAV does not require the
+nominal `[-1, 1]` range.
+
 The four duration bands each contribute six distinct speakers. This is a
 formal spontaneous Romanian-L2-English diagnostic after PCM is available. It
 does not cover domestic conversation, commands, capture, endpointing, echo,
-tools, or live behavior, and model-training overlap may be unknown. Synthetic
-tests are green; real-shard schema/audio compatibility is intentionally unrun
-until the first preparation receives separate review.
+tools, or live behavior, and model-training overlap may be unknown. The first
+real preparation failed closed on the superseded PCM16 assumption. A later
+aggregate-only inspection established the exact container contract and a
+feasible 24-case selection, but did not publish a corpus. Run a new private
+preparation before any model comparison.
 
 ## Whole-clip decoder smoke
 

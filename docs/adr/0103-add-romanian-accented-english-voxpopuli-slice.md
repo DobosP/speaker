@@ -1,7 +1,7 @@
 # ADR-0103: Add a Romanian-accented English VoxPopuli STT slice
 
 Date: 2026-08-01
-Status: accepted
+Status: superseded-by ADR-0106
 
 ## Decision
 

@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 import core.engines._recovering_input as recovering_input_module
+import core.engines._sherpa_streaming_decode_owner as decode_owner_module
 import core.engines.sherpa as sherpa_module
 from core.engine import (
     EngineCallbacks,
@@ -748,6 +749,26 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
     ambiguous_initial_states: list[tuple[int | None, bool]] = []
     callback_stop_states: list[tuple[bool, bool]] = []
     allow_late_launch = Event()
+    bundle_close_calls: list[bool] = []
+
+    if failure_phase == "delayed_transfer":
+        class _ManifestStatus:
+            value = "incomplete"
+
+        class _FakeBundle:
+            manifest_status = _ManifestStatus()
+            failure_codes = ("startup_rollback",)
+
+            def close(self, *, clean_shutdown: bool):
+                bundle_close_calls.append(clean_shutdown)
+                return "fake-manifest.json"
+
+        engine.set_record_path("delayed-startup-bundle.wav")
+
+        def open_bundle() -> None:
+            engine._diagnostic_bundle = _FakeBundle()
+
+        monkeypatch.setattr(engine, "_open_recorders", open_bundle)
 
     def receive(receipt: PlaybackReceipt) -> None:
         receipt_fence_states.append(
@@ -776,16 +797,16 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
         raced_enqueued.append(True)
 
     if failure_phase == "construct":
-        original_thread_constructor = sherpa_module.threading.Thread
+        original_thread_constructor = decode_owner_module.threading.Thread
 
         def fail_capture_constructor(*args, **kwargs):
-            if kwargs.get("name") == "speaker-capture-processor":
+            if kwargs.get("name") == "speaker-streaming-decode-owner":
                 enqueue_raced_speech()
                 raise RuntimeError("synthetic capture launch failure")
             return original_thread_constructor(*args, **kwargs)
 
         monkeypatch.setattr(
-            sherpa_module.threading,
+            decode_owner_module.threading,
             "Thread",
             fail_capture_constructor,
         )
@@ -794,7 +815,7 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
         "late_after_timeout",
         "ambiguous_timeout",
     }:
-        original_thread_constructor = sherpa_module.threading.Thread
+        original_thread_constructor = decode_owner_module.threading.Thread
         original_thread_start = Thread.start
 
         class _AmbiguousCaptureThread(Thread):
@@ -834,12 +855,12 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
                 raise RuntimeError("synthetic capture launch failure")
 
         def ambiguous_thread_constructor(*args, **kwargs):
-            if kwargs.get("name") == "speaker-capture-processor":
+            if kwargs.get("name") == "speaker-streaming-decode-owner":
                 return _AmbiguousCaptureThread(*args, **kwargs)
             return original_thread_constructor(*args, **kwargs)
 
         monkeypatch.setattr(
-            sherpa_module.threading,
+            decode_owner_module.threading,
             "Thread",
             ambiguous_thread_constructor,
         )
@@ -847,7 +868,7 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
         original_thread_start = Thread.start
 
         def fail_capture_start(thread: Thread) -> None:
-            if thread.name == "speaker-capture-processor":
+            if thread.name == "speaker-streaming-decode-owner":
                 if failure_phase == "transferred":
                     original_thread_start(thread)
                     launched_capture_threads.append(thread)
@@ -912,9 +933,14 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
             "open",
             "request_close",
             "abort_read",
-            "request_close",
             "close",
         ]
+        assert callback_stop_states == []
+    elif failure_phase == "delayed_transfer":
+        # The late owner observes the startup fence before its first read,
+        # then its owner-loop terminal path collects the retained input.
+        assert input_events == ["open", "close"]
+        assert bundle_close_calls == [False]
         assert callback_stop_states == []
     else:
         assert input_events == ["open", "request_close", "close"]
@@ -1000,6 +1026,357 @@ def test_capture_thread_launch_failure_reclaims_owner_and_fences_playback(
         engine._capture_thread = None
         assert engine._close_capture_input()
         engine._capture_resource_hold.clear()
+
+
+def test_post_input_playback_launch_interruption_rolls_back_all_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tail-worker start escape must unwind the already-live capture graph."""
+
+    config = SherpaConfig(
+        media_pcm_queue_ms=300.0,
+        input_calibrate=False,
+        endpoint_enabled=False,
+        final_speech_evidence_enabled=False,
+        aec_enabled=False,
+        barge_in_enabled=False,
+        coherence_barge_in_enabled=False,
+    )
+    engine = SherpaOnnxEngine(config)
+    recognizer = _Recognizer()
+    input_events: list[str] = []
+    read_entered = Event()
+    close_requested = Event()
+    playback_started = Event()
+
+    class _FakeRecoveringInput:
+        actual_samplerate = 16_000
+        actual_device = "fake-input"
+        generation = 1
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def open(self) -> None:
+            input_events.append("open")
+
+        def request_close(self) -> None:
+            input_events.append("request_close")
+            close_requested.set()
+
+        def read(self, frames: int):
+            read_entered.set()
+            assert close_requested.wait(_WAIT_SECONDS)
+            return np.zeros(frames, dtype="float32"), False
+
+        def abort_read(self, *, timeout=None) -> bool:
+            input_events.append("abort_read")
+            close_requested.set()
+            return True
+
+        def close(self, *, teardown_timeout=None) -> bool:
+            assert teardown_timeout is not None
+            input_events.append("close")
+            close_requested.set()
+            return True
+
+    sounddevice = SimpleNamespace(
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "fake-input",
+            "default_samplerate": 16_000,
+        },
+        check_input_settings=lambda **_kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    monkeypatch.setattr(
+        recovering_input_module,
+        "_RecoveringInputStream",
+        _FakeRecoveringInput,
+    )
+
+    def build() -> None:
+        engine._recognizer = recognizer
+        engine._tts = object()
+
+    monkeypatch.setattr(engine, "_build", build)
+    monkeypatch.setattr(engine, "_resolve_capture_domain", lambda *_a, **_k: True)
+    monkeypatch.setattr(engine, "_rebind_speech_evidence_domain", lambda: None)
+
+    original_thread_start = Thread.start
+
+    def interrupt_playback_start(thread: Thread) -> None:
+        target = getattr(thread, "_target", None)
+        is_playback_worker = bool(
+            getattr(target, "__self__", None) is engine
+            and getattr(target, "__func__", None)
+            is SherpaOnnxEngine._playback_loop
+        )
+        if not is_playback_worker:
+            original_thread_start(thread)
+            return
+        # Prove this is a post-input tail failure: both the decode owner and the
+        # native capture reader have already transferred, and the receipt worker
+        # is live, before playback launch.
+        assert read_entered.wait(_WAIT_SECONDS)
+        owner = engine._streaming_decode_owner
+        assert owner is not None
+        owner_snapshot = owner.snapshot()
+        assert owner_snapshot.ready
+        assert owner_snapshot.thread_alive
+        assert not owner_snapshot.terminal
+        assert engine._receipt_thread is not None
+        assert engine._receipt_thread.is_alive()
+        original_thread_start(thread)
+        playback_started.set()
+        raise KeyboardInterrupt("synthetic playback launch interruption")
+
+    monkeypatch.setattr(Thread, "start", interrupt_playback_start)
+
+    with pytest.raises(
+        KeyboardInterrupt,
+        match="synthetic playback launch interruption",
+    ):
+        engine.start(EngineCallbacks())
+
+    assert playback_started.is_set()
+    owner = engine._streaming_decode_owner
+    session = engine._streaming_decode_session
+    assert owner is not None
+    assert session is not None and session.closed
+    assert owner.snapshot().session_closed
+    assert input_events == ["open", "request_close", "close"]
+    assert not engine._running.is_set()
+    assert engine._capture_stopping.is_set()
+    assert engine._playback_stopping.is_set()
+    assert engine._capture_thread is None
+    assert engine._capture_media_session is None
+    assert engine._stream_in is None
+    assert engine._play_thread is None
+    assert engine._receipt_thread is None
+    assert not engine._receipt_running.is_set()
+    assert not engine._capture_resource_hold.is_set()
+    assert engine._play_q.empty()
+
+    # Rollback leaves ordinary public cleanup idempotent and bounded.
+    engine.stop()
+    assert engine._capture_thread is None
+    assert engine._capture_media_session is None
+    assert engine._stream_in is None
+    assert engine._play_thread is None
+    assert engine._receipt_thread is None
+    assert not engine._capture_resource_hold.is_set()
+    assert engine._play_q.empty()
+
+
+def test_rollback_closes_new_session_with_stale_closed_owner_metadata() -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    old_session = SherpaStreamingDecodeSession(_Recognizer())
+    old_owner = decode_owner_module.SherpaStreamingDecodeOwner(
+        old_session,
+        run_id=1,
+        capture_scope=sherpa_module.CaptureScope(
+            capture_epoch=0,
+            capture_generation=1,
+        ),
+        processor=lambda _owner: None,
+    )
+    assert old_owner.close(timeout=0.0)
+    engine._streaming_decode_owner = old_owner
+    engine._capture_thread = old_owner.thread
+
+    new_session = SherpaStreamingDecodeSession(_Recognizer())
+    engine._streaming_decode_session = new_session
+
+    engine._rollback_failed_capture_processor_launch(
+        new_session,
+        decode_owner=None,
+        capture_start_ambiguous=False,
+    )
+
+    assert new_session.closed
+    assert old_owner.snapshot().state is decode_owner_module.DecodeOwnerState.CLOSED
+    assert engine._capture_thread is None
+    assert not engine._capture_resource_hold.is_set()
+
+
+def test_unobserved_playback_launch_is_retained_until_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Later stop must not join a tail worker whose start never published."""
+
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            media_pcm_queue_ms=300.0,
+            input_calibrate=False,
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            aec_enabled=False,
+            barge_in_enabled=False,
+            coherence_barge_in_enabled=False,
+        )
+    )
+    recognizer = _Recognizer()
+    read_entered = Event()
+    close_requested = Event()
+    input_events: list[str] = []
+    pending_playback: list[Thread] = []
+
+    class _FakeRecoveringInput:
+        actual_samplerate = 16_000
+        actual_device = "fake-input"
+        generation = 1
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def open(self) -> None:
+            input_events.append("open")
+
+        def request_close(self) -> None:
+            input_events.append("request_close")
+            close_requested.set()
+
+        def read(self, frames: int):
+            read_entered.set()
+            assert close_requested.wait(_WAIT_SECONDS)
+            return np.zeros(frames, dtype="float32"), False
+
+        def abort_read(self, *, timeout=None) -> bool:
+            input_events.append("abort_read")
+            close_requested.set()
+            return True
+
+        def close(self, *, teardown_timeout=None) -> bool:
+            assert teardown_timeout is not None
+            input_events.append("close")
+            return True
+
+    sounddevice = SimpleNamespace(
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "fake-input",
+            "default_samplerate": 16_000,
+        },
+        check_input_settings=lambda **_kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    monkeypatch.setattr(
+        recovering_input_module,
+        "_RecoveringInputStream",
+        _FakeRecoveringInput,
+    )
+
+    def build() -> None:
+        engine._recognizer = recognizer
+        engine._tts = object()
+
+    monkeypatch.setattr(engine, "_build", build)
+    monkeypatch.setattr(engine, "_resolve_capture_domain", lambda *_a, **_k: True)
+    monkeypatch.setattr(engine, "_rebind_speech_evidence_domain", lambda: None)
+
+    original_thread_start = Thread.start
+
+    def interrupt_before_playback_publication(thread: Thread) -> None:
+        target = getattr(thread, "_target", None)
+        is_playback_worker = bool(
+            getattr(target, "__self__", None) is engine
+            and getattr(target, "__func__", None)
+            is SherpaOnnxEngine._playback_loop
+        )
+        if not is_playback_worker:
+            original_thread_start(thread)
+            return
+        assert read_entered.wait(_WAIT_SECONDS)
+        pending_playback.append(thread)
+        raise KeyboardInterrupt("synthetic unpublished playback launch")
+
+    monkeypatch.setattr(Thread, "start", interrupt_before_playback_publication)
+
+    with pytest.raises(
+        KeyboardInterrupt,
+        match="synthetic unpublished playback launch",
+    ):
+        engine.start(EngineCallbacks())
+
+    assert len(pending_playback) == 1
+    worker = pending_playback[0]
+    assert not worker._started.is_set()
+    assert engine._play_thread is worker
+    assert engine._capture_resource_hold.is_set()
+    assert engine._stream_in is not None
+
+    # This used to raise ``cannot join thread before it is started``. The
+    # unpublished tail worker remains fail-closed; capture can still close once
+    # its own reader and owner are independently quiescent.
+    engine.stop()
+    assert engine._play_thread is worker
+    assert engine._capture_resource_hold.is_set()
+    assert engine._stream_in is None
+
+    # Resolve the test-controlled launch ambiguity exactly as a late OS-thread
+    # transfer would. It observes the shutdown fence and exits without audio.
+    original_thread_start(worker)
+    worker.join(_WAIT_SECONDS)
+    assert not worker.is_alive()
+
+    engine.stop()
+    assert engine._stream_in is None
+    assert engine._capture_media_session is None
+    assert not engine._capture_resource_hold.is_set()
+    assert input_events.count("close") == 1
+
+
+@pytest.mark.parametrize(
+    "worker_attribute",
+    ["_final_thread", "_virtual_route_thread"],
+)
+def test_stop_does_not_join_other_unobserved_tail_workers(
+    worker_attribute: str,
+) -> None:
+    engine = SherpaOnnxEngine(SherpaConfig())
+    worker = Thread(target=lambda: None)
+    setattr(engine, worker_attribute, worker)
+
+    engine.stop()
+
+    assert getattr(engine, worker_attribute) is worker
+    assert not worker._started.is_set()
+    worker.start()
+    worker.join(_WAIT_SECONDS)
+    assert not worker.is_alive()
+
+    engine.stop()
+    assert not engine._thread_may_start_or_is_alive(worker)
+
+
+def test_stop_cannot_upgrade_rollback_bundle_with_unobserved_final_worker() -> None:
+    close_calls: list[bool] = []
+
+    class _ManifestStatus:
+        value = "incomplete"
+
+    class _FakeBundle:
+        manifest_status = _ManifestStatus()
+        failure_codes = ("startup_rollback",)
+
+        def close(self, *, clean_shutdown: bool):
+            close_calls.append(clean_shutdown)
+            return "fake-manifest.json"
+
+    engine = SherpaOnnxEngine(SherpaConfig())
+    worker = Thread(target=lambda: None)
+    engine._final_thread = worker
+    engine._diagnostic_bundle = _FakeBundle()
+    engine._capture_startup_rollback.set()
+
+    engine.stop()
+
+    assert close_calls == [False]
+    assert engine._diagnostic_bundle is None
+    assert engine._final_thread is worker
+    assert not worker._started.is_set()
+    worker.start()
+    worker.join(_WAIT_SECONDS)
+    engine.stop()
 
 
 def test_late_tracked_speech_cannot_resurrect_receipt_dispatcher(

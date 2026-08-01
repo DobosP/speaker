@@ -6,11 +6,18 @@ wiring directly (the threaded capture loop is out of scope).
 """
 from __future__ import annotations
 
+from threading import Event
+
 from core.engines._sherpa_streaming_decode import (
     SherpaStreamingDecodeSession,
     SherpaStreamingDecodeStream,
 )
+from core.engines._sherpa_streaming_decode_owner import (
+    DecodeStreamRole,
+    SherpaStreamingDecodeOwner,
+)
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.realtime_media_stage import CaptureScope
 
 
 class _FakePunct:
@@ -57,10 +64,12 @@ def test_postprocess_final_survives_punctuation_failure():
 class _FakeRecognizer:
     def __init__(self):
         self.hotwords_arg = "UNSET"
+        self.hotword_args = []
         self.plain_calls = 0
 
     def create_stream(self, hotwords=None):
         self.hotwords_arg = hotwords
+        self.hotword_args.append(hotwords)
         return object()
 
 
@@ -109,7 +118,7 @@ def test_new_asr_stream_falls_back_when_build_rejects_hotwords():
     assert rec.plain_calls == 1
 
 
-def test_capture_owner_preserves_hotword_stream_creation():
+def test_decode_session_preserves_hotword_stream_creation():
     eng = SherpaOnnxEngine(
         SherpaConfig(
             asr_decoding_method="modified_beam_search",
@@ -128,7 +137,7 @@ def test_capture_owner_preserves_hotword_stream_creation():
     session.close()
 
 
-def test_capture_owner_preserves_older_sherpa_plain_stream_fallback():
+def test_decode_session_preserves_older_sherpa_plain_stream_fallback():
     eng = SherpaOnnxEngine(
         SherpaConfig(
             asr_decoding_method="modified_beam_search",
@@ -146,3 +155,68 @@ def test_capture_owner_preserves_older_sherpa_plain_stream_fallback():
     assert rec.plain_calls == 1
     assert session.snapshot().native_calls_failed == 1
     session.close()
+
+
+def _run_owner_stream_creation(eng, rec):
+    session = SherpaStreamingDecodeSession(rec)
+    release = Event()
+    streams = []
+
+    def process(owner):
+        streams.append(
+            eng._new_asr_stream(owner, role=DecodeStreamRole.PRIMARY)
+        )
+        streams.append(
+            eng._new_asr_stream(owner, role=DecodeStreamRole.WORD_CUT)
+        )
+        owner.publish_processor_ready()
+        assert release.wait(2.0)
+
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(capture_epoch=0, capture_generation=1),
+        processor=process,
+    )
+    owner.start(timeout=1.0)
+    release.set()
+    assert owner.close(timeout=2.0)
+    return owner.snapshot(), session.snapshot(), streams
+
+
+def test_dedicated_owner_preserves_hotwords_for_both_stream_roles():
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            asr_decoding_method="modified_beam_search",
+            asr_hotwords="Flurry\nParis",
+        )
+    )
+    rec = _FakeRecognizer()
+    eng._hotwords = ["Flurry", "Paris"]
+
+    owner, session, streams = _run_owner_stream_creation(eng, rec)
+
+    assert all(type(stream) is SherpaStreamingDecodeStream for stream in streams)
+    assert rec.hotword_args == ["Flurry\nParis", "Flurry\nParis"]
+    assert owner.streams_created == 2
+    assert owner.streams_retired == 2
+    assert session.native_calls_failed == 0
+
+
+def test_dedicated_owner_preserves_old_sherpa_fallback_for_both_roles():
+    eng = SherpaOnnxEngine(
+        SherpaConfig(
+            asr_decoding_method="modified_beam_search",
+            asr_hotwords="Flurry",
+        )
+    )
+    rec = _NoHotwordRecognizer()
+    eng._hotwords = ["Flurry"]
+
+    owner, session, streams = _run_owner_stream_creation(eng, rec)
+
+    assert all(type(stream) is SherpaStreamingDecodeStream for stream in streams)
+    assert rec.plain_calls == 2
+    assert owner.streams_created == 2
+    assert owner.streams_retired == 2
+    assert session.native_calls_failed == 2

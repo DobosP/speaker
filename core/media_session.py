@@ -3,8 +3,9 @@
 The native reader must never wait for VAD, ASR, speaker evidence, callbacks, or
 any other downstream work.  :class:`CaptureMailbox` therefore has a fixed time
 and frame budget and a non-blocking producer.  When that budget is exceeded it
-discards stale queued PCM, keeps the newest admissible block, and attaches one
-coalesced discontinuity to the next block consumed.
+discards stale queued PCM, cancels an unclaimed in-flight block, keeps the newest
+admissible block, and attaches one coalesced discontinuity to the next block
+consumed.
 
 ``CaptureMediaSession`` owns the small reader pump used by a live engine.  It
 does not interpret speech and deliberately knows nothing about enrollment,
@@ -14,7 +15,7 @@ barge-in authority, recognizers, or playback.
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import math
 import threading
@@ -30,6 +31,88 @@ class CaptureGapReason(str, Enum):
     DEVICE_OVERFLOW = "device_overflow"
     MEDIA_BACKPRESSURE = "media_backpressure"
     CAPTURE_RECOVERY = "capture_recovery"
+
+
+class CaptureEffectLease:
+    """Linearizable right to publish effects from one captured block.
+
+    The media processor claims this lease before the first externally visible
+    effect.  A reader-side gap can cancel an unclaimed in-flight block under the
+    mailbox condition; an already-claimed block wins that ordering and may
+    finish while later PCM waits behind the discontinuity.
+    """
+
+    __slots__ = (
+        "_cancel_event",
+        "_cancel_requested",
+        "_claims",
+        "_condition",
+        "_finished",
+        "_owner_thread",
+    )
+
+    def __init__(self, condition: threading.Condition) -> None:
+        self._condition = condition
+        self._cancel_event = threading.Event()
+        self._cancel_requested = False
+        self._claims = 0
+        self._owner_thread: Optional[threading.Thread] = None
+        self._finished = False
+
+    @property
+    def cancel_event(self) -> threading.Event:
+        return self._cancel_event
+
+    @property
+    def cancelled(self) -> bool:
+        with self._condition:
+            return self._cancel_requested
+
+    @property
+    def claimed_by_current_thread(self) -> bool:
+        caller = threading.current_thread()
+        with self._condition:
+            return self._claims > 0 and self._owner_thread is caller
+
+    def claim(self) -> bool:
+        caller = threading.current_thread()
+        with self._condition:
+            if self._finished:
+                return False
+            if self._claims:
+                if self._owner_thread is not caller:
+                    return False
+                self._claims += 1
+                return True
+            if self._cancel_requested:
+                return False
+            self._owner_thread = caller
+            self._claims = 1
+            return True
+
+    def release(self) -> None:
+        caller = threading.current_thread()
+        with self._condition:
+            if self._claims <= 0 or self._owner_thread is not caller:
+                raise RuntimeError("capture effect lease belongs to another thread")
+            self._claims -= 1
+            if self._claims == 0:
+                self._owner_thread = None
+                self._condition.notify_all()
+
+    def _cancel_locked(self) -> bool:
+        if self._cancel_requested:
+            return False
+        self._cancel_requested = True
+        self._cancel_event.set()
+        return self._claims == 0
+
+    def _finish_locked(self) -> None:
+        if self._claims:
+            raise RuntimeError("cannot finish a claimed capture effect lease")
+        if self._finished:
+            raise RuntimeError("captured block already finished")
+        self._finished = True
 
 
 @dataclass(frozen=True)
@@ -70,9 +153,21 @@ class CaptureBlockContext:
     playback_onset_at: float = 0.0
     last_playback_at: float = 0.0
     aec_delay_samples: int = 0
-    far_reference_zero: Optional[np.ndarray] = None
-    far_reference_delayed: Optional[np.ndarray] = None
-    coherence_reference: Optional[np.ndarray] = None
+    far_reference_zero: Optional[np.ndarray] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    far_reference_delayed: Optional[np.ndarray] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    coherence_reference: Optional[np.ndarray] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -86,13 +181,14 @@ class CaptureGap:
     last_dropped_sequence: Optional[int]
     dropped_frames: int
     dropped_samples: int
+    in_flight_cancelled: int = 0
 
 
 @dataclass(frozen=True)
 class CapturedBlock:
     """One owned mono PCM block plus its capture lineage."""
 
-    pcm: np.ndarray
+    pcm: np.ndarray = field(repr=False, compare=False)
     sample_rate_hz: int
     sequence: int
     captured_at: float
@@ -103,8 +199,17 @@ class CapturedBlock:
     source_device: Any = None
     source_sample_start: int = 0
     source_sample_end: int = 0
-    context: Optional[CaptureBlockContext] = None
+    context: Optional[CaptureBlockContext] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
     gap_before: Optional[CaptureGap] = None
+    effect_lease: Optional[CaptureEffectLease] = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def duration_ms(self) -> float:
@@ -122,11 +227,12 @@ class CaptureOfferResult:
     buffered_ms: float
     dropped_frames: int = 0
     dropped_samples: int = 0
+    in_flight_cancelled: int = 0
 
 
 @dataclass(frozen=True)
 class _QueuedBlock:
-    pcm: np.ndarray
+    pcm: np.ndarray = field(repr=False, compare=False)
     sample_rate_hz: int
     sequence: int
     captured_at: float
@@ -138,6 +244,7 @@ class _QueuedBlock:
     source_sample_start: int
     source_sample_end: int
     context: Optional[CaptureBlockContext]
+    effect_lease: CaptureEffectLease = field(repr=False, compare=False)
 
 
 _GAP_PRIORITY = {
@@ -313,6 +420,7 @@ class CaptureMailbox:
         self._clock = clock
         self._condition = threading.Condition()
         self._queue: deque[_QueuedBlock] = deque()
+        self._in_flight: Optional[CapturedBlock] = None
         self._queued_seconds = 0.0
         self._pending_gap: Optional[CaptureGap] = None
         self._next_sequence = 1
@@ -337,6 +445,11 @@ class CaptureMailbox:
     def buffered_ms(self) -> float:
         with self._condition:
             return 1000.0 * self._queued_seconds
+
+    @property
+    def has_in_flight(self) -> bool:
+        with self._condition:
+            return self._in_flight is not None
 
     @property
     def closed(self) -> bool:
@@ -386,16 +499,16 @@ class CaptureMailbox:
         # Native wrappers and test doubles may recycle their read buffer after
         # this call. Own a contiguous snapshot before cross-thread publication.
         # An invalid oversized block is never copied into mailbox storage.
-        samples = (
-            None
-            if oversize
-            else np.array(
+        samples = None
+        if not oversize:
+            # A bytes-backed view is not merely marked read-only: consumers
+            # cannot reverse its WRITEABLE flag and mutate cross-thread PCM.
+            encoded = np.asarray(
                 source_view,
                 dtype="float32",
-                copy=True,
                 order="C",
-            ).reshape(-1)
-        )
+            ).reshape(-1).tobytes(order="C")
+            samples = np.frombuffer(encoded, dtype="float32")
         at = self._clock() if captured_at is None else float(captured_at)
         if not math.isfinite(at) or at < 0.0:
             raise ValueError("captured_at must be a finite non-negative clock")
@@ -467,9 +580,27 @@ class CaptureMailbox:
             if gap_reason is not None:
                 self._queue.clear()
                 self._queued_seconds = 0.0
+                for block in dropped:
+                    block.effect_lease._cancel_locked()
             rejected = oversize
             dropped_sequences = [block.sequence for block in dropped]
             dropped_samples = sum(block.pcm.size for block in dropped)
+            in_flight_cancelled = 0
+            cancelled_carrier_gap = None
+            if (
+                gap_reason is not None
+                and self._in_flight is not None
+                and self._in_flight.effect_lease is not None
+                and self._in_flight.effect_lease._cancel_locked()
+            ):
+                in_flight_cancelled = 1
+                dropped_sequences.append(self._in_flight.sequence)
+                dropped_samples += int(self._in_flight.pcm.size)
+                # take() transfers the pending gap onto its carrier. If reader
+                # loss cancels that unclaimed carrier, preserve its whole
+                # discontinuity in the replacement instead of silently
+                # downgrading (for example) recovery to later backpressure.
+                cancelled_carrier_gap = self._in_flight.gap_before
             if rejected:
                 dropped_sequences.append(sequence)
                 dropped_samples += sample_count
@@ -478,6 +609,8 @@ class CaptureMailbox:
                     gap_reason,
                     dropped_sequences=dropped_sequences,
                     dropped_samples=dropped_samples,
+                    in_flight_cancelled=in_flight_cancelled,
+                    cancelled_carrier_gap=cancelled_carrier_gap,
                 )
 
             if not rejected:
@@ -496,6 +629,7 @@ class CaptureMailbox:
                         source_sample_start=sample_start,
                         source_sample_end=sample_end,
                         context=context,
+                        effect_lease=CaptureEffectLease(self._condition),
                     )
                 )
                 self._queued_seconds += duration
@@ -509,6 +643,7 @@ class CaptureMailbox:
                 buffered_ms=1000.0 * self._queued_seconds,
                 dropped_frames=len(dropped_sequences),
                 dropped_samples=dropped_samples,
+                in_flight_cancelled=in_flight_cancelled,
             )
 
     def take(self, timeout: Optional[float] = None) -> Optional[CapturedBlock]:
@@ -523,7 +658,11 @@ class CaptureMailbox:
             raise ValueError("timeout must be a finite non-negative number")
         deadline = None if timeout is None else time.monotonic() + float(timeout)
         with self._condition:
-            while not self._queue and not self._closed:
+            while True:
+                if self._in_flight is not None:
+                    raise RuntimeError("capture mailbox supports one exact consumer")
+                if self._queue or self._closed:
+                    break
                 if deadline is None:
                     self._condition.wait()
                     continue
@@ -547,7 +686,7 @@ class CaptureMailbox:
             ):
                 gap = self._pending_gap
                 self._pending_gap = None
-            return CapturedBlock(
+            captured = CapturedBlock(
                 pcm=queued.pcm,
                 sample_rate_hz=queued.sample_rate_hz,
                 sequence=queued.sequence,
@@ -561,15 +700,41 @@ class CaptureMailbox:
                 source_sample_end=queued.source_sample_end,
                 context=queued.context,
                 gap_before=gap,
+                effect_lease=queued.effect_lease,
             )
+            self._in_flight = captured
+            return captured
+
+    def finish(self, captured: CapturedBlock) -> bool:
+        """Release the exact in-flight block after all effect claims end."""
+
+        if not isinstance(captured, CapturedBlock):
+            raise TypeError("captured must be a CapturedBlock")
+        with self._condition:
+            if self._in_flight is not captured:
+                raise RuntimeError("captured block is not the exact in-flight owner")
+            lease = captured.effect_lease
+            if lease is None:
+                raise RuntimeError("mailbox block is missing its effect lease")
+            lease._finish_locked()
+            self._in_flight = None
+            self._condition.notify_all()
+            return not lease._cancel_requested
 
     def close(self) -> None:
         """Reject offers, retire queued PCM, and wake every consumer."""
 
         with self._condition:
             self._closed = True
+            for block in self._queue:
+                block.effect_lease._cancel_locked()
             self._queue.clear()
             self._queued_seconds = 0.0
+            if (
+                self._in_flight is not None
+                and self._in_flight.effect_lease is not None
+            ):
+                self._in_flight.effect_lease._cancel_locked()
             self._pending_gap = None
             self._condition.notify_all()
 
@@ -579,17 +744,25 @@ class CaptureMailbox:
         *,
         dropped_sequences: list[int],
         dropped_samples: int,
+        in_flight_cancelled: int,
+        cancelled_carrier_gap: Optional[CaptureGap],
     ) -> None:
         prior_generation = self._capture_generation
         self._capture_generation += 1
-        existing = self._pending_gap
         first = min(dropped_sequences) if dropped_sequences else None
         last = max(dropped_sequences) if dropped_sequences else None
         dropped_frames = len(dropped_sequences)
-        if existing is not None:
+        seen_gaps: set[int] = set()
+        for existing in (self._pending_gap, cancelled_carrier_gap):
+            if existing is None or id(existing) in seen_gaps:
+                continue
+            seen_gaps.add(id(existing))
             if _GAP_PRIORITY[existing.reason] > _GAP_PRIORITY[reason]:
                 reason = existing.reason
-            prior_generation = existing.prior_generation
+            prior_generation = min(
+                prior_generation,
+                existing.prior_generation,
+            )
             if existing.first_dropped_sequence is not None:
                 first = (
                     existing.first_dropped_sequence
@@ -604,6 +777,7 @@ class CaptureMailbox:
                 )
             dropped_frames += existing.dropped_frames
             dropped_samples += existing.dropped_samples
+            in_flight_cancelled += existing.in_flight_cancelled
         self._pending_gap = CaptureGap(
             reason=reason,
             prior_generation=prior_generation,
@@ -612,6 +786,7 @@ class CaptureMailbox:
             last_dropped_sequence=last,
             dropped_frames=dropped_frames,
             dropped_samples=dropped_samples,
+            in_flight_cancelled=in_flight_cancelled,
         )
 
 
@@ -631,6 +806,7 @@ class CaptureMediaSession:
             Callable[[CaptureStamp], CaptureBlockContext]
         ] = None,
         thread_name: str = "speaker-capture-reader",
+        thread_factory: Optional[Callable[..., threading.Thread]] = None,
     ) -> None:
         if (
             isinstance(block_seconds, bool)
@@ -664,13 +840,17 @@ class CaptureMediaSession:
         self._clock = clock
         self._context_provider = context_provider
         self._stop = threading.Event()
+        self._terminal = threading.Event()
         self._error: Optional[BaseException] = None
-        self._started = False
+        self._lifecycle_lock = threading.Lock()
+        self._start_attempted = False
+        self._start_returned = False
         self._source_sample_cursor = 0
         self._cursor_source_generation = source_generation
         self._cursor_sample_rate_hz = source_sample_rate_hz
         self._cursor_source_device = source_device
-        self._thread = threading.Thread(
+        factory = threading.Thread if thread_factory is None else thread_factory
+        self._thread = factory(
             target=self._reader_loop,
             name=thread_name,
             daemon=True,
@@ -692,22 +872,98 @@ class CaptureMediaSession:
     def is_alive(self) -> bool:
         return self._thread.is_alive()
 
+    @property
+    def start_observed(self) -> bool:
+        """Whether the reader crossed Python's thread-start publication seam."""
+
+        started = getattr(self._thread, "_started", None)
+        is_set = getattr(started, "is_set", None)
+        if callable(is_set):
+            try:
+                if is_set():
+                    return True
+            except Exception:
+                pass
+        return getattr(self._thread, "ident", None) is not None
+
+    @property
+    def may_start_or_is_alive(self) -> bool:
+        """Conservatively retain a reader whose launch outcome is ambiguous."""
+
+        with self._lifecycle_lock:
+            attempted = self._start_attempted
+            returned = self._start_returned
+        if not attempted:
+            return False
+        if self.start_observed:
+            return self._thread.is_alive()
+        if not returned:
+            return True
+        # Successful ``Thread.start`` normally publishes ``_started`` before
+        # returning. This narrow fallback supports simple injected test doubles.
+        try:
+            return bool(self._thread.is_alive())
+        except Exception:
+            return True
+
     def start(self) -> None:
-        if self._started:
-            raise RuntimeError("capture media session already started")
+        with self._lifecycle_lock:
+            if self._start_attempted:
+                raise RuntimeError("capture media session already started")
+            # Mark the transfer attempt before entering Thread.start(): an
+            # asynchronous exception can arrive after the OS thread exists but
+            # before CPython publishes ident/_started to the caller.
+            self._start_attempted = True
         self._thread.start()
-        self._started = True
+        with self._lifecycle_lock:
+            self._start_returned = True
 
     def take(self, timeout: Optional[float] = None) -> Optional[CapturedBlock]:
         return self.mailbox.take(timeout)
+
+    def finish(self, captured: CapturedBlock) -> bool:
+        return self.mailbox.finish(captured)
 
     def request_stop(self) -> None:
         self._stop.set()
         self.mailbox.close()
 
-    def join(self, timeout: Optional[float] = None) -> None:
-        if self._started:
-            self._thread.join(timeout)
+    def join(self, timeout: Optional[float] = None) -> bool:
+        if timeout is not None and (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, (int, float))
+            or not math.isfinite(float(timeout))
+            or float(timeout) < 0.0
+        ):
+            raise ValueError("timeout must be a finite non-negative number")
+        deadline = (
+            None if timeout is None else time.monotonic() + float(timeout)
+        )
+        with self._lifecycle_lock:
+            attempted = self._start_attempted
+        if not attempted:
+            return True
+        if self._thread is threading.current_thread():
+            return False
+        if not self.start_observed:
+            started = getattr(self._thread, "_started", None)
+            wait = getattr(started, "wait", None)
+            if callable(wait):
+                remaining = (
+                    None
+                    if deadline is None
+                    else max(0.0, deadline - time.monotonic())
+                )
+                wait(remaining)
+        if not self.start_observed:
+            return not self.may_start_or_is_alive
+        remaining = (
+            None
+            if deadline is None
+            else max(0.0, deadline - time.monotonic())
+        )
+        self._thread.join(remaining)
+        return not self._thread.is_alive()
 
     def _reader_loop(self) -> None:
         try:
@@ -781,3 +1037,4 @@ class CaptureMediaSession:
                 self._error = exc
         finally:
             self.mailbox.close()
+            self._terminal.set()

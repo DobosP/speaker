@@ -4,8 +4,8 @@ Single source of truth: this file > newest accepted ADR > everything else; dated
 
 Last verified: 2026-08-01 on Linux ROG.
 
-- Current non-real logic gate: 7,204 passed as 7,174 low-priority repository tests plus 30 isolated logging/path/thread-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0110 focused 295; current APM/DTD 6.
-- Streaming family: 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71; Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
+- Current non-real logic gate: 7,241 passed as 7,210 low-priority broad tests plus 31 isolated sandbox/logging/path/thread-sensitive checks; 14 skipped, 23 model-only deselected, 9 pre-existing warnings. ADR-0111 focused 325; owner 10; current APM/DTD 6.
+- Earlier landed component baselines: streaming family 653 passed, 3 model-only deselected; structured lifecycle 270; capture-replay 71. Moonshine/Nemotron/Parakeet NeMo stay rejected (ADR-0090/0091/0099).
 - Post-ASR mailbox/adjacent 221; LiveKit Agents seam/manual-session 73, adjacent baseline 224; unified-session 55; playback/actor/runtime 150; public-v3 81 file/145 combined.
 - Stable evidence: both conversation pairs 42/42, semantic-memory PASS, owner replay 9/9, two synthetic-delay passes (ADR-0051/0065/0067/0068/0070/0080).
 
@@ -22,7 +22,8 @@ Last verified: 2026-08-01 on Linux ROG.
 - Open-speaker barge-in must work without enrollment. Generic four-novel-word cuts are identity-optional; optional multi-voice mode and own-TTS-ambiguous STOP require compatible speaker authority (ADR-0008/0042/0072).
 - Sherpa native reads use a 300 ms/eight-frame capture-only MediaSession. Overload retires stale PCM/lineage; atomic reader context and one rational playback clock prevent time/reference drift. Priority recovery preserves fatal state; same-domain gaps preserve learned evidence, recreate KWS, atomically claim confirmation, and guard first-block effects (ADR-0088).
 - Async endpoint finalization crosses a route-neutral, process-local bounded media stage with explicit capture epoch/generation, immutable owned PCM, and per-item cancellation. Overload never decodes inline; shutdown releases queued work without depending on diagnostics, and callback-owned stop defers retained audio cleanup until its capture-effect lease unwinds. Identities, entry points, tools, and model defaults stay unchanged (ADR-0107).
-- Each local Sherpa capture run transfers its primary online recognizer and all streams into one exact capture-thread decode owner. Opaque handles reject foreign/re-entrant/stale access, native retirement stays on the owner, and capture replay binds/attests this source; models and defaults are unchanged (ADR-0110).
+- The default bounded Sherpa path now runs its complete DSP/VAD/primary-ASR/playback-confirm/word-cut/endpoint/capture-loop callback state machine on one dedicated exact-thread decode owner behind the existing capture mailbox. Immutable PCM/reference snapshots, cancelable effect leases, whole-scope loss rotation, whole-role native-error recovery, owner-before-reader readiness, rollback-safe tail workers, and deferred re-entrant cleanup are headlessly covered. The inline zero-queue path remains compatibility only (ADR-0110/0111).
+- Capture replay uses one synchronous decode session and binds the dedicated-owner source in its digest, but explicitly rejects and does not execute the production owner thread. It is not native-reader, mailbox-overload, effect-lease, device, WER, latency, or live evidence (ADR-0111).
 - Sherpa carries immutable acoustic identity through partial, final, barge,
   command, and abort paths; FileReplay does so for deterministic replay. Typed
   stale/duplicate ingress is rejected before effects; command PCM cannot also
@@ -77,7 +78,7 @@ Last verified: 2026-08-01 on Linux ROG.
 
 ## Next
 
-- Move the complete local decode owner behind an ordered bounded stage only with immutable PCM, stream incarnation, callback fences, and whole-old-scope retirement/generation rotation on loss; generic drop-oldest is not sufficient (ADR-0107/0110).
+- Add an end-to-end conversation acceptance gate over turn detection, interruption recovery, incremental TTS, tool completion, and restart behavior; keep model/data acquisition and GPU cells isolated from runtime defaults until their aggregate and live gates pass (ADR-0111).
 - Capture fresh `./live.sh` vault/open-speaker evidence, export exact owner-labelled inputs, add disjoint command/multi-voice strata, then run live A/B; add native-reader/gap and AEC replay (ADR-0092/0100/0108/0109).
 - Keep `parakeet.cpp`, Common Voice/Faster-Whisper model runs, and publisher/mobile/remote work isolated until their capture, ownership, device, and live gates pass.
 

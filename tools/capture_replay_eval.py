@@ -114,6 +114,7 @@ _EVALUATOR_SOURCE_FILES = (
     "core/engines/_faster_whisper.py",
     "core/engines/_sherpa_models.py",
     "core/engines/_sherpa_streaming_decode.py",
+    "core/engines/_sherpa_streaming_decode_owner.py",
     "core/engines/_speech_evidence.py",
     "core/engines/echo_coherence.py",
     "core/engines/sherpa.py",
@@ -416,7 +417,11 @@ def _attest_streaming_decode_execution(
     expected_capture_runs: int,
 ) -> str:
     session = engine._streaming_decode_session
-    if session is None or expected_capture_runs <= 0:
+    if (
+        session is None
+        or engine._streaming_decode_owner is not None
+        or expected_capture_runs <= 0
+    ):
         raise CaptureReplayEvaluationError()
     snapshot = session.snapshot()
     if (
@@ -430,7 +435,7 @@ def _attest_streaming_decode_execution(
         or snapshot.streams_retired != snapshot.streams_created
     ):
         raise CaptureReplayEvaluationError()
-    return "single-owner-synchronous"
+    return "single-session-synchronous-replay"
 
 
 def _safe_label(value: object, allowed: frozenset[str]) -> str:
@@ -781,9 +786,11 @@ def _execute_case(
         engine._capture_media_session = session
         engine._running.set()
         session.start()
-        # The evaluator batch is one decode-owner run. Each case still creates
-        # fresh opaque streams, but the loaded native recognizer is released
-        # only after every case/repeat has completed on this same thread.
+        # The evaluator batch reuses one synchronous decode session. Each case
+        # creates fresh opaque streams, but the loaded native recognizer is
+        # released only after every case/repeat completes on this same thread.
+        # Production's dedicated decode-owner thread is source-bound above but
+        # deliberately not claimed as replay execution evidence here.
         engine._capture_loop(close_decode_session=False)
         wall_seconds = time.perf_counter() - started
         if not session.naturally_exhausted or session.error is not None:

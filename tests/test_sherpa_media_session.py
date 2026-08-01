@@ -2,11 +2,21 @@ from __future__ import annotations
 
 import threading
 import time
+import sys
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from core.engine import EngineCallbacks, TranscriptAbortReason
 from core.engines.sherpa import SherpaConfig, SherpaOnnxEngine
+from core.engines import _recovering_input as recovering_input_module
+from core.engines._sherpa_streaming_decode_owner import DecodeOwnerState
+from core.engines._sherpa_streaming_decode_owner import (
+    DecodeStreamRole,
+    SherpaStreamingDecodeOwner,
+)
+from core.realtime_media_stage import CaptureScope
 from core.engines._aec import FarEndRing
 from core.engines._asr_segment import ASRSegment
 from core.media_session import (
@@ -14,6 +24,7 @@ from core.media_session import (
     CaptureControlLane,
     CaptureGap,
     CaptureGapReason,
+    CaptureMailbox,
     CaptureMediaSession,
     CaptureStamp,
     CapturedBlock,
@@ -27,6 +38,321 @@ def test_sherpa_defaults_to_bounded_capture_with_inline_opt_out() -> None:
     assert config.media_pcm_queue_max_frames == 8
     assert config.barge_word_cut_require_speaker is False
     assert SherpaConfig(media_pcm_queue_ms=0.0).media_pcm_queue_ms == 0.0
+
+
+def test_public_start_uses_ready_owner_before_default_reader_and_restarts(
+    monkeypatch,
+) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            input_calibrate=False,
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            aec_enabled=False,
+            barge_in_enabled=False,
+            coherence_barge_in_enabled=False,
+        )
+    )
+    recognizers = []
+    inputs = []
+    order: list[tuple[str, int, str]] = []
+
+    class _Recognizer:
+        def __init__(self, run: int) -> None:
+            self.run = run
+            self.native_threads: list[threading.Thread] = []
+
+        def _note(self, operation: str) -> None:
+            thread = threading.current_thread()
+            self.native_threads.append(thread)
+            order.append((operation, self.run, thread.name))
+
+        def create_stream(self):
+            self._note("create_stream")
+            return object()
+
+        def is_ready(self, _stream) -> bool:
+            self._note("is_ready")
+            return False
+
+        def decode_stream(self, _stream) -> None:
+            self._note("decode_stream")
+
+        def get_result(self, _stream) -> str:
+            self._note("get_result")
+            return ""
+
+        def is_endpoint(self, _stream) -> bool:
+            self._note("is_endpoint")
+            return False
+
+        def reset(self, _stream) -> None:
+            self._note("reset")
+
+    class _Input:
+        actual_samplerate = 16_000
+        actual_device = "ready-before-reader"
+        generation = 1
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.run = len(inputs) + 1
+            self.read_entered = threading.Event()
+            self.release = threading.Event()
+            self.read_exited = threading.Event()
+            inputs.append(self)
+
+        def open(self) -> None:
+            pass
+
+        def read(self, frames: int):
+            owner = engine._streaming_decode_owner
+            assert owner is not None
+            snapshot = owner.snapshot()
+            assert snapshot.ready
+            assert snapshot.state is DecodeOwnerState.RUNNING
+            assert any(
+                operation == "create_stream" and run == self.run
+                for operation, run, _thread in order
+            )
+            order.append(("read", self.run, threading.current_thread().name))
+            self.read_entered.set()
+            assert self.release.wait(2.0)
+            self.read_exited.set()
+            return np.zeros(frames, dtype="float32"), False
+
+        def request_close(self) -> None:
+            self.release.set()
+
+        def abort_read(self, *, timeout=None) -> bool:
+            self.release.set()
+            return self.read_exited.wait(timeout)
+
+        def close(self, **_kwargs) -> bool:
+            assert self.read_exited.is_set()
+            return True
+
+    sounddevice = SimpleNamespace(
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "ready-before-reader",
+            "default_samplerate": 16_000,
+        },
+        check_input_settings=lambda **_kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    monkeypatch.setattr(recovering_input_module, "_RecoveringInputStream", _Input)
+    monkeypatch.setattr(engine, "_resolve_capture_domain", lambda *_a, **_k: True)
+    monkeypatch.setattr(engine, "_rebind_speech_evidence_domain", lambda: None)
+
+    def build() -> None:
+        recognizer = _Recognizer(len(recognizers) + 1)
+        recognizers.append(recognizer)
+        engine._recognizer = recognizer
+        engine._tts = object()
+
+    monkeypatch.setattr(engine, "_build", build)
+
+    for run in (1, 2):
+        engine.start(EngineCallbacks())
+        source = inputs[-1]
+        assert source.read_entered.wait(1.0)
+        owner = engine._streaming_decode_owner
+        media = engine._capture_media_session
+        assert owner is not None and media is not None
+        assert engine._capture_thread is owner.thread
+        assert media.start_observed
+        assert owner.snapshot().state is DecodeOwnerState.RUNNING
+        create_index = next(
+            index
+            for index, item in enumerate(order)
+            if item[0] == "create_stream" and item[1] == run
+        )
+        read_index = next(
+            index
+            for index, item in enumerate(order)
+            if item[0] == "read" and item[1] == run
+        )
+        assert create_index < read_index
+
+        engine.stop()
+
+        terminal = owner.snapshot()
+        assert terminal.state is DecodeOwnerState.CLOSED
+        assert terminal.session_closed
+        assert not media.may_start_or_is_alive
+        assert engine._stream_in is None
+        assert not engine._capture_resource_hold.is_set()
+
+    assert len(recognizers) == 2
+    for recognizer in recognizers:
+        assert recognizer.native_threads
+        assert {thread.name for thread in recognizer.native_threads} == {
+            "speaker-streaming-decode-owner"
+        }
+
+
+def test_partial_callback_can_reenter_full_stop_on_decode_owner(monkeypatch) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            input_calibrate=False,
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            aec_enabled=False,
+            barge_in_enabled=False,
+            coherence_barge_in_enabled=False,
+        )
+    )
+    inputs = []
+    callback_done = threading.Event()
+    callback_errors: list[BaseException] = []
+    callback_threads: list[threading.Thread] = []
+
+    class _Recorder:
+        seconds = 0.1
+        path = "legacy-reentrant.wav"
+
+        def __init__(self) -> None:
+            self.close_calls = 0
+
+        def write(self, _samples) -> None:
+            pass
+
+        def close(self) -> None:
+            self.close_calls += 1
+
+    recorder = _Recorder()
+    engine.set_record_path("legacy-reentrant.wav")
+
+    class _Stream:
+        accepted = False
+        decoded = False
+
+        def accept_waveform(self, _sample_rate: int, _samples) -> None:
+            self.accepted = True
+
+    class _Recognizer:
+        def create_stream(self):
+            return _Stream()
+
+        def is_ready(self, stream: _Stream) -> bool:
+            return stream.accepted and not stream.decoded
+
+        def decode_stream(self, stream: _Stream) -> None:
+            stream.decoded = True
+
+        def get_result(self, stream: _Stream) -> str:
+            return "stop from callback" if stream.decoded else ""
+
+        def is_endpoint(self, _stream: _Stream) -> bool:
+            return False
+
+        def reset(self, stream: _Stream) -> None:
+            stream.accepted = False
+            stream.decoded = False
+
+    class _Input:
+        actual_samplerate = 16_000
+        actual_device = "reentrant-stop-mic"
+        generation = 1
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.release_first = threading.Event()
+            self.close_requested = threading.Event()
+            self.second_read_entered = threading.Event()
+            self.second_read_exited = threading.Event()
+            self.closed = threading.Event()
+            self.read_count = 0
+            inputs.append(self)
+
+        def open(self) -> None:
+            pass
+
+        def read(self, frames: int):
+            self.read_count += 1
+            if self.read_count == 1:
+                assert self.release_first.wait(2.0)
+                return np.full(frames, 0.1, dtype="float32"), False
+            self.second_read_entered.set()
+            assert self.close_requested.wait(2.0)
+            self.second_read_exited.set()
+            return np.zeros(frames, dtype="float32"), False
+
+        def request_close(self) -> None:
+            self.close_requested.set()
+
+        def abort_read(self, *, timeout=None) -> bool:
+            self.close_requested.set()
+            return self.second_read_exited.wait(timeout)
+
+        def close(self, **_kwargs) -> bool:
+            assert self.second_read_exited.is_set()
+            self.closed.set()
+            return True
+
+    sounddevice = SimpleNamespace(
+        query_devices=lambda *_args, **_kwargs: {
+            "name": "reentrant-stop-mic",
+            "default_samplerate": 16_000,
+        },
+        check_input_settings=lambda **_kwargs: None,
+    )
+    monkeypatch.setitem(sys.modules, "sounddevice", sounddevice)
+    monkeypatch.setattr(recovering_input_module, "_RecoveringInputStream", _Input)
+    monkeypatch.setattr(engine, "_resolve_capture_domain", lambda *_a, **_k: True)
+    monkeypatch.setattr(engine, "_rebind_speech_evidence_domain", lambda: None)
+
+    def build() -> None:
+        engine._recognizer = _Recognizer()
+        engine._tts = object()
+
+    monkeypatch.setattr(engine, "_build", build)
+
+    def open_recorders() -> None:
+        engine._recorder = recorder
+
+    monkeypatch.setattr(engine, "_open_recorders", open_recorders)
+
+    def stop_from_partial(_result) -> None:
+        callback_threads.append(threading.current_thread())
+        try:
+            engine.stop()
+        except BaseException as exc:  # pragma: no cover - assertion captures it
+            callback_errors.append(exc)
+        finally:
+            callback_done.set()
+
+    engine.start(EngineCallbacks(on_partial_result=stop_from_partial))
+    source = inputs[0]
+    owner = engine._streaming_decode_owner
+    media = engine._capture_media_session
+    assert owner is not None and media is not None
+    source.release_first.set()
+    try:
+        assert source.second_read_entered.wait(1.0)
+        assert callback_done.wait(3.0)
+        owner.thread.join(timeout=2.0)
+
+        assert callback_errors == []
+        assert callback_threads == [owner.thread]
+        assert not owner.thread.is_alive()
+        assert owner.snapshot().state is DecodeOwnerState.CLOSED
+        assert owner.snapshot().session_closed
+        assert not media.may_start_or_is_alive
+        assert source.second_read_exited.is_set()
+        assert source.closed.wait(1.0)
+        assert engine._stream_in is None
+        assert not engine._capture_resource_hold.is_set()
+        assert recorder.close_calls == 1
+        assert engine._recorder is None
+
+        # A later caller may collect metadata again without reopening or
+        # double-closing any native resource.
+        engine.stop()
+        assert not engine._capture_resource_hold.is_set()
+    finally:
+        source.release_first.set()
+        source.close_requested.set()
+        if owner.thread.is_alive():
+            engine.stop()
 
 
 def test_same_domain_gap_preserves_optional_speaker_and_route_authority() -> None:
@@ -267,6 +593,530 @@ def test_bounded_reader_aborts_and_resets_before_post_gap_pcm() -> None:
         media.join(timeout=1.0)
         recognizer.release_decode.set()
         capture.join(timeout=1.0)
+
+
+class _OwnerGapStream:
+    def __init__(self, recognizer: "_OwnerGapRecognizer") -> None:
+        self.recognizer = recognizer
+        self.samples: list[np.ndarray] = []
+        self.decoded = False
+
+    def accept_waveform(self, _sample_rate: int, samples) -> None:
+        self.recognizer.note_native_thread()
+        block = np.asarray(samples, dtype="float32").copy()
+        self.samples.append(block)
+        self.recognizer.accepts += 1
+        self.recognizer.trace.append(("accept", float(np.mean(block))))
+        if self.recognizer.accepts == 1:
+            self.recognizer.first_accepted.set()
+        else:
+            self.recognizer.post_gap_accepted.set()
+            self.recognizer.engine._running.clear()
+
+
+class _OwnerGapRecognizer:
+    def __init__(self, engine: SherpaOnnxEngine) -> None:
+        self.engine = engine
+        self.trace: list[tuple[str, object]] = []
+        self.native_threads: list[threading.Thread] = []
+        self.accepts = 0
+        self.first_accepted = threading.Event()
+        self.decode_stalled = threading.Event()
+        self.release_decode = threading.Event()
+        self.post_gap_accepted = threading.Event()
+
+    def create_stream(self):
+        self.note_native_thread()
+        self.trace.append(("create", len(self.native_threads)))
+        return _OwnerGapStream(self)
+
+    def is_ready(self, stream: _OwnerGapStream) -> bool:
+        self.note_native_thread()
+        return bool(stream.samples and not stream.decoded)
+
+    def decode_stream(self, stream: _OwnerGapStream) -> None:
+        self.note_native_thread()
+        if self.accepts == 1:
+            self.decode_stalled.set()
+            assert self.release_decode.wait(2.0)
+        stream.decoded = True
+
+    def get_result(self, stream: _OwnerGapStream) -> str:
+        self.note_native_thread()
+        return "before gap" if self.accepts == 1 and stream.decoded else ""
+
+    def is_endpoint(self, _stream: _OwnerGapStream) -> bool:
+        self.note_native_thread()
+        return False
+
+    def reset(self, stream: _OwnerGapStream) -> None:
+        self.note_native_thread()
+        stream.samples.clear()
+        stream.decoded = False
+
+    def note_native_thread(self) -> None:
+        self.native_threads.append(threading.current_thread())
+
+
+def test_complete_owner_rotates_all_roles_before_post_gap_pcm() -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            media_pcm_queue_ms=300.0,
+            media_pcm_queue_max_frames=8,
+        )
+    )
+    recognizer = _OwnerGapRecognizer(engine)
+    source = _BurstingInput(recognizer.first_accepted)
+    media = CaptureMediaSession(
+        source,
+        block_seconds=engine.config.block_sec,
+        buffer_ms=engine.config.media_pcm_queue_ms,
+        max_frames=engine.config.media_pcm_queue_max_frames,
+        capture_epoch=engine._capture_epoch,
+    )
+    engine._recognizer = recognizer
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = media
+    session = engine._claim_streaming_decode_session()
+    assert session is not None
+    partials = []
+    aborts = []
+    engine._cb = EngineCallbacks(
+        on_partial_result=lambda result: (
+            recognizer.trace.append(("partial", result.text)),
+            partials.append(result),
+        ),
+        on_transcript_abort=lambda result: (
+            recognizer.trace.append(("abort", result.reason)),
+            aborts.append(result),
+        ),
+    )
+    initial_scope = CaptureScope(
+        capture_epoch=engine._capture_epoch,
+        capture_generation=media.generation,
+    )
+    rotations = []
+
+    def process(owner: SherpaStreamingDecodeOwner) -> None:
+        owner.create_stream(role=DecodeStreamRole.WORD_CUT)
+        rotate = owner.rotate_capture_scope
+
+        def traced_rotate(scope: CaptureScope):
+            recognizer.trace.append(("rotate", scope))
+            rotations.append(scope)
+            return rotate(scope)
+
+        owner.rotate_capture_scope = traced_rotate
+        engine._streaming_decode_owner_loop(owner)
+
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=initial_scope,
+        processor=process,
+    )
+    engine._streaming_decode_owner = owner
+    engine._capture_thread = owner.thread
+    engine._running.set()
+    owner.start()
+    media.start()
+    try:
+        assert recognizer.decode_stalled.wait(1.0)
+        assert source.burst_finished.wait(1.0)
+        recognizer.release_decode.set()
+        assert recognizer.post_gap_accepted.wait(2.0)
+        source.release.set()
+        assert owner.close(timeout=2.0)
+        media.join(timeout=1.0)
+
+        snapshot = owner.snapshot()
+        assert snapshot.state is DecodeOwnerState.CLOSED
+        assert snapshot.capture_rotations == 1
+        assert snapshot.decode_rotations == 0
+        assert snapshot.streams_created == 3
+        assert snapshot.streams_retired == 3
+        assert rotations == [
+            CaptureScope(
+                capture_epoch=engine._capture_epoch,
+                capture_generation=media.generation,
+            )
+        ]
+        assert not media.mailbox.has_in_flight
+        assert recognizer.native_threads
+        assert set(recognizer.native_threads) == {owner.thread}
+        assert [item.text for item in partials] == ["Before gap"]
+        assert [item.reason for item in aborts] == [
+            TranscriptAbortReason.BACKPRESSURE
+        ]
+        labels = [name for name, _value in recognizer.trace]
+        assert labels.index("partial") < labels.index("abort")
+        assert labels.index("abort") < labels.index("rotate")
+        post_gap_accept = next(
+            index
+            for index, item in enumerate(recognizer.trace)
+            if item[0] == "accept" and float(item[1]) > 1.0
+        )
+        assert labels.index("rotate") < post_gap_accept
+    finally:
+        engine._running.clear()
+        media.request_stop()
+        source.release.set()
+        recognizer.release_decode.set()
+        media.join(timeout=1.0)
+        owner.close(timeout=1.0)
+
+
+def test_cancelled_gap_carrier_cannot_orphan_a_published_partial() -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            media_pcm_queue_ms=100.0,
+            media_pcm_queue_max_frames=1,
+        )
+    )
+    recognizer = _OwnerGapRecognizer(engine)
+    recognizer.release_decode.set()
+    capture_epoch = engine._capture_epoch
+
+    class _CancellingGapMedia:
+        error = None
+
+        def __init__(self) -> None:
+            self.mailbox = CaptureMailbox(
+                buffer_ms=100.0,
+                max_frames=1,
+                source_generation=1,
+                source_sample_rate_hz=16_000,
+                source_device=None,
+            )
+            self.allow_reads = threading.Event()
+            self.take_calls = 0
+            self.cancelled_carrier = None
+            self.cancel_result = None
+            self._offer(1.0)
+
+        @property
+        def generation(self) -> int:
+            return self.mailbox.generation
+
+        def _offer(self, value: float):
+            return self.mailbox.offer(
+                np.full(1_600, value, dtype="float32"),
+                sample_rate_hz=16_000,
+                source_generation=1,
+                capture_epoch=capture_epoch,
+                source_device=None,
+                context=CaptureBlockContext(),
+            )
+
+        def take(self, timeout=None):
+            assert self.allow_reads.wait(2.0)
+            self.take_calls += 1
+            if self.take_calls == 2:
+                # Manufacture one gap carrier, pop it into the exact in-flight
+                # slot, then overflow again before returning it to Sherpa. This
+                # deterministically recreates reader cancellation between
+                # take() and the processor's first stateful action.
+                self._offer(2.0)
+                self._offer(3.0)
+                carrier = self.mailbox.take(timeout=0.0)
+                assert carrier is not None and carrier.gap_before is not None
+                self._offer(4.0)
+                self.cancel_result = self._offer(5.0)
+                self.cancelled_carrier = carrier
+                assert carrier.effect_lease is not None
+                assert carrier.effect_lease.cancelled
+                assert self.cancel_result.in_flight_cancelled == 1
+                return carrier
+            return self.mailbox.take(timeout=timeout)
+
+        def finish(self, captured: CapturedBlock) -> bool:
+            return self.mailbox.finish(captured)
+
+        def request_stop(self) -> None:
+            self.mailbox.close()
+
+    media = _CancellingGapMedia()
+    source = SimpleNamespace(
+        actual_samplerate=16_000,
+        actual_device=None,
+        generation=1,
+        request_close=lambda: None,
+    )
+    engine._recognizer = recognizer
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = media
+    session = engine._claim_streaming_decode_session()
+    assert session is not None
+    partials = []
+    aborts = []
+    engine._cb = EngineCallbacks(
+        on_partial_result=lambda result: (
+            recognizer.trace.append(("partial", result.text)),
+            partials.append(result),
+        ),
+        on_transcript_abort=lambda result: (
+            recognizer.trace.append(("abort", result.reason)),
+            aborts.append(result),
+        ),
+    )
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(
+            capture_epoch=capture_epoch,
+            capture_generation=media.generation,
+        ),
+        processor=engine._streaming_decode_owner_loop,
+    )
+    engine._streaming_decode_owner = owner
+    engine._capture_thread = owner.thread
+    engine._running.set()
+    owner.start(timeout=1.0)
+    media.allow_reads.set()
+    try:
+        assert recognizer.post_gap_accepted.wait(2.0)
+        assert owner.close(timeout=2.0)
+
+        snapshot = owner.snapshot()
+        assert snapshot.state is DecodeOwnerState.CLOSED
+        assert snapshot.capture_rotations == 1
+        assert snapshot.identity.capture_scope.capture_generation == media.generation
+        assert media.cancelled_carrier is not None
+        assert media.cancelled_carrier.capture_generation == 2
+        assert media.cancel_result is not None
+        assert media.cancel_result.capture_generation == 3
+        assert not media.mailbox.has_in_flight
+        assert [item.text for item in partials] == ["Before gap"]
+        assert [item.reason for item in aborts] == [
+            TranscriptAbortReason.BACKPRESSURE
+        ]
+        assert partials[0].acoustic.spans[0].key == aborts[0].acoustic.spans[0].key
+        assert aborts[0].revision > partials[0].revision
+        labels = [name for name, _value in recognizer.trace]
+        assert labels.index("partial") < labels.index("abort")
+    finally:
+        engine._running.clear()
+        media.request_stop()
+        owner.close(timeout=1.0)
+
+
+class _QuietVad:
+    def __init__(self) -> None:
+        self.resets = 0
+
+    def accept_waveform(self, _samples) -> None:
+        pass
+
+    def is_speech_detected(self) -> bool:
+        return False
+
+    def reset(self) -> None:
+        self.resets += 1
+
+
+class _NativeFaultStream:
+    def __init__(self, recognizer: "_NativeFaultRecognizer", sequence: int) -> None:
+        self.recognizer = recognizer
+        self.sequence = sequence
+        self.accepted = False
+
+    def accept_waveform(self, _sample_rate: int, samples) -> None:
+        self.recognizer.note_native_thread()
+        if (
+            self.recognizer.failure_phase == "primary_accept"
+            and self.sequence == 1
+            and not self.recognizer.failed
+        ) or (
+            self.recognizer.failure_phase == "word_cut_accept"
+            and self.sequence == 2
+            and not self.recognizer.failed
+        ):
+            self.recognizer.failed = True
+            self.recognizer.trace.append(("fault_accept", self.sequence))
+            raise RuntimeError("injected native accept failure")
+        self.accepted = True
+        self.recognizer.decode_identities.append(
+            getattr(
+                self.recognizer.engine._capture_callback_context,
+                "decode_identity",
+                None,
+            )
+        )
+        self.recognizer.trace.append(
+            ("accept", self.sequence, float(np.mean(samples)))
+        )
+
+
+class _NativeFaultRecognizer:
+    def __init__(self, failure_phase: str) -> None:
+        self.failure_phase = failure_phase
+        self.failed = False
+        self.streams_created = 0
+        self.trace: list[tuple] = []
+        self.native_threads: list[threading.Thread] = []
+        self.engine = None
+        self.decode_identities = []
+
+    def note_native_thread(self) -> None:
+        self.native_threads.append(threading.current_thread())
+
+    def create_stream(self):
+        self.note_native_thread()
+        self.streams_created += 1
+        self.trace.append(("create", self.streams_created))
+        return _NativeFaultStream(self, self.streams_created)
+
+    def is_ready(self, _stream: _NativeFaultStream) -> bool:
+        self.note_native_thread()
+        return False
+
+    def decode_stream(self, _stream: _NativeFaultStream) -> None:
+        self.note_native_thread()
+
+    def get_result(self, _stream: _NativeFaultStream) -> str:
+        self.note_native_thread()
+        return ""
+
+    def is_endpoint(self, _stream: _NativeFaultStream) -> bool:
+        self.note_native_thread()
+        return False
+
+    def reset(self, stream: _NativeFaultStream) -> None:
+        self.note_native_thread()
+        if (
+            self.failure_phase == "command_reset"
+            and stream.sequence == 1
+            and not self.failed
+        ):
+            self.failed = True
+            self.trace.append(("fault_reset", stream.sequence))
+            raise RuntimeError("injected native reset failure")
+        stream.accepted = False
+        self.trace.append(("reset", stream.sequence))
+
+
+@pytest.mark.parametrize(
+    "failure_phase, expected_streams, expected_fault",
+    [
+        ("primary_accept", 2, ("fault_accept", 1)),
+        ("command_reset", 2, ("fault_reset", 1)),
+        ("word_cut_accept", 3, ("fault_accept", 2)),
+    ],
+)
+def test_complete_owner_rotates_whole_continuity_after_native_fault(
+    failure_phase: str,
+    expected_streams: int,
+    expected_fault: tuple[str, int],
+) -> None:
+    engine = SherpaOnnxEngine(
+        SherpaConfig(
+            endpoint_enabled=False,
+            final_speech_evidence_enabled=False,
+            barge_in_enabled=(failure_phase == "word_cut_accept"),
+            barge_word_cut_enabled=(failure_phase == "word_cut_accept"),
+            aec_enabled=False,
+        )
+    )
+    recognizer = _NativeFaultRecognizer(failure_phase)
+    source = _IdentityInput()
+    first_release = threading.Event()
+    recognizer.engine = engine
+
+    def wait_until_owner_started() -> None:
+        assert first_release.wait(2.0)
+
+    if failure_phase == "word_cut_accept":
+        engine._vad = _QuietVad()
+        engine._speaking.set()
+        engine._barge_sustain_reset_pending = True
+        first_context = CaptureBlockContext(
+            authority_source_generation=1,
+            authority_source_device="mic-a",
+            word_cut_route_verified=True,
+            speaking=True,
+            speak_generation=0,
+            playback_generation=0,
+        )
+
+        def word_cut_step(_recognizer, stream, samples, *_args, **_kwargs):
+            stream.accept_waveform(engine.config.sample_rate, samples)
+
+        engine._barge_word_cut_step = word_cut_step
+    else:
+        first_context = CaptureBlockContext()
+
+    first = _captured(0.1, at=20.0, context=first_context, sequence=1)
+    second = _captured(
+        0.2,
+        at=20.1,
+        context=CaptureBlockContext(),
+        sequence=2,
+    )
+    media = _ScriptedMedia(
+        engine,
+        [(first, wait_until_owner_started), (second, None)],
+    )
+    engine._recognizer = recognizer
+    engine._stream_in = source
+    engine._capture_sr = source.actual_samplerate
+    engine._capture_media_session = media
+    if failure_phase == "command_reset":
+        keyword_attempts = iter((True, False))
+        engine._poll_keywords = lambda *_args, **_kwargs: next(keyword_attempts)
+
+    session = engine._claim_streaming_decode_session()
+    assert session is not None
+    def process(owner: SherpaStreamingDecodeOwner) -> None:
+        engine._streaming_decode_owner_loop(owner)
+
+    owner = SherpaStreamingDecodeOwner(
+        session,
+        run_id=1,
+        capture_scope=CaptureScope(capture_epoch=0, capture_generation=1),
+        processor=process,
+    )
+    engine._streaming_decode_owner = owner
+    engine._capture_thread = owner.thread
+    engine._running.set()
+    owner.start(timeout=1.0)
+    first_release.set()
+    try:
+        assert owner.close(timeout=2.0)
+        snapshot = owner.snapshot()
+        assert snapshot.state is DecodeOwnerState.CLOSED
+        assert snapshot.capture_rotations == 0
+        assert snapshot.decode_rotations == 1
+        assert snapshot.identity.continuity_generation == 1
+        assert snapshot.streams_created == expected_streams
+        assert snapshot.streams_retired == expected_streams
+        assert expected_fault in recognizer.trace
+        assert any(
+            item[:2] == ("accept", expected_streams)
+            for item in recognizer.trace
+        )
+        assert recognizer.native_threads
+        assert set(recognizer.native_threads) == {owner.thread}
+        assert recognizer.decode_identities[-1] == snapshot.identity
+    finally:
+        engine._running.clear()
+        first_release.set()
+        owner.close(timeout=1.0)
+
+
+def test_capture_reference_snapshot_is_irreversibly_readonly() -> None:
+    source = np.arange(8, dtype="float32")
+
+    reference = SherpaOnnxEngine._readonly_capture_reference(source)
+    source[:] = -1.0
+
+    assert reference.tolist() == list(map(float, range(8)))
+    assert not reference.flags.writeable
+    with pytest.raises(ValueError):
+        reference.setflags(write=True)
 
 
 class _KeywordStream:

@@ -1,74 +1,70 @@
 Valid until: main advances beyond this task's landing commit — then treat as
 history.
 
-# Task result — central local Sherpa streaming-decode ownership
+# Task result — complete asynchronous Sherpa decode owner
 
 ## Outcome
 
-Implemented one run-scoped `SherpaStreamingDecodeSession` as the exclusive
-owner of the local engine's primary online Sherpa recognizer and native
-streams. The capture processor binds the session to its exact `Thread`; only
-opaque handles cross the boundary. Foreign-thread, re-entrant, forged, stale,
-cross-session, and post-close access fails before native code, and native
-streams are retired on the owner before the recognizer.
+The default local Sherpa path now has one bounded reader-to-owner PCM boundary:
+the existing `CaptureMediaSession`/`CaptureMailbox`. A dedicated
+`SherpaStreamingDecodeOwner` runs the complete ordered DSP, VAD, primary ASR,
+playback-confirm, word-cut, endpoint, and capture-loop callback state machine.
+No additional PCM queue was added.
 
-The production capture loop, normal recovery/rebase paths, barge confirmation,
-word-cut streams, and capture-replay evaluator now use that owner. Multi-case
-replay keeps one owner for the evaluator batch, creates fresh streams per case,
-closes once, and attests the completed lifecycle instead of hard-coding a
-provenance label.
+Capture scope, decoder continuity, and stream incarnation are separate.
+Mailbox loss flushes the old scope and cancels an unclaimed in-flight block;
+an already-claimed effect may finish. Capture gaps and native errors retire
+both primary and word-cut roles before replacement. PCM and reader-time
+references are bytes-backed, irreversibly read-only, and excluded from reprs.
 
-Startup rollback covers capture-thread construction, pre-transfer start
-failure, and interruption after the capture thread actually acquired ownership.
-It fences capture and playback before callbacks, drains/stops raced playback
-receipts, joins or retains capture owners, and releases native/input/finalizer/
-recorder state only after quiescence. A delayed `speak_tracked()` cannot
-resurrect the receipt dispatcher after rollback.
+Startup is one rollback transaction after input opens. The complete processor
+publishes readiness before the reader starts; tail-worker and owner launch
+ambiguity is joined or retained without joining unpublished Python threads.
+Native teardown publishes `CLOSING`, pre-start close does not hold the owner
+lock across destructors, callback-driven full stop defers exact resources until
+its lease unwinds, and both legacy WAV and synchronized diagnostic recording
+receive the correct clean/incomplete disposition.
 
-Shutdown now wakes only a live playback worker and drains an unconsumed private
-wake item after the bounded join. Failed capture startup, stop-before-start,
-and repeated stop therefore cannot terminate a later playback run.
+Capture replay remains a synchronous shared-loop evaluator. Its source digest
+binds the production owner implementation, but its attestation rejects any
+production owner and labels execution `single-session-synchronous-replay`.
 
-## Files changed
+## Main files
 
-- Added `core/engines/_sherpa_streaming_decode.py` and its focused lifecycle,
-  race, ownership, launch-rollback, and engine-transfer tests.
-- Updated `core/engines/sherpa.py` to transfer and route the primary online
-  recognizer through the session, make pre-launch rollback fail closed, and
-  leave playback restart state free of stale shutdown sentinels.
-- Updated `tools/capture_replay_eval.py` plus replay tests for one owner across
-  a multi-case batch and lifecycle-derived execution attestation.
-- Updated adjacent ASR, word-cut, media-session, and virtual-audio tests to
-  exercise opaque handles and verify owner closure.
-- Added ADR-0110 and updated `STATUS.md` plus `docs/agent-testing.md`.
+- Added `core/engines/_sherpa_streaming_decode_owner.py` and focused owner tests.
+- Hardened `core/media_session.py` mailbox ownership, immutable snapshots,
+  in-flight effect leases, whole-scope loss, and reader launch ambiguity.
+- Updated `core/engines/sherpa.py` for the complete owner, exact role/identity
+  rotation, native-error recovery, startup rollback, and re-entrant cleanup.
+- Updated hotword, media, startup, replay provenance, playback, and adjacent
+  regression tests.
+- Added ADR-0111 and updated `STATUS.md` plus `docs/agent-testing.md`.
 
 ## Verification
 
-- Focused ownership/capture/barge/replay/duplex gate: 295 passed.
-- Complete non-model split: 7,204 passed as 7,174 low-priority repository
-  checks plus 30 isolated logging/path/thread-sensitive checks; 14 skipped,
-  23 model-only deselected, 9 pre-existing warnings.
-- Required APM/double-talk regression: 6 passed.
-- Independent lifecycle, integration, and test-gap reviews closed native
-  destructor, launch-transfer, receipt-resurrection, and replay-batch races.
-- `git diff --check`: clean.
+- Full non-real-model split: 7,241 passed (7,210 low-priority broad plus
+  31 isolated sandbox/logging/path/thread-sensitive checks), 14 skipped,
+  23 model-only deselected, and 9 pre-existing warnings.
+- Documented complete-owner/adjacent gate: 325 passed; dedicated owner file:
+  10 passed, including terminal/registry stress; required APM/DTD: 6 passed.
+- One unchanged bounded-I/O test was isolated after its process-global
+  `os.read` hook was consumed by an unrelated reader; it passed alone and a
+  reviewer reproduced the pre-snapshot interference deterministically.
+- Working-tree and staged `git diff --check` are clean; the exact 15-file task
+  set is staged with no unstaged changes.
 
 ## Limits / next
 
-No model, endpoint, enrollment, voice-agent capability/tool authority,
-entry-point, or audio default changed.
-No microphone, device, native-reader, AEC, model-backed, or live conversational
-test ran. The later async extraction must transfer the complete decode owner,
-immutable PCM, exact scope/incarnation, and ordered whole-scope loss rotation;
-generic drop-oldest media-stage semantics are insufficient.
+No STT/TTS model, endpoint policy, enrollment rule, tool authority, capability,
+entry point, or device default changed. No physical microphone/audio-device,
+GPU/model-backed, acoustic AEC/room, WER, latency, or live-conversation test
+ran.
 
-FileReplay, rollback-only legacy LiveKit, offline final ASR, KWS, and isolated
-benchmark adapters remain separate, explicitly out-of-scope owners. Broader
-transactional rollback after the capture thread launches successfully but a
-later playback/final worker launch fails remains existing lifecycle debt.
+Fake-device tests prove owner-before-reader ordering, not native hardware.
+Replay bypasses the production owner thread, native reader, mailbox overload,
+and effect leases; its source digest is not execution evidence. The inline
+`media_pcm_queue_ms=0` path is compatibility only.
 
-## Merge recommendation
-
-Land this review-hardened synchronous ownership boundary. It is the prerequisite
-for a later complete asynchronous decode coordinator, not evidence to promote a
-model or claim improved live latency/STT quality.
+Next, add an end-to-end conversation acceptance gate and acquire fresh private
+plus permissively licensed disjoint command/multi-voice data. Run isolated GPU
+model cells without changing runtime defaults, then perform physical live A/B.

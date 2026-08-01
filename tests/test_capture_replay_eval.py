@@ -43,17 +43,21 @@ from tools.capture_replay.metrics import ReplayAcousticEvent
 from tools import capture_replay_eval as evaluate
 
 
-def test_evaluator_provenance_includes_streaming_decode_owner() -> None:
-    assert (
-        "core/engines/_sherpa_streaming_decode.py"
-        in evaluate._EVALUATOR_SOURCE_FILES
+def test_evaluator_provenance_includes_streaming_decode_sources() -> None:
+    assert "core/engines/_sherpa_streaming_decode.py" in (
+        evaluate._EVALUATOR_SOURCE_FILES
+    )
+    assert "core/engines/_sherpa_streaming_decode_owner.py" in (
+        evaluate._EVALUATOR_SOURCE_FILES
     )
     digest = evaluate._evaluator_source_digest()
     assert len(digest) == 64
     assert set(digest) <= set("0123456789abcdef")
 
 
-def test_multi_case_replay_reuses_one_owner_then_closes_it(tmp_path) -> None:
+def test_multi_case_replay_reuses_one_synchronous_session_then_closes_it(
+    tmp_path,
+) -> None:
     class _Stream:
         def accept_waveform(self, _sample_rate, _samples) -> None:
             pass
@@ -120,7 +124,14 @@ def test_multi_case_replay_reuses_one_owner_then_closes_it(tmp_path) -> None:
     assert evaluate._attest_streaming_decode_execution(
         engine,
         expected_capture_runs=2,
-    ) == "single-owner-synchronous"
+    ) == "single-session-synchronous-replay"
+
+    engine._streaming_decode_owner = object()
+    with pytest.raises(evaluate.CaptureReplayEvaluationError):
+        evaluate._attest_streaming_decode_execution(
+            engine,
+            expected_capture_runs=2,
+        )
 
 
 def _track(tmp_path: Path, values: np.ndarray) -> ReplayTrack:

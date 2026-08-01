@@ -15,6 +15,7 @@ def create_recognizer_stream(
     config: "SherpaConfig",
     *,
     hotwords: list[str] | tuple[str, ...] | None = None,
+    stream_role=None,
 ):
     """Create one streaming-ASR stream with production contextual biasing.
 
@@ -33,11 +34,16 @@ def create_recognizer_stream(
         and getattr(config, "asr_decoding_method", "") == "modified_beam_search"
     ):
         try:
-            return recognizer.create_stream(hotwords="\n".join(phrases))
+            kwargs = {"hotwords": "\n".join(phrases)}
+            if stream_role is not None:
+                kwargs["role"] = stream_role
+            return recognizer.create_stream(**kwargs)
         except TypeError:
             log.warning(
                 "this sherpa-onnx build ignores per-stream hotwords; biasing disabled"
             )
+    if stream_role is not None:
+        return recognizer.create_stream(role=stream_role)
     return recognizer.create_stream()
 
 # sherpa-onnx model builders shared by the local engine (``SherpaOnnxEngine``,
